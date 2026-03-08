@@ -1,0 +1,402 @@
+import { useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent } from 'react'
+import { ChevronLeft, ChevronRight, Moon, Sun } from 'lucide-react'
+import { startWindowDragging } from '../../services/window/windowRuntime'
+import type { NotiaIconAction } from '../../types/notia'
+
+interface WindowTitleTab {
+  path: string
+  title: string
+}
+
+interface WindowTitleBarProps {
+  tabs: WindowTitleTab[]
+  activeTabPath: string | null
+  tabIcon: ComponentType<{ size?: number }>
+  onActivateTab: (tabPath: string) => void
+  onCloseTab: (tabPath: string) => void
+  isSidebarOpen: boolean
+  onToggleSidebar: () => void
+  explorerActions: NotiaIconAction[]
+  explorerTools: NotiaIconAction[]
+  activeExplorerActionId: string
+  isSearchMenuOpen: boolean
+  searchQuery: string
+  searchResultCount: number
+  isSearchLoading: boolean
+  onExplorerActionClick: (id: string) => void
+  onExplorerToolClick: (id: string) => void
+  onSearchQueryChange: (value: string) => void
+  onSearchMenuClose: () => void
+  rightActions: NotiaIconAction[]
+  theme: 'dark' | 'light'
+  onToggleTheme: () => void
+  onWindowAction: (action: 'minimize' | 'maximize' | 'close') => void
+}
+
+export function WindowTitleBar({
+  tabs,
+  activeTabPath,
+  tabIcon: TabIcon,
+  onActivateTab,
+  onCloseTab,
+  isSidebarOpen,
+  onToggleSidebar,
+  explorerActions,
+  explorerTools,
+  activeExplorerActionId,
+  isSearchMenuOpen,
+  searchQuery,
+  searchResultCount,
+  isSearchLoading,
+  onExplorerActionClick,
+  onExplorerToolClick,
+  onSearchQueryChange,
+  onSearchMenuClose,
+  rightActions,
+  theme,
+  onToggleTheme,
+  onWindowAction,
+}: WindowTitleBarProps) {
+  const tabsScrollRef = useRef<HTMLDivElement>(null)
+  const tabElementRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const searchButtonRef = useRef<HTMLButtonElement>(null)
+  const searchMenuRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const [isTabsOverflowing, setIsTabsOverflowing] = useState(false)
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+
+  const ToggleIcon = explorerActions[0]?.icon
+  const ThemeIcon = theme === 'dark' ? Sun : Moon
+  const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
+  const blockingSelector =
+    'button, input, textarea, select, a, [role="button"], .notia-tab, .notia-tab-trigger, .notia-toolbar, .notia-explorer-actions, .notia-titlebar-controls, .notia-titlebar-tabs-scroll-button, .notia-search-panel'
+
+  const isInteractiveTitlebarTarget = (target: EventTarget | null): boolean => {
+    if (!(target instanceof HTMLElement)) {
+      return true
+    }
+
+    return Boolean(target.closest(blockingSelector))
+  }
+
+  const updateTabsScrollState = useCallback(() => {
+    const tabsScrollElement = tabsScrollRef.current
+    if (!tabsScrollElement) {
+      setIsTabsOverflowing(false)
+      setCanScrollLeft(false)
+      setCanScrollRight(false)
+      return
+    }
+
+    const maxScrollLeft = tabsScrollElement.scrollWidth - tabsScrollElement.clientWidth
+    const isOverflowing = maxScrollLeft > 1
+
+    setIsTabsOverflowing(isOverflowing)
+    setCanScrollLeft(isOverflowing && tabsScrollElement.scrollLeft > 1)
+    setCanScrollRight(isOverflowing && tabsScrollElement.scrollLeft < maxScrollLeft - 1)
+  }, [])
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      updateTabsScrollState()
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [tabs.length, isSidebarOpen, updateTabsScrollState])
+
+  useEffect(() => {
+    const tabsScrollElement = tabsScrollRef.current
+    if (!tabsScrollElement) {
+      return
+    }
+
+    const handleScroll = () => {
+      updateTabsScrollState()
+    }
+
+    tabsScrollElement.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('resize', handleScroll)
+
+    return () => {
+      tabsScrollElement.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('resize', handleScroll)
+    }
+  }, [updateTabsScrollState])
+
+  useEffect(() => {
+    if (!activeTabPath) {
+      return
+    }
+
+    const activeTabElement = tabElementRefs.current[activeTabPath]
+    if (!activeTabElement) {
+      return
+    }
+
+    activeTabElement.scrollIntoView({
+      block: 'nearest',
+      inline: 'nearest',
+      behavior: 'smooth',
+    })
+
+    window.setTimeout(updateTabsScrollState, 180)
+  }, [activeTabPath, tabs.length, updateTabsScrollState])
+
+  useEffect(() => {
+    if (!isSearchMenuOpen) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+    }, 0)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [isSearchMenuOpen])
+
+  useEffect(() => {
+    if (!isSearchMenuOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: globalThis.MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      const clickedInsideButton = Boolean(searchButtonRef.current?.contains(target))
+      const clickedInsideMenu = Boolean(searchMenuRef.current?.contains(target))
+      if (clickedInsideButton || clickedInsideMenu) {
+        return
+      }
+
+      onSearchMenuClose()
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onSearchMenuClose()
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [isSearchMenuOpen, onSearchMenuClose])
+
+  const handleTitlebarMouseDown = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      return
+    }
+
+    if (isInteractiveTitlebarTarget(event.target)) {
+      return
+    }
+
+    event.preventDefault()
+    void startWindowDragging()
+  }
+
+  const handleTitlebarDoubleClick = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      return
+    }
+
+    if (isInteractiveTitlebarTarget(event.target)) {
+      return
+    }
+
+    event.preventDefault()
+    onWindowAction('maximize')
+  }
+
+  const handleScrollTabs = (direction: 'left' | 'right') => {
+    const tabsScrollElement = tabsScrollRef.current
+    if (!tabsScrollElement) {
+      return
+    }
+
+    const delta = Math.max(180, Math.floor(tabsScrollElement.clientWidth * 0.45))
+    tabsScrollElement.scrollBy({
+      left: direction === 'left' ? -delta : delta,
+      behavior: 'smooth',
+    })
+  }
+
+  return (
+    <header
+      className="notia-titlebar"
+      onMouseDown={handleTitlebarMouseDown}
+      onDoubleClick={handleTitlebarDoubleClick}
+    >
+      <div
+        className={`notia-titlebar-sidebar ${
+          isSidebarOpen ? 'notia-titlebar-sidebar--open' : 'notia-titlebar-sidebar--closed'
+        }`}
+      >
+        <div className="notia-titlebar-rail-slot">
+          <button
+            type="button"
+            className={`notia-icon-button ${isSidebarOpen ? 'notia-icon-button--active' : ''}`}
+            title="Toggle sidebar"
+            onClick={onToggleSidebar}
+          >
+            {ToggleIcon ? <ToggleIcon size={16} /> : null}
+          </button>
+        </div>
+        {isSidebarOpen ? (
+          <div className="notia-titlebar-explorer">
+            <div className="notia-explorer-actions">
+              {explorerActions.slice(1).map(({ id, label, icon: Icon }) => (
+                <div key={id} className="notia-explorer-action-slot">
+                  <button
+                    ref={id === 'search' ? searchButtonRef : undefined}
+                    type="button"
+                    className={`notia-toolbar-button notia-toolbar-button--${id} ${
+                      activeExplorerActionId === id ? 'notia-icon-button--active' : ''
+                    }`}
+                    title={label}
+                    onClick={() => onExplorerActionClick(id)}
+                  >
+                    <Icon size={15} />
+                  </button>
+                  {id === 'search' && isSearchMenuOpen ? (
+                    <div ref={searchMenuRef} className="notia-search-panel">
+                      <div className="notia-search-panel-title">Buscar en libreria</div>
+                      <input
+                        ref={searchInputRef}
+                        type="text"
+                        value={searchQuery}
+                        className="notia-search-panel-input"
+                        placeholder="Buscar por titulo o contenido..."
+                        onChange={(event) => onSearchQueryChange(event.target.value)}
+                      />
+                      <div className="notia-search-panel-meta">
+                        {isSearchLoading
+                          ? 'Buscando...'
+                          : searchQuery.trim()
+                            ? `${searchResultCount} coincidencia${searchResultCount === 1 ? '' : 's'}`
+                            : 'Escribi para buscar en la libreria.'}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <div className="notia-toolbar">
+              {explorerTools.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`notia-toolbar-button notia-toolbar-button--${id}`}
+                  title={label}
+                  onClick={() => onExplorerToolClick(id)}
+                >
+                  <Icon size={15} />
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="notia-titlebar-main">
+        <div className="notia-titlebar-tabs-shell">
+          {isTabsOverflowing ? (
+            <button
+              type="button"
+              className="notia-titlebar-tabs-scroll-button"
+              title="Ver pestanas anteriores"
+              onClick={() => handleScrollTabs('left')}
+              disabled={!canScrollLeft}
+            >
+              <ChevronLeft size={14} />
+            </button>
+          ) : null}
+          <div className="notia-titlebar-tabs" ref={tabsScrollRef}>
+            {tabs.length === 0 ? (
+              <div className="notia-tab notia-tab--active notia-tab--placeholder">
+                <TabIcon size={14} />
+                <span className="notia-tab-title">New tab</span>
+              </div>
+            ) : (
+              tabs.map((tab) => {
+                const isActive = tab.path === activeTabPath
+                return (
+                  <div
+                    key={tab.path}
+                    ref={(element) => {
+                      tabElementRefs.current[tab.path] = element
+                    }}
+                    className={`notia-tab ${isActive ? 'notia-tab--active' : ''}`}
+                  >
+                    <button
+                      type="button"
+                      className="notia-tab-trigger"
+                      title={tab.title}
+                      onClick={() => onActivateTab(tab.path)}
+                    >
+                      <TabIcon size={14} />
+                      <span className="notia-tab-title">{tab.title}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="notia-titlebar-button notia-tab-close"
+                      title="Close tab"
+                      onClick={() => onCloseTab(tab.path)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )
+              })
+            )}
+          </div>
+          {isTabsOverflowing ? (
+            <button
+              type="button"
+              className="notia-titlebar-tabs-scroll-button"
+              title="Ver pestanas siguientes"
+              onClick={() => handleScrollTabs('right')}
+              disabled={!canScrollRight}
+            >
+              <ChevronRight size={14} />
+            </button>
+          ) : null}
+        </div>
+
+        <div className="notia-titlebar-controls">
+          <button type="button" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
+            <ThemeIcon size={15} />
+          </button>
+          <div className="notia-titlebar-separator" />
+          {rightActions.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              className={`notia-titlebar-button ${id === 'close' ? 'notia-titlebar-close' : ''}`}
+              title={label}
+              onClick={() => {
+                if (id === 'minimize' || id === 'maximize' || id === 'close') {
+                  onWindowAction(id)
+                }
+              }}
+            >
+              <Icon size={15} />
+            </button>
+          ))}
+        </div>
+      </div>
+    </header>
+  )
+}
