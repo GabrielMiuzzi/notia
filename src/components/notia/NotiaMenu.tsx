@@ -31,6 +31,7 @@ import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import { useLibraryGraphData } from '../../hooks/useLibraryGraphData'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
 import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
+import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import {
   isTextFileDocument,
@@ -93,20 +94,6 @@ function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
     return true
   }
   return normalizedCandidate.startsWith(`${normalizedBase}/`)
-}
-
-function doesTreeContainFilePath(nodes: NotiaFileNode[], filePath: string): boolean {
-  for (const node of nodes) {
-    if (node.type === 'file' && node.path === filePath) {
-      return true
-    }
-
-    if (node.children && doesTreeContainFilePath(node.children, filePath)) {
-      return true
-    }
-  }
-
-  return false
 }
 
 function collectFolderExpandedState(
@@ -172,6 +159,14 @@ interface OpenDocumentTab {
   latestSavedSource: string
 }
 
+type OpenTextDocumentTab = Omit<OpenDocumentTab, 'document'> & {
+  document: OpenTextFileDocument
+}
+
+function isOpenTextDocumentTab(tab: OpenDocumentTab | null): tab is OpenTextDocumentTab {
+  return Boolean(tab && isTextFileDocument(tab.document))
+}
+
 export function NotiaMenu() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<'documents' | 'graph' | 'task-manager'>(
@@ -196,7 +191,7 @@ export function NotiaMenu() {
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [pendingCreation, setPendingCreation] = useState<{
     id: string
-    kind: 'folder' | 'note'
+    kind: 'folder' | 'note' | 'inkdoc'
     initialName: string
     parentPath: string
   } | null>(null)
@@ -210,11 +205,8 @@ export function NotiaMenu() {
     | { type: 'node'; x: number; y: number; node: NotiaFileNode }
     | null
   >(null)
-  const [dialogState, setDialogState] = useState<
-    | { type: 'info'; title: string; message: string }
-    | { type: 'confirm-delete'; targetPath: string; targetName: string }
-    | null
-  >(null)
+  const [dialogState, setDialogState] = useState<{ type: 'info'; title: string; message: string } | null>(null)
+  const { confirm } = useConfirmationEngine()
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
@@ -228,6 +220,10 @@ export function NotiaMenu() {
   const activeTab = useMemo(
     () => openTabs.find((tab) => tab.document.path === activeTabPath) ?? null,
     [activeTabPath, openTabs],
+  )
+  const activeTextTab = useMemo(
+    () => (isOpenTextDocumentTab(activeTab) ? activeTab : null),
+    [activeTab],
   )
   const activeDocument = activeTab?.document ?? null
   const saveStatus = activeTab?.saveStatus ?? 'idle'
@@ -246,6 +242,23 @@ export function NotiaMenu() {
     () => buildWikiLinkTargets(treeNodes, activeLibrary?.path ?? null),
     [activeLibrary?.path, treeNodes],
   )
+  const libraryFilePaths = useMemo(() => {
+    const paths: string[] = []
+    const collect = (nodes: NotiaFileNode[]) => {
+      for (const node of nodes) {
+        if (node.type === 'file' && node.path) {
+          paths.push(node.path)
+        }
+
+        if (node.children && node.children.length > 0) {
+          collect(node.children)
+        }
+      }
+    }
+
+    collect(treeNodes)
+    return paths
+  }, [treeNodes])
   const { graphModel, isGraphLoading } = useLibraryGraphData({
     libraryPath: activeLibrary?.path ?? null,
     rootPath: activeLibrary?.path ?? null,
@@ -348,20 +361,6 @@ export function NotiaMenu() {
       const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
       const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
       setTreeNodes(selectedNodes)
-
-      const currentTabs = openTabsRef.current
-      const remainingTabs = currentTabs.filter((tab) => doesTreeContainFilePath(selectedNodes, tab.document.path))
-      if (remainingTabs.length !== currentTabs.length) {
-        const currentActiveTabPath = activeTabPathRef.current
-        const nextActiveTabPath =
-          currentActiveTabPath && remainingTabs.some((tab) => tab.document.path === currentActiveTabPath)
-            ? currentActiveTabPath
-            : remainingTabs.length > 0
-              ? remainingTabs[remainingTabs.length - 1].document.path
-              : null
-        setOpenTabs(remainingTabs)
-        setActiveTabPath(nextActiveTabPath)
-      }
     })
 
     return () => {
@@ -405,27 +404,20 @@ export function NotiaMenu() {
   }, [])
 
   useEffect(() => {
-    if (!activeTab || !isTextFileDocument(activeTab.document)) {
+    if (!activeTextTab) {
       return
     }
 
-    if (activeTab.document.source === activeTab.latestSavedSource) {
-      if (activeTab.saveStatus !== 'error' && activeTab.saveStatus !== 'idle') {
-        setOpenTabs((current) =>
-          current.map((tab) =>
-            tab.document.path === activeTab.document.path ? { ...tab, saveStatus: 'idle' } : tab,
-          ),
-        )
-      }
+    const targetPath = activeTextTab.document.path
+    const targetSource = activeTextTab.document.source
+    const latestSavedSource = activeTextTab.latestSavedSource
+    const saveDebounceMs = activeTextTab.document.viewKind === 'markdown' ? 1200 : 380
+
+    if (targetSource === latestSavedSource) {
       return
     }
 
-    const targetPath = activeTab.document.path
-    const targetSource = activeTab.document.source
     const timeoutId = window.setTimeout(() => {
-      setOpenTabs((current) =>
-        current.map((tab) => (tab.document.path === targetPath ? { ...tab, saveStatus: 'saving' } : tab)),
-      )
       void writeLibraryFileContent(targetPath, targetSource).then((result) => {
         const currentTab = openTabsRef.current.find((tab) => tab.document.path === targetPath)
         if (!currentTab || !isTextFileDocument(currentTab.document) || currentTab.document.source !== targetSource) {
@@ -436,6 +428,10 @@ export function NotiaMenu() {
           setOpenTabs((current) =>
             current.map((tab) => {
               if (tab.document.path !== targetPath) {
+                return tab
+              }
+
+              if (tab.latestSavedSource === targetSource && tab.saveStatus === 'idle') {
                 return tab
               }
 
@@ -465,12 +461,12 @@ export function NotiaMenu() {
           }
         })
       })
-    }, 380)
+    }, saveDebounceMs)
 
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [activeTab])
+  }, [activeTextTab])
 
   const handleSidebarToggle = () => {
     setIsSidebarOpen((current) => {
@@ -542,6 +538,16 @@ export function NotiaMenu() {
         id: `pending-note-${Date.now()}`,
         kind: 'note',
         initialName: 'Nueva nota',
+        parentPath: activeLibrary.path,
+      })
+      return
+    }
+
+    if (toolId === 'new-inkdoc') {
+      setPendingCreation({
+        id: `pending-inkdoc-${Date.now()}`,
+        kind: 'inkdoc',
+        initialName: 'Nuevo inkdoc',
         parentPath: activeLibrary.path,
       })
       return
@@ -704,20 +710,6 @@ export function NotiaMenu() {
     const withExpandedState = applyFolderExpandedState(refreshedNodes, expandedStateByPath)
     const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
     setTreeNodes(selectedNodes)
-
-    const currentTabs = openTabsRef.current
-    const remainingTabs = currentTabs.filter((tab) => doesTreeContainFilePath(selectedNodes, tab.document.path))
-    if (remainingTabs.length !== currentTabs.length) {
-      const currentActiveTabPath = activeTabPathRef.current
-      const nextActiveTabPath =
-        currentActiveTabPath && remainingTabs.some((tab) => tab.document.path === currentActiveTabPath)
-          ? currentActiveTabPath
-          : remainingTabs.length > 0
-            ? remainingTabs[remainingTabs.length - 1].document.path
-            : null
-      setOpenTabs(remainingTabs)
-      setActiveTabPath(nextActiveTabPath)
-    }
   }, [activeLibrary])
 
   useEffect(() => {
@@ -794,7 +786,7 @@ export function NotiaMenu() {
     setPendingCreation(null)
     setRenamingPath(null)
 
-    if (isTextualViewKind(viewKind)) {
+    if (isTextualViewKind(viewKind) || viewKind === 'inkdoc') {
       const result = await readLibraryFileContent(filePath)
       if (!result.ok) {
         setDialogState({
@@ -806,7 +798,7 @@ export function NotiaMenu() {
       }
 
       const name = filePath.split(/[\\/]/).pop() ?? filePath
-      const nextDocument: OpenTextFileDocument = {
+      const nextDocument: OpenFileDocument = {
         path: filePath,
         name,
         extension,
@@ -856,6 +848,44 @@ export function NotiaMenu() {
       }),
     )
   }
+
+  const handleInkdocDocumentPersist = useCallback(
+    async (nextSource: string): Promise<void> => {
+      const targetPath = activeTabPathRef.current
+      if (!targetPath) {
+        return
+      }
+
+      setOpenTabs((current) =>
+        current.map((tab) => {
+          if (tab.document.path !== targetPath || tab.document.viewKind !== 'inkdoc') {
+            return tab
+          }
+
+          return {
+            ...tab,
+            document: {
+              ...tab.document,
+              source: nextSource,
+            },
+          }
+        }),
+      )
+
+      const result = await writeLibraryFileContent(targetPath, nextSource)
+      if (!result.ok) {
+        throw new Error(result.error ?? 'No se pudo guardar el archivo Inkdoc.')
+      }
+
+      setOpenTabs((current) =>
+        current.map((tab) =>
+          tab.document.path === targetPath ? { ...tab, latestSavedSource: nextSource, saveStatus: 'idle' } : tab,
+        ),
+      )
+      setGraphRevision((current) => current + 1)
+    },
+    [],
+  )
 
   const handleSubmitPendingCreation = async (name: string) => {
     if (!activeLibrary || !pendingCreation) {
@@ -946,6 +976,17 @@ export function NotiaMenu() {
       return
     }
 
+    if (actionId === 'new-inkdoc-root') {
+      setPendingCreation({
+        id: `pending-inkdoc-${Date.now()}`,
+        kind: 'inkdoc',
+        initialName: 'Nuevo inkdoc',
+        parentPath: activeLibrary.path,
+      })
+      setContextMenu(null)
+      return
+    }
+
     if (contextMenu.type !== 'node') {
       setContextMenu(null)
       return
@@ -1015,8 +1056,37 @@ export function NotiaMenu() {
     }
 
     if (actionId === 'delete') {
-      setDialogState({ type: 'confirm-delete', targetPath, targetName: targetNode.name })
+      const shouldDelete = await confirm({
+        title: 'Confirmar eliminacion',
+        message: `Eliminar "${targetNode.name}"? Esta accion no se puede deshacer.`,
+        confirmLabel: 'Eliminar',
+        cancelLabel: 'Cancelar',
+        tone: 'danger',
+      })
+
+      if (!shouldDelete) {
+        setContextMenu(null)
+        return
+      }
+
+      const deleteResult = await performLibraryEntryOperation({
+        action: 'delete',
+        targetPath,
+      })
+
+      if (!deleteResult.ok) {
+        setDialogState({
+          type: 'info',
+          title: 'No se pudo eliminar',
+          message: deleteResult.error ?? 'No se pudo eliminar el elemento.',
+        })
+        setContextMenu(null)
+        return
+      }
+
+      closeTabsByPath(targetPath)
       setContextMenu(null)
+      await refreshActiveLibraryTree()
       return
     }
 
@@ -1050,6 +1120,18 @@ export function NotiaMenu() {
       return
     }
 
+    if (actionId === 'new-inkdoc' && targetNode.type === 'folder') {
+      setTreeNodes((current) => setFolderExpandedByPath(current, targetPath, true))
+      setPendingCreation({
+        id: `pending-inkdoc-${Date.now()}`,
+        kind: 'inkdoc',
+        initialName: 'Nuevo inkdoc',
+        parentPath: targetPath,
+      })
+      setContextMenu(null)
+      return
+    }
+
     setContextMenu(null)
   }
 
@@ -1070,6 +1152,7 @@ export function NotiaMenu() {
       ? [
           { id: 'new-folder-root', label: 'Crear carpeta nueva' },
           { id: 'new-note-root', label: 'Crear nota nueva' },
+          { id: 'new-inkdoc-root', label: 'Crear inkdoc nuevo' },
         ]
       : contextMenu?.type === 'node'
         ? [
@@ -1085,6 +1168,7 @@ export function NotiaMenu() {
               ? [
                   { id: 'new-subfolder', label: 'Crear subcarpeta' },
                   { id: 'new-note', label: 'Crear nota' },
+                  { id: 'new-inkdoc', label: 'Crear inkdoc' },
                 ]
               : []),
           ]
@@ -1092,35 +1176,6 @@ export function NotiaMenu() {
 
   const handleDialogClose = () => {
     setDialogState(null)
-  }
-
-  const handleDialogConfirm = async () => {
-    if (!dialogState) {
-      return
-    }
-
-    if (dialogState.type === 'info') {
-      setDialogState(null)
-      return
-    }
-
-    const deleteResult = await performLibraryEntryOperation({
-      action: 'delete',
-      targetPath: dialogState.targetPath,
-    })
-    if (!deleteResult.ok) {
-      setDialogState({
-        type: 'info',
-        title: 'No se pudo eliminar',
-        message: deleteResult.error ?? 'No se pudo eliminar el elemento.',
-      })
-      return
-    }
-
-    closeTabsByPath(dialogState.targetPath)
-
-    setDialogState(null)
-    await refreshActiveLibraryTree()
   }
 
   return (
@@ -1214,6 +1269,9 @@ export function NotiaMenu() {
             activeDocument={activeDocument}
             saveStatus={saveStatus}
             onTextDocumentChange={handleTextDocumentChange}
+            onInkdocDocumentPersist={handleInkdocDocumentPersist}
+            rootPath={activeLibrary?.path ?? null}
+            libraryFilePaths={libraryFilePaths}
             markdownWikiLinkTargets={markdownWikiLinkTargets}
             onOpenLinkedFile={(filePath) => {
               void handleOpenFile(filePath)
@@ -1244,16 +1302,11 @@ export function NotiaMenu() {
       />
       <AppDialogModal
         open={Boolean(dialogState)}
-        title={dialogState?.type === 'confirm-delete' ? 'Confirmar eliminacion' : (dialogState?.title ?? '')}
-        message={
-          dialogState?.type === 'confirm-delete'
-            ? `Eliminar "${dialogState.targetName}"? Esta accion no se puede deshacer.`
-            : (dialogState?.message ?? '')
-        }
-        confirmLabel={dialogState?.type === 'confirm-delete' ? 'Eliminar' : 'Aceptar'}
-        cancelLabel={dialogState?.type === 'confirm-delete' ? 'Cancelar' : undefined}
+        title={dialogState?.title ?? ''}
+        message={dialogState?.message ?? ''}
+        confirmLabel="Aceptar"
         onConfirm={() => {
-          void handleDialogConfirm()
+          setDialogState(null)
         }}
         onClose={handleDialogClose}
       />

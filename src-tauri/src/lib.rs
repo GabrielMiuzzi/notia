@@ -78,6 +78,32 @@ struct WriteLibraryFilePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateLibraryFilePayload {
+    file_path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateLibraryDirectoryPayload {
+    directory_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PathExistsPayload {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteBinaryFilePayload {
+    file_path: String,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateLibraryEntryPayload {
     directory_path: String,
     name: String,
@@ -89,6 +115,12 @@ struct CreateLibraryEntryPayload {
 struct SearchLibraryFilesPayload {
     directory_path: String,
     query: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathExistsResult {
+    exists: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,6 +464,112 @@ fn write_library_file(payload: WriteLibraryFilePayload) -> WriteLibraryFileResul
 }
 
 #[tauri::command]
+fn create_library_file(payload: CreateLibraryFilePayload) -> OperationResult {
+    if payload.file_path.trim().is_empty() {
+        return OperationResult {
+            ok: false,
+            error: Some("Invalid file data.".to_string()),
+        };
+    }
+
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&payload.file_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            let write_result = file.write_all(payload.content.as_bytes());
+            match write_result {
+                Ok(()) => OperationResult {
+                    ok: true,
+                    error: None,
+                },
+                Err(_) => OperationResult {
+                    ok: false,
+                    error: Some("Could not create file.".to_string()),
+                },
+            }
+        }
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                return OperationResult {
+                    ok: false,
+                    error: Some("An entry with that name already exists.".to_string()),
+                };
+            }
+
+            OperationResult {
+                ok: false,
+                error: Some("Could not create file.".to_string()),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn create_library_directory(payload: CreateLibraryDirectoryPayload) -> OperationResult {
+    if payload.directory_path.trim().is_empty() {
+        return OperationResult {
+            ok: false,
+            error: Some("Invalid directory data.".to_string()),
+        };
+    }
+
+    match fs::create_dir(payload.directory_path) {
+        Ok(()) => OperationResult {
+            ok: true,
+            error: None,
+        },
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                return OperationResult {
+                    ok: false,
+                    error: Some("An entry with that name already exists.".to_string()),
+                };
+            }
+
+            OperationResult {
+                ok: false,
+                error: Some("Could not create directory.".to_string()),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn path_exists(payload: PathExistsPayload) -> PathExistsResult {
+    if payload.path.trim().is_empty() {
+        return PathExistsResult { exists: false };
+    }
+
+    PathExistsResult {
+        exists: Path::new(&payload.path).exists(),
+    }
+}
+
+#[tauri::command]
+fn write_binary_file(payload: WriteBinaryFilePayload) -> OperationResult {
+    if payload.file_path.trim().is_empty() {
+        return OperationResult {
+            ok: false,
+            error: Some("Invalid file data.".to_string()),
+        };
+    }
+
+    match fs::write(payload.file_path, payload.data) {
+        Ok(()) => OperationResult {
+            ok: true,
+            error: None,
+        },
+        Err(_) => OperationResult {
+            ok: false,
+            error: Some("Could not write file.".to_string()),
+        },
+    }
+}
+
+#[tauri::command]
 fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
     if payload.directory_path.trim().is_empty() {
         return OperationResult {
@@ -440,7 +578,7 @@ fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
         };
     }
 
-    if payload.kind != "folder" && payload.kind != "note" {
+    if payload.kind != "folder" && payload.kind != "note" && payload.kind != "inkdoc" {
         return OperationResult {
             ok: false,
             error: Some("Invalid entry type.".to_string()),
@@ -455,9 +593,10 @@ fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
     }
 
     let trimmed_name = payload.name.trim();
-    let normalized_name = if payload.kind == "note" && !trimmed_name.to_lowercase().ends_with(".md")
-    {
+    let normalized_name = if payload.kind == "note" && !trimmed_name.to_lowercase().ends_with(".md") {
         format!("{}.md", trimmed_name)
+    } else if payload.kind == "inkdoc" && !trimmed_name.to_lowercase().ends_with(".inkdoc") {
+        format!("{}.inkdoc", trimmed_name)
     } else {
         trimmed_name.to_string()
     };
@@ -466,6 +605,31 @@ fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
 
     let operation_result = if payload.kind == "folder" {
         fs::create_dir(target_path)
+    } else if payload.kind == "inkdoc" {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target_path)
+            .and_then(|mut file| {
+                use std::io::Write;
+                file.write_all(
+                    br#"{
+  "version": 1,
+  "title": "InkDoc sin titulo",
+  "page": {
+    "size": "A4",
+    "marginMm": 10
+  },
+  "pages": [
+    {
+      "id": "p1",
+      "canvas": null
+    }
+  ]
+}
+"#,
+                )
+            })
     } else {
         OpenOptions::new()
             .write(true)
@@ -689,6 +853,10 @@ pub fn run() {
             search_library_files,
             read_markdown_files,
             write_library_file,
+            create_library_file,
+            create_library_directory,
+            path_exists,
+            write_binary_file,
             create_library_entry,
             library_entry_operation,
             window_control,

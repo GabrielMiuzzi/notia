@@ -110,7 +110,7 @@ export async function readLibraryTree(directoryPath: string): Promise<NotiaFileN
 export async function createLibraryEntry(
   directoryPath: string,
   name: string,
-  kind: 'folder' | 'note',
+  kind: 'folder' | 'note' | 'inkdoc',
 ): Promise<CreateLibraryEntryResult> {
   const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
 

@@ -1,4 +1,5 @@
 import type { NotiaIconAction } from '../../types/notia'
+import { NotiaButton } from '../common/NotiaButton'
 
 interface IconRailProps {
   actions: NotiaIconAction[]
@@ -11,18 +12,19 @@ export function IconRail({ actions, className, activeActionId, onActionClick }: 
   return (
     <div className={`notia-icon-rail ${className ?? ''}`.trim()}>
       {actions.map(({ id, icon: Icon, label, active }) => (
-        <button
+        <NotiaButton
           key={id}
-          type="button"
           aria-label={label}
           title={label}
+          size="icon"
+          variant={active || activeActionId === id ? 'primary' : 'secondary'}
           className={`notia-icon-button notia-icon-button--${id} ${
             active || activeActionId === id ? 'notia-icon-button--active' : ''
           }`}
           onClick={() => onActionClick?.(id)}
         >
           <Icon size={16} strokeWidth={2} />
-        </button>
+        </NotiaButton>
       ))}
     </div>
   )

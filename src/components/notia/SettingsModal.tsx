@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { NotiaModalShell } from './NotiaModalShell'
+import { NotiaButton } from '../common/NotiaButton'
 
 type SettingsSection = 'General' | 'Panel desplegable' | 'Librerias'
 
@@ -31,22 +33,19 @@ export function SettingsModal({
   }
 
   return (
-    <div className="notia-modal-backdrop" onClick={onClose}>
-      <div
-        className="notia-settings-modal"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-settings-modal">
         <div className="notia-settings-content">
           <div className="notia-settings-header">
             <h2>Configuraciones</h2>
-            <button
-              type="button"
+            <NotiaButton
+              size="icon"
+              variant="ghost"
               className="notia-settings-close"
               title="Cerrar"
               onClick={onClose}
             >
               <X size={16} />
-            </button>
+            </NotiaButton>
           </div>
           <div className="notia-settings-body">
             {activeSection === 'General' ? (
@@ -86,19 +85,18 @@ export function SettingsModal({
         </div>
         <aside className="notia-settings-menu">
           {SECTIONS.map((section) => (
-            <button
+            <NotiaButton
               key={section}
-              type="button"
               className={`notia-settings-menu-item ${
                 section === activeSection ? 'notia-settings-menu-item--active' : ''
               }`}
+              variant={section === activeSection ? 'primary' : 'secondary'}
               onClick={() => setActiveSection(section)}
             >
               {section}
-            </button>
+            </NotiaButton>
           ))}
         </aside>
-      </div>
-    </div>
+    </NotiaModalShell>
   )
 }

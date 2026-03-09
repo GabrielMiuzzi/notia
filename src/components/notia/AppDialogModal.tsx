@@ -1,4 +1,6 @@
 import { X } from 'lucide-react'
+import { NotiaModalShell } from './NotiaModalShell'
+import { NotiaButton } from '../common/NotiaButton'
 
 interface AppDialogModalProps {
   open: boolean
@@ -24,26 +26,24 @@ export function AppDialogModal({
   }
 
   return (
-    <div className="notia-modal-backdrop" onClick={onClose}>
-      <div className="notia-app-dialog" onClick={(event) => event.stopPropagation()}>
+    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="notia-app-dialog">
         <div className="notia-app-dialog-header">
           <h2>{title}</h2>
-          <button type="button" className="notia-settings-close" title="Cerrar" onClick={onClose}>
+          <NotiaButton size="icon" variant="ghost" className="notia-settings-close" title="Cerrar" onClick={onClose}>
             <X size={16} />
-          </button>
+          </NotiaButton>
         </div>
         <div className="notia-app-dialog-body">{message}</div>
         <div className="notia-app-dialog-actions">
           {cancelLabel ? (
-            <button type="button" className="notia-app-dialog-button" onClick={onClose}>
+            <NotiaButton variant="secondary" className="notia-app-dialog-button" onClick={onClose}>
               {cancelLabel}
-            </button>
+            </NotiaButton>
           ) : null}
-          <button type="button" className="notia-app-dialog-button notia-app-dialog-button--primary" onClick={onConfirm}>
+          <NotiaButton variant="primary" className="notia-app-dialog-button notia-app-dialog-button--primary" onClick={onConfirm}>
             {confirmLabel}
-          </button>
+          </NotiaButton>
         </div>
-      </div>
-    </div>
+    </NotiaModalShell>
   )
 }

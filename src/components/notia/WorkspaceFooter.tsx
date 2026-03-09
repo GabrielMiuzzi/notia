@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react'
 import { BookOpen, CircleHelp, Settings } from 'lucide-react'
 import type { NotiaLibrary } from '../../types/notia'
+import { NotiaButton } from '../common/NotiaButton'
 
 interface WorkspaceFooterProps {
   name: string
@@ -43,41 +44,41 @@ export function WorkspaceFooter({
   return (
     <div className="notia-footer">
       <div className="notia-footer-library" ref={menuRef}>
-        <button
-          type="button"
+        <NotiaButton
           className="notia-footer-library-trigger"
+          variant="ghost"
           title="Librerias"
           onClick={() => setIsLibraryMenuOpen((current) => !current)}
         >
           <Icon size={14} />
           <span>{name}</span>
-        </button>
+        </NotiaButton>
         {isLibraryMenuOpen ? (
           <div className="notia-library-menu">
             <div className="notia-library-menu-list">
               {libraries.length > 0 ? (
                 libraries.map((library) => (
-                  <button
+                  <NotiaButton
                     key={library.id}
-                    type="button"
                     className={`notia-library-item ${
                       library.id === activeLibraryId ? 'notia-library-item--active' : ''
                     }`}
+                    variant={library.id === activeLibraryId ? 'primary' : 'secondary'}
                     onClick={() => {
                       onSelectLibrary(library.id)
                       setIsLibraryMenuOpen(false)
                     }}
                   >
                     {library.name}
-                  </button>
+                  </NotiaButton>
                 ))
               ) : (
                 <div className="notia-library-empty">Sin librerias disponibles</div>
               )}
             </div>
-            <button
-              type="button"
+            <NotiaButton
               className="notia-library-manage"
+              variant="secondary"
               onClick={() => {
                 setIsLibraryMenuOpen(false)
                 onOpenLibraryManager()
@@ -85,22 +86,23 @@ export function WorkspaceFooter({
             >
               <BookOpen size={14} />
               <span>Administrar librerias</span>
-            </button>
+            </NotiaButton>
           </div>
         ) : null}
       </div>
       <div className="notia-footer-actions">
-        <button type="button" className="notia-footer-button" title="Help">
+        <NotiaButton type="button" className="notia-footer-button" size="icon" variant="ghost" title="Help">
           <CircleHelp size={14} />
-        </button>
-        <button
-          type="button"
+        </NotiaButton>
+        <NotiaButton
           className="notia-footer-button"
+          size="icon"
+          variant="ghost"
           title="Settings"
           onClick={onOpenSettings}
         >
           <Settings size={14} />
-        </button>
+        </NotiaButton>
       </div>
     </div>
   )

@@ -1,3 +1,5 @@
+import { NotiaButton } from '../common/NotiaButton'
+
 interface ContextMenuPosition {
   x: number
   y: number
@@ -30,15 +32,15 @@ export function FileTreeContextMenu({ open, position, items, onAction }: FileTre
       onClick={(event) => event.stopPropagation()}
     >
       {items.map((item) => (
-        <button
+        <NotiaButton
           key={item.id}
-          type="button"
           className={`notia-tree-context-item ${item.danger ? 'notia-tree-context-item--danger' : ''}`}
+          variant={item.danger ? 'danger' : 'secondary'}
           disabled={item.disabled}
           onClick={() => onAction(item.id)}
         >
           {item.label}
-        </button>
+        </NotiaButton>
       ))}
     </div>
   )

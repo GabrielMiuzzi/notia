@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle } from '@mui/material'
-import { Clock3, Pause, Play, RotateCcw, Trash2 } from 'lucide-react'
+import { Clock3, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
 import {
   formatPomodoroCountdown,
   getDeviationElapsedSeconds,
@@ -107,7 +107,11 @@ export function PomodoroPanel({
 
   const progressPercent = Math.min(100, (elapsedSeconds / totalSeconds) * 100)
   const visualMode = resolveVisualMode(state)
-  const runGlyph = state.runState === 'running' ? '' : state.runState === 'paused' ? '⏸' : '◼'
+  const runGlyph = state.runState === 'running'
+    ? null
+    : state.runState === 'paused'
+      ? <Pause size={12} />
+      : <Square size={10} />
   const runStateLabel = resolveRunStateLabel(state)
   const breakMessage = resolveBreakMessage(state)
 
@@ -199,7 +203,7 @@ export function PomodoroPanel({
             <div className={`tareas-pomodoro-time${state.isDeviationActive ? ' is-deviation' : ''}`} ref={timeRef}>
               {formatPomodoroCountdown(displayedSeconds)}
             </div>
-            <div className="tareas-pomodoro-run-glyph">{runGlyph}</div>
+            {runGlyph ? <div className="tareas-pomodoro-run-glyph">{runGlyph}</div> : null}
           </div>
         </div>
       </div>

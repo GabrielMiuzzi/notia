@@ -1,4 +1,5 @@
 import type { MarkdownWikiLinkTarget } from '../../../../types/views/markdownWikiLink'
+import { NotiaButton } from '../../../common/NotiaButton'
 
 export interface WikiLinkSuggestionMenuState {
   query: string
@@ -35,11 +36,11 @@ export function WikiLinkSuggestionMenu({ state, onSelect }: WikiLinkSuggestionMe
       {state.suggestions.map((target, index) => {
         const isActive = index === state.selectedIndex
         return (
-          <button
+          <NotiaButton
             key={target.path}
-            type="button"
             role="option"
             aria-selected={isActive}
+            variant={isActive ? 'primary' : 'secondary'}
             className={`notia-wikilink-menu-item ${isActive ? 'notia-wikilink-menu-item--active' : ''}`}
             onMouseDown={(event) => {
               event.preventDefault()
@@ -50,7 +51,7 @@ export function WikiLinkSuggestionMenu({ state, onSelect }: WikiLinkSuggestionMe
             {shouldShowPath(target) ? (
               <span className="notia-wikilink-menu-path">{target.relativePath}</span>
             ) : null}
-          </button>
+          </NotiaButton>
         )
       })}
     </div>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, TextField } from '@mui/material'
-import { Clock3, Edit2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Clock3, Edit2, MessageSquare, Pencil, Plus, Trash2 } from 'lucide-react'
 import { groupTopLevelTasks } from '../../engines/taskEngine'
 import type { Group, TaskItem } from '../../types/taskManagerTypes'
 
@@ -315,7 +315,7 @@ export function TaskBoardView({
                     void handleGroupDrop(group.name)
                   }}
                 >
-                  <span className="tareas-toggle">{isExpanded ? '▼' : '▶'}</span>
+                  <span className="tareas-toggle">{isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
                   <span className="tareas-badge" style={{ background: group.color }}>{group.name}</span>
                   <span className="tareas-count">{groupTasks.length}</span>
                   <button
@@ -409,7 +409,10 @@ export function TaskBoardView({
                       ))}
 
                     <div className="tareas-task-card tareas-task-card-add">
-                      <span className="tareas-add-link" onClick={() => onCreateTask({ group: group.name })}>+ Nueva tarea</span>
+                      <span className="tareas-add-link" onClick={() => onCreateTask({ group: group.name })}>
+                        <Plus size={12} />
+                        Nueva tarea
+                      </span>
                     </div>
                     {taskDropTarget?.groupName === group.name && taskDropTarget.index === groupTasks.length ? (
                       <div className="tareas-drop-indicator" />
@@ -427,7 +430,9 @@ export function TaskBoardView({
                 onClick={() => toggleGroup({ name: 'Sin grupo', color: '#607d8b', board: boardName })}
               >
                 <span className="tareas-toggle">
-                  {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName })) ? '▼' : '▶'}
+                  {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName }))
+                    ? <ChevronDown size={13} />
+                    : <ChevronRight size={13} />}
                 </span>
                 <span className="tareas-badge" style={{ background: '#607d8b' }}>Sin grupo</span>
                 <span className="tareas-count">{grouped['Sin grupo'].length}</span>
@@ -512,7 +517,10 @@ export function TaskBoardView({
                     ))}
 
                   <div className="tareas-task-card tareas-task-card-add">
-                    <span className="tareas-add-link" onClick={() => onCreateTask({ group: '' })}>+ Nueva tarea</span>
+                    <span className="tareas-add-link" onClick={() => onCreateTask({ group: '' })}>
+                      <Plus size={12} />
+                      Nueva tarea
+                    </span>
                   </div>
                   {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === grouped['Sin grupo'].length ? (
                     <div className="tareas-drop-indicator" />
@@ -524,7 +532,10 @@ export function TaskBoardView({
         </div>
 
         <div className="tareas-new-group">
-          <span className="tareas-add-link" onClick={onCreateGroup}>+ Nuevo grupo</span>
+          <span className="tareas-add-link" onClick={onCreateGroup}>
+            <Plus size={12} />
+            Nuevo grupo
+          </span>
         </div>
       </div>
 
@@ -735,11 +746,16 @@ function TaskCard({
             className={`tareas-card-subtasks tareas-card-subtasks-toggle${isSubtasksExpanded ? ' is-expanded' : ''}`}
             onClick={() => onToggleSubtasks(task.filePath)}
           >
-            {isSubtasksExpanded ? '▼' : '▶'} {subtasks.length} subtarea(s)
+            {isSubtasksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            {subtasks.length}
+            {' '}subtarea(s)
           </span>
         ) : <span className="tareas-card-subtasks">Sin subtareas</span>}
 
-        <span className="tareas-add-link" onClick={() => onCreateTask({ parentTaskName: task.fileName, group: task.group })}>+ Subtarea</span>
+        <span className="tareas-add-link" onClick={() => onCreateTask({ parentTaskName: task.fileName, group: task.group })}>
+          <Plus size={12} />
+          Subtarea
+        </span>
       </div>
 
       {subtasks.length > 0 && isSubtasksExpanded ? (

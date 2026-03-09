@@ -2,7 +2,7 @@ export {}
 
 declare global {
   type NotiaWindowAction = 'minimize' | 'maximize' | 'close'
-  type NotiaLibraryEntryKind = 'folder' | 'note'
+  type NotiaLibraryEntryKind = 'folder' | 'note' | 'inkdoc'
   type NotiaClipboardMode = 'copy' | 'move'
 
   interface NotiaCreateLibraryEntryResult {

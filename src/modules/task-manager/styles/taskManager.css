@@ -254,7 +254,9 @@
 }
 
 .tareas-toggle {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0.5;
   width: 16px;
   flex-shrink: 0;
@@ -557,6 +559,9 @@
 }
 
 .tareas-card-subtasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   cursor: pointer;
   user-select: none;
   opacity: 0.75;
@@ -569,6 +574,9 @@
 }
 
 .tareas-add-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 12px;
@@ -755,6 +763,9 @@
 }
 
 .tareas-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0.18;
   font-size: 13px;
 }
@@ -765,8 +776,10 @@
 }
 
 .tareas-subtask-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  font-size: 11px;
   opacity: 0.5;
 }
 
@@ -804,6 +817,8 @@
 }
 
 .tareas-subtask-indent {
+  display: inline-flex;
+  align-items: center;
   opacity: 0.3;
   margin-right: 2px;
 }
@@ -1104,7 +1119,9 @@
   bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
 }
 

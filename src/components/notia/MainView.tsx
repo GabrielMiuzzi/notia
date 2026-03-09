@@ -1,11 +1,15 @@
 import { FileViewHost } from './views/FileViewHost'
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
+import { NotiaButton } from '../common/NotiaButton'
 
 interface MainViewProps {
   activeDocument: OpenFileDocument | null
   saveStatus: NotiaDocumentSaveStatus
   onTextDocumentChange: (nextSource: string) => void
+  onInkdocDocumentPersist: (nextSource: string) => Promise<void>
+  rootPath: string | null
+  libraryFilePaths: string[]
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -26,6 +30,9 @@ export function MainView({
   activeDocument,
   saveStatus,
   onTextDocumentChange,
+  onInkdocDocumentPersist,
+  rootPath,
+  libraryFilePaths,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
 }: MainViewProps) {
@@ -33,9 +40,9 @@ export function MainView({
     return (
       <main className="notia-main">
         <div className="notia-main-empty">
-          <button type="button">Create new note (Ctrl + N)</button>
-          <button type="button">Go to file (Ctrl + O)</button>
-          <button type="button">Close</button>
+          <NotiaButton>Create new note (Ctrl + N)</NotiaButton>
+          <NotiaButton>Go to file (Ctrl + O)</NotiaButton>
+          <NotiaButton>Close</NotiaButton>
         </div>
       </main>
     )
@@ -61,6 +68,9 @@ export function MainView({
         <FileViewHost
           document={activeDocument}
           onTextSourceChange={onTextDocumentChange}
+          onInkdocSourcePersist={onInkdocDocumentPersist}
+          rootPath={rootPath}
+          libraryFilePaths={libraryFilePaths}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
         />

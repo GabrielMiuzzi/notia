@@ -14,6 +14,10 @@ const IMAGE_EXTENSIONS = new Set([
 ])
 
 export function resolveFileViewKind(extension: string): NotiaFileViewKind {
+  if (extension === 'inkdoc') {
+    return 'inkdoc'
+  }
+
   if (MARKDOWN_EXTENSIONS.has(extension)) {
     return 'markdown'
   }

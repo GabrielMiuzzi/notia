@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import { Binary, Hash, List, Plus, Tag } from 'lucide-react'
+import { NotiaButton } from '../../common/NotiaButton'
 import {
   findWikiLinkMatches,
   resolveWikiLinkTarget,
@@ -61,14 +62,14 @@ function renderWikiLinkedText(
     const target = resolveWikiLinkTarget(lookup, match.reference)
     if (target) {
       chunks.push(
-        <button
+        <NotiaButton
           key={`${keyBase}-link-${index}`}
-          type="button"
+          variant="ghost"
           className="notia-properties-wikilink"
           onClick={() => onOpenLinkedFile(target.path)}
         >
           {match.displayLabel}
-        </button>,
+        </NotiaButton>,
       )
     } else {
       chunks.push(
@@ -221,11 +222,11 @@ export function MarkdownPropertiesPanel({
               onChange={(event) => setValueInput(event.currentTarget.value)}
             />
             <div className="notia-properties-add-actions">
-              <button type="button" onClick={submitAddProperty}>
+              <NotiaButton onClick={submitAddProperty}>
                 Add
-              </button>
-              <button
-                type="button"
+              </NotiaButton>
+              <NotiaButton
+                variant="secondary"
                 onClick={() => {
                   setIsAddingProperty(false)
                   setKeyInput('')
@@ -233,19 +234,19 @@ export function MarkdownPropertiesPanel({
                 }}
               >
                 Cancel
-              </button>
+              </NotiaButton>
             </div>
           </div>
         ) : null}
       </div>
-      <button
-        type="button"
+      <NotiaButton
         className="notia-properties-add-button"
+        variant="secondary"
         onClick={() => setIsAddingProperty(true)}
       >
         <Plus size={15} />
         <span>Add property</span>
-      </button>
+      </NotiaButton>
     </section>
   )
 }

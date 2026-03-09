@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { BookPlus, X } from 'lucide-react'
 import { pickLibraryDirectory } from '../../services/libraries/libraryRuntime'
 import type { NotiaLibrary } from '../../types/notia'
+import { NotiaModalShell } from './NotiaModalShell'
+import { NotiaButton } from '../common/NotiaButton'
 
 interface LibraryManagerModalProps {
   open: boolean
@@ -44,21 +46,18 @@ export function LibraryManagerModal({
   }
 
   return (
-    <div className="notia-modal-backdrop" onClick={onClose}>
-      <div
-        className="notia-library-manager-modal"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-library-manager-modal">
         <div className="notia-library-manager-header">
           <h2>Administrar librerias</h2>
-          <button
-            type="button"
+          <NotiaButton
+            size="icon"
+            variant="ghost"
             className="notia-settings-close"
             title="Cerrar"
             onClick={onClose}
           >
             <X size={16} />
-          </button>
+          </NotiaButton>
         </div>
         <div className="notia-library-manager-body">
           <div className="notia-library-manager-list">
@@ -79,18 +78,17 @@ export function LibraryManagerModal({
             )}
           </div>
           <aside className="notia-library-manager-menu">
-            <button
-              type="button"
+            <NotiaButton
               className="notia-library-manager-menu-item"
+              variant="primary"
               onClick={handleAddLibrary}
               disabled={isAdding}
             >
               <BookPlus size={14} />
               <span>{isAdding ? 'Seleccionando carpeta...' : 'Agregar nueva libreria'}</span>
-            </button>
+            </NotiaButton>
           </aside>
         </div>
-      </div>
-    </div>
+    </NotiaModalShell>
   )
 }

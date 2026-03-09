@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { ChevronDown, ChevronRight, CornerDownRight, GripVertical } from 'lucide-react'
 import type { TaskItem } from '../../types/taskManagerTypes'
 
 interface TaskTableViewProps {
@@ -68,23 +69,29 @@ export function TaskTableView({ title, tasks, onChangeTaskState, onDeleteTask }:
     const rows: ReactNode[] = [
       <tr key={task.filePath} className="tareas-row">
         <td className="tareas-cell-drag">
-          <span className="tareas-drag-handle">⠁⠁⠁</span>
+          <span className="tareas-drag-handle">
+            <GripVertical size={12} />
+          </span>
         </td>
 
         <td className="tareas-cell-toggle">
           {depth === 0 ? (
             <span
               className={`tareas-subtask-toggle${hasChildren ? '' : ' tareas-toggle-empty'}`}
-              onClick={() => toggleExpanded(task.filePath)}
+              onClick={hasChildren ? () => toggleExpanded(task.filePath) : undefined}
             >
-              {isExpanded ? '▼' : '▶'}
+              {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
             </span>
           ) : null}
         </td>
 
         <td className="tareas-cell-name" style={{ paddingLeft: `${depth * 24 + 8}px` }}>
           <div className="tareas-task-title-wrap">
-            {depth > 0 ? <span className="tareas-subtask-indent">└</span> : null}
+            {depth > 0 ? (
+              <span className="tareas-subtask-indent">
+                <CornerDownRight size={11} />
+              </span>
+            ) : null}
             <a className="tareas-task-link" href="#" onClick={(event) => event.preventDefault()} title={task.title}>
               {task.title}
             </a>

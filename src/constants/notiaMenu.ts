@@ -5,6 +5,7 @@ import {
   ListChecks,
   PanelsTopLeft,
   PencilLine,
+  FilePenLine,
   Search,
   X,
   Minus,
@@ -24,6 +25,7 @@ export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
 
 export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [
   { id: 'new-note', label: 'New Note', icon: PencilLine },
+  { id: 'new-inkdoc', label: 'New InkDoc', icon: FilePenLine },
   { id: 'new-folder', label: 'New Folder', icon: FolderPlus },
 ]
 

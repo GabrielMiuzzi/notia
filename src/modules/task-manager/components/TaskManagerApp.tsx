@@ -1,6 +1,7 @@
 import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
 import { FolderKanban, Plus, RefreshCw } from 'lucide-react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
+import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
 import { useTaskManager } from '../hooks/useTaskManager'
 import { TaskBoardView } from './boards/TaskBoardView'
@@ -37,6 +38,7 @@ interface TaskManagerAppProps {
 
 export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManagerAppProps) {
   const manager = useTaskManager(vaultPath)
+  const { confirm } = useConfirmationEngine()
 
   const activeBoard = manager.settings.activeTab
 
@@ -65,6 +67,54 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
   )
 
   const activeBoardConfig = manager.settings.boards.find((board) => board.name === activeBoard) ?? null
+
+  const handleRemoveBoard = useCallback(async () => {
+    const shouldRemove = await confirm({
+      title: 'Eliminar tablero',
+      message: `Desea eliminar el tablero "${activeBoard}"? Esta accion no se puede deshacer.`,
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+
+    if (!shouldRemove) {
+      return
+    }
+
+    await manager.removeBoard(activeBoard)
+  }, [activeBoard, confirm, manager])
+
+  const handleDeleteTask = useCallback(async (task: Parameters<typeof manager.deleteTaskItem>[0]) => {
+    const shouldDelete = await confirm({
+      title: 'Eliminar tarea',
+      message: `Desea eliminar la tarea "${task.title}"? Esta accion no se puede deshacer.`,
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+
+    if (!shouldDelete) {
+      return
+    }
+
+    await manager.deleteTaskItem(task)
+  }, [confirm, manager])
+
+  const handleDeletePomodoroEntry = useCallback(async (entryId: string) => {
+    const shouldDelete = await confirm({
+      title: 'Eliminar registro',
+      message: 'Desea eliminar este registro de pomodoro? Esta accion no se puede deshacer.',
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+
+    if (!shouldDelete) {
+      return
+    }
+
+    await manager.deletePomodoroLogEntry(entryId)
+  }, [confirm, manager])
 
   return (
     <ThemeProvider theme={theme}>
@@ -109,7 +159,7 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
 
             <button
               className="tareas-btn-delete-board"
-              onClick={() => void manager.removeBoard(activeBoard)}
+              onClick={() => void handleRemoveBoard()}
               disabled={!activeTabIsBoard || activeBoard === 'default'}
             >
               Eliminar tablero
@@ -160,7 +210,7 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
               tasks={manager.snapshot.tasks}
               onCreateTask={manager.openTaskCreateDialog}
               onEditTask={manager.openTaskEditDialog}
-              onDeleteTask={manager.deleteTaskItem}
+              onDeleteTask={handleDeleteTask}
               onChangeTaskState={manager.updateTaskState}
               onMarkTaskUrgent={manager.markTaskAsUrgent}
               onToggleSubtaskDone={manager.toggleSubtaskDone}
@@ -183,7 +233,7 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
               title="Tareas completadas"
               tasks={finishedTasks}
               onChangeTaskState={manager.updateTaskState}
-              onDeleteTask={manager.deleteTaskItem}
+              onDeleteTask={handleDeleteTask}
             />
           ) : null}
 
@@ -192,7 +242,7 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
               title="Tareas canceladas"
               tasks={cancelledTasks}
               onChangeTaskState={manager.updateTaskState}
-              onDeleteTask={manager.deleteTaskItem}
+              onDeleteTask={handleDeleteTask}
             />
           ) : null}
 
@@ -209,7 +259,7 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
               onEnterDeviation={manager.enterPomodoroDeviationMode}
               onExitDeviation={manager.exitPomodoroDeviationMode}
               onSetDurations={manager.setPomodoroDurations}
-              onDeleteEntry={manager.deletePomodoroLogEntry}
+              onDeleteEntry={handleDeletePomodoroEntry}
               onNotify={manager.setInfoMessage}
             />
           ) : null}

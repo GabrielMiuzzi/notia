@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type WheelEvent } from 'react'
 import { SlidersHorizontal, X } from 'lucide-react'
+import { NotiaButton } from '../../common/NotiaButton'
 import {
   buildClusteredGraphLayout,
   type PositionedGraphEdge,
@@ -1432,9 +1433,9 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
         <div className="notia-graph-meta">
           <span>{graphLayout.nodes.length} archivos</span>
           <span>{graphLayout.edges.length} enlaces</span>
-          <button type="button" className="notia-graph-reset" onClick={handleResetViewport}>
+          <NotiaButton type="button" variant="secondary" className="notia-graph-reset" onClick={handleResetViewport}>
             Reset view
-          </button>
+          </NotiaButton>
         </div>
       </header>
       <section className="notia-main-content notia-graph-content">
@@ -1460,9 +1461,10 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                 event.stopPropagation()
               }}
             >
-              <button
+              <NotiaButton
                 ref={controlsButtonRef}
-                type="button"
+                size="icon"
+                variant="ghost"
                 className="notia-graph-controls-button"
                 title="Configurar grafo"
                 onClick={() => {
@@ -1470,20 +1472,21 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                 }}
               >
                 <SlidersHorizontal size={14} />
-              </button>
+              </NotiaButton>
               {isControlsOpen ? (
                 <div ref={controlsPanelRef} className="notia-graph-controls-panel">
                   <div className="notia-graph-controls-header">
                     <span>Configuracion</span>
-                    <button
-                      type="button"
+                    <NotiaButton
+                      size="icon"
+                      variant="ghost"
                       className="notia-graph-controls-close"
                       onClick={() => {
                         setIsControlsOpen(false)
                       }}
                     >
                       <X size={13} />
-                    </button>
+                    </NotiaButton>
                   </div>
                   <div className="notia-graph-control-value">
                     <span>Zoom actual</span>

@@ -157,6 +157,10 @@ export function MarkdownView({
   const onOpenLinkedFileRef = useRef(onOpenLinkedFile)
 
   useEffect(() => {
+    if (source === latestComposedSourceRef.current) {
+      return
+    }
+
     latestComposedSourceRef.current = source
     latestBodyRef.current = parsedDocument.body
     frontmatterRef.current = parsedDocument.frontmatter
@@ -304,15 +308,27 @@ export function MarkdownView({
       return
     }
 
+    // When props are behind local typing, do not push stale content into the editor.
+    if (source !== latestComposedSourceRef.current) {
+      return
+    }
+
+    // If our tracked body already matches the incoming body, this is not an external body change.
+    if (parsedDocument.body === latestBodyRef.current) {
+      return
+    }
+
     const currentMarkdown = crepe.getMarkdown()
     if (currentMarkdown === parsedDocument.body) {
+      latestBodyRef.current = currentMarkdown
       return
     }
 
     isApplyingExternalUpdateRef.current = true
     crepe.editor.action(replaceAll(parsedDocument.body, true))
     isApplyingExternalUpdateRef.current = false
-  }, [parsedDocument.body])
+    latestBodyRef.current = parsedDocument.body
+  }, [parsedDocument.body, source])
 
   useEffect(() => {
     const crepe = crepeRef.current

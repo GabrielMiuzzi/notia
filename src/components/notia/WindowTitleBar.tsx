@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentType, type Mous
 import { ChevronLeft, ChevronRight, Moon, Sun } from 'lucide-react'
 import { startWindowDragging } from '../../services/window/windowRuntime'
 import type { NotiaIconAction } from '../../types/notia'
+import { NotiaButton } from '../common/NotiaButton'
 
 interface WindowTitleTab {
   path: string
@@ -245,23 +246,25 @@ export function WindowTitleBar({
         }`}
       >
         <div className="notia-titlebar-rail-slot">
-          <button
-            type="button"
+          <NotiaButton
+            size="icon"
+            variant={isSidebarOpen ? 'primary' : 'secondary'}
             className={`notia-icon-button ${isSidebarOpen ? 'notia-icon-button--active' : ''}`}
             title="Toggle sidebar"
             onClick={onToggleSidebar}
           >
             {ToggleIcon ? <ToggleIcon size={16} /> : null}
-          </button>
+          </NotiaButton>
         </div>
         {isSidebarOpen ? (
           <div className="notia-titlebar-explorer">
             <div className="notia-explorer-actions">
               {explorerActions.slice(1).map(({ id, label, icon: Icon }) => (
                 <div key={id} className="notia-explorer-action-slot">
-                  <button
+                  <NotiaButton
                     ref={id === 'search' ? searchButtonRef : undefined}
-                    type="button"
+                    size="icon"
+                    variant={activeExplorerActionId === id ? 'primary' : 'secondary'}
                     className={`notia-toolbar-button notia-toolbar-button--${id} ${
                       activeExplorerActionId === id ? 'notia-icon-button--active' : ''
                     }`}
@@ -269,7 +272,7 @@ export function WindowTitleBar({
                     onClick={() => onExplorerActionClick(id)}
                   >
                     <Icon size={15} />
-                  </button>
+                  </NotiaButton>
                   {id === 'search' && isSearchMenuOpen ? (
                     <div ref={searchMenuRef} className="notia-search-panel">
                       <div className="notia-search-panel-title">Buscar en libreria</div>
@@ -295,15 +298,16 @@ export function WindowTitleBar({
             </div>
             <div className="notia-toolbar">
               {explorerTools.map(({ id, label, icon: Icon }) => (
-                <button
+                <NotiaButton
                   key={id}
-                  type="button"
+                  size="icon"
+                  variant="secondary"
                   className={`notia-toolbar-button notia-toolbar-button--${id}`}
                   title={label}
                   onClick={() => onExplorerToolClick(id)}
                 >
                   <Icon size={15} />
-                </button>
+                </NotiaButton>
               ))}
             </div>
           </div>
@@ -313,15 +317,16 @@ export function WindowTitleBar({
       <div className="notia-titlebar-main">
         <div className="notia-titlebar-tabs-shell">
           {isTabsOverflowing ? (
-            <button
-              type="button"
+            <NotiaButton
+              size="icon"
+              variant="ghost"
               className="notia-titlebar-tabs-scroll-button"
               title="Ver pestanas anteriores"
               onClick={() => handleScrollTabs('left')}
               disabled={!canScrollLeft}
             >
               <ChevronLeft size={14} />
-            </button>
+            </NotiaButton>
           ) : null}
           <div className="notia-titlebar-tabs" ref={tabsScrollRef}>
             {tabs.length === 0 ? (
@@ -340,50 +345,53 @@ export function WindowTitleBar({
                     }}
                     className={`notia-tab ${isActive ? 'notia-tab--active' : ''}`}
                   >
-                    <button
-                      type="button"
+                    <NotiaButton
+                      variant="ghost"
                       className="notia-tab-trigger"
                       title={tab.title}
                       onClick={() => onActivateTab(tab.path)}
                     >
                       <TabIcon size={14} />
                       <span className="notia-tab-title">{tab.title}</span>
-                    </button>
-                    <button
-                      type="button"
+                    </NotiaButton>
+                    <NotiaButton
+                      size="icon"
+                      variant="ghost"
                       className="notia-titlebar-button notia-tab-close"
                       title="Close tab"
                       onClick={() => onCloseTab(tab.path)}
                     >
                       ×
-                    </button>
+                    </NotiaButton>
                   </div>
                 )
               })
             )}
           </div>
           {isTabsOverflowing ? (
-            <button
-              type="button"
+            <NotiaButton
+              size="icon"
+              variant="ghost"
               className="notia-titlebar-tabs-scroll-button"
               title="Ver pestanas siguientes"
               onClick={() => handleScrollTabs('right')}
               disabled={!canScrollRight}
             >
               <ChevronRight size={14} />
-            </button>
+            </NotiaButton>
           ) : null}
         </div>
 
         <div className="notia-titlebar-controls">
-          <button type="button" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
+          <NotiaButton size="icon" variant="ghost" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
             <ThemeIcon size={15} />
-          </button>
+          </NotiaButton>
           <div className="notia-titlebar-separator" />
           {rightActions.map(({ id, label, icon: Icon }) => (
-            <button
+            <NotiaButton
               key={id}
-              type="button"
+              size="icon"
+              variant={id === 'close' ? 'danger' : 'ghost'}
               className={`notia-titlebar-button ${id === 'close' ? 'notia-titlebar-close' : ''}`}
               title={label}
               onClick={() => {
@@ -393,7 +401,7 @@ export function WindowTitleBar({
               }}
             >
               <Icon size={15} />
-            </button>
+            </NotiaButton>
           ))}
         </div>
       </div>

@@ -9,8 +9,13 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "tauri": "tauri",
-    "dev:tauri": "tauri dev",
-    "dev:tauri:x11": "GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
+    "dev:tauri": "./scripts/tauri-dev-linux.sh",
+    "dev:tauri:linux": "./scripts/tauri-dev-linux.sh",
+    "dev:tauri:auto": "./scripts/tauri-dev-linux.sh",
+    "dev:tauri:wayland": "NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=0 ./scripts/tauri-dev-linux.sh",
+    "dev:tauri:wayland:fallback": "NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=1 ./scripts/tauri-dev-linux.sh",
+    "dev:android": "NDK_HOME=\"$(ls -d \"$HOME\"/Android/Sdk/ndk/* 2>/dev/null | sort -V | tail -1)\" ANDROID_NDK_HOME=\"$(ls -d \"$HOME\"/Android/Sdk/ndk/* 2>/dev/null | sort -V | tail -1)\" tauri android dev --open",
+    "dev:tauri:x11": "NOTIA_TAURI_BACKEND=x11 ./scripts/tauri-dev-linux.sh",
     "build:tauri": "tauri build"
   },
   "dependencies": {
@@ -20,6 +25,8 @@
     "@mui/material": "^7.3.9",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.0",
     "lucide-react": "^0.577.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

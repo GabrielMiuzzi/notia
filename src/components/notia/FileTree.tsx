@@ -4,7 +4,7 @@ import type { NotiaFileNode } from '../../types/notia'
 
 interface PendingCreation {
   id: string
-  kind: 'folder' | 'note'
+  kind: 'folder' | 'note' | 'inkdoc'
   initialName: string
   parentPath: string
 }
@@ -74,7 +74,9 @@ function TreeRow({
     node.type === 'folder' &&
     node.path === pendingCreation?.parentPath
   const inputRef = useRef<HTMLInputElement>(null)
-  const [renameValue, setRenameValue] = useState(node.type === 'file' ? node.name.replace(/\.md$/i, '') : node.name)
+  const [renameValue, setRenameValue] = useState(
+    node.type === 'file' ? node.name.replace(/\.(md|inkdoc)$/i, '') : node.name,
+  )
 
   useEffect(() => {
     if (!isRenaming) {
