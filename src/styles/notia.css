@@ -1802,6 +1802,10 @@
   font-weight: 600;
 }
 
+.notia-settings-slider-wrap input[type='range'] {
+  width: 100%;
+}
+
 .notia-settings-menu {
   width: 180px;
   border-left: 1px solid var(--color-border-strong);

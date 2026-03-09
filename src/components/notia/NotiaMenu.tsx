@@ -30,6 +30,7 @@ import { isTextualViewKind, resolveFileViewKind } from '../../services/views/fil
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import { useLibraryGraphData } from '../../hooks/useLibraryGraphData'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
+import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import {
   isTextFileDocument,
@@ -52,6 +53,7 @@ import { SettingsModal } from './SettingsModal'
 import { WindowTitleBar } from './WindowTitleBar'
 import { WorkspaceFooter } from './WorkspaceFooter'
 import { GraphView } from './views/GraphView'
+import { TaskManagerApp } from '../../modules/task-manager/components/TaskManagerApp'
 
 function findInitialActiveLibrary(libraries: NotiaLibrary[]): string | null {
   if (libraries.length === 0) {
@@ -107,6 +109,55 @@ function doesTreeContainFilePath(nodes: NotiaFileNode[], filePath: string): bool
   return false
 }
 
+function collectFolderExpandedState(
+  nodes: NotiaFileNode[],
+  stateByPath: Map<string, boolean> = new Map<string, boolean>(),
+): Map<string, boolean> {
+  for (const node of nodes) {
+    if (node.type === 'folder' && typeof node.path === 'string') {
+      stateByPath.set(node.path, Boolean(node.expanded))
+    }
+
+    if (node.children && node.children.length > 0) {
+      collectFolderExpandedState(node.children, stateByPath)
+    }
+  }
+
+  return stateByPath
+}
+
+function applyFolderExpandedState(nodes: NotiaFileNode[], stateByPath: Map<string, boolean>): NotiaFileNode[] {
+  return nodes.map((node) => {
+    const nextChildren = node.children && node.children.length > 0
+      ? applyFolderExpandedState(node.children, stateByPath)
+      : node.children
+
+    if (node.type !== 'folder') {
+      if (nextChildren === node.children) {
+        return node
+      }
+
+      return {
+        ...node,
+        children: nextChildren,
+      }
+    }
+
+    const savedExpanded = typeof node.path === 'string'
+      ? stateByPath.get(node.path)
+      : undefined
+    if (typeof savedExpanded === 'undefined' && nextChildren === node.children) {
+      return node
+    }
+
+    return {
+      ...node,
+      expanded: typeof savedExpanded === 'boolean' ? savedExpanded : node.expanded,
+      children: nextChildren,
+    }
+  })
+}
+
 function joinParentPath(parentPath: string, originalPath: string, name: string): string {
   const separator = originalPath.includes('\\') ? '\\' : '/'
   if (parentPath.endsWith('/') || parentPath.endsWith('\\')) {
@@ -123,7 +174,9 @@ interface OpenDocumentTab {
 
 export function NotiaMenu() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
-  const [isGraphViewOpen, setIsGraphViewOpen] = useState(false)
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'documents' | 'graph' | 'task-manager'>(
+    'documents',
+  )
   const [graphRevision, setGraphRevision] = useState(0)
   const [activeHeaderAction, setActiveHeaderAction] = useState('')
   const [isSearchMenuOpen, setIsSearchMenuOpen] = useState(false)
@@ -133,6 +186,7 @@ export function NotiaMenu() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isLibraryManagerOpen, setIsLibraryManagerOpen] = useState(false)
   const [theme, setTheme] = useState<NotiaTheme>(() => loadThemePreference())
+  const [explorerRefreshIntervalMs, setExplorerRefreshIntervalMs] = useState<number>(() => loadExplorerRefreshIntervalMs())
   const [libraries, setLibraries] = useState<NotiaLibrary[]>(() => loadLibraries())
   const [activeLibraryId, setActiveLibraryId] = useState<string | null>(() =>
     findInitialActiveLibrary(loadLibraries()),
@@ -164,6 +218,8 @@ export function NotiaMenu() {
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
+  const treeNodesRef = useRef<NotiaFileNode[]>([])
+  const libraryTreeRefreshTimerRef = useRef<number | null>(null)
 
   const activeLibrary = useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
@@ -228,12 +284,20 @@ export function NotiaMenu() {
   }, [theme])
 
   useEffect(() => {
+    saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)
+  }, [explorerRefreshIntervalMs])
+
+  useEffect(() => {
     activeTabPathRef.current = activeTabPath
   }, [activeTabPath])
 
   useEffect(() => {
     openTabsRef.current = openTabs
   }, [openTabs])
+
+  useEffect(() => {
+    treeNodesRef.current = treeNodes
+  }, [treeNodes])
 
   useEffect(() => {
     if (!activeLibrary || normalizedSearchQuery.length === 0) {
@@ -280,7 +344,9 @@ export function NotiaMenu() {
         return
       }
 
-      const selectedNodes = setSelectedFileByPath(nodes, activeTabPathRef.current)
+      const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
+      const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
+      const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
       setTreeNodes(selectedNodes)
 
       const currentTabs = openTabsRef.current
@@ -454,7 +520,12 @@ export function NotiaMenu() {
 
   const handleRailActionClick = (actionId: string) => {
     if (actionId === 'graph-view') {
-      setIsGraphViewOpen((current) => !current)
+      setActiveWorkspaceView((current) => (current === 'graph' ? 'documents' : 'graph'))
+      return
+    }
+
+    if (actionId === 'task-manager') {
+      setActiveWorkspaceView((current) => (current === 'task-manager' ? 'documents' : 'task-manager'))
     }
   }
 
@@ -623,13 +694,15 @@ export function NotiaMenu() {
     }
   }, [handleCloseActiveTab, handleCycleToNextTab])
 
-  const refreshActiveLibraryTree = async () => {
+  const refreshActiveLibraryTree = useCallback(async () => {
     if (!activeLibrary) {
       return
     }
 
     const refreshedNodes = await readLibraryTree(activeLibrary.path)
-    const selectedNodes = setSelectedFileByPath(refreshedNodes, activeTabPathRef.current)
+    const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
+    const withExpandedState = applyFolderExpandedState(refreshedNodes, expandedStateByPath)
+    const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
     setTreeNodes(selectedNodes)
 
     const currentTabs = openTabsRef.current
@@ -645,10 +718,68 @@ export function NotiaMenu() {
       setOpenTabs(remainingTabs)
       setActiveTabPath(nextActiveTabPath)
     }
-  }
+  }, [activeLibrary])
+
+  useEffect(() => {
+    const handleLibraryTreeChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ vaultPath?: string; pathHint?: string }>
+      const changedVaultPath = normalizePath(customEvent.detail?.vaultPath ?? '')
+      const changedPathHint = normalizePath(customEvent.detail?.pathHint ?? '')
+      const currentActiveLibraryPath = normalizePath(activeLibrary?.path ?? '')
+      if (!currentActiveLibraryPath) {
+        return
+      }
+
+      const matchesCurrentLibrary = changedVaultPath
+        ? changedVaultPath === currentActiveLibraryPath
+        : changedPathHint
+          ? isSameOrNestedPath(currentActiveLibraryPath, changedPathHint)
+          : true
+      if (!matchesCurrentLibrary) {
+        return
+      }
+
+      if (libraryTreeRefreshTimerRef.current !== null) {
+        window.clearTimeout(libraryTreeRefreshTimerRef.current)
+      }
+
+      libraryTreeRefreshTimerRef.current = window.setTimeout(() => {
+        libraryTreeRefreshTimerRef.current = null
+        void refreshActiveLibraryTree()
+        setGraphRevision((current) => current + 1)
+      }, 120)
+    }
+
+    window.addEventListener('notia:library-tree-changed', handleLibraryTreeChanged)
+    return () => {
+      window.removeEventListener('notia:library-tree-changed', handleLibraryTreeChanged)
+      if (libraryTreeRefreshTimerRef.current !== null) {
+        window.clearTimeout(libraryTreeRefreshTimerRef.current)
+        libraryTreeRefreshTimerRef.current = null
+      }
+    }
+  }, [activeLibrary?.path, refreshActiveLibraryTree])
+
+  useEffect(() => {
+    if (!activeLibrary?.path) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+
+      void refreshActiveLibraryTree()
+    }, explorerRefreshIntervalMs)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [activeLibrary?.path, explorerRefreshIntervalMs, refreshActiveLibraryTree])
 
   const handleOpenFile = async (filePath: string) => {
-    setIsGraphViewOpen(false)
+    setActiveWorkspaceView('documents')
 
     const existingTab = openTabsRef.current.find((tab) => tab.document.path === filePath)
     if (existingTab) {
@@ -835,6 +966,20 @@ export function NotiaMenu() {
       return
     }
 
+    if (actionId === 'copy-system-path') {
+      try {
+        await navigator.clipboard.writeText(targetPath)
+      } catch {
+        setDialogState({
+          type: 'info',
+          title: 'No se pudo copiar',
+          message: 'No se pudo copiar el path al portapapeles.',
+        })
+      }
+      setContextMenu(null)
+      return
+    }
+
     if (actionId === 'move') {
       setClipboardEntry({ path: targetPath, mode: 'move' })
       setContextMenu(null)
@@ -929,6 +1074,9 @@ export function NotiaMenu() {
       : contextMenu?.type === 'node'
         ? [
             { id: 'copy', label: 'Copiar' },
+            ...(contextMenu.node.type === 'file'
+              ? [{ id: 'copy-system-path', label: 'Copiar path del sistema' }]
+              : []),
             { id: 'paste', label: 'Pegar', disabled: !clipboardEntry },
             { id: 'move', label: 'Mover' },
             { id: 'rename', label: 'Renombrar' },
@@ -1006,7 +1154,13 @@ export function NotiaMenu() {
           <div className="notia-primary-rail">
             <IconRail
               actions={LEFT_RAIL_ACTIONS}
-              activeActionId={isGraphViewOpen ? 'graph-view' : null}
+              activeActionId={
+                activeWorkspaceView === 'graph'
+                  ? 'graph-view'
+                  : activeWorkspaceView === 'task-manager'
+                    ? 'task-manager'
+                    : null
+              }
               onActionClick={handleRailActionClick}
             />
           </div>
@@ -1044,7 +1198,7 @@ export function NotiaMenu() {
             </div>
           ) : null}
         </aside>
-        {isGraphViewOpen ? (
+        {activeWorkspaceView === 'graph' ? (
           <GraphView
             graphModel={graphModel}
             libraryName={libraryName}
@@ -1053,6 +1207,8 @@ export function NotiaMenu() {
               void handleOpenFile(filePath)
             }}
           />
+        ) : activeWorkspaceView === 'task-manager' ? (
+          <TaskManagerApp embedded vaultPath={activeLibrary?.path ?? null} />
         ) : (
           <MainView
             activeDocument={activeDocument}
@@ -1065,7 +1221,12 @@ export function NotiaMenu() {
           />
         )}
       </div>
-      <SettingsModal open={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsModal
+        open={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        explorerRefreshIntervalMs={explorerRefreshIntervalMs}
+        onExplorerRefreshIntervalMsChange={setExplorerRefreshIntervalMs}
+      />
       <LibraryManagerModal
         open={isLibraryManagerOpen}
         libraries={libraries}

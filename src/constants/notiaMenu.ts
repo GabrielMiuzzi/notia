@@ -2,6 +2,7 @@ import {
   BookOpen,
   FolderPlus,
   GitBranch,
+  ListChecks,
   PanelsTopLeft,
   PencilLine,
   Search,
@@ -18,6 +19,7 @@ export const EXPLORER_HEADER_ACTIONS: NotiaIconAction[] = [
 
 export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
   { id: 'graph-view', label: 'Graph view', icon: GitBranch },
+  { id: 'task-manager', label: 'Task manager', icon: ListChecks },
 ]
 
 export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [

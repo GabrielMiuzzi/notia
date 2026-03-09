@@ -50,6 +50,13 @@ struct SearchLibraryFilesResult {
     paths: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownFileDocument {
+    path: String,
+    content: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReadLibraryTreePayload {
@@ -82,6 +89,12 @@ struct CreateLibraryEntryPayload {
 struct SearchLibraryFilesPayload {
     directory_path: String,
     query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadMarkdownFilesPayload {
+    directory_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,6 +287,59 @@ fn search_library_files_in_directory(
     }
 }
 
+fn read_markdown_files_in_directory(
+    directory_path: &Path,
+    visited_directories: &mut HashSet<PathBuf>,
+    documents: &mut Vec<MarkdownFileDocument>,
+) {
+    let canonical_directory_path = canonical_or_original(directory_path);
+    if visited_directories.contains(&canonical_directory_path) {
+        return;
+    }
+    visited_directories.insert(canonical_directory_path);
+
+    let Ok(entries) = fs::read_dir(directory_path) else {
+        return;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        if has_invalid_entry_name(&entry_name) || is_hidden_entry_name(&entry_name) {
+            continue;
+        }
+
+        let entry_path = entry.path();
+        let Ok(entry_metadata) = fs::symlink_metadata(&entry_path) else {
+            continue;
+        };
+
+        if entry_metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        if entry_metadata.is_dir() {
+            read_markdown_files_in_directory(&entry_path, visited_directories, documents);
+            continue;
+        }
+
+        let Some(extension) = entry_path.extension() else {
+            continue;
+        };
+        if extension.to_string_lossy().to_lowercase() != "md" {
+            continue;
+        }
+
+        let Ok(content) = fs::read_to_string(&entry_path) else {
+            continue;
+        };
+
+        documents.push(MarkdownFileDocument {
+            path: to_path_string(&entry_path),
+            content,
+        });
+    }
+}
+
 #[tauri::command]
 fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
     let directory_path = PathBuf::from(payload.directory_path);
@@ -327,6 +393,21 @@ fn search_library_files(payload: SearchLibraryFilesPayload) -> SearchLibraryFile
     SearchLibraryFilesResult {
         paths: matched_file_paths,
     }
+}
+
+#[tauri::command]
+fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<MarkdownFileDocument> {
+    if payload.directory_path.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let directory_path = PathBuf::from(payload.directory_path);
+    let mut visited_directories = HashSet::new();
+    let mut documents = Vec::new();
+
+    read_markdown_files_in_directory(&directory_path, &mut visited_directories, &mut documents);
+    documents.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    documents
 }
 
 #[tauri::command]
@@ -606,6 +687,7 @@ pub fn run() {
             read_library_tree,
             read_library_file,
             search_library_files,
+            read_markdown_files,
             write_library_file,
             create_library_entry,
             library_entry_operation,

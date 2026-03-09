@@ -2,19 +2,29 @@ import { useState } from 'react'
 import { X } from 'lucide-react'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
-type SettingsSection = 'General' | 'Librerias'
+type SettingsSection = 'General' | 'Panel desplegable' | 'Librerias'
 
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
+  explorerRefreshIntervalMs: number
+  onExplorerRefreshIntervalMsChange: (value: number) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Librerias']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'Librerias']
 const PROJECT_VERSION = '0.0.0'
+const REFRESH_INTERVAL_MIN_SECONDS = 1
+const REFRESH_INTERVAL_MAX_SECONDS = 30
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export function SettingsModal({
+  open,
+  onClose,
+  explorerRefreshIntervalMs,
+  onExplorerRefreshIntervalMsChange,
+}: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('General')
   const runtimeDevice = getRuntimeDevice()
+  const refreshIntervalSeconds = Math.round(explorerRefreshIntervalMs / 1000)
 
   if (!open) {
     return null
@@ -47,6 +57,27 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   Dispositivo
                 </div>
                 <div className="notia-settings-card-value">{runtimeDevice}</div>
+              </div>
+            ) : activeSection === 'Panel desplegable' ? (
+              <div className="notia-settings-card">
+                <div className="notia-settings-card-label">Refresco automatico del panel</div>
+                <div className="notia-settings-card-value">{refreshIntervalSeconds}s</div>
+                <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                  Intervalo de escaneo (1s a 30s)
+                </div>
+                <div className="notia-settings-slider-wrap">
+                  <input
+                    type="range"
+                    min={REFRESH_INTERVAL_MIN_SECONDS}
+                    max={REFRESH_INTERVAL_MAX_SECONDS}
+                    step={1}
+                    value={refreshIntervalSeconds}
+                    onChange={(event) => {
+                      const seconds = Number(event.target.value)
+                      onExplorerRefreshIntervalMsChange(seconds * 1000)
+                    }}
+                  />
+                </div>
               </div>
             ) : (
               <div>Seccion: {activeSection}</div>

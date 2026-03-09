@@ -1,6 +1,7 @@
 # Notia (Tauri)
 
 Aplicación de notas basada en React + TypeScript + Vite, empaquetada para desktop con Tauri.
+Incluye módulo integrado de `task-manager` accesible desde el rail izquierdo (icono de tareas).
 
 ## Stack
 
@@ -8,6 +9,8 @@ Aplicación de notas basada en React + TypeScript + Vite, empaquetada para deskt
 - TypeScript
 - Vite
 - Tauri 2
+- Material UI
+- Lucide React
 
 ## Requisitos
 
