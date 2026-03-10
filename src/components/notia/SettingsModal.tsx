@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -15,8 +16,6 @@ interface SettingsModalProps {
 
 const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'Librerias']
 const PROJECT_VERSION = '0.0.0'
-const REFRESH_INTERVAL_MIN_SECONDS = 1
-const REFRESH_INTERVAL_MAX_SECONDS = 30
 
 export function SettingsModal({
   open,
@@ -26,7 +25,16 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('General')
   const runtimeDevice = getRuntimeDevice()
-  const refreshIntervalSeconds = Math.round(explorerRefreshIntervalMs / 1000)
+  const refreshBounds = getExplorerRefreshIntervalBounds()
+  const refreshSliderMin = refreshBounds.allowDisabled ? 0 : refreshBounds.minSeconds
+  const isAutoRefreshDisabled = refreshBounds.allowDisabled && explorerRefreshIntervalMs <= 0
+  const refreshIntervalSeconds = isAutoRefreshDisabled
+    ? 0
+    : Math.max(refreshBounds.minSeconds, Math.round(explorerRefreshIntervalMs / 1000))
+  const refreshIntervalLabel = isAutoRefreshDisabled ? 'Manual' : `${refreshIntervalSeconds}s`
+  const refreshIntervalRangeLabel = refreshBounds.allowDisabled
+    ? `Intervalo de escaneo (0 = manual, ${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
+    : `Intervalo de escaneo (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
 
   if (!open) {
     return null
@@ -60,19 +68,24 @@ export function SettingsModal({
             ) : activeSection === 'Panel desplegable' ? (
               <div className="notia-settings-card">
                 <div className="notia-settings-card-label">Refresco automatico del panel</div>
-                <div className="notia-settings-card-value">{refreshIntervalSeconds}s</div>
+                <div className="notia-settings-card-value">{refreshIntervalLabel}</div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Intervalo de escaneo (1s a 30s)
+                  {refreshIntervalRangeLabel}
                 </div>
                 <div className="notia-settings-slider-wrap">
                   <input
                     type="range"
-                    min={REFRESH_INTERVAL_MIN_SECONDS}
-                    max={REFRESH_INTERVAL_MAX_SECONDS}
+                    min={refreshSliderMin}
+                    max={refreshBounds.maxSeconds}
                     step={1}
                     value={refreshIntervalSeconds}
                     onChange={(event) => {
                       const seconds = Number(event.target.value)
+                      if (refreshBounds.allowDisabled && seconds <= 0) {
+                        onExplorerRefreshIntervalMsChange(0)
+                        return
+                      }
+
                       onExplorerRefreshIntervalMsChange(seconds * 1000)
                     }}
                   />

@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Bot } from 'lucide-react'
 import {
@@ -41,6 +40,7 @@ import {
 } from '../../types/views/fileDocument'
 import { getFileExtension } from '../../utils/files/getFileExtension'
 import { toFileUrl } from '../../utils/files/toFileUrl'
+import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { setFolderExpandedByPath } from '../../utils/tree/setFolderExpandedByPath'
 import { setSelectedFileByPath } from '../../utils/tree/setSelectedFileByPath'
 import { toggleFolderNodeExpanded } from '../../utils/tree/toggleFolderNodeExpanded'
@@ -145,6 +145,52 @@ function applyFolderExpandedState(nodes: NotiaFileNode[], stateByPath: Map<strin
   })
 }
 
+function areTreeNodesEqual(leftNode: NotiaFileNode, rightNode: NotiaFileNode): boolean {
+  if (leftNode.id !== rightNode.id || leftNode.name !== rightNode.name) {
+    return false
+  }
+
+  if (leftNode.type !== rightNode.type || leftNode.path !== rightNode.path) {
+    return false
+  }
+
+  if (Boolean(leftNode.expanded) !== Boolean(rightNode.expanded)) {
+    return false
+  }
+
+  if (Boolean(leftNode.selected) !== Boolean(rightNode.selected)) {
+    return false
+  }
+
+  const leftChildren = leftNode.children ?? []
+  const rightChildren = rightNode.children ?? []
+  if (leftChildren.length !== rightChildren.length) {
+    return false
+  }
+
+  for (let index = 0; index < leftChildren.length; index += 1) {
+    if (!areTreeNodesEqual(leftChildren[index], rightChildren[index])) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function areTreeNodeListsEqual(leftNodes: NotiaFileNode[], rightNodes: NotiaFileNode[]): boolean {
+  if (leftNodes.length !== rightNodes.length) {
+    return false
+  }
+
+  for (let index = 0; index < leftNodes.length; index += 1) {
+    if (!areTreeNodesEqual(leftNodes[index], rightNodes[index])) {
+      return false
+    }
+  }
+
+  return true
+}
+
 function joinParentPath(parentPath: string, originalPath: string, name: string): string {
   const separator = originalPath.includes('\\') ? '\\' : '/'
   if (parentPath.endsWith('/') || parentPath.endsWith('\\')) {
@@ -207,11 +253,16 @@ export function NotiaMenu() {
   >(null)
   const [dialogState, setDialogState] = useState<{ type: 'info'; title: string; message: string } | null>(null)
   const { confirm } = useConfirmationEngine()
+  const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
+  const isAndroidRuntime = runtimeDevice === 'Android'
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
   const treeNodesRef = useRef<NotiaFileNode[]>([])
   const libraryTreeRefreshTimerRef = useRef<number | null>(null)
+  const isTreeRefreshInFlightRef = useRef(false)
+  const hasQueuedTreeRefreshRef = useRef(false)
+  const hasDeferredTreeRefreshRef = useRef(false)
 
   const activeLibrary = useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
@@ -226,6 +277,10 @@ export function NotiaMenu() {
     [activeTab],
   )
   const activeDocument = activeTab?.document ?? null
+  const isGraphViewActive = activeWorkspaceView === 'graph'
+  const shouldRefreshVisibleExplorerTree =
+    activeWorkspaceView !== 'task-manager' && (activeWorkspaceView === 'graph' || isSidebarOpen)
+  const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
   const saveStatus = activeTab?.saveStatus ?? 'idle'
   const normalizedSearchQuery = searchQuery.trim()
   const searchMatchedPathSet = useMemo(() => new Set(searchMatchedPaths), [searchMatchedPaths])
@@ -239,8 +294,8 @@ export function NotiaMenu() {
     [openTabs],
   )
   const markdownWikiLinkTargets = useMemo(
-    () => buildWikiLinkTargets(treeNodes, activeLibrary?.path ?? null),
-    [activeLibrary?.path, treeNodes],
+    () => (isMarkdownDocumentActive ? buildWikiLinkTargets(treeNodes, activeLibrary?.path ?? null) : []),
+    [activeLibrary?.path, isMarkdownDocumentActive, treeNodes],
   )
   const libraryFilePaths = useMemo(() => {
     const paths: string[] = []
@@ -260,6 +315,7 @@ export function NotiaMenu() {
     return paths
   }, [treeNodes])
   const { graphModel, isGraphLoading } = useLibraryGraphData({
+    enabled: isGraphViewActive,
     libraryPath: activeLibrary?.path ?? null,
     rootPath: activeLibrary?.path ?? null,
     treeNodes,
@@ -312,6 +368,43 @@ export function NotiaMenu() {
     treeNodesRef.current = treeNodes
   }, [treeNodes])
 
+  const commitTreeNodesSnapshot = useCallback((nodes: NotiaFileNode[]) => {
+    const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
+    const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
+    const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
+
+    setTreeNodes((current) => (
+      areTreeNodeListsEqual(current, selectedNodes)
+        ? current
+        : selectedNodes
+    ))
+  }, [])
+
+  const refreshActiveLibraryTree = useCallback(async () => {
+    if (!activeLibrary) {
+      return
+    }
+
+    if (isTreeRefreshInFlightRef.current) {
+      hasQueuedTreeRefreshRef.current = true
+      return
+    }
+
+    isTreeRefreshInFlightRef.current = true
+    try {
+      const refreshedNodes = await readLibraryTree(activeLibrary.path, {
+        androidDirectoryUri: activeLibrary.androidTreeUri,
+      })
+      commitTreeNodesSnapshot(refreshedNodes)
+    } finally {
+      isTreeRefreshInFlightRef.current = false
+      if (hasQueuedTreeRefreshRef.current) {
+        hasQueuedTreeRefreshRef.current = false
+        void refreshActiveLibraryTree()
+      }
+    }
+  }, [activeLibrary, commitTreeNodesSnapshot])
+
   useEffect(() => {
     if (!activeLibrary || normalizedSearchQuery.length === 0) {
       setSearchMatchedPaths([])
@@ -348,27 +441,35 @@ export function NotiaMenu() {
     if (!activeLibrary) {
       setTreeNodes([])
       setPendingCreation(null)
+      isTreeRefreshInFlightRef.current = false
+      hasQueuedTreeRefreshRef.current = false
+      hasDeferredTreeRefreshRef.current = false
+      if (libraryTreeRefreshTimerRef.current !== null) {
+        window.clearTimeout(libraryTreeRefreshTimerRef.current)
+        libraryTreeRefreshTimerRef.current = null
+      }
       return
     }
 
+    isTreeRefreshInFlightRef.current = false
+    hasQueuedTreeRefreshRef.current = false
+    hasDeferredTreeRefreshRef.current = false
+
     let isCurrent = true
-    readLibraryTree(activeLibrary.path, {
+    void readLibraryTree(activeLibrary.path, {
       androidDirectoryUri: activeLibrary.androidTreeUri,
     }).then((nodes) => {
       if (!isCurrent) {
         return
       }
 
-      const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
-      const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
-      const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
-      setTreeNodes(selectedNodes)
+      commitTreeNodesSnapshot(nodes)
     })
 
     return () => {
       isCurrent = false
     }
-  }, [activeLibrary])
+  }, [activeLibrary, commitTreeNodesSnapshot])
 
   useEffect(() => {
     setPendingCreation(null)
@@ -381,6 +482,13 @@ export function NotiaMenu() {
     setIsSearchLoading(false)
     setActiveHeaderAction('')
     resetTabs()
+    hasDeferredTreeRefreshRef.current = false
+    hasQueuedTreeRefreshRef.current = false
+    isTreeRefreshInFlightRef.current = false
+    if (libraryTreeRefreshTimerRef.current !== null) {
+      window.clearTimeout(libraryTreeRefreshTimerRef.current)
+      libraryTreeRefreshTimerRef.current = null
+    }
   }, [activeLibraryId, resetTabs])
 
   useEffect(() => {
@@ -702,19 +810,18 @@ export function NotiaMenu() {
     }
   }, [handleCloseActiveTab, handleCycleToNextTab])
 
-  const refreshActiveLibraryTree = useCallback(async () => {
-    if (!activeLibrary) {
+  useEffect(() => {
+    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
       return
     }
 
-    const refreshedNodes = await readLibraryTree(activeLibrary.path, {
-      androidDirectoryUri: activeLibrary.androidTreeUri,
-    })
-    const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
-    const withExpandedState = applyFolderExpandedState(refreshedNodes, expandedStateByPath)
-    const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
-    setTreeNodes(selectedNodes)
-  }, [activeLibrary])
+    if (!hasDeferredTreeRefreshRef.current) {
+      return
+    }
+
+    hasDeferredTreeRefreshRef.current = false
+    void refreshActiveLibraryTree()
+  }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
 
   useEffect(() => {
     const handleLibraryTreeChanged = (event: Event) => {
@@ -741,6 +848,13 @@ export function NotiaMenu() {
 
       libraryTreeRefreshTimerRef.current = window.setTimeout(() => {
         libraryTreeRefreshTimerRef.current = null
+        if (!shouldRefreshVisibleExplorerTree) {
+          hasDeferredTreeRefreshRef.current = true
+          setGraphRevision((current) => current + 1)
+          return
+        }
+
+        hasDeferredTreeRefreshRef.current = false
         void refreshActiveLibraryTree()
         setGraphRevision((current) => current + 1)
       }, 120)
@@ -754,10 +868,18 @@ export function NotiaMenu() {
         libraryTreeRefreshTimerRef.current = null
       }
     }
-  }, [activeLibrary?.path, refreshActiveLibraryTree])
+  }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
 
   useEffect(() => {
-    if (!activeLibrary?.path) {
+    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+      return
+    }
+
+    if (explorerRefreshIntervalMs <= 0) {
+      return
+    }
+
+    if (isAndroidRuntime && explorerRefreshIntervalMs < 5000) {
       return
     }
 
@@ -772,7 +894,13 @@ export function NotiaMenu() {
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [activeLibrary?.path, explorerRefreshIntervalMs, refreshActiveLibraryTree])
+  }, [
+    activeLibrary?.path,
+    explorerRefreshIntervalMs,
+    isAndroidRuntime,
+    refreshActiveLibraryTree,
+    shouldRefreshVisibleExplorerTree,
+  ])
 
   const handleOpenFile = async (filePath: string) => {
     setActiveWorkspaceView('documents')

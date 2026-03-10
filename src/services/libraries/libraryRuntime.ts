@@ -25,6 +25,8 @@ interface IsDirectoryPathResult {
 
 type LibraryEntryOperationPayload = NotiaLibraryEntryOperationPayload
 
+const inFlightTreeReadByRequestKey = new Map<string, Promise<NotiaFileNode[]>>()
+
 function normalizeTreeNodes(value: unknown): NotiaFileNode[] {
   if (!Array.isArray(value)) {
     return []
@@ -201,32 +203,50 @@ export async function readLibraryTree(
   options?: { androidDirectoryUri?: string },
 ): Promise<NotiaFileNode[]> {
   const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
+  const isAndroidRuntime = getRuntimeDevice() === 'Android'
+  const requestKey = isAndroidRuntime
+    ? `${normalizedDirectoryPath}::${options?.androidDirectoryUri ?? ''}`
+    : normalizedDirectoryPath
 
-  try {
-    if (getRuntimeDevice() === 'Android') {
-      const mobileTree = await invoke<unknown>('read_android_library_tree', {
-        payload: {
-          directoryPath: normalizedDirectoryPath,
-          directoryUri: options?.androidDirectoryUri,
-        },
-      })
-      return normalizeTreeNodes(mobileTree)
-    }
-
-    const rawTree = await invoke<unknown>('read_library_tree', {
-      payload: { directoryPath: normalizedDirectoryPath },
-    })
-    const normalizedNodes = normalizeTreeNodes(rawTree)
-    if (normalizedNodes.length === 0) {
-      console.warn('[notia] read_library_tree returned an empty tree', {
-        directoryPath: normalizedDirectoryPath,
-      })
-    }
-    return normalizedNodes
-  } catch (error) {
-    console.error('[notia] read_library_tree failed', error)
-    return []
+  const inFlightRead = inFlightTreeReadByRequestKey.get(requestKey)
+  if (inFlightRead) {
+    return inFlightRead
   }
+
+  const request = (async () => {
+    try {
+      if (isAndroidRuntime) {
+        const mobileTree = await invoke<unknown>('read_android_library_tree', {
+          payload: {
+            directoryPath: normalizedDirectoryPath,
+            directoryUri: options?.androidDirectoryUri,
+          },
+        })
+        return normalizeTreeNodes(mobileTree)
+      }
+
+      const rawTree = await invoke<unknown>('read_library_tree', {
+        payload: { directoryPath: normalizedDirectoryPath },
+      })
+      const normalizedNodes = normalizeTreeNodes(rawTree)
+      if (normalizedNodes.length === 0) {
+        console.warn('[notia] read_library_tree returned an empty tree', {
+          directoryPath: normalizedDirectoryPath,
+        })
+      }
+      return normalizedNodes
+    } catch (error) {
+      console.error('[notia] read_library_tree failed', error)
+      return []
+    }
+  })()
+
+  inFlightTreeReadByRequestKey.set(requestKey, request)
+  return request.finally(() => {
+    if (inFlightTreeReadByRequestKey.get(requestKey) === request) {
+      inFlightTreeReadByRequestKey.delete(requestKey)
+    }
+  })
 }
 
 export async function createLibraryEntry(
