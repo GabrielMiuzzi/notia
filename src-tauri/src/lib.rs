@@ -685,7 +685,10 @@ fn create_library_entry(
     android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
 ) -> OperationResult {
     #[cfg(not(target_os = "android"))]
-    let _ = android_picker_state;
+    {
+        let _ = android_picker_state;
+        let _ = &payload.directory_uri;
+    }
 
     if payload.directory_path.trim().is_empty() {
         return OperationResult {
