@@ -1,28 +1,21 @@
-import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
-import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
-import type { MarkdownFileDocument } from '../types/taskManagerTypes'
+import {
+  createLibraryEntry,
+  getPathBaseName,
+  performLibraryEntryOperation,
+  pickDirectory,
+  readMarkdownDocuments,
+  readTextFile,
+  writeTextFile,
+  type FilesystemMarkdownDocument,
+  type FilesystemOperationResult,
+  type FilesystemReadTextResult,
+} from '../../../services/files/filesystemEngine'
 
-interface OperationResult {
-  ok: boolean
-  error?: string
-}
-
-interface ReadLibraryFileResult {
-  ok: boolean
-  content: string
-  error?: string
-}
-
-interface WriteLibraryFileResult {
-  ok: boolean
-  error?: string
-}
-
-interface IsDirectoryPathResult {
-  isDirectory: boolean
-}
+type OperationResult = FilesystemOperationResult
+type ReadLibraryFileResult = FilesystemReadTextResult
+type WriteLibraryFileResult = FilesystemOperationResult
+type MarkdownFileDocument = FilesystemMarkdownDocument
 
 function notifyLibraryTreeChanged(pathHint: string) {
   if (typeof window === 'undefined') {
@@ -34,113 +27,20 @@ function notifyLibraryTreeChanged(pathHint: string) {
   }))
 }
 
-function resolveParentDirectoryPath(pathValue: string): string {
-  const normalized = pathValue.replace(/[\\/]+$/, '')
-  const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
-  if (separatorIndex <= 0) {
-    return normalized
-  }
-  return normalized.slice(0, separatorIndex)
-}
-
-async function resolveVaultDirectoryFromSelection(selectedPath: string): Promise<string | null> {
-  const normalizedPath = normalizeFilesystemPath(selectedPath)
-
-  const selectedMetadata = await invoke<IsDirectoryPathResult>('is_directory_path', {
-    payload: { path: normalizedPath },
-  }).catch(() => ({ isDirectory: false }))
-
-  if (selectedMetadata.isDirectory) {
-    return normalizedPath
-  }
-
-  const parentDirectoryPath = resolveParentDirectoryPath(normalizedPath)
-  if (!parentDirectoryPath || parentDirectoryPath === normalizedPath) {
-    return null
-  }
-
-  const parentMetadata = await invoke<IsDirectoryPathResult>('is_directory_path', {
-    payload: { path: parentDirectoryPath },
-  }).catch(() => ({ isDirectory: false }))
-
-  return parentMetadata.isDirectory ? parentDirectoryPath : null
-}
-
-async function pickAndroidDirectoryPath(): Promise<string | null> {
-  try {
-    let selected: unknown
-    try {
-      selected = await invoke<unknown>('pick_android_directory_tree')
-    } catch (firstError) {
-      selected = await invoke<unknown>('mobile_directory_picker::pick_android_directory_tree').catch(() => {
-        throw firstError
-      })
-    }
-    if (typeof selected === 'string') {
-      if (!selected.trim()) {
-        return null
-      }
-      return normalizeFilesystemPath(selected)
-    }
-    if (!selected || typeof selected !== 'object') {
-      return null
-    }
-    const candidate = selected as { path?: unknown }
-    if (typeof candidate.path !== 'string' || !candidate.path.trim()) {
-      return null
-    }
-    return normalizeFilesystemPath(candidate.path)
-  } catch (error) {
-    console.error('[task-manager] pick_android_directory_tree failed', error)
-    return null
-  }
-}
-
 export async function pickVaultDirectory(): Promise<{ path: string; name: string } | null> {
-  if (getRuntimeDevice() === 'Android') {
-    const androidDirectoryPath = await pickAndroidDirectoryPath()
-    if (!androidDirectoryPath) {
-      return null
-    }
-
-    const name = androidDirectoryPath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() ?? androidDirectoryPath
-    return { path: androidDirectoryPath, name }
-  }
-
-  let selectedPath: string | string[] | null
   try {
-    selectedPath = await open({
-      directory: true,
-      multiple: false,
-      pickerMode: 'document',
-      title: 'Seleccionar vault',
-    })
-  } catch (error) {
-    console.warn('[task-manager] directory picker failed, trying file-based fallback', error)
-    try {
-      selectedPath = await open({
-        directory: false,
-        multiple: false,
-        pickerMode: 'document',
-        title: 'Seleccionar un archivo dentro del vault',
-      })
-    } catch (fallbackError) {
-      console.error('[task-manager] pickVaultDirectory failed to open any picker', fallbackError)
+    const selected = await pickDirectory('Seleccionar vault')
+    if (!selected) {
       return null
     }
-  }
 
-  if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
+    const normalizedPath = normalizeFilesystemPath(selected.path)
+    const name = getPathBaseName(normalizedPath)
+    return { path: normalizedPath, name }
+  } catch (error) {
+    console.error('[task-manager] pick vault directory failed', error)
     return null
   }
-
-  const normalizedPath = await resolveVaultDirectoryFromSelection(selectedPath)
-  if (!normalizedPath) {
-    return null
-  }
-  const name = normalizedPath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() ?? normalizedPath
-
-  return { path: normalizedPath, name }
 }
 
 export async function readMarkdownFiles(directoryPath: string): Promise<MarkdownFileDocument[]> {
@@ -149,20 +49,7 @@ export async function readMarkdownFiles(directoryPath: string): Promise<Markdown
   }
 
   try {
-    const normalizedPath = normalizeFilesystemPath(directoryPath)
-    const response = await invoke<MarkdownFileDocument[]>('read_markdown_files', {
-      payload: { directoryPath: normalizedPath },
-    })
-
-    if (!Array.isArray(response)) {
-      return []
-    }
-
-    return response.filter((item): item is MarkdownFileDocument => (
-      Boolean(item)
-      && typeof item.path === 'string'
-      && typeof item.content === 'string'
-    ))
+    return await readMarkdownDocuments(normalizeFilesystemPath(directoryPath))
   } catch (error) {
     console.error('[task-manager] read_markdown_files failed', error)
     return []
@@ -173,9 +60,11 @@ export async function readFileContent(filePath: string): Promise<ReadLibraryFile
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
-    return await invoke<ReadLibraryFileResult>('read_library_file', {
-      payload: { filePath: normalizedPath },
-    })
+    const result = await readTextFile(normalizedPath)
+    if (result.ok || result.error) {
+      return result
+    }
+    return { ...result, error: 'No se pudo leer el archivo.' }
   } catch (error) {
     console.error('[task-manager] read_library_file failed', error)
     return { ok: false, content: '', error: 'No se pudo leer el archivo.' }
@@ -186,13 +75,14 @@ export async function writeFileContent(filePath: string, content: string): Promi
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
-    const result = await invoke<WriteLibraryFileResult>('write_library_file', {
-      payload: { filePath: normalizedPath, content },
-    })
+    const result = await writeTextFile(normalizedPath, content)
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
     }
-    return result
+    if (result.ok || result.error) {
+      return result
+    }
+    return { ...result, error: 'No se pudo escribir el archivo.' }
   } catch (error) {
     console.error('[task-manager] write_library_file failed', error)
     return { ok: false, error: 'No se pudo escribir el archivo.' }
@@ -201,13 +91,11 @@ export async function writeFileContent(filePath: string, content: string): Promi
 
 export async function createFolder(parentDirectoryPath: string, name: string): Promise<OperationResult> {
   try {
-    const result = await invoke<OperationResult>('create_library_entry', {
-      payload: {
-        directoryPath: normalizeFilesystemPath(parentDirectoryPath),
-        name,
-        kind: 'folder',
-      },
-    })
+    const result = await createLibraryEntry(
+      normalizeFilesystemPath(parentDirectoryPath),
+      name,
+      'folder',
+    )
     if (result.ok) {
       notifyLibraryTreeChanged(`${parentDirectoryPath}/${name}`)
     }
@@ -220,13 +108,11 @@ export async function createFolder(parentDirectoryPath: string, name: string): P
 
 export async function createMarkdownFile(parentDirectoryPath: string, fileName: string): Promise<OperationResult> {
   try {
-    const result = await invoke<OperationResult>('create_library_entry', {
-      payload: {
-        directoryPath: normalizeFilesystemPath(parentDirectoryPath),
-        name: fileName,
-        kind: 'note',
-      },
-    })
+    const result = await createLibraryEntry(
+      normalizeFilesystemPath(parentDirectoryPath),
+      fileName,
+      'note',
+    )
     if (result.ok) {
       notifyLibraryTreeChanged(`${parentDirectoryPath}/${fileName}`)
     }
@@ -240,11 +126,9 @@ export async function createMarkdownFile(parentDirectoryPath: string, fileName: 
 export async function deleteEntry(targetPath: string): Promise<OperationResult> {
   try {
     const normalizedPath = normalizeFilesystemPath(targetPath)
-    const result = await invoke<OperationResult>('library_entry_operation', {
-      payload: {
-        action: 'delete',
-        targetPath: normalizedPath,
-      },
+    const result = await performLibraryEntryOperation({
+      action: 'delete',
+      targetPath: normalizedPath,
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
@@ -259,12 +143,10 @@ export async function deleteEntry(targetPath: string): Promise<OperationResult> 
 export async function renameEntry(targetPath: string, newName: string): Promise<OperationResult> {
   try {
     const normalizedPath = normalizeFilesystemPath(targetPath)
-    const result = await invoke<OperationResult>('library_entry_operation', {
-      payload: {
-        action: 'rename',
-        targetPath: normalizedPath,
-        newName,
-      },
+    const result = await performLibraryEntryOperation({
+      action: 'rename',
+      targetPath: normalizedPath,
+      newName,
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
@@ -280,13 +162,11 @@ export async function moveEntry(sourcePath: string, targetDirectoryPath: string)
   try {
     const normalizedSourcePath = normalizeFilesystemPath(sourcePath)
     const normalizedTargetDirectoryPath = normalizeFilesystemPath(targetDirectoryPath)
-    const result = await invoke<OperationResult>('library_entry_operation', {
-      payload: {
-        action: 'paste',
-        sourcePath: normalizedSourcePath,
-        targetDirectoryPath: normalizedTargetDirectoryPath,
-        mode: 'move',
-      },
+    const result = await performLibraryEntryOperation({
+      action: 'paste',
+      sourcePath: normalizedSourcePath,
+      targetDirectoryPath: normalizedTargetDirectoryPath,
+      mode: 'move',
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedSourcePath)

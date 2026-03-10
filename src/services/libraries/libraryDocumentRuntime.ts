@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
-import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
+import { readTextFile, writeTextFile } from '../files/filesystemEngine'
 
 interface ReadLibraryFileResult {
   ok: boolean
@@ -13,12 +12,8 @@ interface WriteLibraryFileResult {
 }
 
 export async function readLibraryFileContent(filePath: string): Promise<ReadLibraryFileResult> {
-  const normalizedFilePath = normalizeFilesystemPath(filePath)
-
   try {
-    return await invoke<ReadLibraryFileResult>('read_library_file', {
-      payload: { filePath: normalizedFilePath },
-    })
+    return await readTextFile(filePath)
   } catch (error) {
     console.error('[notia] read_library_file failed', error)
     return { ok: false, content: '', error: 'Could not read file.' }
@@ -29,12 +24,8 @@ export async function writeLibraryFileContent(
   filePath: string,
   content: string,
 ): Promise<WriteLibraryFileResult> {
-  const normalizedFilePath = normalizeFilesystemPath(filePath)
-
   try {
-    return await invoke<WriteLibraryFileResult>('write_library_file', {
-      payload: { filePath: normalizedFilePath, content },
-    })
+    return await writeTextFile(filePath, content)
   } catch (error) {
     console.error('[notia] write_library_file failed', error)
     return { ok: false, error: 'Could not write file.' }
