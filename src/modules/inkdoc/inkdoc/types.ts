@@ -33,6 +33,13 @@ export type InkDocPageColors = {
 	margin: string;
 };
 
+export type InkDocTextLayoutPadding = {
+	top: number;
+	right: number;
+	bottom: number;
+	left: number;
+};
+
 export type InkDocPage = {
 	id: string;
 	strokes?: InkDocStroke[];
@@ -136,6 +143,7 @@ export type InkDocDocument = {
 	page: {
 		size: InkDocPageSize;
 		marginMm: number;
+		textPadding?: InkDocTextLayoutPadding;
 	};
 	pages: InkDocPage[];
 	stickyNotes?: InkDocStickyNote[];

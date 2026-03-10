@@ -1,7 +1,19 @@
 // @ts-nocheck
 import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf } from "./engines/platform/inkdocPlatform";
 import type InkDocPlugin from "./main";
-import type { InkDocDocument, InkDocImageBlock, InkDocPageBackground, InkDocPageColors, InkDocPage, InkDocPageSize, InkDocPoint, InkDocStroke, InkDocStrokeStyle, InkDocTextBlock } from "./inkdoc/types";
+import type {
+	InkDocDocument,
+	InkDocImageBlock,
+	InkDocPageBackground,
+	InkDocPageColors,
+	InkDocPage,
+	InkDocPageSize,
+	InkDocPoint,
+	InkDocStroke,
+	InkDocStrokeStyle,
+	InkDocTextBlock,
+	InkDocTextLayoutPadding
+} from "./inkdoc/types";
 import { INKDOC_DEFAULT_LATEX_COLOR, INKDOC_IMAGE_MIN_HEIGHT, INKDOC_IMAGE_MIN_WIDTH, INKDOC_LATEX_TOOLBAR_ID, INKDOC_STROKE_COLOR, INKDOC_STROKE_WIDTH, INKDOC_TEXT_MIN_HEIGHT, INKDOC_TEXT_MIN_WIDTH, INKDOC_TEXT_TOOLBAR_ID, VIEW_TYPE_INKDOC, createImageBlockId, createStrokeId } from "./inkdoc/view/constants";
 import type { CanvasPageState, InkDocTool, InkDocViewState } from "./inkdoc/view/constants";
 import {
@@ -14,6 +26,7 @@ import {
 import { PageBackgroundModal } from "./inkdoc/view/PageBackgroundModal";
 import { PagePaletteModal } from "./inkdoc/view/PagePaletteModal";
 import { PageSizeModal } from "./inkdoc/view/PageSizeModal";
+import { TextLayoutModal } from "./inkdoc/view/TextLayoutModal";
 import { createTextToolbar } from "./inkdoc/view/textToolbar";
 import { createLatexToolbar } from "./inkdoc/view/latexToolbar";
 import { applyWikiLinksToElement } from "./inkdoc/view/wikiLinks";
@@ -104,6 +117,15 @@ import {
 	type InkDocCreatableObject
 } from "./inkdoc/view/objectCreationPrompt";
 import { createInkDocSubmenuEngine, type InkDocSubmenuEngine } from "./inkdoc/view/submenuEngine";
+import {
+	resolveInkDocTextLayoutPadding
+} from "./inkdoc/view/textLayout";
+import {
+	createInkDocPageMarkdownRuntime,
+	type InkDocPageMarkdownRuntime
+} from "./inkdoc/view/pageMarkdownEngine";
+import "@milkdown/crepe/theme/common/style.css";
+import "@milkdown/crepe/theme/nord.css";
 
 type InkDocPencilSubmenu = "brushes" | "stroke" | "colors" | "stylus";
 
@@ -165,6 +187,8 @@ export class InkDocView extends ItemView {
 	private textLayerDirty = new Set<string>();
 	private imageLayerByPage = new Map<string, HTMLDivElement>();
 	private imageLayerDirty = new Set<string>();
+	private pageMarkdownRuntimes = new Map<string, InkDocPageMarkdownRuntime>();
+	private isAutoCreatingTextFlowPage = false;
 	private stickyNotesRuntime: StickyNotesRuntime = createStickyNotesRuntime();
 	private isStickyNoteInteracting = false;
 	private pendingPageRenders = new Map<string, number>();
@@ -368,6 +392,20 @@ export class InkDocView extends ItemView {
 		stickyButton.addEventListener("click", () => {
 			this.setActiveTool("sticky");
 			this.closePencilMenu();
+		});
+
+		const textLayoutButton = this.toolbarEl.createEl("button", {
+			cls: "inkdoc-toolbar-icon",
+			attr: { "aria-label": "Espaciado de texto", title: "Espaciado de texto" }
+		});
+		const textLayoutIcon = textLayoutButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
+		setCompatibleIcon(textLayoutIcon, INKDOC_ICONS.SETTINGS, "S");
+		textLayoutButton.addEventListener("click", () => {
+			if (!this.docData) {
+				new Notice("No hay documento abierto.");
+				return;
+			}
+			this.openTextLayoutModal();
 		});
 
 		const menuButton = this.toolbarEl.createEl("button", {
@@ -1124,6 +1162,7 @@ export class InkDocView extends ItemView {
 		for (const [index, page] of doc.pages.entries()) {
 			await this.renderPage(renderTarget, page, index);
 		}
+		this.updatePageInputMode();
 		this.renderStickyNotes();
 
 	}
@@ -1135,8 +1174,12 @@ export class InkDocView extends ItemView {
 		pageEl.style.height = `${heightMm}mm`;
 		setPageBackgroundAttribute(pageEl, page.background);
 		setPageColorVariables(pageEl, page.colors);
+		this.applyTextLayoutToPage(pageEl);
 
 		const controlsEl = pageEl.createDiv({ cls: "inkdoc-page-controls" });
+		if (index === 0) {
+			controlsEl.addClass("is-first-page-controls");
+		}
 		const deleteButton = controlsEl.createEl("button", {
 			cls: "inkdoc-page-delete",
 			attr: { "aria-label": "Borrar página", title: "Borrar página" }
@@ -1188,7 +1231,7 @@ export class InkDocView extends ItemView {
 		}
 
 		if (index === (this.docData?.pages.length ?? 0) - 1) {
-			const addButton = pageEl.createEl("button", {
+			const addButton = controlsEl.createEl("button", {
 				cls: "inkdoc-page-add-bottom",
 				attr: { "aria-label": "Agregar página", title: "Agregar página" }
 			});
@@ -1205,6 +1248,17 @@ export class InkDocView extends ItemView {
 			cls: "inkdoc-page-index",
 			text: `${index + 1}/${this.docData?.pages.length ?? 0}`
 		});
+
+		const markdownRuntime = createInkDocPageMarkdownRuntime({
+			pageId: page.id,
+			pageEl,
+			initialMarkdown: page.text ?? "",
+			onMarkdownChange: (nextMarkdown) => this.handlePageMarkdownChange(page.id, index, nextMarkdown),
+			onRequestNextPage: () => {
+				void this.handleTextFlowPageAdvance(page.id);
+			}
+		});
+		this.pageMarkdownRuntimes.set(page.id, markdownRuntime);
 
 		const canvasEl = pageEl.createEl("canvas", { cls: "inkdoc-page-canvas" });
 		canvasEl.style.width = `${widthMm}mm`;
@@ -1358,7 +1412,7 @@ export class InkDocView extends ItemView {
 			const selectedText = this.selectedTextBlocks.get(pageId);
 			this.renderTextLayer(
 				page,
-				this.activeTool === "text" || this.activeTool === "latex",
+				this.activeTool === "latex",
 				this.activeTool === "select" ? selectedText ?? null : null
 			);
 		}
@@ -1452,7 +1506,7 @@ export class InkDocView extends ItemView {
 		if (shouldSkipUpdate) {
 			return;
 		}
-		const blocks = page.textBlocks ?? [];
+		const blocks = (page.textBlocks ?? []).filter((block) => this.getBlockType(block) === "latex");
 		let layer = this.textLayerByPage.get(page.id) ?? null;
 		if (!layer) {
 			layer = state.pageEl.createDiv({ cls: "inkdoc-text-layer" });
@@ -1983,12 +2037,54 @@ export class InkDocView extends ItemView {
 		modal.open();
 	}
 
+	private openTextLayoutModal(): void {
+		const current = this.getDocumentTextLayoutPadding();
+		const modal = new TextLayoutModal(this.app, current, (next) => {
+			this.setDocumentTextLayoutPadding(next);
+		});
+		modal.open();
+	}
+
 	private async setDocumentPageSize(size: InkDocPageSize): Promise<void> {
 		if (!this.docData) {
 			return;
 		}
 		this.docData.page.size = resolvePageSize(size);
 		await this.renderDoc(this.docData);
+		this.saveDebounced();
+	}
+
+	private getDocumentTextLayoutPadding(): InkDocTextLayoutPadding {
+		return resolveInkDocTextLayoutPadding(this.docData?.page.textPadding);
+	}
+
+	private applyTextLayoutToPage(pageEl: HTMLDivElement): void {
+		const padding = this.getDocumentTextLayoutPadding();
+		pageEl.style.setProperty("--inkdoc-text-padding-top", `${padding.top}px`);
+		pageEl.style.setProperty("--inkdoc-text-padding-right", `${padding.right}px`);
+		pageEl.style.setProperty("--inkdoc-text-padding-bottom", `${padding.bottom}px`);
+		pageEl.style.setProperty("--inkdoc-text-padding-left", `${padding.left}px`);
+	}
+
+	private setDocumentTextLayoutPadding(nextPadding: InkDocTextLayoutPadding): void {
+		if (!this.docData) {
+			return;
+		}
+		const resolved = resolveInkDocTextLayoutPadding(nextPadding);
+		const current = this.getDocumentTextLayoutPadding();
+		if (
+			current.top === resolved.top &&
+			current.right === resolved.right &&
+			current.bottom === resolved.bottom &&
+			current.left === resolved.left
+		) {
+			return;
+		}
+		this.docData.page.textPadding = resolved;
+		for (const state of this.canvasStates.values()) {
+			this.applyTextLayoutToPage(state.pageEl);
+		}
+		this.syncEngine.noteActivity();
 		this.saveDebounced();
 	}
 
@@ -2020,6 +2116,9 @@ export class InkDocView extends ItemView {
 					return;
 				}
 				void this.confirmAndOpenImagePicker(page, index, point);
+				return;
+			}
+			if (this.activeTool === "text") {
 				return;
 			}
 			if (this.isTextLikeTool()) {
@@ -2093,6 +2192,9 @@ export class InkDocView extends ItemView {
 		const handlePointerMove = (sample: PointerSample) => {
 			this.syncEngine.noteActivity();
 			const { point } = sample;
+			if (this.activeTool === "text") {
+				return;
+			}
 			if (this.isTextLikeTool()) {
 				this.handleTextPointerMove(page, index, point);
 				return;
@@ -2142,6 +2244,9 @@ export class InkDocView extends ItemView {
 			state.isDrawing = false;
 			state.currentStrokeId = null;
 			activePointerId = null;
+			if (this.activeTool === "text") {
+				return;
+			}
 			if (this.isTextLikeTool()) {
 				this.handleTextPointerUp(page);
 				return;
@@ -2183,7 +2288,7 @@ export class InkDocView extends ItemView {
 				return;
 			}
 			const point = this.getMousePosition(state.canvas, event);
-			if (this.activeTool === "text" || this.activeTool === "latex") {
+			if (this.activeTool === "latex") {
 				this.openTextBlockMenu(page, index, point, event.clientX, event.clientY);
 				return;
 			}
@@ -2455,6 +2560,10 @@ export class InkDocView extends ItemView {
 			await this.openImagePicker(target.page, target.pageIndex, target.point);
 			return;
 		}
+		if (tool === "text") {
+			this.focusPageMarkdownEditor(target.page.id);
+			return;
+		}
 		this.closeTextEditor(true);
 		this.closeLatexEditor(true);
 		const block =
@@ -2469,6 +2578,56 @@ export class InkDocView extends ItemView {
 			this.openLatexEditor(target.page, target.pageIndex, block);
 		} else {
 			this.openTextEditor(target.page, target.pageIndex, block);
+		}
+	}
+
+	private handlePageMarkdownChange(pageId: string, index: number, nextMarkdown: string): void {
+		if (!this.docData) {
+			return;
+		}
+		const target = this.docData.pages.find((entry) => entry.id === pageId) ?? this.docData.pages[index];
+		if (!target) {
+			return;
+		}
+		if ((target.text ?? "") === nextMarkdown) {
+			return;
+		}
+		target.text = nextMarkdown;
+		this.saveDebounced();
+		this.syncEngine.noteActivity();
+	}
+
+	private focusPageMarkdownEditor(pageId: string, position: "start" | "end" = "end"): void {
+		const runtime = this.pageMarkdownRuntimes.get(pageId);
+		runtime?.focus(position);
+	}
+
+	private async handleTextFlowPageAdvance(currentPageId: string): Promise<void> {
+		if (!this.docData || this.activeTool !== "text") {
+			return;
+		}
+		const currentIndex = this.docData.pages.findIndex((page) => page.id === currentPageId);
+		if (currentIndex < 0) {
+			return;
+		}
+		const nextExistingPage = this.docData.pages[currentIndex + 1];
+		if (nextExistingPage) {
+			this.focusPageMarkdownEditor(nextExistingPage.id, "start");
+			return;
+		}
+		if (this.isAutoCreatingTextFlowPage) {
+			return;
+		}
+		this.isAutoCreatingTextFlowPage = true;
+		try {
+			await this.addNewPage();
+			const latestPage = this.docData.pages[this.docData.pages.length - 1];
+			if (!latestPage) {
+				return;
+			}
+			this.focusPageMarkdownEditor(latestPage.id, "start");
+		} finally {
+			this.isAutoCreatingTextFlowPage = false;
 		}
 	}
 
@@ -2556,11 +2715,22 @@ export class InkDocView extends ItemView {
 		}
 		this.updateToolButtons();
 		this.updateHandToolState();
+		this.updatePageInputMode();
 		this.updatePencilMenuVisibility();
 		this.updatePencilMenuUI();
 		this.updateTextToolbarVisibility();
 		this.renderAllCanvases();
 		this.renderStickyNotes();
+	}
+
+	private updatePageInputMode(): void {
+		const isTextToolActive = this.activeTool === "text";
+		for (const state of this.canvasStates.values()) {
+			state.canvas.style.pointerEvents = isTextToolActive ? "none" : "auto";
+		}
+		for (const runtime of this.pageMarkdownRuntimes.values()) {
+			runtime.setEditable(isTextToolActive);
+		}
 	}
 
 	private renderAllCanvases(): void {
@@ -2671,12 +2841,10 @@ export class InkDocView extends ItemView {
 		point: InkDocPoint
 	): Promise<void> {
 		const tool = this.activeTool;
-		if (tool !== "text" && tool !== "latex") {
+		if (tool !== "latex") {
 			return;
 		}
-		const shouldCreate = await this.requestObjectCreationConfirmation(
-			tool === "latex" ? "latex" : "text"
-		);
+		const shouldCreate = await this.requestObjectCreationConfirmation("latex");
 		if (!shouldCreate || this.activeTool !== tool) {
 			return;
 		}
@@ -2684,16 +2852,9 @@ export class InkDocView extends ItemView {
 		if (!state) {
 			return;
 		}
-		const createdBlock =
-			tool === "latex"
-				? this.createLatexBlock(page, index, point)
-				: this.createTextBlock(page, index, point);
+		const createdBlock = this.createLatexBlock(page, index, point);
 		this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
-		if (tool === "latex") {
-			this.openLatexEditor(page, index, createdBlock);
-		} else {
-			this.openTextEditor(page, index, createdBlock);
-		}
+		this.openLatexEditor(page, index, createdBlock);
 	}
 
 	private handleTextPointerMove(page: InkDocPage, index: number, point: InkDocPoint): void {
@@ -3667,8 +3828,8 @@ export class InkDocView extends ItemView {
 		return tool === "pen" || tool === "highlighter";
 	}
 
-	private isTextLikeTool(tool: InkDocTool = this.activeTool): tool is "text" | "latex" {
-		return tool === "text" || tool === "latex";
+	private isTextLikeTool(tool: InkDocTool = this.activeTool): tool is "latex" {
+		return tool === "latex";
 	}
 
 	private createRgbInput(container: HTMLDivElement, label: string): HTMLInputElement {
@@ -3852,6 +4013,10 @@ export class InkDocView extends ItemView {
 		}
 		this.imageLayerByPage.clear();
 		this.imageLayerDirty.clear();
+		for (const runtime of this.pageMarkdownRuntimes.values()) {
+			runtime.dispose();
+		}
+		this.pageMarkdownRuntimes.clear();
 		disposeStickyNotesRuntime(this.stickyNotesRuntime);
 	}
 

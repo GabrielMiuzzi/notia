@@ -1,11 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import {
   Box,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
   InputLabel,
   List,
@@ -21,6 +16,8 @@ import {
 } from '@mui/material'
 import { MessageCircle, Plus, Send, Settings, Trash2 } from 'lucide-react'
 import type { ChatMessage, ChatSessionFile, ChatSessionOptions } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
 
 interface ChatPanelProps {
   sessions: ChatSessionFile[]
@@ -89,12 +86,12 @@ export function ChatPanel({
               Sesiones
             </Typography>
             <Stack direction="row" spacing={1}>
-              <Button size="small" onClick={() => setSettingsOpen(true)} sx={{ minWidth: 32 }}>
+              <NotiaButton size="icon" onClick={() => setSettingsOpen(true)}>
                 <Settings size={14} />
-              </Button>
-              <Button size="small" onClick={() => setCreateOpen(true)} sx={{ minWidth: 32 }}>
+              </NotiaButton>
+              <NotiaButton size="icon" onClick={() => setCreateOpen(true)}>
                 <Plus size={14} />
-              </Button>
+              </NotiaButton>
             </Stack>
           </Stack>
 
@@ -113,12 +110,12 @@ export function ChatPanel({
                     />
                   </ListItemButton>
 
-                  <Button size="small" onClick={() => setEditSession(session)} sx={{ minWidth: 32 }}>
+                  <NotiaButton size="icon" onClick={() => setEditSession(session)}>
                     <MessageCircle size={14} />
-                  </Button>
-                  <Button size="small" color="error" onClick={() => void onDeleteChat(session.path)} sx={{ minWidth: 32 }}>
+                  </NotiaButton>
+                  <NotiaButton size="icon" variant="danger" onClick={() => void onDeleteChat(session.path)}>
                     <Trash2 size={14} />
-                  </Button>
+                  </NotiaButton>
                 </Stack>
               ))}
 
@@ -181,9 +178,9 @@ export function ChatPanel({
                 fullWidth
                 disabled={!activeSession || isSending}
               />
-              <Button type="submit" variant="contained" disabled={!activeSession || isSending || !composer.trim()}>
+              <NotiaButton type="submit" variant="primary" disabled={!activeSession || isSending || !composer.trim()}>
                 <Send size={16} />
-              </Button>
+              </NotiaButton>
             </Stack>
           </Box>
         </Paper>
@@ -224,9 +221,11 @@ export function ChatPanel({
         }}
       />
 
-      <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Configuración del asistente</DialogTitle>
-        <DialogContent>
+      <NotiaModalShell open={settingsOpen} onClose={() => setSettingsOpen(false)} size="md" panelClassName="tareas-dialog">
+        <div className="tareas-dialog-header">
+          <h2>Configuración del asistente</h2>
+        </div>
+        <div className="tareas-dialog-body">
           <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField
               label="Base URL Netrunner"
@@ -248,11 +247,11 @@ export function ChatPanel({
               </Select>
             </FormControl>
           </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSettingsOpen(false)}>Cerrar</Button>
-        </DialogActions>
-      </Dialog>
+        </div>
+        <div className="tareas-dialog-actions">
+          <NotiaButton onClick={() => setSettingsOpen(false)}>Cerrar</NotiaButton>
+        </div>
+      </NotiaModalShell>
     </Stack>
   )
 }
@@ -285,9 +284,11 @@ function ChatSessionDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>{title}</DialogTitle>
-      <DialogContent>
+    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="tareas-dialog">
+      <div className="tareas-dialog-header">
+        <h2>{title}</h2>
+      </div>
+      <div className="tareas-dialog-body">
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
             label="Título"
@@ -306,13 +307,13 @@ function ChatSessionDialog({
             <Switch checked={longTermMemory} onChange={(event) => setLongTermMemory(event.target.checked)} />
           </Stack>
         </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancelar</Button>
-        <Button onClick={() => void handleConfirm()} variant="contained">
+      </div>
+      <div className="tareas-dialog-actions">
+        <NotiaButton onClick={onClose}>Cancelar</NotiaButton>
+        <NotiaButton variant="primary" onClick={() => void handleConfirm()}>
           {confirmLabel}
-        </Button>
-      </DialogActions>
-    </Dialog>
+        </NotiaButton>
+      </div>
+    </NotiaModalShell>
   )
 }

@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, CornerDownRight, GripVertical } from 'lucide-react'
 import type { TaskItem } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
 
 interface TaskTableViewProps {
   title: string
@@ -122,22 +123,22 @@ export function TaskTableView({ title, tasks, onChangeTaskState, onDeleteTask }:
 
         <td className="tareas-cell-actions">
           <div className="tareas-status-actions">
-            <button
+            <NotiaButton
               className="tareas-status-action-btn is-finish"
               onClick={() => {
                 void onChangeTaskState(task, 'Pendiente')
               }}
             >
               Recuperar
-            </button>
-            <button
+            </NotiaButton>
+            <NotiaButton
               className="tareas-status-action-btn is-dismiss"
               onClick={() => {
                 void onDeleteTask(task)
               }}
             >
               Eliminar
-            </button>
+            </NotiaButton>
           </div>
         </td>
       </tr>,

@@ -21,12 +21,14 @@ export function LibraryManagerModal({
   onClose,
 }: LibraryManagerModalProps) {
   const [isAdding, setIsAdding] = useState(false)
+  const [addErrorMessage, setAddErrorMessage] = useState<string | null>(null)
 
   if (!open) {
     return null
   }
 
   const handleAddLibrary = async () => {
+    setAddErrorMessage(null)
     setIsAdding(true)
     try {
       const selection = await pickLibraryDirectory()
@@ -38,8 +40,16 @@ export function LibraryManagerModal({
         id: crypto.randomUUID(),
         name: selection.name,
         path: selection.path,
+        androidTreeUri: selection.androidTreeUri,
       }
       onLibraryAdded(newLibrary)
+    } catch (error) {
+      const fallbackMessage = 'No se pudo abrir el selector de carpetas en este dispositivo.'
+      if (error instanceof Error && error.message.trim()) {
+        setAddErrorMessage(error.message)
+      } else {
+        setAddErrorMessage(fallbackMessage)
+      }
     } finally {
       setIsAdding(false)
     }
@@ -87,6 +97,11 @@ export function LibraryManagerModal({
               <BookPlus size={14} />
               <span>{isAdding ? 'Seleccionando carpeta...' : 'Agregar nueva libreria'}</span>
             </NotiaButton>
+            {addErrorMessage ? (
+              <div className="notia-library-manager-error" role="status">
+                {addErrorMessage}
+              </div>
+            ) : null}
           </aside>
         </div>
     </NotiaModalShell>

@@ -2,10 +2,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { NotiaFileNode } from '../../types/notia'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
+import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 interface PickedLibrary {
   name: string
   path: string
+  androidTreeUri?: string
 }
 
 interface CreateLibraryEntryResult {
@@ -15,6 +17,10 @@ interface CreateLibraryEntryResult {
 
 interface SearchLibraryFilesResult {
   paths: string[]
+}
+
+interface IsDirectoryPathResult {
+  isDirectory: boolean
 }
 
 type LibraryEntryOperationPayload = NotiaLibraryEntryOperationPayload
@@ -63,23 +69,126 @@ function buildLibraryNameFromPath(directoryPath: string): string {
   return segments[segments.length - 1] ?? directoryPath
 }
 
+function resolveParentDirectoryPath(pathValue: string): string {
+  const normalized = pathValue.replace(/[\\/]+$/, '')
+  const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+  if (separatorIndex <= 0) {
+    return normalized
+  }
+  return normalized.slice(0, separatorIndex)
+}
+
+async function resolveLibraryDirectoryFromSelection(selectedPath: string): Promise<string | null> {
+  const normalizedPath = normalizeFilesystemPath(selectedPath)
+
+  const selectedMetadata = await invoke<IsDirectoryPathResult>('is_directory_path', {
+    payload: { path: normalizedPath },
+  }).catch(() => ({ isDirectory: false }))
+
+  if (selectedMetadata.isDirectory) {
+    return normalizedPath
+  }
+
+  const parentDirectoryPath = resolveParentDirectoryPath(normalizedPath)
+  if (!parentDirectoryPath || parentDirectoryPath === normalizedPath) {
+    return null
+  }
+
+  const parentMetadata = await invoke<IsDirectoryPathResult>('is_directory_path', {
+    payload: { path: parentDirectoryPath },
+  }).catch(() => ({ isDirectory: false }))
+
+  return parentMetadata.isDirectory ? parentDirectoryPath : null
+}
+
 export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
-  let selected: string | string[] | null
+  if (getRuntimeDevice() === 'Android') {
+    try {
+      let selected: unknown
+      try {
+        selected = await invoke<unknown>('pick_android_directory_tree')
+      } catch (firstError) {
+        selected = await invoke<unknown>('mobile_directory_picker::pick_android_directory_tree').catch(() => {
+          throw firstError
+        })
+      }
+
+      if (typeof selected === 'string') {
+        const androidDirectoryPath = normalizeFilesystemPath(selected)
+        if (!androidDirectoryPath) {
+          return null
+        }
+        return {
+          path: androidDirectoryPath,
+          name: buildLibraryNameFromPath(androidDirectoryPath),
+        }
+      }
+
+      if (!selected || typeof selected !== 'object') {
+        return null
+      }
+      const candidate = selected as { path?: unknown; uri?: unknown }
+      if (typeof candidate.path !== 'string' || !candidate.path.trim()) {
+        return null
+      }
+      const androidDirectoryPath = normalizeFilesystemPath(candidate.path)
+
+      return {
+        path: androidDirectoryPath,
+        name: buildLibraryNameFromPath(androidDirectoryPath),
+        androidTreeUri: typeof candidate.uri === 'string' && candidate.uri.trim()
+          ? candidate.uri
+          : undefined,
+      }
+    } catch (error) {
+      console.error('[notia] pick_android_directory_tree failed', error)
+      if (
+        error instanceof Error
+        && (
+          error.message.includes('command pick_android_directory_tree not found')
+          || error.message.includes('command mobile_directory_picker::pick_android_directory_tree not found')
+        )
+      ) {
+        throw new Error('El backend Android esta desactualizado. Recompila e instala la app nuevamente.')
+      }
+      if (error instanceof Error && error.message.trim()) {
+        throw new Error(error.message)
+      }
+      throw new Error(String(error))
+    }
+  }
+
+  let selected: string | string[] | null = null
   try {
     selected = await open({
       directory: true,
       multiple: false,
+      pickerMode: 'document',
       title: 'Seleccionar libreria',
     })
-  } catch {
-    return null
+  } catch (error) {
+    console.warn('[notia] directory picker failed, trying file-based fallback', error)
+    try {
+      selected = await open({
+        directory: false,
+        multiple: false,
+        pickerMode: 'document',
+        title: 'Seleccionar un archivo dentro de la libreria',
+      })
+    } catch (fallbackError) {
+      console.error('[notia] pickLibraryDirectory failed to open any picker', fallbackError)
+      throw new Error('No se pudo abrir el selector de carpetas.')
+    }
   }
 
   if (typeof selected !== 'string' || !selected.trim()) {
     return null
   }
 
-  const normalizedSelectedPath = normalizeFilesystemPath(selected)
+  const normalizedSelectedPath = await resolveLibraryDirectoryFromSelection(selected)
+  if (!normalizedSelectedPath) {
+    throw new Error('No se pudo resolver una carpeta válida desde la selección.')
+  }
 
   return {
     path: normalizedSelectedPath,
@@ -87,10 +196,23 @@ export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
   }
 }
 
-export async function readLibraryTree(directoryPath: string): Promise<NotiaFileNode[]> {
+export async function readLibraryTree(
+  directoryPath: string,
+  options?: { androidDirectoryUri?: string },
+): Promise<NotiaFileNode[]> {
   const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
 
   try {
+    if (getRuntimeDevice() === 'Android') {
+      const mobileTree = await invoke<unknown>('read_android_library_tree', {
+        payload: {
+          directoryPath: normalizedDirectoryPath,
+          directoryUri: options?.androidDirectoryUri,
+        },
+      })
+      return normalizeTreeNodes(mobileTree)
+    }
+
     const rawTree = await invoke<unknown>('read_library_tree', {
       payload: { directoryPath: normalizedDirectoryPath },
     })
@@ -111,6 +233,7 @@ export async function createLibraryEntry(
   directoryPath: string,
   name: string,
   kind: 'folder' | 'note' | 'inkdoc',
+  options?: { androidDirectoryUri?: string },
 ): Promise<CreateLibraryEntryResult> {
   const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
 
@@ -118,6 +241,7 @@ export async function createLibraryEntry(
     return await invoke<CreateLibraryEntryResult>('create_library_entry', {
       payload: {
         directoryPath: normalizedDirectoryPath,
+        directoryUri: options?.androidDirectoryUri,
         name,
         kind,
       },

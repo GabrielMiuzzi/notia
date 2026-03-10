@@ -352,7 +352,9 @@ export function NotiaMenu() {
     }
 
     let isCurrent = true
-    readLibraryTree(activeLibrary.path).then((nodes) => {
+    readLibraryTree(activeLibrary.path, {
+      androidDirectoryUri: activeLibrary.androidTreeUri,
+    }).then((nodes) => {
       if (!isCurrent) {
         return
       }
@@ -705,7 +707,9 @@ export function NotiaMenu() {
       return
     }
 
-    const refreshedNodes = await readLibraryTree(activeLibrary.path)
+    const refreshedNodes = await readLibraryTree(activeLibrary.path, {
+      androidDirectoryUri: activeLibrary.androidTreeUri,
+    })
     const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
     const withExpandedState = applyFolderExpandedState(refreshedNodes, expandedStateByPath)
     const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
@@ -893,7 +897,12 @@ export function NotiaMenu() {
       return
     }
 
-    const result = await createLibraryEntry(pendingCreation.parentPath, name, pendingCreation.kind)
+    const result = await createLibraryEntry(
+      pendingCreation.parentPath,
+      name,
+      pendingCreation.kind,
+      { androidDirectoryUri: activeLibrary.androidTreeUri },
+    )
     if (!result.ok) {
       setDialogState({
         type: 'info',
@@ -1138,6 +1147,13 @@ export function NotiaMenu() {
   const handleLibraryAdded = (library: NotiaLibrary) => {
     const existingLibrary = libraries.find((item) => item.path === library.path)
     if (existingLibrary) {
+      if (!existingLibrary.androidTreeUri && library.androidTreeUri) {
+        setLibraries((current) => current.map((item) => (
+          item.id === existingLibrary.id
+            ? { ...item, androidTreeUri: library.androidTreeUri }
+            : item
+        )))
+      }
       setActiveLibraryId(existingLibrary.id)
       return
     }

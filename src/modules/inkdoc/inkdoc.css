@@ -1,4 +1,5 @@
 .inkdoc-view {
+	--inkdoc-left-safe-gutter: 76px;
 	--background-primary: var(--color-main-bg, #282a36);
 	--background-primary-alt: color-mix(in srgb, var(--background-primary) 94%, #171b31 6%);
 	--background-secondary: color-mix(in srgb, var(--background-primary) 88%, #20253b 12%);
@@ -1164,7 +1165,7 @@
 .inkdoc-pages {
 	flex: 1;
 	overflow: auto;
-	padding: 24px 16px 48px;
+	padding: 64px 16px 48px var(--inkdoc-left-safe-gutter);
 	background: var(--background-primary);
 }
 
@@ -1191,10 +1192,12 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	gap: 24px;
+	gap: 72px;
 	align-items: center;
 	min-width: 100%;
 	width: max-content;
+	padding-left: 0;
+	box-sizing: border-box;
 }
 
 
@@ -1215,12 +1218,74 @@
 	align-items: stretch;
 }
 
+.inkdoc-page-markdown-layer {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	pointer-events: none;
+	overflow: visible;
+}
+
+.inkdoc-page-markdown-layer.is-editable {
+	pointer-events: auto;
+}
+
+.inkdoc-page-markdown-editor-root {
+	width: 100%;
+	height: 100%;
+}
+
+.inkdoc-page-markdown-editor-root .milkdown {
+	height: 100%;
+	background: transparent;
+	overflow-x: visible;
+	overflow-y: hidden;
+	--crepe-color-outline: var(--notia-milkdown-handle-ink, var(--text-muted));
+}
+
+.inkdoc-page-markdown-editor-root .milkdown .ProseMirror {
+	height: 100%;
+	min-height: 100%;
+	max-height: 100%;
+	padding:
+		var(--inkdoc-text-padding-top, 24px)
+		var(--inkdoc-text-padding-right, 24px)
+		calc(var(--inkdoc-text-padding-bottom, 38px) + 8px)
+		var(--inkdoc-text-padding-left, 24px);
+	box-sizing: border-box;
+	background: transparent;
+	color: var(--text-normal);
+	outline: none;
+	overflow-y: hidden;
+	overflow-x: visible;
+}
+
+.inkdoc-page-markdown-editor-root .milkdown .ProseMirror > *:last-child {
+	margin-bottom: 0 !important;
+}
+
+.inkdoc-page-markdown-editor-root .milkdown .milkdown-block-handle {
+	z-index: 9;
+	transform: translateX(-40px);
+}
+
+.inkdoc-page-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg {
+	fill: var(--notia-milkdown-handle-ink, var(--text-muted));
+}
+
+.inkdoc-page-markdown-editor-root .milkdown .milkdown-slash-menu {
+	z-index: 12;
+}
+
 .inkdoc-page.is-dragover {
 	outline: 2px dashed var(--interactive-accent);
 	outline-offset: 2px;
 }
 
 .inkdoc-page-canvas {
+	position: absolute;
+	inset: 0;
+	z-index: 2;
 	display: block;
 	width: 100%;
 	height: 100%;
@@ -1235,20 +1300,31 @@
 .inkdoc-page-canvas-preview {
 	position: absolute;
 	inset: 0;
-	z-index: 2;
+	z-index: 4;
 	pointer-events: none;
 	border: 0;
 }
 
 .inkdoc-page-controls {
 	position: absolute;
-	top: 12px;
-	left: 4px;
+	top: -24px;
+	left: 50%;
+	transform: translate(-50%, -100%);
 	display: flex;
-	flex-direction: column;
+	flex-direction: row;
 	align-items: center;
 	gap: 6px;
 	z-index: 6;
+	padding: 6px;
+	border-radius: 10px;
+	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 86%, transparent);
+	background: color-mix(in srgb, var(--background-primary) 88%, var(--background-secondary) 12%);
+	box-shadow: 0 8px 18px rgba(0, 0, 0, 0.12);
+	backdrop-filter: blur(4px);
+}
+
+.inkdoc-page-controls.is-first-page-controls {
+	top: -8px;
 }
 
 .inkdoc-page-delete,
@@ -1264,6 +1340,13 @@
 	justify-content: center;
 	padding: 0;
 	cursor: pointer;
+	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
+	background: color-mix(in srgb, var(--background-secondary) 88%, var(--background-primary) 12%);
+	color: var(--text-normal);
+	transition:
+		background-color 120ms ease,
+		border-color 120ms ease,
+		color 120ms ease;
 }
 
 .inkdoc-page-icon-glyph {
@@ -1276,57 +1359,58 @@
 }
 
 .inkdoc-page-delete {
-	border: 1px solid rgba(255, 0, 0, 0.35);
-	background: rgba(255, 50, 50, 0.15);
-	color: #ff4d4d;
+	border-color: color-mix(in srgb, var(--text-error) 48%, var(--background-modifier-border) 52%);
+	background: color-mix(in srgb, var(--text-error) 12%, var(--background-secondary) 88%);
+	color: var(--text-error);
 }
 
 .inkdoc-page-delete:hover {
-	background: rgba(255, 50, 50, 0.25);
+	background: color-mix(in srgb, var(--text-error) 22%, var(--background-secondary) 78%);
+	border-color: color-mix(in srgb, var(--text-error) 65%, var(--background-modifier-border) 35%);
 }
 
 .inkdoc-page-settings {
-	border: 1px solid color-mix(in srgb, var(--inkdoc-page-ui-ink) 35%, transparent);
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 82%, var(--inkdoc-page-ui-ink) 18%);
-	color: var(--inkdoc-page-ui-ink);
+	border-color: color-mix(in srgb, var(--interactive-accent) 38%, var(--background-modifier-border) 62%);
+	background: color-mix(in srgb, var(--interactive-accent) 14%, var(--background-secondary) 86%);
+	color: var(--interactive-accent);
 }
 
 .inkdoc-page-settings:hover {
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 70%, var(--inkdoc-page-ui-ink) 30%);
+	background: color-mix(in srgb, var(--interactive-accent) 24%, var(--background-secondary) 76%);
+	border-color: color-mix(in srgb, var(--interactive-accent) 58%, var(--background-modifier-border) 42%);
 }
 
 .inkdoc-page-palette {
-	border: 1px solid color-mix(in srgb, var(--inkdoc-page-ui-ink) 35%, transparent);
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 82%, var(--inkdoc-page-ui-ink) 18%);
-	color: var(--inkdoc-page-ui-ink);
+	border-color: color-mix(in srgb, var(--text-accent) 38%, var(--background-modifier-border) 62%);
+	background: color-mix(in srgb, var(--text-accent) 14%, var(--background-secondary) 86%);
+	color: var(--text-accent);
 }
 
 .inkdoc-page-palette:hover {
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 70%, var(--inkdoc-page-ui-ink) 30%);
+	background: color-mix(in srgb, var(--text-accent) 24%, var(--background-secondary) 76%);
+	border-color: color-mix(in srgb, var(--text-accent) 58%, var(--background-modifier-border) 42%);
 }
 
 .inkdoc-page-size {
-	border: 1px solid color-mix(in srgb, var(--inkdoc-page-ui-ink) 35%, transparent);
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 82%, var(--inkdoc-page-ui-ink) 18%);
-	color: var(--inkdoc-page-ui-ink);
+	border-color: color-mix(in srgb, var(--text-muted) 55%, var(--background-modifier-border) 45%);
+	background: color-mix(in srgb, var(--text-muted) 16%, var(--background-secondary) 84%);
+	color: var(--text-normal);
 }
 
 .inkdoc-page-size:hover {
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 70%, var(--inkdoc-page-ui-ink) 30%);
+	background: color-mix(in srgb, var(--text-muted) 26%, var(--background-secondary) 74%);
+	border-color: color-mix(in srgb, var(--text-muted) 70%, var(--background-modifier-border) 30%);
 }
 
 .inkdoc-page-add-bottom {
-	position: absolute;
-	left: 4px;
-	bottom: 12px;
-	z-index: 6;
-	border: 1px solid color-mix(in srgb, var(--inkdoc-page-ui-ink) 35%, transparent);
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 82%, var(--inkdoc-page-ui-ink) 18%);
-	color: var(--inkdoc-page-ui-ink);
+	border-color: color-mix(in srgb, var(--interactive-accent) 42%, var(--background-modifier-border) 58%);
+	background: color-mix(in srgb, var(--interactive-accent) 18%, var(--background-secondary) 82%);
+	color: var(--interactive-accent);
 }
 
 .inkdoc-page-add-bottom:hover {
-	background: color-mix(in srgb, var(--inkdoc-page-bg) 70%, var(--inkdoc-page-ui-ink) 30%);
+	background: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-secondary) 70%);
+	border-color: color-mix(in srgb, var(--interactive-accent) 62%, var(--background-modifier-border) 38%);
 }
 
 .inkdoc-page-icon-glyph svg {
@@ -1343,9 +1427,9 @@
 	width: 44px;
 	text-align: center;
 	font-size: 11px;
-	color: var(--inkdoc-page-ui-ink);
+	color: var(--text-muted);
 	font-weight: 600;
-	text-shadow: 0 1px 1px color-mix(in srgb, var(--inkdoc-page-bg) 65%, transparent);
+	text-shadow: 0 1px 1px color-mix(in srgb, var(--background-primary) 65%, transparent);
 }
 
 .inkdoc-page[data-inkdoc-background="plain"],
@@ -2439,6 +2523,66 @@
 	display: flex;
 	flex-direction: column;
 	gap: 14px;
+}
+
+.inkdoc-text-layout-modal {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.inkdoc-text-layout-presets {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.inkdoc-text-layout-preset {
+	height: 30px;
+	padding: 0 10px;
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	cursor: pointer;
+	font-size: 12px;
+}
+
+.inkdoc-text-layout-preset:hover {
+	background: var(--background-secondary-alt);
+}
+
+.inkdoc-text-layout-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.inkdoc-text-layout-field {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.inkdoc-text-layout-label {
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.inkdoc-text-layout-input {
+	height: 34px;
+	padding: 0 10px;
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+}
+
+.inkdoc-text-layout-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
 }
 
 .inkdoc-inkmath-modal {

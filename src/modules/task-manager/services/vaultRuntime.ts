@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
+import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import type { MarkdownFileDocument } from '../types/taskManagerTypes'
 
 interface OperationResult {
@@ -19,6 +20,10 @@ interface WriteLibraryFileResult {
   error?: string
 }
 
+interface IsDirectoryPathResult {
+  isDirectory: boolean
+}
+
 function notifyLibraryTreeChanged(pathHint: string) {
   if (typeof window === 'undefined') {
     return
@@ -29,23 +34,110 @@ function notifyLibraryTreeChanged(pathHint: string) {
   }))
 }
 
+function resolveParentDirectoryPath(pathValue: string): string {
+  const normalized = pathValue.replace(/[\\/]+$/, '')
+  const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+  if (separatorIndex <= 0) {
+    return normalized
+  }
+  return normalized.slice(0, separatorIndex)
+}
+
+async function resolveVaultDirectoryFromSelection(selectedPath: string): Promise<string | null> {
+  const normalizedPath = normalizeFilesystemPath(selectedPath)
+
+  const selectedMetadata = await invoke<IsDirectoryPathResult>('is_directory_path', {
+    payload: { path: normalizedPath },
+  }).catch(() => ({ isDirectory: false }))
+
+  if (selectedMetadata.isDirectory) {
+    return normalizedPath
+  }
+
+  const parentDirectoryPath = resolveParentDirectoryPath(normalizedPath)
+  if (!parentDirectoryPath || parentDirectoryPath === normalizedPath) {
+    return null
+  }
+
+  const parentMetadata = await invoke<IsDirectoryPathResult>('is_directory_path', {
+    payload: { path: parentDirectoryPath },
+  }).catch(() => ({ isDirectory: false }))
+
+  return parentMetadata.isDirectory ? parentDirectoryPath : null
+}
+
+async function pickAndroidDirectoryPath(): Promise<string | null> {
+  try {
+    let selected: unknown
+    try {
+      selected = await invoke<unknown>('pick_android_directory_tree')
+    } catch (firstError) {
+      selected = await invoke<unknown>('mobile_directory_picker::pick_android_directory_tree').catch(() => {
+        throw firstError
+      })
+    }
+    if (typeof selected === 'string') {
+      if (!selected.trim()) {
+        return null
+      }
+      return normalizeFilesystemPath(selected)
+    }
+    if (!selected || typeof selected !== 'object') {
+      return null
+    }
+    const candidate = selected as { path?: unknown }
+    if (typeof candidate.path !== 'string' || !candidate.path.trim()) {
+      return null
+    }
+    return normalizeFilesystemPath(candidate.path)
+  } catch (error) {
+    console.error('[task-manager] pick_android_directory_tree failed', error)
+    return null
+  }
+}
+
 export async function pickVaultDirectory(): Promise<{ path: string; name: string } | null> {
+  if (getRuntimeDevice() === 'Android') {
+    const androidDirectoryPath = await pickAndroidDirectoryPath()
+    if (!androidDirectoryPath) {
+      return null
+    }
+
+    const name = androidDirectoryPath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() ?? androidDirectoryPath
+    return { path: androidDirectoryPath, name }
+  }
+
   let selectedPath: string | string[] | null
   try {
     selectedPath = await open({
       directory: true,
       multiple: false,
+      pickerMode: 'document',
       title: 'Seleccionar vault',
     })
-  } catch {
-    return null
+  } catch (error) {
+    console.warn('[task-manager] directory picker failed, trying file-based fallback', error)
+    try {
+      selectedPath = await open({
+        directory: false,
+        multiple: false,
+        pickerMode: 'document',
+        title: 'Seleccionar un archivo dentro del vault',
+      })
+    } catch (fallbackError) {
+      console.error('[task-manager] pickVaultDirectory failed to open any picker', fallbackError)
+      return null
+    }
   }
 
   if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
     return null
   }
 
-  const normalizedPath = normalizeFilesystemPath(selectedPath)
+  const normalizedPath = await resolveVaultDirectoryFromSelection(selectedPath)
+  if (!normalizedPath) {
+    return null
+  }
   const name = normalizedPath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() ?? normalizedPath
 
   return { path: normalizedPath, name }

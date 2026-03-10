@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
-import { Button, Dialog, DialogActions, DialogContent, DialogTitle, TextField } from '@mui/material'
+import { TextField } from '@mui/material'
 import { ChevronDown, ChevronRight, Clock3, Edit2, MessageSquare, Pencil, Plus, Trash2 } from 'lucide-react'
 import { groupTopLevelTasks } from '../../engines/taskEngine'
 import type { Group, TaskItem } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
 
 interface TaskBoardViewProps {
   boardName: string
@@ -318,7 +320,7 @@ export function TaskBoardView({
                   <span className="tareas-toggle">{isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
                   <span className="tareas-badge" style={{ background: group.color }}>{group.name}</span>
                   <span className="tareas-count">{groupTasks.length}</span>
-                  <button
+                  <NotiaButton
                     className="tareas-group-edit-btn"
                     onClick={(event) => {
                       event.stopPropagation()
@@ -327,7 +329,7 @@ export function TaskBoardView({
                     title="Editar grupo"
                   >
                     <Pencil size={12} />
-                  </button>
+                  </NotiaButton>
                 </div>
 
                 {isExpanded ? (
@@ -539,9 +541,11 @@ export function TaskBoardView({
         </div>
       </div>
 
-      <Dialog open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Agregar comentario</DialogTitle>
-        <DialogContent>
+      <NotiaModalShell open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} size="md" panelClassName="tareas-dialog">
+        <div className="tareas-dialog-header">
+          <h2>Agregar comentario</h2>
+        </div>
+        <div className="tareas-dialog-body">
           <TextField
             autoFocus
             multiline
@@ -553,18 +557,20 @@ export function TaskBoardView({
             }}
             sx={{ mt: 1 }}
           />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCommentDialog(null)}>Cancelar</Button>
-          <Button variant="contained" onClick={() => void submitCommentDialog()} disabled={!commentDialog?.text.trim()}>
+        </div>
+        <div className="tareas-dialog-actions">
+          <NotiaButton onClick={() => setCommentDialog(null)}>Cancelar</NotiaButton>
+          <NotiaButton variant="primary" onClick={() => void submitCommentDialog()} disabled={!commentDialog?.text.trim()}>
             Guardar comentario
-          </Button>
-        </DialogActions>
-      </Dialog>
+          </NotiaButton>
+        </div>
+      </NotiaModalShell>
 
-      <Dialog open={Boolean(sourceDialog)} onClose={() => setSourceDialog(null)} fullWidth maxWidth="lg">
-        <DialogTitle>Editar markdown de tarea</DialogTitle>
-        <DialogContent>
+      <NotiaModalShell open={Boolean(sourceDialog)} onClose={() => setSourceDialog(null)} size="xl" panelClassName="tareas-dialog">
+        <div className="tareas-dialog-header">
+          <h2>Editar markdown de tarea</h2>
+        </div>
+        <div className="tareas-dialog-body">
           <TextField
             multiline
             minRows={18}
@@ -576,18 +582,18 @@ export function TaskBoardView({
             }}
             sx={{ mt: 1 }}
           />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSourceDialog(null)}>Cancelar</Button>
-          <Button
-            variant="contained"
+        </div>
+        <div className="tareas-dialog-actions">
+          <NotiaButton onClick={() => setSourceDialog(null)}>Cancelar</NotiaButton>
+          <NotiaButton
+            variant="primary"
             onClick={() => void saveTaskSourceDialog()}
             disabled={Boolean(sourceDialog?.isLoading) || Boolean(sourceDialog?.isSaving)}
           >
             Guardar markdown
-          </Button>
-        </DialogActions>
-      </Dialog>
+          </NotiaButton>
+        </div>
+      </NotiaModalShell>
     </>
   )
 }
@@ -681,7 +687,7 @@ function TaskCard({
               : action.label
 
             return (
-              <button
+              <NotiaButton
                 key={`${task.filePath}-${action.id}`}
                 className={`tareas-status-action-btn ${action.cls}${task.state === nextState ? ' is-active' : ''}`}
                 onClick={() => {
@@ -691,11 +697,11 @@ function TaskCard({
                 }}
               >
                 {label}
-              </button>
+              </NotiaButton>
             )
           })}
 
-          <button
+          <NotiaButton
             className={`tareas-status-action-btn is-urgent${task.priority === 'Urgente' ? ' is-active' : ''}`}
             onClick={() => {
               if (task.priority !== 'Urgente') {
@@ -704,7 +710,7 @@ function TaskCard({
             }}
           >
             Urgente
-          </button>
+          </NotiaButton>
         </div>
       </div>
 
@@ -721,21 +727,21 @@ function TaskCard({
           {task.title}
         </a>
 
-        <button
+        <NotiaButton
           className="tareas-card-comment-btn"
           title="Agregar comentario"
           onClick={() => onAddTaskComment(task)}
         >
           <MessageSquare size={12} />
-        </button>
+        </NotiaButton>
 
-        <button
+        <NotiaButton
           className="tareas-card-comment-btn"
           title="Editar tarea"
           onClick={() => onEditTask(task)}
         >
           <Edit2 size={12} />
-        </button>
+        </NotiaButton>
       </div>
 
       {task.preview ? <p className="tareas-card-preview">{task.preview}</p> : null}
@@ -820,13 +826,13 @@ function TaskCard({
                   {subtask.title}
                 </a>
 
-                <button
+                <NotiaButton
                   className="tareas-card-comment-btn"
                   title="Agregar comentario"
                   onClick={() => onAddTaskComment(subtask)}
                 >
                   <MessageSquare size={12} />
-                </button>
+                </NotiaButton>
               </div>
             )
           })}
@@ -847,15 +853,15 @@ function TaskCard({
           </div>
         </div>
 
-        <button
+        <NotiaButton
           className="tareas-card-pomodoro-btn"
           title="Abrir pomodoro con esta tarea"
           onClick={() => onOpenPomodoroTask(task.filePath)}
         >
           <Clock3 size={12} />
-        </button>
+        </NotiaButton>
 
-        <button
+        <NotiaButton
           className="tareas-card-pomodoro-btn"
           title="Eliminar tarea"
           onClick={() => {
@@ -863,7 +869,7 @@ function TaskCard({
           }}
         >
           <Trash2 size={12} />
-        </button>
+        </NotiaButton>
       </div>
     </div>
   )

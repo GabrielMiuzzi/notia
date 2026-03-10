@@ -21,4 +21,5 @@ export interface NotiaLibrary {
   id: string
   name: string
   path: string
+  androidTreeUri?: string
 }

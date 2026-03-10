@@ -50,6 +50,37 @@
   box-sizing: border-box;
 }
 
+.tareas-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 84px);
+}
+
+.tareas-dialog-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tareas-dialog-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.tareas-dialog-body {
+  padding: 0 14px 12px;
+  overflow: auto;
+}
+
+.tareas-dialog-actions {
+  padding: 10px 14px;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .tareas-header {
   display: grid;
   grid-template-columns: 1fr auto 1fr;

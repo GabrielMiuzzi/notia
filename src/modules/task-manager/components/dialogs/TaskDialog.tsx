@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
   InputLabel,
   MenuItem,
@@ -13,6 +8,8 @@ import {
   TextField,
 } from '@mui/material'
 import type { Group, TaskFormData, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
 
 interface TaskDialogProps {
   open: boolean
@@ -105,9 +102,11 @@ export function TaskDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>{title}</DialogTitle>
-      <DialogContent>
+    <NotiaModalShell open={open} onClose={onClose} size="md" panelClassName="tareas-dialog">
+      <div className="tareas-dialog-header">
+        <h2>{title}</h2>
+      </div>
+      <div className="tareas-dialog-body">
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
             label="Título"
@@ -199,16 +198,16 @@ export function TaskDialog({
             onChange={(event) => setForm((previous) => ({ ...previous, parentTaskName: event.target.value }))}
           />
         </Stack>
-      </DialogContent>
+      </div>
 
-      <DialogActions>
-        <Button onClick={onClose} disabled={isSubmitting}>
+      <div className="tareas-dialog-actions">
+        <NotiaButton onClick={onClose} disabled={isSubmitting}>
           Cancelar
-        </Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={!form.title.trim() || isSubmitting}>
+        </NotiaButton>
+        <NotiaButton variant="primary" onClick={() => void handleSubmit()} disabled={!form.title.trim() || isSubmitting}>
           Guardar
-        </Button>
-      </DialogActions>
-    </Dialog>
+        </NotiaButton>
+      </div>
+    </NotiaModalShell>
   )
 }

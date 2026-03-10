@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
-import { Button, Dialog, DialogActions, DialogContent, DialogTitle } from '@mui/material'
 import { Clock3, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
 import {
   formatPomodoroCountdown,
@@ -11,6 +10,8 @@ import {
 } from '../../engines/pomodoroEngine'
 import { getEntriesByDate, toLocalDateText } from '../../engines/pomodoroLogEngine'
 import type { PomodoroDurations, PomodoroLogEntry, PomodoroState, TaskItem } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
 
 interface PomodoroPanelProps {
   state: PomodoroState
@@ -213,11 +214,11 @@ export function PomodoroPanel({
       <div className="tareas-pomodoro-controls">
         <div className="tareas-pomodoro-controls-icons">
           {state.runState === 'running' ? (
-            <button className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onPause} title="Pausar">
+            <NotiaButton className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onPause} title="Pausar">
               <Pause size={14} />
-            </button>
+            </NotiaButton>
           ) : (
-            <button
+            <NotiaButton
               className="tareas-pomodoro-btn tareas-pomodoro-btn-icon"
               onClick={() => {
                 if (state.runState === 'paused') {
@@ -229,14 +230,14 @@ export function PomodoroPanel({
               title={state.runState === 'paused' ? 'Reanudar' : 'Iniciar'}
             >
               <Play size={14} />
-            </button>
+            </NotiaButton>
           )}
 
-          <button className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onReset} title="Reiniciar">
+          <NotiaButton className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onReset} title="Reiniciar">
             <RotateCcw size={14} />
-          </button>
+          </NotiaButton>
 
-          <button
+          <NotiaButton
             className={`tareas-pomodoro-btn tareas-pomodoro-btn-icon${state.isDeviationActive ? ' is-deviation-active' : ''}`}
             onClick={() => {
               if (state.isDeviationActive) {
@@ -249,7 +250,7 @@ export function PomodoroPanel({
             disabled={!state.isDeviationActive && state.runState !== 'running'}
           >
             <Clock3 size={14} />
-          </button>
+          </NotiaButton>
         </div>
       </div>
 
@@ -282,9 +283,11 @@ export function PomodoroPanel({
         </div>
       </div>
 
-      <Dialog open={isPresetModalOpen} onClose={() => setIsPresetModalOpen(false)} fullWidth maxWidth="md">
-        <DialogTitle>Elegir duración Pomodoro</DialogTitle>
-        <DialogContent>
+      <NotiaModalShell open={isPresetModalOpen} onClose={() => setIsPresetModalOpen(false)} size="lg" panelClassName="tareas-dialog">
+        <div className="tareas-dialog-header">
+          <h2>Elegir duración Pomodoro</h2>
+        </div>
+        <div className="tareas-dialog-body">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             {POMODORO_PRESETS.map((preset) => {
               const isSelected = preset.durations.workMinutes === state.durations.workMinutes
@@ -292,7 +295,7 @@ export function PomodoroPanel({
                 && preset.durations.longBreakMinutes === state.durations.longBreakMinutes
 
               return (
-                <button
+                <NotiaButton
                   key={preset.title}
                   className="tareas-pomodoro-config-card"
                   style={{ textAlign: 'left', borderColor: isSelected ? 'var(--interactive-accent)' : undefined }}
@@ -309,15 +312,15 @@ export function PomodoroPanel({
                   <p className="tareas-pomodoro-config-card-text">Trabajo: {preset.durations.workMinutes} min</p>
                   <p className="tareas-pomodoro-config-card-text">Descanso corto: {preset.durations.shortBreakMinutes} min</p>
                   <p className="tareas-pomodoro-config-card-text">Descanso largo: {preset.durations.longBreakMinutes} min</p>
-                </button>
+                </NotiaButton>
               )
             })}
           </div>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setIsPresetModalOpen(false)}>Cerrar</Button>
-        </DialogActions>
-      </Dialog>
+        </div>
+        <div className="tareas-dialog-actions">
+          <NotiaButton onClick={() => setIsPresetModalOpen(false)}>Cerrar</NotiaButton>
+        </div>
+      </NotiaModalShell>
 
       <div className="tareas-pomodoro-task-section">
         <h3>Tarea vinculada</h3>
@@ -346,14 +349,14 @@ export function PomodoroPanel({
           </div>
         )}
 
-        <button
+        <NotiaButton
           className="tareas-pomodoro-btn tareas-pomodoro-task-change-btn"
           onClick={() => pickLinkedTask(tasks, state.selectedTaskPath, onSelectTask)}
           disabled={state.runState === 'running'}
           title={state.runState === 'running' ? 'No se puede cambiar la tarea mientras corre el contador' : 'Cambiar tarea vinculada'}
         >
           Cambiar tarea vinculada
-        </button>
+        </NotiaButton>
       </div>
 
       <div className="tareas-pomodoro-log-section">
@@ -387,9 +390,9 @@ export function PomodoroPanel({
                     <td>{formatHours(entry.deviationHours)} h</td>
                     <td>{entry.finalized ? 'true' : 'false'}</td>
                     <td className="tareas-pomodoro-log-actions">
-                      <button className="tareas-pomodoro-log-delete-btn" onClick={() => void onDeleteEntry(entry.id)} title="Eliminar registro">
+                      <NotiaButton className="tareas-pomodoro-log-delete-btn" onClick={() => void onDeleteEntry(entry.id)} title="Eliminar registro">
                         <Trash2 size={12} />
-                      </button>
+                      </NotiaButton>
                     </td>
                   </tr>
                 ))}

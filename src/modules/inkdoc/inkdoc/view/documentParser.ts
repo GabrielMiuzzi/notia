@@ -15,6 +15,7 @@ import {
 import { resolvePageColors, isInkDocPageBackground, DEFAULT_PAGE_BACKGROUND } from "./backgrounds";
 import { isInkDocPageSize, resolvePageSize } from "./pageSizes";
 import { resolveInkDocStrokeStyle } from "./strokeStyles";
+import { resolveInkDocTextLayoutPadding } from "./textLayout";
 
 export const parseInkDocRaw = (raw: string): InkDocDocument => {
 	const parsed = JSON.parse(raw) as Partial<InkDocDocument>;
@@ -164,7 +165,8 @@ export const parseInkDocRaw = (raw: string): InkDocDocument => {
 			marginMm:
 				typeof parsed.page?.marginMm === "number"
 					? parsed.page.marginMm
-					: DEFAULT_PAGE_MARGIN_MM
+					: DEFAULT_PAGE_MARGIN_MM,
+			textPadding: resolveInkDocTextLayoutPadding(parsed.page?.textPadding)
 		},
 		pages,
 		stickyNotes

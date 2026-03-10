@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ComponentType } from 'react'
+import { useState, type ComponentType } from 'react'
 import { BookOpen, CircleHelp, Settings } from 'lucide-react'
 import type { NotiaLibrary } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
+import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
 
 interface WorkspaceFooterProps {
   name: string
@@ -23,28 +24,16 @@ export function WorkspaceFooter({
   onOpenSettings,
 }: WorkspaceFooterProps) {
   const [isLibraryMenuOpen, setIsLibraryMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setIsLibraryMenuOpen(false)
-      }
-    }
-
-    if (isLibraryMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-    }
-  }, [isLibraryMenuOpen])
+  const { triggerRef, panelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
+    open: isLibraryMenuOpen,
+    onClose: () => setIsLibraryMenuOpen(false),
+  })
 
   return (
     <div className="notia-footer">
-      <div className="notia-footer-library" ref={menuRef}>
+      <div className="notia-footer-library">
         <NotiaButton
+          ref={triggerRef}
           className="notia-footer-library-trigger"
           variant="ghost"
           title="Librerias"
@@ -54,7 +43,7 @@ export function WorkspaceFooter({
           <span>{name}</span>
         </NotiaButton>
         {isLibraryMenuOpen ? (
-          <div className="notia-library-menu">
+          <div className="notia-library-menu" ref={panelRef}>
             <div className="notia-library-menu-list">
               {libraries.length > 0 ? (
                 libraries.map((library) => (

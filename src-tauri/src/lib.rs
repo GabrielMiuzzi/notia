@@ -5,6 +5,8 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
+mod mobile_directory_picker;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileNode {
@@ -106,6 +108,8 @@ struct WriteBinaryFilePayload {
 #[serde(rename_all = "camelCase")]
 struct CreateLibraryEntryPayload {
     directory_path: String,
+    #[serde(default)]
+    directory_uri: Option<String>,
     name: String,
     kind: String,
 }
@@ -121,6 +125,12 @@ struct SearchLibraryFilesPayload {
 #[serde(rename_all = "camelCase")]
 struct PathExistsResult {
     exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IsDirectoryPathResult {
+    is_directory: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +173,24 @@ fn has_invalid_entry_name(name: &str) -> bool {
     trimmed.contains('/') || trimmed.contains('\\')
 }
 
+fn default_inkdoc_content() -> &'static str {
+    r#"{
+  "version": 1,
+  "title": "InkDoc sin titulo",
+  "page": {
+    "size": "A4",
+    "marginMm": 10
+  },
+  "pages": [
+    {
+      "id": "p1",
+      "canvas": null
+    }
+  ]
+}
+"#
+}
+
 fn is_hidden_entry_name(name: &str) -> bool {
     name.trim_start().starts_with('.')
 }
@@ -197,12 +225,14 @@ fn read_directory_tree(
             }
 
             let entry_path = entry.path();
-            let Ok(entry_metadata) = fs::metadata(&entry_path) else {
-                return None;
-            };
             let entry_path_string = to_path_string(&entry_path);
+            let is_directory = entry
+                .file_type()
+                .map(|entry_file_type| entry_file_type.is_dir())
+                .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
+                .unwrap_or(false);
 
-            if entry_metadata.is_dir() {
+            if is_directory {
                 return Some(FileNode {
                     id: entry_path_string.clone(),
                     name: entry_name,
@@ -286,11 +316,19 @@ fn search_library_files_in_directory(
         }
 
         let entry_path = entry.path();
-        let Ok(entry_metadata) = fs::metadata(&entry_path) else {
-            continue;
-        };
+        let entry_metadata = fs::metadata(&entry_path).ok();
+        let is_directory = entry
+            .file_type()
+            .map(|entry_file_type| entry_file_type.is_dir())
+            .or_else(|_| {
+                entry_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.is_dir())
+                    .ok_or(std::io::Error::from(std::io::ErrorKind::Other))
+            })
+            .unwrap_or(false);
 
-        if entry_metadata.is_dir() {
+        if is_directory {
             search_library_files_in_directory(
                 &entry_path,
                 normalized_query,
@@ -306,7 +344,11 @@ fn search_library_files_in_directory(
             continue;
         }
 
-        if entry_metadata.len() > 2_000_000 {
+        if entry_metadata
+            .as_ref()
+            .map(|metadata| metadata.len() > 2_000_000)
+            .unwrap_or(true)
+        {
             continue;
         }
 
@@ -341,15 +383,13 @@ fn read_markdown_files_in_directory(
         }
 
         let entry_path = entry.path();
-        let Ok(entry_metadata) = fs::symlink_metadata(&entry_path) else {
-            continue;
-        };
+        let is_directory = entry
+            .file_type()
+            .map(|entry_file_type| entry_file_type.is_dir())
+            .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
+            .unwrap_or(false);
 
-        if entry_metadata.file_type().is_symlink() {
-            continue;
-        }
-
-        if entry_metadata.is_dir() {
+        if is_directory {
             read_markdown_files_in_directory(&entry_path, visited_directories, documents);
             continue;
         }
@@ -380,13 +420,42 @@ fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
 }
 
 #[tauri::command]
-fn read_library_file(payload: ReadLibraryFilePayload) -> ReadLibraryFileResult {
+fn read_library_file(
+    payload: ReadLibraryFilePayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> ReadLibraryFileResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     if payload.file_path.trim().is_empty() {
         return ReadLibraryFileResult {
             ok: false,
             content: String::new(),
             error: Some("Invalid file path.".to_string()),
         };
+    }
+
+    #[cfg(target_os = "android")]
+    if payload.file_path.starts_with("content://") {
+        match mobile_directory_picker::read_android_content_text(
+            android_picker_state.inner(),
+            &payload.file_path,
+        ) {
+            Ok(content) => {
+                return ReadLibraryFileResult {
+                    ok: true,
+                    content,
+                    error: None,
+                }
+            }
+            Err(_) => {
+                return ReadLibraryFileResult {
+                    ok: false,
+                    content: String::new(),
+                    error: Some("Could not read file.".to_string()),
+                }
+            }
+        }
     }
 
     match fs::read_to_string(payload.file_path) {
@@ -443,12 +512,40 @@ fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<MarkdownFileDoc
 }
 
 #[tauri::command]
-fn write_library_file(payload: WriteLibraryFilePayload) -> WriteLibraryFileResult {
+fn write_library_file(
+    payload: WriteLibraryFilePayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> WriteLibraryFileResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     if payload.file_path.trim().is_empty() {
         return WriteLibraryFileResult {
             ok: false,
             error: Some("Invalid file data.".to_string()),
         };
+    }
+
+    #[cfg(target_os = "android")]
+    if payload.file_path.starts_with("content://") {
+        match mobile_directory_picker::write_android_content_text(
+            android_picker_state.inner(),
+            &payload.file_path,
+            &payload.content,
+        ) {
+            Ok(()) => {
+                return WriteLibraryFileResult {
+                    ok: true,
+                    error: None,
+                }
+            }
+            Err(_) => {
+                return WriteLibraryFileResult {
+                    ok: false,
+                    error: Some("Could not write file.".to_string()),
+                }
+            }
+        }
     }
 
     match fs::write(payload.file_path, payload.content) {
@@ -549,6 +646,19 @@ fn path_exists(payload: PathExistsPayload) -> PathExistsResult {
 }
 
 #[tauri::command]
+fn is_directory_path(payload: PathExistsPayload) -> IsDirectoryPathResult {
+    if payload.path.trim().is_empty() {
+        return IsDirectoryPathResult {
+            is_directory: false,
+        };
+    }
+
+    IsDirectoryPathResult {
+        is_directory: Path::new(&payload.path).is_dir(),
+    }
+}
+
+#[tauri::command]
 fn write_binary_file(payload: WriteBinaryFilePayload) -> OperationResult {
     if payload.file_path.trim().is_empty() {
         return OperationResult {
@@ -570,7 +680,13 @@ fn write_binary_file(payload: WriteBinaryFilePayload) -> OperationResult {
 }
 
 #[tauri::command]
-fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
+fn create_library_entry(
+    payload: CreateLibraryEntryPayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> OperationResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     if payload.directory_path.trim().is_empty() {
         return OperationResult {
             ok: false,
@@ -601,6 +717,62 @@ fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
         trimmed_name.to_string()
     };
 
+    #[cfg(target_os = "android")]
+    {
+        let resolved_uri = if payload.directory_path.starts_with("content://") {
+            Some(payload.directory_path.clone())
+        } else {
+            match mobile_directory_picker::resolve_android_tree_uri(
+                android_picker_state.inner(),
+                &payload.directory_path,
+                payload.directory_uri.as_deref(),
+            ) {
+                Ok(uri) => uri,
+                Err(_) => None,
+            }
+        };
+
+        if let Some(parent_uri) = resolved_uri {
+            let (entry_type, content) = if payload.kind == "folder" {
+                ("folder", None)
+            } else if payload.kind == "inkdoc" {
+                ("file", Some(default_inkdoc_content()))
+            } else {
+                ("file", Some(""))
+            };
+
+            return match mobile_directory_picker::create_android_tree_entry(
+                android_picker_state.inner(),
+                &parent_uri,
+                &normalized_name,
+                entry_type,
+                content,
+            ) {
+                Ok(_) => OperationResult {
+                    ok: true,
+                    error: None,
+                },
+                Err(error_message) => {
+                    let lowered = error_message.to_lowercase();
+                    if lowered.contains("already exists")
+                        || lowered.contains("ya existe")
+                        || lowered.contains("exists")
+                    {
+                        OperationResult {
+                            ok: false,
+                            error: Some("An entry with that name already exists.".to_string()),
+                        }
+                    } else {
+                        OperationResult {
+                            ok: false,
+                            error: Some("Could not create entry.".to_string()),
+                        }
+                    }
+                }
+            };
+        }
+    }
+
     let target_path = PathBuf::from(&payload.directory_path).join(normalized_name);
 
     let operation_result = if payload.kind == "folder" {
@@ -612,23 +784,7 @@ fn create_library_entry(payload: CreateLibraryEntryPayload) -> OperationResult {
             .open(&target_path)
             .and_then(|mut file| {
                 use std::io::Write;
-                file.write_all(
-                    br#"{
-  "version": 1,
-  "title": "InkDoc sin titulo",
-  "page": {
-    "size": "A4",
-    "marginMm": 10
-  },
-  "pages": [
-    {
-      "id": "p1",
-      "canvas": null
-    }
-  ]
-}
-"#,
-                )
+                file.write_all(default_inkdoc_content().as_bytes())
             })
     } else {
         OpenOptions::new()
@@ -819,6 +975,7 @@ fn library_entry_operation(payload: LibraryEntryOperationPayload) -> OperationRe
 }
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn window_control(window: tauri::Window, payload: WindowControlPayload) {
     match payload.action.as_str() {
         "minimize" => {
@@ -839,9 +996,18 @@ fn window_control(window: tauri::Window, payload: WindowControlPayload) {
 }
 
 #[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn window_control(_window: tauri::Window, _payload: WindowControlPayload) {}
+
+#[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn start_window_dragging(window: tauri::Window) {
     let _ = window.start_dragging();
 }
+
+#[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn start_window_dragging(_window: tauri::Window) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -856,12 +1022,16 @@ pub fn run() {
             create_library_file,
             create_library_directory,
             path_exists,
+            is_directory_path,
             write_binary_file,
             create_library_entry,
             library_entry_operation,
+            mobile_directory_picker::pick_android_directory_tree,
+            mobile_directory_picker::read_android_library_tree,
             window_control,
             start_window_dragging,
         ])
+        .plugin(mobile_directory_picker::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

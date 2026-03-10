@@ -13,7 +13,8 @@ function isValidLibrary(value: unknown): value is NotiaLibrary {
   return (
     typeof candidate.id === 'string' &&
     typeof candidate.name === 'string' &&
-    typeof candidate.path === 'string'
+    typeof candidate.path === 'string' &&
+    (typeof candidate.androidTreeUri === 'undefined' || typeof candidate.androidTreeUri === 'string')
   )
 }
 
@@ -31,6 +32,9 @@ export function loadLibraries(): NotiaLibrary[] {
     return parsed.filter(isValidLibrary).map((library) => ({
       ...library,
       path: normalizeFilesystemPath(library.path),
+      androidTreeUri: typeof library.androidTreeUri === 'string' && library.androidTreeUri.trim()
+        ? library.androidTreeUri
+        : undefined,
     }))
   } catch {
     return []

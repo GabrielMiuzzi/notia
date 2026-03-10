@@ -2,6 +2,7 @@ import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
 import { FolderKanban, Plus, RefreshCw } from 'lucide-react'
 import { useCallback, useMemo } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
+import { NotiaButton } from '../../../components/common/NotiaButton'
 import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
 import { useTaskManager } from '../hooks/useTaskManager'
 import { TaskBoardView } from './boards/TaskBoardView'
@@ -128,23 +129,23 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
 
           <div className="tareas-header-actions">
             {!manager.isVaultExternallyControlled ? (
-              <button className="tareas-btn-ghost" onClick={() => void manager.selectVault()}>
+              <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.selectVault()}>
                 <FolderKanban size={14} />
                 Vault
-              </button>
+              </NotiaButton>
             ) : null}
 
-            <button className="tareas-btn-ghost" onClick={() => void manager.reload()}>
+            <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.reload()}>
               <RefreshCw size={14} />
               Refrescar
-            </button>
+            </NotiaButton>
 
-            <button className="tareas-btn-new" onClick={manager.openBoardCreateDialog}>
+            <NotiaButton className="tareas-btn-new" onClick={manager.openBoardCreateDialog}>
               <Plus size={14} />
               Nuevo tablero
-            </button>
+            </NotiaButton>
 
-            <button
+            <NotiaButton
               className="tareas-btn-edit-board"
               onClick={() => {
                 if (!activeBoardConfig) {
@@ -155,50 +156,50 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
               disabled={!activeTabIsBoard || activeBoard === 'default'}
             >
               Editar tablero
-            </button>
+            </NotiaButton>
 
-            <button
+            <NotiaButton
               className="tareas-btn-delete-board"
               onClick={() => void handleRemoveBoard()}
               disabled={!activeTabIsBoard || activeBoard === 'default'}
             >
               Eliminar tablero
-            </button>
+            </NotiaButton>
           </div>
         </div>
 
         <div className="tareas-tabs">
           {manager.settings.boards.map((board) => (
-            <button
+            <NotiaButton
               key={board.name}
               className={`tareas-tab-btn${manager.settings.activeTab === board.name ? ' is-active' : ''}`}
               onClick={() => manager.setActiveTab(board.name)}
             >
               {board.name}
               {board.name === activeBoard ? ` ${activeBoardTasksCount}` : ''}
-            </button>
+            </NotiaButton>
           ))}
 
-          <button
+          <NotiaButton
             className={`tareas-tab-btn${manager.settings.activeTab === FINISHED_TAB_ID ? ' is-active' : ''}`}
             onClick={() => manager.setActiveTab(FINISHED_TAB_ID)}
           >
             Completadas {finishedTasks.length}
-          </button>
+          </NotiaButton>
 
-          <button
+          <NotiaButton
             className={`tareas-tab-btn${manager.settings.activeTab === CANCELLED_TAB_ID ? ' is-active' : ''}`}
             onClick={() => manager.setActiveTab(CANCELLED_TAB_ID)}
           >
             Canceladas {cancelledTasks.length}
-          </button>
+          </NotiaButton>
 
-          <button
+          <NotiaButton
             className={`tareas-tab-btn${manager.settings.activeTab === POMODORO_TAB_ID ? ' is-active' : ''}`}
             onClick={() => manager.setActiveTab(POMODORO_TAB_ID)}
           >
             Pomodoro
-          </button>
+          </NotiaButton>
 
         </div>
 

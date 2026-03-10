@@ -22,11 +22,39 @@ function normalizeSlashes(value: string): string {
 }
 
 function isAbsolutePath(value: string): boolean {
-  return value.startsWith('/') || /^[a-zA-Z]:\//.test(normalizeSlashes(value))
+  const normalized = normalizeSlashes(value)
+  return (
+    normalized.startsWith('/')
+    || /^[a-zA-Z]:\//.test(normalized)
+    || /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(normalized)
+  )
 }
 
 function normalizeSegments(value: string): string {
   const source = normalizeSlashes(value)
+  const uriPrefixMatch = source.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]*)(\/.*)?$/)
+  if (uriPrefixMatch) {
+    const uriPrefix = uriPrefixMatch[1]
+    const uriPath = (uriPrefixMatch[2] ?? '').replace(/^\/+/, '')
+    const segments = uriPath.split('/').filter((segment) => segment.length > 0)
+    const normalized: string[] = []
+
+    for (const segment of segments) {
+      if (segment === '.') {
+        continue
+      }
+      if (segment === '..') {
+        if (normalized.length > 0) {
+          normalized.pop()
+        }
+        continue
+      }
+      normalized.push(segment)
+    }
+
+    return normalized.length > 0 ? `${uriPrefix}/${normalized.join('/')}` : `${uriPrefix}/`
+  }
+
   const prefixMatch = source.match(/^[a-zA-Z]:\//)
   const prefix = prefixMatch ? prefixMatch[0] : source.startsWith('/') ? '/' : ''
   const raw = prefix ? source.slice(prefix.length) : source

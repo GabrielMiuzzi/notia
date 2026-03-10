@@ -1,14 +1,11 @@
 import { useEffect, useState } from 'react'
 import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Stack,
   TextField,
 } from '@mui/material'
 import type { Board } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
 
 interface BoardDialogProps {
   open: boolean
@@ -46,9 +43,11 @@ export function BoardDialog({ open, mode, board, onClose, onSubmit }: BoardDialo
   }
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>{mode === 'create' ? 'Nuevo tablero' : 'Editar tablero'}</DialogTitle>
-      <DialogContent>
+    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="tareas-dialog">
+      <div className="tareas-dialog-header">
+        <h2>{mode === 'create' ? 'Nuevo tablero' : 'Editar tablero'}</h2>
+      </div>
+      <div className="tareas-dialog-body">
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
             label="Nombre"
@@ -63,15 +62,15 @@ export function BoardDialog({ open, mode, board, onClose, onSubmit }: BoardDialo
             onChange={(event) => setColor(event.target.value)}
           />
         </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={isSubmitting}>
+      </div>
+      <div className="tareas-dialog-actions">
+        <NotiaButton onClick={onClose} disabled={isSubmitting}>
           Cancelar
-        </Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={!name.trim() || isSubmitting}>
+        </NotiaButton>
+        <NotiaButton variant="primary" onClick={() => void handleSubmit()} disabled={!name.trim() || isSubmitting}>
           Guardar
-        </Button>
-      </DialogActions>
-    </Dialog>
+        </NotiaButton>
+      </div>
+    </NotiaModalShell>
   )
 }

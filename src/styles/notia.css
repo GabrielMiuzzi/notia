@@ -1,5 +1,9 @@
 .notia-app-shell {
   --titlebar-height: 36px;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
   --color-app-bg: #282a36;
   --color-app-text: #cfd3ff;
   --color-titlebar-bg: #21222c;
@@ -60,13 +64,17 @@
   --color-graph-node: #8be9fd;
   --color-graph-node-border: #bd93f9;
   --color-graph-label: #d9dcff;
+  --notia-milkdown-handle-ink: #aeb6db;
   height: 100vh;
+  height: 100dvh;
   background: var(--color-app-bg);
   color: var(--color-app-text);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  box-sizing: border-box;
+  padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);
 }
 
 .notia-theme-light {
@@ -125,6 +133,7 @@
   --color-graph-node: #6db8ce;
   --color-graph-node-border: #8d6bc9;
   --color-graph-label: #2f3151;
+  --notia-milkdown-handle-ink: #5f678d;
 }
 
 .notia-theme-dark {
@@ -389,8 +398,8 @@
 }
 
 .notia-workspace {
-  height: calc(100vh - var(--titlebar-height));
   display: flex;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -1282,7 +1291,7 @@
 
 .notia-md-source-editor {
   width: 100%;
-  min-height: calc(100vh - 190px);
+  min-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 190px);
   border: 1px solid var(--color-border-soft);
   border-radius: 10px;
   resize: vertical;
@@ -1699,7 +1708,7 @@
   --crepe-color-surface-low: var(--color-main-bg);
   --crepe-color-on-surface: var(--color-heading-text);
   --crepe-color-on-surface-variant: var(--color-subtle-text);
-  --crepe-color-outline: var(--color-border-soft);
+  --crepe-color-outline: var(--notia-milkdown-handle-ink);
   --crepe-color-primary: var(--color-accent-text);
   --crepe-color-secondary: var(--color-accent-bg);
   --crepe-color-on-secondary: var(--color-heading-text);
@@ -1716,7 +1725,7 @@
 }
 
 .notia-markdown-editor-root .milkdown .ProseMirror {
-  min-height: calc(100vh - 180px);
+  min-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 180px);
   width: 100%;
   max-width: none;
   margin: 0;
@@ -1726,6 +1735,10 @@
 
 .notia-markdown-editor-root .milkdown .milkdown-block-handle {
   z-index: 9;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg {
+  fill: var(--notia-milkdown-handle-ink);
 }
 
 .notia-markdown-editor-root .milkdown .milkdown-slash-menu {
@@ -1830,7 +1843,7 @@
 
 .notia-modal-engine-panel {
   width: min(760px, calc(100vw - 56px));
-  max-height: calc(100vh - 56px);
+  max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 56px);
   border: 1px solid var(--modal-engine-border);
   border-radius: 10px;
   background: linear-gradient(
@@ -1860,7 +1873,7 @@
 }
 
 .notia-settings-modal {
-  height: min(460px, calc(100vh - 84px));
+  height: min(460px, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 84px));
   display: flex;
   overflow: hidden;
 }
@@ -1963,7 +1976,7 @@
 }
 
 .notia-library-manager-modal {
-  height: min(460px, calc(100vh - 84px));
+  height: min(460px, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 84px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2056,6 +2069,13 @@
 .notia-library-manager-menu-item:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.notia-library-manager-error {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--color-heading-text) 65%, #ff5555);
 }
 
 @media (max-width: 980px) {

@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Moon, Sun } from 'lucide-react'
 import { startWindowDragging } from '../../services/window/windowRuntime'
 import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
+import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
 
 interface WindowTitleTab {
   path: string
@@ -60,12 +61,14 @@ export function WindowTitleBar({
 }: WindowTitleBarProps) {
   const tabsScrollRef = useRef<HTMLDivElement>(null)
   const tabElementRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const searchButtonRef = useRef<HTMLButtonElement>(null)
-  const searchMenuRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [isTabsOverflowing, setIsTabsOverflowing] = useState(false)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
+  const { triggerRef: searchButtonRef, panelRef: searchMenuRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
+    open: isSearchMenuOpen,
+    onClose: onSearchMenuClose,
+  })
 
   const ToggleIcon = explorerActions[0]?.icon
   const ThemeIcon = theme === 'dark' ? Sun : Moon
@@ -160,40 +163,6 @@ export function WindowTitleBar({
       window.clearTimeout(timeoutId)
     }
   }, [isSearchMenuOpen])
-
-  useEffect(() => {
-    if (!isSearchMenuOpen) {
-      return
-    }
-
-    const handlePointerDown = (event: globalThis.MouseEvent) => {
-      const target = event.target
-      if (!(target instanceof Node)) {
-        return
-      }
-
-      const clickedInsideButton = Boolean(searchButtonRef.current?.contains(target))
-      const clickedInsideMenu = Boolean(searchMenuRef.current?.contains(target))
-      if (clickedInsideButton || clickedInsideMenu) {
-        return
-      }
-
-      onSearchMenuClose()
-    }
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onSearchMenuClose()
-      }
-    }
-
-    window.addEventListener('mousedown', handlePointerDown)
-    window.addEventListener('keydown', handleEscape)
-    return () => {
-      window.removeEventListener('mousedown', handlePointerDown)
-      window.removeEventListener('keydown', handleEscape)
-    }
-  }, [isSearchMenuOpen, onSearchMenuClose])
 
   const handleTitlebarMouseDown = (event: MouseEvent<HTMLElement>) => {
     if (event.button !== 0) {

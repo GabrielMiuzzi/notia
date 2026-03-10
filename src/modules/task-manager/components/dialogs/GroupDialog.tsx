@@ -1,10 +1,5 @@
 import { useEffect, useState } from 'react'
 import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
   InputLabel,
   MenuItem,
@@ -13,6 +8,8 @@ import {
   TextField,
 } from '@mui/material'
 import type { Board, Group } from '../../types/taskManagerTypes'
+import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
 
 interface GroupDialogProps {
   open: boolean
@@ -62,9 +59,11 @@ export function GroupDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>{mode === 'create' ? 'Nuevo grupo' : 'Editar grupo'}</DialogTitle>
-      <DialogContent>
+    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="tareas-dialog">
+      <div className="tareas-dialog-header">
+        <h2>{mode === 'create' ? 'Nuevo grupo' : 'Editar grupo'}</h2>
+      </div>
+      <div className="tareas-dialog-body">
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
             label="Nombre"
@@ -95,15 +94,15 @@ export function GroupDialog({
             </Select>
           </FormControl>
         </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={isSubmitting}>
+      </div>
+      <div className="tareas-dialog-actions">
+        <NotiaButton onClick={onClose} disabled={isSubmitting}>
           Cancelar
-        </Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={!name.trim() || isSubmitting}>
+        </NotiaButton>
+        <NotiaButton variant="primary" onClick={() => void handleSubmit()} disabled={!name.trim() || isSubmitting}>
           Guardar
-        </Button>
-      </DialogActions>
-    </Dialog>
+        </NotiaButton>
+      </div>
+    </NotiaModalShell>
   )
 }
