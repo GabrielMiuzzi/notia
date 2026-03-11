@@ -72,6 +72,31 @@ function normalizePath(pathValue: string): string {
   return normalizeFilesystemPath(pathValue)
 }
 
+function updateHashWithString(currentHash: number, value: string): number {
+  let nextHash = currentHash
+  for (let index = 0; index < value.length; index += 1) {
+    nextHash ^= value.charCodeAt(index)
+    nextHash = Math.imul(nextHash, 16777619)
+  }
+
+  return nextHash
+}
+
+function buildFilesystemTreeSignature(nodes: FilesystemTreeNode[]): string {
+  let hash = 2166136261
+  const visit = (currentNodes: FilesystemTreeNode[]) => {
+    for (const node of currentNodes) {
+      hash = updateHashWithString(hash, `${node.type}|${node.path ?? ''}|${node.name}`)
+      if (node.children && node.children.length > 0) {
+        visit(node.children)
+      }
+    }
+  }
+
+  visit(nodes)
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 function resolveParentDirectoryPath(pathValue: string): string {
   const normalized = pathValue.replace(/[\\/]+$/, '')
   const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
@@ -302,6 +327,32 @@ export async function readLibraryTree(
   } catch {
     return []
   }
+}
+
+export async function readLibraryTreeSignature(
+  directoryPath: string,
+  options?: ReadLibraryTreeOptions,
+): Promise<string> {
+  const normalizedDirectoryPath = normalizePath(directoryPath)
+  if (!normalizedDirectoryPath.trim()) {
+    return ''
+  }
+
+  if (getRuntimeDevice() !== 'Android') {
+    try {
+      const signature = await invoke<string>('read_library_tree_signature', {
+        payload: { directoryPath: normalizedDirectoryPath },
+      })
+      if (typeof signature === 'string' && signature.trim()) {
+        return signature
+      }
+    } catch {
+      // Fall back to a client-side signature for compatibility.
+    }
+  }
+
+  const treeNodes = await readLibraryTree(normalizedDirectoryPath, options)
+  return buildFilesystemTreeSignature(treeNodes)
 }
 
 export async function searchLibraryFiles(

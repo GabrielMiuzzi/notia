@@ -17,6 +17,7 @@ import {
   createLibraryEntry,
   performLibraryEntryOperation,
   readLibraryTree,
+  readLibraryTreeSignature,
   searchLibraryFiles,
 } from '../../services/libraries/libraryRuntime'
 import {
@@ -55,6 +56,14 @@ import { WindowTitleBar } from './WindowTitleBar'
 import { WorkspaceFooter } from './WorkspaceFooter'
 import { GraphView } from './views/GraphView'
 import { TaskManagerApp } from '../../modules/task-manager/components/TaskManagerApp'
+
+const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
+const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
+
+interface PendingTextSaveJob {
+  source: string
+  timeoutId: number
+}
 
 function findInitialActiveLibrary(libraries: NotiaLibrary[]): string | null {
   if (libraries.length === 0) {
@@ -191,6 +200,32 @@ function areTreeNodeListsEqual(leftNodes: NotiaFileNode[], rightNodes: NotiaFile
   return true
 }
 
+function resolveTextAutosaveDebounceMs(document: OpenTextFileDocument): number {
+  return document.viewKind === 'markdown'
+    ? MARKDOWN_AUTOSAVE_DEBOUNCE_MS
+    : TEXT_AUTOSAVE_DEBOUNCE_MS
+}
+
+function buildTreeNodesStructureSignature(nodes: NotiaFileNode[]): string {
+  let hash = 2166136261
+  const visit = (list: NotiaFileNode[]) => {
+    for (const node of list) {
+      const token = `${node.type}|${node.path ?? ''}|${node.name}`
+      for (let index = 0; index < token.length; index += 1) {
+        hash ^= token.charCodeAt(index)
+        hash = Math.imul(hash, 16777619)
+      }
+
+      if (node.children && node.children.length > 0) {
+        visit(node.children)
+      }
+    }
+  }
+
+  visit(nodes)
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 function joinParentPath(parentPath: string, originalPath: string, name: string): string {
   const separator = originalPath.includes('\\') ? '\\' : '/'
   if (parentPath.endsWith('/') || parentPath.endsWith('\\')) {
@@ -259,10 +294,14 @@ export function NotiaMenu() {
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
   const treeNodesRef = useRef<NotiaFileNode[]>([])
+  const pendingTextSaveByPathRef = useRef<Map<string, PendingTextSaveJob>>(new Map())
   const libraryTreeRefreshTimerRef = useRef<number | null>(null)
   const isTreeRefreshInFlightRef = useRef(false)
+  const isTreeSignatureProbeInFlightRef = useRef(false)
   const hasQueuedTreeRefreshRef = useRef(false)
   const hasDeferredTreeRefreshRef = useRef(false)
+  const isGraphViewActiveRef = useRef(false)
+  const lastKnownTreeSignatureRef = useRef('')
 
   const activeLibrary = useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
@@ -271,10 +310,6 @@ export function NotiaMenu() {
   const activeTab = useMemo(
     () => openTabs.find((tab) => tab.document.path === activeTabPath) ?? null,
     [activeTabPath, openTabs],
-  )
-  const activeTextTab = useMemo(
-    () => (isOpenTextDocumentTab(activeTab) ? activeTab : null),
-    [activeTab],
   )
   const activeDocument = activeTab?.document ?? null
   const isGraphViewActive = activeWorkspaceView === 'graph'
@@ -327,6 +362,97 @@ export function NotiaMenu() {
     setActiveTabPath(null)
   }, [])
 
+  const clearPendingTextSaveByPath = useCallback((path: string) => {
+    const pendingSave = pendingTextSaveByPathRef.current.get(path)
+    if (!pendingSave) {
+      return
+    }
+
+    window.clearTimeout(pendingSave.timeoutId)
+    pendingTextSaveByPathRef.current.delete(path)
+  }, [])
+
+  const clearAllPendingTextSaves = useCallback(() => {
+    for (const pendingSave of pendingTextSaveByPathRef.current.values()) {
+      window.clearTimeout(pendingSave.timeoutId)
+    }
+    pendingTextSaveByPathRef.current.clear()
+  }, [])
+
+  const bumpGraphRevisionIfVisible = useCallback(() => {
+    if (!isGraphViewActiveRef.current) {
+      return
+    }
+
+    setGraphRevision((current) => current + 1)
+  }, [])
+
+  const persistTextDocumentSource = useCallback(
+    async (targetPath: string, targetSource: string): Promise<boolean> => {
+      const currentTab = openTabsRef.current.find((tab) => tab.document.path === targetPath)
+      if (!currentTab || !isTextFileDocument(currentTab.document) || currentTab.document.source !== targetSource) {
+        return true
+      }
+
+      setOpenTabs((current) =>
+        current.map((tab) => (
+          tab.document.path === targetPath && tab.saveStatus !== 'saving'
+            ? { ...tab, saveStatus: 'saving' }
+            : tab
+        )),
+      )
+
+      const result = await writeLibraryFileContent(targetPath, targetSource)
+      const latestTab = openTabsRef.current.find((tab) => tab.document.path === targetPath)
+      if (!latestTab || !isTextFileDocument(latestTab.document) || latestTab.document.source !== targetSource) {
+        return true
+      }
+
+      if (result.ok) {
+        setOpenTabs((current) =>
+          current.map((tab) => {
+            if (tab.document.path !== targetPath) {
+              return tab
+            }
+
+            if (tab.latestSavedSource === targetSource && tab.saveStatus === 'idle') {
+              return tab
+            }
+
+            return {
+              ...tab,
+              latestSavedSource: targetSource,
+              saveStatus: 'idle',
+            }
+          }),
+        )
+        bumpGraphRevisionIfVisible()
+        return true
+      }
+
+      setOpenTabs((current) =>
+        current.map((tab) => (tab.document.path === targetPath ? { ...tab, saveStatus: 'error' } : tab)),
+      )
+      setDialogState((current) => {
+        if (current) {
+          return current
+        }
+
+        return {
+          type: 'info',
+          title: 'No se pudo guardar',
+          message: result.error ?? 'No se pudo guardar el archivo.',
+        }
+      })
+      return false
+    },
+    [bumpGraphRevisionIfVisible],
+  )
+
+  useEffect(() => {
+    isGraphViewActiveRef.current = isGraphViewActive
+  }, [isGraphViewActive])
+
   useEffect(() => {
     saveLibraries(libraries)
   }, [libraries])
@@ -369,6 +495,7 @@ export function NotiaMenu() {
   }, [treeNodes])
 
   const commitTreeNodesSnapshot = useCallback((nodes: NotiaFileNode[]) => {
+    lastKnownTreeSignatureRef.current = buildTreeNodesStructureSignature(nodes)
     const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
     const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
     const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
@@ -405,6 +532,37 @@ export function NotiaMenu() {
     }
   }, [activeLibrary, commitTreeNodesSnapshot])
 
+  const probeActiveLibraryTreeChanges = useCallback(async () => {
+    if (!activeLibrary?.path || isTreeRefreshInFlightRef.current || isTreeSignatureProbeInFlightRef.current) {
+      return
+    }
+
+    isTreeSignatureProbeInFlightRef.current = true
+    try {
+      const nextSignature = await readLibraryTreeSignature(activeLibrary.path, {
+        androidDirectoryUri: activeLibrary.androidTreeUri,
+      })
+
+      if (!nextSignature) {
+        return
+      }
+
+      if (!lastKnownTreeSignatureRef.current) {
+        lastKnownTreeSignatureRef.current = nextSignature
+        return
+      }
+
+      if (nextSignature === lastKnownTreeSignatureRef.current) {
+        return
+      }
+
+      lastKnownTreeSignatureRef.current = nextSignature
+      await refreshActiveLibraryTree()
+    } finally {
+      isTreeSignatureProbeInFlightRef.current = false
+    }
+  }, [activeLibrary, refreshActiveLibraryTree])
+
   useEffect(() => {
     if (!activeLibrary || normalizedSearchQuery.length === 0) {
       setSearchMatchedPaths([])
@@ -439,9 +597,12 @@ export function NotiaMenu() {
 
   useEffect(() => {
     if (!activeLibrary) {
+      clearAllPendingTextSaves()
       setTreeNodes([])
       setPendingCreation(null)
+      lastKnownTreeSignatureRef.current = ''
       isTreeRefreshInFlightRef.current = false
+      isTreeSignatureProbeInFlightRef.current = false
       hasQueuedTreeRefreshRef.current = false
       hasDeferredTreeRefreshRef.current = false
       if (libraryTreeRefreshTimerRef.current !== null) {
@@ -451,7 +612,10 @@ export function NotiaMenu() {
       return
     }
 
+    clearAllPendingTextSaves()
+    lastKnownTreeSignatureRef.current = ''
     isTreeRefreshInFlightRef.current = false
+    isTreeSignatureProbeInFlightRef.current = false
     hasQueuedTreeRefreshRef.current = false
     hasDeferredTreeRefreshRef.current = false
 
@@ -469,7 +633,7 @@ export function NotiaMenu() {
     return () => {
       isCurrent = false
     }
-  }, [activeLibrary, commitTreeNodesSnapshot])
+  }, [activeLibrary, clearAllPendingTextSaves, commitTreeNodesSnapshot])
 
   useEffect(() => {
     setPendingCreation(null)
@@ -482,6 +646,9 @@ export function NotiaMenu() {
     setIsSearchLoading(false)
     setActiveHeaderAction('')
     resetTabs()
+    clearAllPendingTextSaves()
+    lastKnownTreeSignatureRef.current = ''
+    isTreeSignatureProbeInFlightRef.current = false
     hasDeferredTreeRefreshRef.current = false
     hasQueuedTreeRefreshRef.current = false
     isTreeRefreshInFlightRef.current = false
@@ -489,7 +656,7 @@ export function NotiaMenu() {
       window.clearTimeout(libraryTreeRefreshTimerRef.current)
       libraryTreeRefreshTimerRef.current = null
     }
-  }, [activeLibraryId, resetTabs])
+  }, [activeLibraryId, clearAllPendingTextSaves, resetTabs])
 
   useEffect(() => {
     setTreeNodes((current) => setSelectedFileByPath(current, activeTabPath))
@@ -514,71 +681,82 @@ export function NotiaMenu() {
   }, [])
 
   useEffect(() => {
-    if (!activeTextTab) {
-      return
+    const dirtySourceByPath = new Map<string, string>()
+
+    for (const tab of openTabs) {
+      if (!isOpenTextDocumentTab(tab)) {
+        continue
+      }
+
+      if (tab.saveStatus === 'error') {
+        continue
+      }
+
+      if (tab.document.source === tab.latestSavedSource) {
+        continue
+      }
+
+      dirtySourceByPath.set(tab.document.path, tab.document.source)
     }
 
-    const targetPath = activeTextTab.document.path
-    const targetSource = activeTextTab.document.source
-    const latestSavedSource = activeTextTab.latestSavedSource
-    const saveDebounceMs = activeTextTab.document.viewKind === 'markdown' ? 1200 : 380
+    for (const [path, pendingSave] of pendingTextSaveByPathRef.current) {
+      const dirtySource = dirtySourceByPath.get(path)
+      if (dirtySource && dirtySource === pendingSave.source) {
+        continue
+      }
 
-    if (targetSource === latestSavedSource) {
-      return
+      window.clearTimeout(pendingSave.timeoutId)
+      pendingTextSaveByPathRef.current.delete(path)
     }
 
-    const timeoutId = window.setTimeout(() => {
-      void writeLibraryFileContent(targetPath, targetSource).then((result) => {
-        const currentTab = openTabsRef.current.find((tab) => tab.document.path === targetPath)
-        if (!currentTab || !isTextFileDocument(currentTab.document) || currentTab.document.source !== targetSource) {
+    for (const tab of openTabs) {
+      if (!isOpenTextDocumentTab(tab)) {
+        continue
+      }
+
+      if (tab.saveStatus === 'error') {
+        continue
+      }
+
+      if (tab.document.source === tab.latestSavedSource) {
+        continue
+      }
+
+      const targetPath = tab.document.path
+      const targetSource = tab.document.source
+      const pendingSave = pendingTextSaveByPathRef.current.get(targetPath)
+      if (pendingSave && pendingSave.source === targetSource) {
+        continue
+      }
+
+      if (pendingSave) {
+        window.clearTimeout(pendingSave.timeoutId)
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        const queuedSave = pendingTextSaveByPathRef.current.get(targetPath)
+        if (!queuedSave || queuedSave.source !== targetSource) {
           return
         }
 
-        if (result.ok) {
-          setOpenTabs((current) =>
-            current.map((tab) => {
-              if (tab.document.path !== targetPath) {
-                return tab
-              }
+        pendingTextSaveByPathRef.current.delete(targetPath)
+        void persistTextDocumentSource(targetPath, targetSource)
+      }, resolveTextAutosaveDebounceMs(tab.document))
 
-              if (tab.latestSavedSource === targetSource && tab.saveStatus === 'idle') {
-                return tab
-              }
-
-              return {
-                ...tab,
-                latestSavedSource: targetSource,
-                saveStatus: 'idle',
-              }
-            }),
-          )
-          setGraphRevision((current) => current + 1)
-          return
-        }
-
-        setOpenTabs((current) =>
-          current.map((tab) => (tab.document.path === targetPath ? { ...tab, saveStatus: 'error' } : tab)),
-        )
-        setDialogState((current) => {
-          if (current) {
-            return current
-          }
-
-          return {
-            type: 'info',
-            title: 'No se pudo guardar',
-            message: result.error ?? 'No se pudo guardar el archivo.',
-          }
-        })
+      pendingTextSaveByPathRef.current.set(targetPath, {
+        source: targetSource,
+        timeoutId,
       })
-    }, saveDebounceMs)
-
-    return () => {
-      window.clearTimeout(timeoutId)
     }
-  }, [activeTextTab])
+  }, [openTabs, persistTextDocumentSource])
 
-  const handleSidebarToggle = () => {
+  useEffect(() => {
+    return () => {
+      clearAllPendingTextSaves()
+    }
+  }, [clearAllPendingTextSaves])
+
+  const handleSidebarToggle = useCallback(() => {
     setIsSidebarOpen((current) => {
       const next = !current
       if (!next) {
@@ -587,9 +765,9 @@ export function NotiaMenu() {
       }
       return next
     })
-  }
+  }, [])
 
-  const handleHeaderActionClick = (id: string) => {
+  const handleHeaderActionClick = useCallback((id: string) => {
     if (id === 'layout') {
       handleSidebarToggle()
       return
@@ -605,26 +783,26 @@ export function NotiaMenu() {
     }
 
     setActiveHeaderAction(id)
-  }
+  }, [handleSidebarToggle])
 
   const handleCloseSearchMenu = useCallback(() => {
     setIsSearchMenuOpen(false)
     setActiveHeaderAction((current) => (current === 'search' ? '' : current))
   }, [])
 
-  const handleSelectLibrary = (libraryId: string) => {
+  const handleSelectLibrary = useCallback((libraryId: string) => {
     setActiveLibraryId(libraryId)
-  }
+  }, [])
 
-  const handleToggleFolder = (folderId: string) => {
+  const handleToggleFolder = useCallback((folderId: string) => {
     setTreeNodes((current) => toggleFolderNodeExpanded(current, folderId))
-  }
+  }, [])
 
-  const handleThemeToggle = () => {
+  const handleThemeToggle = useCallback(() => {
     setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
-  }
+  }, [])
 
-  const handleRailActionClick = (actionId: string) => {
+  const handleRailActionClick = useCallback((actionId: string) => {
     if (actionId === 'graph-view') {
       setActiveWorkspaceView((current) => (current === 'graph' ? 'documents' : 'graph'))
       return
@@ -633,9 +811,9 @@ export function NotiaMenu() {
     if (actionId === 'task-manager') {
       setActiveWorkspaceView((current) => (current === 'task-manager' ? 'documents' : 'task-manager'))
     }
-  }
+  }, [])
 
-  const handleExplorerToolClick = (toolId: string) => {
+  const handleExplorerToolClick = useCallback((toolId: string) => {
     if (!activeLibrary) {
       return
     }
@@ -671,11 +849,11 @@ export function NotiaMenu() {
         parentPath: activeLibrary.path,
       })
     }
-  }
+  }, [activeLibrary])
 
-  const handleWindowAction = (action: 'minimize' | 'maximize' | 'close') => {
+  const handleWindowAction = useCallback((action: 'minimize' | 'maximize' | 'close') => {
     void controlWindow(action)
-  }
+  }, [])
 
   const handleActivateTab = useCallback((tabPath: string) => {
     if (!openTabsRef.current.some((tab) => tab.document.path === tabPath)) {
@@ -685,7 +863,56 @@ export function NotiaMenu() {
     setActiveTabPath(tabPath)
   }, [])
 
-  const handleCloseTab = useCallback((tabPath: string) => {
+  const persistOpenTabBeforeClose = useCallback(
+    async (tab: OpenDocumentTab): Promise<boolean> => {
+      const tabPath = tab.document.path
+      clearPendingTextSaveByPath(tabPath)
+
+      if (isTextFileDocument(tab.document)) {
+        if (tab.document.source === tab.latestSavedSource) {
+          return true
+        }
+
+        return persistTextDocumentSource(tabPath, tab.document.source)
+      }
+
+      if (tab.document.viewKind === 'inkdoc' && tab.document.source !== tab.latestSavedSource) {
+        const result = await writeLibraryFileContent(tabPath, tab.document.source)
+        if (result.ok) {
+          bumpGraphRevisionIfVisible()
+          return true
+        }
+
+        setDialogState((current) => {
+          if (current) {
+            return current
+          }
+
+          return {
+            type: 'info',
+            title: 'No se pudo guardar',
+            message: result.error ?? 'No se pudo guardar el archivo Inkdoc.',
+          }
+        })
+        return false
+      }
+
+      return true
+    },
+    [bumpGraphRevisionIfVisible, clearPendingTextSaveByPath, persistTextDocumentSource],
+  )
+
+  const closeTabByPath = useCallback(async (tabPath: string) => {
+    const tabToClose = openTabsRef.current.find((tab) => tab.document.path === tabPath)
+    if (!tabToClose) {
+      return
+    }
+
+    const canClose = await persistOpenTabBeforeClose(tabToClose)
+    if (!canClose) {
+      return
+    }
+
     const currentTabs = openTabsRef.current
     const closingIndex = currentTabs.findIndex((tab) => tab.document.path === tabPath)
     if (closingIndex < 0) {
@@ -712,7 +939,11 @@ export function NotiaMenu() {
 
     setOpenTabs(remainingTabs)
     setActiveTabPath(nextActiveTabPath)
-  }, [])
+  }, [persistOpenTabBeforeClose])
+
+  const handleCloseTab = useCallback((tabPath: string) => {
+    void closeTabByPath(tabPath)
+  }, [closeTabByPath])
 
   const handleCloseActiveTab = useCallback(() => {
     const currentActiveTabPath = activeTabPathRef.current
@@ -720,8 +951,8 @@ export function NotiaMenu() {
       return
     }
 
-    handleCloseTab(currentActiveTabPath)
-  }, [handleCloseTab])
+    void closeTabByPath(currentActiveTabPath)
+  }, [closeTabByPath])
 
   const handleCycleToNextTab = useCallback(() => {
     const currentTabs = openTabsRef.current
@@ -742,6 +973,12 @@ export function NotiaMenu() {
       return
     }
 
+    for (const tab of currentTabs) {
+      if (isSameOrNestedPath(path, tab.document.path)) {
+        clearPendingTextSaveByPath(tab.document.path)
+      }
+    }
+
     const currentActiveTabPath = activeTabPathRef.current
     const nextActiveTabPath =
       currentActiveTabPath && remainingTabs.some((tab) => tab.document.path === currentActiveTabPath)
@@ -752,9 +989,10 @@ export function NotiaMenu() {
 
     setOpenTabs(remainingTabs)
     setActiveTabPath(nextActiveTabPath)
-  }, [])
+  }, [clearPendingTextSaveByPath])
 
   const renameOpenTabPath = useCallback((path: string, nextPath: string, name: string) => {
+    clearPendingTextSaveByPath(path)
     setOpenTabs((current) =>
       current.map((tab) => {
         if (tab.document.path !== path) {
@@ -773,7 +1011,7 @@ export function NotiaMenu() {
       }),
     )
     setActiveTabPath((current) => (current === path ? nextPath : current))
-  }, [])
+  }, [clearPendingTextSaveByPath])
 
   const openDocumentInTab = useCallback((document: OpenFileDocument, latestSavedSource: string) => {
     const existingTab = openTabsRef.current.find((tab) => tab.document.path === document.path)
@@ -824,6 +1062,14 @@ export function NotiaMenu() {
   }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
 
   useEffect(() => {
+    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+      return
+    }
+
+    void probeActiveLibraryTreeChanges()
+  }, [activeLibrary?.path, probeActiveLibraryTreeChanges, shouldRefreshVisibleExplorerTree])
+
+  useEffect(() => {
     const handleLibraryTreeChanged = (event: Event) => {
       const customEvent = event as CustomEvent<{ vaultPath?: string; pathHint?: string }>
       const changedVaultPath = normalizePath(customEvent.detail?.vaultPath ?? '')
@@ -850,13 +1096,13 @@ export function NotiaMenu() {
         libraryTreeRefreshTimerRef.current = null
         if (!shouldRefreshVisibleExplorerTree) {
           hasDeferredTreeRefreshRef.current = true
-          setGraphRevision((current) => current + 1)
+          bumpGraphRevisionIfVisible()
           return
         }
 
         hasDeferredTreeRefreshRef.current = false
         void refreshActiveLibraryTree()
-        setGraphRevision((current) => current + 1)
+        bumpGraphRevisionIfVisible()
       }, 120)
     }
 
@@ -868,7 +1114,7 @@ export function NotiaMenu() {
         libraryTreeRefreshTimerRef.current = null
       }
     }
-  }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
+  }, [activeLibrary?.path, bumpGraphRevisionIfVisible, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
 
   useEffect(() => {
     if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
@@ -888,7 +1134,7 @@ export function NotiaMenu() {
         return
       }
 
-      void refreshActiveLibraryTree()
+      void probeActiveLibraryTreeChanges()
     }, explorerRefreshIntervalMs)
 
     return () => {
@@ -898,11 +1144,11 @@ export function NotiaMenu() {
     activeLibrary?.path,
     explorerRefreshIntervalMs,
     isAndroidRuntime,
-    refreshActiveLibraryTree,
+    probeActiveLibraryTreeChanges,
     shouldRefreshVisibleExplorerTree,
   ])
 
-  const handleOpenFile = async (filePath: string) => {
+  const handleOpenFile = useCallback(async (filePath: string) => {
     setActiveWorkspaceView('documents')
 
     const existingTab = openTabsRef.current.find((tab) => tab.document.path === filePath)
@@ -953,16 +1199,17 @@ export function NotiaMenu() {
       },
       '',
     )
-  }
+  }, [openDocumentInTab])
 
-  const handleTextDocumentChange = (nextSource: string) => {
-    if (!activeTabPath) {
+  const handleTextDocumentChange = useCallback((nextSource: string) => {
+    const targetPath = activeTabPathRef.current
+    if (!targetPath) {
       return
     }
 
     setOpenTabs((current) =>
       current.map((tab) => {
-        if (tab.document.path !== activeTabPath || !isTextFileDocument(tab.document)) {
+        if (tab.document.path !== targetPath || !isTextFileDocument(tab.document)) {
           return tab
         }
 
@@ -972,6 +1219,7 @@ export function NotiaMenu() {
 
         return {
           ...tab,
+          saveStatus: nextSource === tab.latestSavedSource ? 'idle' : 'saving',
           document: {
             ...tab.document,
             source: nextSource,
@@ -979,7 +1227,7 @@ export function NotiaMenu() {
         }
       }),
     )
-  }
+  }, [])
 
   const handleInkdocDocumentPersist = useCallback(
     async (nextSource: string): Promise<void> => {
@@ -1014,12 +1262,12 @@ export function NotiaMenu() {
           tab.document.path === targetPath ? { ...tab, latestSavedSource: nextSource, saveStatus: 'idle' } : tab,
         ),
       )
-      setGraphRevision((current) => current + 1)
+      bumpGraphRevisionIfVisible()
     },
-    [],
+    [bumpGraphRevisionIfVisible],
   )
 
-  const handleSubmitPendingCreation = async (name: string) => {
+  const handleSubmitPendingCreation = useCallback(async (name: string) => {
     if (!activeLibrary || !pendingCreation) {
       setPendingCreation(null)
       return
@@ -1042,24 +1290,24 @@ export function NotiaMenu() {
 
     setPendingCreation(null)
     await refreshActiveLibraryTree()
-  }
+  }, [activeLibrary, pendingCreation, refreshActiveLibraryTree])
 
-  const handleCancelPendingCreation = () => {
+  const handleCancelPendingCreation = useCallback(() => {
     setPendingCreation(null)
-  }
+  }, [])
 
-  const handleNodeContextMenu = (node: NotiaFileNode, position: { x: number; y: number }) => {
+  const handleNodeContextMenu = useCallback((node: NotiaFileNode, position: { x: number; y: number }) => {
     setPendingCreation(null)
     setContextMenu({ type: 'node', x: position.x, y: position.y, node })
-  }
+  }, [])
 
-  const handleEmptyContextMenu = (position: { x: number; y: number }) => {
+  const handleEmptyContextMenu = useCallback((position: { x: number; y: number }) => {
     setPendingCreation(null)
     setRenamingPath(null)
     setContextMenu({ type: 'empty', x: position.x, y: position.y })
-  }
+  }, [])
 
-  const handleRenameSubmit = async (path: string, name: string) => {
+  const handleRenameSubmit = useCallback(async (path: string, name: string) => {
     const result = await performLibraryEntryOperation({ action: 'rename', targetPath: path, newName: name })
     if (!result.ok) {
       setDialogState({
@@ -1083,7 +1331,7 @@ export function NotiaMenu() {
 
     setRenamingPath(null)
     await refreshActiveLibraryTree()
-  }
+  }, [closeTabsByPath, refreshActiveLibraryTree, renameOpenTabPath])
 
   const handleContextMenuAction = async (actionId: string) => {
     if (!activeLibrary || !contextMenu) {
@@ -1291,6 +1539,24 @@ export function NotiaMenu() {
   }
 
   const libraryName = activeLibrary?.name ?? 'Sin librerias'
+  const handleOpenFileFromView = useCallback((filePath: string) => {
+    void handleOpenFile(filePath)
+  }, [handleOpenFile])
+  const handleCancelRename = useCallback(() => {
+    setRenamingPath(null)
+  }, [])
+  const handleOpenLibraryManager = useCallback(() => {
+    setIsLibraryManagerOpen(true)
+  }, [])
+  const handleOpenSettings = useCallback(() => {
+    setIsSettingsOpen(true)
+  }, [])
+  const handleCloseSettings = useCallback(() => {
+    setIsSettingsOpen(false)
+  }, [])
+  const handleCloseLibraryManager = useCallback(() => {
+    setIsLibraryManagerOpen(false)
+  }, [])
   const contextMenuItems =
     contextMenu?.type === 'empty'
       ? [
@@ -1318,9 +1584,9 @@ export function NotiaMenu() {
           ]
         : []
 
-  const handleDialogClose = () => {
+  const handleDialogClose = useCallback(() => {
     setDialogState(null)
-  }
+  }, [])
 
   return (
     <div className={`notia-app-shell ${theme === 'dark' ? 'notia-theme-dark' : 'notia-theme-light'}`}>
@@ -1372,15 +1638,13 @@ export function NotiaMenu() {
                   isSearchActive={isSearchActive}
                   searchMatchedFilePaths={searchMatchedPathSet}
                   onToggleFolder={handleToggleFolder}
-                  onOpenFile={(filePath) => {
-                    void handleOpenFile(filePath)
-                  }}
+                  onOpenFile={handleOpenFileFromView}
                   pendingCreation={pendingCreation}
                   onSubmitPendingCreation={handleSubmitPendingCreation}
                   onCancelPendingCreation={handleCancelPendingCreation}
                   renamingPath={renamingPath}
                   onSubmitRename={handleRenameSubmit}
-                  onCancelRename={() => setRenamingPath(null)}
+                  onCancelRename={handleCancelRename}
                   onNodeContextMenu={handleNodeContextMenu}
                   onEmptyContextMenu={handleEmptyContextMenu}
                 />
@@ -1390,8 +1654,8 @@ export function NotiaMenu() {
                   libraries={libraries}
                   activeLibraryId={activeLibraryId}
                   onSelectLibrary={handleSelectLibrary}
-                  onOpenLibraryManager={() => setIsLibraryManagerOpen(true)}
-                  onOpenSettings={() => setIsSettingsOpen(true)}
+                  onOpenLibraryManager={handleOpenLibraryManager}
+                  onOpenSettings={handleOpenSettings}
                 />
               </div>
             </div>
@@ -1402,9 +1666,7 @@ export function NotiaMenu() {
             graphModel={graphModel}
             libraryName={libraryName}
             isLoading={isGraphLoading}
-            onOpenFile={(filePath) => {
-              void handleOpenFile(filePath)
-            }}
+            onOpenFile={handleOpenFileFromView}
           />
         ) : activeWorkspaceView === 'task-manager' ? (
           <TaskManagerApp embedded vaultPath={activeLibrary?.path ?? null} />
@@ -1417,15 +1679,13 @@ export function NotiaMenu() {
             rootPath={activeLibrary?.path ?? null}
             libraryFilePaths={libraryFilePaths}
             markdownWikiLinkTargets={markdownWikiLinkTargets}
-            onOpenLinkedFile={(filePath) => {
-              void handleOpenFile(filePath)
-            }}
+            onOpenLinkedFile={handleOpenFileFromView}
           />
         )}
       </div>
       <SettingsModal
         open={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
+        onClose={handleCloseSettings}
         explorerRefreshIntervalMs={explorerRefreshIntervalMs}
         onExplorerRefreshIntervalMsChange={setExplorerRefreshIntervalMs}
       />
@@ -1434,7 +1694,7 @@ export function NotiaMenu() {
         libraries={libraries}
         activeLibraryId={activeLibraryId}
         onLibraryAdded={handleLibraryAdded}
-        onClose={() => setIsLibraryManagerOpen(false)}
+        onClose={handleCloseLibraryManager}
       />
       <FileTreeContextMenu
         open={Boolean(contextMenu)}

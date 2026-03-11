@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
 
@@ -261,7 +261,7 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
   )
 }
 
-export function FileTree({
+function FileTreeComponent({
   nodes,
   rootPath,
   isSearchActive,
@@ -319,3 +319,5 @@ export function FileTree({
     </div>
   )
 }
+
+export const FileTree = memo(FileTreeComponent)

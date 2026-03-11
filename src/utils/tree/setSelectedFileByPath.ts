@@ -24,5 +24,7 @@ export function setSelectedFileByPath(
   nodes: NotiaFileNode[],
   selectedFilePath: string | null,
 ): NotiaFileNode[] {
-  return nodes.map((node) => setSelectedInNode(node, selectedFilePath))
+  const nextNodes = nodes.map((node) => setSelectedInNode(node, selectedFilePath))
+  const hasChanges = nodes.some((node, index) => node !== nextNodes[index])
+  return hasChanges ? nextNodes : nodes
 }

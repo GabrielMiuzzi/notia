@@ -8,6 +8,7 @@ import {
   performLibraryEntryOperation as performFilesystemEntryOperation,
   pickDirectory,
   readLibraryTree as readFilesystemTree,
+  readLibraryTreeSignature as readFilesystemTreeSignature,
   searchLibraryFiles as searchFilesystemFiles,
   type FilesystemOperationResult,
 } from '../files/filesystemEngine'
@@ -22,6 +23,7 @@ type CreateLibraryEntryResult = FilesystemOperationResult
 type LibraryEntryOperationPayload = NotiaLibraryEntryOperationPayload
 
 const inFlightTreeReadByRequestKey = new Map<string, Promise<NotiaFileNode[]>>()
+const inFlightTreeSignatureReadByRequestKey = new Map<string, Promise<string>>()
 
 function buildLibraryNameFromPath(directoryPath: string): string {
   return getPathBaseName(directoryPath)
@@ -114,6 +116,33 @@ export async function readLibraryTree(
   return request.finally(() => {
     if (inFlightTreeReadByRequestKey.get(requestKey) === request) {
       inFlightTreeReadByRequestKey.delete(requestKey)
+    }
+  })
+}
+
+export async function readLibraryTreeSignature(
+  directoryPath: string,
+  options?: { androidDirectoryUri?: string },
+): Promise<string> {
+  const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
+  const isAndroidRuntime = getRuntimeDevice() === 'Android'
+  const requestKey = isAndroidRuntime
+    ? `${normalizedDirectoryPath}::${options?.androidDirectoryUri ?? ''}`
+    : normalizedDirectoryPath
+
+  const inFlightRead = inFlightTreeSignatureReadByRequestKey.get(requestKey)
+  if (inFlightRead) {
+    return inFlightRead
+  }
+
+  const request = readFilesystemTreeSignature(normalizedDirectoryPath, {
+    androidDirectoryUri: options?.androidDirectoryUri,
+  })
+
+  inFlightTreeSignatureReadByRequestKey.set(requestKey, request)
+  return request.finally(() => {
+    if (inFlightTreeSignatureReadByRequestKey.get(requestKey) === request) {
+      inFlightTreeSignatureReadByRequestKey.delete(requestKey)
     }
   })
 }

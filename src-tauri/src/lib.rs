@@ -269,6 +269,77 @@ fn read_directory_tree(
     children
 }
 
+fn update_signature_hash_with_text(current_hash: u32, value: &str) -> u32 {
+    let mut next_hash = current_hash;
+    for code_unit in value.encode_utf16() {
+        next_hash ^= u32::from(code_unit);
+        next_hash = next_hash.wrapping_mul(16_777_619);
+    }
+
+    next_hash
+}
+
+fn collect_directory_signature(
+    directory_path: &Path,
+    visited_directories: &mut HashSet<PathBuf>,
+    current_hash: &mut u32,
+) {
+    let canonical_directory_path = canonical_or_original(directory_path);
+    if visited_directories.contains(&canonical_directory_path) {
+        return;
+    }
+    visited_directories.insert(canonical_directory_path);
+
+    let Ok(entries) = fs::read_dir(directory_path) else {
+        return;
+    };
+
+    let mut entries_to_hash: Vec<(String, PathBuf, bool)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            if has_invalid_entry_name(&entry_name) || is_hidden_entry_name(&entry_name) {
+                return None;
+            }
+
+            let entry_path = entry.path();
+            let is_directory = entry
+                .file_type()
+                .map(|entry_file_type| entry_file_type.is_dir())
+                .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
+                .unwrap_or(false);
+
+            Some((entry_name, entry_path, is_directory))
+        })
+        .collect();
+
+    entries_to_hash.sort_by(|left, right| {
+        if left.2 != right.2 {
+            return if left.2 {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+
+        left.0.to_lowercase().cmp(&right.0.to_lowercase())
+    });
+
+    for (entry_name, entry_path, is_directory) in entries_to_hash {
+        let token = format!(
+            "{}|{}|{}",
+            if is_directory { "folder" } else { "file" },
+            to_path_string(&entry_path),
+            entry_name
+        );
+        *current_hash = update_signature_hash_with_text(*current_hash, &token);
+
+        if is_directory {
+            collect_directory_signature(&entry_path, visited_directories, current_hash);
+        }
+    }
+}
+
 fn copy_entry_recursive(source_path: &Path, target_path: &Path) -> std::io::Result<()> {
     let metadata = fs::symlink_metadata(source_path)?;
     if metadata.file_type().is_symlink() {
@@ -417,6 +488,19 @@ fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
     let directory_path = PathBuf::from(payload.directory_path);
     let mut visited_directories = HashSet::new();
     read_directory_tree(&directory_path, &mut visited_directories)
+}
+
+#[tauri::command]
+fn read_library_tree_signature(payload: ReadLibraryTreePayload) -> String {
+    if payload.directory_path.trim().is_empty() {
+        return String::new();
+    }
+
+    let directory_path = PathBuf::from(payload.directory_path);
+    let mut visited_directories = HashSet::new();
+    let mut signature_hash: u32 = 2_166_136_261;
+    collect_directory_signature(&directory_path, &mut visited_directories, &mut signature_hash);
+    format!("{:08x}", signature_hash)
 }
 
 #[tauri::command]
@@ -1018,6 +1102,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_library_tree,
+            read_library_tree_signature,
             read_library_file,
             search_library_files,
             read_markdown_files,

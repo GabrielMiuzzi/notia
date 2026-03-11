@@ -262,6 +262,7 @@ export class InkDocView extends ItemView {
 	}
 
 	async onClose() {
+		await this.saveToFile();
 		this.syncEngine.dispose();
 		if (this.imagePointerCleanup) {
 			this.imagePointerCleanup();
