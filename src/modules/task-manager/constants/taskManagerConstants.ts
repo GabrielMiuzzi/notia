@@ -21,8 +21,8 @@ export const TASK_PRIORITIES = ['Baja', 'Media', 'Alta', 'Urgente'] as const
 
 export const ORDER_STEP = 10
 
-export const DEFAULT_BOARDS: Array<{ name: string; color: string }> = [
-  { name: DEFAULT_BOARD_NAME, color: '#2e6db0' },
+export const DEFAULT_BOARDS: Array<{ name: string; color: string; activityHoursPerDay: number }> = [
+  { name: DEFAULT_BOARD_NAME, color: '#2e6db0', activityHoursPerDay: 24 },
 ]
 
 export const DEFAULT_GROUPS: Array<{ name: string; color: string; board?: string }> = []

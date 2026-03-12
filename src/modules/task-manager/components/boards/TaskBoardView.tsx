@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState, type CSSProperties } from 'react'
 import { TextField } from '@mui/material'
-import { ChevronDown, ChevronRight, Clock3, Edit2, MessageSquare, Pencil, Plus, Trash2 } from 'lucide-react'
+import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
+import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
 import { groupTopLevelTasks } from '../../engines/taskEngine'
-import type { Group, TaskItem } from '../../types/taskManagerTypes'
+import type { Group, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
 
 interface TaskBoardViewProps {
   boardName: string
@@ -12,13 +14,14 @@ interface TaskBoardViewProps {
   groups: Group[]
   onCreateTask: (defaults?: { parentTaskName?: string; group?: string }) => void
   onEditTask: (task: TaskItem) => void
-  onDeleteTask: (task: TaskItem) => Promise<void>
   onChangeTaskState: (task: TaskItem, nextState: string) => Promise<void>
-  onMarkTaskUrgent: (task: TaskItem) => Promise<void>
+  onChangeTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
+  onChangeTaskDedicatedHours: (task: TaskItem, nextDedicatedHours: number) => Promise<void>
   onToggleSubtaskDone: (task: TaskItem, done: boolean) => Promise<void>
   onAddTaskComment: (task: TaskItem, comment: string) => Promise<void>
   onLoadTaskSource: (taskPath: string) => Promise<string>
   onSaveTaskSource: (taskPath: string, content: string) => Promise<void>
+  onOpenTaskFile?: (taskPath: string) => void
   onCreateGroup: () => void
   onEditGroup: (group: Group) => void
   onOpenPomodoroTask: (taskPath: string) => void
@@ -30,8 +33,8 @@ const STATUS_ACTIONS = [
   { id: 'dismiss', label: 'Desestimar', nextState: 'Cancelada', cls: 'is-dismiss' },
   { id: 'start-stop', label: 'Iniciar', nextState: 'En progreso', cls: 'is-start-stop' },
   { id: 'finish', label: 'Finalizar', nextState: 'Finalizada', cls: 'is-finish' },
-  { id: 'block', label: 'Bloquear', nextState: 'Bloqueada', cls: 'is-block' },
 ] as const
+const TASK_DROP_HYSTERESIS_RATIO = 0.15
 
 interface TaskCommentDialogState {
   task: TaskItem
@@ -51,13 +54,14 @@ export function TaskBoardView({
   groups,
   onCreateTask,
   onEditTask,
-  onDeleteTask,
   onChangeTaskState,
-  onMarkTaskUrgent,
+  onChangeTaskPriority,
+  onChangeTaskDedicatedHours,
   onToggleSubtaskDone,
   onAddTaskComment,
   onLoadTaskSource,
   onSaveTaskSource,
+  onOpenTaskFile,
   onCreateGroup,
   onEditGroup,
   onOpenPomodoroTask,
@@ -70,9 +74,11 @@ export function TaskBoardView({
   const [sourceDialog, setSourceDialog] = useState<TaskSourceDialogState | null>(null)
   const [draggedGroupName, setDraggedGroupName] = useState<string | null>(null)
   const [draggedTaskPath, setDraggedTaskPath] = useState<string | null>(null)
+  const [draggedTaskHeight, setDraggedTaskHeight] = useState<number>(0)
   const [draggedSubtaskPath, setDraggedSubtaskPath] = useState<string | null>(null)
   const [groupDropTargetName, setGroupDropTargetName] = useState<string | null>(null)
   const [taskDropTarget, setTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
+  const [pinnedTaskDropTarget, setPinnedTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
   const [subtaskDropTarget, setSubtaskDropTarget] = useState<{ parentTaskPath: string; index: number } | null>(null)
 
   const boardTasks = useMemo(
@@ -151,6 +157,7 @@ export function TaskBoardView({
     const draggedTask = topLevelTasks.find((task) => task.filePath === draggedTaskPath)
     if (!draggedTask) {
       setDraggedTaskPath(null)
+      setPinnedTaskDropTarget(null)
       return
     }
 
@@ -195,6 +202,7 @@ export function TaskBoardView({
 
     setDraggedTaskPath(null)
     setTaskDropTarget(null)
+    setPinnedTaskDropTarget(null)
     await onApplyTaskArrangement(updates)
   }
 
@@ -253,6 +261,58 @@ export function TaskBoardView({
     await onApplyTaskArrangement(updates)
   }
 
+  const resolveTaskDropIndexFromPointer = (
+    groupName: string,
+    index: number,
+    pointerY: number,
+    rect: DOMRect,
+  ): number => {
+    const beforeIndex = index
+    const afterIndex = index + 1
+    const midpoint = rect.top + rect.height / 2
+    const currentIndex = taskDropTarget?.groupName === groupName ? taskDropTarget.index : null
+    const currentAffectsSameTask = currentIndex === beforeIndex || currentIndex === afterIndex
+
+    if (!currentAffectsSameTask) {
+      return pointerY < midpoint ? beforeIndex : afterIndex
+    }
+
+    const hysteresisOffset = rect.height * TASK_DROP_HYSTERESIS_RATIO
+    const switchToBeforeY = midpoint - hysteresisOffset
+    const switchToAfterY = midpoint + hysteresisOffset
+
+    if (currentIndex === beforeIndex) {
+      return pointerY > switchToAfterY ? afterIndex : beforeIndex
+    }
+
+    return pointerY < switchToBeforeY ? beforeIndex : afterIndex
+  }
+
+  const isPointerOverPinnedTaskDropSlot = (pointerX: number, pointerY: number): boolean => {
+    if (!pinnedTaskDropTarget) {
+      return false
+    }
+
+    const slot = Array
+      .from(document.querySelectorAll<HTMLElement>('.tareas-task-drop-slot[data-drop-group][data-drop-index]'))
+      .find((node) => (
+        node.dataset.dropGroup === pinnedTaskDropTarget.groupName
+        && Number(node.dataset.dropIndex) === pinnedTaskDropTarget.index
+      ))
+
+    if (!slot) {
+      return false
+    }
+
+    const bounds = slot.getBoundingClientRect()
+    return (
+      pointerX >= bounds.left
+      && pointerX <= bounds.right
+      && pointerY >= bounds.top
+      && pointerY <= bounds.bottom
+    )
+  }
+
   const submitCommentDialog = async () => {
     if (!commentDialog) {
       return
@@ -294,6 +354,7 @@ export function TaskBoardView({
               <div key={getGroupKey(group)} className="tareas-group" data-group={group.name}>
                 <div
                   className={`tareas-group-header${draggedGroupName === group.name ? ' is-dragging' : ''}${groupDropTargetName === group.name ? ' is-drop-target' : ''}`}
+                  style={{ '--tareas-group-color': group.color } as CSSProperties}
                   onClick={() => toggleGroup(group)}
                   draggable
                   onDragStart={() => setDraggedGroupName(group.name)}
@@ -317,8 +378,12 @@ export function TaskBoardView({
                     void handleGroupDrop(group.name)
                   }}
                 >
-                  <span className="tareas-toggle">{isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
-                  <span className="tareas-badge" style={{ background: group.color }}>{group.name}</span>
+                  <span className="tareas-toggle">
+                    {isExpanded
+                      ? <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={13} />
+                      : <TaskManagerIcon name={TASK_ICON_NAME.chevronRight} size={13} />}
+                  </span>
+                  <span className="tareas-badge">{group.name}</span>
                   <span className="tareas-count">{groupTasks.length}</span>
                   <NotiaButton
                     className="tareas-group-edit-btn"
@@ -328,14 +393,38 @@ export function TaskBoardView({
                     }}
                     title="Editar grupo"
                   >
-                    <Pencil size={12} />
+                    <TaskManagerIcon name={TASK_ICON_NAME.pencil} size={12} />
                   </NotiaButton>
                 </div>
 
                 {isExpanded ? (
                   <div
                     className="tareas-card-list"
-                    onDragOver={(event) => event.preventDefault()}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      if (event.dataTransfer) {
+                        event.dataTransfer.dropEffect = 'move'
+                      }
+                      if (!draggedTaskPath || draggedSubtaskPath) {
+                        return
+                      }
+
+                      const target = event.target
+                      if (target instanceof HTMLElement && target.closest('.tareas-task-drag-wrap')) {
+                        return
+                      }
+                      if (target instanceof HTMLElement && target.closest('.tareas-task-drop-slot')) {
+                        return
+                      }
+                      if (isPointerOverPinnedTaskDropSlot(event.clientX, event.clientY)) {
+                        return
+                      }
+                      if (pinnedTaskDropTarget) {
+                        setPinnedTaskDropTarget(null)
+                      }
+
+                      setTaskDropTarget({ groupName: group.name, index: groupTasks.length })
+                    }}
                     onDrop={(event) => {
                       event.preventDefault()
                       if (draggedTaskPath) {
@@ -347,30 +436,307 @@ export function TaskBoardView({
                       .slice()
                       .sort((left, right) => left.order - right.order)
                       .map((task, index) => (
+                        <Fragment key={task.filePath}>
+                          {taskDropTarget?.groupName === group.name && taskDropTarget.index === index ? (
+                            <div
+                              className="tareas-task-drop-slot"
+                              data-drop-group={group.name}
+                              data-drop-index={index}
+                              style={draggedTaskHeight > 0 ? { height: `${draggedTaskHeight}px` } : undefined}
+                              onDragOver={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                if (event.dataTransfer) {
+                                  event.dataTransfer.dropEffect = 'move'
+                                }
+                                if (!pinnedTaskDropTarget || pinnedTaskDropTarget.groupName !== group.name || pinnedTaskDropTarget.index !== index) {
+                                  setPinnedTaskDropTarget({ groupName: group.name, index })
+                                }
+                                if (taskDropTarget?.groupName !== group.name || taskDropTarget.index !== index) {
+                                  setTaskDropTarget({ groupName: group.name, index })
+                                }
+                              }}
+                              onDragLeave={() => {
+                                if (pinnedTaskDropTarget?.groupName === group.name && pinnedTaskDropTarget.index === index) {
+                                  setPinnedTaskDropTarget(null)
+                                }
+                              }}
+                              onDrop={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                if (!draggedSubtaskPath) {
+                                  void handleTopLevelTaskDrop(group.name, index)
+                                }
+                              }}
+                            />
+                          ) : null}
+                          <div
+                            className={`tareas-task-drag-wrap${draggedTaskPath === task.filePath ? ' is-dragging' : ''}`}
+                            draggable
+                            onDragStart={(event) => {
+                              if (event.dataTransfer) {
+                                event.dataTransfer.effectAllowed = 'move'
+                                event.dataTransfer.setData('text/plain', task.filePath)
+                              }
+                              setPinnedTaskDropTarget(null)
+                              setDraggedTaskPath(task.filePath)
+                              setDraggedTaskHeight(event.currentTarget.getBoundingClientRect().height)
+                            }}
+                            onDragEnd={() => {
+                              setDraggedTaskPath(null)
+                              setDraggedTaskHeight(0)
+                              setTaskDropTarget(null)
+                              setPinnedTaskDropTarget(null)
+                            }}
+                            onDragOver={(event) => {
+                              event.preventDefault()
+                              if (event.dataTransfer) {
+                                event.dataTransfer.dropEffect = 'move'
+                              }
+                              if (draggedTaskPath && !draggedSubtaskPath) {
+                                if (isPointerOverPinnedTaskDropSlot(event.clientX, event.clientY)) {
+                                  return
+                                }
+                                if (pinnedTaskDropTarget) {
+                                  setPinnedTaskDropTarget(null)
+                                }
+                                const bounds = event.currentTarget.getBoundingClientRect()
+                                const nextIndex = resolveTaskDropIndexFromPointer(group.name, index, event.clientY, bounds)
+                                if (taskDropTarget?.groupName === group.name && taskDropTarget.index === nextIndex) {
+                                  return
+                                }
+                                setTaskDropTarget({ groupName: group.name, index: nextIndex })
+                              }
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault()
+                              if (!draggedSubtaskPath) {
+                                const bounds = event.currentTarget.getBoundingClientRect()
+                                const placeBefore = event.clientY < bounds.top + bounds.height / 2
+                                void handleTopLevelTaskDrop(group.name, placeBefore ? index : index + 1)
+                              }
+                            }}
+                          >
+                            <TaskCard
+                              task={task}
+                              allTasks={boardTasks}
+                              isSubtasksExpanded={expandedSubtasks.has(task.filePath)}
+                              onToggleSubtasks={toggleSubtasks}
+                              onCreateTask={onCreateTask}
+                              onEditTask={onEditTask}
+                              onChangeTaskState={onChangeTaskState}
+                              onChangeTaskPriority={onChangeTaskPriority}
+                              onChangeTaskDedicatedHours={onChangeTaskDedicatedHours}
+                              onToggleSubtaskDone={onToggleSubtaskDone}
+                              onAddTaskComment={openCommentDialog}
+                              onOpenTaskSource={openTaskSourceDialog}
+                              onOpenTaskFile={onOpenTaskFile}
+                              onOpenPomodoroTask={onOpenPomodoroTask}
+                              draggedSubtaskPath={draggedSubtaskPath}
+                              subtaskDropTarget={subtaskDropTarget}
+                              onSubtaskDragStart={setDraggedSubtaskPath}
+                              onSubtaskDragEnd={() => {
+                                setDraggedSubtaskPath(null)
+                                setSubtaskDropTarget(null)
+                              }}
+                              onSubtaskDragOverTarget={(targetIndex) => {
+                                setSubtaskDropTarget({ parentTaskPath: task.filePath, index: targetIndex })
+                              }}
+                              onSubtaskDragLeaveTarget={(targetIndex) => {
+                                if (subtaskDropTarget?.parentTaskPath === task.filePath && subtaskDropTarget.index === targetIndex) {
+                                  setSubtaskDropTarget(null)
+                                }
+                              }}
+                              onSubtaskDrop={(targetIndex) => {
+                                void handleSubtaskDrop(task, targetIndex)
+                              }}
+                            />
+                          </div>
+                        </Fragment>
+                      ))}
+
+                    {taskDropTarget?.groupName === group.name && taskDropTarget.index === groupTasks.length ? (
+                      <div
+                        className="tareas-task-drop-slot"
+                        data-drop-group={group.name}
+                        data-drop-index={groupTasks.length}
+                        style={draggedTaskHeight > 0 ? { height: `${draggedTaskHeight}px` } : undefined}
+                        onDragOver={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          if (event.dataTransfer) {
+                            event.dataTransfer.dropEffect = 'move'
+                          }
+                          if (
+                            !pinnedTaskDropTarget
+                            || pinnedTaskDropTarget.groupName !== group.name
+                            || pinnedTaskDropTarget.index !== groupTasks.length
+                          ) {
+                            setPinnedTaskDropTarget({ groupName: group.name, index: groupTasks.length })
+                          }
+                          if (taskDropTarget?.groupName !== group.name || taskDropTarget.index !== groupTasks.length) {
+                            setTaskDropTarget({ groupName: group.name, index: groupTasks.length })
+                          }
+                        }}
+                        onDragLeave={() => {
+                          if (pinnedTaskDropTarget?.groupName === group.name && pinnedTaskDropTarget.index === groupTasks.length) {
+                            setPinnedTaskDropTarget(null)
+                          }
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          if (!draggedSubtaskPath) {
+                            void handleTopLevelTaskDrop(group.name, groupTasks.length)
+                          }
+                        }}
+                      />
+                    ) : null}
+                    <div className="tareas-task-card tareas-task-card-add">
+                      <span className="tareas-add-link" onClick={() => onCreateTask({ group: group.name })}>
+                        <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
+                        Nueva tarea
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+
+          {grouped['Sin grupo']?.length ? (
+            <div className="tareas-group" data-group="Sin grupo">
+              <div
+                className="tareas-group-header"
+                style={{ '--tareas-group-color': '#607d8b' } as CSSProperties}
+                onClick={() => toggleGroup({ name: 'Sin grupo', color: '#607d8b', board: boardName })}
+              >
+                <span className="tareas-toggle">
+                  {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName }))
+                    ? <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={13} />
+                    : <TaskManagerIcon name={TASK_ICON_NAME.chevronRight} size={13} />}
+                </span>
+                <span className="tareas-badge">Sin grupo</span>
+                <span className="tareas-count">{grouped['Sin grupo'].length}</span>
+              </div>
+
+              {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName })) ? (
+                <div
+                  className="tareas-card-list"
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    if (event.dataTransfer) {
+                      event.dataTransfer.dropEffect = 'move'
+                    }
+                    if (!draggedTaskPath || draggedSubtaskPath) {
+                      return
+                    }
+
+                    const target = event.target
+                    if (target instanceof HTMLElement && target.closest('.tareas-task-drag-wrap')) {
+                      return
+                    }
+                    if (target instanceof HTMLElement && target.closest('.tareas-task-drop-slot')) {
+                      return
+                    }
+                    if (isPointerOverPinnedTaskDropSlot(event.clientX, event.clientY)) {
+                      return
+                    }
+                    if (pinnedTaskDropTarget) {
+                      setPinnedTaskDropTarget(null)
+                    }
+
+                    setTaskDropTarget({ groupName: 'Sin grupo', index: grouped['Sin grupo'].length })
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    if (draggedTaskPath) {
+                      void handleTopLevelTaskDrop('Sin grupo', grouped['Sin grupo'].length)
+                    }
+                  }}
+                >
+                  {grouped['Sin grupo']
+                    .slice()
+                    .sort((left, right) => left.order - right.order)
+                    .map((task, index) => (
+                      <Fragment key={task.filePath}>
+                        {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === index ? (
+                          <div
+                            className="tareas-task-drop-slot"
+                            data-drop-group="Sin grupo"
+                            data-drop-index={index}
+                            style={draggedTaskHeight > 0 ? { height: `${draggedTaskHeight}px` } : undefined}
+                            onDragOver={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              if (event.dataTransfer) {
+                                event.dataTransfer.dropEffect = 'move'
+                              }
+                              if (!pinnedTaskDropTarget || pinnedTaskDropTarget.groupName !== 'Sin grupo' || pinnedTaskDropTarget.index !== index) {
+                                setPinnedTaskDropTarget({ groupName: 'Sin grupo', index })
+                              }
+                              if (taskDropTarget?.groupName !== 'Sin grupo' || taskDropTarget.index !== index) {
+                                setTaskDropTarget({ groupName: 'Sin grupo', index })
+                              }
+                            }}
+                            onDragLeave={() => {
+                              if (pinnedTaskDropTarget?.groupName === 'Sin grupo' && pinnedTaskDropTarget.index === index) {
+                                setPinnedTaskDropTarget(null)
+                              }
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              if (!draggedSubtaskPath) {
+                                void handleTopLevelTaskDrop('Sin grupo', index)
+                              }
+                            }}
+                          />
+                        ) : null}
                         <div
-                          key={task.filePath}
-                          className={`tareas-task-drag-wrap${draggedTaskPath === task.filePath ? ' is-dragging' : ''}${taskDropTarget?.groupName === group.name && taskDropTarget.index === index ? ' is-drop-target' : ''}`}
+                          className={`tareas-task-drag-wrap${draggedTaskPath === task.filePath ? ' is-dragging' : ''}`}
                           draggable
-                          onDragStart={() => setDraggedTaskPath(task.filePath)}
+                          onDragStart={(event) => {
+                            if (event.dataTransfer) {
+                              event.dataTransfer.effectAllowed = 'move'
+                              event.dataTransfer.setData('text/plain', task.filePath)
+                            }
+                            setPinnedTaskDropTarget(null)
+                            setDraggedTaskPath(task.filePath)
+                            setDraggedTaskHeight(event.currentTarget.getBoundingClientRect().height)
+                          }}
                           onDragEnd={() => {
                             setDraggedTaskPath(null)
+                            setDraggedTaskHeight(0)
                             setTaskDropTarget(null)
+                            setPinnedTaskDropTarget(null)
                           }}
                           onDragOver={(event) => {
                             event.preventDefault()
-                            if (draggedTaskPath && !draggedSubtaskPath) {
-                              setTaskDropTarget({ groupName: group.name, index })
+                            if (event.dataTransfer) {
+                              event.dataTransfer.dropEffect = 'move'
                             }
-                          }}
-                          onDragLeave={() => {
-                            if (taskDropTarget?.groupName === group.name && taskDropTarget.index === index) {
-                              setTaskDropTarget(null)
+                            if (draggedTaskPath && !draggedSubtaskPath) {
+                              if (isPointerOverPinnedTaskDropSlot(event.clientX, event.clientY)) {
+                                return
+                              }
+                              if (pinnedTaskDropTarget) {
+                                setPinnedTaskDropTarget(null)
+                              }
+                              const bounds = event.currentTarget.getBoundingClientRect()
+                              const nextIndex = resolveTaskDropIndexFromPointer('Sin grupo', index, event.clientY, bounds)
+                              if (taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === nextIndex) {
+                                return
+                              }
+                              setTaskDropTarget({ groupName: 'Sin grupo', index: nextIndex })
                             }
                           }}
                           onDrop={(event) => {
                             event.preventDefault()
                             if (!draggedSubtaskPath) {
-                              void handleTopLevelTaskDrop(group.name, index)
+                              const bounds = event.currentTarget.getBoundingClientRect()
+                              const placeBefore = event.clientY < bounds.top + bounds.height / 2
+                              void handleTopLevelTaskDrop('Sin grupo', placeBefore ? index : index + 1)
                             }
                           }}
                         >
@@ -381,12 +747,13 @@ export function TaskBoardView({
                             onToggleSubtasks={toggleSubtasks}
                             onCreateTask={onCreateTask}
                             onEditTask={onEditTask}
-                            onDeleteTask={onDeleteTask}
                             onChangeTaskState={onChangeTaskState}
-                            onMarkTaskUrgent={onMarkTaskUrgent}
+                            onChangeTaskPriority={onChangeTaskPriority}
+                            onChangeTaskDedicatedHours={onChangeTaskDedicatedHours}
                             onToggleSubtaskDone={onToggleSubtaskDone}
                             onAddTaskComment={openCommentDialog}
                             onOpenTaskSource={openTaskSourceDialog}
+                            onOpenTaskFile={onOpenTaskFile}
                             onOpenPomodoroTask={onOpenPomodoroTask}
                             draggedSubtaskPath={draggedSubtaskPath}
                             subtaskDropTarget={subtaskDropTarget}
@@ -408,125 +775,52 @@ export function TaskBoardView({
                             }}
                           />
                         </div>
-                      ))}
-
-                    <div className="tareas-task-card tareas-task-card-add">
-                      <span className="tareas-add-link" onClick={() => onCreateTask({ group: group.name })}>
-                        <Plus size={12} />
-                        Nueva tarea
-                      </span>
-                    </div>
-                    {taskDropTarget?.groupName === group.name && taskDropTarget.index === groupTasks.length ? (
-                      <div className="tareas-drop-indicator" />
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            )
-          })}
-
-          {grouped['Sin grupo']?.length ? (
-            <div className="tareas-group" data-group="Sin grupo">
-              <div
-                className="tareas-group-header"
-                onClick={() => toggleGroup({ name: 'Sin grupo', color: '#607d8b', board: boardName })}
-              >
-                <span className="tareas-toggle">
-                  {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName }))
-                    ? <ChevronDown size={13} />
-                    : <ChevronRight size={13} />}
-                </span>
-                <span className="tareas-badge" style={{ background: '#607d8b' }}>Sin grupo</span>
-                <span className="tareas-count">{grouped['Sin grupo'].length}</span>
-              </div>
-
-              {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName })) ? (
-                <div
-                  className="tareas-card-list"
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    if (draggedTaskPath) {
-                      void handleTopLevelTaskDrop('Sin grupo', grouped['Sin grupo'].length)
-                    }
-                  }}
-                >
-                  {grouped['Sin grupo']
-                    .slice()
-                    .sort((left, right) => left.order - right.order)
-                    .map((task, index) => (
-                      <div
-                        key={task.filePath}
-                        className={`tareas-task-drag-wrap${draggedTaskPath === task.filePath ? ' is-dragging' : ''}${taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === index ? ' is-drop-target' : ''}`}
-                        draggable
-                        onDragStart={() => setDraggedTaskPath(task.filePath)}
-                        onDragEnd={() => {
-                          setDraggedTaskPath(null)
-                          setTaskDropTarget(null)
-                        }}
-                        onDragOver={(event) => {
-                          event.preventDefault()
-                          if (draggedTaskPath && !draggedSubtaskPath) {
-                            setTaskDropTarget({ groupName: 'Sin grupo', index })
-                          }
-                        }}
-                        onDragLeave={() => {
-                          if (taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === index) {
-                            setTaskDropTarget(null)
-                          }
-                        }}
-                        onDrop={(event) => {
-                          event.preventDefault()
-                          if (!draggedSubtaskPath) {
-                            void handleTopLevelTaskDrop('Sin grupo', index)
-                          }
-                        }}
-                      >
-                        <TaskCard
-                          task={task}
-                          allTasks={boardTasks}
-                          isSubtasksExpanded={expandedSubtasks.has(task.filePath)}
-                          onToggleSubtasks={toggleSubtasks}
-                          onCreateTask={onCreateTask}
-                          onEditTask={onEditTask}
-                          onDeleteTask={onDeleteTask}
-                          onChangeTaskState={onChangeTaskState}
-                          onMarkTaskUrgent={onMarkTaskUrgent}
-                          onToggleSubtaskDone={onToggleSubtaskDone}
-                          onAddTaskComment={openCommentDialog}
-                          onOpenTaskSource={openTaskSourceDialog}
-                          onOpenPomodoroTask={onOpenPomodoroTask}
-                          draggedSubtaskPath={draggedSubtaskPath}
-                          subtaskDropTarget={subtaskDropTarget}
-                          onSubtaskDragStart={setDraggedSubtaskPath}
-                          onSubtaskDragEnd={() => {
-                            setDraggedSubtaskPath(null)
-                            setSubtaskDropTarget(null)
-                          }}
-                          onSubtaskDragOverTarget={(targetIndex) => {
-                            setSubtaskDropTarget({ parentTaskPath: task.filePath, index: targetIndex })
-                          }}
-                          onSubtaskDragLeaveTarget={(targetIndex) => {
-                            if (subtaskDropTarget?.parentTaskPath === task.filePath && subtaskDropTarget.index === targetIndex) {
-                              setSubtaskDropTarget(null)
-                            }
-                          }}
-                          onSubtaskDrop={(targetIndex) => {
-                            void handleSubtaskDrop(task, targetIndex)
-                          }}
-                        />
-                      </div>
+                      </Fragment>
                     ))}
 
+                  {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === grouped['Sin grupo'].length ? (
+                    <div
+                      className="tareas-task-drop-slot"
+                      data-drop-group="Sin grupo"
+                      data-drop-index={grouped['Sin grupo'].length}
+                      style={draggedTaskHeight > 0 ? { height: `${draggedTaskHeight}px` } : undefined}
+                      onDragOver={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        if (event.dataTransfer) {
+                          event.dataTransfer.dropEffect = 'move'
+                        }
+                        if (
+                          !pinnedTaskDropTarget
+                          || pinnedTaskDropTarget.groupName !== 'Sin grupo'
+                          || pinnedTaskDropTarget.index !== grouped['Sin grupo'].length
+                        ) {
+                          setPinnedTaskDropTarget({ groupName: 'Sin grupo', index: grouped['Sin grupo'].length })
+                        }
+                        if (taskDropTarget?.groupName !== 'Sin grupo' || taskDropTarget.index !== grouped['Sin grupo'].length) {
+                          setTaskDropTarget({ groupName: 'Sin grupo', index: grouped['Sin grupo'].length })
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (pinnedTaskDropTarget?.groupName === 'Sin grupo' && pinnedTaskDropTarget.index === grouped['Sin grupo'].length) {
+                          setPinnedTaskDropTarget(null)
+                        }
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        if (!draggedSubtaskPath) {
+                          void handleTopLevelTaskDrop('Sin grupo', grouped['Sin grupo'].length)
+                        }
+                      }}
+                    />
+                  ) : null}
                   <div className="tareas-task-card tareas-task-card-add">
                     <span className="tareas-add-link" onClick={() => onCreateTask({ group: '' })}>
-                      <Plus size={12} />
+                      <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
                       Nueva tarea
                     </span>
                   </div>
-                  {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === grouped['Sin grupo'].length ? (
-                    <div className="tareas-drop-indicator" />
-                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -535,7 +829,7 @@ export function TaskBoardView({
 
         <div className="tareas-new-group">
           <span className="tareas-add-link" onClick={onCreateGroup}>
-            <Plus size={12} />
+            <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
             Nuevo grupo
           </span>
         </div>
@@ -605,12 +899,13 @@ interface TaskCardProps {
   onToggleSubtasks: (taskPath: string) => void
   onCreateTask: (defaults?: { parentTaskName?: string; group?: string }) => void
   onEditTask: (task: TaskItem) => void
-  onDeleteTask: (task: TaskItem) => Promise<void>
   onChangeTaskState: (task: TaskItem, nextState: string) => Promise<void>
-  onMarkTaskUrgent: (task: TaskItem) => Promise<void>
+  onChangeTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
+  onChangeTaskDedicatedHours: (task: TaskItem, nextDedicatedHours: number) => Promise<void>
   onToggleSubtaskDone: (task: TaskItem, done: boolean) => Promise<void>
   onAddTaskComment: (task: TaskItem) => void
   onOpenTaskSource: (task: TaskItem) => void
+  onOpenTaskFile?: (taskPath: string) => void
   onOpenPomodoroTask: (taskPath: string) => void
   draggedSubtaskPath: string | null
   subtaskDropTarget: { parentTaskPath: string; index: number } | null
@@ -628,12 +923,13 @@ function TaskCard({
   onToggleSubtasks,
   onCreateTask,
   onEditTask,
-  onDeleteTask,
   onChangeTaskState,
-  onMarkTaskUrgent,
+  onChangeTaskPriority,
+  onChangeTaskDedicatedHours,
   onToggleSubtaskDone,
   onAddTaskComment,
   onOpenTaskSource,
+  onOpenTaskFile,
   onOpenPomodoroTask,
   draggedSubtaskPath,
   subtaskDropTarget,
@@ -650,101 +946,211 @@ function TaskCard({
     ? (progressPercent % 100 || 100)
     : progressPercent
   const fillPercent = Math.max(0, Math.min(100, visiblePercent))
+  const [isDedicatedHoursEditing, setIsDedicatedHoursEditing] = useState(false)
+  const [dedicatedHoursDraft, setDedicatedHoursDraft] = useState(() => formatHours(task.dedicatedHours))
+  const [isSavingDedicatedHours, setIsSavingDedicatedHours] = useState(false)
+  const [activeMetaMenu, setActiveMetaMenu] = useState<'state' | 'priority' | null>(null)
+  const isStateMenuOpen = activeMetaMenu === 'state'
+  const isPriorityMenuOpen = activeMetaMenu === 'priority'
+  const resolvedPriority: TaskPriority = task.priority || 'Media'
+  const { triggerRef: stateTagTriggerRef, panelRef: stateTagPanelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
+    open: isStateMenuOpen,
+    onClose: () => {
+      setActiveMetaMenu((current) => (current === 'state' ? null : current))
+    },
+  })
+  const { triggerRef: priorityTagTriggerRef, panelRef: priorityTagPanelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
+    open: isPriorityMenuOpen,
+    onClose: () => {
+      setActiveMetaMenu((current) => (current === 'priority' ? null : current))
+    },
+  })
+
+  const handleStateSelection = (nextState: TaskState) => {
+    setActiveMetaMenu(null)
+    if (task.state === nextState) {
+      return
+    }
+
+    void onChangeTaskState(task, nextState)
+  }
+
+  const handlePrioritySelection = (nextPriority: TaskPriority) => {
+    setActiveMetaMenu(null)
+    if (resolvedPriority === nextPriority) {
+      return
+    }
+
+    void onChangeTaskPriority(task, nextPriority)
+  }
+
+  const startDedicatedHoursEdit = () => {
+    if (isSavingDedicatedHours) {
+      return
+    }
+
+    setDedicatedHoursDraft(formatHours(task.dedicatedHours))
+    setIsDedicatedHoursEditing(true)
+  }
+
+  const cancelDedicatedHoursEdit = () => {
+    if (isSavingDedicatedHours) {
+      return
+    }
+
+    setDedicatedHoursDraft(formatHours(task.dedicatedHours))
+    setIsDedicatedHoursEditing(false)
+  }
+
+  const submitDedicatedHoursEdit = async () => {
+    if (isSavingDedicatedHours) {
+      return
+    }
+
+    const normalized = dedicatedHoursDraft.trim().replace(',', '.')
+    const nextValue = Number(normalized)
+    if (!Number.isFinite(nextValue) || nextValue < 0) {
+      setDedicatedHoursDraft(formatHours(task.dedicatedHours))
+      setIsDedicatedHoursEditing(false)
+      return
+    }
+
+    setIsSavingDedicatedHours(true)
+    try {
+      if (Math.abs(nextValue - task.dedicatedHours) > 0.00001) {
+        await onChangeTaskDedicatedHours(task, nextValue)
+      }
+      setIsDedicatedHoursEditing(false)
+    } finally {
+      setIsSavingDedicatedHours(false)
+    }
+  }
 
   return (
     <div
       className="tareas-task-card"
-      style={{ ['--tareas-card-actions-band-height' as string]: '16px' }}
       onDoubleClick={(event) => {
-        if (event.target instanceof HTMLElement && event.target.closest('a,button,input,textarea,select,label')) {
+        if (
+          event.target instanceof HTMLElement
+          && event.target.closest('a,button,input,textarea,select,label,.tareas-card-progress-band-text')
+        ) {
           return
         }
 
         onOpenTaskSource(task)
       }}
     >
-      <div className={`tareas-card-side-band tareas-card-status-band tareas-card-status-band-${toClassName(task.state)}`}>
-        <span className="tareas-card-side-band-text">{task.state}</span>
-      </div>
-
-      <div className={`tareas-card-side-band tareas-card-priority-band tareas-card-priority-band-${toClassName(task.priority || 'Media')}`}>
-        <span className="tareas-card-side-band-text">{task.priority || 'Media'}</span>
-      </div>
-
-      <div className="tareas-card-actions-band">
-        <div className="tareas-status-actions">
-          {STATUS_ACTIONS.map((action) => {
-            const nextState = action.id === 'start-stop'
-              ? task.state === 'En progreso'
-                ? 'Pendiente'
-                : 'En progreso'
-              : action.nextState
-
-            const label = action.id === 'start-stop'
-              ? task.state === 'En progreso'
-                ? 'Parar'
-                : 'Iniciar'
-              : action.label
-
-            return (
-              <NotiaButton
-                key={`${task.filePath}-${action.id}`}
-                className={`tareas-status-action-btn ${action.cls}${task.state === nextState ? ' is-active' : ''}`}
-                onClick={() => {
-                  if (task.state !== nextState) {
-                    void onChangeTaskState(task, nextState)
-                  }
-                }}
-              >
-                {label}
-              </NotiaButton>
-            )
-          })}
-
-          <NotiaButton
-            className={`tareas-status-action-btn is-urgent${task.priority === 'Urgente' ? ' is-active' : ''}`}
-            onClick={() => {
-              if (task.priority !== 'Urgente') {
-                void onMarkTaskUrgent(task)
-              }
-            }}
-          >
-            Urgente
-          </NotiaButton>
-        </div>
-      </div>
-
-      <div className="tareas-card-title-row">
+      <div className="tareas-card-header-band">
         <a
           className="tareas-task-card-title"
           title={task.title}
           href="#"
           onClick={(event) => {
             event.preventDefault()
-            onEditTask(task)
+            if (onOpenTaskFile) {
+              onOpenTaskFile(task.filePath)
+              return
+            }
+
+            onOpenTaskSource(task)
           }}
         >
           {task.title}
         </a>
 
         <NotiaButton
-          className="tareas-card-comment-btn"
-          title="Agregar comentario"
-          onClick={() => onAddTaskComment(task)}
-        >
-          <MessageSquare size={12} />
-        </NotiaButton>
-
-        <NotiaButton
-          className="tareas-card-comment-btn"
+          size="icon"
+          className="tareas-card-header-edit-btn"
           title="Editar tarea"
           onClick={() => onEditTask(task)}
         >
-          <Edit2 size={12} />
+          <TaskManagerIcon name={TASK_ICON_NAME.edit} size={11} />
         </NotiaButton>
       </div>
 
-      {task.preview ? <p className="tareas-card-preview">{task.preview}</p> : null}
+      <div className="tareas-card-meta-tags">
+        <div className="tareas-card-meta-tag-wrap">
+          <NotiaButton
+            ref={stateTagTriggerRef}
+            variant="ghost"
+            size="sm"
+            className={`tareas-card-meta-tag-trigger tareas-estado tareas-estado-${toClassName(task.state)}${isStateMenuOpen ? ' is-open' : ''}`}
+            title="Cambiar estado"
+            aria-haspopup="menu"
+            aria-expanded={isStateMenuOpen}
+            onClick={() => {
+              setActiveMetaMenu((current) => (current === 'state' ? null : 'state'))
+            }}
+          >
+            <span>{task.state}</span>
+            <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={11} />
+          </NotiaButton>
+          {isStateMenuOpen ? (
+            <div className="tareas-card-meta-menu" ref={stateTagPanelRef} role="menu" aria-label="Opciones de estado">
+              {TASK_STATES.map((stateOption) => (
+                <NotiaButton
+                  key={`${task.filePath}-state-${stateOption}`}
+                  variant={task.state === stateOption ? 'primary' : 'ghost'}
+                  size="sm"
+                  className={`tareas-card-meta-menu-option${task.state === stateOption ? ' is-selected' : ''}`}
+                  onClick={() => handleStateSelection(stateOption)}
+                >
+                  {stateOption}
+                </NotiaButton>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="tareas-card-meta-tag-wrap">
+          <NotiaButton
+            ref={priorityTagTriggerRef}
+            variant="ghost"
+            size="sm"
+            className={`tareas-card-meta-tag-trigger tareas-prioridad tareas-prioridad-${toClassName(resolvedPriority)}${isPriorityMenuOpen ? ' is-open' : ''}`}
+            title="Cambiar prioridad"
+            aria-haspopup="menu"
+            aria-expanded={isPriorityMenuOpen}
+            onClick={() => {
+              setActiveMetaMenu((current) => (current === 'priority' ? null : 'priority'))
+            }}
+          >
+            <span>{resolvedPriority}</span>
+            <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={11} />
+          </NotiaButton>
+          {isPriorityMenuOpen ? (
+            <div className="tareas-card-meta-menu" ref={priorityTagPanelRef} role="menu" aria-label="Opciones de prioridad">
+              {TASK_PRIORITIES.map((priorityOption) => (
+                <NotiaButton
+                  key={`${task.filePath}-priority-${priorityOption}`}
+                  variant={resolvedPriority === priorityOption ? 'primary' : 'ghost'}
+                  size="sm"
+                  className={`tareas-card-meta-menu-option${resolvedPriority === priorityOption ? ' is-selected' : ''}`}
+                  onClick={() => handlePrioritySelection(priorityOption)}
+                >
+                  {priorityOption}
+                </NotiaButton>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="tareas-card-detail-row">
+        {task.preview ? (
+          <p className="tareas-card-preview">{task.preview}</p>
+        ) : (
+          <p className="tareas-card-preview tareas-card-preview-empty">Sin detalle</p>
+        )}
+
+        <NotiaButton
+          className="tareas-card-comment-btn tareas-card-detail-comment-btn"
+          title="Agregar comentario"
+          onClick={() => onAddTaskComment(task)}
+        >
+          <TaskManagerIcon name={TASK_ICON_NAME.comment} size={12} />
+        </NotiaButton>
+      </div>
 
       <div className="tareas-card-footer">
         {subtasks.length > 0 ? (
@@ -752,14 +1158,16 @@ function TaskCard({
             className={`tareas-card-subtasks tareas-card-subtasks-toggle${isSubtasksExpanded ? ' is-expanded' : ''}`}
             onClick={() => onToggleSubtasks(task.filePath)}
           >
-            {isSubtasksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            {isSubtasksExpanded
+              ? <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={13} />
+              : <TaskManagerIcon name={TASK_ICON_NAME.chevronRight} size={13} />}
             {subtasks.length}
             {' '}subtarea(s)
           </span>
         ) : <span className="tareas-card-subtasks">Sin subtareas</span>}
 
         <span className="tareas-add-link" onClick={() => onCreateTask({ parentTaskName: task.fileName, group: task.group })}>
-          <Plus size={12} />
+          <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
           Subtarea
         </span>
       </div>
@@ -814,24 +1222,39 @@ function TaskCard({
                   }}
                 />
 
-                <a
-                  className={`tareas-card-subtask-title${checked ? ' is-done' : ''}`}
-                  href="#"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    onEditTask(subtask)
-                  }}
-                  title={subtask.title}
+                <span className="tareas-card-subtask-title-wrap">
+                  <a
+                    className={`tareas-card-subtask-title${checked ? ' is-done' : ''}`}
+                    href="#"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      if (onOpenTaskFile) {
+                        onOpenTaskFile(subtask.filePath)
+                        return
+                      }
+
+                      onOpenTaskSource(subtask)
+                    }}
+                    title={subtask.title}
+                  >
+                    {subtask.title}
+                  </a>
+                </span>
+
+                <NotiaButton
+                  className="tareas-card-comment-btn"
+                  title="Abrir markdown de subtarea"
+                  onClick={() => onOpenTaskSource(subtask)}
                 >
-                  {subtask.title}
-                </a>
+                  <TaskManagerIcon name={TASK_ICON_NAME.eye} size={12} />
+                </NotiaButton>
 
                 <NotiaButton
                   className="tareas-card-comment-btn"
                   title="Agregar comentario"
                   onClick={() => onAddTaskComment(subtask)}
                 >
-                  <MessageSquare size={12} />
+                  <TaskManagerIcon name={TASK_ICON_NAME.comment} size={12} />
                 </NotiaButton>
               </div>
             )
@@ -846,10 +1269,40 @@ function TaskCard({
         <div className={`tareas-card-progress-band${isOverflow ? ' is-overflow' : ''}`}>
           <div className="tareas-card-progress-band-fill" style={{ width: `${fillPercent}%` }} />
           <div className="tareas-card-progress-band-text">
-            <span>
-              {formatHours(task.dedicatedHours)}/{formatHours(task.estimatedHours)}
-              <span className="tareas-card-progress-band-text-deviation"> +-&gt; {formatHours(task.deviationHours)}</span>
-            </span>
+            {isDedicatedHoursEditing ? (
+              <span className="tareas-card-progress-inline-editor" onDoubleClick={(event) => event.stopPropagation()}>
+                <input
+                  className="tareas-card-progress-inline-input"
+                  type="text"
+                  value={dedicatedHoursDraft}
+                  autoFocus
+                  disabled={isSavingDedicatedHours}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onChange={(event) => setDedicatedHoursDraft(event.target.value)}
+                  onBlur={() => void submitDedicatedHoursEdit()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      void submitDedicatedHoursEdit()
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault()
+                      cancelDedicatedHoursEdit()
+                    }
+                  }}
+                />
+                <span>/{formatHours(task.estimatedHours)}</span>
+                <span className="tareas-card-progress-band-text-deviation"> +-&gt; {formatHours(task.deviationHours)}</span>
+              </span>
+            ) : (
+              <span onDoubleClick={(event) => {
+                event.stopPropagation()
+                startDedicatedHoursEdit()
+              }}
+              >
+                {formatHours(task.dedicatedHours)}/{formatHours(task.estimatedHours)}
+                <span className="tareas-card-progress-band-text-deviation"> +-&gt; {formatHours(task.deviationHours)}</span>
+              </span>
+            )}
           </div>
         </div>
 
@@ -858,18 +1311,40 @@ function TaskCard({
           title="Abrir pomodoro con esta tarea"
           onClick={() => onOpenPomodoroTask(task.filePath)}
         >
-          <Clock3 size={12} />
+          <TaskManagerIcon name={TASK_ICON_NAME.clock} size={12} />
         </NotiaButton>
+      </div>
 
-        <NotiaButton
-          className="tareas-card-pomodoro-btn"
-          title="Eliminar tarea"
-          onClick={() => {
-            void onDeleteTask(task)
-          }}
-        >
-          <Trash2 size={12} />
-        </NotiaButton>
+      <div className="tareas-card-status-row">
+        <div className="tareas-status-actions">
+          {STATUS_ACTIONS.map((action) => {
+            const nextState = action.id === 'start-stop'
+              ? task.state === 'En progreso'
+                ? 'Pendiente'
+                : 'En progreso'
+              : action.nextState
+
+            const label = action.id === 'start-stop'
+              ? task.state === 'En progreso'
+                ? 'Parar'
+                : 'Iniciar'
+              : action.label
+
+            return (
+              <NotiaButton
+                key={`${task.filePath}-${action.id}`}
+                className={`tareas-status-action-btn ${action.cls}${task.state === nextState ? ' is-active' : ''}`}
+                onClick={() => {
+                  if (task.state !== nextState) {
+                    void onChangeTaskState(task, nextState)
+                  }
+                }}
+              >
+                {label}
+              </NotiaButton>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

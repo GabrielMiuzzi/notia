@@ -1,10 +1,11 @@
 import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
-import { FolderKanban, Plus, RefreshCw } from 'lucide-react'
 import { useCallback, useMemo } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
+import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
 import { useTaskManager } from '../hooks/useTaskManager'
+import { toAbsoluteVaultPath } from '../utils/path'
 import { TaskBoardView } from './boards/TaskBoardView'
 import { TaskTableView } from './boards/TaskTableView'
 import { BoardDialog } from './dialogs/BoardDialog'
@@ -35,9 +36,10 @@ const theme = createTheme({
 interface TaskManagerAppProps {
   embedded?: boolean
   vaultPath?: string | null
+  onOpenTaskFile?: (taskPath: string) => void
 }
 
-export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManagerAppProps) {
+export function TaskManagerApp({ embedded = false, vaultPath = null, onOpenTaskFile }: TaskManagerAppProps) {
   const manager = useTaskManager(vaultPath)
   const { confirm } = useConfirmationEngine()
 
@@ -130,18 +132,18 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
           <div className="tareas-header-actions">
             {!manager.isVaultExternallyControlled ? (
               <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.selectVault()}>
-                <FolderKanban size={14} />
+                <TaskManagerIcon name={TASK_ICON_NAME.folderKanban} size={14} />
                 Vault
               </NotiaButton>
             ) : null}
 
             <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.reload()}>
-              <RefreshCw size={14} />
+              <TaskManagerIcon name={TASK_ICON_NAME.refresh} size={14} />
               Refrescar
             </NotiaButton>
 
             <NotiaButton className="tareas-btn-new" onClick={manager.openBoardCreateDialog}>
-              <Plus size={14} />
+              <TaskManagerIcon name={TASK_ICON_NAME.plus} size={14} />
               Nuevo tablero
             </NotiaButton>
 
@@ -153,7 +155,7 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
                 }
                 manager.openBoardEditDialog(activeBoardConfig)
               }}
-              disabled={!activeTabIsBoard || activeBoard === 'default'}
+              disabled={!activeTabIsBoard}
             >
               Editar tablero
             </NotiaButton>
@@ -211,13 +213,20 @@ export function TaskManagerApp({ embedded = false, vaultPath = null }: TaskManag
               tasks={manager.snapshot.tasks}
               onCreateTask={manager.openTaskCreateDialog}
               onEditTask={manager.openTaskEditDialog}
-              onDeleteTask={handleDeleteTask}
               onChangeTaskState={manager.updateTaskState}
-              onMarkTaskUrgent={manager.markTaskAsUrgent}
+              onChangeTaskPriority={manager.updateTaskPriority}
+              onChangeTaskDedicatedHours={manager.updateTaskDedicatedHours}
               onToggleSubtaskDone={manager.toggleSubtaskDone}
               onAddTaskComment={manager.addTaskComment}
               onLoadTaskSource={manager.loadTaskSource}
               onSaveTaskSource={manager.saveTaskSource}
+              onOpenTaskFile={(taskPath) => {
+                if (!onOpenTaskFile || !manager.settings.activeVaultPath) {
+                  return
+                }
+
+                onOpenTaskFile(toAbsoluteVaultPath(manager.settings.activeVaultPath, taskPath))
+              }}
               onCreateGroup={manager.openGroupCreateDialog}
               onEditGroup={manager.openGroupEditDialog}
               onOpenPomodoroTask={(taskPath) => {

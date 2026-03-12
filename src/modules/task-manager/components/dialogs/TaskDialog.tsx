@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  FormControlLabel,
   FormControl,
   InputLabel,
   MenuItem,
   Select,
   Stack,
+  Switch,
   TextField,
 } from '@mui/material'
 import type { Group, TaskFormData, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
@@ -32,6 +34,7 @@ const INITIAL_FORM: TaskFormData = {
   detail: '',
   state: 'Pendiente',
   endDate: '',
+  dynamicEndDate: true,
   board: 'default',
   group: '',
   priority: 'Media',
@@ -65,6 +68,7 @@ export function TaskDialog({
         detail: task.detail,
         state: task.state,
         endDate: task.endDate,
+        dynamicEndDate: task.dynamicEndDate,
         board: task.board,
         group: task.group,
         priority: task.priority || 'Media',
@@ -79,6 +83,7 @@ export function TaskDialog({
       board: boardName,
       group: createDefaults?.group ?? groups[0]?.name ?? '',
       parentTaskName: createDefaults?.parentTaskName ?? '',
+      dynamicEndDate: true,
     })
   }, [boardName, createDefaults?.group, createDefaults?.parentTaskName, groups, mode, open, task])
 
@@ -192,11 +197,23 @@ export function TaskDialog({
             InputLabelProps={{ shrink: true }}
           />
 
-          <TextField
-            label="Tarea padre (opcional)"
-            value={form.parentTaskName}
-            onChange={(event) => setForm((previous) => ({ ...previous, parentTaskName: event.target.value }))}
+          <FormControlLabel
+            control={(
+              <Switch
+                checked={form.dynamicEndDate}
+                onChange={(event) => setForm((previous) => ({ ...previous, dynamicEndDate: event.target.checked }))}
+              />
+            )}
+            label="Fecha de finalizacion dinamica"
           />
+
+          {mode === 'create' ? (
+            <TextField
+              label="Tarea padre (opcional)"
+              value={form.parentTaskName}
+              onChange={(event) => setForm((previous) => ({ ...previous, parentTaskName: event.target.value }))}
+            />
+          ) : null}
         </Stack>
       </div>
 

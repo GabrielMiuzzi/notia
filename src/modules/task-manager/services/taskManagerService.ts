@@ -26,6 +26,7 @@ import {
   readPomodoroLogEntries,
   type AppendPomodoroLogEntryInput,
 } from '../engines/pomodoroLogEngine'
+import { buildRebalancedEndDates } from '../engines/scheduleEngine'
 import { buildBoardTaskIndexContent, buildRootTaskIndexContent, CANCELLED_TASK_INDEX_PATH, FINISHED_TASK_INDEX_PATH, getBoardTaskIndexPath, ROOT_TASK_INDEX_PATH } from '../engines/taskIndexEngine'
 import { buildTaskContent, getBoardFolder, getBoardSubtasksFolder, getTasks, isTaskMarkdownFile, resolveNewTaskOrder, resolveTaskEndDate, resolveTaskPath } from '../engines/taskEngine'
 import type {
@@ -170,7 +171,7 @@ export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): P
 
   await runWorkspaceStep('ensure-chat-workspace', () => ensureChatWorkspace(vaultPath))
   await runWorkspaceStep('ensure-pomodoro-log-file', () => ensurePomodoroLogFile(vaultPath))
-  await runWorkspaceStep('sync-indexes-and-metadata', () => syncTaskIndexesAndMetadata(vaultPath, boardNames))
+  await runWorkspaceStep('sync-indexes-and-metadata', () => syncTaskIndexesAndMetadata(vaultPath, boardNames, boards))
 }
 
 export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames: string[]): Promise<void> {
@@ -373,10 +374,17 @@ export async function renameBoardWorkspace(vaultPath: string, currentBoardName: 
   }
 }
 
-export async function syncTaskIndexesAndMetadata(vaultPath: string, boardNamesInput: string[]): Promise<void> {
+export async function syncTaskIndexesAndMetadata(
+  vaultPath: string,
+  boardNamesInput: string[],
+  boardConfigsInput: Board[] = [],
+): Promise<void> {
   const snapshot = await loadTaskManagerSnapshot(vaultPath)
   const documentsByPath = new Map(snapshot.documents.map((document) => [document.path, document.content]))
   const boardNamesFromDocuments = extractBoardNamesFromDocuments(snapshot.documents)
+  const boardConfigsByName = new Map(
+    boardConfigsInput.map((board) => [normalizeBoardName(board.name), board]),
+  )
 
   const boardNames = Array.from(
     new Set([
@@ -420,6 +428,28 @@ export async function syncTaskIndexesAndMetadata(vaultPath: string, boardNamesIn
 
   await writeIfChanged(vaultPath, FINISHED_TASK_INDEX_PATH, buildBoardTaskIndexContent(finishedTaskNames), documentsByPath)
   await writeIfChanged(vaultPath, CANCELLED_TASK_INDEX_PATH, buildBoardTaskIndexContent(cancelledTaskNames), documentsByPath)
+
+  for (const boardName of boardNames) {
+    const boardTasks = snapshot.tasks
+      .filter((task) => !task.parentTaskName.trim())
+      .filter((task) => normalizeBoardName(task.board) === boardName)
+      .filter((task) => task.state !== 'Finalizada' && task.state !== 'Cancelada')
+
+    const endDateUpdates = buildRebalancedEndDates(boardTasks, {
+      activityHoursPerDay: boardConfigsByName.get(boardName)?.activityHoursPerDay ?? 24,
+      startAt: new Date(),
+    })
+
+    for (const update of endDateUpdates) {
+      const currentTaskContent = documentsByPath.get(update.taskPath)
+      if (!currentTaskContent) {
+        continue
+      }
+
+      const nextTaskContent = updateMarkdownFrontmatter(currentTaskContent, { fechaFin: update.endDate })
+      await writeIfChanged(vaultPath, update.taskPath, nextTaskContent, documentsByPath)
+    }
+  }
 
   const taskDocuments = snapshot.documents.filter((document) => isTaskMarkdownFile(document.path))
   const childLinksByPath = rebuildTaskChildLinks(taskDocuments)
@@ -875,13 +905,14 @@ async function runWorkspaceStep(label: string, runner: () => Promise<void>): Pro
 
 export function buildTaskEditPayload(
   existingTask: TaskItem,
-  updates: Partial<{ title: string; detail: string; state: string; endDate: string; group: string; priority: string; estimatedHours: number; parentTaskName: string }>,
+  updates: Partial<{ title: string; detail: string; state: string; endDate: string; dynamicEndDate: boolean; group: string; priority: string; estimatedHours: number; parentTaskName: string }>,
 ): TaskFormData {
   return {
     title: updates.title ?? existingTask.title,
     detail: updates.detail ?? existingTask.detail,
     state: (updates.state as TaskFormData['state']) ?? existingTask.state,
     endDate: updates.endDate ?? existingTask.endDate,
+    dynamicEndDate: updates.dynamicEndDate ?? existingTask.dynamicEndDate,
     board: existingTask.board,
     group: updates.group ?? existingTask.group,
     priority: (updates.priority as TaskFormData['priority']) ?? existingTask.priority,

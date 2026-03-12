@@ -14,7 +14,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { MessageCircle, Plus, Send, Settings, Trash2 } from 'lucide-react'
+import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import type { ChatMessage, ChatSessionFile, ChatSessionOptions } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
@@ -87,10 +87,10 @@ export function ChatPanel({
             </Typography>
             <Stack direction="row" spacing={1}>
               <NotiaButton size="icon" onClick={() => setSettingsOpen(true)}>
-                <Settings size={14} />
+                <TaskManagerIcon name={TASK_ICON_NAME.settings} size={14} />
               </NotiaButton>
               <NotiaButton size="icon" onClick={() => setCreateOpen(true)}>
-                <Plus size={14} />
+                <TaskManagerIcon name={TASK_ICON_NAME.plus} size={14} />
               </NotiaButton>
             </Stack>
           </Stack>
@@ -111,10 +111,10 @@ export function ChatPanel({
                   </ListItemButton>
 
                   <NotiaButton size="icon" onClick={() => setEditSession(session)}>
-                    <MessageCircle size={14} />
+                    <TaskManagerIcon name={TASK_ICON_NAME.commentBubble} size={14} />
                   </NotiaButton>
                   <NotiaButton size="icon" variant="danger" onClick={() => void onDeleteChat(session.path)}>
-                    <Trash2 size={14} />
+                    <TaskManagerIcon name={TASK_ICON_NAME.trash} size={14} />
                   </NotiaButton>
                 </Stack>
               ))}
@@ -179,7 +179,7 @@ export function ChatPanel({
                 disabled={!activeSession || isSending}
               />
               <NotiaButton type="submit" variant="primary" disabled={!activeSession || isSending || !composer.trim()}>
-                <Send size={16} />
+                <TaskManagerIcon name={TASK_ICON_NAME.send} size={16} />
               </NotiaButton>
             </Stack>
           </Box>

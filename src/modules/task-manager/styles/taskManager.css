@@ -50,6 +50,26 @@
   box-sizing: border-box;
 }
 
+.tareas-icon {
+  display: block;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tareas-icon-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  font-size: 0.86em;
+  line-height: 1;
+  font-weight: 700;
+}
+
 .tareas-dialog {
   display: flex;
   flex-direction: column;
@@ -79,6 +99,134 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.tareas-field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tareas-field-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.tareas-activity-clock {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  margin: 0 auto;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 86%, transparent);
+}
+
+.tareas-activity-clock-hand-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tareas-activity-clock-hand {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 92px;
+  height: 2px;
+  background: color-mix(in srgb, var(--interactive-accent) 75%, transparent);
+  border-radius: 999px;
+  transform-origin: 0 50%;
+}
+
+.tareas-activity-clock-hour {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  margin-left: -12px;
+  margin-top: -12px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.tareas-activity-clock-hour.is-primary {
+  width: 28px;
+  height: 28px;
+  margin-left: -14px;
+  margin-top: -14px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tareas-activity-clock-hour.is-intermediate-hit {
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  background: transparent;
+  border-color: transparent;
+  z-index: 2;
+}
+
+.tareas-activity-clock-hit-dot {
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.tareas-activity-clock-mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 2px;
+  margin-left: -5px;
+  margin-top: -1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 78%, transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.tareas-activity-clock-hour.is-selected {
+  background: color-mix(in srgb, var(--interactive-accent) 22%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--interactive-accent) 65%, transparent);
+  color: var(--text-normal);
+  font-weight: 700;
+}
+
+.tareas-activity-clock-hour.is-intermediate-hit.is-selected {
+  background: color-mix(in srgb, var(--interactive-accent) 28%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--interactive-accent) 65%, transparent);
+}
+
+.tareas-activity-clock-mark.is-selected {
+  background: color-mix(in srgb, var(--interactive-accent) 82%, transparent);
+}
+
+.tareas-activity-clock-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-normal);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 80%, transparent);
+  background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+  pointer-events: none;
 }
 
 .tareas-header {
@@ -269,10 +417,11 @@
   cursor: pointer;
   user-select: none;
   border-radius: var(--tareas-radius-sm);
+  background: color-mix(in srgb, var(--tareas-group-color, var(--background-secondary)) 36%, var(--background-secondary));
 }
 
 .tareas-group-header:hover {
-  background: var(--background-secondary);
+  background: color-mix(in srgb, var(--tareas-group-color, var(--background-secondary)) 45%, var(--background-secondary));
 }
 
 .tareas-group-header.is-dragging {
@@ -321,11 +470,10 @@
 
 .tareas-badge {
   display: inline-block;
-  padding: 2px 10px;
-  border-radius: var(--tareas-radius-sm);
-  font-size: 16px;
+  padding: 0;
+  font-size: 14px;
   font-weight: 700;
-  color: #0f1020;
+  color: var(--text-normal);
 }
 
 .tareas-card-list {
@@ -344,6 +492,13 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 50%, transparent);
 }
 
+.tareas-task-drop-slot {
+  min-height: 120px;
+  border: 1px dashed color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  border-radius: var(--tareas-radius-md);
+  background: color-mix(in srgb, var(--interactive-accent) 9%, transparent);
+}
+
 .tareas-drop-indicator {
   height: 0;
   border-top: 2px solid color-mix(in srgb, var(--interactive-accent) 70%, transparent);
@@ -352,12 +507,15 @@
 }
 
 .tareas-task-card {
-  --tareas-card-actions-band-height: 0px;
+  --tareas-card-header-band-content-height: 20px;
+  --tareas-card-header-band-padding-y: 5px;
+  --tareas-card-header-band-height: calc(var(--tareas-card-header-band-content-height) + (var(--tareas-card-header-band-padding-y) * 2));
   position: relative;
   border: 1px solid var(--background-modifier-border-hover);
   border-radius: var(--tareas-radius-md);
   background: var(--background-primary);
-  padding: 10px 40px;
+  padding: 10px 12px;
+  overflow: hidden;
   transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
 }
 
@@ -375,81 +533,20 @@
   background: color-mix(in srgb, var(--background-primary) 80%, transparent);
 }
 
-.tareas-card-side-band {
-  position: absolute;
-  top: calc(var(--tareas-card-actions-band-height) + 1px);
-  bottom: 0;
-  width: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  user-select: none;
-}
-
-.tareas-card-side-band-text {
-  color: color-mix(in srgb, var(--text-normal) 90%, black 5%);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-}
-
-.tareas-card-status-band {
-  left: 0;
-  border-bottom-left-radius: var(--tareas-radius-md);
-}
-
-.tareas-card-status-band-pendiente {
-  background: color-mix(in srgb, var(--tareas-color-warning) 45%, transparent);
-}
-
-.tareas-card-status-band-cancelada {
-  background: color-mix(in srgb, var(--tareas-color-neutral) 45%, transparent);
-}
-
-.tareas-card-status-band-en-progreso {
-  background: color-mix(in srgb, var(--tareas-color-info) 45%, transparent);
-}
-
-.tareas-card-status-band-finalizada {
-  background: color-mix(in srgb, var(--tareas-color-success) 45%, transparent);
-}
-
-.tareas-card-status-band-bloqueada {
-  background: color-mix(in srgb, var(--tareas-color-blocked) 45%, transparent);
-}
-
-.tareas-card-priority-band {
-  right: 0;
-  border-bottom-right-radius: var(--tareas-radius-md);
-}
-
-.tareas-card-priority-band-baja {
-  background: color-mix(in srgb, var(--tareas-color-info) 45%, transparent);
-}
-
-.tareas-card-priority-band-media {
-  background: color-mix(in srgb, var(--color-yellow, var(--tareas-color-warning)) 45%, transparent);
-}
-
-.tareas-card-priority-band-alta {
-  background: color-mix(in srgb, var(--tareas-color-warning) 45%, transparent);
-}
-
-.tareas-card-priority-band-urgente {
-  background: color-mix(in srgb, var(--tareas-color-danger) 45%, transparent);
-}
-
-.tareas-card-actions-band {
-  margin: -10px -40px 8px;
-  min-height: var(--tareas-card-actions-band-height);
-  padding: 3px 28px;
+.tareas-card-header-band {
+  box-sizing: border-box;
+  margin: -10px -12px 8px;
+  height: var(--tareas-card-header-band-height);
+  min-height: var(--tareas-card-header-band-height);
+  padding: var(--tareas-card-header-band-padding-y) 12px;
   border-bottom: 1px solid var(--background-modifier-border-hover);
   background: var(--background-primary);
   border-top-left-radius: var(--tareas-radius-md);
   border-top-right-radius: var(--tareas-radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   overflow: hidden;
 }
 
@@ -461,38 +558,16 @@
   flex-wrap: nowrap;
 }
 
-.tareas-card-actions-band .tareas-status-actions {
-  justify-content: center;
-}
-
 .tareas-status-action-btn {
   font-size: 10px;
   font-weight: 700;
-  border-radius: 0;
+  border-radius: var(--tareas-radius-sm);
   border: 1px solid transparent;
   background: var(--background-primary);
   color: var(--text-muted);
-  padding: 2px 7px;
+  padding: 2px 8px;
   cursor: pointer;
   white-space: nowrap;
-}
-
-.tareas-card-actions-band .tareas-status-action-btn {
-  font-size: 9px;
-  padding: 0 3px;
-  line-height: 1.15;
-  background: transparent !important;
-  border: none !important;
-}
-
-.tareas-card-actions-band .tareas-status-action-btn::after {
-  content: "|";
-  color: var(--text-faint);
-  margin-left: 4px;
-}
-
-.tareas-card-actions-band .tareas-status-action-btn:last-child::after {
-  content: "";
 }
 
 .tareas-status-action-btn.is-dismiss {
@@ -507,32 +582,173 @@
   color: var(--tareas-color-success);
 }
 
-.tareas-status-action-btn.is-block {
-  color: var(--tareas-color-blocked);
-}
-
-.tareas-status-action-btn.is-urgent {
-  color: var(--tareas-color-danger);
-}
-
 .tareas-status-action-btn.is-active {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.tareas-card-title-row {
+.tareas-card-header-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  line-height: 0;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--tareas-radius-sm);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.tareas-card-header-edit-btn:hover:not(:disabled) {
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+.tareas-card-meta-tags {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  flex-wrap: wrap;
+  margin: -2px 0 8px;
+}
+
+.tareas-card-meta-tag-wrap {
+  position: relative;
+}
+
+.tareas-card-meta-tags .tareas-estado,
+.tareas-card-meta-tags .tareas-prioridad {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+
+.tareas-card-meta-tags .tareas-estado::before {
+  width: 6px;
+  height: 6px;
+}
+
+.tareas-card-meta-tag-trigger {
+  min-height: 20px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  line-height: 1;
+  gap: 4px;
+}
+
+.tareas-card-meta-tag-trigger:hover:not(:disabled),
+.tareas-card-meta-tag-trigger.is-open {
+  border-color: color-mix(in srgb, var(--interactive-accent) 38%, transparent);
+}
+
+.tareas-card-meta-tag-trigger .tareas-icon {
+  opacity: 0.75;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.tareas-card-meta-tag-trigger.is-open .tareas-icon {
+  opacity: 1;
+  transform: rotate(180deg);
+}
+
+.tareas-card-meta-tag-trigger.tareas-estado-pendiente {
+  background: color-mix(in srgb, var(--tareas-color-warning) 18%, transparent);
+  color: var(--tareas-color-warning);
+}
+
+.tareas-card-meta-tag-trigger.tareas-estado-cancelada {
+  background: color-mix(in srgb, var(--tareas-color-neutral) 18%, transparent);
+  color: var(--text-muted);
+}
+
+.tareas-card-meta-tag-trigger.tareas-estado-en-progreso {
+  background: color-mix(in srgb, var(--tareas-color-info) 18%, transparent);
+  color: var(--tareas-color-info);
+}
+
+.tareas-card-meta-tag-trigger.tareas-estado-finalizada {
+  background: color-mix(in srgb, var(--tareas-color-success) 18%, transparent);
+  color: var(--tareas-color-success);
+}
+
+.tareas-card-meta-tag-trigger.tareas-estado-bloqueada {
+  background: color-mix(in srgb, var(--tareas-color-blocked) 20%, transparent);
+  color: var(--tareas-color-blocked);
+}
+
+.tareas-card-meta-tag-trigger.tareas-prioridad-baja {
+  background: color-mix(in srgb, var(--tareas-color-info) 20%, transparent);
+  color: var(--tareas-color-info);
+}
+
+.tareas-card-meta-tag-trigger.tareas-prioridad-media {
+  background: color-mix(in srgb, var(--color-yellow, var(--tareas-color-warning)) 20%, transparent);
+  color: var(--color-yellow, var(--tareas-color-warning));
+}
+
+.tareas-card-meta-tag-trigger.tareas-prioridad-alta {
+  background: color-mix(in srgb, var(--tareas-color-warning) 20%, transparent);
+  color: var(--tareas-color-warning);
+}
+
+.tareas-card-meta-tag-trigger.tareas-prioridad-urgente {
+  background: color-mix(in srgb, var(--tareas-color-danger) 20%, transparent);
+  color: var(--tareas-color-danger);
+}
+
+.tareas-card-meta-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 12;
+  min-width: 126px;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--tareas-radius-sm);
+  background: var(--background-primary-alt);
+  box-shadow: 0 10px 20px var(--color-menu-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tareas-card-meta-menu-option {
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: var(--tareas-radius-sm);
+  border: 1px solid transparent;
+  color: var(--text-normal);
+}
+
+.tareas-card-meta-menu-option:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.tareas-card-meta-menu-option.is-selected {
+  font-weight: 700;
+}
+
+.tareas-card-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
 .tareas-task-card-title {
-  display: block;
-  flex: 1;
-  min-width: 0;
+  display: inline-block;
+  flex: 0 1 auto;
+  max-width: 100%;
   font-weight: 700;
+  line-height: 1.1;
   color: var(--text-normal);
   text-decoration: none;
   overflow: hidden;
@@ -564,16 +780,32 @@
 }
 
 .tareas-card-preview {
-  margin: 0 0 8px;
+  margin: 0;
   min-height: calc(1.35em * 2);
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.35;
+  flex: 1;
+  min-width: 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
   overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+.tareas-card-preview-empty {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.tareas-card-detail-comment-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--tareas-radius-sm);
+  background: var(--background-secondary);
+  flex-shrink: 0;
 }
 
 .tareas-card-footer {
@@ -656,15 +888,20 @@
   flex-shrink: 0;
 }
 
-.tareas-card-subtask-title {
+.tareas-card-subtask-title-wrap {
   flex: 1;
   min-width: 0;
+}
+
+.tareas-card-subtask-title {
+  display: inline-block;
   font-size: 12px;
   color: var(--text-normal);
   text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .tareas-card-subtask-title.is-done {
@@ -714,6 +951,36 @@
   letter-spacing: 0.02em;
 }
 
+.tareas-card-progress-band-text > span {
+  cursor: text;
+}
+
+.tareas-card-progress-inline-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.tareas-card-progress-inline-input {
+  width: 34px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 65%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--background-primary) 92%, transparent);
+  color: var(--text-normal);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+  padding: 0 2px;
+  height: 13px;
+}
+
+.tareas-card-progress-inline-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
 .tareas-card-progress-band-text-deviation {
   color: var(--tareas-color-warning);
   font-weight: 700;
@@ -741,6 +1008,18 @@
 .tareas-card-pomodoro-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.tareas-card-status-row {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border-hover);
+}
+
+.tareas-card-status-row .tareas-status-actions {
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .tareas-new-group {

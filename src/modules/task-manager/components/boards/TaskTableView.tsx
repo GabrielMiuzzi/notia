@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, CornerDownRight, GripVertical } from 'lucide-react'
 import type { TaskItem } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
+import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 
 interface TaskTableViewProps {
   title: string
@@ -71,7 +71,7 @@ export function TaskTableView({ title, tasks, onChangeTaskState, onDeleteTask }:
       <tr key={task.filePath} className="tareas-row">
         <td className="tareas-cell-drag">
           <span className="tareas-drag-handle">
-            <GripVertical size={12} />
+            <TaskManagerIcon name={TASK_ICON_NAME.dragHandle} size={12} />
           </span>
         </td>
 
@@ -81,7 +81,9 @@ export function TaskTableView({ title, tasks, onChangeTaskState, onDeleteTask }:
               className={`tareas-subtask-toggle${hasChildren ? '' : ' tareas-toggle-empty'}`}
               onClick={hasChildren ? () => toggleExpanded(task.filePath) : undefined}
             >
-              {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              {isExpanded
+                ? <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={13} />
+                : <TaskManagerIcon name={TASK_ICON_NAME.chevronRight} size={13} />}
             </span>
           ) : null}
         </td>
@@ -90,7 +92,7 @@ export function TaskTableView({ title, tasks, onChangeTaskState, onDeleteTask }:
           <div className="tareas-task-title-wrap">
             {depth > 0 ? (
               <span className="tareas-subtask-indent">
-                <CornerDownRight size={11} />
+                <TaskManagerIcon name={TASK_ICON_NAME.cornerDownRight} size={11} />
               </span>
             ) : null}
             <a className="tareas-task-link" href="#" onClick={(event) => event.preventDefault()} title={task.title}>

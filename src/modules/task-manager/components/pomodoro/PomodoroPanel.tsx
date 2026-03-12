@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
-import { Clock3, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
 import {
   formatPomodoroCountdown,
   getDeviationElapsedSeconds,
@@ -9,6 +8,7 @@ import {
   getPomodoroRemainingSeconds,
 } from '../../engines/pomodoroEngine'
 import { getEntriesByDate, toLocalDateText } from '../../engines/pomodoroLogEngine'
+import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import type { PomodoroDurations, PomodoroLogEntry, PomodoroState, TaskItem } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
@@ -111,8 +111,8 @@ export function PomodoroPanel({
   const runGlyph = state.runState === 'running'
     ? null
     : state.runState === 'paused'
-      ? <Pause size={12} />
-      : <Square size={10} />
+      ? <TaskManagerIcon name={TASK_ICON_NAME.pause} size={12} />
+      : <TaskManagerIcon name={TASK_ICON_NAME.stop} size={10} />
   const runStateLabel = resolveRunStateLabel(state)
   const breakMessage = resolveBreakMessage(state)
 
@@ -215,7 +215,7 @@ export function PomodoroPanel({
         <div className="tareas-pomodoro-controls-icons">
           {state.runState === 'running' ? (
             <NotiaButton className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onPause} title="Pausar">
-              <Pause size={14} />
+              <TaskManagerIcon name={TASK_ICON_NAME.pause} size={14} />
             </NotiaButton>
           ) : (
             <NotiaButton
@@ -229,12 +229,12 @@ export function PomodoroPanel({
               }}
               title={state.runState === 'paused' ? 'Reanudar' : 'Iniciar'}
             >
-              <Play size={14} />
+              <TaskManagerIcon name={TASK_ICON_NAME.play} size={14} />
             </NotiaButton>
           )}
 
           <NotiaButton className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onReset} title="Reiniciar">
-            <RotateCcw size={14} />
+            <TaskManagerIcon name={TASK_ICON_NAME.reset} size={14} />
           </NotiaButton>
 
           <NotiaButton
@@ -249,7 +249,7 @@ export function PomodoroPanel({
             title={state.isDeviationActive ? 'Finalizar desvío' : 'Iniciar desvío'}
             disabled={!state.isDeviationActive && state.runState !== 'running'}
           >
-            <Clock3 size={14} />
+            <TaskManagerIcon name={TASK_ICON_NAME.clock} size={14} />
           </NotiaButton>
         </div>
       </div>
@@ -391,7 +391,7 @@ export function PomodoroPanel({
                     <td>{entry.finalized ? 'true' : 'false'}</td>
                     <td className="tareas-pomodoro-log-actions">
                       <NotiaButton className="tareas-pomodoro-log-delete-btn" onClick={() => void onDeleteEntry(entry.id)} title="Eliminar registro">
-                        <Trash2 size={12} />
+                        <TaskManagerIcon name={TASK_ICON_NAME.trash} size={12} />
                       </NotiaButton>
                     </td>
                   </tr>

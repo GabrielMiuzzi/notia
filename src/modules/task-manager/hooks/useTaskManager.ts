@@ -104,6 +104,8 @@ export interface UseTaskManagerResult {
   closeTaskDialog: () => void
   submitTaskDialog: (formData: TaskFormData) => Promise<void>
   updateTaskState: (task: TaskItem, nextState: string) => Promise<void>
+  updateTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
+  updateTaskDedicatedHours: (task: TaskItem, nextDedicatedHours: number) => Promise<void>
   markTaskAsUrgent: (task: TaskItem) => Promise<void>
   toggleSubtaskDone: (task: TaskItem, done: boolean) => Promise<void>
   addTaskComment: (task: TaskItem, comment: string) => Promise<void>
@@ -113,7 +115,7 @@ export interface UseTaskManagerResult {
   openBoardCreateDialog: () => void
   openBoardEditDialog: (board: Board) => void
   closeBoardDialog: () => void
-  submitBoardDialog: (payload: { name: string; color: string }) => Promise<void>
+  submitBoardDialog: (payload: { name: string; color: string; activityHoursPerDay: number }) => Promise<void>
   removeBoard: (boardName: string) => Promise<void>
   openGroupCreateDialog: () => void
   openGroupEditDialog: (group: Group) => void
@@ -176,10 +178,25 @@ function normalizeBoardCandidate(name: string): string | null {
   return normalized
 }
 
-function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot): Board[] {
+function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot, knownBoards: Board[] = []): Board[] {
   const boardsByName = new Map<string, Board>()
+  for (const knownBoard of knownBoards) {
+    const normalizedKnownName = normalizeBoardCandidate(knownBoard.name)
+    if (!normalizedKnownName) {
+      continue
+    }
+
+    boardsByName.set(normalizedKnownName, {
+      name: normalizedKnownName,
+      color: knownBoard.color,
+      activityHoursPerDay: normalizeBoardActivityHours(knownBoard.activityHoursPerDay),
+    })
+  }
+
   for (const defaultBoard of DEFAULT_BOARDS) {
-    boardsByName.set(defaultBoard.name, defaultBoard)
+    if (!boardsByName.has(defaultBoard.name)) {
+      boardsByName.set(defaultBoard.name, defaultBoard)
+    }
   }
 
   for (const document of snapshot.documents) {
@@ -196,6 +213,7 @@ function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot): Boar
     boardsByName.set(boardName, {
       name: boardName,
       color: AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
+      activityHoursPerDay: 24,
     })
   }
 
@@ -208,6 +226,7 @@ function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot): Boar
     boardsByName.set(boardName, {
       name: boardName,
       color: AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
+      activityHoursPerDay: 24,
     })
   }
 
@@ -250,6 +269,14 @@ function roundHours(value: number): number {
   return Number(value.toFixed(2))
 }
 
+function normalizeBoardActivityHours(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 24
+  }
+
+  return Math.min(24, Math.max(0, Number(value.toFixed(2))))
+}
+
 function resolvePomodoroDurationChoice(durations: PomodoroDurations): string {
   return `${durations.workMinutes}/${durations.shortBreakMinutes}/${durations.longBreakMinutes}`
 }
@@ -264,6 +291,7 @@ function resolveSettingsForEmptySnapshot(previousSettings: TaskManagerSettings):
     boardsByName.set(normalizedName, {
       name: normalizedName,
       color: board.color || '#2e6db0',
+      activityHoursPerDay: normalizeBoardActivityHours(board.activityHoursPerDay),
     })
   }
 
@@ -341,6 +369,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           && nextSettings.boards.every((board, index) => (
             board.name === previousSettings.boards[index]?.name
             && board.color === previousSettings.boards[index]?.color
+            && board.activityHoursPerDay === previousSettings.boards[index]?.activityHoursPerDay
           ))
         const sameGroups = nextSettings.groups.length === previousSettings.groups.length
           && nextSettings.groups.every((group, index) => (
@@ -366,6 +395,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           boardsByName.set(boardName, {
             name: boardName,
             color: AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
+            activityHoursPerDay: 24,
           })
         }
 
@@ -393,7 +423,11 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           : nextBoards[0]?.name ?? DEFAULT_BOARD_NAME
 
       const sameBoards = nextBoards.length === previousSettings.boards.length
-        && nextBoards.every((board, index) => board.name === previousSettings.boards[index]?.name && board.color === previousSettings.boards[index]?.color)
+        && nextBoards.every((board, index) => (
+          board.name === previousSettings.boards[index]?.name
+          && board.color === previousSettings.boards[index]?.color
+          && board.activityHoursPerDay === previousSettings.boards[index]?.activityHoursPerDay
+        ))
       const sameGroups = nextGroups.length === previousSettings.groups.length
         && nextGroups.every((group, index) => (
           group.name === previousSettings.groups[index]?.name
@@ -419,6 +453,16 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
       return
     }
 
+    try {
+      await syncTaskIndexesAndMetadata(
+        settings.activeVaultPath,
+        settings.boards.map((board) => board.name),
+        settings.boards,
+      )
+    } catch (syncError) {
+      console.warn('[task-manager] syncTaskIndexesAndMetadata failed on reload', syncError)
+    }
+
     const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
     setSnapshot(nextSnapshot)
     hydrateSettingsFromSnapshot(nextSnapshot)
@@ -426,7 +470,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     if (!activeChatPath || !nextSnapshot.chatSessions.some((session) => session.path === activeChatPath)) {
       setActiveChatPath(nextSnapshot.chatSessions[0]?.path ?? null)
     }
-  }, [activeChatPath, hydrateSettingsFromSnapshot, settings.activeVaultPath])
+  }, [activeChatPath, hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards])
 
   const setActiveVaultPath = useCallback(async (path: string | null) => {
     if (!path) {
@@ -448,7 +492,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           resolveCleanupBoardCandidates(bootstrapSnapshot),
         )
       }
-      const bootstrapBoards = resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot)
+      const bootstrapBoards = resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot, settings.boards)
       await ensureTaskWorkspace(path, bootstrapBoards)
       const nextSnapshot = await loadTaskManagerSnapshot(path)
       setSnapshot(nextSnapshot)
@@ -494,7 +538,10 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           )
         }
 
-        await ensureTaskWorkspace(settings.activeVaultPath as string, resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot))
+        await ensureTaskWorkspace(
+          settings.activeVaultPath as string,
+          resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot, settings.boards),
+        )
       })
       .then(() => loadTaskManagerSnapshot(settings.activeVaultPath as string))
       .then((nextSnapshot) => {
@@ -509,7 +556,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           : 'No se pudo cargar el estado del gestor de tareas.')
       })
       .finally(() => setIsLoading(false))
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, updateSettings])
+  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards, updateSettings])
 
   useEffect(() => {
     if (!externalVaultPath) {
@@ -619,7 +666,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
   const runSync = useCallback(async (
     runner: () => Promise<void>,
-    syncBoardNamesOverride?: string[],
+    syncBoardsOverride?: Board[],
   ) => {
     if (!settings.activeVaultPath) {
       throw new Error('No hay un vault activo.')
@@ -631,7 +678,8 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
       try {
         await syncTaskIndexesAndMetadata(
           settings.activeVaultPath,
-          syncBoardNamesOverride ?? settings.boards.map((board) => board.name),
+          (syncBoardsOverride ?? settings.boards).map((board) => board.name),
+          syncBoardsOverride ?? settings.boards,
         )
       } catch (syncError) {
         console.warn('[task-manager] syncTaskIndexesAndMetadata failed after action', syncError)
@@ -679,6 +727,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           detalle: formData.detail,
           estado: formData.state,
           fechaFin: formData.endDate,
+          fechaFinDinamica: formData.dynamicEndDate,
           equipo: formData.group,
           prioridad: formData.priority,
           estimacion: formData.estimatedHours,
@@ -710,6 +759,46 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
         : 'No se pudo cambiar el estado de la tarea.')
     }
   }, [runSync, settings.activeVaultPath, snapshot.tasks])
+
+  const updateTaskPriority = useCallback(async (task: TaskItem, nextPriority: TaskPriority) => {
+    if (!settings.activeVaultPath) {
+      return
+    }
+
+    try {
+      await runSync(async () => {
+        await updateTaskFrontmatter(settings.activeVaultPath as string, task.filePath, {
+          prioridad: nextPriority,
+        })
+      })
+    } catch (runtimeError) {
+      console.error(runtimeError)
+      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
+      setError(runtimeMessage
+        ? `No se pudo cambiar la prioridad de la tarea: ${runtimeMessage}`
+        : 'No se pudo cambiar la prioridad de la tarea.')
+    }
+  }, [runSync, settings.activeVaultPath])
+
+  const updateTaskDedicatedHours = useCallback(async (task: TaskItem, nextDedicatedHours: number) => {
+    if (!settings.activeVaultPath) {
+      return
+    }
+
+    try {
+      await runSync(async () => {
+        await updateTaskFrontmatter(settings.activeVaultPath as string, task.filePath, {
+          dedicado: roundHours(Math.max(0, nextDedicatedHours)),
+        })
+      })
+    } catch (runtimeError) {
+      console.error(runtimeError)
+      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
+      setError(runtimeMessage
+        ? `No se pudo actualizar horas dedicadas: ${runtimeMessage}`
+        : 'No se pudo actualizar horas dedicadas.')
+    }
+  }, [runSync, settings.activeVaultPath])
 
   const markTaskAsUrgent = useCallback(async (task: TaskItem) => {
     if (!settings.activeVaultPath) {
@@ -833,7 +922,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     setBoardDialog({ open: false, mode: 'create', board: null })
   }, [])
 
-  const submitBoardDialog = useCallback(async (payload: { name: string; color: string }) => {
+  const submitBoardDialog = useCallback(async (payload: { name: string; color: string; activityHoursPerDay: number }) => {
     const normalizedName = sanitizeFilename(payload.name).toLowerCase()
     if (!normalizedName) {
       setError('El tablero necesita un nombre válido.')
@@ -841,6 +930,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     }
 
     const normalizedColor = payload.color || '#2e6db0'
+    const normalizedActivityHoursPerDay = normalizeBoardActivityHours(payload.activityHoursPerDay)
 
     try {
       if (!settings.activeVaultPath) {
@@ -853,31 +943,45 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           return
         }
 
-        const nextBoards = [...settings.boards, { name: normalizedName, color: normalizedColor }]
+        const nextBoards = [...settings.boards, {
+          name: normalizedName,
+          color: normalizedColor,
+          activityHoursPerDay: normalizedActivityHoursPerDay,
+        }]
         updateSettings((previousSettings) => ({
           ...previousSettings,
           boards: nextBoards,
           activeTab: normalizedName,
         }))
         await ensureBoardWorkspace(settings.activeVaultPath, normalizedName)
-        await runSync(async () => {}, nextBoards.map((board) => board.name))
+        await runSync(async () => {}, nextBoards)
       } else if (boardDialog.board) {
         const previousName = boardDialog.board.name
-        if (previousName === DEFAULT_BOARD_NAME) {
-          setError('El tablero "default" no puede editarse.')
-          return
-        }
 
         if (previousName !== normalizedName && settings.boards.some((board) => board.name === normalizedName)) {
           setError(`Ya existe un tablero llamado "${normalizedName}".`)
           return
         }
 
-        await renameBoardWorkspace(settings.activeVaultPath, previousName, normalizedName)
+        const canRenameOrRecolor = previousName !== DEFAULT_BOARD_NAME
+        const effectiveName = canRenameOrRecolor ? normalizedName : previousName
+        const effectiveColor = canRenameOrRecolor ? normalizedColor : boardDialog.board.color
 
-        const nextBoardNames = settings.boards.map((board) => (
-          board.name === previousName ? normalizedName : board.name
-        ))
+        if (canRenameOrRecolor && previousName !== effectiveName) {
+          await renameBoardWorkspace(settings.activeVaultPath, previousName, effectiveName)
+        }
+
+        const nextBoards = settings.boards.map((board) => {
+          if (board.name !== previousName) {
+            return board
+          }
+
+          return {
+            name: effectiveName,
+            color: effectiveColor,
+            activityHoursPerDay: normalizedActivityHoursPerDay,
+          }
+        })
 
         updateSettings((previousSettings) => ({
           ...previousSettings,
@@ -887,8 +991,9 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
             }
 
             return {
-              name: normalizedName,
-              color: normalizedColor,
+              name: effectiveName,
+              color: effectiveColor,
+              activityHoursPerDay: normalizedActivityHoursPerDay,
             }
           }),
           groups: previousSettings.groups.map((group) => {
@@ -898,12 +1003,12 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
             return {
               ...group,
-              board: normalizedName,
+              board: effectiveName,
             }
           }),
-          activeTab: previousSettings.activeTab === previousName ? normalizedName : previousSettings.activeTab,
+          activeTab: previousSettings.activeTab === previousName ? effectiveName : previousSettings.activeTab,
         }))
-        await runSync(async () => {}, nextBoardNames)
+        await runSync(async () => {}, nextBoards)
       }
       closeBoardDialog()
     } catch (runtimeError) {
@@ -919,9 +1024,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
     try {
       await removeBoardWorkspace(settings.activeVaultPath, boardName)
-      const nextBoardNames = settings.boards
-        .filter((board) => board.name !== boardName)
-        .map((board) => board.name)
+      const nextBoards = settings.boards.filter((board) => board.name !== boardName)
       updateSettings((previousSettings) => ({
         ...previousSettings,
         boards: previousSettings.boards.filter((board) => board.name !== boardName),
@@ -929,7 +1032,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
         activeTab: previousSettings.activeTab === boardName ? DEFAULT_BOARD_NAME : previousSettings.activeTab,
       }))
 
-      await runSync(async () => {}, nextBoardNames)
+      await runSync(async () => {}, nextBoards)
     } catch (runtimeError) {
       console.error(runtimeError)
       setError('No se pudo eliminar el tablero.')
@@ -1461,6 +1564,8 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     closeTaskDialog,
     submitTaskDialog,
     updateTaskState,
+    updateTaskPriority,
+    updateTaskDedicatedHours,
     markTaskAsUrgent,
     toggleSubtaskDone,
     addTaskComment,

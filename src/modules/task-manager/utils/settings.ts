@@ -60,6 +60,7 @@ function normalizeBoards(rawBoards: unknown): Board[] {
         .map((name, index) => ({
           name: String(name).trim().toLowerCase(),
           color: FALLBACK_COLORS[index % FALLBACK_COLORS.length],
+          activityHoursPerDay: 24,
         }))
         .filter((board) => Boolean(board.name)),
     )
@@ -70,6 +71,7 @@ function normalizeBoards(rawBoards: unknown): Board[] {
     .map((item) => ({
       name: typeof item.name === 'string' ? item.name.trim().toLowerCase() : '',
       color: typeof item.color === 'string' ? item.color : '#2e6db0',
+      activityHoursPerDay: normalizeBoardActivityHours(item.activityHoursPerDay),
     }))
     .filter((board) => Boolean(board.name))
 
@@ -103,9 +105,21 @@ function normalizeGroups(rawGroups: unknown): Group[] {
 
 function mergeWithDefaultBoards(boards: Board[]): Board[] {
   const byName = new Map(boards.map((board) => [board.name, board]))
-  const merged = DEFAULT_BOARDS.map((defaultBoard) => byName.get(defaultBoard.name) ?? defaultBoard)
+  const merged = DEFAULT_BOARDS.map((defaultBoard) => ({
+    ...(byName.get(defaultBoard.name) ?? defaultBoard),
+    activityHoursPerDay: normalizeBoardActivityHours(byName.get(defaultBoard.name)?.activityHoursPerDay ?? defaultBoard.activityHoursPerDay),
+  }))
   const additionalBoards = boards.filter((board) => board.name !== DEFAULT_BOARD_NAME)
   return [...merged, ...additionalBoards]
+}
+
+function normalizeBoardActivityHours(rawValue: unknown): number {
+  const parsed = Number(rawValue)
+  if (!Number.isFinite(parsed)) {
+    return 24
+  }
+
+  return Math.min(24, Math.max(0, Number(parsed.toFixed(2))))
 }
 
 function normalizeNetrunnerBaseUrl(rawValue: unknown): string {

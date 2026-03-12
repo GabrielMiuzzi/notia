@@ -3,6 +3,7 @@ import type { TASK_PRIORITIES, TASK_STATES } from '../constants/taskManagerConst
 export interface Board {
   name: string
   color: string
+  activityHoursPerDay: number
 }
 
 export interface Group {
@@ -20,6 +21,7 @@ export interface TaskFrontmatter {
   estado?: string
   fechaInicio?: string
   fechaFin?: string
+  fechaFinDinamica?: boolean | string
   tablero?: string
   equipo?: string
   prioridad?: string
@@ -40,6 +42,7 @@ export interface TaskItem {
   state: TaskState
   startDate: string
   endDate: string
+  dynamicEndDate: boolean
   board: string
   group: string
   priority: TaskPriority | ''
@@ -56,6 +59,7 @@ export interface TaskFormData {
   detail: string
   state: TaskState
   endDate: string
+  dynamicEndDate: boolean
   board: string
   group: string
   priority: TaskPriority | ''

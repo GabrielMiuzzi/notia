@@ -244,15 +244,45 @@ type OpenTextDocumentTab = Omit<OpenDocumentTab, 'document'> & {
   document: OpenTextFileDocument
 }
 
+interface WorkspaceTitleTab {
+  path: string
+  title: string
+}
+
+interface OpenWorkspaceSpecialTabs {
+  graph: boolean
+  taskManager: boolean
+}
+
+const GRAPH_WORKSPACE_TAB_PATH = '__workspace_graph__'
+const TASK_MANAGER_WORKSPACE_TAB_PATH = '__workspace_task_manager__'
+
+function buildWorkspaceTitleTabs(
+  documentTabs: OpenDocumentTab[],
+  specialTabs: OpenWorkspaceSpecialTabs,
+): WorkspaceTitleTab[] {
+  const tabs: WorkspaceTitleTab[] = documentTabs.map((tab) => ({
+    path: tab.document.path,
+    title: tab.document.name,
+  }))
+
+  if (specialTabs.graph) {
+    tabs.push({ path: GRAPH_WORKSPACE_TAB_PATH, title: 'Graph view' })
+  }
+
+  if (specialTabs.taskManager) {
+    tabs.push({ path: TASK_MANAGER_WORKSPACE_TAB_PATH, title: 'Task manager' })
+  }
+
+  return tabs
+}
+
 function isOpenTextDocumentTab(tab: OpenDocumentTab | null): tab is OpenTextDocumentTab {
   return Boolean(tab && isTextFileDocument(tab.document))
 }
 
 export function NotiaMenu() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'documents' | 'graph' | 'task-manager'>(
-    'documents',
-  )
   const [graphRevision, setGraphRevision] = useState(0)
   const [activeHeaderAction, setActiveHeaderAction] = useState('')
   const [isSearchMenuOpen, setIsSearchMenuOpen] = useState(false)
@@ -269,6 +299,10 @@ export function NotiaMenu() {
   )
   const [treeNodes, setTreeNodes] = useState<NotiaFileNode[]>([])
   const [openTabs, setOpenTabs] = useState<OpenDocumentTab[]>([])
+  const [openWorkspaceSpecialTabs, setOpenWorkspaceSpecialTabs] = useState<OpenWorkspaceSpecialTabs>({
+    graph: false,
+    taskManager: false,
+  })
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [pendingCreation, setPendingCreation] = useState<{
     id: string
@@ -293,6 +327,10 @@ export function NotiaMenu() {
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
+  const openWorkspaceSpecialTabsRef = useRef<OpenWorkspaceSpecialTabs>({
+    graph: false,
+    taskManager: false,
+  })
   const treeNodesRef = useRef<NotiaFileNode[]>([])
   const pendingTextSaveByPathRef = useRef<Map<string, PendingTextSaveJob>>(new Map())
   const libraryTreeRefreshTimerRef = useRef<number | null>(null)
@@ -312,6 +350,11 @@ export function NotiaMenu() {
     [activeTabPath, openTabs],
   )
   const activeDocument = activeTab?.document ?? null
+  const activeWorkspaceView = activeTabPath === GRAPH_WORKSPACE_TAB_PATH
+    ? 'graph'
+    : activeTabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
+      ? 'task-manager'
+      : 'documents'
   const isGraphViewActive = activeWorkspaceView === 'graph'
   const shouldRefreshVisibleExplorerTree =
     activeWorkspaceView !== 'task-manager' && (activeWorkspaceView === 'graph' || isSidebarOpen)
@@ -325,8 +368,8 @@ export function NotiaMenu() {
     [treeNodes, searchMatchedPathSet, isSearchActive],
   )
   const titleBarTabs = useMemo(
-    () => openTabs.map((tab) => ({ path: tab.document.path, title: tab.document.name })),
-    [openTabs],
+    () => buildWorkspaceTitleTabs(openTabs, openWorkspaceSpecialTabs),
+    [openTabs, openWorkspaceSpecialTabs],
   )
   const markdownWikiLinkTargets = useMemo(
     () => (isMarkdownDocumentActive ? buildWikiLinkTargets(treeNodes, activeLibrary?.path ?? null) : []),
@@ -359,6 +402,10 @@ export function NotiaMenu() {
 
   const resetTabs = useCallback(() => {
     setOpenTabs([])
+    setOpenWorkspaceSpecialTabs({
+      graph: false,
+      taskManager: false,
+    })
     setActiveTabPath(null)
   }, [])
 
@@ -489,6 +536,10 @@ export function NotiaMenu() {
   useEffect(() => {
     openTabsRef.current = openTabs
   }, [openTabs])
+
+  useEffect(() => {
+    openWorkspaceSpecialTabsRef.current = openWorkspaceSpecialTabs
+  }, [openWorkspaceSpecialTabs])
 
   useEffect(() => {
     treeNodesRef.current = treeNodes
@@ -804,12 +855,28 @@ export function NotiaMenu() {
 
   const handleRailActionClick = useCallback((actionId: string) => {
     if (actionId === 'graph-view') {
-      setActiveWorkspaceView((current) => (current === 'graph' ? 'documents' : 'graph'))
+      setOpenWorkspaceSpecialTabs((current) => (
+        current.graph
+          ? current
+          : {
+              ...current,
+              graph: true,
+            }
+      ))
+      setActiveTabPath(GRAPH_WORKSPACE_TAB_PATH)
       return
     }
 
     if (actionId === 'task-manager') {
-      setActiveWorkspaceView((current) => (current === 'task-manager' ? 'documents' : 'task-manager'))
+      setOpenWorkspaceSpecialTabs((current) => (
+        current.taskManager
+          ? current
+          : {
+              ...current,
+              taskManager: true,
+            }
+      ))
+      setActiveTabPath(TASK_MANAGER_WORKSPACE_TAB_PATH)
     }
   }, [])
 
@@ -856,6 +923,16 @@ export function NotiaMenu() {
   }, [])
 
   const handleActivateTab = useCallback((tabPath: string) => {
+    if (tabPath === GRAPH_WORKSPACE_TAB_PATH || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH) {
+      const specialTabs = openWorkspaceSpecialTabsRef.current
+      if ((tabPath === GRAPH_WORKSPACE_TAB_PATH && !specialTabs.graph) || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !specialTabs.taskManager)) {
+        return
+      }
+
+      setActiveTabPath(tabPath)
+      return
+    }
+
     if (!openTabsRef.current.some((tab) => tab.document.path === tabPath)) {
       return
     }
@@ -903,6 +980,45 @@ export function NotiaMenu() {
   )
 
   const closeTabByPath = useCallback(async (tabPath: string) => {
+    if (tabPath === GRAPH_WORKSPACE_TAB_PATH || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH) {
+      const currentSpecialTabs = openWorkspaceSpecialTabsRef.current
+      if ((tabPath === GRAPH_WORKSPACE_TAB_PATH && !currentSpecialTabs.graph) || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !currentSpecialTabs.taskManager)) {
+        return
+      }
+
+      const currentTabs = buildWorkspaceTitleTabs(openTabsRef.current, currentSpecialTabs)
+      const closingIndex = currentTabs.findIndex((tab) => tab.path === tabPath)
+      if (closingIndex < 0) {
+        return
+      }
+
+      const nextSpecialTabs: OpenWorkspaceSpecialTabs = {
+        graph: tabPath === GRAPH_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.graph,
+        taskManager: tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.taskManager,
+      }
+      const remainingTabs = buildWorkspaceTitleTabs(openTabsRef.current, nextSpecialTabs)
+      const currentActiveTabPath = activeTabPathRef.current
+      let nextActiveTabPath = currentActiveTabPath
+
+      if (currentActiveTabPath === tabPath) {
+        if (remainingTabs.length === 0) {
+          nextActiveTabPath = null
+        } else {
+          const fallbackIndex = closingIndex > 0 ? closingIndex - 1 : 0
+          const safeFallbackIndex = Math.min(fallbackIndex, remainingTabs.length - 1)
+          nextActiveTabPath = remainingTabs[safeFallbackIndex].path
+        }
+      }
+
+      if (nextActiveTabPath && !remainingTabs.some((tab) => tab.path === nextActiveTabPath)) {
+        nextActiveTabPath = remainingTabs.length > 0 ? remainingTabs[remainingTabs.length - 1].path : null
+      }
+
+      setOpenWorkspaceSpecialTabs(nextSpecialTabs)
+      setActiveTabPath(nextActiveTabPath)
+      return
+    }
+
     const tabToClose = openTabsRef.current.find((tab) => tab.document.path === tabPath)
     if (!tabToClose) {
       return
@@ -919,25 +1035,28 @@ export function NotiaMenu() {
       return
     }
 
-    const remainingTabs = currentTabs.filter((tab) => tab.document.path !== tabPath)
+    const remainingDocumentTabs = currentTabs.filter((tab) => tab.document.path !== tabPath)
+    const workspaceTabsBeforeClose = buildWorkspaceTitleTabs(currentTabs, openWorkspaceSpecialTabsRef.current)
+    const workspaceTabsAfterClose = buildWorkspaceTitleTabs(remainingDocumentTabs, openWorkspaceSpecialTabsRef.current)
     const currentActiveTabPath = activeTabPathRef.current
     let nextActiveTabPath = currentActiveTabPath
 
     if (currentActiveTabPath === tabPath) {
-      if (remainingTabs.length === 0) {
+      if (workspaceTabsAfterClose.length === 0) {
         nextActiveTabPath = null
       } else {
-        const fallbackIndex = closingIndex > 0 ? closingIndex - 1 : 0
-        const safeFallbackIndex = Math.min(fallbackIndex, remainingTabs.length - 1)
-        nextActiveTabPath = remainingTabs[safeFallbackIndex].document.path
+        const workspaceClosingIndex = workspaceTabsBeforeClose.findIndex((tab) => tab.path === tabPath)
+        const fallbackIndex = workspaceClosingIndex > 0 ? workspaceClosingIndex - 1 : 0
+        const safeFallbackIndex = Math.min(fallbackIndex, workspaceTabsAfterClose.length - 1)
+        nextActiveTabPath = workspaceTabsAfterClose[safeFallbackIndex].path
       }
     }
 
-    if (nextActiveTabPath && !remainingTabs.some((tab) => tab.document.path === nextActiveTabPath)) {
-      nextActiveTabPath = remainingTabs.length > 0 ? remainingTabs[remainingTabs.length - 1].document.path : null
+    if (nextActiveTabPath && !workspaceTabsAfterClose.some((tab) => tab.path === nextActiveTabPath)) {
+      nextActiveTabPath = workspaceTabsAfterClose.length > 0 ? workspaceTabsAfterClose[workspaceTabsAfterClose.length - 1].path : null
     }
 
-    setOpenTabs(remainingTabs)
+    setOpenTabs(remainingDocumentTabs)
     setActiveTabPath(nextActiveTabPath)
   }, [persistOpenTabBeforeClose])
 
@@ -955,21 +1074,21 @@ export function NotiaMenu() {
   }, [closeTabByPath])
 
   const handleCycleToNextTab = useCallback(() => {
-    const currentTabs = openTabsRef.current
+    const currentTabs = buildWorkspaceTitleTabs(openTabsRef.current, openWorkspaceSpecialTabsRef.current)
     if (currentTabs.length <= 1) {
       return
     }
 
     const currentActiveTabPath = activeTabPathRef.current
-    const activeIndex = currentTabs.findIndex((tab) => tab.document.path === currentActiveTabPath)
+    const activeIndex = currentTabs.findIndex((tab) => tab.path === currentActiveTabPath)
     const nextIndex = activeIndex < 0 ? 0 : (activeIndex + 1) % currentTabs.length
-    setActiveTabPath(currentTabs[nextIndex].document.path)
+    setActiveTabPath(currentTabs[nextIndex].path)
   }, [])
 
   const closeTabsByPath = useCallback((path: string) => {
     const currentTabs = openTabsRef.current
-    const remainingTabs = currentTabs.filter((tab) => !isSameOrNestedPath(path, tab.document.path))
-    if (remainingTabs.length === currentTabs.length) {
+    const remainingDocumentTabs = currentTabs.filter((tab) => !isSameOrNestedPath(path, tab.document.path))
+    if (remainingDocumentTabs.length === currentTabs.length) {
       return
     }
 
@@ -979,15 +1098,16 @@ export function NotiaMenu() {
       }
     }
 
+    const workspaceTabsAfterClose = buildWorkspaceTitleTabs(remainingDocumentTabs, openWorkspaceSpecialTabsRef.current)
     const currentActiveTabPath = activeTabPathRef.current
     const nextActiveTabPath =
-      currentActiveTabPath && remainingTabs.some((tab) => tab.document.path === currentActiveTabPath)
+      currentActiveTabPath && workspaceTabsAfterClose.some((tab) => tab.path === currentActiveTabPath)
         ? currentActiveTabPath
-        : remainingTabs.length > 0
-          ? remainingTabs[remainingTabs.length - 1].document.path
+        : workspaceTabsAfterClose.length > 0
+          ? workspaceTabsAfterClose[workspaceTabsAfterClose.length - 1].path
           : null
 
-    setOpenTabs(remainingTabs)
+    setOpenTabs(remainingDocumentTabs)
     setActiveTabPath(nextActiveTabPath)
   }, [clearPendingTextSaveByPath])
 
@@ -1149,8 +1269,6 @@ export function NotiaMenu() {
   ])
 
   const handleOpenFile = useCallback(async (filePath: string) => {
-    setActiveWorkspaceView('documents')
-
     const existingTab = openTabsRef.current.find((tab) => tab.document.path === filePath)
     if (existingTab) {
       setActiveTabPath(filePath)
@@ -1669,7 +1787,11 @@ export function NotiaMenu() {
             onOpenFile={handleOpenFileFromView}
           />
         ) : activeWorkspaceView === 'task-manager' ? (
-          <TaskManagerApp embedded vaultPath={activeLibrary?.path ?? null} />
+          <TaskManagerApp
+            embedded
+            vaultPath={activeLibrary?.path ?? null}
+            onOpenTaskFile={handleOpenFile}
+          />
         ) : (
           <MainView
             activeDocument={activeDocument}

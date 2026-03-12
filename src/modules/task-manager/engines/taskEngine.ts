@@ -84,6 +84,7 @@ export function getTasks(documents: MarkdownFileDocument[]): TaskItem[] {
       state,
       startDate: frontmatter.fechaInicio ?? '',
       endDate: frontmatter.fechaFin ?? '',
+      dynamicEndDate: resolveDynamicEndDateFlag(frontmatter.fechaFinDinamica),
       board: resolveTaskBoard(document.path, frontmatter),
       group: frontmatter.equipo ?? '',
       priority: (frontmatter.prioridad as TaskItem['priority']) ?? '',
@@ -151,6 +152,7 @@ export function buildTaskContent(data: TaskFormData, order: number): string {
     `estado: "${data.state}"`,
     'fechaInicio: ""',
     `fechaFin: "${safeEndDate}"`,
+    `fechaFinDinamica: ${data.dynamicEndDate}`,
     `tablero: "${data.board}"`,
     `equipo: "${data.group}"`,
     `prioridad: "${data.priority}"`,
@@ -272,6 +274,21 @@ function resolveTaskBoard(path: string, frontmatter: TaskFrontmatter): string {
   }
 
   return boardCandidate
+}
+
+function resolveDynamicEndDateFlag(value: TaskFrontmatter['fechaFinDinamica']): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+      return false
+    }
+  }
+
+  return true
 }
 
 function normalizeParentTaskName(value: string): string {
