@@ -1527,6 +1527,37 @@
   padding: var(--tareas-size-sm);
 }
 
+.tareas-pomodoro-config-card {
+  display: block;
+  width: 100%;
+  height: auto;
+  text-align: left;
+  white-space: normal;
+}
+
+.tareas-pomodoro-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.tareas-pomodoro-preset-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 0;
+  min-height: 170px;
+  overflow: hidden;
+}
+
+.tareas-pomodoro-preset-card .tareas-pomodoro-config-card-title,
+.tareas-pomodoro-preset-card .tareas-pomodoro-config-card-label,
+.tareas-pomodoro-preset-card .tareas-pomodoro-config-card-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .tareas-pomodoro-config-card-title,
 .tareas-pomodoro-task-card-title {
   margin: 0;

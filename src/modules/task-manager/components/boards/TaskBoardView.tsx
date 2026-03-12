@@ -5,7 +5,7 @@ import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstan
 import { groupTopLevelTasks } from '../../engines/taskEngine'
 import type { Group, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { TaskManagerModal } from '../common/TaskManagerModal'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
 
 interface TaskBoardViewProps {
@@ -835,7 +835,7 @@ export function TaskBoardView({
         </div>
       </div>
 
-      <NotiaModalShell open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} size="md" panelClassName="tareas-dialog">
+      <TaskManagerModal open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} size="md" >
         <div className="tareas-dialog-header">
           <h2>Agregar comentario</h2>
         </div>
@@ -858,9 +858,9 @@ export function TaskBoardView({
             Guardar comentario
           </NotiaButton>
         </div>
-      </NotiaModalShell>
+      </TaskManagerModal>
 
-      <NotiaModalShell open={Boolean(sourceDialog)} onClose={() => setSourceDialog(null)} size="xl" panelClassName="tareas-dialog">
+      <TaskManagerModal open={Boolean(sourceDialog)} onClose={() => setSourceDialog(null)} size="xl" >
         <div className="tareas-dialog-header">
           <h2>Editar markdown de tarea</h2>
         </div>
@@ -887,7 +887,7 @@ export function TaskBoardView({
             Guardar markdown
           </NotiaButton>
         </div>
-      </NotiaModalShell>
+      </TaskManagerModal>
     </>
   )
 }

@@ -5,7 +5,7 @@ import {
 } from '@mui/material'
 import type { Board } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { TaskManagerModal } from "../common/TaskManagerModal"
 import { ActivityHoursClockPicker } from './ActivityHoursClockPicker'
 
 interface BoardDialogProps {
@@ -50,7 +50,7 @@ export function BoardDialog({ open, mode, board, onClose, onSubmit }: BoardDialo
   }
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="tareas-dialog">
+    <TaskManagerModal open={open} onClose={onClose} size="sm" >
       <div className="tareas-dialog-header">
         <h2>{mode === 'create' ? 'Nuevo tablero' : 'Editar tablero'}</h2>
       </div>
@@ -84,6 +84,6 @@ export function BoardDialog({ open, mode, board, onClose, onSubmit }: BoardDialo
           Guardar
         </NotiaButton>
       </div>
-    </NotiaModalShell>
+    </TaskManagerModal>
   )
 }

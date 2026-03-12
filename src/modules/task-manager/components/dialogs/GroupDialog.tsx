@@ -9,7 +9,7 @@ import {
 } from '@mui/material'
 import type { Board, Group } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { TaskManagerModal } from "../common/TaskManagerModal"
 
 interface GroupDialogProps {
   open: boolean
@@ -59,7 +59,7 @@ export function GroupDialog({
   }
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="tareas-dialog">
+    <TaskManagerModal open={open} onClose={onClose} size="sm" >
       <div className="tareas-dialog-header">
         <h2>{mode === 'create' ? 'Nuevo grupo' : 'Editar grupo'}</h2>
       </div>
@@ -103,6 +103,6 @@ export function GroupDialog({
           Guardar
         </NotiaButton>
       </div>
-    </NotiaModalShell>
+    </TaskManagerModal>
   )
 }

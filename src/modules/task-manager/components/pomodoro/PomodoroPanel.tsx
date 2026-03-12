@@ -11,7 +11,8 @@ import { getEntriesByDate, toLocalDateText } from '../../engines/pomodoroLogEngi
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import type { PomodoroDurations, PomodoroLogEntry, PomodoroState, TaskItem } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { NotiaCard } from '../../../../components/common/NotiaCard'
+import { TaskManagerModal } from '../common/TaskManagerModal'
 
 interface PomodoroPanelProps {
   state: PomodoroState
@@ -283,22 +284,23 @@ export function PomodoroPanel({
         </div>
       </div>
 
-      <NotiaModalShell open={isPresetModalOpen} onClose={() => setIsPresetModalOpen(false)} size="lg" panelClassName="tareas-dialog">
+      <TaskManagerModal open={isPresetModalOpen} onClose={() => setIsPresetModalOpen(false)} size="lg" >
         <div className="tareas-dialog-header">
           <h2>Elegir duración Pomodoro</h2>
         </div>
         <div className="tareas-dialog-body">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+          <div className="tareas-pomodoro-preset-grid">
             {POMODORO_PRESETS.map((preset) => {
               const isSelected = preset.durations.workMinutes === state.durations.workMinutes
                 && preset.durations.shortBreakMinutes === state.durations.shortBreakMinutes
                 && preset.durations.longBreakMinutes === state.durations.longBreakMinutes
 
               return (
-                <NotiaButton
+                <NotiaCard
                   key={preset.title}
-                  className="tareas-pomodoro-config-card"
-                  style={{ textAlign: 'left', borderColor: isSelected ? 'var(--interactive-accent)' : undefined }}
+                  className="tareas-pomodoro-config-card tareas-pomodoro-preset-card"
+                  selected={isSelected}
+                  interactive
                   onClick={() => {
                     onSetDurations(preset.durations)
                     setIsPresetModalOpen(false)
@@ -312,7 +314,7 @@ export function PomodoroPanel({
                   <p className="tareas-pomodoro-config-card-text">Trabajo: {preset.durations.workMinutes} min</p>
                   <p className="tareas-pomodoro-config-card-text">Descanso corto: {preset.durations.shortBreakMinutes} min</p>
                   <p className="tareas-pomodoro-config-card-text">Descanso largo: {preset.durations.longBreakMinutes} min</p>
-                </NotiaButton>
+                </NotiaCard>
               )
             })}
           </div>
@@ -320,7 +322,7 @@ export function PomodoroPanel({
         <div className="tareas-dialog-actions">
           <NotiaButton onClick={() => setIsPresetModalOpen(false)}>Cerrar</NotiaButton>
         </div>
-      </NotiaModalShell>
+      </TaskManagerModal>
 
       <div className="tareas-pomodoro-task-section">
         <h3>Tarea vinculada</h3>

@@ -11,7 +11,7 @@ import {
 } from '@mui/material'
 import type { Group, TaskFormData, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { TaskManagerModal } from "../common/TaskManagerModal"
 
 interface TaskDialogProps {
   open: boolean
@@ -107,7 +107,7 @@ export function TaskDialog({
   }
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="md" panelClassName="tareas-dialog">
+    <TaskManagerModal open={open} onClose={onClose} size="md" >
       <div className="tareas-dialog-header">
         <h2>{title}</h2>
       </div>
@@ -225,6 +225,6 @@ export function TaskDialog({
           Guardar
         </NotiaButton>
       </div>
-    </NotiaModalShell>
+    </TaskManagerModal>
   )
 }

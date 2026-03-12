@@ -212,6 +212,34 @@
   color: var(--color-icon-muted);
 }
 
+.notia-card {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-modal-bg) 88%, transparent);
+  color: var(--color-heading-text);
+}
+
+.notia-card--interactive {
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.notia-card--interactive:hover {
+  border-color: var(--color-active-border);
+  background: color-mix(in srgb, var(--color-hover-surface) 62%, transparent);
+}
+
+.notia-card--interactive:focus-visible {
+  outline: none;
+  border-color: var(--color-active-border);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-active-border) 70%, transparent);
+}
+
+.notia-card.is-selected {
+  border-color: var(--color-active-border);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-active-border) 65%, transparent);
+}
+
 .notia-titlebar {
   height: var(--titlebar-height);
   border-bottom: 1px solid var(--color-border-strong);
@@ -1820,10 +1848,10 @@
 }
 
 .notia-modal-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background: var(--modal-engine-backdrop);
-  backdrop-filter: blur(1px);
+  backdrop-filter: blur(8px) saturate(115%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1831,10 +1859,10 @@
 }
 
 .notia-modal-engine-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background: var(--modal-engine-backdrop);
-  backdrop-filter: blur(1px);
+  backdrop-filter: blur(8px) saturate(115%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1843,7 +1871,8 @@
 
 .notia-modal-engine-panel {
   width: min(760px, calc(100vw - 56px));
-  max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 56px);
+  max-width: calc((100vw - var(--safe-area-left) - var(--safe-area-right) - 16px) * 0.75);
+  max-height: calc((100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 16px) * 0.75);
   border: 1px solid var(--modal-engine-border);
   border-radius: 10px;
   background: linear-gradient(
@@ -1852,7 +1881,8 @@
     var(--modal-engine-surface-alt) 100%
   );
   box-shadow: 0 24px 60px var(--modal-engine-shadow);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   color: var(--color-body-text);
 }
 

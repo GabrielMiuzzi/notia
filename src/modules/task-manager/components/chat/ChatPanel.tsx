@@ -17,7 +17,7 @@ import {
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import type { ChatMessage, ChatSessionFile, ChatSessionOptions } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaModalShell } from '../../../../components/notia/NotiaModalShell'
+import { TaskManagerModal } from '../common/TaskManagerModal'
 
 interface ChatPanelProps {
   sessions: ChatSessionFile[]
@@ -221,7 +221,7 @@ export function ChatPanel({
         }}
       />
 
-      <NotiaModalShell open={settingsOpen} onClose={() => setSettingsOpen(false)} size="md" panelClassName="tareas-dialog">
+      <TaskManagerModal open={settingsOpen} onClose={() => setSettingsOpen(false)} size="md" >
         <div className="tareas-dialog-header">
           <h2>Configuración del asistente</h2>
         </div>
@@ -251,7 +251,7 @@ export function ChatPanel({
         <div className="tareas-dialog-actions">
           <NotiaButton onClick={() => setSettingsOpen(false)}>Cerrar</NotiaButton>
         </div>
-      </NotiaModalShell>
+      </TaskManagerModal>
     </Stack>
   )
 }
@@ -284,7 +284,7 @@ function ChatSessionDialog({
   }
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="sm" panelClassName="tareas-dialog">
+    <TaskManagerModal open={open} onClose={onClose} size="sm" >
       <div className="tareas-dialog-header">
         <h2>{title}</h2>
       </div>
@@ -314,6 +314,6 @@ function ChatSessionDialog({
           {confirmLabel}
         </NotiaButton>
       </div>
-    </NotiaModalShell>
+    </TaskManagerModal>
   )
 }
