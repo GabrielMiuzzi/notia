@@ -3,6 +3,8 @@ import {
   CHAT_HISTORY_LIMIT_OPTIONS,
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
+  DEFAULT_GROUPS,
+  TASKS_ROOT_FOLDER,
   TASK_PRIORITIES,
   TASK_STATES,
 } from '../constants/taskManagerConstants'
@@ -178,20 +180,8 @@ function normalizeBoardCandidate(name: string): string | null {
   return normalized
 }
 
-function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot, knownBoards: Board[] = []): Board[] {
+function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot): Board[] {
   const boardsByName = new Map<string, Board>()
-  for (const knownBoard of knownBoards) {
-    const normalizedKnownName = normalizeBoardCandidate(knownBoard.name)
-    if (!normalizedKnownName) {
-      continue
-    }
-
-    boardsByName.set(normalizedKnownName, {
-      name: normalizedKnownName,
-      color: knownBoard.color,
-      activityHoursPerDay: normalizeBoardActivityHours(knownBoard.activityHoursPerDay),
-    })
-  }
 
   for (const defaultBoard of DEFAULT_BOARDS) {
     if (!boardsByName.has(defaultBoard.name)) {
@@ -201,7 +191,7 @@ function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot, known
 
   for (const document of snapshot.documents) {
     const segments = document.path.split('/').filter(Boolean)
-    if (segments.length < 2 || segments[0] !== 'task-mannager') {
+    if (segments.length < 2 || segments[0] !== TASKS_ROOT_FOLDER) {
       continue
     }
 
@@ -245,7 +235,7 @@ function resolveCleanupBoardCandidates(snapshot: TaskManagerSnapshot, extraBoard
 
   for (const document of snapshot.documents) {
     const segments = document.path.split('/').filter(Boolean)
-    if (segments.length < 2 || segments[0] !== 'task-mannager') {
+    if (segments.length < 2 || segments[0] !== TASKS_ROOT_FOLDER) {
       continue
     }
 
@@ -282,39 +272,14 @@ function resolvePomodoroDurationChoice(durations: PomodoroDurations): string {
 }
 
 function resolveSettingsForEmptySnapshot(previousSettings: TaskManagerSettings): TaskManagerSettings {
-  const boardsByName = new Map<string, Board>()
-  for (const defaultBoard of DEFAULT_BOARDS) {
-    boardsByName.set(defaultBoard.name, defaultBoard)
-  }
-  for (const board of previousSettings.boards) {
-    const normalizedName = normalizeBoardCandidate(board.name) ?? DEFAULT_BOARD_NAME
-    boardsByName.set(normalizedName, {
-      name: normalizedName,
-      color: board.color || '#2e6db0',
-      activityHoursPerDay: normalizeBoardActivityHours(board.activityHoursPerDay),
-    })
-  }
-
-  const nextBoards = Array.from(boardsByName.values())
-  const boardNames = new Set(nextBoards.map((board) => board.name))
-  const nextGroups = previousSettings.groups.filter((group) => {
-    const groupBoard = normalizeBoardCandidate(group.board ?? DEFAULT_BOARD_NAME) ?? DEFAULT_BOARD_NAME
-    return boardNames.has(groupBoard)
-  }).map((group) => ({
-    ...group,
-    board: normalizeBoardCandidate(group.board ?? DEFAULT_BOARD_NAME) ?? DEFAULT_BOARD_NAME,
-  }))
-
   const nextActiveTab = NON_BOARD_TABS.has(previousSettings.activeTab)
     ? previousSettings.activeTab
-    : boardNames.has(previousSettings.activeTab)
-      ? previousSettings.activeTab
-      : DEFAULT_BOARD_NAME
+    : DEFAULT_BOARD_NAME
 
   return {
     ...previousSettings,
-    boards: nextBoards,
-    groups: nextGroups,
+    boards: [...DEFAULT_BOARDS],
+    groups: [...DEFAULT_GROUPS],
     activeTab: nextActiveTab,
   }
 }
@@ -363,41 +328,54 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
   const hydrateSettingsFromSnapshot = useCallback((nextSnapshot: TaskManagerSnapshot) => {
     updateSettings((previousSettings) => {
-      if (nextSnapshot.tasks.length === 0) {
-        const nextSettings = resolveSettingsForEmptySnapshot(previousSettings)
-        const sameBoards = nextSettings.boards.length === previousSettings.boards.length
-          && nextSettings.boards.every((board, index) => (
-            board.name === previousSettings.boards[index]?.name
-            && board.color === previousSettings.boards[index]?.color
-            && board.activityHoursPerDay === previousSettings.boards[index]?.activityHoursPerDay
-          ))
-        const sameGroups = nextSettings.groups.length === previousSettings.groups.length
-          && nextSettings.groups.every((group, index) => (
-            group.name === previousSettings.groups[index]?.name
-            && group.color === previousSettings.groups[index]?.color
-            && (group.board ?? DEFAULT_BOARD_NAME) === (previousSettings.groups[index]?.board ?? DEFAULT_BOARD_NAME)
-          ))
-        if (sameBoards && sameGroups && nextSettings.activeTab === previousSettings.activeTab) {
-          return previousSettings
-        }
-
-        return nextSettings
-      }
-
-      const boardsByName = new Map(previousSettings.boards.map((board) => [board.name, board]))
-      const groupsByKey = new Map(
+      const previousBoardsByName = new Map(previousSettings.boards.map((board) => [board.name, board]))
+      const previousGroupsByKey = new Map(
         previousSettings.groups.map((group) => [`${group.board ?? DEFAULT_BOARD_NAME}::${group.name}`, group]),
       )
+      const boardsByName = new Map<string, Board>()
+
+      for (const defaultBoard of DEFAULT_BOARDS) {
+        boardsByName.set(defaultBoard.name, {
+          ...defaultBoard,
+          ...(previousBoardsByName.get(defaultBoard.name) ?? {}),
+          activityHoursPerDay: normalizeBoardActivityHours(previousBoardsByName.get(defaultBoard.name)?.activityHoursPerDay ?? defaultBoard.activityHoursPerDay),
+        })
+      }
+
+      for (const document of nextSnapshot.documents) {
+        const segments = document.path.split('/').filter(Boolean)
+        if (segments.length < 2 || segments[0] !== TASKS_ROOT_FOLDER) {
+          continue
+        }
+
+        const boardName = normalizeBoardCandidate(segments[1] ?? '')
+        if (!boardName || boardsByName.has(boardName)) {
+          continue
+        }
+
+        const previousBoard = previousBoardsByName.get(boardName)
+        boardsByName.set(boardName, {
+          name: boardName,
+          color: previousBoard?.color ?? AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
+          activityHoursPerDay: normalizeBoardActivityHours(previousBoard?.activityHoursPerDay ?? 24),
+        })
+      }
 
       for (const task of nextSnapshot.tasks) {
         const boardName = normalizeBoardCandidate(task.board) ?? DEFAULT_BOARD_NAME
         if (!boardsByName.has(boardName)) {
+          const previousBoard = previousBoardsByName.get(boardName)
           boardsByName.set(boardName, {
             name: boardName,
-            color: AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
-            activityHoursPerDay: 24,
+            color: previousBoard?.color ?? AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
+            activityHoursPerDay: normalizeBoardActivityHours(previousBoard?.activityHoursPerDay ?? 24),
           })
         }
+      }
+
+      const groupsByKey = new Map<string, Group>()
+      for (const task of nextSnapshot.tasks) {
+        const boardName = normalizeBoardCandidate(task.board) ?? DEFAULT_BOARD_NAME
 
         const groupName = task.group.trim()
         if (!groupName) {
@@ -406,9 +384,10 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
         const key = `${boardName}::${groupName}`
         if (!groupsByKey.has(key)) {
+          const previousGroup = previousGroupsByKey.get(key)
           groupsByKey.set(key, {
             name: groupName,
-            color: AUTO_COLOR_PALETTE[groupsByKey.size % AUTO_COLOR_PALETTE.length],
+            color: previousGroup?.color ?? AUTO_COLOR_PALETTE[groupsByKey.size % AUTO_COLOR_PALETTE.length],
             board: boardName,
           })
         }
@@ -492,7 +471,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           resolveCleanupBoardCandidates(bootstrapSnapshot),
         )
       }
-      const bootstrapBoards = resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot, settings.boards)
+      const bootstrapBoards = resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot)
       await ensureTaskWorkspace(path, bootstrapBoards)
       const nextSnapshot = await loadTaskManagerSnapshot(path)
       setSnapshot(nextSnapshot)
@@ -511,7 +490,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     } finally {
       setIsLoading(false)
     }
-  }, [hydrateSettingsFromSnapshot, settings.boards, updateSettings])
+  }, [hydrateSettingsFromSnapshot, updateSettings])
 
   const selectVault = useCallback(async () => {
     const selected = await pickVaultDirectory()
@@ -540,7 +519,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
         await ensureTaskWorkspace(
           settings.activeVaultPath as string,
-          resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot, settings.boards),
+          resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot),
         )
       })
       .then(() => loadTaskManagerSnapshot(settings.activeVaultPath as string))
@@ -556,7 +535,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
           : 'No se pudo cargar el estado del gestor de tareas.')
       })
       .finally(() => setIsLoading(false))
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards, updateSettings])
+  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, updateSettings])
 
   useEffect(() => {
     if (!externalVaultPath) {
