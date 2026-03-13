@@ -17,3 +17,11 @@ export async function startWindowDragging(): Promise<void> {
     // Ignore drag start failures and keep UI responsive.
   }
 }
+
+export async function startWindowDraggingWithRestore(): Promise<void> {
+  try {
+    await invoke('start_window_dragging_with_restore')
+  } catch {
+    // Ignore drag start failures and keep UI responsive.
+  }
+}

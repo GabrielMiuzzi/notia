@@ -275,13 +275,61 @@ interface OpenWorkspaceSpecialTabs {
 const GRAPH_WORKSPACE_TAB_PATH = '__workspace_graph__'
 const TASK_MANAGER_WORKSPACE_TAB_PATH = '__workspace_task_manager__'
 
+function getDisplayBaseName(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return value
+  }
+
+  const stripQueryAndHash = (input: string): string => input.replace(/[?#].*$/, '')
+  const decodePath = (input: string): string => {
+    try {
+      return decodeURIComponent(input)
+    } catch {
+      return input
+    }
+  }
+
+  let normalized = stripQueryAndHash(trimmed).replace(/\\/g, '/')
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed)
+      normalized = decodePath(`${parsed.hostname}${parsed.pathname}`).replace(/\\/g, '/')
+    } catch {
+      normalized = decodePath(normalized)
+    }
+  } else {
+    normalized = decodePath(normalized)
+  }
+
+  let leaf = normalized.split('/').filter(Boolean).pop() ?? normalized
+  if (!leaf) {
+    leaf = trimmed
+  }
+
+  const lastColonIndex = leaf.lastIndexOf(':')
+  if (lastColonIndex > 0) {
+    leaf = leaf.slice(lastColonIndex + 1)
+  }
+
+  const lastDotIndex = leaf.lastIndexOf('.')
+  if (lastDotIndex > 0) {
+    return leaf.slice(0, lastDotIndex)
+  }
+  return leaf
+}
+
+function resolveWorkspaceTabTitle(tab: OpenDocumentTab): string {
+  return getDisplayBaseName(tab.document.name || tab.document.path)
+}
+
 function buildWorkspaceTitleTabs(
   documentTabs: OpenDocumentTab[],
   specialTabs: OpenWorkspaceSpecialTabs,
 ): WorkspaceTitleTab[] {
   const tabs: WorkspaceTitleTab[] = documentTabs.map((tab) => ({
     path: tab.document.path,
-    title: tab.document.name,
+    title: resolveWorkspaceTabTitle(tab),
   }))
 
   if (specialTabs.graph) {
@@ -342,6 +390,10 @@ export function NotiaMenu() {
   const { confirm } = useConfirmationEngine()
   const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
   const isAndroidRuntime = runtimeDevice === 'Android'
+  const titlebarRightActions = useMemo(
+    () => (isAndroidRuntime ? [] : TITLEBAR_RIGHT_ACTIONS),
+    [isAndroidRuntime],
+  )
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
@@ -953,7 +1005,7 @@ export function NotiaMenu() {
     }
   }, [activeLibrary])
 
-  const handleWindowAction = useCallback((action: 'minimize' | 'maximize' | 'close') => {
+  const handleWindowAction = useCallback((action: NotiaWindowAction) => {
     void controlWindow(action)
   }, [])
 
@@ -1777,7 +1829,7 @@ export function NotiaMenu() {
         onExplorerToolClick={handleExplorerToolClick}
         onSearchQueryChange={setSearchQuery}
         onSearchMenuClose={handleCloseSearchMenu}
-        rightActions={TITLEBAR_RIGHT_ACTIONS}
+        rightActions={titlebarRightActions}
         theme={theme}
         onToggleTheme={handleThemeToggle}
         onWindowAction={handleWindowAction}

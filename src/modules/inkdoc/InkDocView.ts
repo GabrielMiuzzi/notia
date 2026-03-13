@@ -956,7 +956,7 @@ export class InkDocView extends ItemView {
 		this.pencilSubmenuEngine.register("colors", colorsToggle, colorsFlyout);
 		this.pencilSubmenuEngine.register("stylus", settingsToggle, stylusFlyout);
 
-		this.setActivePencilSubmenu("brushes");
+		this.setActivePencilSubmenu(null);
 		this.updatePencilMenuUI();
 		this.updatePencilMenuVisibility();
 	}

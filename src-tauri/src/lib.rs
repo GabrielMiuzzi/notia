@@ -1075,6 +1075,10 @@ fn window_control(window: tauri::Window, payload: WindowControlPayload) {
                 let _ = window.maximize();
             }
         }
+        "fullscreen" => {
+            let is_fullscreen = window.is_fullscreen().unwrap_or(false);
+            let _ = window.set_fullscreen(!is_fullscreen);
+        }
         "close" => {
             let _ = window.close();
         }
@@ -1095,6 +1099,22 @@ fn start_window_dragging(window: tauri::Window) {
 #[tauri::command]
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn start_window_dragging(_window: tauri::Window) {}
+
+#[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn start_window_dragging_with_restore(window: tauri::Window) {
+    if window.is_fullscreen().unwrap_or(false) {
+        let _ = window.set_fullscreen(false);
+    }
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    }
+    let _ = window.start_dragging();
+}
+
+#[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn start_window_dragging_with_restore(_window: tauri::Window) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1118,6 +1138,7 @@ pub fn run() {
             mobile_directory_picker::read_android_library_tree,
             window_control,
             start_window_dragging,
+            start_window_dragging_with_restore,
         ])
         .plugin(mobile_directory_picker::init())
         .run(tauri::generate_context!())

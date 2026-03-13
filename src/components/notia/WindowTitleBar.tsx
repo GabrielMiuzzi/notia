@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent } from 'react'
 import { ChevronLeft, ChevronRight, Moon, Sun } from 'lucide-react'
-import { startWindowDragging } from '../../services/window/windowRuntime'
+import { startWindowDragging, startWindowDraggingWithRestore } from '../../services/window/windowRuntime'
 import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
@@ -32,7 +32,7 @@ interface WindowTitleBarProps {
   rightActions: NotiaIconAction[]
   theme: 'dark' | 'light'
   onToggleTheme: () => void
-  onWindowAction: (action: 'minimize' | 'maximize' | 'close') => void
+  onWindowAction: (action: NotiaWindowAction) => void
 }
 
 export function WindowTitleBar({
@@ -59,9 +59,15 @@ export function WindowTitleBar({
   onToggleTheme,
   onWindowAction,
 }: WindowTitleBarProps) {
+  const DRAG_START_DELAY_MS = 170
+  const DRAG_MOVE_THRESHOLD_PX = 8
   const tabsScrollRef = useRef<HTMLDivElement>(null)
   const tabElementRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const pendingDragStartTimeoutRef = useRef<number | null>(null)
+  const titlebarPressStartPointRef = useRef<{ x: number; y: number } | null>(null)
+  const isTitlebarPressActiveRef = useRef(false)
+  const hasStartedWindowDragRef = useRef(false)
   const [isTabsOverflowing, setIsTabsOverflowing] = useState(false)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
@@ -164,6 +170,15 @@ export function WindowTitleBar({
     }
   }, [isSearchMenuOpen])
 
+  useEffect(() => {
+    return () => {
+      if (pendingDragStartTimeoutRef.current !== null) {
+        window.clearTimeout(pendingDragStartTimeoutRef.current)
+        pendingDragStartTimeoutRef.current = null
+      }
+    }
+  }, [])
+
   const handleTitlebarMouseDown = (event: MouseEvent<HTMLElement>) => {
     if (event.button !== 0) {
       return
@@ -174,7 +189,59 @@ export function WindowTitleBar({
     }
 
     event.preventDefault()
-    void startWindowDragging()
+    isTitlebarPressActiveRef.current = true
+    hasStartedWindowDragRef.current = false
+    titlebarPressStartPointRef.current = { x: event.clientX, y: event.clientY }
+    if (pendingDragStartTimeoutRef.current !== null) {
+      window.clearTimeout(pendingDragStartTimeoutRef.current)
+      pendingDragStartTimeoutRef.current = null
+    }
+    pendingDragStartTimeoutRef.current = window.setTimeout(() => {
+      pendingDragStartTimeoutRef.current = null
+      void startWindowDragging()
+    }, DRAG_START_DELAY_MS)
+  }
+
+  const resetTitlebarPressState = () => {
+    isTitlebarPressActiveRef.current = false
+    hasStartedWindowDragRef.current = false
+    titlebarPressStartPointRef.current = null
+  }
+
+  const cancelPendingWindowDrag = () => {
+    if (pendingDragStartTimeoutRef.current === null) {
+      resetTitlebarPressState()
+      return
+    }
+    window.clearTimeout(pendingDragStartTimeoutRef.current)
+    pendingDragStartTimeoutRef.current = null
+    resetTitlebarPressState()
+  }
+
+  const handleTitlebarMouseMove = (event: MouseEvent<HTMLElement>) => {
+    if (!isTitlebarPressActiveRef.current || hasStartedWindowDragRef.current) {
+      return
+    }
+    if ((event.buttons & 1) !== 1) {
+      cancelPendingWindowDrag()
+      return
+    }
+    const startPoint = titlebarPressStartPointRef.current
+    if (!startPoint) {
+      return
+    }
+    const deltaX = event.clientX - startPoint.x
+    const deltaY = event.clientY - startPoint.y
+    if ((deltaX * deltaX) + (deltaY * deltaY) < (DRAG_MOVE_THRESHOLD_PX * DRAG_MOVE_THRESHOLD_PX)) {
+      return
+    }
+    if (pendingDragStartTimeoutRef.current !== null) {
+      window.clearTimeout(pendingDragStartTimeoutRef.current)
+      pendingDragStartTimeoutRef.current = null
+    }
+    hasStartedWindowDragRef.current = true
+    event.preventDefault()
+    void startWindowDraggingWithRestore()
   }
 
   const handleTitlebarDoubleClick = (event: MouseEvent<HTMLElement>) => {
@@ -187,7 +254,8 @@ export function WindowTitleBar({
     }
 
     event.preventDefault()
-    onWindowAction('maximize')
+    cancelPendingWindowDrag()
+    onWindowAction('fullscreen')
   }
 
   const handleScrollTabs = (direction: 'left' | 'right') => {
@@ -207,6 +275,9 @@ export function WindowTitleBar({
     <header
       className="notia-titlebar"
       onMouseDown={handleTitlebarMouseDown}
+      onMouseMove={handleTitlebarMouseMove}
+      onMouseUp={cancelPendingWindowDrag}
+      onMouseLeave={cancelPendingWindowDrag}
       onDoubleClick={handleTitlebarDoubleClick}
     >
       <div
@@ -355,7 +426,7 @@ export function WindowTitleBar({
           <NotiaButton size="icon" variant="ghost" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
             <ThemeIcon size={15} />
           </NotiaButton>
-          <div className="notia-titlebar-separator" />
+          {rightActions.length > 0 ? <div className="notia-titlebar-separator" /> : null}
           {rightActions.map(({ id, label, icon: Icon }) => (
             <NotiaButton
               key={id}
