@@ -1,10 +1,11 @@
-import type { NotiaFileNode } from '../../types/notia'
+import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import {
   createLibraryEntry as createFilesystemEntry,
   getPathBaseName,
   isDirectoryPath,
+  pathExists,
   performLibraryEntryOperation as performFilesystemEntryOperation,
   pickDirectory,
   readLibraryTree as readFilesystemTree,
@@ -81,6 +82,34 @@ export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
     name: buildLibraryNameFromPath(resolvedPath),
     androidTreeUri: selected.uri,
   }
+}
+
+export async function filterExistingLibraries(libraries: NotiaLibrary[]): Promise<NotiaLibrary[]> {
+  if (libraries.length === 0) {
+    return []
+  }
+
+  const runtimeDevice = getRuntimeDevice()
+  const checks = await Promise.all(libraries.map(async (library) => {
+    const normalizedPath = normalizeFilesystemPath(library.path)
+    if (!normalizedPath.trim()) {
+      return false
+    }
+
+    if (runtimeDevice === 'Android' && library.androidTreeUri) {
+      // Android SAF paths may not be directly resolvable through regular path checks.
+      return true
+    }
+
+    const exists = await pathExists(normalizedPath)
+    if (!exists) {
+      return false
+    }
+
+    return isDirectoryPath(normalizedPath)
+  }))
+
+  return libraries.filter((_, index) => checks[index])
 }
 
 export async function readLibraryTree(

@@ -2046,8 +2046,17 @@
   border-radius: 8px;
   color: var(--color-body-text);
   font-size: 13px;
-  padding: 10px 12px;
+  padding: 10px;
   margin-bottom: 8px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.notia-library-manager-item-main {
+  min-width: 0;
+  flex: 1;
 }
 
 .notia-library-manager-item-name {
@@ -2062,6 +2071,11 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.notia-library-manager-item-remove {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 .notia-library-manager-empty {

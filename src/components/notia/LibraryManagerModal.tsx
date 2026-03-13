@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BookPlus, X } from 'lucide-react'
+import { BookPlus, Trash2, X } from 'lucide-react'
 import { pickLibraryDirectory } from '../../services/libraries/libraryRuntime'
 import type { NotiaLibrary } from '../../types/notia'
 import { NotiaModalShell } from './NotiaModalShell'
@@ -10,6 +10,7 @@ interface LibraryManagerModalProps {
   libraries: NotiaLibrary[]
   activeLibraryId: string | null
   onLibraryAdded: (library: NotiaLibrary) => void
+  onLibraryRemoved: (library: NotiaLibrary) => Promise<void>
   onClose: () => void
 }
 
@@ -18,6 +19,7 @@ export function LibraryManagerModal({
   libraries,
   activeLibraryId,
   onLibraryAdded,
+  onLibraryRemoved,
   onClose,
 }: LibraryManagerModalProps) {
   const [isAdding, setIsAdding] = useState(false)
@@ -79,8 +81,23 @@ export function LibraryManagerModal({
                     library.id === activeLibraryId ? 'notia-library-manager-item--active' : ''
                   }`}
                 >
-                  <div className="notia-library-manager-item-name">{library.name}</div>
-                  <div className="notia-library-manager-item-path">{library.path}</div>
+                  <div className="notia-library-manager-item-main">
+                    <div className="notia-library-manager-item-name">{library.name}</div>
+                    <div className="notia-library-manager-item-path">{library.path}</div>
+                  </div>
+                  <NotiaButton
+                    type="button"
+                    size="icon"
+                    variant="danger"
+                    className="notia-library-manager-item-remove"
+                    title={`Quitar ${library.name}`}
+                    aria-label={`Quitar ${library.name}`}
+                    onClick={() => {
+                      void onLibraryRemoved(library)
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </NotiaButton>
                 </div>
               ))
             ) : (

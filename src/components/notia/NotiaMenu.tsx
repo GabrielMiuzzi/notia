@@ -15,6 +15,7 @@ import {
 } from '../../services/libraries/libraryStorage'
 import {
   createLibraryEntry,
+  filterExistingLibraries,
   performLibraryEntryOperation,
   readLibraryTree,
   readLibraryTreeSignature,
@@ -120,6 +121,23 @@ function collectFolderExpandedState(
   }
 
   return stateByPath
+}
+
+function areLibrariesEquivalent(current: NotiaLibrary[], next: NotiaLibrary[]): boolean {
+  if (current.length !== next.length) {
+    return false
+  }
+
+  return current.every((library, index) => {
+    const candidate = next[index]
+    if (!candidate) {
+      return false
+    }
+
+    return library.id === candidate.id
+      && library.path === candidate.path
+      && (library.androidTreeUri ?? '') === (candidate.androidTreeUri ?? '')
+  })
 }
 
 function applyFolderExpandedState(nodes: NotiaFileNode[], stateByPath: Map<string, boolean>): NotiaFileNode[] {
@@ -503,6 +521,23 @@ export function NotiaMenu() {
   useEffect(() => {
     saveLibraries(libraries)
   }, [libraries])
+
+  useEffect(() => {
+    let isCancelled = false
+
+    void (async () => {
+      const existingLibraries = await filterExistingLibraries(libraries)
+      if (isCancelled || areLibrariesEquivalent(libraries, existingLibraries)) {
+        return
+      }
+
+      setLibraries(existingLibraries)
+    })()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!activeLibraryId) {
@@ -1655,6 +1690,21 @@ export function NotiaMenu() {
     setLibraries((current) => [...current, library])
     setActiveLibraryId(library.id)
   }
+  const handleLibraryRemoved = useCallback(async (library: NotiaLibrary) => {
+    const shouldRemove = await confirm({
+      title: 'Quitar libreria',
+      message: `Quitar "${library.name}" de Notia? Esta accion no borra la carpeta en disco.`,
+      confirmLabel: 'Quitar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+    if (!shouldRemove) {
+      return
+    }
+
+    closeTabsByPath(library.path)
+    setLibraries((current) => current.filter((item) => item.id !== library.id))
+  }, [closeTabsByPath, confirm])
 
   const libraryName = activeLibrary?.name ?? 'Sin librerias'
   const handleOpenFileFromView = useCallback((filePath: string) => {
@@ -1816,6 +1866,7 @@ export function NotiaMenu() {
         libraries={libraries}
         activeLibraryId={activeLibraryId}
         onLibraryAdded={handleLibraryAdded}
+        onLibraryRemoved={handleLibraryRemoved}
         onClose={handleCloseLibraryManager}
       />
       <FileTreeContextMenu
