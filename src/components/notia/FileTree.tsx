@@ -24,6 +24,7 @@ interface FileTreeProps {
   onCancelRename: () => void
   onNodeContextMenu: (node: NotiaFileNode, position: { x: number; y: number }) => void
   onEmptyContextMenu: (position: { x: number; y: number }) => void
+  onMoveNode: (sourcePath: string, targetDirectoryPath: string) => void
 }
 
 interface TreeRowProps {
@@ -39,7 +40,26 @@ interface TreeRowProps {
   onSubmitRename: (path: string, name: string) => void
   onCancelRename: () => void
   onNodeContextMenu: (node: NotiaFileNode, position: { x: number; y: number }) => void
+  draggingPath: string | null
+  dropTargetFolderPath: string | null
+  onDragStartNode: (path: string) => void
+  onDragEndNode: () => void
+  onDragOverFolder: (targetPath: string) => boolean
+  onDropOnFolder: (targetPath: string) => void
   level?: number
+}
+
+function normalizePath(pathValue: string): string {
+  return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
+  const normalizedBase = normalizePath(basePath)
+  const normalizedCandidate = normalizePath(candidatePath)
+  if (normalizedBase === normalizedCandidate) {
+    return true
+  }
+  return normalizedCandidate.startsWith(`${normalizedBase}/`)
 }
 
 function TreeRow({
@@ -55,6 +75,12 @@ function TreeRow({
   onSubmitRename,
   onCancelRename,
   onNodeContextMenu,
+  draggingPath,
+  dropTargetFolderPath,
+  onDragStartNode,
+  onDragEndNode,
+  onDragOverFolder,
+  onDropOnFolder,
   level = 0,
 }: TreeRowProps) {
   const isFolder = node.type === 'folder'
@@ -74,6 +100,9 @@ function TreeRow({
     node.type === 'folder' &&
     node.path === pendingCreation?.parentPath
   const inputRef = useRef<HTMLInputElement>(null)
+  const nodePath = typeof node.path === 'string' ? node.path : null
+  const isDragging = Boolean(nodePath && draggingPath === nodePath)
+  const isDropTarget = Boolean(isFolder && nodePath && dropTargetFolderPath === nodePath)
   const [renameValue, setRenameValue] = useState(
     node.type === 'file' ? node.name.replace(/\.(md|inkdoc)$/i, '') : node.name,
   )
@@ -115,11 +144,42 @@ function TreeRow({
   return (
     <div>
       <div
-        className={`notia-tree-row ${node.selected ? 'notia-tree-row--selected' : ''} ${isInteractive ? 'notia-tree-row--toggleable' : ''} ${isSearchMatch ? 'notia-tree-row--search-match' : ''}`}
+        className={`notia-tree-row ${node.selected ? 'notia-tree-row--selected' : ''} ${isInteractive ? 'notia-tree-row--toggleable' : ''} ${isSearchMatch ? 'notia-tree-row--search-match' : ''} ${isDragging ? 'notia-tree-row--dragging' : ''} ${isDropTarget ? 'notia-tree-row--drop-target' : ''}`}
         style={{ paddingLeft: `${18 + level * 16}px` }}
         onClick={handleRowClick}
+        draggable={Boolean(nodePath && !isRenaming)}
         role={isInteractive ? 'button' : undefined}
         tabIndex={isInteractive ? 0 : undefined}
+        onDragStart={
+          nodePath
+            ? (event) => {
+                event.dataTransfer.effectAllowed = 'move'
+                event.dataTransfer.setData('text/plain', nodePath)
+                onDragStartNode(nodePath)
+              }
+            : undefined
+        }
+        onDragEnd={onDragEndNode}
+        onDragOver={
+          isFolder && nodePath
+            ? (event) => {
+                if (!onDragOverFolder(nodePath)) {
+                  return
+                }
+
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+              }
+            : undefined
+        }
+        onDrop={
+          isFolder && nodePath
+            ? (event) => {
+                event.preventDefault()
+                onDropOnFolder(nodePath)
+              }
+            : undefined
+        }
         onKeyDown={
           isInteractive
             ? (event) => {
@@ -199,6 +259,12 @@ function TreeRow({
               onSubmitRename={onSubmitRename}
               onCancelRename={onCancelRename}
               onNodeContextMenu={onNodeContextMenu}
+              draggingPath={draggingPath}
+              dropTargetFolderPath={dropTargetFolderPath}
+              onDragStartNode={onDragStartNode}
+              onDragEndNode={onDragEndNode}
+              onDragOverFolder={onDragOverFolder}
+              onDropOnFolder={onDropOnFolder}
               level={level + 1}
             />
           ))}
@@ -276,7 +342,50 @@ function FileTreeComponent({
   onCancelRename,
   onNodeContextMenu,
   onEmptyContextMenu,
+  onMoveNode,
 }: FileTreeProps) {
+  const [draggingEntry, setDraggingEntry] = useState<{ path: string } | null>(null)
+  const [dropTargetFolderPath, setDropTargetFolderPath] = useState<string | null>(null)
+
+  const handleDragStartNode = (path: string) => {
+    setDraggingEntry({ path })
+  }
+
+  const handleDragEndNode = () => {
+    setDraggingEntry(null)
+    setDropTargetFolderPath(null)
+  }
+
+  const handleDragOverFolder = (targetPath: string): boolean => {
+    if (!draggingEntry) {
+      return false
+    }
+
+    if (isSameOrNestedPath(draggingEntry.path, targetPath)) {
+      setDropTargetFolderPath(null)
+      return false
+    }
+
+    setDropTargetFolderPath(targetPath)
+    return true
+  }
+
+  const handleDropOnFolder = (targetPath: string) => {
+    if (!draggingEntry) {
+      return
+    }
+
+    const sourcePath = draggingEntry.path
+    setDraggingEntry(null)
+    setDropTargetFolderPath(null)
+
+    if (isSameOrNestedPath(sourcePath, targetPath)) {
+      return
+    }
+
+    onMoveNode(sourcePath, targetPath)
+  }
+
   if (nodes.length === 0 && !pendingCreation) {
     return <div className="notia-tree-empty">No hay archivos para mostrar.</div>
   }
@@ -314,6 +423,12 @@ function FileTreeComponent({
           onSubmitRename={onSubmitRename}
           onCancelRename={onCancelRename}
           onNodeContextMenu={onNodeContextMenu}
+          draggingPath={draggingEntry?.path ?? null}
+          dropTargetFolderPath={dropTargetFolderPath}
+          onDragStartNode={handleDragStartNode}
+          onDragEndNode={handleDragEndNode}
+          onDragOverFolder={handleDragOverFolder}
+          onDropOnFolder={handleDropOnFolder}
         />
       ))}
     </div>

@@ -1,5 +1,7 @@
 import {
   BookOpen,
+  Folder,
+  FolderOpen,
   FolderPlus,
   GitBranch,
   ListChecks,
@@ -27,6 +29,8 @@ export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [
   { id: 'new-note', label: 'New Note', icon: PencilLine },
   { id: 'new-inkdoc', label: 'New InkDoc', icon: FilePenLine },
   { id: 'new-folder', label: 'New Folder', icon: FolderPlus },
+  { id: 'collapse-folders', label: 'Collapse Folders', icon: Folder },
+  { id: 'expand-folders', label: 'Expand Folders', icon: FolderOpen },
 ]
 
 export const TITLEBAR_LEFT_ACTIONS: NotiaIconAction[] = []

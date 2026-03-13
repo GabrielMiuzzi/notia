@@ -44,6 +44,7 @@ import { getFileExtension } from '../../utils/files/getFileExtension'
 import { toFileUrl } from '../../utils/files/toFileUrl'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { setFolderExpandedByPath } from '../../utils/tree/setFolderExpandedByPath'
+import { setAllFoldersExpanded } from '../../utils/tree/setAllFoldersExpanded'
 import { setSelectedFileByPath } from '../../utils/tree/setSelectedFileByPath'
 import { toggleFolderNodeExpanded } from '../../utils/tree/toggleFolderNodeExpanded'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
@@ -216,6 +217,23 @@ function areTreeNodeListsEqual(leftNodes: NotiaFileNode[], rightNodes: NotiaFile
   }
 
   return true
+}
+
+function findTreeNodeByPath(nodes: NotiaFileNode[], path: string): NotiaFileNode | null {
+  for (const node of nodes) {
+    if (node.path === path) {
+      return node
+    }
+
+    if (node.children && node.children.length > 0) {
+      const nestedNode = findTreeNodeByPath(node.children, path)
+      if (nestedNode) {
+        return nestedNode
+      }
+    }
+  }
+
+  return null
 }
 
 function resolveTextAutosaveDebounceMs(document: OpenTextFileDocument): number {
@@ -1002,6 +1020,16 @@ export function NotiaMenu() {
         initialName: 'Nueva carpeta',
         parentPath: activeLibrary.path,
       })
+      return
+    }
+
+    if (toolId === 'collapse-folders') {
+      setTreeNodes((current) => setAllFoldersExpanded(current, false))
+      return
+    }
+
+    if (toolId === 'expand-folders') {
+      setTreeNodes((current) => setAllFoldersExpanded(current, true))
     }
   }, [activeLibrary])
 
@@ -1762,6 +1790,52 @@ export function NotiaMenu() {
   const handleOpenFileFromView = useCallback((filePath: string) => {
     void handleOpenFile(filePath)
   }, [handleOpenFile])
+  const handleMoveNode = useCallback((sourcePath: string, targetDirectoryPath: string) => {
+    if (!activeLibrary) {
+      return
+    }
+
+    const normalizedSourcePath = normalizePath(sourcePath)
+    const normalizedTargetDirectoryPath = normalizePath(targetDirectoryPath)
+    if (!normalizedSourcePath || !normalizedTargetDirectoryPath) {
+      return
+    }
+
+    const sourceNode = findTreeNodeByPath(treeNodesRef.current, sourcePath)
+    if (sourceNode?.type === 'folder' && isSameOrNestedPath(normalizedSourcePath, normalizedTargetDirectoryPath)) {
+      return
+    }
+
+    if (normalizedSourcePath === normalizedTargetDirectoryPath) {
+      return
+    }
+
+    const currentParentPath = normalizePath(getParentDirectory(normalizedSourcePath))
+    if (currentParentPath === normalizedTargetDirectoryPath) {
+      return
+    }
+
+    void (async () => {
+      const moveResult = await performLibraryEntryOperation({
+        action: 'paste',
+        sourcePath: normalizedSourcePath,
+        targetDirectoryPath: normalizedTargetDirectoryPath,
+        mode: 'move',
+      })
+
+      if (!moveResult.ok) {
+        setDialogState({
+          type: 'info',
+          title: 'No se pudo mover',
+          message: moveResult.error ?? 'No se pudo mover el elemento.',
+        })
+        return
+      }
+
+      closeTabsByPath(normalizedSourcePath)
+      await refreshActiveLibraryTree()
+    })()
+  }, [activeLibrary, closeTabsByPath, refreshActiveLibraryTree])
   const handleCancelRename = useCallback(() => {
     setRenamingPath(null)
   }, [])
@@ -1867,6 +1941,7 @@ export function NotiaMenu() {
                   onCancelRename={handleCancelRename}
                   onNodeContextMenu={handleNodeContextMenu}
                   onEmptyContextMenu={handleEmptyContextMenu}
+                  onMoveNode={handleMoveNode}
                 />
                 <WorkspaceFooter
                   name={libraryName}
