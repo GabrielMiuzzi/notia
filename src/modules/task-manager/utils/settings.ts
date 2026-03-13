@@ -1,10 +1,7 @@
 import {
-  CHAT_HISTORY_LIMIT_OPTIONS,
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
-  DEFAULT_CHAT_HISTORY_LIMIT,
   DEFAULT_GROUPS,
-  DEFAULT_NETRUNNER_BASE_URL,
 } from '../constants/taskManagerConstants'
 import { createDefaultPomodoroState, normalizePomodoroState } from '../engines/pomodoroEngine'
 import type { Board, Group, TaskManagerSettings } from '../types/taskManagerTypes'
@@ -18,8 +15,6 @@ export function createDefaultTaskManagerSettings(): TaskManagerSettings {
     boards: [...DEFAULT_BOARDS],
     groups: [...DEFAULT_GROUPS],
     pomodoro: createDefaultPomodoroState(),
-    netrunnerBaseUrl: DEFAULT_NETRUNNER_BASE_URL,
-    chatHistoryLimit: DEFAULT_CHAT_HISTORY_LIMIT,
     activeTab: DEFAULT_BOARD_NAME,
   }
 }
@@ -43,8 +38,6 @@ export function normalizeTaskManagerSettings(rawValue: unknown): TaskManagerSett
     boards,
     groups,
     pomodoro: normalizePomodoroState(rawValue.pomodoro),
-    netrunnerBaseUrl: normalizeNetrunnerBaseUrl(rawValue.netrunnerBaseUrl),
-    chatHistoryLimit: normalizeChatHistoryLimit(rawValue.chatHistoryLimit),
     activeTab,
   }
 }
@@ -120,24 +113,4 @@ function normalizeBoardActivityHours(rawValue: unknown): number {
   }
 
   return Math.min(24, Math.max(0, Number(parsed.toFixed(2))))
-}
-
-function normalizeNetrunnerBaseUrl(rawValue: unknown): string {
-  if (typeof rawValue !== 'string') {
-    return DEFAULT_NETRUNNER_BASE_URL
-  }
-
-  const normalizedValue = rawValue.trim().replace(/\/+$/, '')
-  return normalizedValue || DEFAULT_NETRUNNER_BASE_URL
-}
-
-function normalizeChatHistoryLimit(rawValue: unknown): number {
-  const limit = Number(rawValue)
-  if (!Number.isInteger(limit)) {
-    return DEFAULT_CHAT_HISTORY_LIMIT
-  }
-
-  return CHAT_HISTORY_LIMIT_OPTIONS.includes(limit as 10 | 20 | 50 | 100)
-    ? limit
-    : DEFAULT_CHAT_HISTORY_LIMIT
 }

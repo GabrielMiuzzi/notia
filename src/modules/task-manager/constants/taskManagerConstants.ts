@@ -27,13 +27,6 @@ export const DEFAULT_BOARDS: Array<{ name: string; color: string; activityHoursP
 
 export const DEFAULT_GROUPS: Array<{ name: string; color: string; board?: string }> = []
 
-export const DEFAULT_NETRUNNER_BASE_URL = 'http://localhost:8000'
-export const DEFAULT_CHAT_HISTORY_LIMIT = 10
-export const CHAT_HISTORY_LIMIT_OPTIONS = [10, 20, 50, 100] as const
-
-export const CHAT_FOLDER = `${TASKS_ROOT_FOLDER}/chat`
-export const LONG_TERM_MEMORY_FILENAME = 'LongTermMemory.md'
-
 export const DEFAULT_POMODORO_WORK_MINUTES = 25
 export const DEFAULT_POMODORO_SHORT_BREAK_MINUTES = 5
 export const DEFAULT_POMODORO_LONG_BREAK_MINUTES = 15

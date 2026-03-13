@@ -1,24 +1,11 @@
 import {
   CANCELLED_TASKS_FOLDER,
-  CHAT_FOLDER,
   DEFAULT_BOARD_NAME,
   FINISHED_TASKS_FOLDER,
-  LONG_TERM_MEMORY_FILENAME,
   POMODORO_LOG_BASENAME,
   TASKS_ROOT_FOLDER,
 } from '../constants/taskManagerConstants'
 import { resolveTaskMoveTarget, resolveUniquePath } from '../engines/completionEngine'
-import {
-  appendLongTermMemoryToContent,
-  createChatSessionContent,
-  ensureLongTermMemoryFileContent,
-  loadChatMessagesFromContent,
-  parseChatSessionOptions,
-  readLongTermMemoriesFromContent,
-  sanitizeChatFilename,
-  saveChatMessagesToContent,
-  updateChatSessionFrontmatter,
-} from '../engines/chatSessionEngine'
 import { parseMarkdownFrontmatter, rebuildTaskChildLinks, syncTaskTypeTags, updateMarkdownFrontmatter } from '../engines/frontmatterEngine'
 import {
   appendPomodoroLogEntry,
@@ -31,9 +18,6 @@ import { buildBoardTaskIndexContent, buildRootTaskIndexContent, CANCELLED_TASK_I
 import { buildTaskContent, getBoardFolder, getBoardSubtasksFolder, getTasks, isTaskMarkdownFile, resolveNewTaskOrder, resolveTaskEndDate, resolveTaskPath } from '../engines/taskEngine'
 import type {
   Board,
-  ChatMessage,
-  ChatSessionFile,
-  ChatSessionOptions,
   MarkdownFileDocument,
   PomodoroLogEntry,
   TaskFormData,
@@ -42,7 +26,6 @@ import type {
 import { getBaseName, getBasenameWithoutExtension, getParentDirectory, toAbsoluteVaultPath, toRelativeVaultPath } from '../utils/path'
 import { createMarkdownFile, deleteEntry, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, writeFileContent } from './vaultRuntime'
 
-const CHAT_SESSION_DEFAULT_BASENAME = 'newChat'
 const ALTERNATE_TASKS_ROOT_FOLDER = 'task-manager'
 let runtimeTasksRootFolder = TASKS_ROOT_FOLDER
 let runtimeTasksRootAtVaultRoot = false
@@ -50,8 +33,6 @@ let runtimeTasksRootAtVaultRoot = false
 export interface TaskManagerSnapshot {
   documents: MarkdownFileDocument[]
   tasks: TaskItem[]
-  chatSessions: ChatSessionFile[]
-  longTermMemories: string[]
   pomodoroEntries: PomodoroLogEntry[]
 }
 
@@ -169,7 +150,6 @@ export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): P
     await runWorkspaceStep(`ensure-board-workspace:${boardName}`, () => ensureBoardWorkspace(vaultPath, boardName))
   }
 
-  await runWorkspaceStep('ensure-chat-workspace', () => ensureChatWorkspace(vaultPath))
   await runWorkspaceStep('ensure-pomodoro-log-file', () => ensurePomodoroLogFile(vaultPath))
   await runWorkspaceStep('sync-indexes-and-metadata', () => syncTaskIndexesAndMetadata(vaultPath, boardNames, boards))
 }
@@ -179,7 +159,7 @@ export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames:
 
   const normalizedBoards = Array.from(new Set(boardNames.map((boardName) => normalizeBoardName(boardName))))
   for (const boardName of normalizedBoards) {
-    if (boardName === DEFAULT_BOARD_NAME || boardName === 'finished' || boardName === 'cancelled' || boardName === 'chat') {
+    if (boardName === DEFAULT_BOARD_NAME || boardName === 'finished' || boardName === 'cancelled') {
       continue
     }
 
@@ -202,15 +182,11 @@ export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskMa
   }))
 
   const tasks = getTasks(relativeDocuments)
-  const chatSessions = extractChatSessions(relativeDocuments)
-  const longTermMemories = extractLongTermMemories(relativeDocuments)
   const pomodoroEntries = extractPomodoroEntries(relativeDocuments)
 
   return {
     documents: relativeDocuments,
     tasks,
-    chatSessions,
-    longTermMemories,
     pomodoroEntries,
   }
 }
@@ -468,149 +444,6 @@ export async function syncTaskIndexesAndMetadata(
   }
 }
 
-export async function createChatSession(
-  vaultPath: string,
-  title: string,
-  options: ChatSessionOptions,
-): Promise<string> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  await ensureChatWorkspace(vaultPath)
-  const snapshot = await loadTaskManagerSnapshot(vaultPath)
-  const existingPaths = new Set(snapshot.documents.map((document) => document.path))
-
-  const normalizedTitle = sanitizeChatFilename(title)
-  const baseName = normalizedTitle || CHAT_SESSION_DEFAULT_BASENAME
-  const desiredRelativePath = `${CHAT_FOLDER}/${baseName}.md`
-  const uniqueRelativePath = resolveUniquePath(desiredRelativePath, existingPaths)
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(uniqueRelativePath))
-
-  const createResult = await createMarkdownFile(getParentDirectory(absolutePath), getBaseName(absolutePath))
-  if (!createResult.ok && !isAlreadyExistsError(createResult.error)) {
-    throw new Error(createResult.error || 'No se pudo crear el chat.')
-  }
-
-  const writeResult = await writeFileContent(absolutePath, createChatSessionContent(options))
-  if (!writeResult.ok) {
-    throw new Error(writeResult.error || 'No se pudo inicializar el chat.')
-  }
-
-  return uniqueRelativePath
-}
-
-export async function loadChatMessages(vaultPath: string, chatPath: string): Promise<ChatMessage[]> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  const result = await readFileContent(toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(chatPath)))
-  if (!result.ok) {
-    return []
-  }
-
-  return loadChatMessagesFromContent(result.content)
-}
-
-export async function saveChatMessages(vaultPath: string, chatPath: string, messages: ChatMessage[]): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(chatPath))
-  const readResult = await readFileContent(absolutePath)
-  if (!readResult.ok) {
-    throw new Error(readResult.error || 'No se pudo leer el chat.')
-  }
-
-  const nextContent = saveChatMessagesToContent(readResult.content, messages)
-  const writeResult = await writeFileContent(absolutePath, nextContent)
-  if (!writeResult.ok) {
-    throw new Error(writeResult.error || 'No se pudo guardar el chat.')
-  }
-}
-
-export async function updateChatSession(
-  vaultPath: string,
-  chatPath: string,
-  title: string,
-  options: ChatSessionOptions,
-): Promise<string> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(chatPath))
-  const readResult = await readFileContent(absolutePath)
-  if (!readResult.ok) {
-    throw new Error(readResult.error || 'No se pudo leer el chat.')
-  }
-
-  const nextContent = updateChatSessionFrontmatter(readResult.content, options)
-  const writeResult = await writeFileContent(absolutePath, nextContent)
-  if (!writeResult.ok) {
-    throw new Error(writeResult.error || 'No se pudo actualizar el chat.')
-  }
-
-  const normalizedTitle = sanitizeChatFilename(title)
-  if (!normalizedTitle) {
-    return chatPath
-  }
-
-  const nextFileName = `${normalizedTitle}.md`
-  const currentFileName = getBaseName(chatPath)
-  if (nextFileName === currentFileName) {
-    return chatPath
-  }
-
-  const renameResult = await renameEntry(absolutePath, normalizedTitle)
-  if (!renameResult.ok) {
-    throw new Error(renameResult.error || 'No se pudo renombrar el chat.')
-  }
-
-  return `${getParentDirectory(chatPath)}/${nextFileName}`
-}
-
-export async function deleteChatSession(vaultPath: string, chatPath: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  const result = await deleteEntry(toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(chatPath)))
-  if (!result.ok) {
-    throw new Error(result.error || 'No se pudo borrar el chat.')
-  }
-}
-
-export async function readLongTermMemories(vaultPath: string): Promise<string[]> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  await ensureChatWorkspace(vaultPath)
-  const longTermMemoryPath = `${CHAT_FOLDER}/${LONG_TERM_MEMORY_FILENAME}`
-  const result = await readFileContent(
-    toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(longTermMemoryPath)),
-  )
-  if (!result.ok) {
-    return []
-  }
-
-  return readLongTermMemoriesFromContent(result.content)
-}
-
-export async function appendLongTermMemory(vaultPath: string, memory: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
-
-  await ensureChatWorkspace(vaultPath)
-  const longTermMemoryPath = `${CHAT_FOLDER}/${LONG_TERM_MEMORY_FILENAME}`
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(longTermMemoryPath))
-
-  const readResult = await readFileContent(absolutePath)
-  if (!readResult.ok) {
-    throw new Error(readResult.error || 'No se pudo leer la memoria de largo plazo.')
-  }
-
-  const nextContent = appendLongTermMemoryToContent(readResult.content, memory)
-  if (nextContent === readResult.content) {
-    return
-  }
-
-  const writeResult = await writeFileContent(absolutePath, nextContent)
-  if (!writeResult.ok) {
-    throw new Error(writeResult.error || 'No se pudo actualizar la memoria de largo plazo.')
-  }
-}
-
 export async function appendPomodoroEntry(vaultPath: string, input: AppendPomodoroLogEntryInput): Promise<void> {
   await applyRuntimeTasksRoot(vaultPath)
 
@@ -663,13 +496,6 @@ export async function deletePomodoroEntry(vaultPath: string, entryId: string): P
   return writeResult.ok
 }
 
-async function ensureChatWorkspace(vaultPath: string): Promise<void> {
-  await ensureFolderPath(vaultPath, toRuntimeRelativePath(CHAT_FOLDER))
-
-  const longTermMemoryPath = `${CHAT_FOLDER}/${LONG_TERM_MEMORY_FILENAME}`
-  await ensureFile(vaultPath, longTermMemoryPath, ensureLongTermMemoryFileContent(''))
-}
-
 async function ensurePomodoroLogFile(vaultPath: string): Promise<void> {
   const logPath = `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`
   await ensureFile(vaultPath, logPath, '')
@@ -713,29 +539,6 @@ async function writeIfChanged(
   }
 
   currentContentsByPath.set(relativePath, nextContent)
-}
-
-function extractChatSessions(documents: MarkdownFileDocument[]): ChatSessionFile[] {
-  return documents
-    .filter((document) => document.path.startsWith(`${CHAT_FOLDER}/`))
-    .filter((document) => document.path.endsWith('.md'))
-    .filter((document) => getBaseName(document.path).toLowerCase() !== LONG_TERM_MEMORY_FILENAME.toLowerCase())
-    .sort((left, right) => left.path.localeCompare(right.path))
-    .map((document) => ({
-      path: document.path,
-      name: getBasenameWithoutExtension(document.path),
-      options: parseChatSessionOptions(document.content),
-    }))
-}
-
-function extractLongTermMemories(documents: MarkdownFileDocument[]): string[] {
-  const longTermMemoryPath = `${CHAT_FOLDER}/${LONG_TERM_MEMORY_FILENAME}`
-  const memoryDocument = documents.find((document) => document.path === longTermMemoryPath)
-  if (!memoryDocument) {
-    return []
-  }
-
-  return readLongTermMemoriesFromContent(memoryDocument.content)
 }
 
 function extractPomodoroEntries(documents: MarkdownFileDocument[]): PomodoroLogEntry[] {
@@ -858,7 +661,7 @@ function extractBoardNamesFromDocuments(documents: MarkdownFileDocument[]): stri
 }
 
 function isReservedBoardName(boardName: string): boolean {
-  return boardName === 'finished' || boardName === 'cancelled' || boardName === 'chat'
+  return boardName === 'finished' || boardName === 'cancelled'
 }
 
 function isAlreadyExistsError(error: string | undefined): boolean {

@@ -102,32 +102,11 @@ export interface PomodoroLogEntry {
   finalized: boolean
 }
 
-export type ChatRole = 'assistant' | 'user'
-
-export interface ChatMessage {
-  id: string
-  role: ChatRole
-  content: string
-}
-
-export interface ChatSessionOptions {
-  chatMemory: boolean
-  longTermMemory: boolean
-}
-
-export interface ChatSessionFile {
-  path: string
-  name: string
-  options: ChatSessionOptions
-}
-
 export interface TaskManagerSettings {
   activeVaultPath: string | null
   boards: Board[]
   groups: Group[]
   pomodoro: PomodoroState
-  netrunnerBaseUrl: string
-  chatHistoryLimit: number
   activeTab: string
 }
 

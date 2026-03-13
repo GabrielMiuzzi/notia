@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  CHAT_HISTORY_LIMIT_OPTIONS,
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
   DEFAULT_GROUPS,
@@ -8,7 +7,6 @@ import {
   TASK_PRIORITIES,
   TASK_STATES,
 } from '../constants/taskManagerConstants'
-import { appendChatMessage, buildAssistantFallbackReply, createInitialChatMessages } from '../engines/chatEngine'
 import {
   advancePomodoroState,
   applyPomodoroDurations,
@@ -23,32 +21,25 @@ import {
   resumePomodoro,
   startPomodoro,
 } from '../engines/pomodoroEngine'
-import { requestNetrunnerToolsMetadata, streamNetrunnerChat } from '../engines/netrunnerChatEngine'
-import type { Board, ChatMessage, ChatSessionOptions, Group, PomodoroDurations, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
+import type { Board, Group, PomodoroDurations, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
 import { sanitizeFilename } from '../utils/sanitizeFilename'
 import { loadTaskManagerSettings, saveTaskManagerSettings } from '../services/taskManagerStorage'
 import {
-  appendLongTermMemory,
   appendPomodoroEntry,
   cleanupEmptyWorkspaceBoards,
-  createChatSession,
   createTask,
-  deleteChatSession,
   deletePomodoroEntry,
   deleteTask,
   ensureBoardWorkspace,
   ensureTaskWorkspace,
-  loadChatMessages,
   loadTaskManagerSnapshot,
   moveTaskByState,
   readPomodoroEntries,
   removeBoardWorkspace,
   readTaskMarkdownSource,
   renameBoardWorkspace,
-  saveChatMessages,
   syncTaskIndexesAndMetadata,
   updateTaskBody,
-  updateChatSession,
   updateTaskFrontmatter,
   writeTaskMarkdownSource,
   type TaskManagerSnapshot,
@@ -80,11 +71,6 @@ export interface UseTaskManagerResult {
   isSyncing: boolean
   error: string | null
   infoMessage: string | null
-  activeChatPath: string | null
-  chatMessages: ChatMessage[]
-  isSendingChat: boolean
-  transientThinking: string
-  transientStreaming: string
   taskDialog: TaskDialogState
   taskCreateDefaults: {
     parentTaskName?: string
@@ -94,7 +80,6 @@ export interface UseTaskManagerResult {
   groupDialog: GroupDialogState
   taskStates: readonly TaskState[]
   taskPriorities: readonly TaskPriority[]
-  chatHistoryOptions: readonly number[]
   setError: (value: string | null) => void
   setInfoMessage: (value: string | null) => void
   setActiveTab: (tab: string) => void
@@ -135,21 +120,12 @@ export interface UseTaskManagerResult {
   exitPomodoroDeviationMode: () => Promise<void>
   setPomodoroDurations: (durations: PomodoroDurations) => void
   deletePomodoroLogEntry: (entryId: string) => Promise<void>
-  setNetrunnerBaseUrl: (value: string) => void
-  setChatHistoryLimit: (value: number) => void
   isVaultExternallyControlled: boolean
-  setActiveChatPath: (path: string | null) => void
-  createChat: (title: string, options: ChatSessionOptions) => Promise<void>
-  updateChat: (chatPath: string, title: string, options: ChatSessionOptions) => Promise<void>
-  deleteChat: (chatPath: string) => Promise<void>
-  sendChatMessage: (input: string) => Promise<void>
 }
 
 const EMPTY_SNAPSHOT: TaskManagerSnapshot = {
   documents: [],
   tasks: [],
-  chatSessions: [],
-  longTermMemories: [],
   pomodoroEntries: [],
 }
 
@@ -165,7 +141,7 @@ function normalizeBoardCandidate(name: string): string | null {
     return null
   }
 
-  if (normalized === 'finished' || normalized === 'cancelled' || normalized === 'chat') {
+  if (normalized === 'finished' || normalized === 'cancelled') {
     return null
   }
 
@@ -291,12 +267,6 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
   const [isSyncing, setIsSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
-
-  const [activeChatPath, setActiveChatPath] = useState<string | null>(null)
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(createInitialChatMessages)
-  const [isSendingChat, setIsSendingChat] = useState(false)
-  const [transientThinking, setTransientThinking] = useState('')
-  const [transientStreaming, setTransientStreaming] = useState('')
 
   const [taskDialog, setTaskDialog] = useState<TaskDialogState>({
     open: false,
@@ -445,11 +415,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
     setSnapshot(nextSnapshot)
     hydrateSettingsFromSnapshot(nextSnapshot)
-
-    if (!activeChatPath || !nextSnapshot.chatSessions.some((session) => session.path === activeChatPath)) {
-      setActiveChatPath(nextSnapshot.chatSessions[0]?.path ?? null)
-    }
-  }, [activeChatPath, hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards])
+  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards])
 
   const setActiveVaultPath = useCallback(async (path: string | null) => {
     if (!path) {
@@ -551,24 +517,6 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
 
     void setActiveVaultPath(externalVaultPath)
   }, [externalVaultPath, setActiveVaultPath, settings.activeVaultPath])
-
-  useEffect(() => {
-    if (!settings.activeVaultPath || !activeChatPath) {
-      if (!activeChatPath) {
-        setChatMessages(createInitialChatMessages())
-      }
-      return
-    }
-
-    loadChatMessages(settings.activeVaultPath, activeChatPath)
-      .then((messages) => {
-        setChatMessages(messages.length > 0 ? messages : createInitialChatMessages())
-      })
-      .catch((runtimeError) => {
-        console.error(runtimeError)
-        setChatMessages(createInitialChatMessages())
-      })
-  }, [activeChatPath, settings.activeVaultPath])
 
   useEffect(() => {
     if (!settings.activeVaultPath) {
@@ -1362,154 +1310,6 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     }))
   }, [settings.activeVaultPath])
 
-  const setNetrunnerBaseUrl = useCallback((value: string) => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      netrunnerBaseUrl: value.trim().replace(/\/+$/, ''),
-    }))
-  }, [updateSettings])
-
-  const setChatHistoryLimit = useCallback((value: number) => {
-    if (!CHAT_HISTORY_OPTIONS.includes(value)) {
-      return
-    }
-
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      chatHistoryLimit: value,
-    }))
-  }, [updateSettings])
-
-  const createChat = useCallback(async (title: string, options: ChatSessionOptions) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      const chatPath = await createChatSession(settings.activeVaultPath, title, options)
-      setActiveChatPath(chatPath)
-      setChatMessages(createInitialChatMessages())
-      await reload()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo crear el chat.')
-    }
-  }, [reload, settings.activeVaultPath])
-
-  const updateChat = useCallback(async (chatPath: string, title: string, options: ChatSessionOptions) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      const nextPath = await updateChatSession(settings.activeVaultPath, chatPath, title, options)
-      setActiveChatPath(nextPath)
-      await reload()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo actualizar el chat.')
-    }
-  }, [reload, settings.activeVaultPath])
-
-  const deleteChat = useCallback(async (chatPath: string) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await deleteChatSession(settings.activeVaultPath, chatPath)
-      if (activeChatPath === chatPath) {
-        setActiveChatPath(null)
-        setChatMessages(createInitialChatMessages())
-      }
-      await reload()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo eliminar el chat.')
-    }
-  }, [activeChatPath, reload, settings.activeVaultPath])
-
-  const sendChatMessage = useCallback(async (input: string) => {
-    const normalizedInput = input.trim()
-    if (!settings.activeVaultPath || !activeChatPath || !normalizedInput || isSendingChat) {
-      return
-    }
-
-    setIsSendingChat(true)
-    setTransientThinking('')
-    setTransientStreaming('')
-
-    const nextWithUser = appendChatMessage(chatMessages, 'user', normalizedInput)
-    setChatMessages(nextWithUser)
-
-    try {
-      await saveChatMessages(settings.activeVaultPath, activeChatPath, nextWithUser)
-      const activeSession = snapshot.chatSessions.find((session) => session.path === activeChatPath)
-      const options = activeSession?.options ?? { chatMemory: true, longTermMemory: false }
-      const isFirstUserMessage = nextWithUser.filter((message) => message.role === 'user').length <= 1
-
-      const toolsMetadata = await requestNetrunnerToolsMetadata(
-        settings.netrunnerBaseUrl,
-        normalizedInput,
-        isFirstUserMessage,
-        options.longTermMemory,
-      )
-
-      if (options.longTermMemory) {
-        for (const memory of toolsMetadata.longTermMemories) {
-          await appendLongTermMemory(settings.activeVaultPath, memory)
-        }
-      }
-
-      if (isFirstUserMessage && toolsMetadata.suggestedTitle) {
-        const nextPath = await updateChatSession(
-          settings.activeVaultPath,
-          activeChatPath,
-          toolsMetadata.suggestedTitle,
-          options,
-        )
-        setActiveChatPath(nextPath)
-      }
-
-      const chatMemory = options.chatMemory
-        ? nextWithUser
-            .slice(-settings.chatHistoryLimit)
-            .map((message) => ({ message: message.content, role: message.role }))
-        : []
-
-      const longTermMemories = options.longTermMemory
-        ? snapshot.longTermMemories.map((memory) => ({ memory }))
-        : []
-
-      const assistantReply = await streamNetrunnerChat(
-        settings.netrunnerBaseUrl,
-        normalizedInput,
-        chatMemory,
-        longTermMemories,
-        {
-          onThinkingDelta: (delta) => setTransientThinking((previous) => `${previous}${delta}`),
-          onMessageDelta: (delta) => setTransientStreaming((previous) => `${previous}${delta}`),
-        },
-      )
-
-      const nextWithAssistant = appendChatMessage(nextWithUser, 'assistant', assistantReply)
-      setChatMessages(nextWithAssistant)
-      await saveChatMessages(settings.activeVaultPath, activeChatPath, nextWithAssistant)
-      await reload()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const fallbackReply = buildAssistantFallbackReply(normalizedInput)
-      const nextWithFallback = appendChatMessage(nextWithUser, 'assistant', fallbackReply)
-      setChatMessages(nextWithFallback)
-      await saveChatMessages(settings.activeVaultPath, activeChatPath, nextWithFallback)
-      setError('No se pudo completar el flujo remoto. Se usó respuesta local.')
-    } finally {
-      setTransientThinking('')
-      setTransientStreaming('')
-      setIsSendingChat(false)
-    }
-  }, [activeChatPath, chatMessages, isSendingChat, reload, settings.activeVaultPath, settings.chatHistoryLimit, settings.netrunnerBaseUrl, snapshot.chatSessions, snapshot.longTermMemories])
-
   const taskStates = useMemo(() => TASK_STATES, [])
   const taskPriorities = useMemo(() => TASK_PRIORITIES, [])
 
@@ -1520,18 +1320,12 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     isSyncing,
     error,
     infoMessage,
-    activeChatPath,
-    chatMessages,
-    isSendingChat,
-    transientThinking,
-    transientStreaming,
     taskDialog,
     taskCreateDefaults,
     boardDialog,
     groupDialog,
     taskStates,
     taskPriorities,
-    chatHistoryOptions: CHAT_HISTORY_OPTIONS,
     setError,
     setInfoMessage,
     setActiveTab: (tab: string) => updateSettings((previousSettings) => ({ ...previousSettings, activeTab: tab })),
@@ -1572,15 +1366,6 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     exitPomodoroDeviationMode,
     setPomodoroDurations,
     deletePomodoroLogEntry,
-    setNetrunnerBaseUrl,
-    setChatHistoryLimit,
     isVaultExternallyControlled: Boolean(externalVaultPath),
-    setActiveChatPath,
-    createChat,
-    updateChat,
-    deleteChat,
-    sendChatMessage,
   }
 }
-
-const CHAT_HISTORY_OPTIONS = CHAT_HISTORY_LIMIT_OPTIONS as readonly number[]

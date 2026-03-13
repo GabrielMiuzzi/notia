@@ -542,8 +542,7 @@
 }
 
 .notia-toolbar-button--new-note,
-.notia-icon-button--new-note,
-.notia-icon-button--chat {
+.notia-icon-button--new-note {
   color: var(--color-icon-new-note);
 }
 

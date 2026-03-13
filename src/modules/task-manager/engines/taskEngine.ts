@@ -1,5 +1,4 @@
 import {
-  CHAT_FOLDER,
   CANCELLED_SUBTASKS_FOLDER,
   CANCELLED_TASK_INDEX_BASENAME,
   CANCELLED_TASKS_FOLDER,
@@ -43,7 +42,7 @@ export function isTaskMarkdownFile(path: string): boolean {
     return false
   }
 
-  if (path.startsWith(`${CHAT_FOLDER}/`) || path === `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`) {
+  if (path === `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`) {
     return false
   }
 
