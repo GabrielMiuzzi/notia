@@ -1,8 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 
 const host = process.env.TAURI_DEV_HOST
+const packageJsonPath = resolve(__dirname, 'package.json')
+const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version?: string }
+const appVersion = typeof packageJson.version === 'string' && packageJson.version.trim().length > 0
+  ? packageJson.version.trim()
+  : '0.0.0'
 
 export default defineConfig(() => ({
   plugins: [react()],
@@ -10,6 +16,9 @@ export default defineConfig(() => ({
     alias: {
       settings: resolve(__dirname, 'src/modules/inkdoc/settings.ts'),
     },
+  },
+  define: {
+    __NOTIA_APP_VERSION__: JSON.stringify(appVersion),
   },
   clearScreen: false,
   server: {

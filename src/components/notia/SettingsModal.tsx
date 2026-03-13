@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X } from 'lucide-react'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
+import { getAppVersion } from '../../services/runtime/appVersion'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -15,7 +16,6 @@ interface SettingsModalProps {
 }
 
 const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'Librerias']
-const PROJECT_VERSION = '0.0.0'
 
 export function SettingsModal({
   open,
@@ -24,6 +24,7 @@ export function SettingsModal({
   onExplorerRefreshIntervalMsChange,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('General')
+  const projectVersion = getAppVersion()
   const runtimeDevice = getRuntimeDevice()
   const refreshBounds = getExplorerRefreshIntervalBounds()
   const refreshSliderMin = refreshBounds.allowDisabled ? 0 : refreshBounds.minSeconds
@@ -59,7 +60,7 @@ export function SettingsModal({
             {activeSection === 'General' ? (
               <div className="notia-settings-card">
                 <div className="notia-settings-card-label">Version del proyecto</div>
-                <div className="notia-settings-card-value">v{PROJECT_VERSION}</div>
+                <div className="notia-settings-card-value">v{projectVersion}</div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Dispositivo
                 </div>
