@@ -255,7 +255,7 @@ export function WindowTitleBar({
 
     event.preventDefault()
     cancelPendingWindowDrag()
-    onWindowAction('fullscreen')
+    onWindowAction('maximize')
   }
 
   const handleScrollTabs = (direction: 'left' | 'right') => {
