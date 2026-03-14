@@ -1,6 +1,7 @@
 // @ts-nocheck
 type DocumentSyncEngineOptions = {
 	debounceMs: number;
+	minimumSaveIdleMs?: number;
 	isInteractionActive: () => boolean;
 	save: () => Promise<void>;
 	reload: () => Promise<void>;
@@ -8,6 +9,7 @@ type DocumentSyncEngineOptions = {
 
 export class DocumentSyncEngine {
 	private debounceMs: number;
+	private minimumSaveIdleMs: number;
 	private isInteractionActive: () => boolean;
 	private save: () => Promise<void>;
 	private reload: () => Promise<void>;
@@ -23,6 +25,7 @@ export class DocumentSyncEngine {
 
 	constructor(options: DocumentSyncEngineOptions) {
 		this.debounceMs = Math.max(0, options.debounceMs);
+		this.minimumSaveIdleMs = Math.max(0, options.minimumSaveIdleMs ?? options.debounceMs);
 		this.isInteractionActive = options.isInteractionActive;
 		this.save = options.save;
 		this.reload = options.reload;
@@ -78,6 +81,12 @@ export class DocumentSyncEngine {
 		return Math.max(0, this.debounceMs - elapsed);
 	}
 
+	private getSaveQuietDelay(): number {
+		const elapsed = Date.now() - this.lastActivityAt;
+		const requiredIdleMs = Math.max(this.debounceMs, this.minimumSaveIdleMs);
+		return Math.max(0, requiredIdleMs - elapsed);
+	}
+
 	private scheduleSave(): void {
 		if (this.disposed || !this.pendingSave) {
 			return;
@@ -88,7 +97,7 @@ export class DocumentSyncEngine {
 		this.saveTimer = window.setTimeout(() => {
 			this.saveTimer = null;
 			void this.flushSave();
-		}, this.getQuietDelay());
+		}, this.getSaveQuietDelay());
 	}
 
 	private scheduleReload(): void {
@@ -112,7 +121,7 @@ export class DocumentSyncEngine {
 			this.scheduleSave();
 			return;
 		}
-		if (this.isInteractionActive() || this.getQuietDelay() > 0) {
+		if (this.isInteractionActive() || this.getSaveQuietDelay() > 0) {
 			this.scheduleSave();
 			return;
 		}

@@ -219,6 +219,7 @@ export class InkDocView extends ItemView {
 		this.recentStrokeColors = this.createRandomRecentStrokeColors(12);
 		this.syncEngine = new DocumentSyncEngine({
 			debounceMs: this.plugin.getSyncDebounceMs(),
+			minimumSaveIdleMs: 1000,
 			isInteractionActive: () => this.hasActiveInteraction(),
 			save: () => this.saveToFile(),
 			reload: () => this.loadAndRender()
@@ -1961,11 +1962,18 @@ export class InkDocView extends ItemView {
 				if (target instanceof HTMLElement && target.closest(".inkdoc-object-menu")) {
 					return;
 				}
+				if (target instanceof HTMLElement && target.closest(".inkdoc-wikilink")) {
+					return;
+				}
 				menuController.handleHostClick();
 			});
 
 			blockEl.addEventListener("dblclick", (event) => {
 				if (!isActiveToolForBlock) {
+					return;
+				}
+				const target = event.target;
+				if (target instanceof HTMLElement && target.closest(".inkdoc-wikilink")) {
 					return;
 				}
 				event.preventDefault();
@@ -1983,6 +1991,9 @@ export class InkDocView extends ItemView {
 				}
 				const target = event.target;
 				if (target instanceof HTMLElement && target.closest(".inkdoc-object-menu")) {
+					return;
+				}
+				if (target instanceof HTMLElement && target.closest(".inkdoc-wikilink")) {
 					return;
 				}
 				const canMove =

@@ -45,6 +45,11 @@ function buildMenuContext(view: EditorView): WikiLinkMenuContext | null {
     return null
   }
 
+  const rawCandidate = parentNode.textContent.slice(context.startOffset, context.endOffset)
+  if (rawCandidate.endsWith(']]')) {
+    return null
+  }
+
   const replaceFrom = $from.start() + context.startOffset
   const replaceTo = $from.start() + context.endOffset
 
@@ -76,16 +81,16 @@ function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLo
 
     const matches = findWikiLinkMatches(node.text)
     for (const match of matches) {
+      const matchFrom = position + match.startOffset
+      const matchTo = position + match.endOffset
       const target = resolveWikiLinkTarget(lookup, match.reference)
       const className = target
         ? 'notia-wikilink-token notia-wikilink-token--resolved'
         : 'notia-wikilink-token notia-wikilink-token--broken'
 
       decorations.push(
-        Decoration.inline(position + match.startOffset, position + match.endOffset, {
+        Decoration.inline(matchFrom, matchTo, {
           class: className,
-          'data-wikilink-ref': match.reference,
-          'data-wikilink-label': match.displayLabel,
         }),
       )
     }

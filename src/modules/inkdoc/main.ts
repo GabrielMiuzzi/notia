@@ -1,6 +1,12 @@
 // @ts-nocheck
 import type { App } from './engines/platform/inkdocPlatform'
-import { clampOcrDebounceMs, DEFAULT_INKMATH_SETTINGS, normalizeServiceUrl } from './settings'
+import {
+  clampOcrDebounceMs,
+  clampSyncDebounceMs,
+  DEFAULT_INKMATH_SETTINGS,
+  DEFAULT_SETTINGS as DEFAULT_PLUGIN_SETTINGS,
+  normalizeServiceUrl,
+} from './settings'
 
 export interface InkDocPluginSettingsLike {
   syncDebounceMs: number
@@ -9,7 +15,7 @@ export interface InkDocPluginSettingsLike {
 }
 
 const DEFAULT_SETTINGS: InkDocPluginSettingsLike = {
-  syncDebounceMs: 380,
+  syncDebounceMs: DEFAULT_PLUGIN_SETTINGS.syncDebounceMs,
   inkmathServiceUrl: normalizeServiceUrl(DEFAULT_INKMATH_SETTINGS.serviceUrl),
   inkmathDebounceMs: clampOcrDebounceMs(DEFAULT_INKMATH_SETTINGS.ocrDebounceMs),
 }
@@ -25,6 +31,7 @@ export class InkDocPlugin {
       ...(settings ?? {}),
     }
     this.settings.inkmathServiceUrl = normalizeServiceUrl(this.settings.inkmathServiceUrl)
+    this.settings.syncDebounceMs = clampSyncDebounceMs(this.settings.syncDebounceMs)
     this.settings.inkmathDebounceMs = clampOcrDebounceMs(this.settings.inkmathDebounceMs)
   }
 

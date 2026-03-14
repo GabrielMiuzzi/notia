@@ -5,6 +5,7 @@ import {
 	type CanvasPageState
 } from "./constants";
 import type { InkDocDocument, InkDocPage, InkDocTextBlock } from "../types";
+import { restoreWikiLinkSourceForEditing } from "./wikiLinks";
 
 export type ActiveBlockEdit = {
 	pageId: string;
@@ -135,7 +136,7 @@ const commitTextEditor = (
 	if (!block) {
 		return;
 	}
-	block.html = editor.innerHTML;
+	block.html = restoreWikiLinkSourceForEditing(editor.innerHTML);
 	block.text = editor.innerText;
 	const state = context.canvasStates.get(active.pageId);
 	if (state) {
@@ -200,7 +201,7 @@ export const syncActiveTextBlockFromEditor = (
 	if (!block) {
 		return;
 	}
-	block.html = editor.innerHTML;
+	block.html = restoreWikiLinkSourceForEditing(editor.innerHTML);
 	block.text = editor.innerText;
 	if (render) {
 		context.textLayerDirty.add(active.pageId);
@@ -365,7 +366,7 @@ export const openTextEditor = (
 	const editor = state.pageEl.createDiv({ cls: "inkdoc-text-editor" });
 	editor.contentEditable = "true";
 	editor.spellcheck = true;
-	editor.innerHTML = block.html ?? escapeHtml(block.text ?? "");
+	editor.innerHTML = restoreWikiLinkSourceForEditing(block.html ?? escapeHtml(block.text ?? ""));
 	editor.style.color = typeof block.color === "string" && block.color.trim().length > 0
 		? block.color
 		: context.getDefaultBlockColor(page);

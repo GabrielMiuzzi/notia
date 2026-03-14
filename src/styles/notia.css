@@ -1798,21 +1798,11 @@
 }
 
 .notia-wikilink-token {
-  position: relative;
-  font-size: 0;
-  line-height: inherit;
-  color: transparent;
-  background: transparent;
+  white-space: pre-wrap;
 }
 
 .notia-wikilink-token--resolved {
-  cursor: pointer;
-}
-
-.notia-wikilink-token::after {
-  content: attr(data-wikilink-label);
-  font-size: 13px;
-  line-height: 1.6;
+  cursor: text;
   color: var(--color-accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -1821,11 +1811,11 @@
 
 .notia-wikilink-token--broken {
   cursor: text;
-}
-
-.notia-wikilink-token--broken::after {
   color: var(--color-subtle-text);
+  text-decoration: underline;
   text-decoration-style: dashed;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
 }
 
 .notia-wikilink-menu {

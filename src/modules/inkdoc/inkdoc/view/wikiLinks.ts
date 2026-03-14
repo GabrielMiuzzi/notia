@@ -2,6 +2,7 @@
 import { App, TFile, TFolder, normalizePath } from "../../engines/platform/inkdocPlatform";
 
 const WIKI_LINK_PATTERN = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+const WIKI_LINK_SELECTOR = ".inkdoc-wikilink[data-wikilink-target]";
 
 const ensureParentFolders = async (app: App, filePath: string): Promise<void> => {
 	const folderParts = filePath.split("/").slice(0, -1).filter((part) => part.length > 0);
@@ -50,11 +51,44 @@ const openOrCreateWikiLink = async (
 	await app.workspace.getLeaf(true).openFile(created);
 };
 
+const buildWikiLinkSource = (target: string, alias?: string): string => {
+	const cleanTarget = target.trim();
+	const cleanAlias = alias?.trim() ?? "";
+	if (!cleanTarget) {
+		return "";
+	}
+	return cleanAlias && cleanAlias !== cleanTarget
+		? `[[${cleanTarget}|${cleanAlias}]]`
+		: `[[${cleanTarget}]]`;
+};
+
+const replaceWikiLinkAnchorsWithSource = (container: HTMLElement): void => {
+	const links = Array.from(container.querySelectorAll<HTMLElement>(WIKI_LINK_SELECTOR));
+	for (const link of links) {
+		const target = link.dataset.wikilinkTarget?.trim() ?? "";
+		const alias = link.dataset.wikilinkAlias?.trim() ?? "";
+		const fallbackText = link.textContent?.trim() ?? "";
+		const source = buildWikiLinkSource(target || fallbackText, alias);
+		link.replaceWith(document.createTextNode(source || fallbackText));
+	}
+};
+
+export const restoreWikiLinkSourceForEditing = (html: string): string => {
+	if (!html.trim()) {
+		return html;
+	}
+	const container = document.createElement("div");
+	container.innerHTML = html;
+	replaceWikiLinkAnchorsWithSource(container);
+	return container.innerHTML;
+};
+
 export const applyWikiLinksToElement = (
 	container: HTMLElement,
 	app: App,
 	sourceFile: TFile | null
 ): void => {
+	replaceWikiLinkAnchorsWithSource(container);
 	const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
 	const nodes: Text[] = [];
 	while (true) {
@@ -91,14 +125,24 @@ export const applyWikiLinksToElement = (
 			if (!target) {
 				fragment.append(raw);
 			} else {
-				const link = document.createElement("a");
+				const link = document.createElement("span");
 				link.className = "inkdoc-wikilink";
-				link.href = "#";
 				link.textContent = alias || target;
+				link.tabIndex = 0;
+				link.setAttribute("role", "link");
+				link.dataset.wikilinkTarget = target;
+				link.dataset.wikilinkAlias = alias;
 				link.addEventListener("pointerdown", (event) => {
 					event.stopPropagation();
 				});
 				link.addEventListener("click", (event) => {
+					event.stopPropagation();
+					void openOrCreateWikiLink(app, sourceFile, target);
+				});
+				link.addEventListener("keydown", (event) => {
+					if (event.key !== "Enter" && event.key !== " ") {
+						return;
+					}
 					event.preventDefault();
 					event.stopPropagation();
 					void openOrCreateWikiLink(app, sourceFile, target);
