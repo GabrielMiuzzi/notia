@@ -26,7 +26,7 @@ export const DEFAULT_INKMATH_SETTINGS: InkMathSettings = {
 	forceWasm: false,
 	allowBackendFallback: true,
 	qualityMode: "balanced",
-	serviceUrl: "http://127.0.0.1:8765",
+	serviceUrl: "http://127.0.0.1:8767",
 	ocrDebounceMs: 1000
 };
 
@@ -40,8 +40,16 @@ export const normalizeServiceUrl = (value: string): string => {
 	if (!raw) {
 		return DEFAULT_INKMATH_SETTINGS.serviceUrl;
 	}
-	const noTrailingSlash = raw.replace(/\/+$/, "");
-	return noTrailingSlash || DEFAULT_INKMATH_SETTINGS.serviceUrl;
+	try {
+		const parsed = new URL(raw);
+		if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) {
+			return DEFAULT_INKMATH_SETTINGS.serviceUrl;
+		}
+		const normalized = `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, "");
+		return normalized || DEFAULT_INKMATH_SETTINGS.serviceUrl;
+	} catch {
+		return DEFAULT_INKMATH_SETTINGS.serviceUrl;
+	}
 };
 
 export const clampSyncDebounceMs = (value: number): number => {

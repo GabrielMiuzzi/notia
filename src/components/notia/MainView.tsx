@@ -1,4 +1,5 @@
 import { FileViewHost } from './views/FileViewHost'
+import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
 import { NotiaButton } from '../common/NotiaButton'
@@ -10,6 +11,7 @@ interface MainViewProps {
   onInkdocDocumentPersist: (nextSource: string) => Promise<void>
   rootPath: string | null
   libraryFilePaths: string[]
+  inkdocPreferences: InkdocPreferences
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -33,6 +35,7 @@ export function MainView({
   onInkdocDocumentPersist,
   rootPath,
   libraryFilePaths,
+  inkdocPreferences,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
 }: MainViewProps) {
@@ -71,6 +74,7 @@ export function MainView({
           onInkdocSourcePersist={onInkdocDocumentPersist}
           rootPath={rootPath}
           libraryFilePaths={libraryFilePaths}
+          inkdocPreferences={inkdocPreferences}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
         />

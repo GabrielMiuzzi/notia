@@ -12,7 +12,6 @@ import {
 	startWindowPointerInteraction
 } from "./objectBehavior";
 import { setCompatibleIcon } from "./iconFallback";
-import { INKDOC_ICONS } from "./icons";
 
 const DEFAULT_STICKY_COLOR = "#ffe672";
 const COLLAPSED_STICKY_HEIGHT = 4;
@@ -226,24 +225,24 @@ const renderStickyNote = (
 		cls: "inkdoc-sticky-menu-btn",
 		attr: { "aria-label": "Colapsar sticky", title: "Colapsar sticky", type: "button" }
 	});
-	setCompatibleIcon(eyeButton, INKDOC_ICONS.EXPAND_VERTICALLY, "O");
+	setCompatibleIcon(eyeButton, "stretch-vertical", "O");
 
 	const lockButton = menuEl.createEl("button", {
 		cls: "inkdoc-sticky-menu-btn",
 		attr: { "aria-label": "Bloquear sticky", title: "Bloquear sticky", type: "button" }
 	});
-	setCompatibleIcon(lockButton, INKDOC_ICONS.PIN, "L");
+	setCompatibleIcon(lockButton, "pin", "L");
 
 	const settingsButton = menuEl.createEl("button", {
 		cls: "inkdoc-sticky-menu-btn",
 		attr: { "aria-label": "Tipo de sticky", title: "Tipo de sticky", type: "button" }
 	});
-	setCompatibleIcon(settingsButton, INKDOC_ICONS.GEAR, "S");
+	setCompatibleIcon(settingsButton, "settings", "S");
 	const deleteButton = menuEl.createEl("button", {
 		cls: "inkdoc-sticky-menu-btn",
 		attr: { "aria-label": "Borrar sticky", title: "Borrar sticky", type: "button" }
 	});
-	setCompatibleIcon(deleteButton, INKDOC_ICONS.TRASH, "D");
+	setCompatibleIcon(deleteButton, "trash", "D");
 	const kindPopover = menuEl.createDiv({ cls: "inkdoc-sticky-kind-popover" });
 	for (const option of STICKY_KIND_OPTIONS) {
 		const optionButton = kindPopover.createEl("button", {
@@ -374,7 +373,7 @@ const renderStickyNote = (
 		noteEl.classList.toggle("is-kind-arrow-up", kind === "arrow-up");
 		noteEl.classList.toggle("is-kind-arrow-down", kind === "arrow-down");
 		colorButton.style.background = color;
-		setCompatibleIcon(lockButton, note.locked ? INKDOC_ICONS.FILLED_PIN : INKDOC_ICONS.PIN, "L");
+		setCompatibleIcon(lockButton, note.locked ? "bookmark-check" : "pin", "L");
 		lockButton.setAttr("aria-label", note.locked ? "Desbloquear sticky" : "Bloquear sticky");
 		lockButton.setAttr("title", note.locked ? "Desbloquear sticky" : "Bloquear sticky");
 		eyeButton.setAttr("title", note.collapsed ? "Expandir sticky" : "Colapsar sticky");

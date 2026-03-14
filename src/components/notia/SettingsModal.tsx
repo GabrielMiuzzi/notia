@@ -1,29 +1,36 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
+import { clampOcrDebounceMs, INKDOC_OCR_DEBOUNCE_MAX_MS, INKDOC_OCR_DEBOUNCE_MIN_MS, normalizeServiceUrl } from '../../modules/inkdoc/settings'
+import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'Librerias'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkDocs'
 
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
   explorerRefreshIntervalMs: number
   onExplorerRefreshIntervalMsChange: (value: number) => void
+  inkdocPreferences: InkdocPreferences
+  onInkdocPreferencesChange: (value: InkdocPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'Librerias']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs']
 
 export function SettingsModal({
   open,
   onClose,
   explorerRefreshIntervalMs,
   onExplorerRefreshIntervalMsChange,
+  inkdocPreferences,
+  onInkdocPreferencesChange,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('General')
+  const [inkmathServiceUrlDraft, setInkmathServiceUrlDraft] = useState(inkdocPreferences.inkmathServiceUrl)
   const projectVersion = getAppVersion()
   const runtimeDevice = getRuntimeDevice()
   const refreshBounds = getExplorerRefreshIntervalBounds()
@@ -36,6 +43,25 @@ export function SettingsModal({
   const refreshIntervalRangeLabel = refreshBounds.allowDisabled
     ? `Intervalo de escaneo (0 = manual, ${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
     : `Intervalo de escaneo (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
+  const ocrDebounceMs = clampOcrDebounceMs(inkdocPreferences.inkmathDebounceMs)
+  const ocrDebounceLabel = `${ocrDebounceMs} ms`
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    setInkmathServiceUrlDraft(inkdocPreferences.inkmathServiceUrl)
+  }, [inkdocPreferences.inkmathServiceUrl, open])
+
+  const commitInkMathServiceUrl = () => {
+    const normalized = normalizeServiceUrl(inkmathServiceUrlDraft)
+    setInkmathServiceUrlDraft(normalized)
+    onInkdocPreferencesChange({
+      ...inkdocPreferences,
+      inkmathServiceUrl: normalized,
+    })
+  }
 
   if (!open) {
     return null
@@ -92,6 +118,56 @@ export function SettingsModal({
                   />
                 </div>
               </div>
+            ) : activeSection === 'InkDocs' ? (
+              <>
+                <div className="notia-settings-card">
+                  <div className="notia-settings-card-label">Backend de InkMath</div>
+                  <div className="notia-settings-card-value">{normalizeServiceUrl(inkdocPreferences.inkmathServiceUrl)}</div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    URL del servicio OCR para el canvas matemático de InkDocs
+                  </div>
+                  <div className="notia-settings-input-wrap">
+                    <input
+                      className="notia-settings-input"
+                      type="text"
+                      value={inkmathServiceUrlDraft}
+                      onChange={(event) => {
+                        setInkmathServiceUrlDraft(event.target.value)
+                      }}
+                      onBlur={commitInkMathServiceUrl}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          commitInkMathServiceUrl()
+                        }
+                      }}
+                      placeholder="http://127.0.0.1:8767"
+                    />
+                  </div>
+                </div>
+                <div className="notia-settings-card">
+                  <div className="notia-settings-card-label">Debounce OCR</div>
+                  <div className="notia-settings-card-value">{ocrDebounceLabel}</div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    Tiempo de espera antes de enviar el dibujo al backend
+                  </div>
+                  <div className="notia-settings-slider-wrap">
+                    <input
+                      type="range"
+                      min={INKDOC_OCR_DEBOUNCE_MIN_MS}
+                      max={INKDOC_OCR_DEBOUNCE_MAX_MS}
+                      step={50}
+                      value={ocrDebounceMs}
+                      onChange={(event) => {
+                        onInkdocPreferencesChange({
+                          ...inkdocPreferences,
+                          inkmathDebounceMs: clampOcrDebounceMs(Number(event.target.value)),
+                        })
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
             ) : (
               <div>Seccion: {activeSection}</div>
             )}

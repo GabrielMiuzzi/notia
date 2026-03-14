@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { createInkDocSubmenuEngine } from "./submenuEngine";
+
 type MenuItem = {
 	label: string;
 	onClick: () => void;
@@ -14,9 +16,17 @@ export const openManagedMenu = (
 	items: MenuItem[],
 	onClose: () => void
 ): HTMLDivElement => {
-	const menu = container.createDiv({ cls: `inkdoc-context-menu ${menuClass}`.trim() });
-	menu.style.left = `${left}px`;
-	menu.style.top = `${top}px`;
+	const host = container.createDiv({ cls: `inkdoc-context-menu-host ${menuClass}`.trim() });
+	host.style.left = `${left}px`;
+	host.style.top = `${top}px`;
+	const trigger = host.createEl("button", {
+		cls: "inkdoc-context-menu-trigger",
+		attr: { type: "button", "aria-hidden": "true", tabindex: "-1" }
+	});
+	const menu = host.createDiv({ cls: "inkdoc-context-menu-panel" });
+	const submenuEngine = createInkDocSubmenuEngine(host);
+	submenuEngine.register("context", trigger, menu);
+	submenuEngine.setActive("context");
 
 	for (const item of items) {
 		const button = menu.createEl("button", {
@@ -28,7 +38,7 @@ export const openManagedMenu = (
 
 	const closeOnClick = (event: MouseEvent) => {
 		const target = event.target as Node | null;
-		if (!target || menu.contains(target)) {
+		if (!target || host.contains(target)) {
 			return;
 		}
 		onClose();
@@ -41,11 +51,12 @@ export const openManagedMenu = (
 
 	window.addEventListener("mousedown", closeOnClick, { capture: true });
 	window.addEventListener("keydown", closeOnEsc);
-	cleanupMap.set(menu, () => {
+	cleanupMap.set(host, () => {
 		window.removeEventListener("mousedown", closeOnClick, true);
 		window.removeEventListener("keydown", closeOnEsc);
+		submenuEngine.dispose();
 	});
-	return menu;
+	return host;
 };
 
 export const closeManagedMenu = (container: HTMLElement, selector: string): void => {

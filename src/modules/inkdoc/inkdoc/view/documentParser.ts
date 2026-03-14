@@ -2,7 +2,6 @@
 import type { InkDocDocument, InkDocPage } from "../types";
 import { DEFAULT_PAGE_MARGIN_MM } from "../types";
 import {
-	INKDOC_DEFAULT_LATEX_COLOR,
 	INKDOC_IMAGE_MIN_HEIGHT,
 	INKDOC_IMAGE_MIN_WIDTH,
 	INKDOC_STICKY_NOTE_DEFAULT_HEIGHT,
@@ -40,10 +39,8 @@ export const parseInkDocRaw = (raw: string): InkDocDocument => {
 					type: (block.type === "latex" ? "latex" : "text") as "latex" | "text",
 					latex: typeof block.latex === "string" ? block.latex : "",
 					color:
-						block.type === "latex"
-							? typeof block.color === "string" && block.color.trim().length > 0
-								? block.color
-								: INKDOC_DEFAULT_LATEX_COLOR
+						typeof block.color === "string" && block.color.trim().length > 0
+							? block.color
 							: undefined
 				}));
 				const rawImages = Array.isArray((safePage as InkDocPage | undefined)?.images)

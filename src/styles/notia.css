@@ -1969,12 +1969,18 @@
 .notia-settings-body {
   flex: 1;
   padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
   color: var(--color-body-text);
   font-size: 13px;
 }
 
 .notia-settings-card {
-  max-width: 320px;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   border: 1px solid var(--color-border-soft);
   background: var(--color-card-bg);
   border-radius: 8px;
@@ -1999,6 +2005,27 @@
 
 .notia-settings-slider-wrap input[type='range'] {
   width: 100%;
+}
+
+.notia-settings-input-wrap {
+  margin-top: 12px;
+}
+
+.notia-settings-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-soft);
+  background: var(--color-surface-elevated);
+  color: var(--color-heading-text);
+}
+
+.notia-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .notia-settings-menu {

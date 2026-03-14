@@ -6,26 +6,26 @@ import {
 	clampOcrDebounceMs,
 	normalizeServiceUrl
 } from "settings";
-import type { InkDocPoint } from "../types";
+import type { InkDocPoint, InkDocStroke } from "../types";
+import { BrushRegistry } from "./brushRegistry";
 import { renderInkMathLatexPreview } from "./inkmath/latexPreview";
+import { renderStrokeWithBrush } from "./strokeRenderers";
+import { resolveInkDocStrokeStyle } from "./strokeStyles";
 import { stabilizePoint } from "./strokeSmoothing";
 import {
 	createRecognitionImageBase64,
-	type InkMathStroke,
 	type InkMathStrokePoint
 } from "./inkmath/strokeRaster";
 import { setInkDocIcon } from "./iconEngine";
 import { setCompatibleIcon } from "./iconFallback";
-import { INKDOC_ICONS, type InkDocIconName } from "./icons";
 import { PalmRejectionController } from "./palmRejection";
-import { getInkDocBuildInfo } from "./buildInfo";
 import { attachInkDocModalEngine } from "./modalEngine";
 
 type InkMathPoint = { x: number; y: number };
 type ClientPoint = { x: number; y: number };
-type ExpandDirection = "left" | "right" | "up" | "down";
 type OcrStatus = "idle" | "debouncing" | "requesting" | "error";
 type OcrTimelineStatus = "requesting" | "ok" | "canceled" | "error";
+type InkMathStroke = InkDocStroke & { mode: "draw" };
 
 type OcrTimelineEntry = {
 	requestId: number;
@@ -54,16 +54,17 @@ type InkMathModalOptions = {
 
 const INITIAL_CANVAS_WIDTH = 640;
 const INITIAL_CANVAS_HEIGHT = 270;
-const GROW_STEP = 240;
 const ERASER_SIZE = 18;
 const CANVAS_LINE_WIDTH = 4.4;
 const OCR_LINE_WIDTH = 6;
-const INKMATH_DRAW_STABILIZER = 0.72;
+const MIN_STROKE_WIDTH = 1.5;
+const MAX_STROKE_WIDTH = 12;
 const MAX_TIMELINE_ENTRIES = 16;
 const HEALTH_TIMEOUT_MS = 5000;
 const HEALTH_CACHE_MS = 3000;
 
 export class InkMathModal extends Modal {
+	private brushRegistry = new BrushRegistry();
 	private canvasShellEl: HTMLDivElement | null = null;
 	private canvasEl: HTMLCanvasElement | null = null;
 	private toolRowEl: HTMLDivElement | null = null;
@@ -71,6 +72,8 @@ export class InkMathModal extends Modal {
 	private eraseToolButtonEl: HTMLButtonElement | null = null;
 	private stabilizationToggleButtonEl: HTMLButtonElement | null = null;
 	private stylusDynamicsToggleButtonEl: HTMLButtonElement | null = null;
+	private strokeWidthSliderEl: HTMLInputElement | null = null;
+	private strokeWidthValueEl: HTMLDivElement | null = null;
 	private latexPreviewEl: HTMLDivElement | null = null;
 	private latexPreviewContentEl: HTMLDivElement | null = null;
 	private latexEditButtonEl: HTMLButtonElement | null = null;
@@ -86,7 +89,6 @@ export class InkMathModal extends Modal {
 	private telemetryBackendMessageEl: HTMLDivElement | null = null;
 	private actionsEl: HTMLDivElement | null = null;
 	private latexInvalidIconEl: HTMLSpanElement | null = null;
-	private buildStampEl: HTMLDivElement | null = null;
 	private ctx: CanvasRenderingContext2D | null = null;
 	private readonly backgroundColor: string;
 	private readonly inkColor: string;
@@ -94,6 +96,7 @@ export class InkMathModal extends Modal {
 	private readonly serviceUrl: string;
 	private readonly ocrDebounceMs: number;
 	private currentLatex: string;
+	private strokeWidth = CANVAS_LINE_WIDTH;
 	private logicalWidth = INITIAL_CANVAS_WIDTH;
 	private logicalHeight = INITIAL_CANVAS_HEIGHT;
 	private dpr = 1;
@@ -125,6 +128,7 @@ export class InkMathModal extends Modal {
 	private showLatexInvalidAlert = false;
 	private isManualLatexEditing = false;
 	private detachShell: (() => void) | null = null;
+	private responsiveLayoutFrame: number | null = null;
 
 	constructor(app: App, options: InkMathModalOptions = {}) {
 		super(app);
@@ -139,18 +143,8 @@ export class InkMathModal extends Modal {
 
 	onOpen(): void {
 		this.detachShell = attachInkDocModalEngine(this, { tone: "inkmath", size: "xl" });
-		this.titleEl.setText("InkMath");
 		this.modalEl.addClass("inkdoc-inkmath-modal-shell");
 		this.contentEl.addClass("inkdoc-inkmath-modal");
-		this.contentEl.createEl("p", {
-			cls: "inkdoc-background-intro",
-			text: "Dibuja en el canvas. Usa las flechas para expandir el área manualmente."
-		});
-		const buildInfo = getInkDocBuildInfo();
-		this.buildStampEl = this.contentEl.createDiv({
-			cls: "inkdoc-build-stamp",
-			text: `Build: ${buildInfo.stamp}`
-		});
 		this.createLatexPreview();
 		this.setLatexInvalidAlert(false);
 		void this.renderLatexPreview();
@@ -164,7 +158,6 @@ export class InkMathModal extends Modal {
 		this.canvasEl.addEventListener("pointercancel", this.onPointerUp);
 		this.canvasEl.addEventListener("pointerleave", this.onPointerUp);
 		this.canvasEl.addEventListener("contextmenu", this.onCanvasContextMenu);
-		this.createCanvasExpandControls();
 		this.resizeCanvas(this.logicalWidth, this.logicalHeight);
 		this.createToolRow();
 
@@ -172,9 +165,10 @@ export class InkMathModal extends Modal {
 		this.createTelemetryCard();
 		this.createActionsRow();
 		this.syncSectionWidthsWithCanvas();
+		window.addEventListener("resize", this.onWindowResize);
+		this.queueResponsiveLayout();
 		this.appendLog(`InkMath listo. OCR: ${this.serviceUrl}/v1/inkmath/recognize`);
 		this.appendLog(`Debounce OCR: ${this.ocrDebounceMs} ms.`);
-		this.appendLog(`Build: ${buildInfo.stamp}`);
 		this.updateTelemetryUi();
 		void this.ensureBackendHealthy("startup", true);
 	}
@@ -218,7 +212,6 @@ export class InkMathModal extends Modal {
 		this.telemetryBackendMessageEl = null;
 		this.actionsEl = null;
 		this.latexInvalidIconEl = null;
-		this.buildStampEl = null;
 		this.ctx = null;
 		this.canvasShellEl = null;
 		this.canvasEl = null;
@@ -227,6 +220,8 @@ export class InkMathModal extends Modal {
 		this.eraseToolButtonEl = null;
 		this.stabilizationToggleButtonEl = null;
 		this.stylusDynamicsToggleButtonEl = null;
+		this.strokeWidthSliderEl = null;
+		this.strokeWidthValueEl = null;
 		this.lastHealthCheckAtMs = 0;
 		this.backendHealthy = false;
 		this.backendErrorMessage = null;
@@ -235,6 +230,11 @@ export class InkMathModal extends Modal {
 		this.telemetryCollapsed = true;
 		this.showLatexInvalidAlert = false;
 		this.isManualLatexEditing = false;
+		if (this.responsiveLayoutFrame !== null) {
+			window.cancelAnimationFrame(this.responsiveLayoutFrame);
+			this.responsiveLayoutFrame = null;
+		}
+		window.removeEventListener("resize", this.onWindowResize);
 		this.stylusAvailable = false;
 		this.isStrokeStabilizationEnabled = true;
 		this.isStylusDynamicsEnabled = true;
@@ -256,7 +256,7 @@ export class InkMathModal extends Modal {
 				title: "Editar LaTeX manualmente"
 			}
 		});
-		setInkDocIcon(editButton, INKDOC_ICONS.PENCIL, "E");
+		setInkDocIcon(editButton, "pencil", "E");
 		editButton.addEventListener("click", () => {
 			if (this.isManualLatexEditing) {
 				this.closeManualLatexEditor(true);
@@ -286,6 +286,7 @@ export class InkMathModal extends Modal {
 		if (!rendered) {
 			this.appendLog("LaTeX recibido pero inválido para render.");
 		}
+		this.queueResponsiveLayout();
 	}
 
 	private renderPreviewPlaceholder(): void {
@@ -300,6 +301,7 @@ export class InkMathModal extends Modal {
 			cls: "inkdoc-inkmath-latex-placeholder",
 			text: "Sin LaTeX reconocido todavía."
 		});
+		this.queueResponsiveLayout();
 	}
 
 	private async applyRecognizedLatexIfValid(latex: string): Promise<boolean> {
@@ -328,7 +330,7 @@ export class InkMathModal extends Modal {
 			this.latexInvalidIconEl = this.latexPreviewEl.createSpan({
 				cls: "inkdoc-inkmath-latex-invalid-icon"
 			});
-			setCompatibleIcon(this.latexInvalidIconEl, INKDOC_ICONS.CROSS_IN_BOX, "!");
+			setCompatibleIcon(this.latexInvalidIconEl, "x-square", "!");
 		}
 		this.latexInvalidIconEl.toggleClass("is-visible", this.showLatexInvalidAlert);
 	}
@@ -380,6 +382,7 @@ export class InkMathModal extends Modal {
 			this.latexManualEditorEl.value.length,
 			this.latexManualEditorEl.value.length
 		);
+		this.queueResponsiveLayout();
 	}
 
 	private closeManualLatexEditor(restorePreview: boolean): void {
@@ -390,7 +393,9 @@ export class InkMathModal extends Modal {
 		this.latexManualActionsEl = null;
 		if (restorePreview) {
 			void this.renderLatexPreview();
+			return;
 		}
+		this.queueResponsiveLayout();
 	}
 
 	private async applyManualLatexEditorValue(): Promise<void> {
@@ -447,14 +452,24 @@ export class InkMathModal extends Modal {
 				this.onInkChanged();
 			}
 		} else {
+			const brush = this.getInkMathBrushPreset();
 			const stroke: InkMathStroke = {
+				id: this.createStrokeId(),
 				mode: "draw",
-				points: [this.createStrokePoint(point, event)]
+				points: [this.createStrokePoint(point, event)],
+				color: this.inkColor,
+				width: this.strokeWidth,
+				opacity: 1,
+				style: resolveInkDocStrokeStyle(brush.style),
+				tool: "pen",
+				brushId: brush.id,
+				smoothing: brush.smoothing,
+				stabilizer: this.isStrokeStabilizationEnabled ? brush.stabilizer : 0
 			};
 			this.strokes.push(stroke);
 			this.activeStroke = stroke;
 			this.lastStabilizedDrawPoint = { x: point.x, y: point.y };
-			this.drawDot(point, stroke.points[0]?.pressure);
+			this.redrawCanvasFromStrokes();
 			this.onInkChanged();
 		}
 	};
@@ -488,11 +503,7 @@ export class InkMathModal extends Modal {
 			}
 			const strokePoint = this.createStrokePoint(point, event);
 			this.activeStroke.points.push(strokePoint);
-			this.ctx.beginPath();
-			this.ctx.moveTo(this.lastPoint.x, this.lastPoint.y);
-			this.ctx.lineTo(point.x, point.y);
-			this.ctx.lineWidth = this.getDrawLineWidth(strokePoint.pressure);
-			this.ctx.stroke();
+			this.redrawCanvasFromStrokes();
 			this.onInkChanged();
 		}
 		this.lastPoint = point;
@@ -529,6 +540,8 @@ export class InkMathModal extends Modal {
 			x: point.x,
 			y: point.y,
 			pressure,
+			tiltX: this.isStylusDynamicsEnabled && isStylus ? event.tiltX : undefined,
+			tiltY: this.isStylusDynamicsEnabled && isStylus ? event.tiltY : undefined,
 			time: Date.now()
 		};
 	}
@@ -542,10 +555,11 @@ export class InkMathModal extends Modal {
 			this.lastStabilizedDrawPoint = { x: point.x, y: point.y };
 			return point;
 		}
+		const stabilization = this.activeStroke?.stabilizer ?? this.getInkMathBrushPreset().stabilizer ?? 0;
 		const stabilized = stabilizePoint(
 			this.lastStabilizedDrawPoint,
 			{ x: point.x, y: point.y },
-			INKMATH_DRAW_STABILIZER
+			stabilization
 		);
 		this.lastStabilizedDrawPoint = stabilized;
 		return {
@@ -705,10 +719,13 @@ export class InkMathModal extends Modal {
 	private createRecognitionImageBase64(): string | null {
 		// OCR image is always rebuilt from strokes: white background + black ink, no grid/background styling.
 		return createRecognitionImageBase64(
-			this.strokes,
+			this.strokes.map((stroke) => ({
+				mode: "draw",
+				points: stroke.points
+			})),
 			this.logicalWidth,
 			this.logicalHeight,
-			OCR_LINE_WIDTH,
+			this.getOcrLineWidth(),
 			ERASER_SIZE
 		);
 	}
@@ -807,9 +824,11 @@ export class InkMathModal extends Modal {
 			return { x: 0, y: 0 };
 		}
 		const rect = this.canvasEl.getBoundingClientRect();
+		const scaleX = rect.width > 0 ? this.logicalWidth / rect.width : 1;
+		const scaleY = rect.height > 0 ? this.logicalHeight / rect.height : 1;
 		return {
-			x: clamp(event.clientX - rect.left, 0, this.logicalWidth),
-			y: clamp(event.clientY - rect.top, 0, this.logicalHeight)
+			x: clamp((event.clientX - rect.left) * scaleX, 0, this.logicalWidth),
+			y: clamp((event.clientY - rect.top) * scaleY, 0, this.logicalHeight)
 		};
 	}
 
@@ -820,35 +839,13 @@ export class InkMathModal extends Modal {
 		};
 	}
 
-	private createCanvasExpandControls(): void {
-		if (!this.canvasShellEl) {
-			return;
-		}
-		const makeButton = (direction: ExpandDirection, icon: InkDocIconName, label: string): void => {
-			const button = this.canvasShellEl?.createEl("button", {
-				cls: `inkdoc-inkmath-canvas-expand is-${direction}`,
-				attr: { type: "button", "aria-label": label, title: label }
-			});
-			if (button) {
-				setCompatibleIcon(button, icon, "+");
-			}
-			button?.addEventListener("click", () => {
-				this.expandCanvas(direction);
-			});
-		};
-		makeButton("up", INKDOC_ICONS.UP_ARROW_WITH_TAIL, "Expandir arriba");
-		makeButton("down", INKDOC_ICONS.DOWN_ARROW_WITH_TAIL, "Expandir abajo");
-		makeButton("left", INKDOC_ICONS.LEFT_ARROW_WITH_TAIL, "Expandir izquierda");
-		makeButton("right", INKDOC_ICONS.RIGHT_ARROW_WITH_TAIL, "Expandir derecha");
-	}
-
 	private createToolRow(): void {
 		const toolRow = this.contentEl.createDiv({ cls: "inkdoc-inkmath-tools" });
 		this.toolRowEl = toolRow;
 
 		const createToolButton = (
 			tool: "draw" | "erase",
-			icon: InkDocIconName,
+			icon: string,
 			label: string,
 			fallback: string
 		): HTMLButtonElement => {
@@ -865,12 +862,12 @@ export class InkMathModal extends Modal {
 			return button;
 		};
 
-		this.drawToolButtonEl = createToolButton("draw", INKDOC_ICONS.PENCIL, "Lápiz", "P");
-		this.eraseToolButtonEl = createToolButton("erase", INKDOC_ICONS.ERASER, "Borrador", "E");
+		this.drawToolButtonEl = createToolButton("draw", "pencil", "Lápiz", "P");
+		this.eraseToolButtonEl = createToolButton("erase", "eraser", "Borrador", "E");
 		this.stabilizationToggleButtonEl = this.createToggleToolButton(
 			toolRow,
 			"Estabilización",
-			INKDOC_ICONS.SWITCH,
+			"flip-horizontal",
 			"S"
 		);
 		this.stabilizationToggleButtonEl.addEventListener("click", () => {
@@ -880,7 +877,7 @@ export class InkMathModal extends Modal {
 		this.stylusDynamicsToggleButtonEl = this.createToggleToolButton(
 			toolRow,
 			"Stylus dinámico",
-			INKDOC_ICONS.WAND_2,
+			"wand-2",
 			"D"
 		);
 		this.stylusDynamicsToggleButtonEl.addEventListener("click", () => {
@@ -890,8 +887,40 @@ export class InkMathModal extends Modal {
 			this.isStylusDynamicsEnabled = !this.isStylusDynamicsEnabled;
 			this.updateInkMathAdvancedToolTogglesUi();
 		});
+		const strokeWidthControl = toolRow.createDiv({ cls: "inkdoc-inkmath-stroke-width" });
+		strokeWidthControl.createDiv({ cls: "inkdoc-inkmath-stroke-width-label", text: "Grosor" });
+		this.strokeWidthSliderEl = strokeWidthControl.createEl("input", {
+			cls: "inkdoc-inkmath-stroke-width-slider",
+			attr: {
+				type: "range",
+				min: String(MIN_STROKE_WIDTH),
+				max: String(MAX_STROKE_WIDTH),
+				step: "0.1",
+				value: String(this.strokeWidth),
+				"aria-label": "Grosor del trazo"
+			}
+		});
+		this.strokeWidthValueEl = strokeWidthControl.createDiv({
+			cls: "inkdoc-inkmath-stroke-width-value",
+			text: this.formatStrokeWidthLabel(this.strokeWidth)
+		});
+		this.strokeWidthSliderEl.addEventListener("input", () => {
+			const nextWidth = Number.parseFloat(this.strokeWidthSliderEl?.value ?? "");
+			if (!Number.isFinite(nextWidth)) {
+				return;
+			}
+			this.strokeWidth = clamp(nextWidth, MIN_STROKE_WIDTH, MAX_STROKE_WIDTH);
+			for (const stroke of this.strokes) {
+				stroke.width = this.strokeWidth;
+			}
+			this.updateStrokeWidthUi();
+			if (this.strokes.length > 0) {
+				this.redrawCanvasFromStrokes();
+			}
+		});
 		this.setSelectedTool(this.selectedTool);
 		this.updateInkMathAdvancedToolTogglesUi();
+		this.updateStrokeWidthUi();
 	}
 
 	private setSelectedTool(tool: "draw" | "erase"): void {
@@ -906,7 +935,7 @@ export class InkMathModal extends Modal {
 	private createToggleToolButton(
 		toolRow: HTMLDivElement,
 		label: string,
-		icon: InkDocIconName,
+		icon: string,
 		fallback: string
 	): HTMLButtonElement {
 		const button = toolRow.createEl("button", {
@@ -938,6 +967,15 @@ export class InkMathModal extends Modal {
 		}
 	}
 
+	private updateStrokeWidthUi(): void {
+		if (this.strokeWidthSliderEl) {
+			this.strokeWidthSliderEl.value = this.strokeWidth.toFixed(1);
+		}
+		if (this.strokeWidthValueEl) {
+			this.strokeWidthValueEl.setText(this.formatStrokeWidthLabel(this.strokeWidth));
+		}
+	}
+
 	private updateStylusAvailabilityFromEvent(event: PointerEvent, isStylus: boolean): void {
 		if (!isStylus || this.stylusAvailable) {
 			return;
@@ -959,55 +997,16 @@ export class InkMathModal extends Modal {
 		};
 	}
 
-	private expandCanvas(direction: ExpandDirection): void {
-		let deltaWidth = 0;
-		let deltaHeight = 0;
-		let shiftX = 0;
-		let shiftY = 0;
-		if (direction === "left") {
-			deltaWidth = GROW_STEP;
-			shiftX = GROW_STEP;
-		} else if (direction === "right") {
-			deltaWidth = GROW_STEP;
-		} else if (direction === "up") {
-			deltaHeight = GROW_STEP;
-			shiftY = GROW_STEP;
-		} else if (direction === "down") {
-			deltaHeight = GROW_STEP;
-		}
-		if (shiftX !== 0 || shiftY !== 0) {
-			for (const stroke of this.strokes) {
-				for (const point of stroke.points) {
-					point.x += shiftX;
-					point.y += shiftY;
-				}
-			}
-			if (this.lastPoint) {
-				this.lastPoint = {
-					x: this.lastPoint.x + shiftX,
-					y: this.lastPoint.y + shiftY
-				};
-			}
-			if (this.lastStabilizedDrawPoint) {
-				this.lastStabilizedDrawPoint = {
-					...this.lastStabilizedDrawPoint,
-					x: this.lastStabilizedDrawPoint.x + shiftX,
-					y: this.lastStabilizedDrawPoint.y + shiftY
-				};
-			}
-		}
-		this.resizeCanvas(this.logicalWidth + deltaWidth, this.logicalHeight + deltaHeight);
-	}
-
 	private resizeCanvas(nextWidth: number, nextHeight: number): void {
-		if (!this.canvasEl) {
+		if (!this.canvasEl || !this.canvasShellEl) {
 			return;
 		}
 		this.logicalWidth = Math.max(1, Math.round(nextWidth));
 		this.logicalHeight = Math.max(1, Math.round(nextHeight));
 		this.dpr = Math.max(1, window.devicePixelRatio || 1);
-		this.canvasEl.style.width = `${this.logicalWidth}px`;
-		this.canvasEl.style.height = `${this.logicalHeight}px`;
+		this.canvasShellEl.style.aspectRatio = `${this.logicalWidth} / ${this.logicalHeight}`;
+		this.canvasEl.style.width = "100%";
+		this.canvasEl.style.height = "100%";
 		this.canvasEl.width = Math.max(1, Math.round(this.logicalWidth * this.dpr));
 		this.canvasEl.height = Math.max(1, Math.round(this.logicalHeight * this.dpr));
 		const nextCtx = this.canvasEl.getContext("2d");
@@ -1018,11 +1017,12 @@ export class InkMathModal extends Modal {
 		nextCtx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 		nextCtx.lineCap = "round";
 		nextCtx.lineJoin = "round";
-		nextCtx.lineWidth = CANVAS_LINE_WIDTH;
+		nextCtx.lineWidth = this.strokeWidth;
 		nextCtx.strokeStyle = this.inkColor;
 		this.ctx = nextCtx;
 		this.redrawCanvasFromStrokes();
 		this.syncSectionWidthsWithCanvas();
+		this.queueResponsiveLayout();
 	}
 
 	private redrawCanvasFromStrokes(): void {
@@ -1036,54 +1036,45 @@ export class InkMathModal extends Modal {
 	}
 
 	private redrawDrawStroke(stroke: InkMathStroke): void {
-		if (!this.ctx || stroke.mode !== "draw" || stroke.points.length === 0) {
+		if (!this.ctx || stroke.points.length === 0) {
 			return;
 		}
-		if (stroke.points.length === 1) {
-			const first = stroke.points[0];
-			if (!first) {
-				return;
-			}
-			this.drawDot({ x: first.x, y: first.y }, first.pressure);
-			return;
-		}
-		for (let index = 1; index < stroke.points.length; index += 1) {
-			const previous = stroke.points[index - 1];
-			const current = stroke.points[index];
-			if (!previous || !current) {
-				continue;
-			}
-			this.ctx.beginPath();
-			this.ctx.moveTo(previous.x, previous.y);
-			this.ctx.lineTo(current.x, current.y);
-			this.ctx.lineWidth = this.getDrawLineWidth(current.pressure);
-			this.ctx.strokeStyle = this.inkColor;
-			this.ctx.stroke();
-		}
+		renderStrokeWithBrush(this.ctx, stroke, this.getBrushPresetByStroke(stroke), {
+			stylusDynamicsEnabled: this.stylusAvailable && this.isStylusDynamicsEnabled,
+			quality: "high"
+		});
 	}
 
-	private getDrawLineWidth(pressure: number | undefined): number {
-		if (!this.stylusAvailable || !this.isStylusDynamicsEnabled || typeof pressure !== "number") {
-			return CANVAS_LINE_WIDTH;
-		}
-		const normalized = clamp(pressure, 0, 1);
-		return clamp(
-			CANVAS_LINE_WIDTH * (0.45 + normalized * 1.15),
-			CANVAS_LINE_WIDTH * 0.45,
-			CANVAS_LINE_WIDTH * 1.7
-		);
+	private getOcrLineWidth(): number {
+		return (this.strokeWidth / CANVAS_LINE_WIDTH) * OCR_LINE_WIDTH;
 	}
 
-	private drawDot(point: InkMathPoint, pressure: number | undefined): void {
-		if (!this.ctx) {
-			return;
-		}
-		this.ctx.save();
-		this.ctx.fillStyle = this.inkColor;
-		this.ctx.beginPath();
-		this.ctx.arc(point.x, point.y, this.getDrawLineWidth(pressure) * 0.5, 0, Math.PI * 2);
-		this.ctx.fill();
-		this.ctx.restore();
+	private formatStrokeWidthLabel(width: number): string {
+		return `${width.toFixed(1)} px`;
+	}
+
+	private getInkMathBrushPreset() {
+		const baseBrush = this.brushRegistry.get("monoline");
+		return {
+			...baseBrush,
+			defaultWidth: this.strokeWidth,
+			minWidth: Math.min(baseBrush.minWidth, this.strokeWidth),
+			maxWidth: Math.max(baseBrush.maxWidth, this.strokeWidth)
+		};
+	}
+
+	private getBrushPresetByStroke(stroke: InkMathStroke) {
+		const baseBrush = this.brushRegistry.get(stroke.brushId ?? "monoline");
+		return {
+			...baseBrush,
+			defaultWidth: stroke.width,
+			minWidth: Math.min(baseBrush.minWidth, stroke.width),
+			maxWidth: Math.max(baseBrush.maxWidth, stroke.width)
+		};
+	}
+
+	private createStrokeId(): string {
+		return `inkmath-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 	}
 
 	private eraseAtPoint(point: InkMathPoint): void {
@@ -1177,7 +1168,7 @@ export class InkMathModal extends Modal {
 			cls: "inkdoc-inkmath-card-toggle",
 			attr: { type: "button", "aria-label": "Colapsar logs", title: "Colapsar/expandir logs" }
 		});
-		setCompatibleIcon(collapseButton, INKDOC_ICONS.DOWN_CHEVRON_GLYPH, "v");
+		setCompatibleIcon(collapseButton, "chevron-down", "v");
 		collapseButton.addEventListener("click", () => {
 			this.logsCollapsed = !this.logsCollapsed;
 			this.updateCardCollapseUi();
@@ -1195,7 +1186,7 @@ export class InkMathModal extends Modal {
 			cls: "inkdoc-inkmath-card-toggle",
 			attr: { type: "button", "aria-label": "Colapsar telemetría OCR", title: "Colapsar/expandir telemetría OCR" }
 		});
-		setCompatibleIcon(collapseButton, INKDOC_ICONS.DOWN_CHEVRON_GLYPH, "v");
+		setCompatibleIcon(collapseButton, "chevron-down", "v");
 		collapseButton.addEventListener("click", () => {
 			this.telemetryCollapsed = !this.telemetryCollapsed;
 			this.updateCardCollapseUi();
@@ -1229,7 +1220,7 @@ export class InkMathModal extends Modal {
 			cls: "inkdoc-inkmath-action inkmath-debug-eye",
 			attr: { type: "button", "aria-label": "Ver imagen OCR", title: "Ver imagen OCR (debug)" }
 		});
-		setCompatibleIcon(debugButton, INKDOC_ICONS.MAGNIFYING_GLASS, "O");
+		setCompatibleIcon(debugButton, "search", "O");
 		const rightGroup = actions.createDiv({ cls: "inkdoc-inkmath-actions-right" });
 		const cancelButton = rightGroup.createEl("button", {
 			cls: "inkdoc-inkmath-action",
@@ -1370,7 +1361,7 @@ export class InkMathModal extends Modal {
 	}
 
 	private syncSectionWidthsWithCanvas(): void {
-		const widthPx = `${this.logicalWidth}px`;
+		const widthPx = "100%";
 		if (this.toolRowEl) {
 			this.toolRowEl.style.width = widthPx;
 			this.toolRowEl.style.maxWidth = widthPx;
@@ -1393,6 +1384,55 @@ export class InkMathModal extends Modal {
 		}
 	}
 
+	private queueResponsiveLayout(): void {
+		if (this.responsiveLayoutFrame !== null) {
+			window.cancelAnimationFrame(this.responsiveLayoutFrame);
+		}
+		this.responsiveLayoutFrame = window.requestAnimationFrame(() => {
+			this.responsiveLayoutFrame = null;
+			this.syncResponsiveLayout();
+		});
+	}
+
+	private syncResponsiveLayout(): void {
+		if (!this.contentEl || !this.canvasShellEl) {
+			return;
+		}
+		const contentWidth = this.contentEl.clientWidth;
+		const contentHeight = this.contentEl.clientHeight;
+		if (contentWidth <= 0 || contentHeight <= 0) {
+			return;
+		}
+		const style = window.getComputedStyle(this.contentEl);
+		const gap = Number.parseFloat(style.rowGap || style.gap || "0") || 0;
+		const children = Array.from(this.contentEl.children).filter(
+			(child): child is HTMLElement => child instanceof HTMLElement
+		);
+		let occupiedHeight = 0;
+		let visibleChildren = 0;
+		for (const child of children) {
+			if (child.offsetParent === null) {
+				continue;
+			}
+			visibleChildren += 1;
+			if (child === this.canvasShellEl) {
+				continue;
+			}
+			occupiedHeight += child.getBoundingClientRect().height;
+		}
+		const totalGapHeight = Math.max(0, visibleChildren - 1) * gap;
+		const availableCanvasHeight = Math.max(180, contentHeight - occupiedHeight - totalGapHeight);
+		const aspectRatio = this.logicalWidth / Math.max(1, this.logicalHeight);
+		const fittedWidth = Math.min(contentWidth, availableCanvasHeight * aspectRatio);
+		const fittedHeight = fittedWidth / Math.max(0.0001, aspectRatio);
+		this.canvasShellEl.style.width = `${Math.max(180, Math.floor(fittedWidth))}px`;
+		this.canvasShellEl.style.height = `${Math.max(120, Math.floor(fittedHeight))}px`;
+	}
+
+	private onWindowResize = (): void => {
+		this.queueResponsiveLayout();
+	};
+
 	private updateCardCollapseUi(): void {
 		if (this.logsCardEl) {
 			this.logsCardEl.classList.toggle("is-collapsed", this.logsCollapsed);
@@ -1400,7 +1440,7 @@ export class InkMathModal extends Modal {
 			if (button) {
 				setCompatibleIcon(
 					button,
-					this.logsCollapsed ? INKDOC_ICONS.RIGHT_TRIANGLE : INKDOC_ICONS.DOWN_CHEVRON_GLYPH,
+					this.logsCollapsed ? "chevron-right" : "chevron-down",
 					">"
 				);
 				button.setAttribute("aria-label", this.logsCollapsed ? "Expandir logs" : "Colapsar logs");
@@ -1413,7 +1453,7 @@ export class InkMathModal extends Modal {
 			if (button) {
 				setCompatibleIcon(
 					button,
-					this.telemetryCollapsed ? INKDOC_ICONS.RIGHT_TRIANGLE : INKDOC_ICONS.DOWN_CHEVRON_GLYPH,
+					this.telemetryCollapsed ? "chevron-right" : "chevron-down",
 					">"
 				);
 				button.setAttribute(
@@ -1423,6 +1463,7 @@ export class InkMathModal extends Modal {
 				button.title = this.telemetryCollapsed ? "Expandir telemetría OCR" : "Colapsar telemetría OCR";
 			}
 		}
+		this.queueResponsiveLayout();
 	}
 }
 

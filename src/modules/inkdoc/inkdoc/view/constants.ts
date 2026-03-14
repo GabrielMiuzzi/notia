@@ -9,8 +9,6 @@ export const INKDOC_TEXT_HANDLE_SIZE = 16;
 export const INKDOC_TEXT_RESIZE_HANDLE_SIZE = 14;
 export const INKDOC_TEXT_MIN_WIDTH = 80;
 export const INKDOC_TEXT_MIN_HEIGHT = 28;
-export const INKDOC_TEXT_TOOLBAR_ID = "inkdoc-text-toolbar";
-export const INKDOC_LATEX_TOOLBAR_ID = "inkdoc-latex-toolbar";
 export const INKDOC_DEFAULT_LATEX_COLOR = "#000000";
 export const INKDOC_LATEX_PALETTE = [
 	"#000000",

@@ -1,5 +1,6 @@
 import { isTextFileDocument, type OpenFileDocument } from '../../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
+import type { InkdocPreferences } from '../../../services/preferences/inkdocSettingsStorage'
 import { ImageView } from './ImageView'
 import { InkdocView } from './inkdoc/InkdocView'
 import { MarkdownView } from './MarkdownView'
@@ -11,6 +12,7 @@ interface FileViewHostProps {
   onInkdocSourcePersist: (nextSource: string) => Promise<void>
   rootPath: string | null
   libraryFilePaths: string[]
+  inkdocPreferences: InkdocPreferences
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -21,6 +23,7 @@ export function FileViewHost({
   onInkdocSourcePersist,
   rootPath,
   libraryFilePaths,
+  inkdocPreferences,
   wikiLinkTargets,
   onOpenLinkedFile,
 }: FileViewHostProps) {
@@ -36,6 +39,7 @@ export function FileViewHost({
           source={document.source}
           rootPath={rootPath}
           libraryFilePaths={libraryFilePaths}
+          inkdocPreferences={inkdocPreferences}
           onSourcePersist={onInkdocSourcePersist}
           onOpenLinkedFile={onOpenLinkedFile}
         />

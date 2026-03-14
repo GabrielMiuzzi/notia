@@ -11,24 +11,21 @@ import type {
 	InkDocPoint,
 	InkDocStroke,
 	InkDocStrokeStyle,
-	InkDocTextBlock,
-	InkDocTextLayoutPadding
+	InkDocTextBlock
 } from "./inkdoc/types";
-import { INKDOC_DEFAULT_LATEX_COLOR, INKDOC_IMAGE_MIN_HEIGHT, INKDOC_IMAGE_MIN_WIDTH, INKDOC_LATEX_TOOLBAR_ID, INKDOC_STROKE_COLOR, INKDOC_STROKE_WIDTH, INKDOC_TEXT_MIN_HEIGHT, INKDOC_TEXT_MIN_WIDTH, INKDOC_TEXT_TOOLBAR_ID, VIEW_TYPE_INKDOC, createImageBlockId, createStrokeId } from "./inkdoc/view/constants";
+import { INKDOC_DEFAULT_LATEX_COLOR, INKDOC_IMAGE_MIN_HEIGHT, INKDOC_IMAGE_MIN_WIDTH, INKDOC_LATEX_PALETTE, INKDOC_STROKE_COLOR, INKDOC_STROKE_WIDTH, INKDOC_TEXT_MIN_HEIGHT, INKDOC_TEXT_MIN_WIDTH, VIEW_TYPE_INKDOC, createImageBlockId, createStrokeId } from "./inkdoc/view/constants";
 import type { CanvasPageState, InkDocTool, InkDocViewState } from "./inkdoc/view/constants";
 import {
 	resolvePageBackground,
 	setPageBackgroundAttribute,
 	setPageColorVariables,
 	resolvePageColors,
+	getContrastPageTextColor,
 	DEFAULT_PAGE_BACKGROUND
 } from "./inkdoc/view/backgrounds";
 import { PageBackgroundModal } from "./inkdoc/view/PageBackgroundModal";
 import { PagePaletteModal } from "./inkdoc/view/PagePaletteModal";
 import { PageSizeModal } from "./inkdoc/view/PageSizeModal";
-import { TextLayoutModal } from "./inkdoc/view/TextLayoutModal";
-import { createTextToolbar } from "./inkdoc/view/textToolbar";
-import { createLatexToolbar } from "./inkdoc/view/latexToolbar";
 import { applyWikiLinksToElement } from "./inkdoc/view/wikiLinks";
 import { syncInkDocWikiLinksToMetadata } from "./inkdoc/view/wikiLinkIndex";
 import { PdfExportModal } from "./inkdoc/view/PdfExportModal";
@@ -99,7 +96,6 @@ import {
 } from "./inkdoc/view/strokeRenderers";
 import { stabilizePoint } from "./inkdoc/view/strokeSmoothing";
 import { setCompatibleIcon, setLegacyIcon, type LegacyIconName } from "./inkdoc/view/iconFallback";
-import { INKDOC_ICONS } from "./inkdoc/view/icons";
 import { DocumentSyncEngine } from "./inkdoc/view/documentSyncEngine";
 import {
 	createStickyNoteAtPoint,
@@ -117,17 +113,10 @@ import {
 	type InkDocCreatableObject
 } from "./inkdoc/view/objectCreationPrompt";
 import { createInkDocSubmenuEngine, type InkDocSubmenuEngine } from "./inkdoc/view/submenuEngine";
-import {
-	resolveInkDocTextLayoutPadding
-} from "./inkdoc/view/textLayout";
-import {
-	createInkDocPageMarkdownRuntime,
-	type InkDocPageMarkdownRuntime
-} from "./inkdoc/view/pageMarkdownEngine";
-import "@milkdown/crepe/theme/common/style.css";
-import "@milkdown/crepe/theme/nord.css";
 
 type InkDocPencilSubmenu = "brushes" | "stroke" | "colors" | "stylus";
+type InkDocTextSubmenu = "format" | "font" | "colors" | "paragraph" | "insert";
+type InkDocLatexSubmenu = "colors";
 
 export class InkDocView extends ItemView {
 	private plugin: InkDocPlugin;
@@ -177,18 +166,18 @@ export class InkDocView extends ItemView {
 	private selectedImages = new Map<string, Set<string>>();
 	private textEditorEl: HTMLDivElement | null = null;
 	private stickyTextEditorEl: HTMLDivElement | null = null;
-	private textToolbarEl: HTMLDivElement | null = null;
-	private latexToolbarEl: HTMLDivElement | null = null;
-	private bottomDrawerToggleEl: HTMLButtonElement | null = null;
-	private isBottomDrawerCollapsed = false;
+	private textMenuEl: HTMLDivElement | null = null;
+	private textSubmenuEngine: InkDocSubmenuEngine | null = null;
+	private activeTextSubmenu: InkDocTextSubmenu | null = null;
+	private latexMenuEl: HTMLDivElement | null = null;
+	private latexSubmenuEngine: InkDocSubmenuEngine | null = null;
+	private activeLatexSubmenu: InkDocLatexSubmenu | null = null;
 	private isTextToolbarInteraction = false;
 	private latexColor = INKDOC_DEFAULT_LATEX_COLOR;
 	private textLayerByPage = new Map<string, HTMLDivElement>();
 	private textLayerDirty = new Set<string>();
 	private imageLayerByPage = new Map<string, HTMLDivElement>();
 	private imageLayerDirty = new Set<string>();
-	private pageMarkdownRuntimes = new Map<string, InkDocPageMarkdownRuntime>();
-	private isAutoCreatingTextFlowPage = false;
 	private stickyNotesRuntime: StickyNotesRuntime = createStickyNotesRuntime();
 	private isStickyNoteInteracting = false;
 	private pendingPageRenders = new Map<string, number>();
@@ -210,6 +199,12 @@ export class InkDocView extends ItemView {
 		pointerId: number;
 		startX: number;
 		startY: number;
+	} | null = null;
+	private pendingObjectCreationClick: {
+		tool: InkDocCreatableObject;
+		pageId: string;
+		point: InkDocPoint;
+		atMs: number;
 	} | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: InkDocPlugin) {
@@ -246,7 +241,7 @@ export class InkDocView extends ItemView {
 	}
 
 	getIcon(): string {
-		return INKDOC_ICONS.FILE_TEXT;
+		return "file-text";
 	}
 
 	async onOpen() {
@@ -275,6 +270,10 @@ export class InkDocView extends ItemView {
 		this.toolbarDragCreateSession = null;
 		this.pencilSubmenuEngine?.dispose();
 		this.pencilSubmenuEngine = null;
+		this.textSubmenuEngine?.dispose();
+		this.textSubmenuEngine = null;
+		this.latexSubmenuEngine?.dispose();
+		this.latexSubmenuEngine = null;
 		this.closeTextBlockMenu();
 		this.closeImageBlockMenu();
 		closeInkDocToolsMenu(this.contentEl);
@@ -313,7 +312,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Lápiz", title: "Lápiz" }
 		});
 		const pencilIcon = pencilButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(pencilIcon, INKDOC_ICONS.PENCIL, "P");
+		setCompatibleIcon(pencilIcon, "pencil", "P");
 		pencilButton.dataset.tool = "pen";
 		pencilButton.addEventListener("click", () => {
 			this.setActiveTool("pen");
@@ -325,7 +324,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Mano", title: "Mano" }
 		});
 		const handIcon = handButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(handIcon, INKDOC_ICONS.HAND, "H");
+		setCompatibleIcon(handIcon, "hand", "H");
 		handButton.dataset.tool = "hand";
 		handButton.addEventListener("click", () => {
 			this.setActiveTool("hand");
@@ -338,7 +337,7 @@ export class InkDocView extends ItemView {
 		});
 		textButton.dataset.tool = "text";
 		const textIcon = textButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(textIcon, INKDOC_ICONS.TYPE, "T");
+		setCompatibleIcon(textIcon, "type", "T");
 		this.registerToolbarDragCreate(textButton, "text");
 		textButton.addEventListener("click", () => {
 			this.setActiveTool("text");
@@ -350,7 +349,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "LaTeX", title: "LaTeX" }
 		});
 		const latexIcon = latexButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(latexIcon, INKDOC_ICONS.SIGMA, "Σ");
+		setCompatibleIcon(latexIcon, "sigma", "Σ");
 		latexButton.dataset.tool = "latex";
 		this.registerToolbarDragCreate(latexButton, "latex");
 		latexButton.addEventListener("click", () => {
@@ -363,7 +362,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Seleccionar", title: "Seleccionar" }
 		});
 		const selectIcon = selectButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(selectIcon, INKDOC_ICONS.MOUSE_POINTER_2, "S");
+		setCompatibleIcon(selectIcon, "mouse-pointer-2", "S");
 		selectButton.dataset.tool = "select";
 		selectButton.addEventListener("click", () => {
 			this.setActiveTool("select");
@@ -375,7 +374,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Imagen", title: "Imagen" }
 		});
 		const imageIcon = imageButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(imageIcon, INKDOC_ICONS.IMAGE, "I");
+		setCompatibleIcon(imageIcon, "image", "I");
 		imageButton.dataset.tool = "image";
 		this.registerToolbarDragCreate(imageButton, "image");
 		imageButton.addEventListener("click", () => {
@@ -388,25 +387,11 @@ export class InkDocView extends ItemView {
 		});
 		stickyButton.dataset.tool = "sticky";
 		const stickyIcon = stickyButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(stickyIcon, INKDOC_ICONS.STICKY_NOTE, "N");
+		setCompatibleIcon(stickyIcon, "sticky-note", "N");
 		this.registerToolbarDragCreate(stickyButton, "sticky");
 		stickyButton.addEventListener("click", () => {
 			this.setActiveTool("sticky");
 			this.closePencilMenu();
-		});
-
-		const textLayoutButton = this.toolbarEl.createEl("button", {
-			cls: "inkdoc-toolbar-icon",
-			attr: { "aria-label": "Espaciado de texto", title: "Espaciado de texto" }
-		});
-		const textLayoutIcon = textLayoutButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(textLayoutIcon, INKDOC_ICONS.SETTINGS, "S");
-		textLayoutButton.addEventListener("click", () => {
-			if (!this.docData) {
-				new Notice("No hay documento abierto.");
-				return;
-			}
-			this.openTextLayoutModal();
 		});
 
 		const menuButton = this.toolbarEl.createEl("button", {
@@ -414,7 +399,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Más opciones", title: "Más opciones" }
 		});
 		const menuIcon = menuButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
-		setCompatibleIcon(menuIcon, INKDOC_ICONS.MENU, "☰");
+		setCompatibleIcon(menuIcon, "menu", "☰");
 		menuButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -483,6 +468,9 @@ export class InkDocView extends ItemView {
 			if (!point) {
 				return;
 			}
+			if (!this.shouldConfirmObjectCreationOnClick("sticky", "sticky-layer", point)) {
+				return;
+			}
 			event.preventDefault();
 			event.stopPropagation();
 			void this.confirmAndCreateStickyNote(point);
@@ -527,53 +515,14 @@ export class InkDocView extends ItemView {
 			this.pagesEl.classList.remove("is-panning");
 			this.pagesEl.releasePointerCapture(event.pointerId);
 		});
-		this.textToolbarEl = createTextToolbar(root, INKDOC_TEXT_TOOLBAR_ID, {
-			onToolbarInteraction: () => {
-				this.isTextToolbarInteraction = true;
-				window.setTimeout(() => {
-					this.isTextToolbarInteraction = false;
-				}, 0);
-			},
-			applyEditorCommand: (command, value) => this.applyEditorCommand(command, value),
-			applySelectionStyle: (style) => this.applySelectionStyle(style),
-			applyTextTransform: (value) => this.applyTextTransform(value),
-			applyBlockStyle: (styles) => this.applyBlockStyle(styles),
-			applyParagraphStyle: (styles) => this.applyParagraphStyle(styles)
-		});
-		this.latexToolbarEl = createLatexToolbar(
-			root,
-			INKDOC_LATEX_TOOLBAR_ID,
-			{ initialColor: this.latexColor },
-			{
-				onToolbarInteraction: () => {
-					this.isTextToolbarInteraction = true;
-					window.setTimeout(() => {
-						this.isTextToolbarInteraction = false;
-					}, 0);
-				},
-				applyLatexColor: (color) => this.applyLatexColor(color)
-			}
-		);
-		this.bottomDrawerToggleEl = root.createEl("button", {
-			cls: "inkdoc-bottom-drawer-toggle",
-			attr: {
-				"aria-label": "Ocultar cajón de herramientas",
-				title: "Ocultar cajón de herramientas",
-				"aria-hidden": "true"
-			}
-		});
-		setCompatibleIcon(this.bottomDrawerToggleEl, INKDOC_ICONS.CHEVRON_DOWN, "▾");
-		this.bottomDrawerToggleEl.addEventListener("click", () => {
-			this.toggleBottomDrawer();
-		});
 		this.registerDomEvent(window, "resize", () => {
-			this.updateBottomDrawerToggleUI();
 			if (!this.pencilMenuEl) {
 				this.renderStickyNotes();
 				return;
 			}
 			window.requestAnimationFrame(() => {
 				this.updatePencilMenuUI();
+				this.updateLatexToolbarUI();
 				this.renderStickyNotes();
 			});
 		});
@@ -587,14 +536,46 @@ export class InkDocView extends ItemView {
 			}
 			this.setActivePencilSubmenu(null);
 		}, { capture: true });
+		this.registerDomEvent(window, "mousedown", (event: MouseEvent) => {
+			if (!this.textSubmenuEngine || !this.textSubmenuEngine.getActive()) {
+				return;
+			}
+			const target = event.target;
+			if (!(target instanceof Node) || this.textSubmenuEngine.containsTarget(target)) {
+				return;
+			}
+			this.setActiveTextSubmenu(null);
+		}, { capture: true });
 		this.registerDomEvent(window, "keydown", (event: KeyboardEvent) => {
 			if (event.key === "Escape" && this.activePencilSubmenu) {
 				this.setActivePencilSubmenu(null);
 			}
 		});
+		this.registerDomEvent(window, "keydown", (event: KeyboardEvent) => {
+			if (event.key === "Escape" && this.activeTextSubmenu) {
+				this.setActiveTextSubmenu(null);
+			}
+		});
+		this.registerDomEvent(window, "mousedown", (event: MouseEvent) => {
+			if (!this.latexSubmenuEngine || !this.latexSubmenuEngine.getActive()) {
+				return;
+			}
+			const target = event.target;
+			if (!(target instanceof Node) || this.latexSubmenuEngine.containsTarget(target)) {
+				return;
+			}
+			this.setActiveLatexSubmenu(null);
+		}, { capture: true });
+		this.registerDomEvent(window, "keydown", (event: KeyboardEvent) => {
+			if (event.key === "Escape" && this.activeLatexSubmenu) {
+				this.setActiveLatexSubmenu(null);
+			}
+		});
 		this.updateTextToolbarVisibility();
 		this.updateLatexToolbarUI();
 		this.buildPencilMenu(root);
+		this.buildTextMenu(root);
+		this.buildLatexMenu(root);
 	}
 
 	private buildPencilMenu(root: HTMLDivElement): void {
@@ -622,7 +603,7 @@ export class InkDocView extends ItemView {
 			return button;
 		};
 
-		const brushesToggle = createRailButton("brushes", "Brushes", INKDOC_ICONS.PENCIL, "P");
+		const brushesToggle = createRailButton("brushes", "Brushes", "pencil", "P");
 		brushesToggle.addEventListener("click", () => this.togglePencilSubmenu("brushes"));
 
 		const eraserQuickButton = rail.createEl("button", {
@@ -631,19 +612,19 @@ export class InkDocView extends ItemView {
 		});
 		eraserQuickButton.dataset.role = "quick-eraser";
 		const eraserQuickGlyph = eraserQuickButton.createSpan({ cls: "inkdoc-pencil-fab-glyph" });
-		setCompatibleIcon(eraserQuickGlyph, INKDOC_ICONS.ERASER, "E");
+		setCompatibleIcon(eraserQuickGlyph, "eraser", "E");
 		eraserQuickButton.addEventListener("click", () => {
 			this.setActiveBrush("eraser");
 			this.setActivePencilSubmenu(null);
 		});
 
-		const strokeToggle = createRailButton("stroke", "Tamaño de trazo", INKDOC_ICONS.STRETCH_VERTICAL, "R");
+		const strokeToggle = createRailButton("stroke", "Tamaño de trazo", "stretch-vertical", "R");
 		strokeToggle.addEventListener("click", () => this.togglePencilSubmenu("stroke"));
 
-		const colorsToggle = createRailButton("colors", "Paleta de color", INKDOC_ICONS.PALETTE, "C");
+		const colorsToggle = createRailButton("colors", "Paleta de color", "palette", "C");
 		colorsToggle.addEventListener("click", () => this.togglePencilSubmenu("colors"));
 
-		const settingsToggle = createRailButton("stylus", "Configuración de stylus", INKDOC_ICONS.SETTINGS, "S");
+		const settingsToggle = createRailButton("stylus", "Configuración de stylus", "settings", "S");
 		settingsToggle.addEventListener("click", () => this.togglePencilSubmenu("stylus"));
 
 		const flyouts = menu.createDiv({ cls: "inkdoc-pencil-flyouts" });
@@ -961,42 +942,451 @@ export class InkDocView extends ItemView {
 		this.updatePencilMenuVisibility();
 	}
 
+	private buildTextMenu(root: HTMLDivElement): void {
+		const menu = root.createDiv({ cls: "inkdoc-pencil-floating inkdoc-text-floating" });
+		menu.setAttr("aria-hidden", "true");
+		menu.addEventListener("mousedown", () => this.markTextToolbarInteraction());
+		this.textMenuEl = menu;
+		this.textSubmenuEngine?.dispose();
+		this.textSubmenuEngine = createInkDocSubmenuEngine(menu);
+		this.activeTextSubmenu = null;
+
+		const rail = menu.createDiv({ cls: "inkdoc-pencil-fab-rail" });
+		const createRailButton = (
+			submenu: InkDocTextSubmenu,
+			label: string,
+			icon: string,
+			fallback: string
+		): HTMLButtonElement => {
+			const button = rail.createEl("button", {
+				cls: "inkdoc-pencil-fab",
+				attr: { "aria-label": label, title: label }
+			});
+			button.dataset.textSubmenuTrigger = submenu;
+			const glyph = button.createSpan({ cls: "inkdoc-pencil-fab-glyph" });
+			setCompatibleIcon(glyph, icon, fallback);
+			button.addEventListener("click", () => this.toggleTextSubmenu(submenu));
+			return button;
+		};
+
+		const formatToggle = createRailButton("format", "Formato", "bold", "B");
+		const fontToggle = createRailButton("font", "Tipografía", "type", "T");
+		const colorsToggle = createRailButton("colors", "Color", "palette", "C");
+		const paragraphToggle = createRailButton("paragraph", "Párrafo", "align-left", "P");
+		const insertToggle = createRailButton("insert", "Insertar", "plus", "+");
+
+		const flyouts = menu.createDiv({ cls: "inkdoc-pencil-flyouts" });
+
+		const formatFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-text-flyout",
+			attr: { "data-text-submenu": "format" }
+		});
+		const formatCard = formatFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		formatCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Formato" });
+		const formatButtons = formatCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(formatButtons, "undo-2", "Deshacer", () => this.applyEditorCommand("undo"));
+		this.createTextIconButton(formatButtons, "redo-2", "Rehacer", () => this.applyEditorCommand("redo"));
+		this.createTextIconButton(formatButtons, "eraser", "Quitar formato", () =>
+			this.applyEditorCommand("removeFormat")
+		);
+		this.createTextIconButton(formatButtons, "bold", "Negrita", () => this.applyEditorCommand("bold"));
+		this.createTextIconButton(formatButtons, "italic", "Cursiva", () => this.applyEditorCommand("italic"));
+		this.createTextIconButton(formatButtons, "underline", "Subrayado", () =>
+			this.applyEditorCommand("underline")
+		);
+		this.createTextIconButton(formatButtons, "strikethrough", "Tachado", () =>
+			this.applyEditorCommand("strikeThrough")
+		);
+		this.createTextIconButton(formatButtons, "highlighter", "Resaltar", () =>
+			this.applySelectionStyle("background-image: linear-gradient(120deg, #ffeaa7 0%, #fab1a0 100%);")
+		);
+		this.createTextIconButton(formatButtons, "align-left", "Alinear izquierda", () =>
+			this.applyEditorCommand("justifyLeft")
+		);
+		this.createTextIconButton(formatButtons, "align-center", "Alinear centro", () =>
+			this.applyEditorCommand("justifyCenter")
+		);
+		this.createTextIconButton(formatButtons, "align-right", "Alinear derecha", () =>
+			this.applyEditorCommand("justifyRight")
+		);
+		this.createTextIconButton(formatButtons, "superscript", "Superíndice", () =>
+			this.applyEditorCommand("superscript")
+		);
+		this.createTextIconButton(formatButtons, "subscript", "Subíndice", () =>
+			this.applyEditorCommand("subscript")
+		);
+		this.createTextIconButton(formatButtons, "a-arrow-up", "Mayúsculas", () =>
+			this.applyTextTransform("uppercase")
+		);
+		this.createTextIconButton(formatButtons, "a-arrow-down", "Minúsculas", () =>
+			this.applyTextTransform("lowercase")
+		);
+		this.createTextIconButton(formatButtons, "a-large-small", "Capitalizar", () =>
+			this.applyTextTransform("capitalize")
+		);
+		this.createTextIconButton(formatButtons, "text-select", "Seleccionar todo", () =>
+			this.applyEditorCommand("selectAll")
+		);
+
+		const listsCard = formatFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-subcard" });
+		listsCard.createDiv({ cls: "inkdoc-pencil-subtitle", text: "Listas y sangría" });
+		const listButtons = listsCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(listButtons, "list", "Viñetas", () =>
+			this.applyEditorCommand("insertUnorderedList")
+		);
+		this.createTextIconButton(listButtons, "list-ordered", "Numeradas", () =>
+			this.applyEditorCommand("insertOrderedList")
+		);
+		this.createTextIconButton(listButtons, "check-square", "Checklist", () =>
+			this.applyEditorCommand("insertText", "☐ ")
+		);
+		this.createTextIconButton(listButtons, "indent", "Aumentar sangría", () =>
+			this.applyEditorCommand("indent")
+		);
+		this.createTextIconButton(listButtons, "outdent", "Disminuir sangría", () =>
+			this.applyEditorCommand("outdent")
+		);
+		this.createTextIconButton(listButtons, "text-cursor-input", "Tabulación", () =>
+			this.applyEditorCommand("insertText", "    ")
+		);
+		this.createTextIconButton(listButtons, "quote", "Cita", () =>
+			this.applyEditorCommand("formatBlock", "<blockquote>")
+		);
+		this.createTextIconButton(listButtons, "code-2", "Código", () =>
+			this.applyEditorCommand("formatBlock", "<pre>")
+		);
+
+		const fontFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-text-flyout",
+			attr: { "data-text-submenu": "font" }
+		});
+		const fontCard = fontFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		fontCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Tipografía" });
+		const fontGrid = fontCard.createDiv({ cls: "inkdoc-text-form-grid" });
+		this.createTextSelectControl(fontGrid, "Estilo", [
+			{ label: "Párrafo", value: "<p>" },
+			{ label: "Título", value: "<h1>" },
+			{ label: "Subtítulo", value: "<h2>" },
+			{ label: "Encabezado 3", value: "<h3>" },
+			{ label: "Cita", value: "<blockquote>" },
+			{ label: "Código", value: "<pre>" }
+		], (value) => this.applyEditorCommand("formatBlock", value));
+		this.createTextSelectControl(fontGrid, "Fuente", [
+			{ label: "Inter", value: "Inter" },
+			{ label: "Georgia", value: "Georgia" },
+			{ label: "Times New Roman", value: "Times New Roman" },
+			{ label: "Courier New", value: "Courier New" },
+			{ label: "Verdana", value: "Verdana" },
+			{ label: "Tahoma", value: "Tahoma" }
+		], (value) => this.applyEditorCommand("fontName", value));
+		this.createTextSelectControl(fontGrid, "Tamaño", [
+			{ label: "12", value: "12px" },
+			{ label: "14", value: "14px" },
+			{ label: "16", value: "16px" },
+			{ label: "18", value: "18px" },
+			{ label: "20", value: "20px" },
+			{ label: "24", value: "24px" },
+			{ label: "28", value: "28px" }
+		], (value) => this.applySelectionStyle(`font-size: ${value};`));
+		this.createTextSelectControl(fontGrid, "Espaciado letra", [
+			{ label: "0", value: "0px" },
+			{ label: "0.5", value: "0.5px" },
+			{ label: "1", value: "1px" },
+			{ label: "1.5", value: "1.5px" },
+			{ label: "2", value: "2px" }
+		], (value) => this.applySelectionStyle(`letter-spacing: ${value};`));
+		this.createTextSelectControl(fontGrid, "Peso", [
+			{ label: "Normal", value: "400" },
+			{ label: "Medio", value: "500" },
+			{ label: "SemiBold", value: "600" },
+			{ label: "Bold", value: "700" },
+			{ label: "ExtraBold", value: "800" }
+		], (value) => this.applySelectionStyle(`font-weight: ${value};`));
+
+		const colorsFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-text-flyout",
+			attr: { "data-text-submenu": "colors" }
+		});
+		const colorsCard = colorsFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		colorsCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Color" });
+		const colorInputs = colorsCard.createDiv({ cls: "inkdoc-text-color-inputs" });
+		const textColorInput = colorInputs.createEl("input", {
+			type: "color",
+			cls: "inkdoc-text-color-input"
+		});
+		textColorInput.value = "#000000";
+		textColorInput.title = "Color de texto";
+		textColorInput.addEventListener("input", () => this.applyEditorCommand("foreColor", textColorInput.value));
+		const highlightColorInput = colorInputs.createEl("input", {
+			type: "color",
+			cls: "inkdoc-text-color-input"
+		});
+		highlightColorInput.value = "#ffeaa7";
+		highlightColorInput.title = "Resaltado";
+		highlightColorInput.addEventListener("input", () =>
+			this.applyEditorCommand("hiliteColor", highlightColorInput.value)
+		);
+		const textPaletteCard = colorsFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-subcard" });
+		textPaletteCard.createDiv({ cls: "inkdoc-pencil-subtitle", text: "Texto" });
+		const textPalette = textPaletteCard.createDiv({ cls: "inkdoc-text-palette" });
+		this.strokePaletteColors.forEach((color) => {
+			const swatch = this.createTextSwatch(textPalette, color, `Texto ${color}`);
+			swatch.addEventListener("click", () => {
+				textColorInput.value = color;
+				this.applyEditorCommand("foreColor", color);
+			});
+		});
+		const highlightPaletteCard = colorsFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-subcard" });
+		highlightPaletteCard.createDiv({ cls: "inkdoc-pencil-subtitle", text: "Resaltado" });
+		const highlightPalette = highlightPaletteCard.createDiv({ cls: "inkdoc-text-palette is-highlight" });
+		this.strokePaletteColors.forEach((color) => {
+			const swatch = this.createTextSwatch(highlightPalette, color, `Resaltado ${color}`);
+			swatch.addEventListener("click", () => {
+				highlightColorInput.value = color;
+				this.applyEditorCommand("hiliteColor", color);
+			});
+		});
+
+		const paragraphFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-text-flyout",
+			attr: { "data-text-submenu": "paragraph" }
+		});
+		const paragraphCard = paragraphFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		paragraphCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Párrafo" });
+		const paragraphButtons = paragraphCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(paragraphButtons, "align-left", "Alinear izquierda", () =>
+			this.applyEditorCommand("justifyLeft")
+		);
+		this.createTextIconButton(paragraphButtons, "align-center", "Alinear centro", () =>
+			this.applyEditorCommand("justifyCenter")
+		);
+		this.createTextIconButton(paragraphButtons, "align-right", "Alinear derecha", () =>
+			this.applyEditorCommand("justifyRight")
+		);
+		this.createTextIconButton(paragraphButtons, "align-justify", "Justificar", () =>
+			this.applyEditorCommand("justifyFull")
+		);
+		const spacingCard = paragraphFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-subcard" });
+		spacingCard.createDiv({ cls: "inkdoc-pencil-subtitle", text: "Espaciado" });
+		const spacingGrid = spacingCard.createDiv({ cls: "inkdoc-text-form-grid" });
+		this.createTextSelectControl(spacingGrid, "Interlineado", [
+			{ label: "1.0", value: "1.0" },
+			{ label: "1.15", value: "1.15" },
+			{ label: "1.5", value: "1.5" },
+			{ label: "2.0", value: "2.0" }
+		], (value) => this.applyBlockStyle({ lineHeight: value }));
+		this.createTextSelectControl(spacingGrid, "Antes", [
+			{ label: "0px", value: "0" },
+			{ label: "4px", value: "4" },
+			{ label: "8px", value: "8" },
+			{ label: "12px", value: "12" },
+			{ label: "16px", value: "16" }
+		], (value) => this.applyParagraphStyle({ marginTop: `${value}px` }));
+		this.createTextSelectControl(spacingGrid, "Después", [
+			{ label: "0px", value: "0" },
+			{ label: "4px", value: "4" },
+			{ label: "8px", value: "8" },
+			{ label: "12px", value: "12" },
+			{ label: "16px", value: "16" }
+		], (value) => this.applyParagraphStyle({ marginBottom: `${value}px` }));
+		this.createTextSelectControl(spacingGrid, "Sangría primera línea", [
+			{ label: "0px", value: "0" },
+			{ label: "12px", value: "12" },
+			{ label: "24px", value: "24" },
+			{ label: "36px", value: "36" }
+		], (value) => this.applyParagraphStyle({ textIndent: `${value}px` }));
+		this.createTextSelectControl(spacingGrid, "Ancho bloque", [
+			{ label: "Auto", value: "auto" },
+			{ label: "45ch", value: "45ch" },
+			{ label: "60ch", value: "60ch" },
+			{ label: "75ch", value: "75ch" }
+		], (value) => this.applyBlockStyle({ maxWidth: value }));
+
+		const insertFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-text-flyout",
+			attr: { "data-text-submenu": "insert" }
+		});
+		const insertCard = insertFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		insertCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Insertar" });
+		const insertButtons = insertCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(insertButtons, "link", "Insertar enlace", () => this.promptTextLink());
+		this.createTextIconButton(insertButtons, "unlink-2", "Quitar enlace", () =>
+			this.applyEditorCommand("unlink")
+		);
+		this.createTextIconButton(insertButtons, "separator-horizontal", "Separador", () =>
+			this.insertEditorHtml("<hr />")
+		);
+		this.createTextIconButton(insertButtons, "table-2", "Tabla 2x2", () =>
+			this.insertEditorHtml(
+				"<table style=\"width:100%; border-collapse:collapse;\"><tr><td style=\"border:1px solid currentColor; padding:4px;\">&nbsp;</td><td style=\"border:1px solid currentColor; padding:4px;\">&nbsp;</td></tr><tr><td style=\"border:1px solid currentColor; padding:4px;\">&nbsp;</td><td style=\"border:1px solid currentColor; padding:4px;\">&nbsp;</td></tr></table><p></p>"
+			)
+		);
+		this.createTextIconButton(insertButtons, "calendar", "Fecha", () =>
+			this.applyEditorCommand("insertText", new Date().toLocaleDateString())
+		);
+		this.createTextIconButton(insertButtons, "clock-3", "Hora", () =>
+			this.applyEditorCommand("insertText", new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))
+		);
+		this.createTextIconButton(insertButtons, "quote", "Bloque cita", () =>
+			this.insertEditorHtml("<blockquote><p>Escribe aqui</p></blockquote><p></p>")
+		);
+		this.createTextIconButton(insertButtons, "code-2", "Bloque código", () =>
+			this.insertEditorHtml("<pre><code></code></pre><p></p>")
+		);
+		this.createTextIconButton(insertButtons, "list-checks", "Checklist", () =>
+			this.insertEditorHtml("<ul><li>☐ </li></ul>")
+		);
+		this.createTextIconButton(insertButtons, "wrap-text", "Salto de línea", () =>
+			this.applyEditorCommand("insertHTML", "<br />")
+		);
+
+		this.textSubmenuEngine.register("format", formatToggle, formatFlyout);
+		this.textSubmenuEngine.register("font", fontToggle, fontFlyout);
+		this.textSubmenuEngine.register("colors", colorsToggle, colorsFlyout);
+		this.textSubmenuEngine.register("paragraph", paragraphToggle, paragraphFlyout);
+		this.textSubmenuEngine.register("insert", insertToggle, insertFlyout);
+
+		this.setActiveTextSubmenu(null);
+		this.updateTextToolbarVisibility();
+	}
+
+	private buildLatexMenu(root: HTMLDivElement): void {
+		const menu = root.createDiv({ cls: "inkdoc-pencil-floating inkdoc-latex-floating" });
+		menu.setAttr("aria-hidden", "true");
+		menu.addEventListener("mousedown", () => this.markTextToolbarInteraction());
+		this.latexMenuEl = menu;
+		this.latexSubmenuEngine?.dispose();
+		this.latexSubmenuEngine = createInkDocSubmenuEngine(menu);
+		this.activeLatexSubmenu = null;
+
+		const rail = menu.createDiv({ cls: "inkdoc-pencil-fab-rail" });
+		const colorToggle = rail.createEl("button", {
+			cls: "inkdoc-pencil-fab",
+			attr: { "aria-label": "Color de formula", title: "Color de formula" }
+		});
+		const colorGlyph = colorToggle.createSpan({ cls: "inkdoc-pencil-fab-glyph" });
+		setCompatibleIcon(colorGlyph, "palette", "C");
+		colorToggle.addEventListener("click", () => this.toggleLatexSubmenu("colors"));
+
+		const flyouts = menu.createDiv({ cls: "inkdoc-pencil-flyouts" });
+		const colorsFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-latex-flyout",
+			attr: { "data-latex-submenu": "colors" }
+		});
+		const colorsCard = colorsFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		colorsCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Color de formula" });
+		const controls = colorsCard.createDiv({ cls: "inkdoc-latex-color-inputs" });
+		const colorInput = controls.createEl("input", {
+			type: "color",
+			cls: "inkdoc-text-color-input inkdoc-latex-color-input"
+		});
+		colorInput.value = this.latexColor;
+		colorInput.title = "Color de formula";
+		colorInput.addEventListener("input", () => this.applyLatexColor(colorInput.value));
+		const preview = controls.createDiv({ cls: "inkdoc-pencil-preview-color", attr: { "data-role": "latex-color-preview" } });
+		const palette = colorsCard.createDiv({
+			cls: "inkdoc-latex-palette",
+			attr: { "aria-label": "Paleta de LaTeX" }
+		});
+		for (const color of INKDOC_LATEX_PALETTE) {
+			const swatch = palette.createEl("button", {
+				cls: "inkdoc-latex-swatch",
+				attr: {
+					"aria-label": `Color de formula ${color}`,
+					title: `Formula: ${color}`
+				}
+			});
+			swatch.style.background = color;
+			swatch.dataset.color = color;
+			swatch.addEventListener("click", () => {
+				colorInput.value = color;
+				this.applyLatexColor(color);
+			});
+		}
+
+		this.latexSubmenuEngine.register("colors", colorToggle, colorsFlyout);
+		this.setActiveLatexSubmenu(null);
+		this.updateLatexToolbarUI();
+	}
+
 	private updateTextToolbarVisibility(): void {
-		if (!this.textToolbarEl) {
+		if (!this.textMenuEl) {
 			return;
 		}
 		const hasTextEditor = Boolean(this.textEditorEl) || Boolean(this.stickyTextEditorEl);
-		const shouldShow = hasTextEditor && !this.isBottomDrawerCollapsed;
-		this.textToolbarEl.classList.toggle("is-visible", shouldShow);
-		if (!this.latexToolbarEl) {
-			this.updateBottomDrawerToggleUI();
-			return;
+		const shouldShow = this.activeTool === "text" || hasTextEditor;
+		this.textMenuEl.classList.toggle("is-open", shouldShow);
+		this.textMenuEl.setAttr("aria-hidden", shouldShow ? "false" : "true");
+		if (!shouldShow) {
+			this.setActiveTextSubmenu(null);
 		}
-		const shouldShowLatex = this.activeTool === "latex" && !this.isBottomDrawerCollapsed;
-		this.latexToolbarEl.classList.toggle("is-visible", shouldShowLatex);
-		this.updateBottomDrawerToggleUI();
 	}
 
 	private updateLatexToolbarUI(): void {
-		if (!this.latexToolbarEl) {
+		if (!this.latexMenuEl) {
 			return;
 		}
-		const picker = this.latexToolbarEl.querySelector<HTMLInputElement>(".inkdoc-latex-color");
+		const shouldShow = this.activeTool === "latex" || Boolean(this.latexEditorEl);
+		this.latexMenuEl.classList.toggle("is-open", shouldShow);
+		this.latexMenuEl.setAttr("aria-hidden", shouldShow ? "false" : "true");
+		if (!shouldShow) {
+			this.setActiveLatexSubmenu(null);
+		}
+		const picker = this.latexMenuEl.querySelector<HTMLInputElement>(".inkdoc-latex-color-input");
 		if (picker) {
 			picker.value = this.latexColor;
 		}
-		const swatches = this.latexToolbarEl.querySelectorAll<HTMLButtonElement>(".inkdoc-latex-swatch");
+		const swatches = this.latexMenuEl.querySelectorAll<HTMLButtonElement>(".inkdoc-latex-swatch");
 		swatches.forEach((swatch) => {
 			const isActive = swatch.dataset.color === this.latexColor;
 			swatch.classList.toggle("is-active", isActive);
 		});
+		const preview = this.latexMenuEl.querySelector<HTMLDivElement>("[data-role='latex-color-preview']");
+		if (preview) {
+			preview.style.background = this.latexColor;
+		}
 	}
 
-	private getLatexBlockColor(block: InkDocTextBlock): string {
+	private getPageDefaultTextColor(page: InkDocPage): string {
+		return getContrastPageTextColor(page.colors);
+	}
+
+	private normalizeLatexForRender(value: string): string {
+		const trimmed = value.trim();
+		if (!trimmed) {
+			return "";
+		}
+		const bracketMatch = trimmed.match(/^\\\[\s*([\s\S]*?)\s*\\\]$/);
+		if (bracketMatch) {
+			return bracketMatch[1]?.trim() ?? "";
+		}
+		const parenMatch = trimmed.match(/^\\\(\s*([\s\S]*?)\s*\\\)$/);
+		if (parenMatch) {
+			return parenMatch[1]?.trim() ?? "";
+		}
+		const dollarMatch = trimmed.match(/^\$\$\s*([\s\S]*?)\s*\$\$$/);
+		if (dollarMatch) {
+			return dollarMatch[1]?.trim() ?? "";
+		}
+		const inlineDollarMatch = trimmed.match(/^\$\s*([\s\S]*?)\s*\$$/);
+		if (inlineDollarMatch) {
+			return inlineDollarMatch[1]?.trim() ?? "";
+		}
+		return trimmed;
+	}
+
+	private getTextBlockColor(page: InkDocPage, block: InkDocTextBlock): string {
 		if (typeof block.color === "string" && block.color.trim().length > 0) {
 			return block.color;
 		}
-		return INKDOC_DEFAULT_LATEX_COLOR;
+		return this.getPageDefaultTextColor(page);
+	}
+
+	private getLatexBlockColor(page: InkDocPage, block: InkDocTextBlock): string {
+		if (typeof block.color === "string" && block.color.trim().length > 0) {
+			return block.color;
+		}
+		return this.getPageDefaultTextColor(page);
 	}
 
 	private applyLatexColor(color: string): void {
@@ -1038,50 +1428,6 @@ export class InkDocView extends ItemView {
 		} else {
 			this.setActivePencilSubmenu(null);
 		}
-		this.updateBottomDrawerToggleUI();
-	}
-
-	private getActiveBottomDrawer(): HTMLDivElement | null {
-		if (this.textEditorEl || this.stickyTextEditorEl) {
-			return this.textToolbarEl;
-		}
-		if (this.activeTool === "latex") {
-			return this.latexToolbarEl;
-		}
-		return null;
-	}
-
-	private toggleBottomDrawer(): void {
-		if (!this.getActiveBottomDrawer()) {
-			return;
-		}
-		this.isBottomDrawerCollapsed = !this.isBottomDrawerCollapsed;
-		this.updatePencilMenuVisibility();
-		this.updateTextToolbarVisibility();
-	}
-
-	private updateBottomDrawerToggleUI(): void {
-		if (!this.bottomDrawerToggleEl) {
-			return;
-		}
-		const drawer = this.getActiveBottomDrawer();
-		const shouldShow = Boolean(drawer);
-		this.bottomDrawerToggleEl.classList.toggle("is-visible", shouldShow);
-		this.bottomDrawerToggleEl.setAttr("aria-hidden", shouldShow ? "false" : "true");
-		if (!shouldShow) {
-			return;
-		}
-		const isExpanded = !this.isBottomDrawerCollapsed;
-		const label = isExpanded ? "Ocultar cajón de herramientas" : "Mostrar cajón de herramientas";
-		setCompatibleIcon(
-			this.bottomDrawerToggleEl,
-			isExpanded ? INKDOC_ICONS.CHEVRON_DOWN : INKDOC_ICONS.CHEVRON_UP,
-			isExpanded ? "▾" : "▴"
-		);
-		this.bottomDrawerToggleEl.setAttr("aria-label", label);
-		this.bottomDrawerToggleEl.setAttr("title", label);
-		const drawerHeight = isExpanded && drawer ? Math.ceil(drawer.getBoundingClientRect().height) : 0;
-		this.bottomDrawerToggleEl.style.bottom = `${drawerHeight + 8}px`;
 	}
 
 	private applyEditorCommand(command: string, value?: string): void {
@@ -1163,6 +1509,11 @@ export class InkDocView extends ItemView {
 		for (const [index, page] of doc.pages.entries()) {
 			await this.renderPage(renderTarget, page, index);
 		}
+		const firstPage = doc.pages[0];
+		if (firstPage) {
+			this.latexColor = this.getPageDefaultTextColor(firstPage);
+			this.updateLatexToolbarUI();
+		}
 		this.updatePageInputMode();
 		this.renderStickyNotes();
 
@@ -1175,7 +1526,6 @@ export class InkDocView extends ItemView {
 		pageEl.style.height = `${heightMm}mm`;
 		setPageBackgroundAttribute(pageEl, page.background);
 		setPageColorVariables(pageEl, page.colors);
-		this.applyTextLayoutToPage(pageEl);
 
 		const controlsEl = pageEl.createDiv({ cls: "inkdoc-page-controls" });
 		if (index === 0) {
@@ -1186,7 +1536,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Borrar página", title: "Borrar página" }
 		});
 		const deleteIcon = deleteButton.createSpan({ cls: "inkdoc-page-icon-glyph" });
-		setCompatibleIcon(deleteIcon, INKDOC_ICONS.TRASH, "D");
+		setCompatibleIcon(deleteIcon, "trash", "D");
 		deleteButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -1198,7 +1548,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Configurar fondo", title: "Configurar fondo" }
 		});
 		const settingsIcon = settingsButton.createSpan({ cls: "inkdoc-page-icon-glyph" });
-		setCompatibleIcon(settingsIcon, INKDOC_ICONS.SETTINGS, "S");
+		setCompatibleIcon(settingsIcon, "settings", "S");
 		settingsButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -1210,7 +1560,7 @@ export class InkDocView extends ItemView {
 			attr: { "aria-label": "Configurar colores", title: "Configurar colores" }
 		});
 		const paletteIcon = paletteButton.createSpan({ cls: "inkdoc-page-icon-glyph" });
-		setCompatibleIcon(paletteIcon, INKDOC_ICONS.PALETTE, "P");
+		setCompatibleIcon(paletteIcon, "palette", "P");
 		paletteButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -1223,7 +1573,7 @@ export class InkDocView extends ItemView {
 				attr: { "aria-label": "Configurar tamaño", title: "Configurar tamaño" }
 			});
 			const sizeIcon = sizeButton.createSpan({ cls: "inkdoc-page-icon-glyph" });
-			setCompatibleIcon(sizeIcon, INKDOC_ICONS.STRETCH_VERTICAL, "R");
+			setCompatibleIcon(sizeIcon, "stretch-vertical", "R");
 			sizeButton.addEventListener("click", (event) => {
 				event.preventDefault();
 				event.stopPropagation();
@@ -1237,7 +1587,7 @@ export class InkDocView extends ItemView {
 				attr: { "aria-label": "Agregar página", title: "Agregar página" }
 			});
 			const addIcon = addButton.createSpan({ cls: "inkdoc-page-icon-glyph" });
-			setCompatibleIcon(addIcon, INKDOC_ICONS.PLUS, "+");
+			setCompatibleIcon(addIcon, "plus", "+");
 			addButton.addEventListener("click", (event) => {
 				event.preventDefault();
 				event.stopPropagation();
@@ -1249,17 +1599,6 @@ export class InkDocView extends ItemView {
 			cls: "inkdoc-page-index",
 			text: `${index + 1}/${this.docData?.pages.length ?? 0}`
 		});
-
-		const markdownRuntime = createInkDocPageMarkdownRuntime({
-			pageId: page.id,
-			pageEl,
-			initialMarkdown: page.text ?? "",
-			onMarkdownChange: (nextMarkdown) => this.handlePageMarkdownChange(page.id, index, nextMarkdown),
-			onRequestNextPage: () => {
-				void this.handleTextFlowPageAdvance(page.id);
-			}
-		});
-		this.pageMarkdownRuntimes.set(page.id, markdownRuntime);
 
 		const canvasEl = pageEl.createEl("canvas", { cls: "inkdoc-page-canvas" });
 		canvasEl.style.width = `${widthMm}mm`;
@@ -1413,7 +1752,7 @@ export class InkDocView extends ItemView {
 			const selectedText = this.selectedTextBlocks.get(pageId);
 			this.renderTextLayer(
 				page,
-				this.activeTool === "latex",
+				this.isTextLikeTool(),
 				this.activeTool === "select" ? selectedText ?? null : null
 			);
 		}
@@ -1507,7 +1846,7 @@ export class InkDocView extends ItemView {
 		if (shouldSkipUpdate) {
 			return;
 		}
-		const blocks = (page.textBlocks ?? []).filter((block) => this.getBlockType(block) === "latex");
+		const blocks = page.textBlocks ?? [];
 		let layer = this.textLayerByPage.get(page.id) ?? null;
 		if (!layer) {
 			layer = state.pageEl.createDiv({ cls: "inkdoc-text-layer" });
@@ -1564,8 +1903,9 @@ export class InkDocView extends ItemView {
 			blockEl.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h * scaleY)}px`;
 			const content = blockEl.createDiv({ cls: "inkdoc-text-block-content" });
 			if (this.getBlockType(block) === "latex") {
-				void this.renderLatexBlock(content, block);
+				void this.renderLatexBlock(page, content, block);
 			} else {
+				content.style.color = this.getTextBlockColor(page, block);
 				content.innerHTML = block.html ?? this.escapeHtml(block.text ?? "");
 				applyWikiLinksToElement(content, this.app, this.file);
 			}
@@ -1578,7 +1918,7 @@ export class InkDocView extends ItemView {
 					cls: "inkdoc-object-menu-btn",
 					attr: { type: "button", "aria-label": "InkMath", title: "InkMath" }
 				});
-				setCompatibleIcon(inkMathButton, INKDOC_ICONS.WAND, "W");
+				setCompatibleIcon(inkMathButton, "wand", "W");
 				inkMathButton.addEventListener("click", (event) => {
 					if (!isActiveToolForBlock) {
 						return;
@@ -1592,7 +1932,7 @@ export class InkDocView extends ItemView {
 				cls: "inkdoc-object-menu-btn",
 				attr: { type: "button", "aria-label": "Borrar bloque", title: "Borrar bloque" }
 			});
-			setCompatibleIcon(deleteButton, INKDOC_ICONS.TRASH, "D");
+			setCompatibleIcon(deleteButton, "trash", "D");
 			deleteButton.addEventListener("click", (event) => {
 				if (!isActiveToolForBlock) {
 					return;
@@ -1782,17 +2122,17 @@ export class InkDocView extends ItemView {
 					cls: "inkdoc-object-menu-btn",
 					attr: { type: "button", "aria-label": "Borrar imagen", title: "Borrar imagen" }
 				});
-				setCompatibleIcon(deleteButton, INKDOC_ICONS.TRASH, "D");
+				setCompatibleIcon(deleteButton, "trash", "D");
 				const rotateButton = menuEl.createEl("button", {
 					cls: "inkdoc-object-menu-btn",
 					attr: { type: "button", "aria-label": "Rotar imagen", title: "Rotar imagen" }
 				});
-				setCompatibleIcon(rotateButton, INKDOC_ICONS.ROTATE_CW, "R");
+				setCompatibleIcon(rotateButton, "rotate-cw", "R");
 				const mirrorButton = menuEl.createEl("button", {
 					cls: "inkdoc-object-menu-btn",
 					attr: { type: "button", "aria-label": "Invertir imagen", title: "Invertir imagen (espejo)" }
 				});
-				setCompatibleIcon(mirrorButton, INKDOC_ICONS.FLIP_HORIZONTAL, "M");
+				setCompatibleIcon(mirrorButton, "flip-horizontal", "M");
 				deleteButton.addEventListener("click", (event) => {
 					if (this.activeTool !== "image") {
 						return;
@@ -1908,16 +2248,26 @@ export class InkDocView extends ItemView {
 		this.imageLayerDirty.delete(page.id);
 	}
 
-	private async renderLatexBlock(container: HTMLDivElement, block: InkDocTextBlock): Promise<void> {
+	private async renderLatexBlock(
+		page: InkDocPage,
+		container: HTMLDivElement,
+		block: InkDocTextBlock
+	): Promise<void> {
 		container.empty();
-		container.style.color = this.getLatexBlockColor(block);
-		const latex = block.latex?.trim() ?? "";
+		container.style.color = this.getLatexBlockColor(page, block);
+		const latex = this.normalizeLatexForRender(block.latex ?? "");
 		if (!latex) {
 			return;
 		}
-		const sourcePath = this.file?.path ?? "";
 		try {
-			await MarkdownRenderer.render(this.app, `$$${latex}$$`, container, sourcePath, this);
+			const katexModule = await import("katex");
+			const host = container.createDiv({
+				cls: "inkdoc-markdown-render inkdoc-markdown-render--math"
+			});
+			host.innerHTML = katexModule.renderToString(latex, {
+				throwOnError: false,
+				displayMode: true
+			});
 		} catch (error) {
 			console.error("Error al renderizar LaTeX:", error);
 			container.textContent = latex;
@@ -2027,6 +2377,11 @@ export class InkDocView extends ItemView {
 		if (state) {
 			setPageColorVariables(state.pageEl, resolved);
 		}
+		if (this.activeTool === "latex") {
+			this.latexColor = this.getPageDefaultTextColor(page);
+			this.updateLatexToolbarUI();
+		}
+		this.textLayerDirty.add(page.id);
 		this.saveDebounced();
 	}
 
@@ -2034,14 +2389,6 @@ export class InkDocView extends ItemView {
 		const current = resolvePageSize(this.docData?.page.size);
 		const modal = new PageSizeModal(this.app, current, (next) => {
 			void this.setDocumentPageSize(next);
-		});
-		modal.open();
-	}
-
-	private openTextLayoutModal(): void {
-		const current = this.getDocumentTextLayoutPadding();
-		const modal = new TextLayoutModal(this.app, current, (next) => {
-			this.setDocumentTextLayoutPadding(next);
 		});
 		modal.open();
 	}
@@ -2055,42 +2402,36 @@ export class InkDocView extends ItemView {
 		this.saveDebounced();
 	}
 
-	private getDocumentTextLayoutPadding(): InkDocTextLayoutPadding {
-		return resolveInkDocTextLayoutPadding(this.docData?.page.textPadding);
-	}
-
-	private applyTextLayoutToPage(pageEl: HTMLDivElement): void {
-		const padding = this.getDocumentTextLayoutPadding();
-		pageEl.style.setProperty("--inkdoc-text-padding-top", `${padding.top}px`);
-		pageEl.style.setProperty("--inkdoc-text-padding-right", `${padding.right}px`);
-		pageEl.style.setProperty("--inkdoc-text-padding-bottom", `${padding.bottom}px`);
-		pageEl.style.setProperty("--inkdoc-text-padding-left", `${padding.left}px`);
-	}
-
-	private setDocumentTextLayoutPadding(nextPadding: InkDocTextLayoutPadding): void {
-		if (!this.docData) {
-			return;
-		}
-		const resolved = resolveInkDocTextLayoutPadding(nextPadding);
-		const current = this.getDocumentTextLayoutPadding();
-		if (
-			current.top === resolved.top &&
-			current.right === resolved.right &&
-			current.bottom === resolved.bottom &&
-			current.left === resolved.left
-		) {
-			return;
-		}
-		this.docData.page.textPadding = resolved;
-		for (const state of this.canvasStates.values()) {
-			this.applyTextLayoutToPage(state.pageEl);
-		}
-		this.syncEngine.noteActivity();
-		this.saveDebounced();
-	}
-
 	private mmToPx(mm: number): number {
 		return Math.max(1, Math.round((mm * 96) / 25.4));
+	}
+
+	private resetPendingObjectCreationClick(): void {
+		this.pendingObjectCreationClick = null;
+	}
+
+	private shouldConfirmObjectCreationOnClick(
+		tool: InkDocCreatableObject,
+		pageId: string,
+		point: InkDocPoint
+	): boolean {
+		const pending = this.pendingObjectCreationClick;
+		const now = Date.now();
+		this.pendingObjectCreationClick = {
+			tool,
+			pageId,
+			point: { ...point },
+			atMs: now
+		};
+		if (!pending || pending.tool !== tool || pending.pageId !== pageId) {
+			return false;
+		}
+		if (now - pending.atMs > 1600) {
+			return false;
+		}
+		const dx = point.x - pending.point.x;
+		const dy = point.y - pending.point.y;
+		return Math.hypot(dx, dy) <= 28;
 	}
 
 	private registerCanvasEvents(
@@ -2110,16 +2451,17 @@ export class InkDocView extends ItemView {
 			this.syncEngine.noteActivity();
 			const { point, event } = sample;
 			if (this.activeTool === "sticky") {
+				this.resetPendingObjectCreationClick();
 				return;
 			}
 			if (this.activeTool === "image") {
 				if (sample.button !== 0) {
 					return;
 				}
+				if (!this.shouldConfirmObjectCreationOnClick("image", page.id, point)) {
+					return;
+				}
 				void this.confirmAndOpenImagePicker(page, index, point);
-				return;
-			}
-			if (this.activeTool === "text") {
 				return;
 			}
 			if (this.isTextLikeTool()) {
@@ -2193,9 +2535,6 @@ export class InkDocView extends ItemView {
 		const handlePointerMove = (sample: PointerSample) => {
 			this.syncEngine.noteActivity();
 			const { point } = sample;
-			if (this.activeTool === "text") {
-				return;
-			}
 			if (this.isTextLikeTool()) {
 				this.handleTextPointerMove(page, index, point);
 				return;
@@ -2245,9 +2584,6 @@ export class InkDocView extends ItemView {
 			state.isDrawing = false;
 			state.currentStrokeId = null;
 			activePointerId = null;
-			if (this.activeTool === "text") {
-				return;
-			}
 			if (this.isTextLikeTool()) {
 				this.handleTextPointerUp(page);
 				return;
@@ -2289,7 +2625,7 @@ export class InkDocView extends ItemView {
 				return;
 			}
 			const point = this.getMousePosition(state.canvas, event);
-			if (this.activeTool === "latex") {
+			if (this.isTextLikeTool()) {
 				this.openTextBlockMenu(page, index, point, event.clientX, event.clientY);
 				return;
 			}
@@ -2561,10 +2897,6 @@ export class InkDocView extends ItemView {
 			await this.openImagePicker(target.page, target.pageIndex, target.point);
 			return;
 		}
-		if (tool === "text") {
-			this.focusPageMarkdownEditor(target.page.id);
-			return;
-		}
 		this.closeTextEditor(true);
 		this.closeLatexEditor(true);
 		const block =
@@ -2579,56 +2911,6 @@ export class InkDocView extends ItemView {
 			this.openLatexEditor(target.page, target.pageIndex, block);
 		} else {
 			this.openTextEditor(target.page, target.pageIndex, block);
-		}
-	}
-
-	private handlePageMarkdownChange(pageId: string, index: number, nextMarkdown: string): void {
-		if (!this.docData) {
-			return;
-		}
-		const target = this.docData.pages.find((entry) => entry.id === pageId) ?? this.docData.pages[index];
-		if (!target) {
-			return;
-		}
-		if ((target.text ?? "") === nextMarkdown) {
-			return;
-		}
-		target.text = nextMarkdown;
-		this.saveDebounced();
-		this.syncEngine.noteActivity();
-	}
-
-	private focusPageMarkdownEditor(pageId: string, position: "start" | "end" = "end"): void {
-		const runtime = this.pageMarkdownRuntimes.get(pageId);
-		runtime?.focus(position);
-	}
-
-	private async handleTextFlowPageAdvance(currentPageId: string): Promise<void> {
-		if (!this.docData || this.activeTool !== "text") {
-			return;
-		}
-		const currentIndex = this.docData.pages.findIndex((page) => page.id === currentPageId);
-		if (currentIndex < 0) {
-			return;
-		}
-		const nextExistingPage = this.docData.pages[currentIndex + 1];
-		if (nextExistingPage) {
-			this.focusPageMarkdownEditor(nextExistingPage.id, "start");
-			return;
-		}
-		if (this.isAutoCreatingTextFlowPage) {
-			return;
-		}
-		this.isAutoCreatingTextFlowPage = true;
-		try {
-			await this.addNewPage();
-			const latestPage = this.docData.pages[this.docData.pages.length - 1];
-			if (!latestPage) {
-				return;
-			}
-			this.focusPageMarkdownEditor(latestPage.id, "start");
-		} finally {
-			this.isAutoCreatingTextFlowPage = false;
 		}
 	}
 
@@ -2685,6 +2967,7 @@ export class InkDocView extends ItemView {
 		const wasText = previousTool === "text";
 		const wasLatex = previousTool === "latex";
 		this.activeTool = tool;
+		this.resetPendingObjectCreationClick();
 		if (wasText && tool !== "text") {
 			this.closeTextEditor(true);
 			this.closeTextBlockMenu();
@@ -2725,12 +3008,8 @@ export class InkDocView extends ItemView {
 	}
 
 	private updatePageInputMode(): void {
-		const isTextToolActive = this.activeTool === "text";
 		for (const state of this.canvasStates.values()) {
-			state.canvas.style.pointerEvents = isTextToolActive ? "none" : "auto";
-		}
-		for (const runtime of this.pageMarkdownRuntimes.values()) {
-			runtime.setEditable(isTextToolActive);
+			state.canvas.style.pointerEvents = "auto";
 		}
 	}
 
@@ -2795,6 +3074,9 @@ export class InkDocView extends ItemView {
 			state.text.dragOffset = { x: point.x - blockHit.x, y: point.y - blockHit.y };
 			return;
 		}
+		if (!this.shouldConfirmObjectCreationOnClick(this.activeTool, page.id, point)) {
+			return;
+		}
 		void this.confirmAndCreateTextLikeBlock(page, index, point);
 	}
 
@@ -2814,6 +3096,7 @@ export class InkDocView extends ItemView {
 
 	private async confirmAndCreateStickyNote(point: { x: number; y: number }): Promise<void> {
 		const shouldCreate = await this.requestObjectCreationConfirmation("sticky");
+		this.resetPendingObjectCreationClick();
 		if (!shouldCreate || this.activeTool !== "sticky") {
 			return;
 		}
@@ -2830,6 +3113,7 @@ export class InkDocView extends ItemView {
 		point: InkDocPoint
 	): Promise<void> {
 		const shouldCreate = await this.requestObjectCreationConfirmation("image");
+		this.resetPendingObjectCreationClick();
 		if (!shouldCreate || this.activeTool !== "image") {
 			return;
 		}
@@ -2842,10 +3126,11 @@ export class InkDocView extends ItemView {
 		point: InkDocPoint
 	): Promise<void> {
 		const tool = this.activeTool;
-		if (tool !== "latex") {
+		if (!this.isTextLikeTool(tool)) {
 			return;
 		}
-		const shouldCreate = await this.requestObjectCreationConfirmation("latex");
+		const shouldCreate = await this.requestObjectCreationConfirmation(tool);
+		this.resetPendingObjectCreationClick();
 		if (!shouldCreate || this.activeTool !== tool) {
 			return;
 		}
@@ -2853,9 +3138,16 @@ export class InkDocView extends ItemView {
 		if (!state) {
 			return;
 		}
-		const createdBlock = this.createLatexBlock(page, index, point);
+		const createdBlock =
+			tool === "latex"
+				? this.createLatexBlock(page, index, point)
+				: this.createTextBlock(page, index, point);
 		this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
-		this.openLatexEditor(page, index, createdBlock);
+		if (tool === "latex") {
+			this.openLatexEditor(page, index, createdBlock);
+			return;
+		}
+		this.openTextEditor(page, index, createdBlock);
 	}
 
 	private handleTextPointerMove(page: InkDocPage, index: number, point: InkDocPoint): void {
@@ -2978,7 +3270,6 @@ export class InkDocView extends ItemView {
 
 	private createLatexBlock(page: InkDocPage, index: number, point: InkDocPoint): InkDocTextBlock {
 		const block = addLatexBlock(this.docData, page, index, point);
-		block.color = this.latexColor;
 		this.textLayerDirty.add(page.id);
 		this.saveDebounced();
 		return block;
@@ -3034,7 +3325,7 @@ export class InkDocView extends ItemView {
 	}
 
 	private openLatexEditor(page: InkDocPage, index: number, block: InkDocTextBlock): void {
-		this.latexColor = this.getLatexBlockColor(block);
+		this.latexColor = this.getLatexBlockColor(page, block);
 		openLatexEditorInstance(this.getTextEditingContext(), this.getTextEditingAccessors(), page, index, block);
 		this.updateLatexToolbarUI();
 	}
@@ -3074,7 +3365,7 @@ export class InkDocView extends ItemView {
 			return;
 		}
 		block.latex = latex;
-		await this.fitLatexBlockToRender(block);
+		await this.fitLatexBlockToRender(page, block);
 		this.textLayerDirty.add(page.id);
 		const state = this.canvasStates.get(page.id);
 		if (state) {
@@ -3083,8 +3374,8 @@ export class InkDocView extends ItemView {
 		this.saveDebounced();
 	}
 
-	private async fitLatexBlockToRender(block: InkDocTextBlock): Promise<void> {
-		const latex = block.latex?.trim() ?? "";
+	private async fitLatexBlockToRender(page: InkDocPage, block: InkDocTextBlock): Promise<void> {
+		const latex = this.normalizeLatexForRender(block.latex ?? "");
 		if (!latex) {
 			return;
 		}
@@ -3102,12 +3393,18 @@ export class InkDocView extends ItemView {
 		content.style.width = "fit-content";
 		content.style.height = "fit-content";
 		content.style.overflow = "visible";
-		content.style.color = this.getLatexBlockColor(block);
+		content.style.color = this.getLatexBlockColor(page, block);
 		host.appendChild(content);
 		document.body.appendChild(host);
 		try {
-			const sourcePath = this.file?.path ?? "";
-			await MarkdownRenderer.render(this.app, `$$${latex}$$`, content, sourcePath, this);
+			const katexModule = await import("katex");
+			const mathHost = content.createDiv({
+				cls: "inkdoc-markdown-render inkdoc-markdown-render--math"
+			});
+			mathHost.innerHTML = katexModule.renderToString(latex, {
+				throwOnError: false,
+				displayMode: true
+			});
 			const rect = content.getBoundingClientRect();
 			const measuredWidth = Math.ceil(rect.width);
 			const measuredHeight = Math.ceil(rect.height);
@@ -3122,6 +3419,16 @@ export class InkDocView extends ItemView {
 		} finally {
 			host.remove();
 		}
+	}
+
+	private async handleLatexBlockCommitted(page: InkDocPage, block: InkDocTextBlock): Promise<void> {
+		await this.fitLatexBlockToRender(page, block);
+		this.textLayerDirty.add(page.id);
+		const state = this.canvasStates.get(page.id);
+		if (state) {
+			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		}
+		this.saveDebounced();
 	}
 
 	private closeTextEditor(commit: boolean): void {
@@ -3296,7 +3603,11 @@ export class InkDocView extends ItemView {
 			renderStrokes: (ctx, strokes, pageId) => this.renderStrokes(ctx, strokes, pageId),
 			saveDebounced: () => this.saveDebounced(),
 			noteUserActivity: () => this.syncEngine.noteActivity(),
-			updateTextToolbarVisibility: () => this.updateTextToolbarVisibility()
+			updateTextToolbarVisibility: () => this.updateTextToolbarVisibility(),
+			getDefaultBlockColor: (page) => this.getPageDefaultTextColor(page),
+			onLatexCommitted: (page, block) => {
+				void this.handleLatexBlockCommitted(page, block);
+			}
 		};
 	}
 
@@ -3431,7 +3742,10 @@ export class InkDocView extends ItemView {
 	}
 
 	private closeContextMenu(): void {
-		closeManagedMenu(this.contentEl, ".inkdoc-context-menu:not(.inkdoc-text-context-menu):not(.inkdoc-image-context-menu)");
+		closeManagedMenu(
+			this.contentEl,
+			".inkdoc-context-menu-host:not(.inkdoc-text-context-menu):not(.inkdoc-image-context-menu)"
+		);
 	}
 
 	private openTextBlockMenu(
@@ -3479,7 +3793,7 @@ export class InkDocView extends ItemView {
 	}
 
 	private closeTextBlockMenu(): void {
-		closeManagedMenu(this.contentEl, ".inkdoc-text-context-menu");
+		closeManagedMenu(this.contentEl, ".inkdoc-text-context-menu.inkdoc-context-menu-host");
 	}
 
 	private openImageBlockMenu(
@@ -3516,7 +3830,7 @@ export class InkDocView extends ItemView {
 	}
 
 	private closeImageBlockMenu(): void {
-		closeManagedMenu(this.contentEl, ".inkdoc-image-context-menu");
+		closeManagedMenu(this.contentEl, ".inkdoc-image-context-menu.inkdoc-context-menu-host");
 	}
 
 	private deleteImageBlock(page: InkDocPage, index: number, blockId: string): void {
@@ -3825,12 +4139,97 @@ export class InkDocView extends ItemView {
 		}
 	}
 
+	private markTextToolbarInteraction(): void {
+		this.isTextToolbarInteraction = true;
+		window.setTimeout(() => {
+			this.isTextToolbarInteraction = false;
+		}, 0);
+	}
+
+	private toggleTextSubmenu(submenu: InkDocTextSubmenu): void {
+		const next = this.activeTextSubmenu === submenu ? null : submenu;
+		this.setActiveTextSubmenu(next);
+	}
+
+	private setActiveTextSubmenu(submenu: InkDocTextSubmenu | null): void {
+		this.activeTextSubmenu = submenu;
+		this.textSubmenuEngine?.setActive(submenu);
+	}
+
+	private toggleLatexSubmenu(submenu: InkDocLatexSubmenu): void {
+		const next = this.activeLatexSubmenu === submenu ? null : submenu;
+		this.setActiveLatexSubmenu(next);
+	}
+
+	private setActiveLatexSubmenu(submenu: InkDocLatexSubmenu | null): void {
+		this.activeLatexSubmenu = submenu;
+		this.latexSubmenuEngine?.setActive(submenu);
+	}
+
+	private createTextIconButton(
+		container: HTMLDivElement,
+		icon: string,
+		label: string,
+		onClick: () => void
+	): HTMLButtonElement {
+		const button = container.createEl("button", {
+			cls: "inkdoc-text-toolbar-btn",
+			attr: { "aria-label": label, title: label }
+		});
+		setCompatibleIcon(button, icon, label.charAt(0).toUpperCase());
+		button.addEventListener("click", onClick);
+		return button;
+	}
+
+	private createTextSelectControl(
+		container: HTMLDivElement,
+		label: string,
+		options: Array<{ label: string; value: string }>,
+		onChange: (value: string) => void
+	): HTMLDivElement {
+		const field = container.createDiv({ cls: "inkdoc-text-field" });
+		field.createEl("span", { cls: "inkdoc-text-field-label", text: label });
+		const select = field.createEl("select", { cls: "inkdoc-text-field-select" });
+		options.forEach((option) => {
+			const entry = select.createEl("option", { text: option.label });
+			entry.value = option.value;
+		});
+		select.addEventListener("change", () => onChange(select.value));
+		return field;
+	}
+
+	private createTextSwatch(
+		container: HTMLDivElement,
+		color: string,
+		label: string
+	): HTMLButtonElement {
+		const swatch = container.createEl("button", {
+			cls: "inkdoc-text-swatch",
+			attr: { "aria-label": label, title: label }
+		});
+		swatch.style.background = color;
+		return swatch;
+	}
+
+	private promptTextLink(): void {
+		const url = window.prompt("URL del enlace", "https://");
+		const normalized = url?.trim();
+		if (!normalized) {
+			return;
+		}
+		this.applyEditorCommand("createLink", normalized);
+	}
+
+	private insertEditorHtml(html: string): void {
+		this.applyEditorCommand("insertHTML", html);
+	}
+
 	private isStrokeTool(tool: InkDocTool = this.activeTool): tool is "pen" | "highlighter" {
 		return tool === "pen" || tool === "highlighter";
 	}
 
-	private isTextLikeTool(tool: InkDocTool = this.activeTool): tool is "latex" {
-		return tool === "latex";
+	private isTextLikeTool(tool: InkDocTool = this.activeTool): tool is "text" | "latex" {
+		return tool === "text" || tool === "latex";
 	}
 
 	private createRgbInput(container: HTMLDivElement, label: string): HTMLInputElement {
@@ -4014,10 +4413,6 @@ export class InkDocView extends ItemView {
 		}
 		this.imageLayerByPage.clear();
 		this.imageLayerDirty.clear();
-		for (const runtime of this.pageMarkdownRuntimes.values()) {
-			runtime.dispose();
-		}
-		this.pageMarkdownRuntimes.clear();
 		disposeStickyNotesRuntime(this.stickyNotesRuntime);
 	}
 

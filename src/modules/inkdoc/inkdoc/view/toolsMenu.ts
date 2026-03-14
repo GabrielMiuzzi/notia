@@ -1,6 +1,5 @@
 // @ts-nocheck
 import { App, Menu } from "../../engines/platform/inkdocPlatform";
-import { INKDOC_ICONS } from "./icons";
 import { setInkDocMenuItemIcon } from "./iconEngine";
 
 export const openInkDocToolsMenu = (
@@ -11,7 +10,7 @@ export const openInkDocToolsMenu = (
 	const menu = new Menu();
 	menu.addItem((item) => {
 		item.setTitle("Exportar como PDF");
-		setInkDocMenuItemIcon(item, INKDOC_ICONS.FILE_DOWN);
+		setInkDocMenuItemIcon(item, "file-down");
 		item.onClick(() => onExportPdf());
 	});
 	const rect = anchor.getBoundingClientRect();

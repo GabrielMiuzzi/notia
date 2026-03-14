@@ -1,6 +1,5 @@
 // @ts-nocheck
 import {
-	INKDOC_DEFAULT_LATEX_COLOR,
 	INKDOC_TEXT_MIN_HEIGHT,
 	INKDOC_TEXT_MIN_WIDTH,
 	type CanvasPageState
@@ -23,6 +22,8 @@ export type TextEditingContext = {
 	saveDebounced: () => void;
 	noteUserActivity: () => void;
 	updateTextToolbarVisibility: () => void;
+	getDefaultBlockColor: (page: InkDocPage) => string;
+	onLatexCommitted?: (page: InkDocPage, block: InkDocTextBlock) => void;
 };
 
 export type TextEditingAccessors = {
@@ -148,6 +149,7 @@ const commitTextEditor = (
 		block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, editorRect.height * scaleY);
 		context.renderStrokes(state.ctx, page.strokes ?? [], page.id);
 	}
+	context.onLatexCommitted?.(page, block);
 	context.saveDebounced();
 };
 
@@ -364,6 +366,9 @@ export const openTextEditor = (
 	editor.contentEditable = "true";
 	editor.spellcheck = true;
 	editor.innerHTML = block.html ?? escapeHtml(block.text ?? "");
+	editor.style.color = typeof block.color === "string" && block.color.trim().length > 0
+		? block.color
+		: context.getDefaultBlockColor(page);
 	accessors.setTextEditor(editor);
 	accessors.setActiveTextEdit({ pageId: page.id, pageIndex: index, blockId: block.id });
 	refreshTextLayer(context, page.id, page);
@@ -424,7 +429,7 @@ export const openLatexEditor = (
 	editor.style.backgroundColor = "transparent";
 	editor.style.color = typeof block.color === "string" && block.color.trim().length > 0
 		? block.color
-		: INKDOC_DEFAULT_LATEX_COLOR;
+		: context.getDefaultBlockColor(page);
 	accessors.setLatexEditor(editor);
 	accessors.setActiveLatexEdit({ pageId: page.id, pageIndex: index, blockId: block.id });
 	refreshTextLayer(context, page.id, page);

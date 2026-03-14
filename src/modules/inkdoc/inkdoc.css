@@ -672,15 +672,30 @@
 	line-height: 1;
 }
 
-.inkdoc-context-menu {
+.inkdoc-context-menu-host {
 	position: fixed;
 	z-index: 50;
+}
+
+.inkdoc-context-menu-trigger {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: 0;
+	border: 0;
+	opacity: 0;
+	pointer-events: none;
+}
+
+.inkdoc-context-menu-panel {
 	min-width: 160px;
 	padding: 6px;
 	border-radius: 8px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-primary);
+	border: 1px solid var(--inkdoc-submenu-border, #3a3f5a);
+	background: var(--inkdoc-submenu-surface, #25293d);
 	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+	background-clip: padding-box;
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
@@ -1216,65 +1231,6 @@
 	box-sizing: border-box;
 	display: flex;
 	align-items: stretch;
-}
-
-.inkdoc-page-markdown-layer {
-	position: absolute;
-	inset: 0;
-	z-index: 1;
-	pointer-events: none;
-	overflow: visible;
-}
-
-.inkdoc-page-markdown-layer.is-editable {
-	pointer-events: auto;
-}
-
-.inkdoc-page-markdown-editor-root {
-	width: 100%;
-	height: 100%;
-}
-
-.inkdoc-page-markdown-editor-root .milkdown {
-	height: 100%;
-	background: transparent;
-	overflow-x: visible;
-	overflow-y: hidden;
-	--crepe-color-outline: var(--notia-milkdown-handle-ink, var(--text-muted));
-}
-
-.inkdoc-page-markdown-editor-root .milkdown .ProseMirror {
-	height: 100%;
-	min-height: 100%;
-	max-height: 100%;
-	padding:
-		var(--inkdoc-text-padding-top, 24px)
-		var(--inkdoc-text-padding-right, 24px)
-		calc(var(--inkdoc-text-padding-bottom, 38px) + 8px)
-		var(--inkdoc-text-padding-left, 24px);
-	box-sizing: border-box;
-	background: transparent;
-	color: var(--text-normal);
-	outline: none;
-	overflow-y: hidden;
-	overflow-x: visible;
-}
-
-.inkdoc-page-markdown-editor-root .milkdown .ProseMirror > *:last-child {
-	margin-bottom: 0 !important;
-}
-
-.inkdoc-page-markdown-editor-root .milkdown .milkdown-block-handle {
-	z-index: 9;
-	transform: translateX(-40px);
-}
-
-.inkdoc-page-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg {
-	fill: var(--notia-milkdown-handle-ink, var(--text-muted));
-}
-
-.inkdoc-page-markdown-editor-root .milkdown .milkdown-slash-menu {
-	z-index: 12;
 }
 
 .inkdoc-page.is-dragover {
@@ -2057,33 +2013,60 @@
 	resize: none;
 }
 
-.inkdoc-text-toolbar {
-	position: sticky;
-	bottom: 0;
-	z-index: 25;
-	display: none;
-	flex-wrap: wrap;
+.inkdoc-text-floating {
+	z-index: 38;
+}
+
+.inkdoc-text-flyout {
+	min-width: 264px;
+	max-width: min(360px, calc(100vw - 92px));
+}
+
+.inkdoc-text-action-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.inkdoc-text-form-grid {
+	display: grid;
+	gap: 10px;
+}
+
+.inkdoc-text-field {
+	display: grid;
 	gap: 6px;
-	padding: 8px 12px;
-	border-top: 1px solid var(--background-modifier-border);
-	background: var(--background-primary-alt);
 }
 
-.inkdoc-text-toolbar.is-visible {
-	display: flex;
+.inkdoc-text-field-label {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--text-muted);
 }
 
-.inkdoc-text-toolbar-group {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding-right: 6px;
-	border-right: 1px solid var(--background-modifier-border);
+.inkdoc-text-field-select,
+.inkdoc-text-color-input {
+	height: 32px;
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	padding: 0 8px;
+	font-size: 12px;
+	box-sizing: border-box;
 }
 
-.inkdoc-text-toolbar-group:last-child {
-	border-right: none;
-	padding-right: 0;
+.inkdoc-text-color-inputs {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.inkdoc-text-color-input {
+	width: 100%;
+	padding: 0;
 }
 
 .inkdoc-text-palette {
@@ -2118,15 +2101,17 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 28px;
-	height: 28px;
+	min-width: 36px;
+	height: 36px;
 	border-radius: 6px;
 	border: 1px solid var(--background-modifier-border);
 	background: var(--background-secondary);
 	color: var(--text-normal);
 	cursor: pointer;
-	padding: 0;
+	padding: 0 8px;
 	font-size: 11px;
+	font-weight: 700;
+	box-sizing: border-box;
 }
 
 .inkdoc-text-toolbar-btn svg {
@@ -2138,50 +2123,21 @@
 	background: var(--background-secondary-alt);
 }
 
-.inkdoc-text-toolbar select,
-.inkdoc-text-toolbar input[type="color"] {
-	height: 28px;
-	border-radius: 6px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-normal);
-	padding: 0 6px;
-	font-size: 12px;
+.inkdoc-latex-floating {
+	z-index: 38;
 }
 
-.inkdoc-text-toolbar input[type="color"] {
-	padding: 0;
-	width: 28px;
+.inkdoc-latex-flyout {
+	min-width: 248px;
+	max-width: min(320px, calc(100vw - 92px));
 }
 
-.inkdoc-latex-toolbar {
-	position: sticky;
-	bottom: 0;
-	z-index: 25;
-	display: none;
-	gap: 8px;
-	padding: 8px 12px;
-	border-top: 1px solid var(--background-modifier-border);
-	background: var(--background-primary-alt);
-}
-
-.inkdoc-latex-toolbar.is-visible {
-	display: flex;
-}
-
-.inkdoc-latex-toolbar-group {
-	display: inline-flex;
+.inkdoc-latex-color-inputs {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 40px;
 	align-items: center;
-	gap: 6px;
-}
-
-.inkdoc-latex-toolbar input[type="color"] {
-	height: 28px;
-	width: 28px;
-	padding: 0;
-	border-radius: 6px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
+	gap: 10px;
+	margin-bottom: 10px;
 }
 
 .inkdoc-latex-palette {
@@ -2202,36 +2158,6 @@
 	border: 1px solid rgba(0, 0, 0, 0.18);
 	padding: 0;
 	cursor: pointer;
-}
-
-.inkdoc-bottom-drawer-toggle {
-	position: absolute;
-	left: 50%;
-	bottom: 8px;
-	transform: translateX(-50%);
-	z-index: 30;
-	display: none;
-	align-items: center;
-	justify-content: center;
-	width: 30px;
-	height: 30px;
-	padding: 0;
-	border-radius: 999px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-primary-alt);
-	color: var(--text-normal);
-	cursor: pointer;
-	box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-	transition: bottom 120ms ease;
-}
-
-.inkdoc-bottom-drawer-toggle.is-visible {
-	display: inline-flex;
-}
-
-.inkdoc-bottom-drawer-toggle svg {
-	width: 16px;
-	height: 16px;
 }
 
 .inkdoc-latex-swatch:hover {
@@ -2525,99 +2451,28 @@
 	gap: 14px;
 }
 
-.inkdoc-text-layout-modal {
-	display: flex;
-	flex-direction: column;
-	gap: 14px;
-}
-
-.inkdoc-text-layout-presets {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-}
-
-.inkdoc-text-layout-preset {
-	height: 30px;
-	padding: 0 10px;
-	border-radius: 8px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-normal);
-	cursor: pointer;
-	font-size: 12px;
-}
-
-.inkdoc-text-layout-preset:hover {
-	background: var(--background-secondary-alt);
-}
-
-.inkdoc-text-layout-grid {
-	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 10px;
-}
-
-.inkdoc-text-layout-field {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-}
-
-.inkdoc-text-layout-label {
-	font-size: 12px;
-	color: var(--text-muted);
-}
-
-.inkdoc-text-layout-input {
-	height: 34px;
-	padding: 0 10px;
-	border-radius: 8px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-normal);
-}
-
-.inkdoc-text-layout-actions {
-	display: flex;
-	align-items: center;
-	justify-content: flex-end;
-	gap: 8px;
-}
-
 .inkdoc-inkmath-modal {
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
-	width: fit-content;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
 	max-width: none;
-	align-items: flex-start;
-}
-
-.inkdoc-build-stamp {
-	font-size: 11px;
-	line-height: 1.25;
-	color: var(--text-muted);
-	font-family: var(--font-monospace);
-	padding: 3px 6px;
-	border-radius: 6px;
-	border: 1px dashed var(--background-modifier-border);
-	background: var(--background-primary-alt);
+	align-items: stretch;
+	box-sizing: border-box;
 }
 
 .inkdoc-inkmath-modal-shell {
-	width: fit-content;
+	width: 100%;
 	max-width: none;
 	max-height: none;
 }
 
 .inkdoc-inkmath-modal-shell .modal-content {
 	max-height: none;
-	overflow: visible;
-}
-
-.inkdoc-inkmath-modal-shell .modal-title {
-	white-space: nowrap;
+	overflow-x: hidden;
+	overflow-y: hidden;
 }
 
 .inkdoc-inkmath-canvas {
@@ -2631,13 +2486,20 @@
 
 .inkdoc-inkmath-canvas-shell {
 	position: relative;
-	display: inline-block;
+	display: block;
+	width: 100%;
+	max-width: 100%;
+	margin-inline: 0;
+	flex: 1 1 auto;
+	min-height: 0;
+	align-self: center;
 }
 
 .inkdoc-inkmath-tools {
 	min-width: 0;
 	width: 100%;
-	display: inline-flex;
+	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
 	margin-top: 10px;
@@ -2687,65 +2549,54 @@
 	cursor: default;
 }
 
-.inkdoc-inkmath-canvas-expand {
-	position: absolute;
-	width: 28px;
-	height: 28px;
-	padding: 0;
-	border-radius: 999px;
+.inkdoc-inkmath-stroke-width {
+	margin-left: auto;
+	min-width: min(100%, 220px);
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 0 10px;
+	height: 32px;
+	border-radius: 6px;
 	border: 1px solid var(--background-modifier-border);
 	background: var(--background-secondary);
-	cursor: pointer;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	line-height: 1;
+}
+
+.inkdoc-inkmath-stroke-width-label {
 	font-size: 12px;
-	z-index: 2;
+	font-weight: 600;
+	color: var(--text-normal);
+	white-space: nowrap;
 }
 
-.inkdoc-inkmath-canvas-expand svg {
-	width: 12px;
-	height: 12px;
+.inkdoc-inkmath-stroke-width-slider {
+	flex: 1 1 auto;
+	min-width: 84px;
+	accent-color: var(--interactive-accent);
 }
 
-.inkdoc-inkmath-canvas-expand.is-up {
-	top: -14px;
-	left: 50%;
-	transform: translateX(-50%);
-}
-
-.inkdoc-inkmath-canvas-expand.is-down {
-	bottom: -14px;
-	left: 50%;
-	transform: translateX(-50%);
-}
-
-.inkdoc-inkmath-canvas-expand.is-left {
-	left: -14px;
-	top: 50%;
-	transform: translateY(-50%);
-}
-
-.inkdoc-inkmath-canvas-expand.is-right {
-	right: -14px;
-	top: 50%;
-	transform: translateY(-50%);
+.inkdoc-inkmath-stroke-width-value {
+	min-width: 44px;
+	font-size: 11px;
+	font-family: var(--font-monospace);
+	color: var(--text-muted);
+	text-align: right;
+	white-space: nowrap;
 }
 
 .inkdoc-inkmath-latex-preview {
 	min-width: 0;
 	width: 100%;
-	height: 92px;
-	min-height: 92px;
-	max-height: 92px;
+	height: clamp(72px, 10dvh, 92px);
+	min-height: clamp(72px, 10dvh, 92px);
+	max-height: clamp(72px, 10dvh, 92px);
 	padding: 10px 44px 10px 12px;
 	border-radius: 8px;
 	border: 1px solid var(--background-modifier-border);
 	background: var(--background-primary-alt);
 	color: var(--text-normal);
 	font-size: 16px;
-	overflow: auto;
+	overflow: hidden;
 	position: relative;
 }
 
@@ -2787,16 +2638,16 @@
 
 .inkdoc-inkmath-latex-preview.is-manual-editing {
 	height: auto;
-	min-height: 138px;
+	min-height: min(138px, 18dvh);
 	max-height: none;
 	padding-right: 44px;
 }
 
 .inkdoc-inkmath-latex-manual-editor {
 	width: 100%;
-	min-height: 86px;
-	max-height: 150px;
-	resize: vertical;
+	min-height: clamp(64px, 10dvh, 86px);
+	max-height: min(150px, 18dvh);
+	resize: none;
 	border-radius: 6px;
 	border: 1px solid var(--background-modifier-border);
 	background: var(--background-primary);
@@ -2905,10 +2756,10 @@
 }
 
 .inkdoc-inkmath-logs-body {
-	height: 156px;
-	min-height: 156px;
-	max-height: 156px;
-	overflow-y: scroll;
+	height: clamp(64px, 12dvh, 120px);
+	min-height: clamp(64px, 12dvh, 120px);
+	max-height: clamp(64px, 12dvh, 120px);
+	overflow: hidden;
 	overflow-x: hidden;
 	display: flex;
 	flex-direction: column;
@@ -2944,15 +2795,16 @@
 	min-width: 0;
 	width: 100%;
 	display: flex;
-	justify-content: space-between;
+	justify-content: flex-end;
 	align-items: center;
 	gap: 8px;
 }
 
 .inkdoc-inkmath-actions-right {
-	display: inline-flex;
+	display: flex;
 	align-items: center;
 	gap: 8px;
+	margin-left: auto;
 }
 
 .inkdoc-inkmath-action {
@@ -2977,6 +2829,7 @@
 .inkmath-debug-eye {
 	min-width: 36px;
 	padding: 0;
+	margin-right: auto;
 }
 
 .inkmath-debug-eye svg {
@@ -2996,9 +2849,9 @@
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	height: 172px;
-	min-height: 172px;
-	max-height: 172px;
+	height: auto;
+	min-height: 0;
+	max-height: none;
 }
 
 .inkdoc-inkmath-telemetry-card.is-collapsed {
@@ -3098,10 +2951,10 @@
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	height: 52px;
-	min-height: 52px;
-	max-height: 52px;
-	overflow-y: scroll;
+	height: clamp(36px, 7dvh, 52px);
+	min-height: clamp(36px, 7dvh, 52px);
+	max-height: clamp(36px, 7dvh, 52px);
+	overflow: hidden;
 	overflow-x: hidden;
 	padding-right: 2px;
 }
@@ -3445,6 +3298,23 @@
 	background: var(--background-primary);
 	border-color: var(--background-modifier-border);
 	box-shadow: 0 24px 62px var(--inkdoc-modal-engine-shadow);
+	width: calc((100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 32px) * 0.75);
+	max-width: calc((100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 32px) * 0.75);
+	height: calc((100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 32px) * 0.75);
+	max-height: calc((100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 32px) * 0.75);
+}
+
+.notia-modal-engine-panel.inkdoc-modal-engine-panel.inkdoc-modal-engine-panel--tone-inkmath .modal-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	height: calc(
+		((100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 32px) * 0.75) - 32px
+	);
+	max-height: calc(
+		((100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 32px) * 0.75) - 32px
+	);
+	overflow: hidden;
 }
 
 @media (max-width: 820px) {
@@ -3459,8 +3329,32 @@
 		grid-template-columns: 1fr;
 	}
 
+	.inkdoc-inkmath-stroke-width {
+		margin-left: 0;
+		width: 100%;
+	}
+
 	.inkdoc-size-visual-canvas {
 		height: 210px;
+	}
+
+	.notia-modal-engine-panel.inkdoc-modal-engine-panel.inkdoc-modal-engine-panel--tone-inkmath {
+		width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 16px);
+		max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 16px);
+		height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px);
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px);
+		border-radius: 12px;
+	}
+
+	.notia-modal-engine-panel.inkdoc-modal-engine-panel.inkdoc-modal-engine-panel--tone-inkmath .modal-content {
+		height: calc(
+			100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 48px
+		);
+		max-height: calc(
+			100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 48px
+		);
+		padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+		overflow: hidden;
 	}
 }
 

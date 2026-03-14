@@ -3,6 +3,7 @@ import { InkDocView } from '../../../../modules/inkdoc/InkDocView'
 import { createInkdocApp, type InkdocHostBridge } from '../../../../modules/inkdoc/engines/platform/inkdocPlatform'
 import InkDocPlugin from '../../../../modules/inkdoc/main'
 import { createInkdocFile, createInkdocFolder, pathExists, writeBinaryFile } from '../../../../modules/inkdoc/services/inkdocFilesystemRuntime'
+import type { InkdocPreferences } from '../../../../services/preferences/inkdocSettingsStorage'
 import { readLibraryFileContent, writeLibraryFileContent } from '../../../../services/libraries/libraryDocumentRuntime'
 import { performLibraryEntryOperation } from '../../../../services/libraries/libraryRuntime'
 import '../../../../modules/inkdoc/inkdoc.css'
@@ -13,6 +14,7 @@ interface InkdocViewProps {
   source: string
   rootPath: string | null
   libraryFilePaths: string[]
+  inkdocPreferences: InkdocPreferences
   onSourcePersist: (nextSource: string) => Promise<void>
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -22,6 +24,7 @@ export function InkdocView({
   source,
   rootPath,
   libraryFilePaths,
+  inkdocPreferences,
   onSourcePersist,
   onOpenLinkedFile,
 }: InkdocViewProps) {
@@ -97,7 +100,10 @@ export function InkdocView({
     }
 
     const app = createInkdocApp(bridge)
-    const plugin = new InkDocPlugin(app)
+    const plugin = new InkDocPlugin(app, {
+      inkmathServiceUrl: inkdocPreferences.inkmathServiceUrl,
+      inkmathDebounceMs: inkdocPreferences.inkmathDebounceMs,
+    })
     const leaf = app.workspace.getLeaf(false)
     const view = new InkDocView(leaf, plugin)
 
@@ -120,7 +126,7 @@ export function InkdocView({
       void view.onClose()
       mountNode.empty()
     }
-  }, [bridge, filePath])
+  }, [bridge, filePath, inkdocPreferences.inkmathDebounceMs, inkdocPreferences.inkmathServiceUrl])
 
   return <div ref={mountRef} className="notia-inkdoc-host" />
 }

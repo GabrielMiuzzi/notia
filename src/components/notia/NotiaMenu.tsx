@@ -32,6 +32,7 @@ import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import { useLibraryGraphData } from '../../hooks/useLibraryGraphData'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
 import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
+import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import {
@@ -377,6 +378,7 @@ export function NotiaMenu() {
   const [isLibraryManagerOpen, setIsLibraryManagerOpen] = useState(false)
   const [theme, setTheme] = useState<NotiaTheme>(() => loadThemePreference())
   const [explorerRefreshIntervalMs, setExplorerRefreshIntervalMs] = useState<number>(() => loadExplorerRefreshIntervalMs())
+  const [inkdocPreferences, setInkdocPreferences] = useState(() => loadInkdocPreferences())
   const [libraries, setLibraries] = useState<NotiaLibrary[]>(() => loadLibraries())
   const [activeLibraryId, setActiveLibraryId] = useState<string | null>(() =>
     findInitialActiveLibrary(loadLibraries()),
@@ -633,6 +635,10 @@ export function NotiaMenu() {
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)
   }, [explorerRefreshIntervalMs])
+
+  useEffect(() => {
+    saveInkdocPreferences(inkdocPreferences)
+  }, [inkdocPreferences])
 
   useEffect(() => {
     activeTabPathRef.current = activeTabPath
@@ -1977,6 +1983,7 @@ export function NotiaMenu() {
             onInkdocDocumentPersist={handleInkdocDocumentPersist}
             rootPath={activeLibrary?.path ?? null}
             libraryFilePaths={libraryFilePaths}
+            inkdocPreferences={inkdocPreferences}
             markdownWikiLinkTargets={markdownWikiLinkTargets}
             onOpenLinkedFile={handleOpenFileFromView}
           />
@@ -1987,6 +1994,8 @@ export function NotiaMenu() {
         onClose={handleCloseSettings}
         explorerRefreshIntervalMs={explorerRefreshIntervalMs}
         onExplorerRefreshIntervalMsChange={setExplorerRefreshIntervalMs}
+        inkdocPreferences={inkdocPreferences}
+        onInkdocPreferencesChange={setInkdocPreferences}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

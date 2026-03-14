@@ -135,10 +135,17 @@ const toLinear = (channel: number): number => {
 		: Math.pow((normalized + 0.055) / 1.055, 2.4);
 };
 
-const getContrastInkColor = (background: string): string => {
+export const getContrastInkColor = (background: string): string => {
 	const { r, g, b } = parseColorToRgb(background);
 	const luminance = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 	return luminance > 0.48 ? "rgb(25, 30, 37)" : "rgb(242, 246, 252)";
+};
+
+export const getContrastPageTextColor = (
+	value?: Partial<InkDocPageColors> | null
+): string => {
+	const colors = resolvePageColors(value);
+	return getContrastInkColor(colors.background);
 };
 
 export const resolvePageColors = (value?: Partial<InkDocPageColors> | null): InkDocPageColors => {
