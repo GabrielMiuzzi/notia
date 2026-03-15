@@ -1,6 +1,6 @@
 [package]
 name = "notia"
-version = "1.0.0-ALPHA"
+version = "1.0.1-ALPHA"
 description = "Notia desktop app"
 authors = ["Gabriel"]
 edition = "2021"

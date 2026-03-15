@@ -1,7 +1,7 @@
 {
   "name": "notia",
   "private": true,
-  "version": "1.0.0-ALPHA",
+  "version": "1.0.1-ALPHA",
   "type": "module",
   "scripts": {
     "dev": "vite",

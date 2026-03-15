@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { Bot } from 'lucide-react'
 import {
   EXPLORER_HEADER_ACTIONS,
@@ -31,7 +31,12 @@ import { isTextualViewKind, resolveFileViewKind } from '../../services/views/fil
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import { useLibraryGraphData } from '../../hooks/useLibraryGraphData'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
-import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
+import {
+  loadExplorerFolderExpandedState,
+  loadExplorerRefreshIntervalMs,
+  saveExplorerFolderExpandedState,
+  saveExplorerRefreshIntervalMs,
+} from '../../services/preferences/explorerPanelStorage'
 import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
@@ -218,6 +223,15 @@ function areTreeNodeListsEqual(leftNodes: NotiaFileNode[], rightNodes: NotiaFile
   }
 
   return true
+}
+
+function resolveTreeNodeUpdate(
+  current: NotiaFileNode[],
+  update: SetStateAction<NotiaFileNode[]>,
+): NotiaFileNode[] {
+  return typeof update === 'function'
+    ? (update as (nodes: NotiaFileNode[]) => NotiaFileNode[])(current)
+    : update
 }
 
 function findTreeNodeByPath(nodes: NotiaFileNode[], path: string): NotiaFileNode | null {
@@ -430,6 +444,7 @@ export function NotiaMenu() {
   const hasDeferredTreeRefreshRef = useRef(false)
   const isGraphViewActiveRef = useRef(false)
   const lastKnownTreeSignatureRef = useRef('')
+  const treeNodesLibraryIdRef = useRef<string | null>(null)
 
   const activeLibrary = useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
@@ -656,18 +671,40 @@ export function NotiaMenu() {
     treeNodesRef.current = treeNodes
   }, [treeNodes])
 
-  const commitTreeNodesSnapshot = useCallback((nodes: NotiaFileNode[]) => {
+  const persistExplorerFolderState = useCallback((libraryId: string | null, nodes: NotiaFileNode[]) => {
+    if (!libraryId) {
+      return
+    }
+
+    saveExplorerFolderExpandedState(libraryId, collectFolderExpandedState(nodes))
+  }, [])
+
+  const setTreeNodesForLibrary = useCallback((
+    libraryId: string | null,
+    update: SetStateAction<NotiaFileNode[]>,
+  ) => {
+    setTreeNodes((current) => {
+      const next = resolveTreeNodeUpdate(current, update)
+      treeNodesLibraryIdRef.current = libraryId
+      persistExplorerFolderState(libraryId, next)
+      return next
+    })
+  }, [persistExplorerFolderState])
+
+  const commitTreeNodesSnapshot = useCallback((libraryId: string, nodes: NotiaFileNode[]) => {
     lastKnownTreeSignatureRef.current = buildTreeNodesStructureSignature(nodes)
-    const expandedStateByPath = collectFolderExpandedState(treeNodesRef.current)
+    const expandedStateByPath = treeNodesLibraryIdRef.current === libraryId
+      ? collectFolderExpandedState(treeNodesRef.current)
+      : loadExplorerFolderExpandedState(libraryId)
     const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
     const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
 
-    setTreeNodes((current) => (
+    setTreeNodesForLibrary(libraryId, (current) => (
       areTreeNodeListsEqual(current, selectedNodes)
         ? current
         : selectedNodes
     ))
-  }, [])
+  }, [setTreeNodesForLibrary])
 
   const refreshActiveLibraryTree = useCallback(async () => {
     if (!activeLibrary) {
@@ -684,7 +721,7 @@ export function NotiaMenu() {
       const refreshedNodes = await readLibraryTree(activeLibrary.path, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
-      commitTreeNodesSnapshot(refreshedNodes)
+      commitTreeNodesSnapshot(activeLibrary.id, refreshedNodes)
     } finally {
       isTreeRefreshInFlightRef.current = false
       if (hasQueuedTreeRefreshRef.current) {
@@ -761,6 +798,7 @@ export function NotiaMenu() {
     if (!activeLibrary) {
       clearAllPendingTextSaves()
       setTreeNodes([])
+      treeNodesLibraryIdRef.current = null
       setPendingCreation(null)
       lastKnownTreeSignatureRef.current = ''
       isTreeRefreshInFlightRef.current = false
@@ -789,7 +827,7 @@ export function NotiaMenu() {
         return
       }
 
-      commitTreeNodesSnapshot(nodes)
+      commitTreeNodesSnapshot(activeLibrary.id, nodes)
     })
 
     return () => {
@@ -821,8 +859,8 @@ export function NotiaMenu() {
   }, [activeLibraryId, clearAllPendingTextSaves, resetTabs])
 
   useEffect(() => {
-    setTreeNodes((current) => setSelectedFileByPath(current, activeTabPath))
-  }, [activeTabPath])
+    setTreeNodesForLibrary(activeLibraryId, (current) => setSelectedFileByPath(current, activeTabPath))
+  }, [activeLibraryId, activeTabPath, setTreeNodesForLibrary])
 
   useEffect(() => {
     const handleGlobalClick = () => {
@@ -957,8 +995,8 @@ export function NotiaMenu() {
   }, [])
 
   const handleToggleFolder = useCallback((folderId: string) => {
-    setTreeNodes((current) => toggleFolderNodeExpanded(current, folderId))
-  }, [])
+    setTreeNodesForLibrary(activeLibraryId, (current) => toggleFolderNodeExpanded(current, folderId))
+  }, [activeLibraryId, setTreeNodesForLibrary])
 
   const handleThemeToggle = useCallback(() => {
     setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
@@ -1030,14 +1068,14 @@ export function NotiaMenu() {
     }
 
     if (toolId === 'collapse-folders') {
-      setTreeNodes((current) => setAllFoldersExpanded(current, false))
+      setTreeNodesForLibrary(activeLibrary.id, (current) => setAllFoldersExpanded(current, false))
       return
     }
 
     if (toolId === 'expand-folders') {
-      setTreeNodes((current) => setAllFoldersExpanded(current, true))
+      setTreeNodesForLibrary(activeLibrary.id, (current) => setAllFoldersExpanded(current, true))
     }
-  }, [activeLibrary])
+  }, [activeLibrary, setTreeNodesForLibrary])
 
   const handleWindowAction = useCallback((action: NotiaWindowAction) => {
     void controlWindow(action)
@@ -1721,7 +1759,7 @@ export function NotiaMenu() {
     }
 
     if (actionId === 'new-subfolder' && targetNode.type === 'folder') {
-      setTreeNodes((current) => setFolderExpandedByPath(current, targetPath, true))
+      setTreeNodesForLibrary(activeLibraryId, (current) => setFolderExpandedByPath(current, targetPath, true))
       setPendingCreation({
         id: `pending-subfolder-${Date.now()}`,
         kind: 'folder',
@@ -1733,7 +1771,7 @@ export function NotiaMenu() {
     }
 
     if (actionId === 'new-note' && targetNode.type === 'folder') {
-      setTreeNodes((current) => setFolderExpandedByPath(current, targetPath, true))
+      setTreeNodesForLibrary(activeLibraryId, (current) => setFolderExpandedByPath(current, targetPath, true))
       setPendingCreation({
         id: `pending-note-${Date.now()}`,
         kind: 'note',
@@ -1745,7 +1783,7 @@ export function NotiaMenu() {
     }
 
     if (actionId === 'new-inkdoc' && targetNode.type === 'folder') {
-      setTreeNodes((current) => setFolderExpandedByPath(current, targetPath, true))
+      setTreeNodesForLibrary(activeLibraryId, (current) => setFolderExpandedByPath(current, targetPath, true))
       setPendingCreation({
         id: `pending-inkdoc-${Date.now()}`,
         kind: 'inkdoc',

@@ -1,6 +1,7 @@
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 const EXPLORER_REFRESH_INTERVAL_STORAGE_KEY = 'notia:explorer-refresh-interval-ms'
+const EXPLORER_FOLDER_STATE_STORAGE_KEY = 'notia:explorer-folder-state'
 
 interface ExplorerRefreshPolicy {
   defaultMs: number
@@ -79,4 +80,68 @@ export function loadExplorerRefreshIntervalMs(): number {
 export function saveExplorerRefreshIntervalMs(value: number): void {
   const normalizedValue = normalizeRefreshIntervalMs(value)
   localStorage.setItem(EXPLORER_REFRESH_INTERVAL_STORAGE_KEY, String(normalizedValue))
+}
+
+type ExplorerFolderExpandedStateRecord = Record<string, Record<string, boolean>>
+
+function readExplorerFolderExpandedStateRecord(): ExplorerFolderExpandedStateRecord {
+  const raw = localStorage.getItem(EXPLORER_FOLDER_STATE_STORAGE_KEY)
+  if (!raw) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const normalizedRecord: ExplorerFolderExpandedStateRecord = {}
+    for (const [libraryId, stateByPath] of Object.entries(parsed)) {
+      if (!stateByPath || typeof stateByPath !== 'object' || Array.isArray(stateByPath)) {
+        continue
+      }
+
+      const normalizedStateByPath: Record<string, boolean> = {}
+      for (const [path, expanded] of Object.entries(stateByPath)) {
+        if (typeof path !== 'string' || typeof expanded !== 'boolean') {
+          continue
+        }
+        normalizedStateByPath[path] = expanded
+      }
+
+      normalizedRecord[libraryId] = normalizedStateByPath
+    }
+
+    return normalizedRecord
+  } catch {
+    return {}
+  }
+}
+
+export function loadExplorerFolderExpandedState(libraryId: string | null): Map<string, boolean> {
+  if (!libraryId) {
+    return new Map<string, boolean>()
+  }
+
+  const record = readExplorerFolderExpandedStateRecord()
+  const stateByPath = record[libraryId]
+  if (!stateByPath) {
+    return new Map<string, boolean>()
+  }
+
+  return new Map<string, boolean>(Object.entries(stateByPath))
+}
+
+export function saveExplorerFolderExpandedState(
+  libraryId: string | null,
+  stateByPath: ReadonlyMap<string, boolean>,
+): void {
+  if (!libraryId) {
+    return
+  }
+
+  const record = readExplorerFolderExpandedStateRecord()
+  record[libraryId] = Object.fromEntries(stateByPath)
+  localStorage.setItem(EXPLORER_FOLDER_STATE_STORAGE_KEY, JSON.stringify(record))
 }
