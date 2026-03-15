@@ -1,0 +1,7 @@
+# Copy this file to android-signing.properties and replace the placeholder values.
+# Relative paths are resolved from the project root.
+
+storeFile=.secrets/android/notia-upload.jks
+storePassword=replace-me
+keyAlias=notia
+keyPassword=replace-me

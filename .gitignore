@@ -10,7 +10,12 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+builds/
 *.local
+*.jks
+*.keystore
+android-signing.properties
+.secrets/
 
 # Rust / Tauri
 src-tauri/target

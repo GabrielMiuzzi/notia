@@ -15,6 +15,10 @@
     "dev:tauri:wayland": "NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=0 ./scripts/tauri-dev-linux.sh",
     "dev:tauri:wayland:fallback": "NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=1 ./scripts/tauri-dev-linux.sh",
     "dev:android": "NDK_HOME=\"$(ls -d \"$HOME\"/Android/Sdk/ndk/* 2>/dev/null | sort -V | tail -1)\" ANDROID_NDK_HOME=\"$(ls -d \"$HOME\"/Android/Sdk/ndk/* 2>/dev/null | sort -V | tail -1)\" tauri android dev --open",
+    "build:android:debug": "./scripts/tauri-cli.sh android build --apk --debug --target aarch64",
+    "build:android:release": "./scripts/android-build-release.sh",
+    "build:android:aab": "./scripts/android-build-release.sh --aab",
+    "install:android:release": "./scripts/android-install-release.sh",
     "dev:tauri:x11": "NOTIA_TAURI_BACKEND=x11 ./scripts/tauri-dev-linux.sh",
     "build:tauri": "tauri build"
   },

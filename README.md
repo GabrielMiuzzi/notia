@@ -108,6 +108,10 @@ Guia oficial de prerequisitos Tauri:
 - `npm run dev:tauri:wayland:fallback`: Wayland con fallback a X11.
 - `npm run dev:tauri:x11`: fuerza backend X11.
 - `npm run dev:android`: dev en Android usando Tauri mobile.
+- `npm run build:android:debug`: genera APK debug firmado para pruebas locales.
+- `npm run build:android:release`: genera APK release firmado.
+- `npm run build:android:aab`: genera APK release firmado y AAB.
+- `npm run install:android:release`: genera el APK release firmado y lo instala por `adb`.
 - `npm run build:tauri`: build empaquetado con Tauri.
 
 ## Tecnico (resumen corto)
@@ -126,6 +130,20 @@ Guia oficial de prerequisitos Tauri:
 
 - `npm run dev:android` intenta detectar el NDK mas reciente en `$HOME/Android/Sdk/ndk/*`.
 - El wrapper tambien autoselecciona `ANDROID_SERIAL` cuando hay dispositivos conectados por `adb`.
+- `npm run build:android:release` crea automaticamente una keystore local de desarrollo si no encuentra configuracion de firma.
+- El APK firmado listo para instalar se copia a `builds/android/notia-release.apk`.
+- `npm run install:android:release` usa ese APK y ejecuta `adb install -r`.
+- Si queres usar tu propia firma, podes crear `android-signing.properties` y completar:
+  - `storeFile`
+  - `storePassword`
+  - `keyAlias`
+  - `keyPassword`
+- Tambien se pueden usar variables de entorno:
+  - `NOTIA_ANDROID_KEYSTORE_PATH`
+  - `NOTIA_ANDROID_KEYSTORE_PASSWORD`
+  - `NOTIA_ANDROID_KEY_ALIAS`
+  - `NOTIA_ANDROID_KEY_PASSWORD`
+- El build release firmado queda disponible con `npm run build:android:release`.
 
 ## Convenciones del proyecto
 
