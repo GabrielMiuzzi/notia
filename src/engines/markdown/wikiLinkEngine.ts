@@ -52,14 +52,14 @@ function toRelativePath(filePath: string, rootPath: string | null): string {
   return normalizedFilePath.split('/').pop() ?? normalizedFilePath
 }
 
-function collectMarkdownTargets(
+function collectWikiLinkTargets(
   nodes: NotiaFileNode[],
   rootPath: string | null,
   targets: MarkdownWikiLinkTarget[],
 ): void {
   for (const node of nodes) {
     if (node.type === 'folder') {
-      collectMarkdownTargets(node.children ?? [], rootPath, targets)
+      collectWikiLinkTargets(node.children ?? [], rootPath, targets)
       continue
     }
 
@@ -68,7 +68,8 @@ function collectMarkdownTargets(
     }
 
     const extension = getFileExtension(node.path)
-    if (resolveFileViewKind(extension) !== 'markdown') {
+    const viewKind = resolveFileViewKind(extension)
+    if (viewKind !== 'markdown' && viewKind !== 'inkdoc') {
       continue
     }
 
@@ -92,7 +93,7 @@ export function buildWikiLinkTargets(
   rootPath: string | null,
 ): MarkdownWikiLinkTarget[] {
   const collectedTargets: MarkdownWikiLinkTarget[] = []
-  collectMarkdownTargets(nodes, rootPath, collectedTargets)
+  collectWikiLinkTargets(nodes, rootPath, collectedTargets)
 
   const repeatedTitles = new Set<string>()
   const titleCounts = new Map<string, number>()

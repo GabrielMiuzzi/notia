@@ -113,6 +113,7 @@ import {
 	type InkDocCreatableObject
 } from "./inkdoc/view/objectCreationPrompt";
 import { createInkDocSubmenuEngine, type InkDocSubmenuEngine } from "./inkdoc/view/submenuEngine";
+import type { MarkdownWikiLinkTarget } from "../../types/views/markdownWikiLink";
 
 type InkDocPencilSubmenu = "brushes" | "stroke" | "colors" | "stylus";
 type InkDocTextSubmenu = "format" | "font" | "colors" | "paragraph" | "insert";
@@ -3616,10 +3617,41 @@ export class InkDocView extends ItemView {
 			noteUserActivity: () => this.syncEngine.noteActivity(),
 			updateTextToolbarVisibility: () => this.updateTextToolbarVisibility(),
 			getDefaultBlockColor: (page) => this.getPageDefaultTextColor(page),
+			getWikiLinkTargets: () => this.getInkdocWikiLinkTargets(),
 			onLatexCommitted: (page, block) => {
 				void this.handleLatexBlockCommitted(page, block);
 			}
 		};
+	}
+
+	private getInkdocWikiLinkTargets(): MarkdownWikiLinkTarget[] {
+		const files = this.app.vault.getFiles();
+		const rootPath = this.app.vault.getRoot().path.replace(/\\/g, "/").replace(/\/+$/, "");
+		const titleCounts = new Map<string, number>();
+		const normalized = files.map((file) => {
+			const normalizedPath = file.path.replace(/\\/g, "/");
+			const relativePathWithExtension = rootPath && normalizedPath.startsWith(`${rootPath}/`)
+				? normalizedPath.slice(rootPath.length + 1)
+				: file.name;
+			const title = file.name.replace(/\.[^./\\]+$/, "");
+			const relativePath = relativePathWithExtension.replace(/\.[^./\\]+$/, "");
+			const key = title.toLowerCase();
+			titleCounts.set(key, (titleCounts.get(key) ?? 0) + 1);
+			return {
+				path: file.path,
+				name: file.name,
+				title,
+				relativePath,
+				relativePathWithExtension
+			};
+		});
+
+		return normalized.map((entry) => ({
+			...entry,
+			wikiLink: (titleCounts.get(entry.title.toLowerCase()) ?? 0) > 1
+				? entry.relativePath
+				: entry.title
+		}));
 	}
 
 	private getTextEditingAccessors(): TextEditingAccessors {

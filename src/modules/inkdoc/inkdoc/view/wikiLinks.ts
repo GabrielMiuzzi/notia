@@ -62,6 +62,16 @@ const buildWikiLinkSource = (target: string, alias?: string): string => {
 		: `[[${cleanTarget}]]`;
 };
 
+const buildVisibleWikiLinkLabel = (target: string, alias?: string): string => {
+	const cleanTarget = target.trim();
+	const cleanAlias = alias?.trim() ?? "";
+	const visibleLabel = cleanAlias || cleanTarget;
+	if (!visibleLabel) {
+		return "";
+	}
+	return `[[${visibleLabel}]]`;
+};
+
 const replaceWikiLinkAnchorsWithSource = (container: HTMLElement): void => {
 	const links = Array.from(container.querySelectorAll<HTMLElement>(WIKI_LINK_SELECTOR));
 	for (const link of links) {
@@ -127,7 +137,7 @@ export const applyWikiLinksToElement = (
 			} else {
 				const link = document.createElement("span");
 				link.className = "inkdoc-wikilink";
-				link.textContent = alias || target;
+				link.textContent = buildVisibleWikiLinkLabel(target, alias);
 				link.tabIndex = 0;
 				link.setAttribute("role", "link");
 				link.dataset.wikilinkTarget = target;

@@ -6,6 +6,12 @@ import {
 } from "./constants";
 import type { InkDocDocument, InkDocPage, InkDocTextBlock } from "../types";
 import { restoreWikiLinkSourceForEditing } from "./wikiLinks";
+import {
+	findActiveWikiLinkContext,
+	searchWikiLinkTargets
+} from "../../../../engines/markdown/wikiLinkEngine";
+import type { MarkdownWikiLinkTarget } from "../../../../types/views/markdownWikiLink";
+import { closeManagedMenu, openManagedMenu } from "./contextMenus";
 
 export type ActiveBlockEdit = {
 	pageId: string;
@@ -24,6 +30,7 @@ export type TextEditingContext = {
 	noteUserActivity: () => void;
 	updateTextToolbarVisibility: () => void;
 	getDefaultBlockColor: (page: InkDocPage) => string;
+	getWikiLinkTargets: () => MarkdownWikiLinkTarget[];
 	onLatexCommitted?: (page: InkDocPage, block: InkDocTextBlock) => void;
 };
 
@@ -108,6 +115,88 @@ const autoResizeTextEditor = (editor: HTMLDivElement): void => {
 const autoResizeLatexEditor = (editor: HTMLTextAreaElement): void => {
 	editor.style.height = "auto";
 	editor.style.height = `${editor.scrollHeight}px`;
+};
+
+const getEditorTextOffset = (editor: HTMLDivElement): number | null => {
+	const selection = window.getSelection();
+	if (!selection || selection.rangeCount === 0 || !selection.anchorNode) {
+		return null;
+	}
+	if (!editor.contains(selection.anchorNode)) {
+		return null;
+	}
+	const range = document.createRange();
+	range.selectNodeContents(editor);
+	range.setEnd(selection.anchorNode, selection.anchorOffset);
+	return range.toString().length;
+};
+
+const resolveTextNodePosition = (
+	root: Node,
+	offset: number
+): { node: Node; offset: number } | null => {
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+	let consumed = 0;
+	while (true) {
+		const current = walker.nextNode();
+		if (!(current instanceof Text)) {
+			break;
+		}
+		const length = current.nodeValue?.length ?? 0;
+		if (offset <= consumed + length) {
+			return { node: current, offset: Math.max(0, offset - consumed) };
+		}
+		consumed += length;
+	}
+	return { node: root, offset: root.childNodes.length };
+};
+
+const replaceEditorTextRange = (
+	editor: HTMLDivElement,
+	startOffset: number,
+	endOffset: number,
+	replacement: string
+): void => {
+	const start = resolveTextNodePosition(editor, startOffset);
+	const end = resolveTextNodePosition(editor, endOffset);
+	if (!start || !end) {
+		return;
+	}
+	const range = document.createRange();
+	range.setStart(start.node, start.offset);
+	range.setEnd(end.node, end.offset);
+	range.deleteContents();
+	const textNode = document.createTextNode(replacement);
+	range.insertNode(textNode);
+	range.setStart(textNode, textNode.nodeValue?.length ?? replacement.length);
+	range.collapse(true);
+	const selection = window.getSelection();
+	if (!selection) {
+		return;
+	}
+	selection.removeAllRanges();
+	selection.addRange(range);
+};
+
+const WIKI_LINK_MENU_SELECTOR = ".inkdoc-text-wikilink-menu";
+
+const closeWikiLinkSuggestionMenu = (menu: HTMLDivElement | null): void => {
+	if (menu?.parentElement) {
+		closeManagedMenu(menu.parentElement, WIKI_LINK_MENU_SELECTOR);
+		return;
+	}
+	closeManagedMenu(document.body, WIKI_LINK_MENU_SELECTOR);
+};
+
+const buildWikiLinkReplacement = (target: MarkdownWikiLinkTarget): string => {
+	const explicitReference = target.relativePathWithExtension || target.path;
+	const visibleLabel = target.title.trim();
+	if (!explicitReference) {
+		return `[[${visibleLabel}]]`;
+	}
+	return visibleLabel
+		? `[[${explicitReference}|${visibleLabel}]]`
+		: `[[${explicitReference}]]`;
 };
 
 const refreshTextLayer = (
@@ -375,9 +464,92 @@ export const openTextEditor = (
 	refreshTextLayer(context, page.id, page);
 	positionTextEditor(context, state.canvas, block, editor);
 	autoResizeTextEditor(editor);
+	let wikiLinkMenuEl: HTMLDivElement | null = null;
+	let wikiLinkSelectionIndex = 0;
+	let activeWikiLinkSuggestions: MarkdownWikiLinkTarget[] = [];
+	let activeWikiLinkRange: { startOffset: number; endOffset: number } | null = null;
+
+	const refreshWikiLinkMenu = () => {
+		const caretOffset = getEditorTextOffset(editor);
+		const rawText = editor.innerText ?? "";
+		if (caretOffset === null) {
+			activeWikiLinkSuggestions = [];
+			activeWikiLinkRange = null;
+			closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+			wikiLinkMenuEl = null;
+			return;
+		}
+		const contextMatch = findActiveWikiLinkContext(rawText, caretOffset);
+		if (!contextMatch) {
+			activeWikiLinkSuggestions = [];
+			activeWikiLinkRange = null;
+			closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+			wikiLinkMenuEl = null;
+			return;
+		}
+		const rawCandidate = rawText.slice(contextMatch.startOffset, contextMatch.endOffset);
+		if (rawCandidate.endsWith("]]")) {
+			activeWikiLinkSuggestions = [];
+			activeWikiLinkRange = null;
+			closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+			wikiLinkMenuEl = null;
+			return;
+		}
+		const suggestions = searchWikiLinkTargets(context.getWikiLinkTargets(), contextMatch.query);
+		if (suggestions.length === 0) {
+			activeWikiLinkSuggestions = [];
+			activeWikiLinkRange = null;
+			closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+			wikiLinkMenuEl = null;
+			return;
+		}
+		activeWikiLinkSuggestions = suggestions;
+		activeWikiLinkRange = {
+			startOffset: contextMatch.startOffset,
+			endOffset: contextMatch.endOffset
+		};
+		wikiLinkSelectionIndex = Math.max(0, Math.min(wikiLinkSelectionIndex, suggestions.length - 1));
+		const selection = window.getSelection();
+		const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+		const rect = range?.getBoundingClientRect() ?? editor.getBoundingClientRect();
+		closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+		wikiLinkMenuEl = openManagedMenu(
+			document.body,
+			"inkdoc-text-wikilink-menu",
+			rect.left,
+			rect.bottom + 6,
+			suggestions.map((target) => ({
+				label:
+					target.relativePath.toLowerCase() !== target.title.toLowerCase() || target.wikiLink.toLowerCase() !== target.title.toLowerCase()
+						? `${target.title} - ${target.relativePath}`
+						: target.title,
+				onClick: () => {
+					if (!activeWikiLinkRange) {
+						return;
+					}
+					replaceEditorTextRange(
+						editor,
+						activeWikiLinkRange.startOffset,
+						activeWikiLinkRange.endOffset,
+						buildWikiLinkReplacement(target)
+					);
+					context.noteUserActivity();
+					autoResizeTextEditor(editor);
+					refreshWikiLinkMenu();
+				}
+			})),
+			() => {
+				activeWikiLinkSuggestions = [];
+				activeWikiLinkRange = null;
+				closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+				wikiLinkMenuEl = null;
+			}
+		);
+	};
 	editor.addEventListener("input", () => {
 		context.noteUserActivity();
 		autoResizeTextEditor(editor);
+		refreshWikiLinkMenu();
 	});
 	editor.addEventListener("pointerdown", (event) => {
 		event.stopPropagation();
@@ -387,10 +559,49 @@ export const openTextEditor = (
 	});
 	editor.addEventListener("click", (event) => {
 		event.stopPropagation();
+		window.setTimeout(refreshWikiLinkMenu, 0);
 	});
 	editor.addEventListener("keydown", (event) => {
 		context.noteUserActivity();
 		event.stopPropagation();
+		if (wikiLinkMenuEl && activeWikiLinkSuggestions.length > 0) {
+			if (event.key === "ArrowDown") {
+				event.preventDefault();
+				wikiLinkSelectionIndex = (wikiLinkSelectionIndex + 1) % activeWikiLinkSuggestions.length;
+				refreshWikiLinkMenu();
+				return;
+			}
+			if (event.key === "ArrowUp") {
+				event.preventDefault();
+				wikiLinkSelectionIndex =
+					(wikiLinkSelectionIndex - 1 + activeWikiLinkSuggestions.length) % activeWikiLinkSuggestions.length;
+				refreshWikiLinkMenu();
+				return;
+			}
+			if (event.key === "Enter" || event.key === "Tab") {
+				const target = activeWikiLinkSuggestions[wikiLinkSelectionIndex] ?? activeWikiLinkSuggestions[0];
+				if (target && activeWikiLinkRange) {
+					event.preventDefault();
+					replaceEditorTextRange(
+						editor,
+						activeWikiLinkRange.startOffset,
+						activeWikiLinkRange.endOffset,
+						buildWikiLinkReplacement(target)
+					);
+					autoResizeTextEditor(editor);
+					refreshWikiLinkMenu();
+					return;
+				}
+			}
+			if (event.key === "Escape") {
+				event.preventDefault();
+				activeWikiLinkSuggestions = [];
+				activeWikiLinkRange = null;
+				closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+				wikiLinkMenuEl = null;
+				return;
+			}
+		}
 		if (event.key === "Tab") {
 			event.preventDefault();
 			applyEditorCommand(context, accessors, "insertText", "    ");
@@ -401,6 +612,8 @@ export const openTextEditor = (
 		}
 	});
 	editor.addEventListener("blur", () => {
+		closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
+		wikiLinkMenuEl = null;
 		if (accessors.isTextToolbarInteraction()) {
 			editor.focus();
 			return;
@@ -409,6 +622,7 @@ export const openTextEditor = (
 	});
 	editor.focus();
 	moveCaretToEnd(editor);
+	refreshWikiLinkMenu();
 	context.updateTextToolbarVisibility();
 };
 
