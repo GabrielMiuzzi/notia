@@ -1,6 +1,8 @@
 import { findWikiLinkMatches } from '../markdown/wikiLinkEngine'
+import { resolveFileViewKind } from '../../services/views/fileViewResolver'
 import type { NotiaFileNode } from '../../types/notia'
 import type { LibraryGraphEdge, LibraryGraphModel, LibraryGraphNode } from '../../types/graph/libraryGraph'
+import { getFileExtension } from '../../utils/files/getFileExtension'
 
 type MarkdownSourcesByPath = Record<string, string>
 type PathLookup = Map<string, string | null>
@@ -21,6 +23,7 @@ interface ParsedPath {
 }
 
 const MARKDOWN_LINK_PATTERN = /!?\[[^\]]*]\(([^)\n]+)\)/g
+const LEGACY_ESCAPED_WIKI_LINK_PATTERN = /\\\[\\\[([^\n\]]+?)\]\]/g
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')
@@ -264,9 +267,32 @@ function extractWikiLinkReferences(sourceContent: string): string[] {
   return references
 }
 
+function extractLegacyEscapedWikiLinkReferences(sourceContent: string): string[] {
+  const references: string[] = []
+
+  LEGACY_ESCAPED_WIKI_LINK_PATTERN.lastIndex = 0
+  let match = LEGACY_ESCAPED_WIKI_LINK_PATTERN.exec(sourceContent)
+
+  while (match) {
+    const rawInner = match[1]?.trim() ?? ''
+    const rawReference = rawInner.split('|', 1)[0]?.trim() ?? ''
+    const sanitizedReference = sanitizeLinkReference(rawReference)
+    if (sanitizedReference && !isExternalReference(sanitizedReference)) {
+      references.push(sanitizedReference)
+    }
+
+    match = LEGACY_ESCAPED_WIKI_LINK_PATTERN.exec(sourceContent)
+  }
+
+  return references
+}
+
 function extractAllLinkReferences(sourceContent: string): string[] {
   const uniqueReferences = new Set<string>()
   for (const reference of extractWikiLinkReferences(sourceContent)) {
+    uniqueReferences.add(reference)
+  }
+  for (const reference of extractLegacyEscapedWikiLinkReferences(sourceContent)) {
     uniqueReferences.add(reference)
   }
   for (const reference of extractMarkdownLinkReferences(sourceContent)) {
@@ -274,6 +300,52 @@ function extractAllLinkReferences(sourceContent: string): string[] {
   }
 
   return [...uniqueReferences]
+}
+
+function extractInkDocLinkReferences(sourceContent: string): string[] {
+  const uniqueReferences = new Set<string>()
+
+  try {
+    const parsedDocument = JSON.parse(sourceContent) as {
+      pages?: Array<{ textBlocks?: Array<{ text?: string; html?: string; type?: string }> }>
+    }
+
+    for (const page of parsedDocument.pages ?? []) {
+      for (const block of page.textBlocks ?? []) {
+        if (block.type === 'latex') {
+          continue
+        }
+
+        const linkSource = typeof block.html === 'string' && block.html.trim().length > 0 ? block.html : block.text ?? ''
+        if (!linkSource) {
+          continue
+        }
+
+        for (const reference of extractWikiLinkReferences(linkSource)) {
+          uniqueReferences.add(reference)
+        }
+      }
+    }
+  } catch {
+    return []
+  }
+
+  return [...uniqueReferences]
+}
+
+function extractGraphLinkReferences(filePath: string, sourceContent: string): string[] {
+  const extension = getFileExtension(filePath)
+  const viewKind = resolveFileViewKind(extension)
+
+  if (viewKind === 'inkdoc') {
+    return extractInkDocLinkReferences(sourceContent)
+  }
+
+  if (viewKind === 'markdown') {
+    return extractAllLinkReferences(sourceContent)
+  }
+
+  return []
 }
 
 function resolveReferenceCandidates(
@@ -357,11 +429,17 @@ function buildGraphNodes(fileDescriptors: FileDescriptor[]): LibraryGraphNode[] 
     .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }))
 }
 
-export function collectMarkdownFilePaths(nodes: NotiaFileNode[]): string[] {
+export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
   const descriptors: FileDescriptor[] = []
   collectFileDescriptors(nodes, null, descriptors)
 
-  return descriptors.filter((descriptor) => descriptor.isMarkdown).map((descriptor) => descriptor.path)
+  return descriptors
+    .filter((descriptor) => {
+      const extension = getFileExtension(descriptor.path)
+      const viewKind = resolveFileViewKind(extension)
+      return viewKind === 'markdown' || viewKind === 'inkdoc'
+    })
+    .map((descriptor) => descriptor.path)
 }
 
 export function buildLibraryGraphModel(
@@ -387,7 +465,7 @@ export function buildLibraryGraphModel(
       continue
     }
 
-    for (const linkReference of extractAllLinkReferences(sourceContent)) {
+    for (const linkReference of extractGraphLinkReferences(sourcePath, sourceContent)) {
       const targetPath = resolveTargetPath(sourcePath, linkReference, rootPath, nodePathSet, pathLookup)
       if (!targetPath || sourcePath === targetPath) {
         continue

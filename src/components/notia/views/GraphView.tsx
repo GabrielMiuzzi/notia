@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type WheelEvent } from 'react'
-import { SlidersHorizontal, X } from 'lucide-react'
+import { Eye, Search, SlidersHorizontal, X } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
 import {
   buildClusteredGraphLayout,
@@ -25,22 +25,32 @@ const DEFAULT_NODE_SIZE_MULTIPLIER = 1
 const GRAPH_VIEW_SETTINGS_STORAGE_KEY = 'notia.graphView.settings.v1'
 const GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY = 'notia.graphView.positions.v1'
 const GRAPH_PHYSICS_COLLISION_PADDING = 5
-const GRAPH_PHYSICS_DAMPING = 0.82
-const GRAPH_PHYSICS_MAX_DELTA = 2.2
+const GRAPH_PHYSICS_DAMPING = 0.86
+const GRAPH_PHYSICS_MAX_DELTA = 1.6
 const GRAPH_PHYSICS_MIN_DELTA = 0.45
-const GRAPH_PHYSICS_CONSTRAINT_ITERATIONS = 4
-const GRAPH_PHYSICS_RELEASE_TRANSITION_STRENGTH = 0.019
-const GRAPH_PHYSICS_DRAG_TRANSITION_STRENGTH = 0.064
-const GRAPH_PHYSICS_RELEASE_TRANSITION_EPSILON = 1.2
+const GRAPH_PHYSICS_CONSTRAINT_ITERATIONS = 3
 const GRAPH_PHYSICS_EDGE_CONSTRAINT_SLOP = 0.025
-const GRAPH_PHYSICS_EDGE_COMPRESSION_STRENGTH = 0.38
-const GRAPH_PHYSICS_EDGE_STRETCH_STRENGTH = 0.055
+const GRAPH_PHYSICS_EDGE_COMPRESSION_STRENGTH = 0.18
+const GRAPH_PHYSICS_EDGE_STRETCH_STRENGTH = 0.06
 const GRAPH_PHYSICS_COLLISION_SLOP = 0.025
-const GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL = 0.018
-const GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON = 0.006
-const GRAPH_PHYSICS_MOVEMENT_SLEEP_EPSILON = 0.009
-const GRAPH_PHYSICS_RELEASE_RING_PADDING = 8
-const GRAPH_PHYSICS_RELEASE_RING_MIN_RADIUS = 26
+const GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL = 0.012
+const GRAPH_PHYSICS_ANCHORED_NODE_PULL = 0.004
+const GRAPH_PHYSICS_DRAG_NEIGHBOR_PULL = 0.016
+const GRAPH_PHYSICS_SECOND_RING_PULL = 0.008
+const GRAPH_PHYSICS_DRAG_LEAF_RING_PULL = 0.017
+const GRAPH_PHYSICS_DRAG_LEAF_RING_SETTLE = 0.1
+const GRAPH_PHYSICS_DRAG_LEAF_RING_PADDING = 18
+const GRAPH_PHYSICS_DRAG_LEAF_RING_MIN_RADIUS = 44
+const GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON = 0.004
+const GRAPH_PHYSICS_MOVEMENT_SLEEP_EPSILON = 0.006
+const GRAPH_PHYSICS_MAX_NODE_SPEED = 14
+const GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER = 0.38
+const GRAPH_PHYSICS_DRAG_OUTER_RING_DAMPING = 0.72
+const GRAPH_PHYSICS_DRAG_NEIGHBOR_DAMPING = 0.82
+const GRAPH_PHYSICS_SETTLE_POSITION_EPSILON = 0.18
+const GRAPH_PHYSICS_SETTLE_VELOCITY_EPSILON = 0.035
+const GRAPH_PHYSICS_SETTLE_REST_LENGTH_EPSILON = 0.22
+const GRAPH_VIEW_FOCUS_ANIMATION_DURATION_MS = 320
 const GRAPH_MODEL_SIGNATURE_CACHE_LIMIT = 24
 const graphModelBySignatureCache = new Map<string, LibraryGraphModel>()
 
@@ -79,6 +89,7 @@ interface GraphSimulationTopology {
 interface GraphDragNeighborhood {
   draggedIndex: number
   directLinkedIndexes: Set<number>
+  directLeafIndexes: Set<number>
   secondRingIndexes: Set<number>
 }
 
@@ -103,9 +114,8 @@ class GraphSimulationNode implements PositionedGraphNode {
   vx: number
   vy: number
   linkedNodes: GraphSimulationNode[]
-  transitionTargetX: number | null
-  transitionTargetY: number | null
-
+  dragTargetX: number | null
+  dragTargetY: number | null
   constructor(node: PositionedGraphNode, persistedPosition?: PersistedGraphNodePosition) {
     this.id = node.id
     this.path = node.path
@@ -123,18 +133,8 @@ class GraphSimulationNode implements PositionedGraphNode {
     this.vx = 0
     this.vy = 0
     this.linkedNodes = []
-    this.transitionTargetX = null
-    this.transitionTargetY = null
-  }
-
-  setTransitionTarget(targetX: number, targetY: number) {
-    this.transitionTargetX = targetX
-    this.transitionTargetY = targetY
-  }
-
-  clearTransitionTarget() {
-    this.transitionTargetX = null
-    this.transitionTargetY = null
+    this.dragTargetX = null
+    this.dragTargetY = null
   }
 
   toRenderNode(): GraphRenderNode {
@@ -164,9 +164,145 @@ interface NodeDragSession {
 
 interface GraphViewProps {
   graphModel: LibraryGraphModel
+  graphSourcesByPath: Record<string, string>
   libraryName: string
   isLoading: boolean
   onOpenFile: (filePath: string) => void
+}
+
+interface GraphSearchResult {
+  path: string
+  label: string
+  preview: string
+  score: number
+}
+
+interface GraphSearchScrollSession {
+  startClientY: number
+  startScrollTop: number
+  moved: boolean
+}
+
+function resolveNodeGlowClass(degree: number): string {
+  if (degree === 0) {
+    return 'notia-graph-node--isolated'
+  }
+  if (degree >= 3) {
+    return 'notia-graph-node--hub'
+  }
+  return 'notia-graph-node--connected'
+}
+
+function clampSignedMagnitude(value: number, limit: number): number {
+  if (value > limit) {
+    return limit
+  }
+  if (value < -limit) {
+    return -limit
+  }
+  return value
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]+>/g, ' ')
+}
+
+function extractSearchableContent(path: string, source: string): string {
+  if (path.toLowerCase().endsWith('.inkdoc')) {
+    try {
+      const parsed = JSON.parse(source) as {
+        pages?: Array<{
+          textBlocks?: Array<{
+            text?: string
+            html?: string
+          }>
+        }>
+      }
+      const blocks =
+        parsed.pages?.flatMap((page) =>
+          (page.textBlocks ?? []).map((block) => stripHtmlTags(block.html ?? block.text ?? '')),
+        ) ?? []
+      const extractedText = blocks.join(' ').replace(/\s+/g, ' ').trim()
+      return extractedText || source
+    } catch {
+      return source
+    }
+  }
+
+  return source
+}
+
+function buildSearchPreview(source: string, normalizedQuery: string): string {
+  const flattenedSource = source.replace(/\s+/g, ' ').trim()
+  if (!flattenedSource) {
+    return 'Coincidencia en el archivo'
+  }
+
+  const normalizedSource = normalizeSearchText(flattenedSource)
+  const matchIndex = normalizedSource.indexOf(normalizedQuery)
+  if (matchIndex < 0) {
+    return flattenedSource.slice(0, 140)
+  }
+
+  const previewStart = Math.max(0, matchIndex - 44)
+  const previewEnd = Math.min(flattenedSource.length, matchIndex + normalizedQuery.length + 72)
+  const prefix = previewStart > 0 ? '... ' : ''
+  const suffix = previewEnd < flattenedSource.length ? ' ...' : ''
+  return `${prefix}${flattenedSource.slice(previewStart, previewEnd)}${suffix}`
+}
+
+function easeInOutCubic(value: number): number {
+  if (value < 0.5) {
+    return 4 * value * value * value
+  }
+
+  return 1 - Math.pow(-2 * value + 2, 3) / 2
+}
+
+function isNodeNearRestState(
+  nodeIndex: number,
+  nodes: readonly GraphSimulationNode[],
+  topology: GraphSimulationTopology,
+): boolean {
+  const node = nodes[nodeIndex]
+  if (!node) {
+    return false
+  }
+
+  if (
+    Math.abs(node.baseX - node.x) > GRAPH_PHYSICS_SETTLE_POSITION_EPSILON ||
+    Math.abs(node.baseY - node.y) > GRAPH_PHYSICS_SETTLE_POSITION_EPSILON
+  ) {
+    return false
+  }
+
+  const linkedIndexes = topology.linkedIndexesByIndex[nodeIndex] ?? []
+  for (const linkedIndex of linkedIndexes) {
+    const linkedNode = nodes[linkedIndex]
+    if (!linkedNode) {
+      continue
+    }
+
+    const pairKey = buildEdgePairKey(node.path, linkedNode.path)
+    const restLength = topology.restLengthByPairKey.get(pairKey)
+    if (!restLength) {
+      continue
+    }
+
+    const distance = Math.hypot(linkedNode.x - node.x, linkedNode.y - node.y)
+    if (Math.abs(distance - restLength) > GRAPH_PHYSICS_SETTLE_REST_LENGTH_EPSILON) {
+      return false
+    }
+  }
+
+  return true
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -373,9 +509,20 @@ function buildEdgePairKey(leftPath: string, rightPath: string): string {
   return leftPath < rightPath ? `${leftPath}::${rightPath}` : `${rightPath}::${leftPath}`
 }
 
+function computeStableAngleOffset(path: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < path.length; index += 1) {
+    hash ^= path.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return ((hash % 360) * Math.PI) / 180
+}
+
 function buildGraphSimulationTopology(
   nodes: readonly GraphSimulationNode[],
   edges: readonly PositionedGraphEdge[],
+  preferredRestLengthByPairKey?: ReadonlyMap<string, number>,
 ): GraphSimulationTopology {
   for (const node of nodes) {
     node.linkedNodes = []
@@ -399,7 +546,9 @@ function buildGraphSimulationTopology(
 
     const sourceNode = nodes[sourceIndex]
     const targetNode = nodes[targetIndex]
-    const distance = Math.max(1, Math.hypot(targetNode.x - sourceNode.x, targetNode.y - sourceNode.y))
+    const pairKey = buildEdgePairKey(sourceNode.path, targetNode.path)
+    const fallbackDistance = Math.max(1, Math.hypot(targetNode.x - sourceNode.x, targetNode.y - sourceNode.y))
+    const distance = Math.max(1, preferredRestLengthByPairKey?.get(pairKey) ?? fallbackDistance)
     simulationEdges.push({
       sourceIndex,
       targetIndex,
@@ -407,7 +556,7 @@ function buildGraphSimulationTopology(
     })
     linkedIndexesByIndex[sourceIndex].push(targetIndex)
     linkedIndexesByIndex[targetIndex].push(sourceIndex)
-    restLengthByPairKey.set(buildEdgePairKey(sourceNode.path, targetNode.path), distance)
+    restLengthByPairKey.set(pairKey, distance)
     sourceNode.linkedNodes.push(targetNode)
     targetNode.linkedNodes.push(sourceNode)
   }
@@ -464,10 +613,18 @@ function applyElasticEdgeConstraints(
   topology: GraphSimulationTopology,
   draggedNodeIndex: number,
   dragNeighborhood: GraphDragNeighborhood | null,
+  activeClusterIndex: number | null,
 ) {
   for (const edge of topology.edges) {
     const sourceNode = nodes[edge.sourceIndex]
     const targetNode = nodes[edge.targetIndex]
+    if (
+      activeClusterIndex !== null &&
+      sourceNode.clusterIndex !== activeClusterIndex &&
+      targetNode.clusterIndex !== activeClusterIndex
+    ) {
+      continue
+    }
     let dx = targetNode.x - sourceNode.x
     let dy = targetNode.y - sourceNode.y
     let distance = Math.hypot(dx, dy)
@@ -517,11 +674,24 @@ function applyElasticEdgeConstraints(
   }
 }
 
-function applyCollisionConstraints(nodes: GraphSimulationNode[], draggedNodeIndex: number) {
+function applyCollisionConstraints(
+  nodes: GraphSimulationNode[],
+  draggedNodeIndex: number,
+  activeClusterIndex: number | null,
+) {
   for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
     const leftNode = nodes[leftIndex]
+    if (activeClusterIndex !== null && leftNode.clusterIndex !== activeClusterIndex) {
+      continue
+    }
     for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
       const rightNode = nodes[rightIndex]
+      if (leftNode.clusterIndex !== rightNode.clusterIndex) {
+        continue
+      }
+      if (activeClusterIndex !== null && rightNode.clusterIndex !== activeClusterIndex) {
+        continue
+      }
       let dx = rightNode.x - leftNode.x
       let dy = rightNode.y - leftNode.y
       let distance = Math.hypot(dx, dy)
@@ -578,11 +748,22 @@ function stepGraphSimulation(
   }
 
   const draggedNodeIndex = dragSession === null ? -1 : (topology.pathToIndex.get(dragSession.path) ?? -1)
+  const activeClusterIndex = draggedNodeIndex >= 0 ? nodes[draggedNodeIndex]?.clusterIndex ?? null : null
   const dragNeighborhood =
     draggedNodeIndex >= 0
       ? (() => {
           const directIndexes = new Set(topology.linkedIndexesByIndex[draggedNodeIndex] ?? [])
+          const directLeafIndexes = new Set<number>()
           const secondRingIndexes = new Set<number>()
+
+          for (const directIndex of directIndexes) {
+            const linkedIndexes = topology.linkedIndexesByIndex[directIndex] ?? []
+            const linksExcludingDragged = linkedIndexes.filter((index) => index !== draggedNodeIndex)
+            if (linksExcludingDragged.length === 0) {
+              directLeafIndexes.add(directIndex)
+            }
+          }
+
           for (const directIndex of directIndexes) {
             const secondRingCandidates = topology.linkedIndexesByIndex[directIndex] ?? []
             for (const candidateIndex of secondRingCandidates) {
@@ -596,6 +777,7 @@ function stepGraphSimulation(
           return {
             draggedIndex: draggedNodeIndex,
             directLinkedIndexes: directIndexes,
+            directLeafIndexes,
             secondRingIndexes,
           } satisfies GraphDragNeighborhood
         })()
@@ -605,13 +787,12 @@ function stepGraphSimulation(
     const draggedNode = nodes[draggedNodeIndex]
     draggedNode.x = dragSession.targetX
     draggedNode.y = dragSession.targetY
-    applyHierarchicalCircularTargets(nodes, topology, draggedNodeIndex, false)
   }
   const previousPositions = nodes.map((node) => ({ x: node.x, y: node.y }))
-  let hasTransitionTargets = false
-  const transitionStrength = isNodeDragActive
-    ? GRAPH_PHYSICS_DRAG_TRANSITION_STRENGTH
-    : GRAPH_PHYSICS_RELEASE_TRANSITION_STRENGTH
+  for (const node of nodes) {
+    node.dragTargetX = null
+    node.dragTargetY = null
+  }
 
   for (let index = 0; index < nodes.length; index += 1) {
     if (index === draggedNodeIndex) {
@@ -619,22 +800,18 @@ function stepGraphSimulation(
     }
 
     const node = nodes[index]
+    if (activeClusterIndex !== null && node.clusterIndex !== activeClusterIndex) {
+      node.vx = 0
+      node.vy = 0
+      continue
+    }
     const isFreeNode = (topology.linkedIndexesByIndex[index]?.length ?? 0) === 0
     if (isFreeNode) {
-      // Free nodes should preserve manual drops; pull them back to their own anchor.
       node.vx += (node.baseX - node.x) * GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL * deltaScale
       node.vy += (node.baseY - node.y) * GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL * deltaScale
-    }
-
-    if (node.transitionTargetX !== null && node.transitionTargetY !== null) {
-      hasTransitionTargets = true
-      const targetDx = node.transitionTargetX - node.x
-      const targetDy = node.transitionTargetY - node.y
-      node.vx += targetDx * transitionStrength * deltaScale
-      node.vy += targetDy * transitionStrength * deltaScale
-      if (Math.hypot(targetDx, targetDy) <= GRAPH_PHYSICS_RELEASE_TRANSITION_EPSILON) {
-        node.clearTransitionTarget()
-      }
+    } else {
+      node.vx += (node.baseX - node.x) * GRAPH_PHYSICS_ANCHORED_NODE_PULL * deltaScale
+      node.vy += (node.baseY - node.y) * GRAPH_PHYSICS_ANCHORED_NODE_PULL * deltaScale
     }
 
     node.vx *= GRAPH_PHYSICS_DAMPING
@@ -647,11 +824,78 @@ function stepGraphSimulation(
     const draggedNode = nodes[draggedNodeIndex]
     draggedNode.x = dragSession.targetX
     draggedNode.y = dragSession.targetY
+
+    const draggedNodePath = draggedNode.path
+    const directLeafIndexes = Array.from(dragNeighborhood?.directLeafIndexes ?? [])
+      .sort((leftIndex, rightIndex) => nodes[leftIndex].path.localeCompare(nodes[rightIndex].path))
+    if (directLeafIndexes.length > 0) {
+      const maxLeafRadius = directLeafIndexes.reduce(
+        (currentMax, nodeIndex) => Math.max(currentMax, nodes[nodeIndex]?.radius ?? 0),
+        0,
+      )
+      const requiredCircumference =
+        directLeafIndexes.length * Math.max(maxLeafRadius * 2 + GRAPH_PHYSICS_COLLISION_PADDING * 2, 18)
+      const leafRingRadius = Math.max(
+        GRAPH_PHYSICS_DRAG_LEAF_RING_MIN_RADIUS,
+        draggedNode.radius + maxLeafRadius + GRAPH_PHYSICS_DRAG_LEAF_RING_PADDING,
+        requiredCircumference / (Math.PI * 2),
+      )
+      const angleStep = (Math.PI * 2) / directLeafIndexes.length
+      const angleOffset = computeStableAngleOffset(draggedNode.path)
+
+      for (let orderIndex = 0; orderIndex < directLeafIndexes.length; orderIndex += 1) {
+        const linkedIndex = directLeafIndexes[orderIndex]
+        const linkedNode = nodes[linkedIndex]
+        const targetAngle = angleOffset + orderIndex * angleStep
+        const targetX = draggedNode.x + Math.cos(targetAngle) * leafRingRadius
+        const targetY = draggedNode.y + Math.sin(targetAngle) * leafRingRadius
+        linkedNode.dragTargetX = targetX
+        linkedNode.dragTargetY = targetY
+        linkedNode.vx += (targetX - linkedNode.x) * GRAPH_PHYSICS_DRAG_LEAF_RING_PULL * deltaScale
+        linkedNode.vy += (targetY - linkedNode.y) * GRAPH_PHYSICS_DRAG_LEAF_RING_PULL * deltaScale
+      }
+    }
+
+    for (const linkedIndex of dragNeighborhood?.directLinkedIndexes ?? []) {
+      if (dragNeighborhood?.directLeafIndexes.has(linkedIndex)) {
+        continue
+      }
+
+      const linkedNode = nodes[linkedIndex]
+      const pairKey = buildEdgePairKey(draggedNodePath, linkedNode.path)
+      const preferredDistance = topology.restLengthByPairKey.get(pairKey) ?? Math.max(24, draggedNode.radius + linkedNode.radius + 14)
+      const dx = draggedNode.x - linkedNode.x
+      const dy = draggedNode.y - linkedNode.y
+      const distance = Math.max(0.001, Math.hypot(dx, dy))
+      const distanceError = distance - preferredDistance
+      if (distanceError > 0) {
+        linkedNode.vx += (dx / distance) * distanceError * GRAPH_PHYSICS_DRAG_NEIGHBOR_PULL * deltaScale
+        linkedNode.vy += (dy / distance) * distanceError * GRAPH_PHYSICS_DRAG_NEIGHBOR_PULL * deltaScale
+      }
+    }
+
+    for (const linkedIndex of dragNeighborhood?.secondRingIndexes ?? []) {
+      const linkedNode = nodes[linkedIndex]
+      linkedNode.vx += (linkedNode.baseX - linkedNode.x) * GRAPH_PHYSICS_SECOND_RING_PULL * deltaScale
+      linkedNode.vy += (linkedNode.baseY - linkedNode.y) * GRAPH_PHYSICS_SECOND_RING_PULL * deltaScale
+    }
   }
 
   for (let iteration = 0; iteration < GRAPH_PHYSICS_CONSTRAINT_ITERATIONS; iteration += 1) {
-    applyElasticEdgeConstraints(nodes, topology, draggedNodeIndex, dragNeighborhood)
-    applyCollisionConstraints(nodes, draggedNodeIndex)
+    for (let index = 0; index < nodes.length; index += 1) {
+      if (index === draggedNodeIndex) {
+        continue
+      }
+
+      const node = nodes[index]
+      if (node.dragTargetX !== null && node.dragTargetY !== null) {
+        node.x += (node.dragTargetX - node.x) * GRAPH_PHYSICS_DRAG_LEAF_RING_SETTLE
+        node.y += (node.dragTargetY - node.y) * GRAPH_PHYSICS_DRAG_LEAF_RING_SETTLE
+      }
+    }
+
+    applyElasticEdgeConstraints(nodes, topology, draggedNodeIndex, dragNeighborhood, activeClusterIndex)
+    applyCollisionConstraints(nodes, draggedNodeIndex, activeClusterIndex)
     if (dragSession && draggedNodeIndex >= 0) {
       const draggedNode = nodes[draggedNodeIndex]
       draggedNode.x = dragSession.targetX
@@ -668,165 +912,47 @@ function stepGraphSimulation(
     }
 
     const node = nodes[index]
+    if (activeClusterIndex !== null && node.clusterIndex !== activeClusterIndex) {
+      node.vx = 0
+      node.vy = 0
+      continue
+    }
     const previous = previousPositions[index]
-    const nextVx = node.x - previous.x
-    const nextVy = node.y - previous.y
+    const positionalDeltaX = node.x - previous.x
+    const positionalDeltaY = node.y - previous.y
+    let nextVx = node.vx * (1 - GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER) + positionalDeltaX * GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER
+    let nextVy = node.vy * (1 - GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER) + positionalDeltaY * GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER
+    if (
+      dragNeighborhood &&
+      index !== draggedNodeIndex &&
+      !dragNeighborhood.directLinkedIndexes.has(index)
+    ) {
+      const isSecondRingNode = dragNeighborhood.secondRingIndexes.has(index)
+      const damping = isSecondRingNode ? GRAPH_PHYSICS_DRAG_NEIGHBOR_DAMPING : GRAPH_PHYSICS_DRAG_OUTER_RING_DAMPING
+      nextVx *= damping
+      nextVy *= damping
+    }
+
+    nextVx = clampSignedMagnitude(nextVx, GRAPH_PHYSICS_MAX_NODE_SPEED)
+    nextVy = clampSignedMagnitude(nextVy, GRAPH_PHYSICS_MAX_NODE_SPEED)
+    if (
+      Math.abs(nextVx) <= GRAPH_PHYSICS_SETTLE_VELOCITY_EPSILON &&
+      Math.abs(nextVy) <= GRAPH_PHYSICS_SETTLE_VELOCITY_EPSILON &&
+      isNodeNearRestState(index, nodes, topology)
+    ) {
+      node.x = node.baseX
+      node.y = node.baseY
+      node.vx = 0
+      node.vy = 0
+      continue
+    }
+
     node.vx = Math.abs(nextVx) <= GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON ? 0 : nextVx
     node.vy = Math.abs(nextVy) <= GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON ? 0 : nextVy
     maxMovement = Math.max(maxMovement, Math.hypot(node.vx, node.vy))
   }
 
-  return maxMovement > GRAPH_PHYSICS_MOVEMENT_SLEEP_EPSILON || dragSession !== null || hasTransitionTargets
-}
-
-function computeStableAngleOffset(path: string): number {
-  let hash = 2166136261
-  for (let index = 0; index < path.length; index += 1) {
-    hash ^= path.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  const degrees = hash % 360
-  return (degrees * Math.PI) / 180
-}
-
-function applyCircularTargetsAroundCenter(
-  nodes: GraphSimulationNode[],
-  topology: GraphSimulationTopology,
-  centerIndex: number,
-  childIndexes: number[],
-  angleSeedPath: string,
-  persistAsBase: boolean,
-): void {
-  if (childIndexes.length === 0) {
-    return
-  }
-
-  const centerNode = nodes[centerIndex]
-  const centerX = centerNode.x
-  const centerY = centerNode.y
-  const orderedChildIndexes = [...childIndexes].sort((leftIndex, rightIndex) =>
-    nodes[leftIndex].path.localeCompare(nodes[rightIndex].path),
-  )
-  const childCount = orderedChildIndexes.length
-  const maxChildDiameter = orderedChildIndexes.reduce(
-    (maxDiameter, nodeIndex) =>
-      Math.max(maxDiameter, nodes[nodeIndex].radius * 2 + GRAPH_PHYSICS_COLLISION_PADDING * 2),
-    0,
-  )
-  const averageDistance =
-    orderedChildIndexes.reduce(
-      (distanceSum, nodeIndex) =>
-        distanceSum + Math.hypot(nodes[nodeIndex].x - centerX, nodes[nodeIndex].y - centerY),
-      0,
-    ) / childCount
-
-  const minRadiusByArc = (maxChildDiameter * childCount) / (Math.PI * 2)
-  const ringRadius = Math.max(
-    GRAPH_PHYSICS_RELEASE_RING_MIN_RADIUS,
-    centerNode.radius + maxChildDiameter * 0.55 + GRAPH_PHYSICS_RELEASE_RING_PADDING,
-    minRadiusByArc + GRAPH_PHYSICS_RELEASE_RING_PADDING,
-    averageDistance * 0.7,
-  )
-  const angleStep = (Math.PI * 2) / childCount
-  const angleOffset = computeStableAngleOffset(angleSeedPath)
-
-  for (let orderIndex = 0; orderIndex < orderedChildIndexes.length; orderIndex += 1) {
-    const childIndex = orderedChildIndexes[orderIndex]
-    const childNode = nodes[childIndex]
-    const angle = angleOffset + orderIndex * angleStep
-    const pairKey = buildEdgePairKey(centerNode.path, childNode.path)
-    const minDistanceFromCollision =
-      centerNode.radius + childNode.radius + GRAPH_PHYSICS_COLLISION_PADDING * 2
-    const minDistanceFromLink = topology.restLengthByPairKey.get(pairKey) ?? ringRadius
-    const targetDistance = persistAsBase
-      ? Math.max(minDistanceFromCollision, minDistanceFromLink)
-      : Math.max(minDistanceFromCollision, ringRadius)
-    const nextX = centerX + Math.cos(angle) * targetDistance
-    const nextY = centerY + Math.sin(angle) * targetDistance
-    childNode.setTransitionTarget(nextX, nextY)
-    if (persistAsBase) {
-      childNode.baseX = nextX
-      childNode.baseY = nextY
-      childNode.vx *= 0.6
-      childNode.vy *= 0.6
-    }
-  }
-}
-
-function applyHierarchicalCircularTargets(
-  nodes: GraphSimulationNode[],
-  topology: GraphSimulationTopology,
-  anchorIndex: number,
-  persistAsBase: boolean,
-): void {
-  const directLinkedIndexes = Array.from(new Set(topology.linkedIndexesByIndex[anchorIndex] ?? []))
-  if (directLinkedIndexes.length === 0) {
-    return
-  }
-
-  const anchorPath = nodes[anchorIndex]?.path
-  if (!anchorPath) {
-    return
-  }
-
-  const primaryLinkedSet = new Set(directLinkedIndexes)
-  const reservedIndexes = new Set<number>([anchorIndex, ...directLinkedIndexes])
-
-  applyCircularTargetsAroundCenter(
-    nodes,
-    topology,
-    anchorIndex,
-    directLinkedIndexes,
-    anchorPath,
-    persistAsBase,
-  )
-
-  for (const centerIndex of directLinkedIndexes) {
-    const secondaryLinkedIndexes = (topology.linkedIndexesByIndex[centerIndex] ?? []).filter(
-      (nodeIndex) => nodeIndex !== anchorIndex && !primaryLinkedSet.has(nodeIndex) && !reservedIndexes.has(nodeIndex),
-    )
-    if (secondaryLinkedIndexes.length === 0) {
-      continue
-    }
-
-    applyCircularTargetsAroundCenter(
-      nodes,
-      topology,
-      centerIndex,
-      secondaryLinkedIndexes,
-      nodes[centerIndex].path,
-      persistAsBase,
-    )
-    for (const nodeIndex of secondaryLinkedIndexes) {
-      reservedIndexes.add(nodeIndex)
-    }
-  }
-}
-
-function reorganizeLinkedNodesInCircle(
-  nodes: readonly GraphSimulationNode[],
-  topology: GraphSimulationTopology,
-  anchorPath: string,
-): GraphSimulationNode[] {
-  const anchorIndex = topology.pathToIndex.get(anchorPath)
-  if (anchorIndex === undefined) {
-    return [...nodes]
-  }
-
-  const nextNodes = nodes.map((node) => {
-    const clonedNode = new GraphSimulationNode(node)
-    clonedNode.baseX = node.baseX
-    clonedNode.baseY = node.baseY
-    clonedNode.vx = node.vx
-    clonedNode.vy = node.vy
-    clonedNode.linkedNodes = node.linkedNodes
-    clonedNode.transitionTargetX = node.transitionTargetX
-    clonedNode.transitionTargetY = node.transitionTargetY
-    return clonedNode
-  })
-  applyHierarchicalCircularTargets(nextNodes, topology, anchorIndex, true)
-
-  return nextNodes
+  return maxMovement > GRAPH_PHYSICS_MOVEMENT_SLEEP_EPSILON || dragSession !== null
 }
 
 function persistGraphNodePositionsForLibrary(libraryName: string, nodes: readonly GraphSimulationNode[]): void {
@@ -873,7 +999,7 @@ function clearGraphNodePositionsForLibrary(libraryName: string): void {
   window.localStorage.setItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY, JSON.stringify(nextStore))
 }
 
-export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: GraphViewProps) {
+export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoading, onOpenFile }: GraphViewProps) {
   const initialSettings = useMemo(() => readGraphViewSettings(), [])
   const graphModelSignature = useMemo(() => buildGraphModelSignature(graphModel), [graphModel])
   const stableGraphModel = useMemo(
@@ -881,8 +1007,10 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
     [graphModel, graphModelSignature],
   )
   const canvasRef = useRef<HTMLDivElement>(null)
+  const searchResultsRef = useRef<HTMLDivElement>(null)
   const controlsButtonRef = useRef<HTMLButtonElement>(null)
   const controlsPanelRef = useRef<HTMLDivElement>(null)
+  const searchScrollSessionRef = useRef<GraphSearchScrollSession | null>(null)
   const dragStartRef = useRef<{
     originX: number
     originY: number
@@ -893,6 +1021,8 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
   const simulationNodesRef = useRef<GraphSimulationNode[]>([])
   const simulationTopologyRef = useRef<GraphSimulationTopology>(createEmptySimulationTopology())
   const simulationFrameRef = useRef<number | null>(null)
+  const viewportAnimationFrameRef = useRef<number | null>(null)
+  const viewportRef = useRef({ x: 0, y: 0, scale: 1 })
   const simulationLastTimestampRef = useRef<number | null>(null)
   const simulationNeedsSyncRef = useRef(true)
   const dragMovedRef = useRef(false)
@@ -902,8 +1032,10 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
   const [displayedNodes, setDisplayedNodes] = useState<GraphRenderNode[]>([])
   const [draggedPath, setDraggedPath] = useState<string | null>(null)
   const [hoveredPath, setHoveredPath] = useState<string | null>(null)
+  const [hoveredSearchResultPath, setHoveredSearchResultPath] = useState<string | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [isControlsOpen, setIsControlsOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [nodeSizeMultiplier, setNodeSizeMultiplier] = useState(() =>
     resolveInitialNumber(
       initialSettings,
@@ -913,6 +1045,10 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
       INPUT_MAX_NODE_SIZE_MULTIPLIER,
     ),
   )
+
+  useEffect(() => {
+    viewportRef.current = viewport
+  }, [viewport])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1082,6 +1218,43 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
     }
     return map
   }, [renderedNodes])
+  const normalizedSearchQuery = useMemo(() => normalizeSearchText(searchQuery.trim()), [searchQuery])
+  const searchResults = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return [] as GraphSearchResult[]
+    }
+
+    const nextResults: GraphSearchResult[] = []
+    for (const node of graphModel.nodes) {
+      const normalizedLabel = normalizeSearchText(node.label)
+      const extractedContent = extractSearchableContent(node.path, graphSourcesByPath[node.path] ?? '')
+      const normalizedContent = normalizeSearchText(extractedContent)
+      const titleMatchIndex = normalizedLabel.indexOf(normalizedSearchQuery)
+      const contentMatchIndex = normalizedContent.indexOf(normalizedSearchQuery)
+      if (titleMatchIndex < 0 && contentMatchIndex < 0) {
+        continue
+      }
+
+      const titleScore = titleMatchIndex < 0 ? 0 : 600 - titleMatchIndex * 8
+      const contentScore = contentMatchIndex < 0 ? 0 : 240 - Math.min(contentMatchIndex, 180)
+      nextResults.push({
+        path: node.path,
+        label: node.label,
+        preview: buildSearchPreview(extractedContent, normalizedSearchQuery),
+        score: titleScore + contentScore + Math.min(node.degree, 12) * 4,
+      })
+    }
+
+    return nextResults
+      .sort((left, right) => {
+        if (right.score !== left.score) {
+          return right.score - left.score
+        }
+        return left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
+      })
+      .slice(0, 8)
+  }, [graphModel.nodes, graphSourcesByPath, normalizedSearchQuery])
+  const searchMatchedPaths = useMemo(() => new Set(searchResults.map((result) => result.path)), [searchResults])
 
   const visibleEdges = useMemo(() => {
     return graphLayout.edges.filter(
@@ -1146,32 +1319,29 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
     [resolveGraphCoordinatesFromClientPoint],
   )
 
-  const commitDraggedNodePositions = useCallback((anchorPath: string) => {
+  const commitDraggedNodePositions = useCallback(() => {
     const simulationNodes = simulationNodesRef.current
     if (simulationNodes.length === 0) {
       return
     }
 
-    const frozenNodes = simulationNodes.map((node) => {
-      const frozenNode = new GraphSimulationNode(node)
-      frozenNode.linkedNodes = node.linkedNodes
-      frozenNode.baseX = node.x
-      frozenNode.baseY = node.y
-      frozenNode.vx = 0
-      frozenNode.vy = 0
-      return frozenNode
-    })
-    const nextSimulationNodes = reorganizeLinkedNodesInCircle(
-      frozenNodes,
-      simulationTopologyRef.current,
-      anchorPath,
-    )
+    const previousRestLengthByPairKey = simulationTopologyRef.current.restLengthByPairKey
 
-    simulationNodesRef.current = nextSimulationNodes
-    simulationTopologyRef.current = buildGraphSimulationTopology(nextSimulationNodes, graphLayout.edges)
+    for (const node of simulationNodes) {
+      node.baseX = node.x
+      node.baseY = node.y
+      node.vx *= 0.5
+      node.vy *= 0.5
+    }
+
+    simulationTopologyRef.current = buildGraphSimulationTopology(
+      simulationNodes,
+      graphLayout.edges,
+      previousRestLengthByPairKey,
+    )
     simulationNeedsSyncRef.current = true
-    setDisplayedNodes(nextSimulationNodes.map((node) => node.toRenderNode()))
-    persistGraphNodePositionsForLibrary(libraryName, nextSimulationNodes)
+    setDisplayedNodes(simulationNodes.map((node) => node.toRenderNode()))
+    persistGraphNodePositionsForLibrary(libraryName, simulationNodes)
   }, [graphLayout.edges, libraryName])
 
   const handleCanvasMouseDown = (event: MouseEvent<HTMLDivElement>) => {
@@ -1231,7 +1401,7 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
   const handleCanvasMouseUp = () => {
     const releasedNodePath = nodeDragRef.current?.path
     if (releasedNodePath) {
-      commitDraggedNodePositions(releasedNodePath)
+      commitDraggedNodePositions()
     }
     nodeDragRef.current = null
     setDraggedPath(null)
@@ -1242,7 +1412,7 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
   const handleCanvasMouseLeave = () => {
     const releasedNodePath = nodeDragRef.current?.path
     if (releasedNodePath) {
-      commitDraggedNodePositions(releasedNodePath)
+      commitDraggedNodePositions()
     }
     nodeDragRef.current = null
     setDraggedPath(null)
@@ -1285,7 +1455,7 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
     const handleWindowMouseUp = () => {
       const releasedNodePath = nodeDragRef.current?.path
       if (releasedNodePath) {
-        commitDraggedNodePositions(releasedNodePath)
+        commitDraggedNodePositions()
       }
       nodeDragRef.current = null
       setDraggedPath(null)
@@ -1342,6 +1512,11 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
   }
 
   const handleResetViewport = () => {
+    if (typeof window !== 'undefined' && viewportAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(viewportAnimationFrameRef.current)
+      viewportAnimationFrameRef.current = null
+    }
+
     setViewport({ x: 0, y: 0, scale: 1 })
     clearGraphNodePositionsForLibrary(libraryName)
 
@@ -1356,6 +1531,65 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
     setIsDragging(false)
     setDisplayedNodes(naturalNodes.map((node) => node.toRenderNode()))
   }
+
+  const focusNodeInViewport = useCallback(
+    (filePath: string) => {
+      const node = positionedNodesByPath.get(filePath)
+      if (!node) {
+        return
+      }
+
+      const nextScale = Math.min(MAX_ZOOM, Math.max(viewport.scale, 1.65))
+      const nextViewport = {
+        scale: nextScale,
+        x: -node.x * nextScale,
+        y: -node.y * nextScale,
+      }
+
+      if (typeof window === 'undefined') {
+        setViewport(nextViewport)
+      } else {
+        if (viewportAnimationFrameRef.current !== null) {
+          window.cancelAnimationFrame(viewportAnimationFrameRef.current)
+          viewportAnimationFrameRef.current = null
+        }
+
+        const startViewport = viewportRef.current
+        const animationStart = window.performance.now()
+        const tick = (timestamp: number) => {
+          const elapsed = timestamp - animationStart
+          const progress = clamp(elapsed / GRAPH_VIEW_FOCUS_ANIMATION_DURATION_MS, 0, 1)
+          const easedProgress = easeInOutCubic(progress)
+          setViewport({
+            scale: startViewport.scale + (nextViewport.scale - startViewport.scale) * easedProgress,
+            x: startViewport.x + (nextViewport.x - startViewport.x) * easedProgress,
+            y: startViewport.y + (nextViewport.y - startViewport.y) * easedProgress,
+          })
+
+          if (progress < 1) {
+            viewportAnimationFrameRef.current = window.requestAnimationFrame(tick)
+            return
+          }
+
+          viewportAnimationFrameRef.current = null
+        }
+
+        viewportAnimationFrameRef.current = window.requestAnimationFrame(tick)
+      }
+
+      setSelectedPath(filePath)
+      setHoveredSearchResultPath(filePath)
+    },
+    [positionedNodesByPath, viewport.scale],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && viewportAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportAnimationFrameRef.current)
+      }
+    }
+  }, [])
 
   const handleNodeSizeSliderChange = (value: string) => {
     const parsedValue = Number.parseFloat(value)
@@ -1421,7 +1655,62 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
     onOpenFile(filePath)
   }
 
+  const handleSearchResultsMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+    const resultsElement = searchResultsRef.current
+    if (!resultsElement) {
+      return
+    }
+
+    searchScrollSessionRef.current = {
+      startClientY: event.clientY,
+      startScrollTop: resultsElement.scrollTop,
+      moved: false,
+    }
+    event.stopPropagation()
+  }
+
+  const handleSearchResultsMouseMove = (event: MouseEvent<HTMLDivElement>) => {
+    const resultsElement = searchResultsRef.current
+    const session = searchScrollSessionRef.current
+    if (!resultsElement || !session) {
+      return
+    }
+
+    const deltaY = event.clientY - session.startClientY
+    if (Math.abs(deltaY) > 2) {
+      session.moved = true
+    }
+
+    if (session.moved) {
+      resultsElement.scrollTop = session.startScrollTop - deltaY
+      event.preventDefault()
+    }
+    event.stopPropagation()
+  }
+
+  const handleSearchResultsMouseUp = (event: MouseEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+    window.setTimeout(() => {
+      searchScrollSessionRef.current = null
+    }, 0)
+  }
+
+  const handleSearchResultsWheel = (event: WheelEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+  }
+
+  const handleSearchResultsClickCapture = (event: MouseEvent<HTMLDivElement>) => {
+    if (!searchScrollSessionRef.current?.moved) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    searchScrollSessionRef.current = null
+  }
+
   const hasNodes = graphLayout.nodes.length > 0
+  const shouldShowLoadingScreen = isLoading && !hasNodes
 
   return (
     <main className="notia-main">
@@ -1439,9 +1728,17 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
         </div>
       </header>
       <section className="notia-main-content notia-graph-content">
-        {isLoading ? <div className="notia-graph-empty">Construyendo grafo...</div> : null}
+        {shouldShowLoadingScreen ? (
+          <div className="notia-graph-loading-screen" role="status" aria-live="polite">
+            <div className="notia-graph-loading-card">
+              <div className="notia-graph-loading-spinner" aria-hidden="true" />
+              <strong>Cargando graph view</strong>
+              <span>Preparando nodos y enlaces de la libreria actual...</span>
+            </div>
+          </div>
+        ) : null}
         {!isLoading && !hasNodes ? <div className="notia-graph-empty">No hay archivos para mostrar.</div> : null}
-        {!isLoading && hasNodes ? (
+        {(hasNodes || isLoading) ? (
           <div
             ref={canvasRef}
             className={`notia-graph-canvas ${isDragging ? 'notia-graph-canvas--dragging' : ''}`}
@@ -1548,17 +1845,36 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                     linkedToSelectedPath.has(targetNode.path)
 
                   return (
-                    <line
-                      key={edge.id}
-                      className={`notia-graph-edge ${isConnectedToFocus ? '' : 'notia-graph-edge--dim'} ${
-                        isConnectedToSelection ? 'notia-graph-edge--selected' : ''
-                      }`}
-                      stroke={edge.color}
-                      x1={edgeEndpoints.x1}
-                      y1={edgeEndpoints.y1}
-                      x2={edgeEndpoints.x2}
-                      y2={edgeEndpoints.y2}
-                    />
+                    <g key={edge.id}>
+                      <line
+                        className={`notia-graph-edge-halo notia-graph-edge-halo--outer ${
+                          isConnectedToFocus ? '' : 'notia-graph-edge--dim'
+                        } ${isConnectedToSelection ? 'notia-graph-edge--selected' : ''}`}
+                        x1={edgeEndpoints.x1}
+                        y1={edgeEndpoints.y1}
+                        x2={edgeEndpoints.x2}
+                        y2={edgeEndpoints.y2}
+                      />
+                      <line
+                        className={`notia-graph-edge-halo notia-graph-edge-halo--inner ${
+                          isConnectedToFocus ? '' : 'notia-graph-edge--dim'
+                        } ${isConnectedToSelection ? 'notia-graph-edge--selected' : ''}`}
+                        x1={edgeEndpoints.x1}
+                        y1={edgeEndpoints.y1}
+                        x2={edgeEndpoints.x2}
+                        y2={edgeEndpoints.y2}
+                      />
+                      <line
+                        className={`notia-graph-edge ${isConnectedToFocus ? '' : 'notia-graph-edge--dim'} ${
+                          isConnectedToSelection ? 'notia-graph-edge--selected' : ''
+                        }`}
+                        stroke={edge.color}
+                        x1={edgeEndpoints.x1}
+                        y1={edgeEndpoints.y1}
+                        x2={edgeEndpoints.x2}
+                        y2={edgeEndpoints.y2}
+                      />
+                    </g>
                   )
                 })}
                 {renderedNodes.map((node) => {
@@ -1567,7 +1883,15 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                   const isLinkedToHover = linkedToHoveredPath?.has(node.path) ?? false
                   const isLinkedToSelected = linkedToSelectedPath?.has(node.path) ?? false
                   const isDragged = draggedPath === node.path
-                  const showLabel = viewport.scale >= LABEL_VISIBILITY_ZOOM || isLinkedToSelected || isLinkedToHover
+                  const isSearchMatch = searchMatchedPaths.has(node.path)
+                  const isSearchPreview = hoveredSearchResultPath === node.path
+                  const nodeGlowClass = resolveNodeGlowClass(node.degree)
+                  const showLabel =
+                    isSearchMatch ||
+                    isSearchPreview ||
+                    viewport.scale >= LABEL_VISIBILITY_ZOOM ||
+                    isLinkedToSelected ||
+                    isLinkedToHover
 
                   return (
                     <g
@@ -1576,7 +1900,11 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                         hoveredPath === node.path ? 'notia-graph-node--hovered' : ''
                       } ${isLinkedToSelected ? 'notia-graph-node--linked' : ''} ${
                         isSelected ? 'notia-graph-node--selected' : ''
-                      } ${isDragged ? 'notia-graph-node--dragged' : ''}`}
+                      } ${isDragged ? 'notia-graph-node--dragged' : ''} ${
+                        isSearchMatch ? 'notia-graph-node--search-match' : ''
+                      } ${isSearchPreview ? 'notia-graph-node--search-preview' : ''} ${
+                        isSearchPreview ? 'notia-graph-node--title-emphasis' : ''
+                      } ${nodeGlowClass}`}
                       onMouseDown={(event) => {
                         handleNodeMouseDown(event, node.path)
                       }}
@@ -1592,9 +1920,11 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                         handleNodeDoubleClick(node.path)
                       }}
                     >
+                      <circle className="notia-graph-node-halo notia-graph-node-halo--outer" r={node.radius * 2.5} />
+                      <circle className="notia-graph-node-halo notia-graph-node-halo--inner" r={node.radius * 1.7} />
                       <circle r={node.radius} fill={node.color} fillOpacity={0.26} stroke={node.color} strokeOpacity={0.94} />
                       {showLabel ? (
-                        <text x={node.radius + 6} y={4}>
+                        <text className={isSearchPreview ? 'notia-graph-node-title--search-preview' : ''} x={node.radius + 6} y={4}>
                           {node.label}
                         </text>
                       ) : null}
@@ -1603,6 +1933,89 @@ export function GraphView({ graphModel, libraryName, isLoading, onOpenFile }: Gr
                 })}
               </g>
             </svg>
+            <div
+              className="notia-graph-search-shell"
+              onMouseDown={(event) => {
+                event.stopPropagation()
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+              }}
+            >
+              {searchQuery.trim() ? (
+                <button
+                  type="button"
+                  className="notia-graph-search-clear"
+                  title="Limpiar busqueda"
+                  aria-label="Limpiar busqueda"
+                  onClick={() => {
+                    setSearchQuery('')
+                    setHoveredSearchResultPath(null)
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+              {searchResults.length > 0 ? (
+                <div
+                  ref={searchResultsRef}
+                  className="notia-graph-search-results"
+                  role="listbox"
+                  aria-label="Resultados de busqueda del grafo"
+                  onMouseDown={handleSearchResultsMouseDown}
+                  onMouseMove={handleSearchResultsMouseMove}
+                  onMouseUp={handleSearchResultsMouseUp}
+                  onMouseLeave={handleSearchResultsMouseUp}
+                  onWheel={handleSearchResultsWheel}
+                  onClickCapture={handleSearchResultsClickCapture}
+                >
+                  {searchResults.map((result) => (
+                    <div
+                      key={result.path}
+                      className="notia-graph-search-result"
+                      onMouseEnter={() => {
+                        setHoveredSearchResultPath(result.path)
+                      }}
+                      onMouseLeave={() => {
+                        setHoveredSearchResultPath((current) => (current === result.path ? null : current))
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="notia-graph-search-result-main"
+                        onClick={() => onOpenFile(result.path)}
+                      >
+                        <strong>{result.label}</strong>
+                        <span>{result.preview}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="notia-graph-search-result-focus"
+                        title="Centrar nodo en el grafo"
+                        aria-label={`Centrar ${result.label} en el grafo`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          focusNodeInViewport(result.path)
+                        }}
+                      >
+                        <Eye size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <label className="notia-graph-search-bar" aria-label="Buscar en graph view">
+                <Search size={15} aria-hidden="true" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  placeholder="Buscar por titulo o contenido..."
+                  onChange={(event) => {
+                    setSearchQuery(event.target.value)
+                  }}
+                />
+              </label>
+            </div>
           </div>
         ) : null}
       </section>

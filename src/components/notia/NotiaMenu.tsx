@@ -482,7 +482,7 @@ export function NotiaMenu() {
     collect(treeNodes)
     return paths
   }, [treeNodes])
-  const { graphModel, isGraphLoading } = useLibraryGraphData({
+  const { graphModel, graphSourcesByPath, isGraphLoading } = useLibraryGraphData({
     enabled: isGraphViewActive,
     libraryPath: activeLibrary?.path ?? null,
     rootPath: activeLibrary?.path ?? null,
@@ -1965,6 +1965,7 @@ export function NotiaMenu() {
         {activeWorkspaceView === 'graph' ? (
           <GraphView
             graphModel={graphModel}
+            graphSourcesByPath={graphSourcesByPath}
             libraryName={libraryName}
             isLoading={isGraphLoading}
             onOpenFile={handleOpenFileFromView}

@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { buildLibraryGraphModel, collectMarkdownFilePaths } from '../engines/graph/libraryGraphEngine'
+import { buildLibraryGraphModel, collectGraphSourceFilePaths } from '../engines/graph/libraryGraphEngine'
 import { readLibraryFileContent } from '../services/libraries/libraryDocumentRuntime'
 import type { NotiaFileNode } from '../types/notia'
 
-const MARKDOWN_SIGNATURE_SEPARATOR = '\u0001'
-const GRAPH_MARKDOWN_READ_BATCH_SIZE = 6
+const GRAPH_SOURCE_SIGNATURE_SEPARATOR = '\u0001'
+const GRAPH_SOURCE_READ_BATCH_SIZE = 6
+const GRAPH_SOURCE_CACHE_LIMIT = 8
+
+const graphSourceSnapshotCache = new Map<string, Record<string, string>>()
 
 interface UseLibraryGraphDataParams {
   enabled?: boolean
@@ -14,11 +17,11 @@ interface UseLibraryGraphDataParams {
   revision: number
 }
 
-async function loadMarkdownSourcesByPath(markdownPaths: string[]): Promise<Record<string, string>> {
-  const nextMarkdownSourcesByPath: Record<string, string> = {}
+async function loadGraphSourcesByPath(filePaths: string[]): Promise<Record<string, string>> {
+  const nextSourcesByPath: Record<string, string> = {}
 
-  for (let index = 0; index < markdownPaths.length; index += GRAPH_MARKDOWN_READ_BATCH_SIZE) {
-    const batchPaths = markdownPaths.slice(index, index + GRAPH_MARKDOWN_READ_BATCH_SIZE)
+  for (let index = 0; index < filePaths.length; index += GRAPH_SOURCE_READ_BATCH_SIZE) {
+    const batchPaths = filePaths.slice(index, index + GRAPH_SOURCE_READ_BATCH_SIZE)
     const batchEntries = await Promise.all(
       batchPaths.map(async (pathValue) => {
         const result = await readLibraryFileContent(pathValue)
@@ -35,11 +38,24 @@ async function loadMarkdownSourcesByPath(markdownPaths: string[]): Promise<Recor
         continue
       }
 
-      nextMarkdownSourcesByPath[entry.path] = entry.content
+      nextSourcesByPath[entry.path] = entry.content
     }
   }
 
-  return nextMarkdownSourcesByPath
+  return nextSourcesByPath
+}
+
+function cacheGraphSourceSnapshot(cacheKey: string, sourcesByPath: Record<string, string>): void {
+  graphSourceSnapshotCache.set(cacheKey, sourcesByPath)
+
+  if (graphSourceSnapshotCache.size <= GRAPH_SOURCE_CACHE_LIMIT) {
+    return
+  }
+
+  const oldestCacheKey = graphSourceSnapshotCache.keys().next().value
+  if (oldestCacheKey) {
+    graphSourceSnapshotCache.delete(oldestCacheKey)
+  }
 }
 
 export function useLibraryGraphData({
@@ -49,74 +65,75 @@ export function useLibraryGraphData({
   treeNodes,
   revision,
 }: UseLibraryGraphDataParams) {
-  const [markdownSourcesByPath, setMarkdownSourcesByPath] = useState<Record<string, string>>({})
-  const [loadedSignature, setLoadedSignature] = useState('')
+  const [graphSourcesByPath, setGraphSourcesByPath] = useState<Record<string, string>>({})
+  const [activeSnapshotCacheKey, setActiveSnapshotCacheKey] = useState('')
 
-  const markdownPathSignature = useMemo(() => {
+  const graphSourcePathSignature = useMemo(() => {
     if (!enabled) {
       return ''
     }
 
-    const markdownPaths = collectMarkdownFilePaths(treeNodes).sort((left, right) =>
+    const graphSourcePaths = collectGraphSourceFilePaths(treeNodes).sort((left, right) =>
       left.localeCompare(right, undefined, { sensitivity: 'base' }),
     )
-    return markdownPaths.join(MARKDOWN_SIGNATURE_SEPARATOR)
+    return graphSourcePaths.join(GRAPH_SOURCE_SIGNATURE_SEPARATOR)
   }, [enabled, treeNodes])
+
+  const currentSnapshotCacheKey =
+    enabled && libraryPath && graphSourcePathSignature
+      ? `${libraryPath}::${graphSourcePathSignature}`
+      : ''
 
   useEffect(() => {
     if (!enabled) {
       return
     }
 
-    if (!libraryPath || !markdownPathSignature) {
+    if (!currentSnapshotCacheKey || !graphSourcePathSignature) {
       return
     }
 
-    const requestSignature = `${libraryPath}::${markdownPathSignature}::${revision}`
     let isCurrent = true
-    const markdownPaths = markdownPathSignature.split(MARKDOWN_SIGNATURE_SEPARATOR)
+    const cachedSnapshot = graphSourceSnapshotCache.get(currentSnapshotCacheKey)
+    if (cachedSnapshot) {
+      setGraphSourcesByPath(cachedSnapshot)
+      setActiveSnapshotCacheKey(currentSnapshotCacheKey)
+    }
 
-    void loadMarkdownSourcesByPath(markdownPaths)
-      .then((nextMarkdownSourcesByPath) => {
-        if (!isCurrent) {
-          return
-        }
+    const graphSourcePaths = graphSourcePathSignature.split(GRAPH_SOURCE_SIGNATURE_SEPARATOR)
+    void loadGraphSourcesByPath(graphSourcePaths).then((nextSourcesByPath) => {
+      if (!isCurrent) {
+        return
+      }
 
-        setMarkdownSourcesByPath(nextMarkdownSourcesByPath)
-      })
-      .finally(() => {
-        if (!isCurrent) {
-          return
-        }
-        setLoadedSignature(requestSignature)
-      })
+      cacheGraphSourceSnapshot(currentSnapshotCacheKey, nextSourcesByPath)
+      setGraphSourcesByPath(nextSourcesByPath)
+      setActiveSnapshotCacheKey(currentSnapshotCacheKey)
+    })
 
     return () => {
       isCurrent = false
     }
-  }, [enabled, libraryPath, markdownPathSignature, revision])
+  }, [currentSnapshotCacheKey, enabled, graphSourcePathSignature, revision])
 
-  const currentSignature =
-    enabled && libraryPath && markdownPathSignature
-      ? `${libraryPath}::${markdownPathSignature}::${revision}`
-      : ''
-  const isCurrentSignatureLoaded = Boolean(currentSignature) && loadedSignature === currentSignature
+  const hasUsableSnapshot = Boolean(currentSnapshotCacheKey) && activeSnapshotCacheKey === currentSnapshotCacheKey
 
-  const effectiveMarkdownSourcesByPath = useMemo(() => {
-    if (!enabled || !isCurrentSignatureLoaded) {
+  const effectiveGraphSourcesByPath = useMemo(() => {
+    if (!enabled || !hasUsableSnapshot) {
       return {}
     }
 
-    return markdownSourcesByPath
-  }, [enabled, isCurrentSignatureLoaded, markdownSourcesByPath])
+    return graphSourcesByPath
+  }, [enabled, graphSourcesByPath, hasUsableSnapshot])
 
   const graphModel = useMemo(
-    () => (enabled ? buildLibraryGraphModel(treeNodes, rootPath, effectiveMarkdownSourcesByPath) : { nodes: [], edges: [] }),
-    [effectiveMarkdownSourcesByPath, enabled, rootPath, treeNodes],
+    () => (enabled ? buildLibraryGraphModel(treeNodes, rootPath, effectiveGraphSourcesByPath) : { nodes: [], edges: [] }),
+    [effectiveGraphSourcesByPath, enabled, rootPath, treeNodes],
   )
 
   return {
     graphModel,
-    isGraphLoading: enabled && Boolean(currentSignature) && !isCurrentSignatureLoaded,
+    graphSourcesByPath: effectiveGraphSourcesByPath,
+    isGraphLoading: enabled && Boolean(currentSnapshotCacheKey) && !hasUsableSnapshot,
   }
 }

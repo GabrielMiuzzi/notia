@@ -402,11 +402,11 @@ function placeFreeNodeComponentCenters(
   }
 
   const hasGroupedObstacles = groupedObstacles.length > 0
-  const groupedBoundaryPadding = clamp(10 + freeSeparation * 2.4, -180, 420)
+  const groupedBoundaryPadding = clamp(2 + freeSeparation * 1.2, -180, 240)
   const minOuterRadius = hasGroupedObstacles ? Math.max(0, groupedOuterRadius + groupedBoundaryPadding) : 0
-  const freeNodePadding = clamp(2 + freeSeparation * 0.72, -140, 260)
-  const obstaclePadding = clamp(6 + freeSeparation * 0.85, -140, 260)
-  const ringStep = clamp(10 + freeSeparation * 1.1, 2, 190)
+  const freeNodePadding = clamp(1 + freeSeparation * 0.42, -140, 180)
+  const obstaclePadding = clamp(4 + freeSeparation * 0.52, -140, 180)
+  const ringStep = clamp(4 + freeSeparation * 0.48, 1.5, 96)
 
   const centers = freeComponentIndexes.map((componentIndex, freeIndex) => {
     const componentRadius = componentLayouts[componentIndex]?.radius ?? 34
@@ -423,8 +423,8 @@ function placeFreeNodeComponentCenters(
 
   for (let iteration = 0; iteration < 320; iteration += 1) {
     for (let centerIndex = 0; centerIndex < centers.length; centerIndex += 1) {
-      centers[centerIndex].x *= 0.992
-      centers[centerIndex].y *= 0.992
+      centers[centerIndex].x *= 0.985
+      centers[centerIndex].y *= 0.985
     }
 
     let hadOverlap = false
