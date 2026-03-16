@@ -61,6 +61,41 @@ run_apksigner_sign() {
     "${aligned_apk}"
 }
 
+run_apksigner_sign_with_fallback() {
+  local apksigner_bin="${1}"
+  local aligned_apk="${2}"
+  local signed_apk="${3}"
+  local first_attempt_log
+  first_attempt_log="$(mktemp)"
+
+  if run_apksigner_sign "${apksigner_bin}" "${key_password}" "${aligned_apk}" "${signed_apk}" \
+    2>"${first_attempt_log}"; then
+    rm -f "${first_attempt_log}"
+    return 0
+  fi
+
+  if [[ "${key_password}" != "${store_password}" ]]; then
+    local fallback_attempt_log
+    fallback_attempt_log="$(mktemp)"
+
+    if run_apksigner_sign "${apksigner_bin}" "${store_password}" "${aligned_apk}" "${signed_apk}" \
+      2>"${fallback_attempt_log}"; then
+      echo "[notia] Android signing used storePassword fallback because keyPassword did not match alias ${key_alias}. Update android-signing.properties to avoid this warning." >&2
+      rm -f "${first_attempt_log}" "${fallback_attempt_log}"
+      return 0
+    fi
+
+    cat "${first_attempt_log}" >&2
+    cat "${fallback_attempt_log}" >&2
+    rm -f "${first_attempt_log}" "${fallback_attempt_log}"
+    return 1
+  fi
+
+  cat "${first_attempt_log}" >&2
+  rm -f "${first_attempt_log}"
+  return 1
+}
+
 ensure_local_signing_config() {
   local current_store_file="${1:-}"
   local current_store_password="${2:-}"
@@ -158,13 +193,7 @@ sign_unsigned_apk() {
 
   "${zipalign_bin}" -f -p 4 "${unsigned_apk}" "${aligned_apk}"
 
-  if ! run_apksigner_sign "${apksigner_bin}" "${key_password}" "${aligned_apk}" "${signed_apk}"; then
-    if [[ "${key_password}" != "${store_password}" ]]; then
-      run_apksigner_sign "${apksigner_bin}" "${store_password}" "${aligned_apk}" "${signed_apk}"
-    else
-      exit 1
-    fi
-  fi
+  run_apksigner_sign_with_fallback "${apksigner_bin}" "${aligned_apk}" "${signed_apk}"
 
   "${apksigner_bin}" verify -v "${signed_apk}" >/dev/null
 

@@ -31,6 +31,10 @@ export interface FilesystemPickDirectoryResult {
   uri?: string
 }
 
+export interface FilesystemPickFileResult {
+  path: string
+}
+
 export type FilesystemCreateEntryKind = 'folder' | 'note' | 'inkdoc'
 export type FilesystemEntryOperationMode = 'copy' | 'move'
 
@@ -298,6 +302,38 @@ export async function pickDirectory(title: string): Promise<FilesystemPickDirect
   }
 
   return { path: resolvedPath }
+}
+
+export async function pickFile(
+  title: string,
+  extensions: string[] = [],
+): Promise<FilesystemPickFileResult | null> {
+  let selectedPath: string | string[] | null = null
+
+  try {
+    selectedPath = await open({
+      directory: false,
+      multiple: false,
+      pickerMode: 'document',
+      title,
+      filters: extensions.length > 0
+        ? [
+          {
+            name: 'Files',
+            extensions,
+          },
+        ]
+        : undefined,
+    })
+  } catch {
+    selectedPath = null
+  }
+
+  if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
+    return null
+  }
+
+  return { path: normalizePath(selectedPath) }
 }
 
 export async function readLibraryTree(

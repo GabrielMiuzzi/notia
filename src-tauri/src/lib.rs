@@ -5,7 +5,19 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
+mod commands {
+    pub mod bluetooth;
+}
+mod dto {
+    pub mod bluetooth;
+}
 mod mobile_directory_picker;
+mod services {
+    pub mod bluetooth_service;
+}
+mod state {
+    pub mod bluetooth_state;
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1088,7 +1100,9 @@ fn window_control(window: tauri::Window, payload: WindowControlPayload) {
 
 #[tauri::command]
 #[cfg(any(target_os = "android", target_os = "ios"))]
-fn window_control(_window: tauri::Window, _payload: WindowControlPayload) {}
+fn window_control(_window: tauri::Window, payload: WindowControlPayload) {
+    let _ = payload.action;
+}
 
 #[tauri::command]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1119,6 +1133,7 @@ fn start_window_dragging_with_restore(_window: tauri::Window) {}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(state::bluetooth_state::ColdPassBluetoothState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_library_tree,
@@ -1136,6 +1151,12 @@ pub fn run() {
             library_entry_operation,
             mobile_directory_picker::pick_android_directory_tree,
             mobile_directory_picker::read_android_library_tree,
+            commands::bluetooth::coldpass_bluetooth_status,
+            commands::bluetooth::coldpass_bluetooth_connect,
+            commands::bluetooth::coldpass_bluetooth_submit_pin,
+            commands::bluetooth::coldpass_bluetooth_authenticate,
+            commands::bluetooth::coldpass_bluetooth_send_message,
+            commands::bluetooth::coldpass_bluetooth_disconnect,
             window_control,
             start_window_dragging,
             start_window_dragging_with_restore,

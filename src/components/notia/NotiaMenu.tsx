@@ -40,6 +40,7 @@ import {
 import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
+import type { ColdPassEntry } from '../../types/coldpass'
 import {
   isTextFileDocument,
   type NotiaDocumentSaveStatus,
@@ -64,6 +65,17 @@ import { WindowTitleBar } from './WindowTitleBar'
 import { WorkspaceFooter } from './WorkspaceFooter'
 import { GraphView } from './views/GraphView'
 import { TaskManagerApp } from '../../modules/task-manager/components/TaskManagerApp'
+import { ColdPassView } from './views/ColdPassView'
+import { ColdPassPasskeyModal } from './ColdPassPasskeyModal'
+import { ColdPassCredentialModal } from './ColdPassCredentialModal'
+import { pathExists, pickFile } from '../../services/files/filesystemEngine'
+import {
+  resolveColdPassPaths,
+  saveColdPassEntries,
+  unlockColdPassSession,
+  type ColdPassSessionData,
+} from '../../services/coldpass/coldpassStorage'
+import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '../../services/coldpass/coldpassCsvImport'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
@@ -303,10 +315,12 @@ interface WorkspaceTitleTab {
 interface OpenWorkspaceSpecialTabs {
   graph: boolean
   taskManager: boolean
+  coldPass: boolean
 }
 
 const GRAPH_WORKSPACE_TAB_PATH = '__workspace_graph__'
 const TASK_MANAGER_WORKSPACE_TAB_PATH = '__workspace_task_manager__'
+const COLDPASS_WORKSPACE_TAB_PATH = '__workspace_coldpass__'
 
 function getDisplayBaseName(value: string): string {
   const trimmed = value.trim()
@@ -373,6 +387,10 @@ function buildWorkspaceTitleTabs(
     tabs.push({ path: TASK_MANAGER_WORKSPACE_TAB_PATH, title: 'Task manager' })
   }
 
+  if (specialTabs.coldPass) {
+    tabs.push({ path: COLDPASS_WORKSPACE_TAB_PATH, title: 'ColdPass' })
+  }
+
   return tabs
 }
 
@@ -402,6 +420,7 @@ export function NotiaMenu() {
   const [openWorkspaceSpecialTabs, setOpenWorkspaceSpecialTabs] = useState<OpenWorkspaceSpecialTabs>({
     graph: false,
     taskManager: false,
+    coldPass: false,
   })
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [pendingCreation, setPendingCreation] = useState<{
@@ -421,6 +440,55 @@ export function NotiaMenu() {
     | null
   >(null)
   const [dialogState, setDialogState] = useState<{ type: 'info'; title: string; message: string } | null>(null)
+  const [coldPassSession, setColdPassSession] = useState<ColdPassSessionData | null>(null)
+  const [coldPassPromptState, setColdPassPromptState] = useState<{
+    open: boolean
+    requiresConfirmation: boolean
+    errorMessage: string | null
+    isSubmitting: boolean
+  }>({
+    open: false,
+    requiresConfirmation: false,
+    errorMessage: null,
+    isSubmitting: false,
+  })
+  const [coldPassCredentialModalState, setColdPassCredentialModalState] = useState<{
+    open: boolean
+    mode: 'create' | 'edit'
+    editingIndex: number | null
+    errorMessage: string | null
+    isSubmitting: boolean
+  }>({
+    open: false,
+    mode: 'create',
+    editingIndex: null,
+    errorMessage: null,
+    isSubmitting: false,
+  })
+  const [coldPassDeletePromptState, setColdPassDeletePromptState] = useState<{
+    open: boolean
+    deletingIndex: number | null
+    errorMessage: string | null
+    isSubmitting: boolean
+  }>({
+    open: false,
+    deletingIndex: null,
+    errorMessage: null,
+    isSubmitting: false,
+  })
+  const [coldPassImportPromptState, setColdPassImportPromptState] = useState<{
+    open: boolean
+    pendingImport: ColdPassCsvImportResult | null
+    errorMessage: string | null
+    isSubmitting: boolean
+    isSelectingFile: boolean
+  }>({
+    open: false,
+    pendingImport: null,
+    errorMessage: null,
+    isSubmitting: false,
+    isSelectingFile: false,
+  })
   const { confirm } = useConfirmationEngine()
   const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
   const isAndroidRuntime = runtimeDevice === 'Android'
@@ -434,6 +502,7 @@ export function NotiaMenu() {
   const openWorkspaceSpecialTabsRef = useRef<OpenWorkspaceSpecialTabs>({
     graph: false,
     taskManager: false,
+    coldPass: false,
   })
   const treeNodesRef = useRef<NotiaFileNode[]>([])
   const pendingTextSaveByPathRef = useRef<Map<string, PendingTextSaveJob>>(new Map())
@@ -459,6 +528,8 @@ export function NotiaMenu() {
     ? 'graph'
     : activeTabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       ? 'task-manager'
+      : activeTabPath === COLDPASS_WORKSPACE_TAB_PATH
+        ? 'coldpass'
       : 'documents'
   const isGraphViewActive = activeWorkspaceView === 'graph'
   const shouldRefreshVisibleExplorerTree =
@@ -510,6 +581,34 @@ export function NotiaMenu() {
     setOpenWorkspaceSpecialTabs({
       graph: false,
       taskManager: false,
+      coldPass: false,
+    })
+    setColdPassSession(null)
+    setColdPassPromptState({
+      open: false,
+      requiresConfirmation: false,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+    setColdPassCredentialModalState({
+      open: false,
+      mode: 'create',
+      editingIndex: null,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+    setColdPassDeletePromptState({
+      open: false,
+      deletingIndex: null,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+    setColdPassImportPromptState({
+      open: false,
+      pendingImport: null,
+      errorMessage: null,
+      isSubmitting: false,
+      isSelectingFile: false,
     })
     setActiveTabPath(null)
   }, [])
@@ -859,6 +958,39 @@ export function NotiaMenu() {
   }, [activeLibraryId, clearAllPendingTextSaves, resetTabs])
 
   useEffect(() => {
+    if (activeWorkspaceView !== 'coldpass' || !activeLibrary || coldPassSession?.filePath) {
+      return
+    }
+
+    let cancelled = false
+
+    const openColdPassPrompt = async () => {
+      const { filePath } = resolveColdPassPaths(activeLibrary.path)
+      const coldPassFileExists = await pathExists(filePath)
+      if (cancelled) {
+        return
+      }
+
+      setColdPassPromptState((current) => (
+        current.open
+          ? current
+          : {
+              open: true,
+              requiresConfirmation: !coldPassFileExists,
+              errorMessage: null,
+              isSubmitting: false,
+            }
+      ))
+    }
+
+    void openColdPassPrompt()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeLibrary, activeWorkspaceView, coldPassSession?.filePath])
+
+  useEffect(() => {
     setTreeNodesForLibrary(activeLibraryId, (current) => setSelectedFileByPath(current, activeTabPath))
   }, [activeLibraryId, activeTabPath, setTreeNodesForLibrary])
 
@@ -1026,6 +1158,19 @@ export function NotiaMenu() {
             }
       ))
       setActiveTabPath(TASK_MANAGER_WORKSPACE_TAB_PATH)
+      return
+    }
+
+    if (actionId === 'coldpass') {
+      setOpenWorkspaceSpecialTabs((current) => (
+        current.coldPass
+          ? current
+          : {
+              ...current,
+              coldPass: true,
+            }
+      ))
+      setActiveTabPath(COLDPASS_WORKSPACE_TAB_PATH)
     }
   }, [])
 
@@ -1082,9 +1227,17 @@ export function NotiaMenu() {
   }, [])
 
   const handleActivateTab = useCallback((tabPath: string) => {
-    if (tabPath === GRAPH_WORKSPACE_TAB_PATH || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH) {
+    if (
+      tabPath === GRAPH_WORKSPACE_TAB_PATH
+      || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
+      || tabPath === COLDPASS_WORKSPACE_TAB_PATH
+    ) {
       const specialTabs = openWorkspaceSpecialTabsRef.current
-      if ((tabPath === GRAPH_WORKSPACE_TAB_PATH && !specialTabs.graph) || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !specialTabs.taskManager)) {
+      if (
+        (tabPath === GRAPH_WORKSPACE_TAB_PATH && !specialTabs.graph)
+        || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !specialTabs.taskManager)
+        || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !specialTabs.coldPass)
+      ) {
         return
       }
 
@@ -1139,9 +1292,17 @@ export function NotiaMenu() {
   )
 
   const closeTabByPath = useCallback(async (tabPath: string) => {
-    if (tabPath === GRAPH_WORKSPACE_TAB_PATH || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH) {
+    if (
+      tabPath === GRAPH_WORKSPACE_TAB_PATH
+      || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
+      || tabPath === COLDPASS_WORKSPACE_TAB_PATH
+    ) {
       const currentSpecialTabs = openWorkspaceSpecialTabsRef.current
-      if ((tabPath === GRAPH_WORKSPACE_TAB_PATH && !currentSpecialTabs.graph) || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !currentSpecialTabs.taskManager)) {
+      if (
+        (tabPath === GRAPH_WORKSPACE_TAB_PATH && !currentSpecialTabs.graph)
+        || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !currentSpecialTabs.taskManager)
+        || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !currentSpecialTabs.coldPass)
+      ) {
         return
       }
 
@@ -1154,6 +1315,7 @@ export function NotiaMenu() {
       const nextSpecialTabs: OpenWorkspaceSpecialTabs = {
         graph: tabPath === GRAPH_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.graph,
         taskManager: tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.taskManager,
+        coldPass: tabPath === COLDPASS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.coldPass,
       }
       const remainingTabs = buildWorkspaceTitleTabs(openTabsRef.current, nextSpecialTabs)
       const currentActiveTabPath = activeTabPathRef.current
@@ -1174,6 +1336,35 @@ export function NotiaMenu() {
       }
 
       setOpenWorkspaceSpecialTabs(nextSpecialTabs)
+      if (tabPath === COLDPASS_WORKSPACE_TAB_PATH) {
+        setColdPassSession(null)
+        setColdPassPromptState({
+          open: false,
+          requiresConfirmation: false,
+          errorMessage: null,
+          isSubmitting: false,
+        })
+        setColdPassCredentialModalState({
+          open: false,
+          mode: 'create',
+          editingIndex: null,
+          errorMessage: null,
+          isSubmitting: false,
+        })
+        setColdPassDeletePromptState({
+          open: false,
+          deletingIndex: null,
+          errorMessage: null,
+          isSubmitting: false,
+        })
+        setColdPassImportPromptState({
+          open: false,
+          pendingImport: null,
+          errorMessage: null,
+          isSubmitting: false,
+          isSelectingFile: false,
+        })
+      }
       setActiveTabPath(nextActiveTabPath)
       return
     }
@@ -1222,6 +1413,391 @@ export function NotiaMenu() {
   const handleCloseTab = useCallback((tabPath: string) => {
     void closeTabByPath(tabPath)
   }, [closeTabByPath])
+
+  const handleSubmitColdPassPasskey = useCallback((passkey: string) => {
+    if (!activeLibrary) {
+      return
+    }
+
+    setColdPassPromptState({
+      open: true,
+      requiresConfirmation: coldPassPromptState.requiresConfirmation,
+      errorMessage: null,
+      isSubmitting: true,
+    })
+
+    void unlockColdPassSession(activeLibrary, passkey)
+      .then((session) => {
+        setColdPassSession(session)
+        setColdPassPromptState({
+          open: false,
+          requiresConfirmation: false,
+          errorMessage: null,
+          isSubmitting: false,
+        })
+      })
+      .catch((error) => {
+        setColdPassSession(null)
+        setColdPassPromptState({
+          open: true,
+          requiresConfirmation: coldPassPromptState.requiresConfirmation,
+          errorMessage: error instanceof Error ? error.message : 'No se pudo desbloquear ColdPass.',
+          isSubmitting: false,
+        })
+      })
+  }, [activeLibrary, coldPassPromptState.requiresConfirmation])
+
+  const handleCloseColdPassPrompt = useCallback(() => {
+    setColdPassPromptState({
+      open: false,
+      requiresConfirmation: false,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+
+    if (activeWorkspaceView === 'coldpass' && !coldPassSession) {
+      void closeTabByPath(COLDPASS_WORKSPACE_TAB_PATH)
+    }
+  }, [activeWorkspaceView, closeTabByPath, coldPassSession])
+
+  const handleOpenColdPassCredentialModal = useCallback(() => {
+    if (!coldPassSession) {
+      return
+    }
+
+    setColdPassCredentialModalState({
+      open: true,
+      mode: 'create',
+      editingIndex: null,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+  }, [coldPassSession])
+
+  const handleEditColdPassCredential = useCallback((index: number) => {
+    if (!coldPassSession || !coldPassSession.entries[index]) {
+      return
+    }
+
+    setColdPassCredentialModalState({
+      open: true,
+      mode: 'edit',
+      editingIndex: index,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+  }, [coldPassSession])
+
+  const handleCloseColdPassCredentialModal = useCallback(() => {
+    setColdPassCredentialModalState({
+      open: false,
+      mode: 'create',
+      editingIndex: null,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+  }, [])
+
+  const handleDeleteColdPassCredential = useCallback(async (index: number) => {
+    if (!coldPassSession || !coldPassSession.entries[index]) {
+      return
+    }
+
+    const entry = coldPassSession.entries[index]
+    const shouldDelete = await confirm({
+      title: 'Eliminar credencial',
+      message: `Eliminar la credencial "${entry.name || entry.username || 'sin nombre'}"? Esta accion no se puede deshacer.`,
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+
+    if (!shouldDelete) {
+      return
+    }
+
+    setColdPassDeletePromptState({
+      open: true,
+      deletingIndex: index,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+  }, [coldPassSession, confirm])
+
+  const handleImportColdPassVault = useCallback(() => {
+    if (!coldPassSession) {
+      return
+    }
+
+    setColdPassImportPromptState({
+      open: false,
+      pendingImport: null,
+      errorMessage: null,
+      isSubmitting: false,
+      isSelectingFile: true,
+    })
+
+    void pickFile('Importar vault CSV', ['csv'])
+      .then((selectedFile) => {
+        if (!selectedFile) {
+          setColdPassImportPromptState({
+            open: false,
+            pendingImport: null,
+            errorMessage: null,
+            isSubmitting: false,
+            isSelectingFile: false,
+          })
+          return null
+        }
+
+        return importColdPassEntriesFromCsvFile(selectedFile.path)
+      })
+      .then((importResult) => {
+        if (!importResult) {
+          return
+        }
+
+        if (importResult.importedEntries.length === 0) {
+          setColdPassImportPromptState({
+            open: false,
+            pendingImport: null,
+            errorMessage: null,
+            isSubmitting: false,
+            isSelectingFile: false,
+          })
+          setDialogState({
+            type: 'info',
+            title: 'Sin credenciales para importar',
+            message: 'El CSV seleccionado no contiene filas importables para ColdPass.',
+          })
+          return
+        }
+
+        setColdPassImportPromptState({
+          open: true,
+          pendingImport: importResult,
+          errorMessage: null,
+          isSubmitting: false,
+          isSelectingFile: false,
+        })
+      })
+      .catch((error) => {
+        setColdPassImportPromptState({
+          open: false,
+          pendingImport: null,
+          errorMessage: null,
+          isSubmitting: false,
+          isSelectingFile: false,
+        })
+        setDialogState({
+          type: 'info',
+          title: 'No se pudo importar el vault',
+          message: error instanceof Error ? error.message : 'No se pudo validar el CSV seleccionado.',
+        })
+      })
+  }, [coldPassSession])
+
+  const handleSubmitColdPassCredential = useCallback((entry: ColdPassEntry) => {
+    if (!coldPassSession) {
+      return
+    }
+
+    const nextEntries = [...coldPassSession.entries]
+    if (
+      coldPassCredentialModalState.mode === 'edit'
+      && coldPassCredentialModalState.editingIndex !== null
+      && nextEntries[coldPassCredentialModalState.editingIndex]
+    ) {
+      const previousEntry = nextEntries[coldPassCredentialModalState.editingIndex]
+      const nextPasswordHistory = [...previousEntry.passwordHistory]
+      if (previousEntry.password && previousEntry.password !== entry.password) {
+        nextPasswordHistory.unshift(previousEntry.password)
+      }
+
+      nextEntries[coldPassCredentialModalState.editingIndex] = {
+        ...entry,
+        id: previousEntry.id,
+        passwordHistory: nextPasswordHistory,
+      }
+    } else {
+      nextEntries.push({
+        ...entry,
+        id: entry.id || crypto.randomUUID(),
+        passwordHistory: entry.passwordHistory ?? [],
+      })
+    }
+
+    setColdPassCredentialModalState({
+      open: true,
+      mode: coldPassCredentialModalState.mode,
+      editingIndex: coldPassCredentialModalState.editingIndex,
+      errorMessage: null,
+      isSubmitting: true,
+    })
+
+    void saveColdPassEntries(coldPassSession.filePath, coldPassSession.passkey, nextEntries)
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? 'No se pudo guardar la credencial.')
+        }
+
+        setColdPassSession({
+          ...coldPassSession,
+          entries: nextEntries,
+          markdown: result.markdown,
+        })
+        setColdPassCredentialModalState({
+          open: false,
+          mode: 'create',
+          editingIndex: null,
+          errorMessage: null,
+          isSubmitting: false,
+        })
+      })
+      .catch((error) => {
+        setColdPassCredentialModalState({
+          open: true,
+          mode: coldPassCredentialModalState.mode,
+          editingIndex: coldPassCredentialModalState.editingIndex,
+          errorMessage: error instanceof Error ? error.message : 'No se pudo guardar la credencial.',
+          isSubmitting: false,
+        })
+      })
+  }, [coldPassCredentialModalState.editingIndex, coldPassCredentialModalState.mode, coldPassSession])
+
+  const handleCloseColdPassDeletePrompt = useCallback(() => {
+    setColdPassDeletePromptState({
+      open: false,
+      deletingIndex: null,
+      errorMessage: null,
+      isSubmitting: false,
+    })
+  }, [])
+
+  const handleCloseColdPassImportPrompt = useCallback(() => {
+    setColdPassImportPromptState({
+      open: false,
+      pendingImport: null,
+      errorMessage: null,
+      isSubmitting: false,
+      isSelectingFile: false,
+    })
+  }, [])
+
+  const handleSubmitColdPassDeletePasskey = useCallback((passkey: string) => {
+    if (
+      !coldPassSession
+      || coldPassDeletePromptState.deletingIndex === null
+      || !coldPassSession.entries[coldPassDeletePromptState.deletingIndex]
+    ) {
+      return
+    }
+
+    if (passkey !== coldPassSession.passkey) {
+      setColdPassDeletePromptState((current) => ({
+        ...current,
+        open: true,
+        errorMessage: 'La passkey no coincide.',
+        isSubmitting: false,
+      }))
+      return
+    }
+
+    const nextEntries = coldPassSession.entries.filter((_, index) => index !== coldPassDeletePromptState.deletingIndex)
+    setColdPassDeletePromptState((current) => ({
+      ...current,
+      open: true,
+      errorMessage: null,
+      isSubmitting: true,
+    }))
+
+    void saveColdPassEntries(coldPassSession.filePath, coldPassSession.passkey, nextEntries)
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? 'No se pudo eliminar la credencial.')
+        }
+
+        setColdPassSession({
+          ...coldPassSession,
+          entries: nextEntries,
+          markdown: result.markdown,
+        })
+        setColdPassDeletePromptState({
+          open: false,
+          deletingIndex: null,
+          errorMessage: null,
+          isSubmitting: false,
+        })
+      })
+      .catch((error) => {
+        setColdPassDeletePromptState((current) => ({
+          ...current,
+          open: true,
+          errorMessage: error instanceof Error ? error.message : 'No se pudo eliminar la credencial.',
+          isSubmitting: false,
+        }))
+      })
+  }, [coldPassDeletePromptState.deletingIndex, coldPassSession])
+
+  const handleSubmitColdPassImportPasskey = useCallback((passkey: string) => {
+    if (!coldPassSession || !coldPassImportPromptState.pendingImport) {
+      return
+    }
+
+    if (passkey !== coldPassSession.passkey) {
+      setColdPassImportPromptState((current) => ({
+        ...current,
+        open: true,
+        errorMessage: 'La passkey no coincide.',
+        isSubmitting: false,
+      }))
+      return
+    }
+
+    const importSummary = coldPassImportPromptState.pendingImport
+    const nextEntries = [...coldPassSession.entries, ...importSummary.importedEntries]
+    setColdPassImportPromptState((current) => ({
+      ...current,
+      open: true,
+      errorMessage: null,
+      isSubmitting: true,
+    }))
+
+    void saveColdPassEntries(coldPassSession.filePath, coldPassSession.passkey, nextEntries)
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? 'No se pudo importar el vault.')
+        }
+
+        setColdPassSession({
+          ...coldPassSession,
+          entries: nextEntries,
+          markdown: result.markdown,
+        })
+        setDialogState({
+          type: 'info',
+          title: 'Vault importado',
+          message: importSummary.skippedRowCount > 0
+            ? `Se importaron ${importSummary.importedEntries.length} credenciales desde ${importSummary.sourceFileName} y se omitieron ${importSummary.skippedRowCount} filas vacias.`
+            : `Se importaron ${importSummary.importedEntries.length} credenciales desde ${importSummary.sourceFileName}.`,
+        })
+        setColdPassImportPromptState({
+          open: false,
+          pendingImport: null,
+          errorMessage: null,
+          isSubmitting: false,
+          isSelectingFile: false,
+        })
+      })
+      .catch((error) => {
+        setColdPassImportPromptState((current) => ({
+          ...current,
+          open: true,
+          errorMessage: error instanceof Error ? error.message : 'No se pudo importar el vault.',
+          isSubmitting: false,
+        }))
+      })
+  }, [coldPassImportPromptState.pendingImport, coldPassSession])
 
   const handleCloseActiveTab = useCallback(() => {
     const currentActiveTabPath = activeTabPathRef.current
@@ -1962,6 +2538,8 @@ export function NotiaMenu() {
                   ? 'graph-view'
                   : activeWorkspaceView === 'task-manager'
                     ? 'task-manager'
+                    : activeWorkspaceView === 'coldpass'
+                      ? 'coldpass'
                     : null
               }
               onActionClick={handleRailActionClick}
@@ -2014,6 +2592,16 @@ export function NotiaMenu() {
             vaultPath={activeLibrary?.path ?? null}
             onOpenTaskFile={handleOpenFile}
           />
+        ) : activeWorkspaceView === 'coldpass' ? (
+          <ColdPassView
+            entries={coldPassSession?.entries ?? []}
+            isUnlocked={Boolean(coldPassSession)}
+            isImportingVault={coldPassImportPromptState.isSelectingFile}
+            onCreateCredential={handleOpenColdPassCredentialModal}
+            onImportVault={handleImportColdPassVault}
+            onEditCredential={handleEditColdPassCredential}
+            onDeleteCredential={handleDeleteColdPassCredential}
+          />
         ) : (
           <MainView
             activeDocument={activeDocument}
@@ -2061,6 +2649,52 @@ export function NotiaMenu() {
           setDialogState(null)
         }}
         onClose={handleDialogClose}
+      />
+      <ColdPassPasskeyModal
+        open={coldPassPromptState.open}
+        title={coldPassPromptState.requiresConfirmation ? 'Crear ColdPass' : 'Desbloquear ColdPass'}
+        message={coldPassPromptState.requiresConfirmation
+          ? 'ColdPass/ColdPass.md no existe todavia. Ingresá una passkey para crear la bóveda cifrada. Si la olvidás, no hay forma de recuperar el contenido cifrado.'
+          : 'La passkey se usa para desencriptar ColdPass/ColdPass.md solo en memoria. Si la olvidás, no hay forma de recuperar el contenido cifrado. Al cerrar la pestaña, el contenido se olvida.'}
+        requiresConfirmation={coldPassPromptState.requiresConfirmation}
+        errorMessage={coldPassPromptState.errorMessage}
+        isSubmitting={coldPassPromptState.isSubmitting}
+        onSubmit={handleSubmitColdPassPasskey}
+        onClose={handleCloseColdPassPrompt}
+      />
+      <ColdPassPasskeyModal
+        open={coldPassDeletePromptState.open}
+        title="Confirmar eliminacion"
+        message="Ingresá la passkey de ColdPass para confirmar la eliminacion de esta credencial."
+        errorMessage={coldPassDeletePromptState.errorMessage}
+        isSubmitting={coldPassDeletePromptState.isSubmitting}
+        onSubmit={handleSubmitColdPassDeletePasskey}
+        onClose={handleCloseColdPassDeletePrompt}
+      />
+      <ColdPassPasskeyModal
+        open={coldPassImportPromptState.open}
+        title="Confirmar importacion"
+        message={coldPassImportPromptState.pendingImport
+          ? `Se validaron ${coldPassImportPromptState.pendingImport.importedEntries.length} credenciales desde ${coldPassImportPromptState.pendingImport.sourceFileName}. Ingresá la passkey de ColdPass para importarlas dentro de la bóveda cifrada.`
+          : 'Ingresá la passkey de ColdPass para confirmar la importacion del vault.'}
+        errorMessage={coldPassImportPromptState.errorMessage}
+        isSubmitting={coldPassImportPromptState.isSubmitting}
+        onSubmit={handleSubmitColdPassImportPasskey}
+        onClose={handleCloseColdPassImportPrompt}
+      />
+      <ColdPassCredentialModal
+        open={coldPassCredentialModalState.open}
+        mode={coldPassCredentialModalState.mode}
+        initialEntry={
+          coldPassCredentialModalState.mode === 'edit'
+            && coldPassCredentialModalState.editingIndex !== null
+            ? coldPassSession?.entries[coldPassCredentialModalState.editingIndex] ?? null
+            : null
+        }
+        isSubmitting={coldPassCredentialModalState.isSubmitting}
+        errorMessage={coldPassCredentialModalState.errorMessage}
+        onSubmit={handleSubmitColdPassCredential}
+        onClose={handleCloseColdPassCredentialModal}
       />
     </div>
   )

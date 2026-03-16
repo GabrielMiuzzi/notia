@@ -596,15 +596,20 @@
   top: calc(100% + 8px);
   left: 0;
   width: 292px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
-  background: var(--color-modal-bg);
-  box-shadow: 0 14px 30px var(--color-menu-shadow);
   padding: 10px;
   z-index: 120;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.notia-submenu-panel {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-modal-bg);
+  box-shadow: 0 14px 30px var(--color-menu-shadow);
+  color: var(--color-body-text);
   -webkit-app-region: no-drag;
 }
 
@@ -965,6 +970,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -1712,6 +1718,696 @@
   color: var(--color-accent-text);
   font-size: 13px;
   cursor: pointer;
+}
+
+.notia-coldpass-view {
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 20px 28px 20px 20px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.notia-coldpass-hero {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.notia-coldpass-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+
+.notia-coldpass-actions .notia-button {
+  width: auto;
+}
+
+.notia-coldpass-bluetooth-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-card-bg) 96%, transparent) 0%, color-mix(in srgb, var(--color-card-bg) 88%, transparent) 100%);
+  box-shadow: 0 18px 34px color-mix(in srgb, var(--color-main-bg) 58%, transparent);
+}
+
+.notia-coldpass-bluetooth-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.notia-coldpass-bluetooth-card-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--color-accent-text);
+  background: color-mix(in srgb, var(--color-accent-bg) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent-bg) 84%, var(--color-border-soft) 16%);
+}
+
+.notia-coldpass-bluetooth-card-copy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.notia-coldpass-bluetooth-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.notia-coldpass-bluetooth-card-header h3 {
+  margin: 0;
+  color: var(--color-heading-text);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.notia-coldpass-bluetooth-card-copy p {
+  margin: 0;
+  color: var(--color-subtle-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notia-coldpass-bluetooth-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-soft);
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+  color: var(--color-heading-text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.notia-coldpass-bluetooth-status--connected {
+  color: var(--color-accent-text);
+  background: color-mix(in srgb, var(--color-accent-bg) 72%, transparent);
+}
+
+.notia-coldpass-bluetooth-status--searching {
+  color: var(--color-heading-text);
+  background: color-mix(in srgb, #f0c674 28%, transparent);
+}
+
+.notia-coldpass-bluetooth-status--error,
+.notia-coldpass-bluetooth-status--unsupported {
+  color: #ffb3b3;
+  background: color-mix(in srgb, #7a1f2b 42%, transparent);
+}
+
+.notia-coldpass-bluetooth-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.notia-coldpass-bluetooth-meta span {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.notia-coldpass-bluetooth-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.notia-coldpass-bluetooth-card-footer {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+@media (max-width: 860px) {
+  .notia-coldpass-bluetooth-card-main {
+    flex-direction: column;
+  }
+
+  .notia-coldpass-bluetooth-card-actions {
+    justify-content: flex-start;
+  }
+}
+
+.notia-coldpass-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 14px;
+  height: 42px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+  color: var(--color-subtle-text);
+}
+
+.notia-coldpass-search-bar input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-body-text);
+  font-size: 13px;
+}
+
+.notia-coldpass-search-bar input::placeholder {
+  color: var(--color-subtle-text);
+}
+
+.notia-coldpass-search-clear {
+  flex: 0 0 auto;
+}
+
+.notia-coldpass-table-shell {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 18px;
+  overflow: visible;
+  background: color-mix(in srgb, var(--color-card-bg) 94%, transparent);
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+  margin-right: 0;
+}
+
+.notia-coldpass-table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-width: 100%;
+  max-height: min(62vh, calc(100dvh - 230px));
+  border-radius: inherit;
+}
+
+.notia-coldpass-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.notia-coldpass-table thead th {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border-strong);
+  background: color-mix(in srgb, var(--color-main-bg) 86%, transparent);
+  color: var(--color-heading-text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notia-coldpass-table tbody td {
+  padding: 16px;
+  border-bottom: 1px solid var(--color-border-soft);
+  color: var(--color-body-text);
+  font-size: 13px;
+  vertical-align: top;
+  overflow: visible;
+}
+
+.notia-coldpass-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.notia-coldpass-password-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  position: relative;
+}
+
+.notia-coldpass-password-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+}
+
+.notia-coldpass-password-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.notia-coldpass-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.notia-coldpass-password-history-panel {
+  position: fixed;
+  width: min(320px, calc(100vw - 24px));
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-modal-bg);
+  box-shadow: 0 14px 30px var(--color-menu-shadow);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 220;
+}
+
+.notia-coldpass-password-history-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-heading-text);
+}
+
+.notia-coldpass-password-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.notia-coldpass-password-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+  padding: 8px 10px;
+}
+
+.notia-coldpass-password-history-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.notia-coldpass-password-history-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 12px;
+  color: var(--color-body-text);
+}
+
+.notia-coldpass-password-history-empty {
+  font-size: 12px;
+  color: var(--color-subtle-text);
+}
+
+.notia-coldpass-password-action {
+  color: var(--color-subtle-text);
+}
+
+.notia-coldpass-password-action:hover {
+  color: var(--color-heading-text);
+}
+
+.notia-coldpass-table-empty {
+  color: var(--color-subtle-text);
+  text-align: center;
+}
+
+.notia-coldpass-passkey-modal {
+  width: min(440px, calc(100vw - 44px));
+  overflow: hidden;
+}
+
+.notia-coldpass-passkey-header {
+  height: 46px;
+  border-bottom: 1px solid var(--color-border-strong);
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notia-coldpass-passkey-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-heading-text);
+}
+
+.notia-coldpass-passkey-title h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notia-coldpass-passkey-body {
+  padding: 14px;
+  color: var(--color-body-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notia-coldpass-passkey-body p {
+  margin: 0;
+}
+
+.notia-coldpass-passkey-field {
+  position: relative;
+}
+
+.notia-coldpass-passkey-input {
+  padding-right: 42px;
+}
+
+.notia-coldpass-passkey-visibility {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+}
+
+.notia-coldpass-passkey-error {
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-alert-text) 30%, var(--color-border-soft));
+  background: color-mix(in srgb, var(--color-alert-text) 12%, var(--color-modal-bg));
+  color: var(--color-alert-text);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.notia-coldpass-passkey-actions {
+  border-top: 1px solid var(--color-border-strong);
+  padding: 10px 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.notia-coldpass-passkey-inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.notia-coldpass-message-textarea {
+  min-height: 112px;
+  resize: vertical;
+  padding-right: 14px;
+}
+
+.notia-coldpass-operation-status {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.notia-coldpass-operation-status--card {
+  margin: 0 0 10px;
+}
+
+.notia-coldpass-operation-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-top-color: var(--color-accent);
+  animation: notia-coldpass-operation-spin 800ms linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes notia-coldpass-operation-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.notia-coldpass-credential-modal {
+  width: min(720px, calc(100vw - 44px));
+  overflow: hidden;
+}
+
+.notia-coldpass-credential-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.notia-coldpass-credential-header {
+  height: 48px;
+  border-bottom: 1px solid var(--color-border-strong);
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notia-coldpass-credential-header h2 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-heading-text);
+}
+
+.notia-coldpass-credential-body {
+  padding: 14px;
+}
+
+.notia-coldpass-credential-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.notia-coldpass-credential-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--color-body-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notia-coldpass-credential-field--full {
+  grid-column: 1 / -1;
+}
+
+.notia-coldpass-credential-password-block {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.notia-coldpass-credential-input-field {
+  position: relative;
+}
+
+.notia-coldpass-credential-input {
+  padding-right: 42px;
+}
+
+.notia-coldpass-credential-input-actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.notia-coldpass-credential-input--with-trailing-action {
+  padding-right: 74px;
+}
+
+.notia-coldpass-credential-input-actions--password {
+  right: 4px;
+}
+
+.notia-coldpass-credential-input-action {
+  color: var(--color-subtle-text);
+}
+
+.notia-coldpass-credential-input-action:hover {
+  color: var(--color-heading-text);
+}
+
+.notia-coldpass-credential-password-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notia-coldpass-password-popover-wrap {
+  display: contents;
+}
+
+.notia-coldpass-password-popover-panel {
+  width: 100%;
+}
+
+.notia-coldpass-password-popover {
+  width: min(100%, 420px);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-modal-bg);
+  box-shadow: 0 14px 30px var(--color-menu-shadow);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notia-coldpass-password-popover-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-heading-text);
+}
+
+.notia-coldpass-password-popover-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-body-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notia-coldpass-password-popover-field input[type='range'] {
+  width: 100%;
+}
+
+.notia-coldpass-password-popover-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-body-text);
+  font-size: 12px;
+}
+
+.notia-coldpass-password-popover-preview {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notia-coldpass-password-popover-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-subtle-text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.notia-coldpass-password-popover-value {
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 13px;
+  color: var(--color-heading-text);
+  word-break: break-all;
+}
+
+.notia-coldpass-password-popover-meta {
+  font-size: 12px;
+  color: var(--color-subtle-text);
+}
+
+.notia-coldpass-password-popover-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notia-coldpass-password-popover-actions .notia-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notia-coldpass-credential-textarea {
+  min-height: 116px;
+  padding: 10px 12px;
+  resize: vertical;
+  font: inherit;
+}
+
+.notia-coldpass-credential-error {
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-alert-text) 30%, var(--color-border-soft));
+  background: color-mix(in srgb, var(--color-alert-text) 12%, var(--color-modal-bg));
+  color: var(--color-alert-text);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.notia-coldpass-credential-actions {
+  border-top: 1px solid var(--color-border-strong);
+  padding: 10px 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 1080px) {
+  .notia-coldpass-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 780px) {
+  .notia-coldpass-credential-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .notia-text-view {

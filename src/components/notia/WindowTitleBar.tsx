@@ -4,6 +4,7 @@ import { startWindowDragging, startWindowDraggingWithRestore } from '../../servi
 import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
+import { NotiaSubmenuPanel } from './NotiaSubmenuPanel'
 
 interface WindowTitleTab {
   path: string
@@ -314,7 +315,7 @@ export function WindowTitleBar({
                     <Icon size={15} />
                   </NotiaButton>
                   {id === 'search' && isSearchMenuOpen ? (
-                    <div ref={searchMenuRef} className="notia-search-panel">
+                    <NotiaSubmenuPanel ref={searchMenuRef} className="notia-search-panel">
                       <div className="notia-search-panel-title">Buscar en libreria</div>
                       <input
                         ref={searchInputRef}
@@ -331,7 +332,7 @@ export function WindowTitleBar({
                             ? `${searchResultCount} coincidencia${searchResultCount === 1 ? '' : 's'}`
                             : 'Escribi para buscar en la libreria.'}
                       </div>
-                    </div>
+                    </NotiaSubmenuPanel>
                   ) : null}
                 </div>
               ))}
