@@ -5,11 +5,15 @@ import { ImageView } from './ImageView'
 import { InkdocView } from './inkdoc/InkdocView'
 import { MarkdownView } from './MarkdownView'
 import { TextView } from './TextView'
+import { DrawioView } from './drawio/DrawioView'
+import type { DrawioDocumentController } from '../../../modules/drawio/types'
 
 interface FileViewHostProps {
   document: OpenFileDocument
   onTextSourceChange: (nextSource: string) => void
   onInkdocSourcePersist: (nextSource: string) => Promise<void>
+  onDrawioSourcePersist: (filePath: string, nextSource: string) => Promise<void>
+  onDrawioControllerReady: (filePath: string, controller: DrawioDocumentController | null) => void
   rootPath: string | null
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
@@ -21,6 +25,8 @@ export function FileViewHost({
   document,
   onTextSourceChange,
   onInkdocSourcePersist,
+  onDrawioSourcePersist,
+  onDrawioControllerReady,
   rootPath,
   libraryFilePaths,
   inkdocPreferences,
@@ -42,6 +48,20 @@ export function FileViewHost({
           inkdocPreferences={inkdocPreferences}
           onSourcePersist={onInkdocSourcePersist}
           onOpenLinkedFile={onOpenLinkedFile}
+        />
+      )
+    }
+
+    if (document.viewKind === 'drawio') {
+      return (
+        <DrawioView
+          key={document.path}
+          filePath={document.path}
+          source={document.source}
+          onSourcePersist={onDrawioSourcePersist}
+          onControllerReady={(controller) => {
+            onDrawioControllerReady(document.path, controller)
+          }}
         />
       )
     }

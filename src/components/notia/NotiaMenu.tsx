@@ -76,6 +76,7 @@ import {
   type ColdPassSessionData,
 } from '../../services/coldpass/coldpassStorage'
 import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '../../services/coldpass/coldpassCsvImport'
+import type { DrawioDocumentController } from '../../modules/drawio/types'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
@@ -504,6 +505,7 @@ export function NotiaMenu() {
     taskManager: false,
     coldPass: false,
   })
+  const drawioControllersRef = useRef<Map<string, DrawioDocumentController>>(new Map())
   const treeNodesRef = useRef<NotiaFileNode[]>([])
   const pendingTextSaveByPathRef = useRef<Map<string, PendingTextSaveJob>>(new Map())
   const libraryTreeRefreshTimerRef = useRef<number | null>(null)
@@ -577,6 +579,7 @@ export function NotiaMenu() {
   })
 
   const resetTabs = useCallback(() => {
+    drawioControllersRef.current.clear()
     setOpenTabs([])
     setOpenWorkspaceSpecialTabs({
       graph: false,
@@ -1286,6 +1289,63 @@ export function NotiaMenu() {
         return false
       }
 
+      if (tab.document.viewKind === 'drawio') {
+        const controller = drawioControllersRef.current.get(tabPath)
+        if (controller) {
+          try {
+            await controller.flush()
+            return true
+          } catch (error) {
+            const message = error instanceof Error && error.message.trim()
+              ? error.message
+              : 'No se pudo guardar el archivo draw.io.'
+
+            setOpenTabs((current) =>
+              current.map((currentTab) => (
+                currentTab.document.path === tabPath
+                  ? { ...currentTab, saveStatus: 'error' }
+                  : currentTab
+              )),
+            )
+            setDialogState((current) => {
+              if (current) {
+                return current
+              }
+
+              return {
+                type: 'info',
+                title: 'No se pudo guardar',
+                message,
+              }
+            })
+            return false
+          }
+        }
+
+        if (tab.document.source === tab.latestSavedSource) {
+          return true
+        }
+
+        const result = await writeLibraryFileContent(tabPath, tab.document.source)
+        if (result.ok) {
+          bumpGraphRevisionIfVisible()
+          return true
+        }
+
+        setDialogState((current) => {
+          if (current) {
+            return current
+          }
+
+          return {
+            type: 'info',
+            title: 'No se pudo guardar',
+            message: result.error ?? 'No se pudo guardar el archivo draw.io.',
+          }
+        })
+        return false
+      }
+
       return true
     },
     [bumpGraphRevisionIfVisible, clearPendingTextSaveByPath, persistTextDocumentSource],
@@ -1830,6 +1890,7 @@ export function NotiaMenu() {
     for (const tab of currentTabs) {
       if (isSameOrNestedPath(path, tab.document.path)) {
         clearPendingTextSaveByPath(tab.document.path)
+        drawioControllersRef.current.delete(tab.document.path)
       }
     }
 
@@ -1848,6 +1909,11 @@ export function NotiaMenu() {
 
   const renameOpenTabPath = useCallback((path: string, nextPath: string, name: string) => {
     clearPendingTextSaveByPath(path)
+    const drawioController = drawioControllersRef.current.get(path)
+    if (drawioController) {
+      drawioControllersRef.current.delete(path)
+      drawioControllersRef.current.set(nextPath, drawioController)
+    }
     setOpenTabs((current) =>
       current.map((tab) => {
         if (tab.document.path !== path) {
@@ -2017,7 +2083,7 @@ export function NotiaMenu() {
     setPendingCreation(null)
     setRenamingPath(null)
 
-    if (isTextualViewKind(viewKind) || viewKind === 'inkdoc') {
+    if (isTextualViewKind(viewKind) || viewKind === 'inkdoc' || viewKind === 'drawio') {
       const result = await readLibraryFileContent(filePath)
       if (!result.ok) {
         setDialogState({
@@ -2118,6 +2184,71 @@ export function NotiaMenu() {
       bumpGraphRevisionIfVisible()
     },
     [bumpGraphRevisionIfVisible],
+  )
+
+  const handleDrawioDocumentPersist = useCallback(
+    async (targetPath: string, nextSource: string): Promise<void> => {
+      setOpenTabs((current) =>
+        current.map((tab) => {
+          if (tab.document.path !== targetPath || tab.document.viewKind !== 'drawio') {
+            return tab
+          }
+
+          return {
+            ...tab,
+            saveStatus: 'saving',
+            document: {
+              ...tab.document,
+              source: nextSource,
+            },
+          }
+        }),
+      )
+
+      const result = await writeLibraryFileContent(targetPath, nextSource)
+      if (!result.ok) {
+        setOpenTabs((current) =>
+          current.map((tab) => (
+            tab.document.path === targetPath
+              ? { ...tab, saveStatus: 'error' }
+              : tab
+          )),
+        )
+        throw new Error(result.error ?? 'No se pudo guardar el archivo draw.io.')
+      }
+
+      setOpenTabs((current) =>
+        current.map((tab) => {
+          if (tab.document.path !== targetPath || tab.document.viewKind !== 'drawio') {
+            return tab
+          }
+
+          return {
+            ...tab,
+            latestSavedSource: nextSource,
+            saveStatus: 'idle',
+            document: {
+              ...tab.document,
+              source: nextSource,
+            },
+          }
+        }),
+      )
+      bumpGraphRevisionIfVisible()
+    },
+    [bumpGraphRevisionIfVisible],
+  )
+
+  const handleDrawioControllerReady = useCallback(
+    (filePath: string, controller: DrawioDocumentController | null) => {
+      if (controller) {
+        drawioControllersRef.current.set(filePath, controller)
+        return
+      }
+
+      drawioControllersRef.current.delete(filePath)
+    },
+    [],
   )
 
   const handleSubmitPendingCreation = useCallback(async (name: string) => {
@@ -2608,6 +2739,8 @@ export function NotiaMenu() {
             saveStatus={saveStatus}
             onTextDocumentChange={handleTextDocumentChange}
             onInkdocDocumentPersist={handleInkdocDocumentPersist}
+            onDrawioDocumentPersist={handleDrawioDocumentPersist}
+            onDrawioControllerReady={handleDrawioControllerReady}
             rootPath={activeLibrary?.path ?? null}
             libraryFilePaths={libraryFilePaths}
             inkdocPreferences={inkdocPreferences}

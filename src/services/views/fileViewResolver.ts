@@ -18,6 +18,10 @@ export function resolveFileViewKind(extension: string): NotiaFileViewKind {
     return 'inkdoc'
   }
 
+  if (extension === 'drawio') {
+    return 'drawio'
+  }
+
   if (MARKDOWN_EXTENSIONS.has(extension)) {
     return 'markdown'
   }

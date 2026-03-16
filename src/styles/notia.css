@@ -1024,13 +1024,250 @@
 
 .notia-main-content {
   flex: 1;
+  display: flex;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
 }
 
 .notia-inkdoc-host {
   width: 100%;
   height: 100%;
+}
+
+.notia-drawio-view {
+  flex: 1;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--color-main-bg);
+}
+
+.notia-drawio-mount,
+.notia-drawio-runtime-root {
+  flex: 1;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.notia-drawio-runtime-root.geEditor {
+  --ge-panel-color: var(--color-menu-panel-bg);
+  --toolbar-color: color-mix(in srgb, var(--color-titlebar-bg) 76%, var(--color-menu-panel-bg) 24%);
+  --workspace-color: color-mix(in srgb, var(--color-main-bg) 90%, var(--color-card-bg) 10%);
+  --border-color: var(--color-border-soft);
+  --scrollbar-hover-color: var(--color-hover-surface);
+  --text-color: var(--color-heading-text);
+  --inactive-color: color-mix(in srgb, var(--color-card-bg) 78%, var(--color-border-soft) 22%);
+  --active-color: var(--color-active-item-bg);
+  --primary-color: color-mix(in srgb, var(--color-accent-text) 18%, var(--color-card-bg) 82%);
+  --primary-hover-color: color-mix(in srgb, var(--color-accent-text) 24%, var(--color-card-bg) 76%);
+  --accent-color: color-mix(in srgb, var(--color-accent-text) 16%, var(--color-menu-panel-bg) 84%);
+  --accent-hover-color: color-mix(in srgb, var(--color-accent-text) 24%, var(--color-menu-panel-bg) 76%);
+  --accent-text-color: var(--color-accent-text);
+  --ge-dark-panel-color: var(--color-menu-panel-bg);
+  --dark-toolbar-color: color-mix(in srgb, var(--color-titlebar-bg) 72%, var(--color-main-bg) 28%);
+  --dark-border-color: var(--color-border-soft);
+  --dark-text-color: var(--color-heading-text);
+  --dark-accent-color: color-mix(in srgb, var(--color-accent-text) 18%, var(--color-main-bg) 82%);
+  --dark-accent-text-color: var(--color-accent-text);
+  --dark-active-accent-color: color-mix(in srgb, var(--color-accent-text) 28%, var(--color-main-bg) 72%);
+  --dark-inverse-active-color: var(--color-heading-text);
+  --dark-highlight-color: color-mix(in srgb, var(--color-hover-surface) 68%, var(--color-main-bg) 32%);
+  --dark-header-color: var(--color-titlebar-bg);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: min-content 1fr min-content;
+}
+
+.notia-drawio-runtime-root.geEditor > .geMenubarContainer,
+.notia-drawio-runtime-root.geEditor > .geSimpleMainMenu {
+  display: none;
+}
+
+.notia-drawio-runtime-root.geEditor > .geToolbarContainer:not(.geSketch *) {
+  grid-row: 1;
+}
+
+.notia-drawio-runtime-root.geEditor > .geSidebarContainer:not(.geFormatContainer),
+.notia-drawio-runtime-root.geEditor > .geSidebarContainer.geFormatContainer,
+.notia-drawio-runtime-root.geEditor > .geHsplit,
+.notia-drawio-runtime-root.geEditor > .geDiagramContainer {
+  grid-row: 2;
+}
+
+.notia-drawio-runtime-root.geEditor > .geTabContainer {
+  grid-row: 3;
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor {
+  --ge-panel-color: var(--color-menu-panel-bg);
+  --toolbar-color: var(--color-titlebar-bg);
+  --workspace-color: var(--color-main-bg);
+  --border-color: var(--color-border-soft);
+  --scrollbar-hover-color: var(--color-hover-surface);
+  --text-color: var(--color-heading-text);
+  --inactive-color: var(--color-card-bg);
+  --active-color: var(--color-active-item-bg);
+  --primary-color: var(--color-accent-bg);
+  --primary-hover-color: color-mix(in srgb, var(--color-accent-bg) 84%, var(--color-hover-surface) 16%);
+  --accent-color: var(--color-accent-bg);
+  --accent-hover-color: color-mix(in srgb, var(--color-accent-bg) 78%, var(--color-hover-surface) 22%);
+  --accent-text-color: var(--color-accent-text);
+  --ge-dark-panel-color: var(--color-menu-panel-bg);
+  --dark-toolbar-color: var(--color-titlebar-bg);
+  --dark-border-color: var(--color-border-soft);
+  --dark-text-color: var(--color-heading-text);
+  --dark-accent-color: var(--color-accent-bg);
+  --dark-accent-text-color: var(--color-accent-text);
+  --dark-active-accent-color: color-mix(in srgb, var(--color-accent-bg) 78%, var(--color-hover-surface) 22%);
+  --dark-inverse-active-color: var(--color-heading-text);
+  --dark-highlight-color: var(--color-hover-surface);
+  --dark-header-color: var(--color-titlebar-bg);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor > .geToolbarContainer,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor > .geSidebarContainer,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor > .geTabContainer,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geFormatTitleContainer,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geDialog,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .mxWindow,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor div.mxPopupMenu,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geHint,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geSidebarTooltip {
+  background: var(--color-menu-panel-bg);
+  color: var(--color-heading-text);
+  border-color: var(--color-border-soft);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor > .geToolbarContainer {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-titlebar-bg) 92%, black 8%), var(--color-titlebar-bg));
+  border-top-color: var(--color-border-soft);
+  border-bottom-color: var(--color-border-soft);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor > .geSidebarContainer:not(.geFormatContainer) {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-sidebar-bg) 96%, black 4%), var(--color-sidebar-bg));
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor > .geSidebarContainer.geFormatContainer,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geTabContainer {
+  background: var(--color-card-bg);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geDiagramContainer {
+  background:
+    radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--color-main-bg) 88%, white 12%), transparent 36%),
+    radial-gradient(circle at 82% 78%, color-mix(in srgb, var(--color-main-bg) 86%, black 14%), transparent 34%),
+    var(--color-main-bg);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geButton,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geTitle,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .mxPopupMenuItem > div:not(:has(img)),
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geBtnStepper > div,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geStatus > div:not(.geStatusAlert) {
+  color: var(--color-heading-text);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geButton:hover:not(.mxDisabled, .mxDisabled *, [disabled], .gePageTab *, .geSimpleMainMenu *, .geBtn *, .geButtonGroup *, .geAdaptiveAsset, .gePrimaryBtn),
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .gePageTab .geButton:hover:not([disabled]),
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geButtonGroup .geButton:hover:not([disabled]),
+.notia-theme-dark .notia-drawio-runtime-root.geEditor table.mxPopupMenu tr.mxPopupMenuItemHover,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geSidebarContainer .geDropTarget,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .gePageTab:hover {
+  background: var(--color-hover-surface);
+  color: var(--color-hover-text);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geButtonGroup {
+  background: color-mix(in srgb, var(--color-card-bg) 92%, black 8%);
+  border-color: var(--color-border-soft);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .gePrimaryBtn {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+  border: 1px solid color-mix(in srgb, var(--color-accent-text) 40%, var(--color-border-soft) 60%);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .gePrimaryBtn:hover:not([disabled]) {
+  background: color-mix(in srgb, var(--color-accent-bg) 84%, var(--color-hover-surface) 16%);
+  color: var(--color-accent-text);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geButton[disabled] {
+  opacity: 0.45;
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor input:not(svg *, .geButton),
+.notia-theme-dark .notia-drawio-runtime-root.geEditor select:not(svg *),
+.notia-theme-dark .notia-drawio-runtime-root.geEditor textarea:not(svg *) {
+  background: color-mix(in srgb, var(--color-card-bg) 92%, black 8%);
+  color: var(--color-heading-text);
+  border-color: var(--color-border-soft);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geActivePage,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geFormatTitle.geActiveFormatTitle {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geHint,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor div.mxTooltip,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geSpinnerStatus {
+  background: color-mix(in srgb, var(--color-modal-bg) 94%, black 6%);
+  color: var(--color-heading-text);
+  border: 1px solid var(--color-border-soft);
+  box-shadow: 0 12px 30px -20px var(--color-modal-shadow);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geStatus .geStatusAlert,
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geAlert {
+  background: color-mix(in srgb, var(--color-close-hover-bg) 18%, var(--color-modal-bg) 82%);
+  color: #ffdede !important;
+  border-color: color-mix(in srgb, var(--color-close-hover-bg) 44%, var(--color-border-soft) 56%);
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geHsplit {
+  background: linear-gradient(var(--color-accent-text), var(--color-accent-text)) no-repeat left/2px 100%;
+}
+
+.notia-theme-dark .notia-drawio-runtime-root.geEditor .geBackgroundPage {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border-soft) 70%, transparent), 0 18px 40px -28px rgba(0, 0, 0, 0.58);
+}
+
+.notia-drawio-error {
+  position: absolute;
+  inset: 16px auto auto 16px;
+  max-width: min(420px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-modal-bg) 94%, transparent);
+  box-shadow: 0 12px 30px -20px var(--color-modal-shadow);
+  color: var(--color-heading-text);
+  z-index: 2;
+}
+
+.notia-drawio-error span {
+  color: var(--color-body-text);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .notia-graph-content {
@@ -2740,8 +2977,11 @@
 }
 
 .notia-markdown-host {
+  flex: 1;
+  width: 100%;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
 }
 
@@ -2900,7 +3140,9 @@
 }
 
 .notia-markdown-editor-root {
+  width: 100%;
   min-height: 100%;
+  min-width: 0;
 }
 
 .notia-markdown-editor-root .milkdown {

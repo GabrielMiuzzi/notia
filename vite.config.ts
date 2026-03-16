@@ -2,6 +2,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
+import {
+  copyDrawioRuntimeIntoBuild,
+  createDrawioRuntimePlugin,
+  DRAWIO_RUNTIME_PUBLIC_BASE,
+} from './build/drawioRuntime'
 
 const host = process.env.TAURI_DEV_HOST
 const packageJsonPath = resolve(__dirname, 'package.json')
@@ -11,7 +16,11 @@ const appVersion = typeof packageJson.version === 'string' && packageJson.versio
   : '0.0.0'
 
 export default defineConfig(() => ({
-  plugins: [react()],
+  plugins: [
+    react(),
+    createDrawioRuntimePlugin(),
+    copyDrawioRuntimeIntoBuild(),
+  ],
   resolve: {
     alias: {
       settings: resolve(__dirname, 'src/modules/inkdoc/settings.ts'),
@@ -19,6 +28,7 @@ export default defineConfig(() => ({
   },
   define: {
     __NOTIA_APP_VERSION__: JSON.stringify(appVersion),
+    __NOTIA_DRAWIO_RUNTIME_BASE__: JSON.stringify(DRAWIO_RUNTIME_PUBLIC_BASE),
   },
   clearScreen: false,
   server: {

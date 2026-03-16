@@ -1,4 +1,4 @@
-export type NotiaFileViewKind = 'markdown' | 'text' | 'image' | 'inkdoc'
+export type NotiaFileViewKind = 'markdown' | 'text' | 'image' | 'inkdoc' | 'drawio'
 
 interface OpenFileDocumentBase {
   path: string
@@ -17,12 +17,21 @@ export interface OpenInkdocFileDocument extends OpenFileDocumentBase {
   source: string
 }
 
+export interface OpenDrawioFileDocument extends OpenFileDocumentBase {
+  viewKind: 'drawio'
+  source: string
+}
+
 export interface OpenImageFileDocument extends OpenFileDocumentBase {
   viewKind: 'image'
   imageUrl: string
 }
 
-export type OpenFileDocument = OpenTextFileDocument | OpenImageFileDocument | OpenInkdocFileDocument
+export type OpenFileDocument =
+  | OpenTextFileDocument
+  | OpenImageFileDocument
+  | OpenInkdocFileDocument
+  | OpenDrawioFileDocument
 
 export type NotiaDocumentSaveStatus = 'idle' | 'saving' | 'error'
 
