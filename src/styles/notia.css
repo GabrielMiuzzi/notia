@@ -3566,6 +3566,42 @@
 
   .notia-titlebar {
     height: var(--titlebar-height);
+    padding: 0 4px;
+  }
+
+  .notia-titlebar-sidebar--open {
+    width: 264px;
+  }
+
+  .notia-titlebar-explorer {
+    padding: 0 6px;
+  }
+
+  .notia-titlebar-main {
+    padding-left: 6px;
+    gap: 4px;
+  }
+
+  .notia-tab {
+    min-width: 104px;
+  }
+
+  .notia-titlebar-controls {
+    padding-right: 4px;
+  }
+
+  .notia-sidebar--open {
+    width: 264px;
+  }
+}
+
+@media (max-width: 720px) {
+  .notia-app-shell {
+    --titlebar-height: 44px;
+  }
+
+  .notia-titlebar {
+    height: var(--titlebar-height);
     padding: 0 8px;
   }
 
@@ -3580,5 +3616,4 @@
   .notia-sidebar--open {
     width: 264px;
   }
-
 }
