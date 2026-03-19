@@ -1,4 +1,5 @@
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import type { NotiaLibrary } from '../../types/notia'
 
 const EXPLORER_REFRESH_INTERVAL_STORAGE_KEY = 'notia:explorer-refresh-interval-ms'
 const EXPLORER_FOLDER_STATE_STORAGE_KEY = 'notia:explorer-folder-state'
@@ -84,6 +85,27 @@ export function saveExplorerRefreshIntervalMs(value: number): void {
 
 type ExplorerFolderExpandedStateRecord = Record<string, Record<string, boolean>>
 
+type ExplorerFolderStateLibraryRef = Pick<NotiaLibrary, 'id' | 'path' | 'androidTreeUri'>
+
+function resolveExplorerFolderStateStorageKey(library: ExplorerFolderStateLibraryRef | null): string | null {
+  if (!library) {
+    return null
+  }
+
+  const androidTreeUri = library.androidTreeUri?.trim()
+  if (androidTreeUri) {
+    return `uri:${androidTreeUri}`
+  }
+
+  const normalizedPath = library.path.trim()
+  if (normalizedPath) {
+    return `path:${normalizedPath}`
+  }
+
+  const libraryId = library.id.trim()
+  return libraryId ? `id:${libraryId}` : null
+}
+
 function readExplorerFolderExpandedStateRecord(): ExplorerFolderExpandedStateRecord {
   const raw = localStorage.getItem(EXPLORER_FOLDER_STATE_STORAGE_KEY)
   if (!raw) {
@@ -119,13 +141,17 @@ function readExplorerFolderExpandedStateRecord(): ExplorerFolderExpandedStateRec
   }
 }
 
-export function loadExplorerFolderExpandedState(libraryId: string | null): Map<string, boolean> {
-  if (!libraryId) {
+export function loadExplorerFolderExpandedState(
+  library: ExplorerFolderStateLibraryRef | null,
+): Map<string, boolean> {
+  if (!library) {
     return new Map<string, boolean>()
   }
 
   const record = readExplorerFolderExpandedStateRecord()
-  const stateByPath = record[libraryId]
+  const storageKey = resolveExplorerFolderStateStorageKey(library)
+  const legacyStateById = library.id ? record[library.id] : undefined
+  const stateByPath = (storageKey ? record[storageKey] : undefined) ?? legacyStateById
   if (!stateByPath) {
     return new Map<string, boolean>()
   }
@@ -134,14 +160,25 @@ export function loadExplorerFolderExpandedState(libraryId: string | null): Map<s
 }
 
 export function saveExplorerFolderExpandedState(
-  libraryId: string | null,
+  library: ExplorerFolderStateLibraryRef | null,
   stateByPath: ReadonlyMap<string, boolean>,
 ): void {
-  if (!libraryId) {
+  if (!library) {
+    return
+  }
+
+  const storageKey = resolveExplorerFolderStateStorageKey(library)
+  if (!storageKey) {
     return
   }
 
   const record = readExplorerFolderExpandedStateRecord()
-  record[libraryId] = Object.fromEntries(stateByPath)
+  record[storageKey] = Object.fromEntries(stateByPath)
+
+  const legacyLibraryId = library.id.trim()
+  if (legacyLibraryId && legacyLibraryId !== storageKey) {
+    delete record[legacyLibraryId]
+  }
+
   localStorage.setItem(EXPLORER_FOLDER_STATE_STORAGE_KEY, JSON.stringify(record))
 }

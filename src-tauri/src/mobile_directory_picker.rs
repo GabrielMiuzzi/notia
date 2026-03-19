@@ -317,6 +317,30 @@ pub fn create_android_tree_entry(
 }
 
 #[cfg(target_os = "android")]
+pub fn delete_android_tree_entry(
+    state: &AndroidDirectoryPickerState,
+    entry_uri: &str,
+) -> Result<(), String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<WriteFileResponse>("deleteEntry", serde_json::json!({ "uri": entry_uri }))
+        .map_err(|error| format!("No se pudo eliminar la entrada Android: {error}"))?;
+
+    if !response.ok {
+        return Err("No se pudo eliminar la entrada Android.".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
 pub fn resolve_android_tree_uri(
     state: &AndroidDirectoryPickerState,
     directory_path: &str,

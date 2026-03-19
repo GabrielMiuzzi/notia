@@ -778,8 +778,9 @@ export function NotiaMenu() {
       return
     }
 
-    saveExplorerFolderExpandedState(libraryId, collectFolderExpandedState(nodes))
-  }, [])
+    const library = libraries.find((entry) => entry.id === libraryId) ?? null
+    saveExplorerFolderExpandedState(library, collectFolderExpandedState(nodes))
+  }, [libraries])
 
   const setTreeNodesForLibrary = useCallback((
     libraryId: string | null,
@@ -787,6 +788,10 @@ export function NotiaMenu() {
   ) => {
     setTreeNodes((current) => {
       const next = resolveTreeNodeUpdate(current, update)
+      if (current === next || areTreeNodeListsEqual(current, next)) {
+        return current
+      }
+
       treeNodesLibraryIdRef.current = libraryId
       persistExplorerFolderState(libraryId, next)
       return next
@@ -795,9 +800,10 @@ export function NotiaMenu() {
 
   const commitTreeNodesSnapshot = useCallback((libraryId: string, nodes: NotiaFileNode[]) => {
     lastKnownTreeSignatureRef.current = buildTreeNodesStructureSignature(nodes)
+    const library = libraries.find((entry) => entry.id === libraryId) ?? null
     const expandedStateByPath = treeNodesLibraryIdRef.current === libraryId
       ? collectFolderExpandedState(treeNodesRef.current)
-      : loadExplorerFolderExpandedState(libraryId)
+      : loadExplorerFolderExpandedState(library)
     const withExpandedState = applyFolderExpandedState(nodes, expandedStateByPath)
     const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
 
@@ -806,7 +812,7 @@ export function NotiaMenu() {
         ? current
         : selectedNodes
     ))
-  }, [setTreeNodesForLibrary])
+  }, [libraries, setTreeNodesForLibrary])
 
   const refreshActiveLibraryTree = useCallback(async () => {
     if (!activeLibrary) {

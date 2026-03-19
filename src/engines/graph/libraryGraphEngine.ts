@@ -10,6 +10,7 @@ type PathLookup = Map<string, string | null>
 interface FileDescriptor {
   path: string
   label: string
+  logicalPath: string
   relativePath: string
   relativePathWithoutExtension: string
   fileName: string
@@ -26,7 +27,14 @@ const MARKDOWN_LINK_PATTERN = /!?\[[^\]]*]\(([^)\n]+)\)/g
 const LEGACY_ESCAPED_WIKI_LINK_PATTERN = /\\\[\\\[([^\n\]]+?)\]\]/g
 
 function normalizePath(pathValue: string): string {
-  return pathValue.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')
+  const withForwardSlashes = pathValue.replace(/\\/g, '/')
+  const schemeMatch = withForwardSlashes.match(/^([a-zA-Z][a-zA-Z\d+.-]*:\/\/)(.*)$/)
+  if (schemeMatch) {
+    const [, schemePrefix, rest] = schemeMatch
+    return `${schemePrefix}${rest.replace(/\/+/g, '/').replace(/\/$/, '')}`
+  }
+
+  return withForwardSlashes.replace(/\/+/g, '/').replace(/\/$/, '')
 }
 
 function normalizeLookupKey(value: string): string {
@@ -56,24 +64,6 @@ function isExternalReference(reference: string): boolean {
   }
 
   return /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(reference)
-}
-
-function toRelativePath(filePath: string, rootPath: string | null): string {
-  const normalizedFilePath = normalizePath(filePath)
-  if (!rootPath) {
-    return normalizedFilePath.split('/').pop() ?? normalizedFilePath
-  }
-
-  const normalizedRootPath = normalizePath(rootPath)
-  if (normalizedFilePath === normalizedRootPath) {
-    return normalizedFilePath.split('/').pop() ?? normalizedFilePath
-  }
-
-  if (normalizedFilePath.startsWith(`${normalizedRootPath}/`)) {
-    return normalizedFilePath.slice(normalizedRootPath.length + 1)
-  }
-
-  return normalizedFilePath.split('/').pop() ?? normalizedFilePath
 }
 
 function parsePath(pathValue: string): ParsedPath {
@@ -138,7 +128,7 @@ function getParentDirectoryPath(filePath: string): string {
   const normalizedPath = normalizePath(filePath)
   const lastSeparatorIndex = normalizedPath.lastIndexOf('/')
   if (lastSeparatorIndex < 0) {
-    return normalizedPath
+    return ''
   }
 
   if (lastSeparatorIndex === 0) {
@@ -150,12 +140,13 @@ function getParentDirectoryPath(filePath: string): string {
 
 function collectFileDescriptors(
   nodes: NotiaFileNode[],
-  rootPath: string | null,
   descriptors: FileDescriptor[],
+  parentLogicalPath = '',
 ): void {
   for (const node of nodes) {
     if (node.type === 'folder') {
-      collectFileDescriptors(node.children ?? [], rootPath, descriptors)
+      const nextParentLogicalPath = parentLogicalPath ? `${parentLogicalPath}/${node.name}` : node.name
+      collectFileDescriptors(node.children ?? [], descriptors, nextParentLogicalPath)
       continue
     }
 
@@ -164,10 +155,12 @@ function collectFileDescriptors(
     }
 
     const normalizedPath = normalizePath(node.path)
-    const relativePath = toRelativePath(normalizedPath, rootPath)
+    const logicalPath = parentLogicalPath ? `${parentLogicalPath}/${node.name}` : node.name
+    const relativePath = logicalPath
     descriptors.push({
       path: normalizedPath,
       label: relativePath,
+      logicalPath,
       relativePath,
       relativePathWithoutExtension: stripFileExtension(relativePath),
       fileName: node.name,
@@ -199,6 +192,7 @@ function buildPathLookup(fileDescriptors: FileDescriptor[]): PathLookup {
 
   for (const descriptor of fileDescriptors) {
     registerLookupKey(lookup, descriptor.path, descriptor.path)
+    registerLookupKey(lookup, descriptor.logicalPath, descriptor.path)
     registerLookupKey(lookup, descriptor.relativePath, descriptor.path)
     registerLookupKey(lookup, descriptor.relativePathWithoutExtension, descriptor.path)
     registerLookupKey(lookup, descriptor.fileName, descriptor.path)
@@ -349,9 +343,8 @@ function extractGraphLinkReferences(filePath: string, sourceContent: string): st
 }
 
 function resolveReferenceCandidates(
-  sourcePath: string,
+  sourceLogicalPath: string,
   rawReference: string,
-  rootPath: string | null,
 ): string[] {
   const sanitizedReference = sanitizeLinkReference(rawReference)
   if (!sanitizedReference || isExternalReference(sanitizedReference)) {
@@ -365,40 +358,35 @@ function resolveReferenceCandidates(
 
   const candidates = new Set<string>()
 
-  const sourceDirectoryPath = getParentDirectoryPath(sourcePath)
+  const sourceDirectoryPath = getParentDirectoryPath(sourceLogicalPath)
   candidates.add(resolveRelativePath(sourceDirectoryPath, normalizedReference))
-
-  if (rootPath) {
-    const normalizedRootPath = normalizePath(rootPath)
-    candidates.add(resolveRelativePath(normalizedRootPath, normalizedReference))
-
-    if (normalizedReference.startsWith('/')) {
-      candidates.add(resolveRelativePath(normalizedRootPath, normalizedReference.slice(1)))
-    }
-  }
 
   if (/^([a-zA-Z]:)?\//.test(normalizedReference)) {
     candidates.add(normalizePath(normalizedReference))
+    if (normalizedReference.startsWith('/')) {
+      candidates.add(normalizedReference.slice(1))
+    }
   }
 
   return [...candidates]
 }
 
 function resolveTargetPath(
-  sourcePath: string,
+  sourceLogicalPath: string,
   rawReference: string,
-  rootPath: string | null,
-  nodePathSet: Set<string>,
   pathLookup: PathLookup,
 ): string | null {
-  const referenceCandidates = resolveReferenceCandidates(sourcePath, rawReference, rootPath)
+  const referenceCandidates = resolveReferenceCandidates(sourceLogicalPath, rawReference)
   for (const candidate of referenceCandidates) {
-    if (nodePathSet.has(candidate)) {
-      return candidate
+    const directLookupPath = pathLookup.get(normalizeLookupKey(candidate))
+    if (directLookupPath) {
+      return directLookupPath
     }
-
-    if (!hasFileExtension(candidate) && nodePathSet.has(`${candidate}.md`)) {
-      return `${candidate}.md`
+    if (!hasFileExtension(candidate)) {
+      const markdownLookupPath = pathLookup.get(normalizeLookupKey(`${candidate}.md`))
+      if (markdownLookupPath) {
+        return markdownLookupPath
+      }
     }
   }
 
@@ -431,7 +419,7 @@ function buildGraphNodes(fileDescriptors: FileDescriptor[]): LibraryGraphNode[] 
 
 export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
   const descriptors: FileDescriptor[] = []
-  collectFileDescriptors(nodes, null, descriptors)
+  collectFileDescriptors(nodes, descriptors)
 
   return descriptors
     .filter((descriptor) => {
@@ -444,29 +432,30 @@ export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
 
 export function buildLibraryGraphModel(
   nodes: NotiaFileNode[],
-  rootPath: string | null,
+  _rootPath: string | null,
   markdownSourcesByPath: MarkdownSourcesByPath,
 ): LibraryGraphModel {
   const fileDescriptors: FileDescriptor[] = []
-  collectFileDescriptors(nodes, rootPath, fileDescriptors)
+  collectFileDescriptors(nodes, fileDescriptors)
   if (fileDescriptors.length === 0) {
     return { nodes: [], edges: [] }
   }
 
   const graphNodes = buildGraphNodes(fileDescriptors)
-  const nodePathSet = new Set(graphNodes.map((node) => node.path))
   const pathLookup = buildPathLookup(fileDescriptors)
+  const relativePathByNodePath = new Map(fileDescriptors.map((descriptor) => [descriptor.path, descriptor.relativePath]))
   const edgeKeySet = new Set<string>()
   const graphEdges: LibraryGraphEdge[] = []
 
   for (const [rawSourcePath, sourceContent] of Object.entries(markdownSourcesByPath)) {
     const sourcePath = normalizePath(rawSourcePath)
-    if (!nodePathSet.has(sourcePath)) {
+    const sourceRelativePath = relativePathByNodePath.get(sourcePath)
+    if (!sourceRelativePath) {
       continue
     }
 
     for (const linkReference of extractGraphLinkReferences(sourcePath, sourceContent)) {
-      const targetPath = resolveTargetPath(sourcePath, linkReference, rootPath, nodePathSet, pathLookup)
+      const targetPath = resolveTargetPath(sourceRelativePath, linkReference, pathLookup)
       if (!targetPath || sourcePath === targetPath) {
         continue
       }

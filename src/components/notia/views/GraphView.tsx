@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type WheelEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type TouchEvent, type WheelEvent } from 'react'
 import { Eye, Search, SlidersHorizontal, X } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
 import {
@@ -181,6 +181,12 @@ interface GraphSearchScrollSession {
   startClientY: number
   startScrollTop: number
   moved: boolean
+}
+
+interface TouchPinchSession {
+  startDistance: number
+  graphX: number
+  graphY: number
 }
 
 function resolveNodeGlowClass(degree: number): string {
@@ -1026,6 +1032,7 @@ export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoadi
   const simulationLastTimestampRef = useRef<number | null>(null)
   const simulationNeedsSyncRef = useRef(true)
   const dragMovedRef = useRef(false)
+  const touchPinchSessionRef = useRef<TouchPinchSession | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 })
@@ -1293,6 +1300,22 @@ export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoadi
     [canvasSize.height, canvasSize.width, viewport.scale, viewport.x, viewport.y],
   )
 
+  const resolveCanvasLocalCoordinatesFromClientPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvasElement = canvasRef.current
+      if (!canvasElement || canvasSize.width <= 0 || canvasSize.height <= 0) {
+        return null
+      }
+
+      const rect = canvasElement.getBoundingClientRect()
+      return {
+        x: clientX - rect.left - canvasSize.width / 2,
+        y: clientY - rect.top - canvasSize.height / 2,
+      }
+    },
+    [canvasSize.height, canvasSize.width],
+  )
+
   const updateNodeDragTarget = useCallback(
     (clientX: number, clientY: number) => {
       const dragSession = nodeDragRef.current
@@ -1509,6 +1532,131 @@ export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoadi
         y: current.y - pointerY * (scaleRatio - 1),
       }
     })
+  }
+
+  const handleCanvasTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    if (nodeDragRef.current) {
+      return
+    }
+
+    if (event.touches.length === 1) {
+      const touch = event.touches[0]
+      dragMovedRef.current = false
+      touchPinchSessionRef.current = null
+      dragStartRef.current = {
+        originX: viewportRef.current.x,
+        originY: viewportRef.current.y,
+        pointerX: touch.clientX,
+        pointerY: touch.clientY,
+      }
+      setIsDragging(true)
+      return
+    }
+
+    if (event.touches.length === 2) {
+      const [firstTouch, secondTouch] = [event.touches[0], event.touches[1]]
+      const localPoint = resolveCanvasLocalCoordinatesFromClientPoint(
+        (firstTouch.clientX + secondTouch.clientX) / 2,
+        (firstTouch.clientY + secondTouch.clientY) / 2,
+      )
+      if (!localPoint) {
+        return
+      }
+
+      const currentViewport = viewportRef.current
+      touchPinchSessionRef.current = {
+        startDistance: Math.hypot(secondTouch.clientX - firstTouch.clientX, secondTouch.clientY - firstTouch.clientY),
+        graphX: (localPoint.x - currentViewport.x) / currentViewport.scale,
+        graphY: (localPoint.y - currentViewport.y) / currentViewport.scale,
+      }
+      dragStartRef.current = null
+      dragMovedRef.current = true
+      setIsDragging(true)
+      event.preventDefault()
+    }
+  }
+
+  const handleCanvasTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 2) {
+      const pinchSession = touchPinchSessionRef.current
+      if (!pinchSession) {
+        return
+      }
+
+      const [firstTouch, secondTouch] = [event.touches[0], event.touches[1]]
+      const nextDistance = Math.hypot(secondTouch.clientX - firstTouch.clientX, secondTouch.clientY - firstTouch.clientY)
+      if (pinchSession.startDistance <= 0 || nextDistance <= 0) {
+        return
+      }
+
+      const localPoint = resolveCanvasLocalCoordinatesFromClientPoint(
+        (firstTouch.clientX + secondTouch.clientX) / 2,
+        (firstTouch.clientY + secondTouch.clientY) / 2,
+      )
+      if (!localPoint) {
+        return
+      }
+
+      const nextScale = Math.min(
+        MAX_ZOOM,
+        Math.max(MIN_ZOOM_EPSILON, viewportRef.current.scale * (nextDistance / pinchSession.startDistance)),
+      )
+
+      setViewport({
+        scale: nextScale,
+        x: localPoint.x - pinchSession.graphX * nextScale,
+        y: localPoint.y - pinchSession.graphY * nextScale,
+      })
+      touchPinchSessionRef.current = {
+        ...pinchSession,
+        startDistance: nextDistance,
+      }
+      dragMovedRef.current = true
+      event.preventDefault()
+      return
+    }
+
+    if (event.touches.length !== 1) {
+      return
+    }
+
+    const dragStart = dragStartRef.current
+    if (!dragStart) {
+      return
+    }
+
+    const touch = event.touches[0]
+    const deltaX = touch.clientX - dragStart.pointerX
+    const deltaY = touch.clientY - dragStart.pointerY
+    if (Math.abs(deltaX) + Math.abs(deltaY) > 2) {
+      dragMovedRef.current = true
+    }
+
+    setViewport((current) => ({
+      ...current,
+      x: dragStart.originX + deltaX,
+      y: dragStart.originY + deltaY,
+    }))
+    event.preventDefault()
+  }
+
+  const handleCanvasTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 1 && touchPinchSessionRef.current) {
+      const touch = event.touches[0]
+      touchPinchSessionRef.current = null
+      dragStartRef.current = {
+        originX: viewportRef.current.x,
+        originY: viewportRef.current.y,
+        pointerX: touch.clientX,
+        pointerY: touch.clientY,
+      }
+      setIsDragging(true)
+      return
+    }
+
+    touchPinchSessionRef.current = null
+    dragStartRef.current = null
+    setIsDragging(false)
   }
 
   const handleResetViewport = () => {
@@ -1746,6 +1894,10 @@ export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoadi
             onMouseMove={handleCanvasMouseMove}
             onMouseUp={handleCanvasMouseUp}
             onMouseLeave={handleCanvasMouseLeave}
+            onTouchStart={handleCanvasTouchStart}
+            onTouchMove={handleCanvasTouchMove}
+            onTouchEnd={handleCanvasTouchEnd}
+            onTouchCancel={handleCanvasTouchEnd}
             onWheel={handleCanvasWheel}
             onClick={handleCanvasClick}
           >

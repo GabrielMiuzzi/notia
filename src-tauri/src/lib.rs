@@ -915,7 +915,13 @@ fn create_library_entry(
 }
 
 #[tauri::command]
-fn library_entry_operation(payload: LibraryEntryOperationPayload) -> OperationResult {
+fn library_entry_operation(
+    payload: LibraryEntryOperationPayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> OperationResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     match payload.action.as_str() {
         "delete" => {
             let Some(target_path_value) = payload.target_path else {
@@ -924,6 +930,23 @@ fn library_entry_operation(payload: LibraryEntryOperationPayload) -> OperationRe
                     error: Some("Invalid target path.".to_string()),
                 };
             };
+
+            #[cfg(target_os = "android")]
+            if target_path_value.starts_with("content://") {
+                return match mobile_directory_picker::delete_android_tree_entry(
+                    android_picker_state.inner(),
+                    &target_path_value,
+                ) {
+                    Ok(()) => OperationResult {
+                        ok: true,
+                        error: None,
+                    },
+                    Err(_) => OperationResult {
+                        ok: false,
+                        error: Some("Could not delete entry.".to_string()),
+                    },
+                };
+            }
 
             let target_path = PathBuf::from(target_path_value);
             let operation_result = if target_path.is_dir() {
