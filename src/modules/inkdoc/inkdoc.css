@@ -27,8 +27,11 @@
 	flex-direction: column;
 	height: 100%;
 	width: 100%;
+	min-height: 0;
+	min-width: 0;
 	background: var(--background-primary);
 	position: relative;
+	overflow: hidden;
 }
 
 .inkdoc-toolbar {
@@ -1180,6 +1183,8 @@
 .inkdoc-pages {
 	flex: 1;
 	overflow: auto;
+	min-height: 0;
+	min-width: 0;
 	padding: 64px 16px 48px var(--inkdoc-left-safe-gutter);
 	background: var(--background-primary);
 }
