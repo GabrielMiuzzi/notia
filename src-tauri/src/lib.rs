@@ -847,10 +847,16 @@ fn create_library_entry(
                 entry_type,
                 content,
             ) {
-                Ok(_) => OperationResult {
-                    ok: true,
-                    error: None,
-                },
+                Ok(_) => {
+                    let _ = mobile_directory_picker::refresh_android_tree_path_cache(
+                        android_picker_state.inner(),
+                        &parent_uri,
+                    );
+                    OperationResult {
+                        ok: true,
+                        error: None,
+                    }
+                }
                 Err(error_message) => {
                     let lowered = error_message.to_lowercase();
                     if lowered.contains("already exists")

@@ -110,6 +110,11 @@ export interface TaskManagerSettings {
   activeTab: string
 }
 
+export interface TaskManagerVaultRef {
+  path: string
+  androidTreeUri?: string
+}
+
 export interface MarkdownFileDocument {
   path: string
   content: string

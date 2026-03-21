@@ -11,11 +11,46 @@ import {
   type FilesystemOperationResult,
   type FilesystemReadTextResult,
 } from '../../../services/files/filesystemEngine'
+import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 
 type OperationResult = FilesystemOperationResult
 type ReadLibraryFileResult = FilesystemReadTextResult
 type WriteLibraryFileResult = FilesystemOperationResult
 type MarkdownFileDocument = FilesystemMarkdownDocument
+
+let activeTaskManagerVaultRef: TaskManagerVaultRef | null = null
+
+function normalizeVaultRef(vault: TaskManagerVaultRef | null): TaskManagerVaultRef | null {
+  if (!vault?.path.trim()) {
+    return null
+  }
+
+  return {
+    path: normalizeFilesystemPath(vault.path),
+    androidTreeUri: typeof vault.androidTreeUri === 'string' && vault.androidTreeUri.trim()
+      ? vault.androidTreeUri
+      : undefined,
+  }
+}
+
+function resolveAndroidDirectoryUri(pathValue: string): string | undefined {
+  const vaultRef = activeTaskManagerVaultRef
+  if (!vaultRef?.androidTreeUri) {
+    return undefined
+  }
+
+  const normalizedPath = normalizeFilesystemPath(pathValue)
+  const normalizedVaultPath = normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')
+  if (normalizedPath === normalizedVaultPath) {
+    return vaultRef.androidTreeUri
+  }
+
+  return undefined
+}
+
+export function setActiveTaskManagerVaultContext(vault: TaskManagerVaultRef | null): void {
+  activeTaskManagerVaultRef = normalizeVaultRef(vault)
+}
 
 function notifyLibraryTreeChanged(pathHint: string) {
   if (typeof window === 'undefined') {
@@ -27,7 +62,7 @@ function notifyLibraryTreeChanged(pathHint: string) {
   }))
 }
 
-export async function pickVaultDirectory(): Promise<{ path: string; name: string } | null> {
+export async function pickVaultDirectory(): Promise<TaskManagerVaultRef & { name: string } | null> {
   try {
     const selected = await pickDirectory('Seleccionar vault')
     if (!selected) {
@@ -36,7 +71,13 @@ export async function pickVaultDirectory(): Promise<{ path: string; name: string
 
     const normalizedPath = normalizeFilesystemPath(selected.path)
     const name = getPathBaseName(normalizedPath)
-    return { path: normalizedPath, name }
+    return {
+      path: normalizedPath,
+      name,
+      androidTreeUri: typeof selected.uri === 'string' && selected.uri.trim()
+        ? selected.uri
+        : undefined,
+    }
   } catch (error) {
     console.error('[task-manager] pick vault directory failed', error)
     return null
@@ -95,6 +136,9 @@ export async function createFolder(parentDirectoryPath: string, name: string): P
       normalizeFilesystemPath(parentDirectoryPath),
       name,
       'folder',
+      {
+        androidDirectoryUri: resolveAndroidDirectoryUri(parentDirectoryPath),
+      },
     )
     if (result.ok) {
       notifyLibraryTreeChanged(`${parentDirectoryPath}/${name}`)
@@ -112,6 +156,9 @@ export async function createMarkdownFile(parentDirectoryPath: string, fileName: 
       normalizeFilesystemPath(parentDirectoryPath),
       fileName,
       'note',
+      {
+        androidDirectoryUri: resolveAndroidDirectoryUri(parentDirectoryPath),
+      },
     )
     if (result.ok) {
       notifyLibraryTreeChanged(`${parentDirectoryPath}/${fileName}`)

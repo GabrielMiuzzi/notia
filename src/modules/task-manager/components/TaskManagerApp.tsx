@@ -2,6 +2,7 @@ import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
 import { useCallback, useMemo } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
+import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
 import { useTaskManager } from '../hooks/useTaskManager'
@@ -35,12 +36,12 @@ const theme = createTheme({
 
 interface TaskManagerAppProps {
   embedded?: boolean
-  vaultPath?: string | null
+  vault?: TaskManagerVaultRef | null
   onOpenTaskFile?: (taskPath: string) => void
 }
 
-export function TaskManagerApp({ embedded = false, vaultPath = null, onOpenTaskFile }: TaskManagerAppProps) {
-  const manager = useTaskManager(vaultPath)
+export function TaskManagerApp({ embedded = false, vault = null, onOpenTaskFile }: TaskManagerAppProps) {
+  const manager = useTaskManager(vault)
   const { confirm } = useConfirmationEngine()
 
   const activeBoard = manager.settings.activeTab

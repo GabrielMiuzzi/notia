@@ -2726,7 +2726,12 @@ export function NotiaMenu() {
         ) : activeWorkspaceView === 'task-manager' ? (
           <TaskManagerApp
             embedded
-            vaultPath={activeLibrary?.path ?? null}
+            vault={activeLibrary
+              ? {
+                path: activeLibrary.path,
+                androidTreeUri: activeLibrary.androidTreeUri,
+              }
+              : null}
             onOpenTaskFile={handleOpenFile}
           />
         ) : activeWorkspaceView === 'coldpass' ? (

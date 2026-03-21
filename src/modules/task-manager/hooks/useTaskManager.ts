@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
@@ -22,6 +22,7 @@ import {
   startPomodoro,
 } from '../engines/pomodoroEngine'
 import type { Board, Group, PomodoroDurations, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
+import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 import { sanitizeFilename } from '../utils/sanitizeFilename'
 import { loadTaskManagerSettings, saveTaskManagerSettings } from '../services/taskManagerStorage'
 import {
@@ -45,6 +46,7 @@ import {
   type TaskManagerSnapshot,
 } from '../services/taskManagerService'
 import { pickVaultDirectory } from '../services/vaultRuntime'
+import { setActiveTaskManagerVaultContext } from '../services/vaultRuntime'
 
 interface TaskDialogState {
   open: boolean
@@ -83,7 +85,7 @@ export interface UseTaskManagerResult {
   setError: (value: string | null) => void
   setInfoMessage: (value: string | null) => void
   setActiveTab: (tab: string) => void
-  setActiveVaultPath: (path: string | null) => Promise<void>
+  setActiveVaultPath: (vault: TaskManagerVaultRef | null) => Promise<void>
   selectVault: () => Promise<void>
   reload: () => Promise<void>
   openTaskCreateDialog: (defaults?: { parentTaskName?: string; group?: string }) => void
@@ -260,7 +262,13 @@ function resolveSettingsForEmptySnapshot(previousSettings: TaskManagerSettings):
   }
 }
 
-export function useTaskManager(externalVaultPath: string | null = null): UseTaskManagerResult {
+function areSameVaultRef(left: TaskManagerVaultRef | null, right: TaskManagerVaultRef | null): boolean {
+  return (left?.path ?? '') === (right?.path ?? '')
+    && (left?.androidTreeUri ?? '') === (right?.androidTreeUri ?? '')
+}
+
+export function useTaskManager(externalVault: TaskManagerVaultRef | null = null): UseTaskManagerResult {
+  const activeVaultRef = useRef<TaskManagerVaultRef | null>(null)
   const [settings, setSettings] = useState<TaskManagerSettings>(() => loadTaskManagerSettings())
   const [snapshot, setSnapshot] = useState<TaskManagerSnapshot>(EMPTY_SNAPSHOT)
   const [isLoading, setIsLoading] = useState(false)
@@ -417,8 +425,10 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     hydrateSettingsFromSnapshot(nextSnapshot)
   }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards])
 
-  const setActiveVaultPath = useCallback(async (path: string | null) => {
-    if (!path) {
+  const setActiveVaultPath = useCallback(async (vault: TaskManagerVaultRef | null) => {
+    if (!vault?.path) {
+      activeVaultRef.current = null
+      setActiveTaskManagerVaultContext(null)
       updateSettings((previousSettings) => ({
         ...previousSettings,
         activeVaultPath: null,
@@ -427,24 +437,30 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
       return
     }
 
+    const normalizedVault: TaskManagerVaultRef = {
+      path: vault.path,
+      androidTreeUri: vault.androidTreeUri,
+    }
+    activeVaultRef.current = normalizedVault
+    setActiveTaskManagerVaultContext(normalizedVault)
     setIsLoading(true)
     try {
-      const bootstrapSnapshot = await loadTaskManagerSnapshot(path)
+      const bootstrapSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
       if (bootstrapSnapshot.tasks.length === 0) {
         updateSettings((previousSettings) => resolveSettingsForEmptySnapshot(previousSettings))
         await cleanupEmptyWorkspaceBoards(
-          path,
+          normalizedVault.path,
           resolveCleanupBoardCandidates(bootstrapSnapshot),
         )
       }
       const bootstrapBoards = resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot)
-      await ensureTaskWorkspace(path, bootstrapBoards)
-      const nextSnapshot = await loadTaskManagerSnapshot(path)
+      await ensureTaskWorkspace(normalizedVault.path, bootstrapBoards)
+      const nextSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
       setSnapshot(nextSnapshot)
       hydrateSettingsFromSnapshot(nextSnapshot)
       updateSettings((previousSettings) => ({
         ...previousSettings,
-        activeVaultPath: path,
+        activeVaultPath: normalizedVault.path,
       }))
       setInfoMessage('Vault sincronizado.')
     } catch (runtimeError) {
@@ -464,7 +480,7 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
       return
     }
 
-    await setActiveVaultPath(selected.path)
+    await setActiveVaultPath(selected)
   }, [setActiveVaultPath])
 
   useEffect(() => {
@@ -504,19 +520,19 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
   }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, updateSettings])
 
   useEffect(() => {
-    if (!externalVaultPath) {
+    if (!externalVault?.path) {
       if (settings.activeVaultPath) {
         void setActiveVaultPath(null)
       }
       return
     }
 
-    if (externalVaultPath === settings.activeVaultPath) {
+    if (areSameVaultRef(externalVault, activeVaultRef.current)) {
       return
     }
 
-    void setActiveVaultPath(externalVaultPath)
-  }, [externalVaultPath, setActiveVaultPath, settings.activeVaultPath])
+    void setActiveVaultPath(externalVault)
+  }, [externalVault, setActiveVaultPath, settings.activeVaultPath])
 
   useEffect(() => {
     if (!settings.activeVaultPath) {
@@ -1366,6 +1382,6 @@ export function useTaskManager(externalVaultPath: string | null = null): UseTask
     exitPomodoroDeviationMode,
     setPomodoroDurations,
     deletePomodoroLogEntry,
-    isVaultExternallyControlled: Boolean(externalVaultPath),
+    isVaultExternallyControlled: Boolean(externalVault?.path),
   }
 }
