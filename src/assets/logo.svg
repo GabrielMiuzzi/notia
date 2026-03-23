@@ -1,0 +1,272 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="matrixGreen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b8ffd8"/>
+      <stop offset="0.28" stop-color="#57ffab"/>
+      <stop offset="0.6" stop-color="#00ff88"/>
+      <stop offset="1" stop-color="#00994d"/>
+    </linearGradient>
+
+    <filter id="logoGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur1"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="9" result="blur2"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="softNoise" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="1" seed="11" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="table" tableValues="0 0.03"/>
+      </feComponentTransfer>
+    </filter>
+
+    <filter id="crtWarp" x="-10%" y="-10%" width="120%" height="120%">
+      <feDisplacementMap in="SourceGraphic" in2="SourceGraphic" scale="0"/>
+    </filter>
+
+    <pattern id="scanlines" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="transparent"/>
+      <rect y="0" width="8" height="2" fill="#7dffb3" opacity="0.08"/>
+      <rect y="4" width="8" height="1" fill="#00ff88" opacity="0.04"/>
+    </pattern>
+
+    <radialGradient id="crtVignette" cx="50%" cy="48%" r="62%">
+      <stop offset="58%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="82%" stop-color="#00ff88" stop-opacity="0.035"/>
+      <stop offset="100%" stop-color="#00ff88" stop-opacity="0.12"/>
+    </radialGradient>
+
+    <mask id="centerFade">
+      <rect width="1024" height="1024" fill="white"/>
+      <circle cx="512" cy="512" r="300" fill="black" opacity="0.25"/>
+    </mask>
+
+    <style>
+      .logo {
+        fill: url(#matrixGreen);
+        filter: url(#logoGlow);
+      }
+
+      .ring {
+        fill: none;
+        stroke: #57ffab;
+        stroke-width: 6;
+        filter: url(#logoGlow);
+      }
+
+      .rain {
+        font-family: monospace;
+        font-size: 28px;
+        fill: #57ffab;
+        opacity: 0.22;
+        letter-spacing: 2px;
+      }
+
+      .rainBright {
+        fill: #caffdf;
+        opacity: 0.35;
+      }
+
+      .flickerA {
+        animation: flickerA 2.8s infinite steps(1);
+      }
+
+      .flickerB {
+        animation: flickerB 3.7s infinite steps(1);
+      }
+
+      .drift1 { animation: fall1 8s linear infinite; }
+      .drift2 { animation: fall2 11s linear infinite; }
+      .drift3 { animation: fall3 9.5s linear infinite; }
+      .drift4 { animation: fall4 12.5s linear infinite; }
+      .drift5 { animation: fall5 10.5s linear infinite; }
+      .drift6 { animation: fall6 13s linear infinite; }
+
+      @keyframes flickerA {
+        0%, 16%, 19%, 54%, 57%, 100% { opacity: 1; }
+        17% { opacity: 0.8; }
+        55% { opacity: 0.88; }
+      }
+
+      @keyframes flickerB {
+        0%, 24%, 28%, 68%, 72%, 100% { opacity: 1; }
+        26% { opacity: 0.74; }
+        70% { opacity: 0.9; }
+      }
+
+      @keyframes fall1 { from { transform: translateY(-160px);} to { transform: translateY(180px);} }
+      @keyframes fall2 { from { transform: translateY(-220px);} to { transform: translateY(150px);} }
+      @keyframes fall3 { from { transform: translateY(-140px);} to { transform: translateY(200px);} }
+      @keyframes fall4 { from { transform: translateY(-260px);} to { transform: translateY(140px);} }
+      @keyframes fall5 { from { transform: translateY(-180px);} to { transform: translateY(170px);} }
+      @keyframes fall6 { from { transform: translateY(-300px);} to { transform: translateY(120px);} }
+    </style>
+  </defs>
+
+  <!-- Grupo CRT general -->
+  <g filter="url(#crtWarp)">
+    <!-- caracteres cayendo detrás -->
+    <g mask="url(#centerFade)">
+      <g class="drift1">
+        <text class="rain" x="150" y="20">ﾊ ﾂ ｶ ﾐ ｴ ﾗ 0 1 ｦ ﾈ ﾎ 7 ｹ</text>
+        <text class="rain rainBright" x="150" y="160">ﾜ ｲ ﾇ ｵ 4 2 ﾓ ｼ ﾃ ﾕ ﾅ</text>
+        <text class="rain" x="150" y="300">ﾁ ｻ ｿ 8 3 ｱ ﾘ ﾋ ﾀ ﾉ</text>
+        <text class="rain" x="150" y="450">ｸ ﾏ ﾒ 5 6 ﾌ ﾆ ｹ ﾛ</text>
+        <text class="rain" x="150" y="620">ﾍ ｳ 1 9 ﾚ ｽ ﾖ ﾗ ｾ</text>
+        <text class="rain" x="150" y="790">ﾄ ﾝ 0 7 ｷ ﾑ ﾔ ﾃ</text>
+      </g>
+
+      <g class="drift2">
+        <text class="rain" x="280" y="10">1 0 0 1 1 0 1 0 0 1 1 1 0 1</text>
+        <text class="rain rainBright" x="280" y="140">ｻ ﾂ ﾌ ﾅ ﾎ 2 7 4 ｴ ﾗ</text>
+        <text class="rain" x="280" y="280">0 1 1 0 1 0 1 1 0 0 1 0</text>
+        <text class="rain" x="280" y="430">ﾐ ﾖ ﾇ ﾃ ﾘ 6 5 ﾏ ﾛ</text>
+        <text class="rain" x="280" y="600">1 1 0 0 0 1 1 0 1 0 1 0</text>
+        <text class="rain" x="280" y="770">ﾊ ﾜ ﾈ ｼ ﾋ 8 2 ｵ</text>
+      </g>
+
+      <g class="drift3">
+        <text class="rain" x="410" y="0">ｸ ﾁ ﾏ ﾆ ﾂ ﾘ 0 9 7 ｴ ﾒ</text>
+        <text class="rain rainBright" x="410" y="170">0 1 1 0 1 1 0 0 1 0 1 1</text>
+        <text class="rain" x="410" y="340">ﾇ ﾕ ﾔ ﾗ ﾓ 3 4 ｽ ﾎ</text>
+        <text class="rain" x="410" y="520">1 0 0 1 0 0 1 1 1 0</text>
+        <text class="rain" x="410" y="700">ﾀ ﾖ ﾛ ｱ ﾚ 5 8 6</text>
+      </g>
+
+      <g class="drift4">
+        <text class="rain" x="560" y="-20">0 1 0 1 0 0 1 1 0 1 0 1</text>
+        <text class="rain rainBright" x="560" y="150">ﾊ ﾐ ﾃ ﾘ ｻ 7 2 9 ﾗ</text>
+        <text class="rain" x="560" y="320">0 0 1 1 1 0 0 1 0 1 1</text>
+        <text class="rain" x="560" y="500">ﾎ ﾇ ﾅ ﾓ ﾍ 4 5 ｸ</text>
+        <text class="rain" x="560" y="690">1 0 1 1 0 0 0 1 1 0</text>
+        <text class="rain" x="560" y="850">ﾖ ﾀ ﾚ ﾔ ｵ 6</text>
+      </g>
+
+      <g class="drift5">
+        <text class="rain" x="700" y="30">ﾗ ﾑ ﾈ ｴ ﾂ 1 3 5 7 9</text>
+        <text class="rain rainBright" x="700" y="210">0 1 0 0 1 1 0 1 1 0</text>
+        <text class="rain" x="700" y="380">ﾏ ﾘ ﾅ ﾄ ﾌ 8 2 4</text>
+        <text class="rain" x="700" y="560">1 1 0 1 0 0 1 0 1 1</text>
+        <text class="rain" x="700" y="740">ﾁ ﾕ ﾛ ｹ ﾋ 6 0</text>
+      </g>
+
+      <g class="drift6">
+        <text class="rain" x="835" y="-30">1 0 1 0 1 1 0 0 1 0</text>
+        <text class="rain rainBright" x="835" y="120">ﾎ ﾃ ﾊ ﾜ ﾆ 2 3 8</text>
+        <text class="rain" x="835" y="290">0 0 1 1 0 1 0 1 1 1</text>
+        <text class="rain" x="835" y="470">ﾒ ﾛ ﾂ ｻ ﾇ 7 4</text>
+        <text class="rain" x="835" y="650">1 1 0 0 1 0 0 1 1</text>
+        <text class="rain" x="835" y="830">ﾚ ﾖ ﾀ ｸ 5 9</text>
+      </g>
+    </g>
+
+    <!-- scanlines CRT -->
+    <rect width="1024" height="1024" fill="url(#scanlines)" opacity="0.65"/>
+
+    <!-- viñeta CRT -->
+    <rect width="1024" height="1024" fill="url(#crtVignette)"/>
+
+    <!-- ruido -->
+    <rect width="1024" height="1024" filter="url(#softNoise)" opacity="0.45"/>
+
+    <!-- leve reflejo horizontal -->
+    <ellipse cx="512" cy="220" rx="300" ry="70" fill="#caffdf" opacity="0.045"/>
+
+    <!-- logo -->
+    <g class="flickerA">
+      <path class="logo" fill-rule="evenodd"
+            d="M511 157 L203 327 L203 662 L512 832 L819 662 L819 326 Z
+               M511 180 L799 338 L799 649 L512 807 L224 649 L224 339 Z"/>
+
+      <path class="logo"
+            d="M510 232
+               L485 258
+               L415 299
+               L403 293
+               L391 295
+               L384 304
+               L384 312
+               L393 322
+               L405 322
+               L413 315
+               L415 305
+               L468 275
+               L396 361
+               L425 382
+               L491 309
+               L492 452
+               L532 452
+               L533 309
+               L600 382
+               L628 361
+               L553 275
+               L607 304
+               L618 322
+               L634 320
+               L640 308
+               L631 294
+               L621 293
+               L611 300
+               L539 258
+               L516 233 Z"/>
+
+      <path class="logo" d="M276 468 L747 467 L747 492 L276 494 Z"/>
+
+      <path class="logo"
+            d="M364 617
+               L365 658
+               L491 537
+               L492 712
+               L495 720
+               L511 733
+               L528 720
+               L531 712
+               L532 537
+               L659 659
+               L658 615
+               L548 508
+               L473 509 Z"/>
+
+      <path class="logo" d="M371 508 L423 556 L415 565 L371 517 Z"/>
+      <path class="logo" d="M653 508 L601 556 L609 565 L653 517 Z"/>
+      <path class="logo" d="M449 583 L483 619 L474 619 L449 592 Z"/>
+      <path class="logo" d="M575 583 L541 619 L550 619 L575 592 Z"/>
+
+      <path class="logo"
+            d="M340 428
+               L334 420
+               L324 417
+               L309 430
+               L250 430
+               L250 436
+               L309 436
+               L316 446
+               L328 448
+               L338 441 Z"/>
+
+      <path class="logo"
+            d="M683 427
+               L684 439
+               L694 447
+               L707 445
+               L714 435
+               L774 434
+               L773 429
+               L714 429
+               L702 417
+               L691 418 Z"/>
+    </g>
+
+    <g class="flickerB">
+      <circle class="ring" cx="324" cy="432" r="15"/>
+      <circle class="ring" cx="700" cy="432" r="15"/>
+      <circle class="ring" cx="400" cy="307" r="13"/>
+      <circle class="ring" cx="625" cy="307" r="13"/>
+    </g>
+  </g>
+</svg>

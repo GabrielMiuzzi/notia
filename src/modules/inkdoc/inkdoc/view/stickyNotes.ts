@@ -542,6 +542,8 @@ const renderStickyNote = (
 		const startLeft = note.x;
 		const startTop = note.y;
 		const cleanup = startWindowPointerInteraction({
+			pointerId: event.pointerId,
+			captureTarget: noteEl,
 			onMove: (moveEvent) => {
 				context.noteActivity();
 				const zoom = Math.max(0.001, context.getZoomLevel());
@@ -577,6 +579,8 @@ const renderStickyNote = (
 		const startW = Math.max(INKDOC_STICKY_NOTE_MIN_WIDTH, note.w);
 		const startH = Math.max(INKDOC_STICKY_NOTE_MIN_HEIGHT, note.h);
 		const cleanup = startWindowPointerInteraction({
+			pointerId: event.pointerId,
+			captureTarget: resizeHandle,
 			onMove: (moveEvent) => {
 				context.noteActivity();
 				const zoom = Math.max(0.001, context.getZoomLevel());

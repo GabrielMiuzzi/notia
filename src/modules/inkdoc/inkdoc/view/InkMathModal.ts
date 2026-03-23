@@ -67,6 +67,7 @@ export class InkMathModal extends Modal {
 	private brushRegistry = new BrushRegistry();
 	private canvasShellEl: HTMLDivElement | null = null;
 	private canvasEl: HTMLCanvasElement | null = null;
+	private previewCanvasEl: HTMLCanvasElement | null = null;
 	private toolRowEl: HTMLDivElement | null = null;
 	private drawToolButtonEl: HTMLButtonElement | null = null;
 	private eraseToolButtonEl: HTMLButtonElement | null = null;
@@ -90,6 +91,7 @@ export class InkMathModal extends Modal {
 	private actionsEl: HTMLDivElement | null = null;
 	private latexInvalidIconEl: HTMLSpanElement | null = null;
 	private ctx: CanvasRenderingContext2D | null = null;
+	private previewCtx: CanvasRenderingContext2D | null = null;
 	private readonly backgroundColor: string;
 	private readonly inkColor: string;
 	private readonly onAccept: ((latex: string) => void) | null;
@@ -151,6 +153,7 @@ export class InkMathModal extends Modal {
 
 		this.canvasShellEl = this.contentEl.createDiv({ cls: "inkdoc-inkmath-canvas-shell" });
 		this.canvasEl = this.canvasShellEl.createEl("canvas", { cls: "inkdoc-inkmath-canvas" });
+		this.previewCanvasEl = this.canvasShellEl.createEl("canvas", { cls: "inkdoc-inkmath-canvas-preview" });
 		this.applyGridBackground();
 		this.canvasEl.addEventListener("pointerdown", this.onPointerDown);
 		this.canvasEl.addEventListener("pointermove", this.onPointerMove);
@@ -213,8 +216,10 @@ export class InkMathModal extends Modal {
 		this.actionsEl = null;
 		this.latexInvalidIconEl = null;
 		this.ctx = null;
+		this.previewCtx = null;
 		this.canvasShellEl = null;
 		this.canvasEl = null;
+		this.previewCanvasEl = null;
 		this.toolRowEl = null;
 		this.drawToolButtonEl = null;
 		this.eraseToolButtonEl = null;
@@ -469,7 +474,7 @@ export class InkMathModal extends Modal {
 			this.strokes.push(stroke);
 			this.activeStroke = stroke;
 			this.lastStabilizedDrawPoint = { x: point.x, y: point.y };
-			this.redrawCanvasFromStrokes();
+			this.renderActiveStrokePreview(stroke);
 			this.onInkChanged();
 		}
 	};
@@ -503,7 +508,7 @@ export class InkMathModal extends Modal {
 			}
 			const strokePoint = this.createStrokePoint(point, event);
 			this.activeStroke.points.push(strokePoint);
-			this.redrawCanvasFromStrokes();
+			this.renderActiveStrokePreview(this.activeStroke);
 			this.onInkChanged();
 		}
 		this.lastPoint = point;
@@ -525,6 +530,8 @@ export class InkMathModal extends Modal {
 		this.pointerMode = this.selectedTool;
 		this.lastStabilizedDrawPoint = null;
 		this.activeStroke = null;
+		this.clearPreviewCanvas();
+		this.redrawCanvasFromStrokes();
 	};
 
 	private onCanvasContextMenu = (event: MouseEvent): void => {
@@ -556,11 +563,11 @@ export class InkMathModal extends Modal {
 			return point;
 		}
 		const stabilization = this.activeStroke?.stabilizer ?? this.getInkMathBrushPreset().stabilizer ?? 0;
-		const stabilized = stabilizePoint(
-			this.lastStabilizedDrawPoint,
-			{ x: point.x, y: point.y },
-			stabilization
-		);
+		if (stabilization <= 0) {
+			this.lastStabilizedDrawPoint = { x: point.x, y: point.y };
+			return point;
+		}
+		const stabilized = stabilizePoint(this.lastStabilizedDrawPoint, { x: point.x, y: point.y }, stabilization);
 		this.lastStabilizedDrawPoint = stabilized;
 		return {
 			x: clamp(stabilized.x, 0, this.logicalWidth),
@@ -1007,22 +1014,60 @@ export class InkMathModal extends Modal {
 		this.canvasShellEl.style.aspectRatio = `${this.logicalWidth} / ${this.logicalHeight}`;
 		this.canvasEl.style.width = "100%";
 		this.canvasEl.style.height = "100%";
-		this.canvasEl.width = Math.max(1, Math.round(this.logicalWidth * this.dpr));
-		this.canvasEl.height = Math.max(1, Math.round(this.logicalHeight * this.dpr));
-		const nextCtx = this.canvasEl.getContext("2d");
-		if (!nextCtx) {
-			this.ctx = null;
+		const displayWidth = Math.max(1, Math.round(this.canvasShellEl.clientWidth || this.logicalWidth));
+		const displayHeight = Math.max(1, Math.round(this.canvasShellEl.clientHeight || this.logicalHeight));
+		this.syncCanvasBitmapToDisplay(displayWidth, displayHeight);
+		this.syncSectionWidthsWithCanvas();
+		this.queueResponsiveLayout();
+	}
+
+	private syncCanvasBitmapToDisplay(displayWidth: number, displayHeight: number): void {
+		if (!this.canvasEl || !this.previewCanvasEl) {
 			return;
 		}
-		nextCtx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+		this.dpr = Math.max(1, window.devicePixelRatio || 1);
+		const bitmapWidth = Math.max(1, Math.round(displayWidth * this.dpr));
+		const bitmapHeight = Math.max(1, Math.round(displayHeight * this.dpr));
+		if (this.canvasEl.width !== bitmapWidth) {
+			this.canvasEl.width = bitmapWidth;
+		}
+		if (this.canvasEl.height !== bitmapHeight) {
+			this.canvasEl.height = bitmapHeight;
+		}
+		this.previewCanvasEl.style.width = "100%";
+		this.previewCanvasEl.style.height = "100%";
+		if (this.previewCanvasEl.width !== bitmapWidth) {
+			this.previewCanvasEl.width = bitmapWidth;
+		}
+		if (this.previewCanvasEl.height !== bitmapHeight) {
+			this.previewCanvasEl.height = bitmapHeight;
+		}
+		const nextCtx = this.canvasEl.getContext("2d");
+		const nextPreviewCtx = this.previewCanvasEl.getContext("2d");
+		if (!nextCtx || !nextPreviewCtx) {
+			this.ctx = null;
+			this.previewCtx = null;
+			return;
+		}
+		const scaleX = bitmapWidth / Math.max(1, this.logicalWidth);
+		const scaleY = bitmapHeight / Math.max(1, this.logicalHeight);
+		nextCtx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+		nextPreviewCtx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
 		nextCtx.lineCap = "round";
 		nextCtx.lineJoin = "round";
 		nextCtx.lineWidth = this.strokeWidth;
 		nextCtx.strokeStyle = this.inkColor;
+		nextPreviewCtx.lineCap = "round";
+		nextPreviewCtx.lineJoin = "round";
+		nextPreviewCtx.lineWidth = this.strokeWidth;
+		nextPreviewCtx.strokeStyle = this.inkColor;
 		this.ctx = nextCtx;
+		this.previewCtx = nextPreviewCtx;
 		this.redrawCanvasFromStrokes();
-		this.syncSectionWidthsWithCanvas();
-		this.queueResponsiveLayout();
+		this.clearPreviewCanvas();
+		if (this.activeStroke) {
+			this.renderActiveStrokePreview(this.activeStroke);
+		}
 	}
 
 	private redrawCanvasFromStrokes(): void {
@@ -1031,6 +1076,9 @@ export class InkMathModal extends Modal {
 		}
 		this.ctx.clearRect(0, 0, this.logicalWidth, this.logicalHeight);
 		for (const stroke of this.strokes) {
+			if (this.activeStroke && stroke.id === this.activeStroke.id) {
+				continue;
+			}
 			this.redrawDrawStroke(stroke);
 		}
 	}
@@ -1040,6 +1088,24 @@ export class InkMathModal extends Modal {
 			return;
 		}
 		renderStrokeWithBrush(this.ctx, stroke, this.getBrushPresetByStroke(stroke), {
+			stylusDynamicsEnabled: this.stylusAvailable && this.isStylusDynamicsEnabled,
+			quality: "high"
+		});
+	}
+
+	private clearPreviewCanvas(): void {
+		if (!this.previewCtx) {
+			return;
+		}
+		this.previewCtx.clearRect(0, 0, this.logicalWidth, this.logicalHeight);
+	}
+
+	private renderActiveStrokePreview(stroke: InkMathStroke): void {
+		if (!this.previewCtx) {
+			return;
+		}
+		this.clearPreviewCanvas();
+		renderStrokeWithBrush(this.previewCtx, stroke, this.getBrushPresetByStroke(stroke), {
 			stylusDynamicsEnabled: this.stylusAvailable && this.isStylusDynamicsEnabled,
 			quality: "high"
 		});
@@ -1399,34 +1465,16 @@ export class InkMathModal extends Modal {
 			return;
 		}
 		const contentWidth = this.contentEl.clientWidth;
-		const contentHeight = this.contentEl.clientHeight;
-		if (contentWidth <= 0 || contentHeight <= 0) {
+		if (contentWidth <= 0) {
 			return;
 		}
-		const style = window.getComputedStyle(this.contentEl);
-		const gap = Number.parseFloat(style.rowGap || style.gap || "0") || 0;
-		const children = Array.from(this.contentEl.children).filter(
-			(child): child is HTMLElement => child instanceof HTMLElement
-		);
-		let occupiedHeight = 0;
-		let visibleChildren = 0;
-		for (const child of children) {
-			if (child.offsetParent === null) {
-				continue;
-			}
-			visibleChildren += 1;
-			if (child === this.canvasShellEl) {
-				continue;
-			}
-			occupiedHeight += child.getBoundingClientRect().height;
-		}
-		const totalGapHeight = Math.max(0, visibleChildren - 1) * gap;
-		const availableCanvasHeight = Math.max(180, contentHeight - occupiedHeight - totalGapHeight);
 		const aspectRatio = this.logicalWidth / Math.max(1, this.logicalHeight);
-		const fittedWidth = Math.min(contentWidth, availableCanvasHeight * aspectRatio);
+		const fittedWidth = Math.max(1, Math.floor(contentWidth));
 		const fittedHeight = fittedWidth / Math.max(0.0001, aspectRatio);
-		this.canvasShellEl.style.width = `${Math.max(180, Math.floor(fittedWidth))}px`;
-		this.canvasShellEl.style.height = `${Math.max(120, Math.floor(fittedHeight))}px`;
+		this.canvasShellEl.style.width = `${fittedWidth}px`;
+		const displayHeight = Math.max(120, Math.floor(fittedHeight));
+		this.canvasShellEl.style.height = `${displayHeight}px`;
+		this.syncCanvasBitmapToDisplay(fittedWidth, displayHeight);
 	}
 
 	private onWindowResize = (): void => {
@@ -1560,7 +1608,9 @@ class InkMathImageDebugModal extends Modal {
 	}
 
 	onOpen(): void {
-		this.detachShell = attachInkDocModalEngine(this, { tone: "debug", size: "md" });
+		this.detachShell = attachInkDocModalEngine(this, { tone: "debug", size: "xl" });
+		this.modalEl.addClass("inkdoc-inkmath-modal-shell");
+		this.contentEl.addClass("inkdoc-inkmath-modal");
 		this.titleEl.setText("InkMath OCR Debug");
 		this.contentEl.empty();
 		this.contentEl.createEl("p", {
@@ -1582,6 +1632,8 @@ class InkMathImageDebugModal extends Modal {
 	onClose(): void {
 		this.detachShell?.();
 		this.detachShell = null;
+		this.modalEl.removeClass("inkdoc-inkmath-modal-shell");
+		this.contentEl.removeClass("inkdoc-inkmath-modal");
 		this.contentEl.empty();
 	}
 }

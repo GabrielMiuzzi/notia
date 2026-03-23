@@ -220,6 +220,8 @@ export const createObjectHoverMenuController = (
 };
 
 type StartPointerInteractionOptions = {
+	pointerId?: number;
+	captureTarget?: HTMLElement | null;
 	onMove: (event: PointerEvent) => void;
 	onEnd: (event: PointerEvent) => void;
 };
@@ -227,8 +229,40 @@ type StartPointerInteractionOptions = {
 export const startWindowPointerInteraction = (
 	options: StartPointerInteractionOptions
 ): (() => void) => {
-	const handleMove = (event: PointerEvent) => options.onMove(event);
+	const pointerId = options.pointerId ?? null;
+	const captureTarget = options.captureTarget ?? null;
+	if (captureTarget && pointerId !== null && typeof captureTarget.setPointerCapture === "function") {
+		try {
+			captureTarget.setPointerCapture(pointerId);
+		} catch {
+			// Ignore browsers/platforms that reject capture for this pointer.
+		}
+	}
+	const releaseCapture = () => {
+		if (!captureTarget || pointerId === null || typeof captureTarget.releasePointerCapture !== "function") {
+			return;
+		}
+		try {
+			if (!captureTarget.hasPointerCapture || captureTarget.hasPointerCapture(pointerId)) {
+				captureTarget.releasePointerCapture(pointerId);
+			}
+		} catch {
+			// Ignore browsers/platforms that already released capture.
+		}
+	};
+	const matchesPointer = (event: PointerEvent) => pointerId === null || event.pointerId === pointerId;
+	const handleMove = (event: PointerEvent) => {
+		if (!matchesPointer(event)) {
+			return;
+		}
+		event.preventDefault();
+		options.onMove(event);
+	};
 	const handleUp = (event: PointerEvent) => {
+		if (!matchesPointer(event)) {
+			return;
+		}
+		event.preventDefault();
 		options.onEnd(event);
 		dispose();
 	};
@@ -236,6 +270,7 @@ export const startWindowPointerInteraction = (
 		window.removeEventListener("pointermove", handleMove);
 		window.removeEventListener("pointerup", handleUp);
 		window.removeEventListener("pointercancel", handleUp);
+		releaseCapture();
 	};
 	window.addEventListener("pointermove", handleMove);
 	window.addEventListener("pointerup", handleUp);

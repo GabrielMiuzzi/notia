@@ -188,6 +188,11 @@ export class InkDocView extends ItemView {
 	private imagePointerCleanup: (() => void) | null = null;
 	private zoomLevel = 1;
 	private isPanning = false;
+	private handPanPointerId: number | null = null;
+	private handGesturePointers = new Map<number, { x: number; y: number }>();
+	private pinchStartDistance: number | null = null;
+	private pinchStartZoom = 1;
+	private pinchAnchorContent: { x: number; y: number } | null = null;
 	private panStart: { x: number; y: number } | null = null;
 	private panScrollStart: { left: number; top: number } | null = null;
 	private activeTextEdit: ActiveBlockEdit | null = null;
@@ -481,41 +486,56 @@ export class InkDocView extends ItemView {
 			if (this.activeTool !== "hand" || event.button !== 0 || !this.pagesEl) {
 				return;
 			}
-			this.isPanning = true;
-			this.panStart = { x: event.clientX, y: event.clientY };
-			this.panScrollStart = { left: this.pagesEl.scrollLeft, top: this.pagesEl.scrollTop };
-			this.pagesEl.classList.add("is-panning");
+			this.handGesturePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 			this.pagesEl.setPointerCapture(event.pointerId);
+			if (this.handGesturePointers.size >= 2) {
+				this.beginHandPinchGesture();
+			} else {
+				this.isPanning = true;
+				this.handPanPointerId = event.pointerId;
+				this.panStart = { x: event.clientX, y: event.clientY };
+				this.panScrollStart = { left: this.pagesEl.scrollLeft, top: this.pagesEl.scrollTop };
+				this.pagesEl.classList.add("is-panning");
+			}
 			event.preventDefault();
 		});
 		this.registerDomEvent(this.pagesEl, "pointermove", (event: PointerEvent) => {
-			if (!this.isPanning || !this.panStart || !this.panScrollStart || !this.pagesEl) {
+			if (this.activeTool !== "hand" || !this.pagesEl) {
+				return;
+			}
+			if (this.handGesturePointers.has(event.pointerId)) {
+				this.handGesturePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			}
+			if (this.handGesturePointers.size >= 2 && this.pinchStartDistance && this.pinchAnchorContent) {
+				this.updateHandPinchGesture();
+				event.preventDefault();
+				return;
+			}
+			if (
+				!this.isPanning ||
+				this.handPanPointerId !== event.pointerId ||
+				!this.panStart ||
+				!this.panScrollStart
+			) {
 				return;
 			}
 			const dx = event.clientX - this.panStart.x;
 			const dy = event.clientY - this.panStart.y;
 			this.pagesEl.scrollLeft = this.panScrollStart.left - dx;
 			this.pagesEl.scrollTop = this.panScrollStart.top - dy;
+			event.preventDefault();
 		});
 		this.registerDomEvent(this.pagesEl, "pointerup", (event: PointerEvent) => {
-			if (!this.isPanning || !this.pagesEl) {
+			if (this.activeTool !== "hand" || !this.pagesEl) {
 				return;
 			}
-			this.isPanning = false;
-			this.panStart = null;
-			this.panScrollStart = null;
-			this.pagesEl.classList.remove("is-panning");
-			this.pagesEl.releasePointerCapture(event.pointerId);
+			this.finishHandGesturePointer(event.pointerId);
 		});
 		this.registerDomEvent(this.pagesEl, "pointercancel", (event: PointerEvent) => {
-			if (!this.isPanning || !this.pagesEl) {
+			if (this.activeTool !== "hand" || !this.pagesEl) {
 				return;
 			}
-			this.isPanning = false;
-			this.panStart = null;
-			this.panScrollStart = null;
-			this.pagesEl.classList.remove("is-panning");
-			this.pagesEl.releasePointerCapture(event.pointerId);
+			this.finishHandGesturePointer(event.pointerId);
 		});
 		this.registerDomEvent(window, "resize", () => {
 			if (!this.pencilMenuEl) {
@@ -2011,6 +2031,8 @@ export class InkDocView extends ItemView {
 				const startLeft = block.x;
 				const startTop = block.y;
 				startWindowPointerInteraction({
+					pointerId: event.pointerId,
+					captureTarget: blockEl,
 					onMove: (moveEvent) => {
 						this.syncEngine.noteActivity();
 						const currentZoom = Math.max(0.001, this.zoomLevel || 1);
@@ -2046,6 +2068,8 @@ export class InkDocView extends ItemView {
 				const startW = Math.max(INKDOC_TEXT_MIN_WIDTH, block.w);
 				const startH = Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h);
 				startWindowPointerInteraction({
+					pointerId: event.pointerId,
+					captureTarget: resizeHandle,
 					onMove: (moveEvent) => {
 						this.syncEngine.noteActivity();
 						const currentZoom = Math.max(0.001, this.zoomLevel || 1);
@@ -2818,6 +2842,8 @@ export class InkDocView extends ItemView {
 			if (event.button !== 0) {
 				return;
 			}
+			event.preventDefault();
+			event.stopPropagation();
 			this.setActiveTool(tool);
 			this.closePencilMenu();
 			this.toolbarDragCreateSession = {
@@ -2830,6 +2856,8 @@ export class InkDocView extends ItemView {
 				this.toolbarDragCreateCleanup();
 			}
 			this.toolbarDragCreateCleanup = startWindowPointerInteraction({
+				pointerId: event.pointerId,
+				captureTarget: button,
 				onMove: () => {},
 				onEnd: (upEvent) => {
 					const session = this.toolbarDragCreateSession;
@@ -3571,6 +3599,10 @@ export class InkDocView extends ItemView {
 		if (this.activeTool !== "hand") {
 			this.pagesEl.classList.remove("is-panning");
 			this.isPanning = false;
+			this.handPanPointerId = null;
+			this.handGesturePointers.clear();
+			this.pinchStartDistance = null;
+			this.pinchAnchorContent = null;
 			this.panStart = null;
 			this.panScrollStart = null;
 		}
@@ -4368,6 +4400,99 @@ export class InkDocView extends ItemView {
 		return Math.min(2.5, Math.max(0.5, value));
 	}
 
+	private getHandGesturePair(): [{ x: number; y: number }, { x: number; y: number }] | null {
+		if (this.handGesturePointers.size < 2) {
+			return null;
+		}
+		const entries = Array.from(this.handGesturePointers.values());
+		const first = entries[0];
+		const second = entries[1];
+		if (!first || !second) {
+			return null;
+		}
+		return [first, second];
+	}
+
+	private beginHandPinchGesture(): void {
+		if (!this.pagesEl) {
+			return;
+		}
+		const pair = this.getHandGesturePair();
+		if (!pair) {
+			return;
+		}
+		const [first, second] = pair;
+		this.isPanning = false;
+		this.handPanPointerId = null;
+		this.panStart = null;
+		this.panScrollStart = null;
+		this.pagesEl.classList.remove("is-panning");
+		this.pinchStartDistance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+		this.pinchStartZoom = this.zoomLevel;
+		const rect = this.pagesEl.getBoundingClientRect();
+		const midpointX = (first.x + second.x) * 0.5 - rect.left;
+		const midpointY = (first.y + second.y) * 0.5 - rect.top;
+		this.pinchAnchorContent = {
+			x: (this.pagesEl.scrollLeft + midpointX) / Math.max(0.001, this.zoomLevel),
+			y: (this.pagesEl.scrollTop + midpointY) / Math.max(0.001, this.zoomLevel)
+		};
+	}
+
+	private updateHandPinchGesture(): void {
+		if (!this.pagesEl || !this.pinchStartDistance || !this.pinchAnchorContent) {
+			return;
+		}
+		const pair = this.getHandGesturePair();
+		if (!pair) {
+			return;
+		}
+		const [first, second] = pair;
+		const nextDistance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+		const nextZoom = this.clampZoom(this.pinchStartZoom * (nextDistance / this.pinchStartDistance));
+		const rect = this.pagesEl.getBoundingClientRect();
+		const midpointX = (first.x + second.x) * 0.5 - rect.left;
+		const midpointY = (first.y + second.y) * 0.5 - rect.top;
+		if (nextZoom !== this.zoomLevel) {
+			this.zoomLevel = nextZoom;
+			this.updateZoom();
+		}
+		this.pagesEl.scrollLeft = this.pinchAnchorContent.x * this.zoomLevel - midpointX;
+		this.pagesEl.scrollTop = this.pinchAnchorContent.y * this.zoomLevel - midpointY;
+	}
+
+	private finishHandGesturePointer(pointerId: number): void {
+		if (!this.pagesEl) {
+			return;
+		}
+		this.handGesturePointers.delete(pointerId);
+		if (this.pagesEl.hasPointerCapture(pointerId)) {
+			this.pagesEl.releasePointerCapture(pointerId);
+		}
+		if (this.handGesturePointers.size >= 2) {
+			this.beginHandPinchGesture();
+			return;
+		}
+		this.pinchStartDistance = null;
+		this.pinchAnchorContent = null;
+		this.isPanning = false;
+		this.handPanPointerId = null;
+		this.panStart = null;
+		this.panScrollStart = null;
+		this.pagesEl.classList.remove("is-panning");
+		if (this.handGesturePointers.size === 1) {
+			const remainingEntry = Array.from(this.handGesturePointers.entries())[0];
+			if (!remainingEntry) {
+				return;
+			}
+			const [remainingPointerId, remainingPoint] = remainingEntry;
+			this.isPanning = true;
+			this.handPanPointerId = remainingPointerId;
+			this.panStart = { x: remainingPoint.x, y: remainingPoint.y };
+			this.panScrollStart = { left: this.pagesEl.scrollLeft, top: this.pagesEl.scrollTop };
+			this.pagesEl.classList.add("is-panning");
+		}
+	}
+
 	private updateZoom(): void {
 		if (!this.pagesContentEl) {
 			return;
@@ -4564,6 +4689,8 @@ export class InkDocView extends ItemView {
 		const center = { x: block.x + block.w / 2, y: block.y + block.h / 2 };
 		const startAngle = Math.atan2(startPoint.y - center.y, startPoint.x - center.x);
 		this.imagePointerCleanup = startWindowPointerInteraction({
+			pointerId: event.pointerId,
+			captureTarget: event.currentTarget instanceof HTMLElement ? event.currentTarget : null,
 			onMove: (moveEvent) => {
 				this.syncEngine.noteActivity();
 				const point = this.getPointerPosition(state.canvas, moveEvent);

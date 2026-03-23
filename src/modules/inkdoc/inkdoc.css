@@ -58,6 +58,7 @@
 	color: var(--text-normal, #1e232a);
 	cursor: default;
 	padding: 0;
+	touch-action: none;
 }
 
 .inkdoc-toolbar-icon-glyph {
@@ -191,6 +192,7 @@
 	cursor: pointer;
 	padding: 0;
 	box-shadow: 0 5px 14px rgba(0, 0, 0, 0.18);
+	touch-action: none;
 }
 
 .inkdoc-pencil-fab.is-active {
@@ -1191,6 +1193,7 @@
 
 .inkdoc-pages.is-hand-tool {
 	cursor: grab;
+	touch-action: none;
 }
 
 .inkdoc-pages.is-hand-tool.is-panning {
@@ -1554,6 +1557,7 @@
 	);
 	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
 	pointer-events: auto;
+	touch-action: none;
 }
 
 .inkdoc-sticky-note.is-collapsed {
@@ -1828,6 +1832,7 @@
 	box-sizing: border-box;
 	border: 1px dotted transparent;
 	pointer-events: auto;
+	touch-action: none;
 }
 
 .inkdoc-image-block.is-tool-active {
@@ -1865,6 +1870,7 @@
 	justify-content: center;
 	color: var(--text-normal);
 	cursor: pointer;
+	touch-action: none;
 }
 
 .inkdoc-image-handle.is-resize {
@@ -1899,6 +1905,7 @@
 	border: 1px dotted transparent;
 	overflow: visible;
 	pointer-events: auto;
+	touch-action: none;
 }
 
 .inkdoc-text-block.is-tool-active {
@@ -1963,6 +1970,7 @@
 	background: rgba(0, 0, 0, 0.35);
 	border: 1px solid rgba(255, 255, 255, 0.95);
 	box-sizing: border-box;
+	touch-action: none;
 }
 
 .inkdoc-text-block-resize {
@@ -2483,7 +2491,7 @@
 .inkdoc-inkmath-modal-shell .modal-content {
 	max-height: none;
 	overflow-x: hidden;
-	overflow-y: hidden;
+	overflow-y: auto;
 }
 
 .inkdoc-inkmath-canvas {
@@ -2495,6 +2503,13 @@
 	cursor: crosshair;
 }
 
+.inkdoc-inkmath-canvas-preview {
+	position: absolute;
+	inset: 0;
+	display: block;
+	pointer-events: none;
+}
+
 .inkdoc-inkmath-canvas-shell {
 	position: relative;
 	display: block;
@@ -2503,7 +2518,7 @@
 	margin-inline: 0;
 	flex: 1 1 auto;
 	min-height: 0;
-	align-self: center;
+	align-self: stretch;
 }
 
 .inkdoc-inkmath-tools {

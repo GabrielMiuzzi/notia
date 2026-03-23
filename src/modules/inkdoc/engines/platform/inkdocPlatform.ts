@@ -564,6 +564,7 @@ export class Modal {
   }
 
   open(): void {
+    const BACKDROP_CLOSE_GUARD_MS = 250
     this.modalEl.empty()
     const body = document.createElement('div')
     body.className = 'modal-bg'
@@ -574,9 +575,34 @@ export class Modal {
     this.modalEl.appendChild(body)
     this.modalEl.appendChild(inner)
     document.body.appendChild(this.modalEl)
-    window.setTimeout(() => {
-      body.addEventListener('click', () => this.close(), { once: true })
-    }, 0)
+    const openedAt = performance.now()
+    let backdropPointerDownArmed = false
+    const armBackdropClose = () => {
+      backdropPointerDownArmed = true
+    }
+    const handleBackdropPointerDown = (event: PointerEvent) => {
+      if (event.target !== body) {
+        return
+      }
+      if (performance.now() - openedAt < BACKDROP_CLOSE_GUARD_MS) {
+        return
+      }
+      armBackdropClose()
+    }
+    const handleBackdropClick = (event: MouseEvent) => {
+      if (event.target !== body) {
+        return
+      }
+      if (!backdropPointerDownArmed && performance.now() - openedAt < BACKDROP_CLOSE_GUARD_MS) {
+        return
+      }
+      if (!backdropPointerDownArmed && event.detail !== 0) {
+        return
+      }
+      this.close()
+    }
+    body.addEventListener('pointerdown', handleBackdropPointerDown)
+    body.addEventListener('click', handleBackdropClick)
     this.onOpen()
   }
 
