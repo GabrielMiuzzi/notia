@@ -4,6 +4,7 @@ import type { InkDocDocument, InkDocImageBlock, InkDocPage, InkDocPoint, InkDocS
 import { getPageSizeMm } from "./pageSizes";
 import { renderPdfPageBackground } from "./pdfPageBackground";
 import { applyStrokeStyleToCanvas, applyStrokeStyleToPdf } from "./strokeStyles";
+import { ensureInkDocDecorations, isDecorationVisibleOnPage } from "./documentDecorations";
 
 const PX_TO_MM = 25.4 / 96;
 
@@ -270,11 +271,26 @@ const renderPage = async (
 	pdf: any,
 	app: App,
 	sourcePath: string,
+	doc: InkDocDocument,
 	page: InkDocPage,
+	pageIndex: number,
 	pageWidthMm: number,
 	pageHeightMm: number
 ): Promise<void> => {
 	renderPdfPageBackground(pdf, page, pageWidthMm, pageHeightMm);
+	const decorations = ensureInkDocDecorations(doc);
+	const effectiveImages: InkDocImageBlock[] = [];
+	const effectiveTextBlocks: InkDocTextBlock[] = [];
+	if (isDecorationVisibleOnPage(doc, "header", pageIndex)) {
+		effectiveImages.push(...(decorations.header.images ?? []));
+		effectiveTextBlocks.push(...(decorations.header.textBlocks ?? []));
+	}
+	effectiveImages.push(...(page.images ?? []));
+	effectiveTextBlocks.push(...(page.textBlocks ?? []));
+	if (isDecorationVisibleOnPage(doc, "footer", pageIndex)) {
+		effectiveImages.push(...(decorations.footer.images ?? []));
+		effectiveTextBlocks.push(...(decorations.footer.textBlocks ?? []));
+	}
 
 	for (const stroke of page.strokes ?? []) {
 		if (stroke.tool === "highlighter") {
@@ -283,10 +299,10 @@ const renderPage = async (
 		}
 		renderStroke(pdf, stroke);
 	}
-	for (const image of page.images ?? []) {
+	for (const image of effectiveImages) {
 		await renderImageBlock(pdf, image);
 	}
-	for (const block of page.textBlocks ?? []) {
+	for (const block of effectiveTextBlocks) {
 		if (block.type === "latex") {
 			await renderLatexBlock(pdf, app, sourcePath, block);
 			continue;
@@ -314,7 +330,7 @@ const buildInkDocPdf = async (
 		if (index > 0) {
 			pdf.addPage([widthMm, heightMm], orientation);
 		}
-		await renderPage(pdf, app, sourcePath, page, widthMm, heightMm);
+		await renderPage(pdf, app, sourcePath, doc, page, index, widthMm, heightMm);
 	}
 	return pdf;
 };

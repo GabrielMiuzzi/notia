@@ -1205,6 +1205,11 @@
 	pointer-events: none;
 }
 
+.inkdoc-pages.is-select-tool .inkdoc-text-block.is-decoration-block,
+.inkdoc-pages.is-select-tool .inkdoc-image-block.is-decoration-block {
+	pointer-events: auto;
+}
+
 .inkdoc-pages.is-hand-tool .inkdoc-text-block,
 .inkdoc-pages.is-hand-tool .inkdoc-image-block,
 .inkdoc-pages.is-hand-tool .inkdoc-sticky-note {
@@ -1533,6 +1538,75 @@
 	inset: 0;
 	z-index: 12;
 	pointer-events: none;
+}
+
+.inkdoc-page-decoration-band {
+	position: absolute;
+	left: 0;
+	right: 0;
+	z-index: 3;
+	pointer-events: none;
+	box-sizing: border-box;
+	border-top: 1px dashed color-mix(in srgb, var(--interactive-accent) 42%, var(--background-modifier-border) 58%);
+	border-bottom: 1px dashed color-mix(in srgb, var(--interactive-accent) 42%, var(--background-modifier-border) 58%);
+	background:
+		linear-gradient(
+			180deg,
+			color-mix(in srgb, var(--interactive-accent) 11%, transparent) 0%,
+			color-mix(in srgb, var(--background-modifier-hover) 10%, transparent) 100%
+		),
+		repeating-linear-gradient(
+			90deg,
+			color-mix(in srgb, var(--interactive-accent) 7%, transparent) 0 18px,
+			transparent 18px 36px
+		);
+	box-shadow:
+		inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 12%, transparent),
+		inset 0 1px 0 color-mix(in srgb, var(--background-primary) 78%, transparent),
+		inset 0 -1px 0 color-mix(in srgb, var(--background-primary) 78%, transparent);
+}
+
+.inkdoc-page-decoration-band::after {
+	content: attr(data-region-label);
+	position: absolute;
+	right: 12px;
+	top: 8px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--background-primary) 82%, transparent);
+	border: 1px solid color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border) 70%);
+	color: color-mix(in srgb, var(--text-muted) 78%, var(--interactive-accent) 22%);
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.inkdoc-page-decoration-band--header {
+	top: 0;
+	border-top-style: solid;
+}
+
+.inkdoc-page-decoration-band--footer {
+	border-bottom: none;
+}
+
+.inkdoc-page-decoration-band--footer::after {
+	top: auto;
+	bottom: 8px;
+}
+
+.inkdoc-page-body-band {
+	position: absolute;
+	left: 0;
+	right: 0;
+	z-index: 1;
+	pointer-events: none;
+	border-left: 1px solid color-mix(in srgb, var(--background-modifier-border) 42%, transparent);
+	border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 42%, transparent);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, var(--background-primary) 84%, transparent),
+		inset 0 -1px 0 color-mix(in srgb, var(--background-primary) 84%, transparent);
 }
 
 .inkdoc-sticky-layer {
@@ -1992,6 +2066,8 @@
 .inkdoc-text-editor {
 	position: absolute;
 	z-index: 30;
+	pointer-events: auto;
+	user-select: text;
 	border: 1px solid var(--interactive-accent);
 	border-radius: 6px;
 	padding: 6px;
@@ -3058,6 +3134,98 @@
 	display: flex;
 	flex-direction: column;
 	gap: 14px;
+}
+
+.inkdoc-document-settings-modal {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.inkdoc-document-settings-form {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.inkdoc-document-settings-option {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 12px 14px;
+	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+}
+
+.inkdoc-document-settings-checkbox {
+	width: 18px;
+	height: 18px;
+	margin: 0;
+}
+
+.inkdoc-document-settings-label {
+	font-size: 0.95rem;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.inkdoc-document-settings-height {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px 14px;
+	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+}
+
+.inkdoc-document-settings-height-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.inkdoc-document-settings-height-meta,
+.inkdoc-document-settings-height-unit {
+	font-size: 0.82rem;
+	color: var(--text-muted);
+}
+
+.inkdoc-document-settings-number {
+	width: 100%;
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
+	background: color-mix(in srgb, var(--background-primary) 88%, transparent);
+	color: var(--text-normal);
+}
+
+.inkdoc-document-settings-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+}
+
+.inkdoc-document-settings-button {
+	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
+	border-radius: 12px;
+	padding: 10px 16px;
+	background: color-mix(in srgb, var(--background-secondary) 88%, transparent);
+	color: var(--text-normal);
+	cursor: pointer;
+}
+
+.inkdoc-document-settings-button.is-primary {
+	background: color-mix(in srgb, var(--interactive-accent) 26%, var(--background-secondary));
+	border-color: color-mix(in srgb, var(--interactive-accent) 56%, var(--background-modifier-border));
+	color: var(--text-normal);
+}
+
+.inkdoc-text-block.is-decoration-block,
+.inkdoc-image-block.is-decoration-block {
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
 }
 
 .inkdoc-pdf-export-actions {

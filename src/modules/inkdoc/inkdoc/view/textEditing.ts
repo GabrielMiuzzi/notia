@@ -17,6 +17,7 @@ export type ActiveBlockEdit = {
 	pageId: string;
 	pageIndex: number;
 	blockId: string;
+	decorationRegion?: "header" | "footer";
 };
 
 export type TextEditingContext = {
@@ -27,10 +28,24 @@ export type TextEditingContext = {
 	getCanvasSizePx: () => { widthPx: number; heightPx: number };
 	renderStrokes: (ctx: CanvasRenderingContext2D, strokes: NonNullable<InkDocPage["strokes"]>, pageId: string) => void;
 	saveDebounced: () => void;
+	saveNow?: () => void;
 	noteUserActivity: () => void;
 	updateTextToolbarVisibility: () => void;
 	getDefaultBlockColor: (page: InkDocPage) => string;
 	getWikiLinkTargets: () => MarkdownWikiLinkTarget[];
+	getDecorationTextBlock?: (
+		region: "header" | "footer",
+		blockId: string
+	) => InkDocTextBlock | null;
+	getVisiblePageIdsForDecoration?: (region: "header" | "footer") => string[];
+	applyTextEdit?: (
+		edit: ActiveBlockEdit,
+		changes: Partial<Pick<InkDocTextBlock, "html" | "text" | "latex" | "w" | "h">>
+	) => { page: InkDocPage; block: InkDocTextBlock; affectedPageIds: string[] } | null;
+	resolveTextEditTarget?: (
+		edit: ActiveBlockEdit
+	) => { page: InkDocPage; block: InkDocTextBlock; affectedPageIds?: string[] } | null;
+	refreshPageRender?: (pageId: string) => void;
 	onLatexCommitted?: (page: InkDocPage, block: InkDocTextBlock) => void;
 };
 
@@ -50,6 +65,13 @@ const escapeHtml = (value: string): string => {
 	const div = document.createElement("div");
 	div.textContent = value;
 	return div.innerHTML;
+};
+
+const resolveStoredTextBlockHtml = (block: InkDocTextBlock): string => {
+	if (typeof block.html === "string" && block.html.trim().length > 0) {
+		return block.html;
+	}
+	return escapeHtml(block.text ?? "");
 };
 
 const moveCaretToEnd = (editor: HTMLDivElement): void => {
@@ -212,35 +234,75 @@ const refreshTextLayer = (
 	context.renderStrokes(state.ctx, page.strokes ?? [], page.id);
 };
 
+const resolveTargetByEdit = (
+	context: TextEditingContext,
+	edit: ActiveBlockEdit
+): { page: InkDocPage; block: InkDocTextBlock; affectedPageIds: string[] } | null => {
+	if (edit.decorationRegion) {
+		const page = resolvePageByEdit(context.docData, edit);
+		const block = context.getDecorationTextBlock?.(edit.decorationRegion, edit.blockId) ?? null;
+		if (!page || !block) {
+			return null;
+		}
+		return {
+			page,
+			block,
+			affectedPageIds: context.getVisiblePageIdsForDecoration?.(edit.decorationRegion) ?? [edit.pageId]
+		};
+	}
+	const resolved = context.resolveTextEditTarget?.(edit);
+	if (resolved) {
+		return {
+			page: resolved.page,
+			block: resolved.block,
+			affectedPageIds: resolved.affectedPageIds ?? [edit.pageId]
+		};
+	}
+	const page = resolvePageByEdit(context.docData, edit);
+	if (!page) {
+		return null;
+	}
+	const block = page.textBlocks?.find((entry) => entry.id === edit.blockId);
+	if (!block) {
+		return null;
+	}
+	return {
+		page,
+		block,
+		affectedPageIds: [edit.pageId]
+	};
+};
+
 const commitTextEditor = (
 	context: TextEditingContext,
 	editor: HTMLDivElement,
 	active: ActiveBlockEdit
 ): void => {
-	const page = resolvePageByEdit(context.docData, active);
-	if (!page) {
-		return;
-	}
-	const block = page.textBlocks?.find((entry) => entry.id === active.blockId);
-	if (!block) {
-		return;
-	}
-	block.html = restoreWikiLinkSourceForEditing(editor.innerHTML);
-	block.text = editor.innerText;
+	const changes: Partial<Pick<InkDocTextBlock, "html" | "text" | "w" | "h">> = {
+		html: restoreWikiLinkSourceForEditing(editor.innerHTML),
+		text: editor.innerText
+	};
 	const state = context.canvasStates.get(active.pageId);
 	if (state) {
-		context.textLayerDirty.add(active.pageId);
 		const { widthPx, heightPx } = context.getCanvasSizePx();
 		const canvasRect = state.canvas.getBoundingClientRect();
 		const editorRect = editor.getBoundingClientRect();
 		const scaleX = widthPx / canvasRect.width;
 		const scaleY = heightPx / canvasRect.height;
-		block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, editorRect.width * scaleX);
-		block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, editorRect.height * scaleY);
-		context.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		changes.w = Math.max(INKDOC_TEXT_MIN_WIDTH, editorRect.width * scaleX);
+		changes.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, editorRect.height * scaleY);
 	}
-	context.onLatexCommitted?.(page, block);
+	const target = context.applyTextEdit?.(active, changes) ?? resolveTargetByEdit(context, active);
+	if (!target) {
+		return;
+	}
+	const { affectedPageIds } = target;
+	for (const pageId of affectedPageIds) {
+		context.textLayerDirty.add(pageId);
+		context.refreshPageRender?.(pageId);
+	}
 	context.saveDebounced();
+	context.saveNow?.();
 };
 
 const commitLatexEditor = (
@@ -248,28 +310,54 @@ const commitLatexEditor = (
 	editor: HTMLTextAreaElement,
 	active: ActiveBlockEdit
 ): void => {
-	const page = resolvePageByEdit(context.docData, active);
-	if (!page) {
-		return;
-	}
-	const block = page.textBlocks?.find((entry) => entry.id === active.blockId);
-	if (!block) {
-		return;
-	}
-	block.latex = editor.value;
+	const changes: Partial<Pick<InkDocTextBlock, "latex" | "w" | "h">> = {
+		latex: editor.value
+	};
 	const state = context.canvasStates.get(active.pageId);
 	if (state) {
-		context.textLayerDirty.add(active.pageId);
 		const { widthPx, heightPx } = context.getCanvasSizePx();
 		const canvasRect = state.canvas.getBoundingClientRect();
 		const editorRect = editor.getBoundingClientRect();
 		const scaleX = widthPx / canvasRect.width;
 		const scaleY = heightPx / canvasRect.height;
-		block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, editorRect.width * scaleX);
-		block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, editorRect.height * scaleY);
-		context.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		changes.w = Math.max(INKDOC_TEXT_MIN_WIDTH, editorRect.width * scaleX);
+		changes.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, editorRect.height * scaleY);
+	}
+	const target = context.applyTextEdit?.(active, changes) ?? resolveTargetByEdit(context, active);
+	if (!target) {
+		return;
+	}
+	const { affectedPageIds } = target;
+	for (const pageId of affectedPageIds) {
+		context.textLayerDirty.add(pageId);
+		context.refreshPageRender?.(pageId);
 	}
 	context.saveDebounced();
+	context.saveNow?.();
+};
+
+const syncActiveLatexBlockFromEditor = (
+	context: TextEditingContext,
+	accessors: TextEditingAccessors,
+	render: boolean
+): void => {
+	const editor = accessors.getLatexEditor();
+	const active = accessors.getActiveLatexEdit();
+	if (!editor || !active || !context.docData) {
+		return;
+	}
+	const target =
+		context.applyTextEdit?.(active, { latex: editor.value }) ?? resolveTargetByEdit(context, active);
+	if (!target) {
+		return;
+	}
+	const { affectedPageIds } = target;
+	if (render) {
+		for (const pageId of affectedPageIds) {
+			context.textLayerDirty.add(pageId);
+			context.refreshPageRender?.(pageId);
+		}
+	}
 };
 
 export const syncActiveTextBlockFromEditor = (
@@ -282,21 +370,19 @@ export const syncActiveTextBlockFromEditor = (
 	if (!editor || !active || !context.docData) {
 		return;
 	}
-	const page = resolvePageByEdit(context.docData, active);
-	if (!page) {
+	const target =
+		context.applyTextEdit?.(active, {
+			html: restoreWikiLinkSourceForEditing(editor.innerHTML),
+			text: editor.innerText
+		}) ?? resolveTargetByEdit(context, active);
+	if (!target) {
 		return;
 	}
-	const block = page.textBlocks?.find((entry) => entry.id === active.blockId);
-	if (!block) {
-		return;
-	}
-	block.html = restoreWikiLinkSourceForEditing(editor.innerHTML);
-	block.text = editor.innerText;
+	const { affectedPageIds } = target;
 	if (render) {
-		context.textLayerDirty.add(active.pageId);
-		const state = context.canvasStates.get(active.pageId);
-		if (state) {
-			context.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		for (const pageId of affectedPageIds) {
+			context.textLayerDirty.add(pageId);
+			context.refreshPageRender?.(pageId);
 		}
 	}
 };
@@ -445,7 +531,8 @@ export const openTextEditor = (
 	accessors: TextEditingAccessors,
 	page: InkDocPage,
 	index: number,
-	block: InkDocTextBlock
+	block: InkDocTextBlock,
+	options?: { decorationRegion?: "header" | "footer" }
 ): void => {
 	const state = context.canvasStates.get(page.id);
 	if (!state || block.type === "latex") {
@@ -454,13 +541,21 @@ export const openTextEditor = (
 	closeTextEditor(context, accessors, true);
 	const editor = state.pageEl.createDiv({ cls: "inkdoc-text-editor" });
 	editor.contentEditable = "true";
+	editor.tabIndex = 0;
 	editor.spellcheck = true;
-	editor.innerHTML = restoreWikiLinkSourceForEditing(block.html ?? escapeHtml(block.text ?? ""));
+	editor.innerHTML = restoreWikiLinkSourceForEditing(resolveStoredTextBlockHtml(block));
 	editor.style.color = typeof block.color === "string" && block.color.trim().length > 0
 		? block.color
 		: context.getDefaultBlockColor(page);
+	editor.style.pointerEvents = "auto";
+	editor.style.userSelect = "text";
 	accessors.setTextEditor(editor);
-	accessors.setActiveTextEdit({ pageId: page.id, pageIndex: index, blockId: block.id });
+	accessors.setActiveTextEdit({
+		pageId: page.id,
+		pageIndex: index,
+		blockId: block.id,
+		decorationRegion: options?.decorationRegion
+	});
 	refreshTextLayer(context, page.id, page);
 	positionTextEditor(context, state.canvas, block, editor);
 	autoResizeTextEditor(editor);
@@ -549,6 +644,8 @@ export const openTextEditor = (
 	editor.addEventListener("input", () => {
 		context.noteUserActivity();
 		autoResizeTextEditor(editor);
+		syncActiveTextBlockFromEditor(context, accessors, false);
+		context.saveDebounced();
 		refreshWikiLinkMenu();
 	});
 	editor.addEventListener("pointerdown", (event) => {
@@ -560,6 +657,9 @@ export const openTextEditor = (
 	editor.addEventListener("click", (event) => {
 		event.stopPropagation();
 		window.setTimeout(refreshWikiLinkMenu, 0);
+	});
+	editor.addEventListener("dblclick", (event) => {
+		event.stopPropagation();
 	});
 	editor.addEventListener("keydown", (event) => {
 		context.noteUserActivity();
@@ -615,14 +715,19 @@ export const openTextEditor = (
 		closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
 		wikiLinkMenuEl = null;
 		if (accessors.isTextToolbarInteraction()) {
-			editor.focus();
+			window.setTimeout(() => editor.focus(), 0);
 			return;
 		}
 		closeTextEditor(context, accessors, true);
 	});
-	editor.focus();
-	moveCaretToEnd(editor);
-	refreshWikiLinkMenu();
+	window.setTimeout(() => {
+		if (accessors.getTextEditor() !== editor) {
+			return;
+		}
+		editor.focus();
+		moveCaretToEnd(editor);
+		refreshWikiLinkMenu();
+	}, 0);
 	context.updateTextToolbarVisibility();
 };
 
@@ -631,7 +736,8 @@ export const openLatexEditor = (
 	accessors: TextEditingAccessors,
 	page: InkDocPage,
 	index: number,
-	block: InkDocTextBlock
+	block: InkDocTextBlock,
+	options?: { decorationRegion?: "header" | "footer" }
 ): void => {
 	const state = context.canvasStates.get(page.id);
 	if (!state || block.type !== "latex") {
@@ -646,13 +752,19 @@ export const openLatexEditor = (
 		? block.color
 		: context.getDefaultBlockColor(page);
 	accessors.setLatexEditor(editor);
-	accessors.setActiveLatexEdit({ pageId: page.id, pageIndex: index, blockId: block.id });
+	accessors.setActiveLatexEdit({
+		pageId: page.id,
+		pageIndex: index,
+		blockId: block.id,
+		decorationRegion: options?.decorationRegion
+	});
 	refreshTextLayer(context, page.id, page);
 	positionTextEditor(context, state.canvas, block, editor);
 	autoResizeLatexEditor(editor);
 	editor.addEventListener("input", () => {
 		context.noteUserActivity();
 		autoResizeLatexEditor(editor);
+		syncActiveLatexBlockFromEditor(context, accessors, false);
 	});
 	editor.addEventListener("pointerdown", (event) => {
 		event.stopPropagation();

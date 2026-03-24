@@ -224,6 +224,8 @@ type StartPointerInteractionOptions = {
 	captureTarget?: HTMLElement | null;
 	onMove: (event: PointerEvent) => void;
 	onEnd: (event: PointerEvent) => void;
+	preventDefaultOnMove?: boolean;
+	preventDefaultOnEnd?: boolean;
 };
 
 export const startWindowPointerInteraction = (
@@ -231,6 +233,8 @@ export const startWindowPointerInteraction = (
 ): (() => void) => {
 	const pointerId = options.pointerId ?? null;
 	const captureTarget = options.captureTarget ?? null;
+	const preventDefaultOnMove = options.preventDefaultOnMove ?? true;
+	const preventDefaultOnEnd = options.preventDefaultOnEnd ?? true;
 	if (captureTarget && pointerId !== null && typeof captureTarget.setPointerCapture === "function") {
 		try {
 			captureTarget.setPointerCapture(pointerId);
@@ -255,14 +259,18 @@ export const startWindowPointerInteraction = (
 		if (!matchesPointer(event)) {
 			return;
 		}
-		event.preventDefault();
+		if (preventDefaultOnMove) {
+			event.preventDefault();
+		}
 		options.onMove(event);
 	};
 	const handleUp = (event: PointerEvent) => {
 		if (!matchesPointer(event)) {
 			return;
 		}
-		event.preventDefault();
+		if (preventDefaultOnEnd) {
+			event.preventDefault();
+		}
 		options.onEnd(event);
 		dispose();
 	};

@@ -12,9 +12,12 @@ export type SelectionMovementContext = {
 	textLayerDirty: Set<string>;
 	imageLayerDirty: Set<string>;
 	getCanvasSizePx: () => { widthPx: number; heightPx: number };
+	getBodyBounds?: (pageIndex: number) => { top: number; bottom: number; height: number };
 	getPointerPosition: (canvas: HTMLCanvasElement, event: PointerEvent) => InkDocPoint;
 	renderStrokes: (ctx: CanvasRenderingContext2D, strokes: InkDocStroke[], pageId: string) => void;
 	saveDebounced: () => void;
+	clampTextBlockToBody?: (block: InkDocTextBlock, pageIndex: number) => void;
+	clampImageBlockToBody?: (block: InkDocImageBlock, pageIndex: number) => void;
 };
 
 const resolvePageByIdOrIndex = (
@@ -39,21 +42,24 @@ const renderPage = (context: SelectionMovementContext, page: InkDocPage): void =
 const clampDeltaToPage = (
 	bounds: SelectionBounds,
 	widthPx: number,
-	heightPx: number
+	heightPx: number,
+	verticalBounds?: { top: number; bottom: number }
 ): { dx: number; dy: number } => {
 	let dx = 0;
 	let dy = 0;
+	const minTop = verticalBounds?.top ?? 0;
+	const maxBottom = verticalBounds?.bottom ?? heightPx;
 	if (bounds.left < 0) {
 		dx = -bounds.left;
 	}
 	if (bounds.right + dx > widthPx) {
 		dx = Math.min(dx, widthPx - bounds.right);
 	}
-	if (bounds.top < 0) {
-		dy = -bounds.top;
+	if (bounds.top < minTop) {
+		dy = minTop - bounds.top;
 	}
-	if (bounds.bottom + dy > heightPx) {
-		dy = Math.min(dy, heightPx - bounds.bottom);
+	if (bounds.bottom + dy > maxBottom) {
+		dy = Math.min(dy, maxBottom - bounds.bottom);
 	}
 	return { dx, dy };
 };
@@ -87,7 +93,8 @@ const clampSelectionToPage = (
 	bounds: SelectionBounds
 ): void => {
 	const { widthPx, heightPx } = context.getCanvasSizePx();
-	const { dx, dy } = clampDeltaToPage(bounds, widthPx, heightPx);
+	const bodyBounds = context.getBodyBounds?.(index);
+	const { dx, dy } = clampDeltaToPage(bounds, widthPx, heightPx, bodyBounds);
 	if (dx === 0 && dy === 0) {
 		return;
 	}
@@ -121,6 +128,11 @@ const clampSelectionToPage = (
 				y: block.y + dy
 			};
 		});
+		target.textBlocks.forEach((block) => {
+			if (selectedBlocks.has(block.id)) {
+				context.clampTextBlockToBody?.(block, index);
+			}
+		});
 		page.textBlocks = target.textBlocks;
 	}
 	if (selectedImages.size > 0 && target.images) {
@@ -133,6 +145,11 @@ const clampSelectionToPage = (
 				x: block.x + dx,
 				y: block.y + dy
 			};
+		});
+		target.images.forEach((block) => {
+			if (selectedImages.has(block.id)) {
+				context.clampImageBlockToBody?.(block, index);
+			}
 		});
 		page.images = target.images;
 	}
@@ -213,6 +230,11 @@ export const dragSelection = (
 				y: block.y + dy
 			};
 		});
+		target.textBlocks.forEach((block) => {
+			if (selectedBlocks?.has(block.id)) {
+				context.clampTextBlockToBody?.(block);
+			}
+		});
 		page.textBlocks = target.textBlocks;
 	}
 	if (target.images && hasImageSelection) {
@@ -225,6 +247,11 @@ export const dragSelection = (
 				x: block.x + dx,
 				y: block.y + dy
 			};
+		});
+		target.images.forEach((block) => {
+			if (selectedImages?.has(block.id)) {
+				context.clampImageBlockToBody?.(block);
+			}
 		});
 		page.images = target.images;
 	}
@@ -257,7 +284,8 @@ export const dropSelectionOnPage = (
 	}
 	const sourcePage = resolvePageByIdOrIndex(context.docData, page, index);
 	const targetPage = context.docData.pages.find((entry) => entry.id === drop.page.id) ?? drop.page;
-	if (!sourcePage || !targetPage) {
+	const targetPageIndex = context.docData.pages.findIndex((entry) => entry.id === targetPage.id);
+	if (!sourcePage || !targetPage || targetPageIndex < 0) {
 		return;
 	}
 	const sourcePoint = sourceState.selection.lastDragPoint;
@@ -306,6 +334,7 @@ export const dropSelectionOnPage = (
 				x: block.x + dx,
 				y: block.y + dy
 			};
+			context.clampTextBlockToBody?.(moved, targetPageIndex);
 			if (!targetPage.textBlocks) {
 				targetPage.textBlocks = [];
 			}
@@ -327,6 +356,7 @@ export const dropSelectionOnPage = (
 				x: block.x + dx,
 				y: block.y + dy
 			};
+			context.clampImageBlockToBody?.(moved, targetPageIndex);
 			if (!targetPage.images) {
 				targetPage.images = [];
 			}
@@ -336,14 +366,14 @@ export const dropSelectionOnPage = (
 		page.images = sourcePage.images;
 	}
 	const { widthPx, heightPx } = context.getCanvasSizePx();
+	const targetBodyBounds = context.getBodyBounds?.(targetPageIndex);
 	const nextBounds = {
 		left: bounds.left + dx,
 		top: bounds.top + dy,
 		right: bounds.right + dx,
 		bottom: bounds.bottom + dy
 	};
-	const clampDx = clampDeltaToPage(nextBounds, widthPx, heightPx).dx;
-	const clampDy = clampDeltaToPage(nextBounds, widthPx, heightPx).dy;
+	const { dx: clampDx, dy: clampDy } = clampDeltaToPage(nextBounds, widthPx, heightPx, targetBodyBounds);
 	if (clampDx !== 0 || clampDy !== 0) {
 		if (movedStrokeIds.size > 0 && targetPage.strokes) {
 			targetPage.strokes = targetPage.strokes.map((stroke) => {
@@ -367,6 +397,11 @@ export const dropSelectionOnPage = (
 					y: block.y + clampDy
 				};
 			});
+			targetPage.textBlocks.forEach((block) => {
+				if (movedBlockIds.has(block.id)) {
+					context.clampTextBlockToBody?.(block, targetPageIndex);
+				}
+			});
 		}
 		if (movedImageIds.size > 0 && targetPage.images) {
 			targetPage.images = targetPage.images.map((block) => {
@@ -378,6 +413,11 @@ export const dropSelectionOnPage = (
 					x: block.x + clampDx,
 					y: block.y + clampDy
 				};
+			});
+			targetPage.images.forEach((block) => {
+				if (movedImageIds.has(block.id)) {
+					context.clampImageBlockToBody?.(block, targetPageIndex);
+				}
 			});
 		}
 	}
@@ -424,13 +464,14 @@ export const moveSelectionToPoint = (
 	let dx = point.x - bounds.left;
 	let dy = point.y - bounds.top;
 	const { widthPx, heightPx } = context.getCanvasSizePx();
+	const targetBodyBounds = context.getBodyBounds?.(index);
 	const nextBounds = {
 		left: bounds.left + dx,
 		top: bounds.top + dy,
 		right: bounds.right + dx,
 		bottom: bounds.bottom + dy
 	};
-	const clamp = clampDeltaToPage(nextBounds, widthPx, heightPx);
+	const clamp = clampDeltaToPage(nextBounds, widthPx, heightPx, targetBodyBounds);
 	dx += clamp.dx;
 	dy += clamp.dy;
 	const selectedStrokes = context.selectionMaps.strokes.get(sourcePageId) ?? new Set<string>();
@@ -462,6 +503,11 @@ export const moveSelectionToPoint = (
 					y: block.y + dy
 				};
 			});
+			sourcePage.textBlocks.forEach((block) => {
+				if (selectedBlocks.has(block.id)) {
+					context.clampTextBlockToBody?.(block, sourcePageIndex);
+				}
+			});
 		}
 		if (sourcePage.images && selectedImages.size > 0) {
 			sourcePage.images = sourcePage.images.map((block) => {
@@ -473,6 +519,11 @@ export const moveSelectionToPoint = (
 					x: block.x + dx,
 					y: block.y + dy
 				};
+			});
+			sourcePage.images.forEach((block) => {
+				if (selectedImages.has(block.id)) {
+					context.clampImageBlockToBody?.(block, sourcePageIndex);
+				}
 			});
 		}
 		context.textLayerDirty.add(sourcePage.id);
@@ -516,6 +567,7 @@ export const moveSelectionToPoint = (
 				x: block.x + dx,
 				y: block.y + dy
 			};
+			context.clampTextBlockToBody?.(moved, index);
 			if (!targetPage.textBlocks) {
 				targetPage.textBlocks = [];
 			}
@@ -536,6 +588,7 @@ export const moveSelectionToPoint = (
 				x: block.x + dx,
 				y: block.y + dy
 			};
+			context.clampImageBlockToBody?.(moved, index);
 			if (!targetPage.images) {
 				targetPage.images = [];
 			}

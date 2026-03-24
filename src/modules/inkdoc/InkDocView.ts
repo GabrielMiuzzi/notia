@@ -26,6 +26,7 @@ import {
 import { PageBackgroundModal } from "./inkdoc/view/PageBackgroundModal";
 import { PagePaletteModal } from "./inkdoc/view/PagePaletteModal";
 import { PageSizeModal } from "./inkdoc/view/PageSizeModal";
+import { DocumentDecorationsModal } from "./inkdoc/view/DocumentDecorationsModal";
 import { applyWikiLinksToElement } from "./inkdoc/view/wikiLinks";
 import { syncInkDocWikiLinksToMetadata } from "./inkdoc/view/wikiLinkIndex";
 import { PdfExportModal } from "./inkdoc/view/PdfExportModal";
@@ -34,6 +35,16 @@ import { closeInkDocToolsMenu, openInkDocToolsMenu } from "./inkdoc/view/toolsMe
 import { closeManagedMenu, openManagedMenu } from "./inkdoc/view/contextMenus";
 import { getPageSizeMm, resolvePageSize } from "./inkdoc/view/pageSizes";
 import { parseInkDocRaw } from "./inkdoc/view/documentParser";
+import {
+	ensureInkDocDecorations,
+	getDocumentBodyBounds,
+	getDocumentDecorationBandHeightMm,
+	getDocumentDecorationBandHeightPx,
+	getDocumentDecorationHeightPercent,
+	getDocumentDecorationBounds,
+	isDecorationVisibleOnPage,
+	shiftFooterDecorationContent
+} from "./inkdoc/view/documentDecorations";
 import {
 	getImageFileFromDragEvent,
 	hasFileDragData,
@@ -114,6 +125,10 @@ import {
 } from "./inkdoc/view/objectCreationPrompt";
 import { createInkDocSubmenuEngine, type InkDocSubmenuEngine } from "./inkdoc/view/submenuEngine";
 import type { MarkdownWikiLinkTarget } from "../../types/views/markdownWikiLink";
+
+type InkDocBlockOwner =
+	| { kind: "page" }
+	| { kind: "decoration"; region: "header" | "footer" };
 
 type InkDocPencilSubmenu = "brushes" | "stroke" | "colors" | "stylus";
 type InkDocTextSubmenu = "format" | "font" | "colors" | "paragraph" | "insert";
@@ -399,6 +414,18 @@ export class InkDocView extends ItemView {
 		stickyButton.addEventListener("click", () => {
 			this.setActiveTool("sticky");
 			this.closePencilMenu();
+		});
+
+		const documentSettingsButton = this.toolbarEl.createEl("button", {
+			cls: "inkdoc-toolbar-icon",
+			attr: { "aria-label": "Configuración del documento", title: "Configuración del documento" }
+		});
+		const documentSettingsIcon = documentSettingsButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
+		setCompatibleIcon(documentSettingsIcon, "settings", "C");
+		documentSettingsButton.addEventListener("click", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			this.openDocumentDecorationsModal();
 		});
 
 		const menuButton = this.toolbarEl.createEl("button", {
@@ -1478,6 +1505,13 @@ export class InkDocView extends ItemView {
 		return div.innerHTML;
 	}
 
+	private getRenderableTextBlockHtml(block: InkDocTextBlock): string {
+		if (typeof block.html === "string" && block.html.trim().length > 0) {
+			return block.html;
+		}
+		return this.escapeHtml(block.text ?? "");
+	}
+
 	private async loadAndRender(): Promise<void> {
 		if (!this.file) {
 			this.renderError("No hay archivo abierto.");
@@ -1508,6 +1542,254 @@ export class InkDocView extends ItemView {
 			this.renderError("El archivo InkDoc tiene JSON inválido.");
 			return null;
 		}
+	}
+
+	private ensureDocumentDecorations() {
+		if (!this.docData) {
+			return null;
+		}
+		return ensureInkDocDecorations(this.docData);
+	}
+
+	private getDecorationBandHeightPx(): number {
+		return getDocumentDecorationBandHeightPx(this.docData, "header", this.docData?.page.size);
+	}
+
+	private isDecorationVisible(region: "header" | "footer", pageIndex: number): boolean {
+		return isDecorationVisibleOnPage(this.docData, region, pageIndex);
+	}
+
+	private getDecorationTextBlocks(region: "header" | "footer"): InkDocTextBlock[] {
+		const decorations = this.ensureDocumentDecorations();
+		if (!decorations) {
+			return [];
+		}
+		const section = region === "header" ? decorations.header : decorations.footer;
+		section.textBlocks = section.textBlocks ?? [];
+		return section.textBlocks;
+	}
+
+	private getDecorationImages(region: "header" | "footer"): InkDocImageBlock[] {
+		const decorations = this.ensureDocumentDecorations();
+		if (!decorations) {
+			return [];
+		}
+		const section = region === "header" ? decorations.header : decorations.footer;
+		section.images = section.images ?? [];
+		return section.images;
+	}
+
+	private getDecorationTextBlockById(
+		region: "header" | "footer",
+		blockId: string
+	): InkDocTextBlock | null {
+		return this.getDecorationTextBlocks(region).find((block) => block.id === blockId) ?? null;
+	}
+
+	private getDecorationImageBlockById(
+		region: "header" | "footer",
+		blockId: string
+	): InkDocImageBlock | null {
+		return this.getDecorationImages(region).find((block) => block.id === blockId) ?? null;
+	}
+
+	private getDecorationBounds(region: "header" | "footer"): { top: number; bottom: number; height: number } {
+		return getDocumentDecorationBounds(region, this.docData?.page.size, this.docData);
+	}
+
+	private getDecorationHeightPercent(region: "header" | "footer"): number {
+		return getDocumentDecorationHeightPercent(this.docData, region);
+	}
+
+	private getDecorationHeightMm(region: "header" | "footer"): number {
+		return getDocumentDecorationBandHeightMm(this.docData, region, this.docData?.page.size);
+	}
+
+	private getBodyBounds(pageIndex = 0): { top: number; bottom: number; height: number } {
+		return getDocumentBodyBounds(this.docData, pageIndex);
+	}
+
+	private clampPointToBody(point: InkDocPoint, pageIndex = 0): InkDocPoint {
+		const { widthPx, heightPx } = this.getCanvasSizePx();
+		const bounds = this.getBodyBounds(pageIndex);
+		return {
+			...point,
+			x: Math.max(0, Math.min(widthPx, point.x)),
+			y: Math.max(bounds.top, Math.min(bounds.bottom, point.y))
+		};
+	}
+
+	private clampTextBlockToVerticalBounds(
+		block: InkDocTextBlock,
+		bounds: { top: number; bottom: number; height: number }
+	): void {
+		const { widthPx } = this.getCanvasSizePx();
+		const maxWidth = Math.max(1, widthPx);
+		const maxHeight = Math.max(1, bounds.height);
+		const nextWidth = Math.max(INKDOC_TEXT_MIN_WIDTH, block.w);
+		const nextHeight = Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h);
+		block.w = Math.min(nextWidth, maxWidth);
+		block.h = Math.min(nextHeight, maxHeight);
+		block.x = Math.max(0, Math.min(widthPx - block.w, block.x));
+		block.y = Math.max(bounds.top, Math.min(bounds.bottom - block.h, block.y));
+	}
+
+	private clampImageBlockToVerticalBounds(
+		block: InkDocImageBlock,
+		bounds: { top: number; bottom: number; height: number }
+	): void {
+		const { widthPx } = this.getCanvasSizePx();
+		const maxWidth = Math.max(1, widthPx);
+		const maxHeight = Math.max(1, bounds.height);
+		const nextWidth = Math.max(INKDOC_IMAGE_MIN_WIDTH, block.w);
+		const nextHeight = Math.max(INKDOC_IMAGE_MIN_HEIGHT, block.h);
+		block.w = Math.min(nextWidth, maxWidth);
+		block.h = Math.min(nextHeight, maxHeight);
+		block.x = Math.max(0, Math.min(widthPx - block.w, block.x));
+		block.y = Math.max(bounds.top, Math.min(bounds.bottom - block.h, block.y));
+	}
+
+	private clampTextBlockToBody(block: InkDocTextBlock, pageIndex = 0): void {
+		this.clampTextBlockToVerticalBounds(block, this.getBodyBounds(pageIndex));
+	}
+
+	private clampImageBlockToBody(block: InkDocImageBlock, pageIndex = 0): void {
+		this.clampImageBlockToVerticalBounds(block, this.getBodyBounds(pageIndex));
+	}
+
+	private clampTextBlockToDecorationRegion(
+		block: InkDocTextBlock,
+		region: "header" | "footer"
+	): void {
+		this.clampTextBlockToVerticalBounds(block, this.getDecorationBounds(region));
+	}
+
+	private clampImageBlockToDecorationRegion(
+		block: InkDocImageBlock,
+		region: "header" | "footer"
+	): void {
+		this.clampImageBlockToVerticalBounds(block, this.getDecorationBounds(region));
+	}
+
+	private getEffectiveTextBlocks(page: InkDocPage, index: number): InkDocTextBlock[] {
+		const blocks: InkDocTextBlock[] = [];
+		if (this.isDecorationVisible("header", index)) {
+			blocks.push(...this.getDecorationTextBlocks("header"));
+		}
+		blocks.push(...(page.textBlocks ?? []));
+		if (this.isDecorationVisible("footer", index)) {
+			blocks.push(...this.getDecorationTextBlocks("footer"));
+		}
+		return blocks;
+	}
+
+	private getEffectiveImageBlocks(page: InkDocPage, index: number): InkDocImageBlock[] {
+		const blocks: InkDocImageBlock[] = [];
+		if (this.isDecorationVisible("header", index)) {
+			blocks.push(...this.getDecorationImages("header"));
+		}
+		blocks.push(...(page.images ?? []));
+		if (this.isDecorationVisible("footer", index)) {
+			blocks.push(...this.getDecorationImages("footer"));
+		}
+		return blocks;
+	}
+
+	private resolveDecorationRegionForPoint(pageIndex: number, point: InkDocPoint): "header" | "footer" | null {
+		if (!this.docData) {
+			return null;
+		}
+		if (this.isDecorationVisible("header", pageIndex)) {
+			const headerBounds = this.getDecorationBounds("header");
+			if (point.y >= headerBounds.top && point.y <= headerBounds.bottom) {
+				return "header";
+			}
+		}
+		if (this.isDecorationVisible("footer", pageIndex)) {
+			const footerBounds = this.getDecorationBounds("footer");
+			if (point.y >= footerBounds.top && point.y <= footerBounds.bottom) {
+				return "footer";
+			}
+		}
+		return null;
+	}
+
+	private resolveTextBlockOwner(page: InkDocPage, index: number, blockId: string): InkDocBlockOwner {
+		if (page.textBlocks?.some((block) => block.id === blockId)) {
+			return { kind: "page" };
+		}
+		if (this.isDecorationVisible("header", index) && this.getDecorationTextBlocks("header").some((block) => block.id === blockId)) {
+			return { kind: "decoration", region: "header" };
+		}
+		if (this.isDecorationVisible("footer", index) && this.getDecorationTextBlocks("footer").some((block) => block.id === blockId)) {
+			return { kind: "decoration", region: "footer" };
+		}
+		return { kind: "page" };
+	}
+
+	private resolveImageBlockOwner(page: InkDocPage, index: number, blockId: string): InkDocBlockOwner {
+		if (page.images?.some((block) => block.id === blockId)) {
+			return { kind: "page" };
+		}
+		if (this.isDecorationVisible("header", index) && this.getDecorationImages("header").some((block) => block.id === blockId)) {
+			return { kind: "decoration", region: "header" };
+		}
+		if (this.isDecorationVisible("footer", index) && this.getDecorationImages("footer").some((block) => block.id === blockId)) {
+			return { kind: "decoration", region: "footer" };
+		}
+		return { kind: "page" };
+	}
+
+	private markDecorationDirty(): void {
+		if (!this.docData) {
+			return;
+		}
+		for (const entry of this.docData.pages) {
+			this.textLayerDirty.add(entry.id);
+			this.imageLayerDirty.add(entry.id);
+		}
+	}
+
+	private refreshPage(pageId: string): void {
+		if (!this.docData) {
+			return;
+		}
+		const page = this.docData.pages.find((entry) => entry.id === pageId);
+		const state = this.canvasStates.get(pageId);
+		if (!page || !state) {
+			return;
+		}
+		this.renderStrokes(state.ctx, page.strokes ?? [], pageId);
+	}
+
+	private refreshAllPages(): void {
+		if (!this.docData) {
+			return;
+		}
+		for (const page of this.docData.pages) {
+			this.refreshPage(page.id);
+		}
+	}
+
+	private createDecorationBand(pageEl: HTMLDivElement, region: "header" | "footer"): void {
+		const { heightPx, top } = this.getDecorationBounds(region);
+		const { heightPx: pageHeightPx } = this.getCanvasSizePx();
+		const bandEl = pageEl.createDiv({
+			cls: `inkdoc-page-decoration-band inkdoc-page-decoration-band--${region}`
+		});
+		bandEl.dataset.regionLabel = region === "header" ? "Encabezado" : "Pie";
+		bandEl.style.height = `${(heightPx / pageHeightPx) * 100}%`;
+		if (region === "footer") {
+			bandEl.style.top = `${(top / pageHeightPx) * 100}%`;
+		}
+	}
+
+	private createBodyBand(pageEl: HTMLDivElement, pageIndex: number): void {
+		const { top, height } = this.getBodyBounds(pageIndex);
+		const { heightPx: pageHeightPx } = this.getCanvasSizePx();
+		const bodyEl = pageEl.createDiv({ cls: "inkdoc-page-body-band" });
+		bodyEl.style.top = `${(top / pageHeightPx) * 100}%`;
+		bodyEl.style.height = `${(height / pageHeightPx) * 100}%`;
 	}
 
 	private async renderDoc(doc: InkDocDocument): Promise<void> {
@@ -1548,6 +1830,13 @@ export class InkDocView extends ItemView {
 		pageEl.style.height = `${heightMm}mm`;
 		setPageBackgroundAttribute(pageEl, page.background);
 		setPageColorVariables(pageEl, page.colors);
+		if (this.isDecorationVisible("header", index)) {
+			this.createDecorationBand(pageEl, "header");
+		}
+		if (this.isDecorationVisible("footer", index)) {
+			this.createDecorationBand(pageEl, "footer");
+		}
+		this.createBodyBand(pageEl, index);
 
 		const controlsEl = pageEl.createDiv({ cls: "inkdoc-page-controls" });
 		if (index === 0) {
@@ -1868,7 +2157,7 @@ export class InkDocView extends ItemView {
 		if (shouldSkipUpdate) {
 			return;
 		}
-		const blocks = page.textBlocks ?? [];
+		const blocks = this.getEffectiveTextBlocks(page, this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0);
 		let layer = this.textLayerByPage.get(page.id) ?? null;
 		if (!layer) {
 			layer = state.pageEl.createDiv({ cls: "inkdoc-text-layer" });
@@ -1886,18 +2175,19 @@ export class InkDocView extends ItemView {
 		const scaleY = rect.height / zoom / heightPx;
 		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
 		for (const block of blocks) {
-			if (
+			const owner = this.resolveTextBlockOwner(page, pageIndex, block.id);
+			const hideTextBlockWhileEditing =
 				this.activeTextEdit &&
-				this.activeTextEdit.pageId === page.id &&
-				this.activeTextEdit.blockId === block.id
-			) {
+				this.activeTextEdit.blockId === block.id &&
+				(owner.kind === "decoration" || this.activeTextEdit.pageId === page.id);
+			if (hideTextBlockWhileEditing) {
 				continue;
 			}
-			if (
+			const hideLatexBlockWhileEditing =
 				this.activeLatexEdit &&
-				this.activeLatexEdit.pageId === page.id &&
-				this.activeLatexEdit.blockId === block.id
-			) {
+				this.activeLatexEdit.blockId === block.id &&
+				(owner.kind === "decoration" || this.activeLatexEdit.pageId === page.id);
+			if (hideLatexBlockWhileEditing) {
 				continue;
 			}
 			const blockEl = layer.createDiv({ cls: "inkdoc-text-block" });
@@ -1919,6 +2209,9 @@ export class InkDocView extends ItemView {
 			if (selectedBlocks?.has(block.id)) {
 				blockEl.classList.add("is-selected");
 			}
+			if (owner.kind === "decoration") {
+				blockEl.classList.add("is-decoration-block");
+			}
 			blockEl.style.left = `${block.x * scaleX}px`;
 			blockEl.style.top = `${block.y * scaleY}px`;
 			blockEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, block.w * scaleX)}px`;
@@ -1928,7 +2221,7 @@ export class InkDocView extends ItemView {
 				void this.renderLatexBlock(page, content, block);
 			} else {
 				content.style.color = this.getTextBlockColor(page, block);
-				content.innerHTML = block.html ?? this.escapeHtml(block.text ?? "");
+				content.innerHTML = this.getRenderableTextBlockHtml(block);
 				applyWikiLinksToElement(content, this.app, this.file);
 			}
 			const resizeHandle = blockEl.createDiv({ cls: "inkdoc-text-block-resize" });
@@ -1990,7 +2283,12 @@ export class InkDocView extends ItemView {
 			});
 
 			blockEl.addEventListener("dblclick", (event) => {
-				if (!isActiveToolForBlock) {
+				const canEdit =
+					isActiveToolForBlock ||
+					this.activeTool === "select" ||
+					(this.activeTool === "text" && blockType === "text") ||
+					(this.activeTool === "latex" && blockType === "latex");
+				if (!canEdit) {
 					return;
 				}
 				const target = event.target;
@@ -2008,6 +2306,9 @@ export class InkDocView extends ItemView {
 
 			blockEl.addEventListener("pointerdown", (event) => {
 				if (event.button !== 0) {
+					return;
+				}
+				if (event.detail >= 2) {
 					return;
 				}
 				const target = event.target;
@@ -2033,17 +2334,35 @@ export class InkDocView extends ItemView {
 				startWindowPointerInteraction({
 					pointerId: event.pointerId,
 					captureTarget: blockEl,
+					preventDefaultOnEnd: false,
 					onMove: (moveEvent) => {
 						this.syncEngine.noteActivity();
 						const currentZoom = Math.max(0.001, this.zoomLevel || 1);
 						const dx = (moveEvent.clientX - startX) / currentZoom;
 						const dy = (moveEvent.clientY - startY) / currentZoom;
-						block.x = startLeft + dx;
-						block.y = startTop + dy;
-						this.textLayerDirty.add(page.id);
-						this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+						if (owner.kind === "decoration") {
+							const targetBlock = this.getDecorationTextBlockById(owner.region, block.id);
+							if (!targetBlock) {
+								return;
+							}
+							targetBlock.x = startLeft + dx;
+							targetBlock.y = startTop + dy;
+							this.clampTextBlockToDecorationRegion(targetBlock, owner.region);
+							blockEl.style.left = `${targetBlock.x * scaleX}px`;
+							blockEl.style.top = `${targetBlock.y * scaleY}px`;
+						} else {
+							block.x = startLeft + dx;
+							block.y = startTop + dy;
+							this.clampTextBlockToBody(block, pageIndex);
+							this.textLayerDirty.add(page.id);
+							this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+						}
 					},
 					onEnd: () => {
+						if (owner.kind === "decoration") {
+							this.markDecorationDirty();
+							this.refreshAllPages();
+						}
 						this.saveDebounced();
 					}
 				});
@@ -2075,12 +2394,31 @@ export class InkDocView extends ItemView {
 						const currentZoom = Math.max(0.001, this.zoomLevel || 1);
 						const dx = (moveEvent.clientX - startX) / currentZoom;
 						const dy = (moveEvent.clientY - startY) / currentZoom;
-						block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, startW + dx);
-						block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, startH + dy);
-						this.textLayerDirty.add(page.id);
-						this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+						if (owner.kind === "decoration") {
+							const targetBlock = this.getDecorationTextBlockById(owner.region, block.id);
+							if (!targetBlock) {
+								return;
+							}
+							targetBlock.w = Math.max(INKDOC_TEXT_MIN_WIDTH, startW + dx);
+							targetBlock.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, startH + dy);
+							this.clampTextBlockToDecorationRegion(targetBlock, owner.region);
+							blockEl.style.left = `${targetBlock.x * scaleX}px`;
+							blockEl.style.top = `${targetBlock.y * scaleY}px`;
+							blockEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, targetBlock.w * scaleX)}px`;
+							blockEl.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, targetBlock.h * scaleY)}px`;
+						} else {
+							block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, startW + dx);
+							block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, startH + dy);
+							this.clampTextBlockToBody(block, pageIndex);
+							this.textLayerDirty.add(page.id);
+							this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+						}
 					},
 					onEnd: () => {
+						if (owner.kind === "decoration") {
+							this.markDecorationDirty();
+							this.refreshAllPages();
+						}
 						this.saveDebounced();
 					}
 				});
@@ -2105,7 +2443,8 @@ export class InkDocView extends ItemView {
 		if (shouldSkipUpdate) {
 			return;
 		}
-		const blocks = page.images ?? [];
+		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
+		const blocks = this.getEffectiveImageBlocks(page, pageIndex);
 		let layer = this.imageLayerByPage.get(page.id) ?? null;
 		if (!layer) {
 			layer = state.pageEl.createDiv({ cls: "inkdoc-image-layer" });
@@ -2122,10 +2461,10 @@ export class InkDocView extends ItemView {
 		const zoom = this.zoomLevel || 1;
 		const scaleX = rect.width / zoom / widthPx;
 		const scaleY = rect.height / zoom / heightPx;
-		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
 		for (const block of blocks) {
 			const blockEl = layer.createDiv({ cls: "inkdoc-image-block" });
 			blockEl.tabIndex = 0;
+			const owner = this.resolveImageBlockOwner(page, pageIndex, block.id);
 			const isImageToolActive = this.activeTool === "image";
 			if (isImageToolActive) {
 				blockEl.classList.add("is-tool-active");
@@ -2133,6 +2472,9 @@ export class InkDocView extends ItemView {
 			const isSelected = selectedBlocks?.has(block.id) ?? false;
 			if (isSelected) {
 				blockEl.classList.add("is-selected");
+			}
+			if (owner.kind === "decoration") {
+				blockEl.classList.add("is-decoration-block");
 			}
 			blockEl.style.left = `${block.x * scaleX}px`;
 			blockEl.style.top = `${block.y * scaleY}px`;
@@ -2429,11 +2771,68 @@ export class InkDocView extends ItemView {
 		modal.open();
 	}
 
+	private openDocumentDecorationsModal(): void {
+		const decorations = this.ensureDocumentDecorations();
+		if (!decorations) {
+			return;
+		}
+		new DocumentDecorationsModal(
+			this.app,
+			{
+				headerEnabled: decorations.headerEnabled,
+				footerEnabled: decorations.footerEnabled,
+				firstPageWithoutDecorations: decorations.firstPageWithoutDecorations,
+				headerHeightPercent: this.getDecorationHeightPercent("header"),
+				footerHeightPercent: this.getDecorationHeightPercent("footer"),
+				headerHeightMm: this.getDecorationHeightMm("header"),
+				footerHeightMm: this.getDecorationHeightMm("footer")
+			},
+			(next) => {
+				void this.applyDocumentDecorationsSettings(next);
+			}
+		).open();
+	}
+
+	private async applyDocumentDecorationsSettings(
+		next: Pick<
+			NonNullable<InkDocDocument["decorations"]>,
+			"headerEnabled" | "footerEnabled" | "firstPageWithoutDecorations" | "headerHeightPercent" | "footerHeightPercent"
+		>
+	): Promise<void> {
+		const decorations = this.ensureDocumentDecorations();
+		if (!decorations) {
+			return;
+		}
+		const previousFooterTop = this.getDecorationBounds("footer").top;
+		decorations.headerEnabled = next.headerEnabled === true;
+		decorations.footerEnabled = next.footerEnabled === true;
+		decorations.firstPageWithoutDecorations = next.firstPageWithoutDecorations === true;
+		decorations.headerHeightPercent = next.headerHeightPercent;
+		decorations.footerHeightPercent = next.footerHeightPercent;
+		const nextFooterTop = this.getDecorationBounds("footer").top;
+		const footerDelta = nextFooterTop - previousFooterTop;
+		if (footerDelta !== 0) {
+			for (const block of decorations.footer?.textBlocks ?? []) {
+				block.y += footerDelta;
+			}
+			for (const image of decorations.footer?.images ?? []) {
+				image.y += footerDelta;
+			}
+		}
+		this.markDecorationDirty();
+		await this.renderDoc(this.docData!);
+		this.saveDebounced();
+	}
+
 	private async setDocumentPageSize(size: InkDocPageSize): Promise<void> {
 		if (!this.docData) {
 			return;
 		}
-		this.docData.page.size = resolvePageSize(size);
+		const previousSize = this.docData.page.size;
+		const nextSize = resolvePageSize(size);
+		shiftFooterDecorationContent(this.docData, previousSize, nextSize);
+		this.docData.page.size = nextSize;
+		this.markDecorationDirty();
 		await this.renderDoc(this.docData);
 		this.saveDebounced();
 	}
@@ -2727,9 +3126,10 @@ export class InkDocView extends ItemView {
 			target.strokes = [];
 		}
 		const activeBrush = this.getActiveBrushPreset();
+		const normalizedSourcePoint = this.clampPointToBody(point, index);
 		const normalizedPoint: InkDocPoint = {
-			x: point.x,
-			y: point.y,
+			x: normalizedSourcePoint.x,
+			y: normalizedSourcePoint.y,
 			pressure:
 				sample.isStylus && this.isStylusDynamicsEnabled ? sample.point.pressure : undefined,
 			tiltX: sample.isStylus && this.isStylusDynamicsEnabled ? sample.point.tiltX : undefined,
@@ -2944,7 +3344,11 @@ export class InkDocView extends ItemView {
 				? this.createLatexBlock(target.page, target.pageIndex, target.point)
 				: this.createTextBlock(target.page, target.pageIndex, target.point);
 		const state = this.canvasStates.get(target.page.id);
-		if (state) {
+		const owner = this.resolveTextBlockOwner(target.page, target.pageIndex, block.id);
+		if (owner.kind === "decoration") {
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else if (state) {
 			this.renderStrokes(state.ctx, target.page.strokes ?? [], target.page.id);
 		}
 		if (tool === "latex") {
@@ -3182,7 +3586,13 @@ export class InkDocView extends ItemView {
 			tool === "latex"
 				? this.createLatexBlock(page, index, point)
 				: this.createTextBlock(page, index, point);
-		this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const owner = this.resolveTextBlockOwner(page, index, createdBlock.id);
+		if (owner.kind === "decoration") {
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		}
 		if (tool === "latex") {
 			this.openLatexEditor(page, index, createdBlock);
 			return;
@@ -3203,12 +3613,20 @@ export class InkDocView extends ItemView {
 			if (!this.isBlockCompatibleWithTool(block, this.activeTool)) {
 				return;
 			}
-			const dx = point.x - state.text.resizeStartPoint.x;
-			const dy = point.y - state.text.resizeStartPoint.y;
-			block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, state.text.resizeStartSize.w + dx);
-			block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, state.text.resizeStartSize.h + dy);
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
-			return;
+						const dx = point.x - state.text.resizeStartPoint.x;
+						const dy = point.y - state.text.resizeStartPoint.y;
+						block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, state.text.resizeStartSize.w + dx);
+						block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, state.text.resizeStartSize.h + dy);
+						const owner = this.resolveTextBlockOwner(page, index, block.id);
+						if (owner.kind === "decoration") {
+							this.clampTextBlockToDecorationRegion(block, owner.region);
+							this.markDecorationDirty();
+							this.refreshAllPages();
+						} else {
+							this.clampTextBlockToBody(block, index);
+							this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+						}
+						return;
 		}
 		if (!state.text.isDragging || !state.text.draggingId || !state.text.dragOffset) {
 			return;
@@ -3222,7 +3640,15 @@ export class InkDocView extends ItemView {
 		}
 		block.x = point.x - state.text.dragOffset.x;
 		block.y = point.y - state.text.dragOffset.y;
-		this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const owner = this.resolveTextBlockOwner(page, index, block.id);
+		if (owner.kind === "decoration") {
+			this.clampTextBlockToDecorationRegion(block, owner.region);
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			this.clampTextBlockToBody(block, index);
+			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		}
 	}
 
 	private handleTextPointerUp(page: InkDocPage): void {
@@ -3243,6 +3669,48 @@ export class InkDocView extends ItemView {
 			state.text.dragOffset = null;
 			this.saveDebounced();
 		}
+	}
+
+	private applyTextEditChanges(
+		edit: ActiveBlockEdit,
+		changes: Partial<Pick<InkDocTextBlock, "html" | "text" | "latex" | "w" | "h">>
+	): { page: InkDocPage; block: InkDocTextBlock; affectedPageIds: string[] } | null {
+		if (!this.docData) {
+			return null;
+		}
+		const page = this.docData.pages.find((entry) => entry.id === edit.pageId) ?? this.docData.pages[edit.pageIndex];
+		if (!page) {
+			return null;
+		}
+		let block: InkDocTextBlock | null = null;
+		let affectedPageIds: string[] = [page.id];
+		if (edit.decorationRegion) {
+			block = this.getDecorationTextBlockById(edit.decorationRegion, edit.blockId);
+			affectedPageIds = this.docData.pages
+				.filter((_, pageIndex) => this.isDecorationVisible(edit.decorationRegion!, pageIndex))
+				.map((entry) => entry.id);
+		} else {
+			block = page.textBlocks?.find((entry) => entry.id === edit.blockId) ?? null;
+		}
+		if (!block) {
+			return null;
+		}
+		if (typeof changes.html === "string") {
+			block.html = changes.html.trim().length > 0 ? changes.html : undefined;
+		}
+		if (typeof changes.text === "string") {
+			block.text = changes.text;
+		}
+		if (typeof changes.latex === "string") {
+			block.latex = changes.latex;
+		}
+		if (typeof changes.w === "number") {
+			block.w = changes.w;
+		}
+		if (typeof changes.h === "number") {
+			block.h = changes.h;
+		}
+		return { page, block, affectedPageIds };
 	}
 
 	private getTextBlocks(page: InkDocPage, index: number): InkDocTextBlock[] {
@@ -3266,7 +3734,23 @@ export class InkDocView extends ItemView {
 		index: number,
 		blockId: string
 	): InkDocTextBlock | null {
-		return getTextBlockByIdInPage(this.docData, page, index, blockId);
+		const pageBlock = getTextBlockByIdInPage(this.docData, page, index, blockId);
+		if (pageBlock) {
+			return pageBlock;
+		}
+		if (this.isDecorationVisible("header", index)) {
+			const headerBlock = this.getDecorationTextBlocks("header").find((block) => block.id === blockId);
+			if (headerBlock) {
+				return headerBlock;
+			}
+		}
+		if (this.isDecorationVisible("footer", index)) {
+			const footerBlock = this.getDecorationTextBlocks("footer").find((block) => block.id === blockId);
+			if (footerBlock) {
+				return footerBlock;
+			}
+		}
+		return null;
 	}
 
 	private findTextBlockHit(
@@ -3274,7 +3758,19 @@ export class InkDocView extends ItemView {
 		index: number,
 		point: InkDocPoint
 	): InkDocTextBlock | null {
-		return findTextBlockHitInPage(this.docData, page, index, point);
+		const blocks = this.getEffectiveTextBlocks(page, index);
+		for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+			const block = blocks[blockIndex];
+			if (!block) {
+				continue;
+			}
+			const w = Math.max(INKDOC_TEXT_MIN_WIDTH, block.w);
+			const h = Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h);
+			if (point.x >= block.x && point.x <= block.x + w && point.y >= block.y && point.y <= block.y + h) {
+				return block;
+			}
+		}
+		return null;
 	}
 
 	private findImageBlockHit(
@@ -3282,7 +3778,19 @@ export class InkDocView extends ItemView {
 		index: number,
 		point: InkDocPoint
 	): InkDocImageBlock | null {
-		return findImageBlockHitInPage(this.docData, page, index, point);
+		const blocks = this.getEffectiveImageBlocks(page, index);
+		for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+			const block = blocks[blockIndex];
+			if (!block) {
+				continue;
+			}
+			const w = Math.max(INKDOC_IMAGE_MIN_WIDTH, block.w);
+			const h = Math.max(INKDOC_IMAGE_MIN_HEIGHT, block.h);
+			if (point.x >= block.x && point.x <= block.x + w && point.y >= block.y && point.y <= block.y + h) {
+				return block;
+			}
+		}
+		return null;
 	}
 
 	private findTextBlockHandleHit(
@@ -3290,7 +3798,26 @@ export class InkDocView extends ItemView {
 		index: number,
 		point: InkDocPoint
 	): InkDocTextBlock | null {
-		return findTextBlockHandleHitInPage(this.docData, page, index, point);
+		const blocks = this.getEffectiveTextBlocks(page, index);
+		for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+			const block = blocks[blockIndex];
+			if (!block) {
+				continue;
+			}
+			const handleLeft = block.x + 2;
+			const handleTop = block.y + 2;
+			const handleRight = handleLeft + 16;
+			const handleBottom = handleTop + 16;
+			if (
+				point.x >= handleLeft &&
+				point.x <= handleRight &&
+				point.y >= handleTop &&
+				point.y <= handleBottom
+			) {
+				return block;
+			}
+		}
+		return null;
 	}
 
 	private findTextBlockResizeHit(
@@ -3298,18 +3825,61 @@ export class InkDocView extends ItemView {
 		index: number,
 		point: InkDocPoint
 	): InkDocTextBlock | null {
-		return findTextBlockResizeHitInPage(this.docData, page, index, point);
+		const blocks = this.getEffectiveTextBlocks(page, index);
+		for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+			const block = blocks[blockIndex];
+			if (!block) {
+				continue;
+			}
+			const w = Math.max(INKDOC_TEXT_MIN_WIDTH, block.w);
+			const h = Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h);
+			const handleLeft = block.x + w - 14 - 2;
+			const handleTop = block.y + h - 14 - 2;
+			const handleRight = handleLeft + 14;
+			const handleBottom = handleTop + 14;
+			if (
+				point.x >= handleLeft &&
+				point.x <= handleRight &&
+				point.y >= handleTop &&
+				point.y <= handleBottom
+			) {
+				return block;
+			}
+		}
+		return null;
 	}
 
 	private createTextBlock(page: InkDocPage, index: number, point: InkDocPoint): InkDocTextBlock {
-		const block = addTextBlock(this.docData, page, index, point);
+		const decorationRegion = this.resolveDecorationRegionForPoint(index, point);
+		if (decorationRegion) {
+			const block = addTextBlock(null, { id: `${decorationRegion}-virtual` } as InkDocPage, 0, point);
+			const blocks = this.getDecorationTextBlocks(decorationRegion);
+			blocks.push(block);
+			this.clampTextBlockToDecorationRegion(block, decorationRegion);
+			this.markDecorationDirty();
+			this.saveDebounced();
+			return block;
+		}
+		const block = addTextBlock(this.docData, page, index, this.clampPointToBody(point, index));
+		this.clampTextBlockToBody(block, index);
 		this.textLayerDirty.add(page.id);
 		this.saveDebounced();
 		return block;
 	}
 
 	private createLatexBlock(page: InkDocPage, index: number, point: InkDocPoint): InkDocTextBlock {
-		const block = addLatexBlock(this.docData, page, index, point);
+		const decorationRegion = this.resolveDecorationRegionForPoint(index, point);
+		if (decorationRegion) {
+			const block = addLatexBlock(null, { id: `${decorationRegion}-virtual` } as InkDocPage, 0, point);
+			const blocks = this.getDecorationTextBlocks(decorationRegion);
+			blocks.push(block);
+			this.clampTextBlockToDecorationRegion(block, decorationRegion);
+			this.markDecorationDirty();
+			this.saveDebounced();
+			return block;
+		}
+		const block = addLatexBlock(this.docData, page, index, this.clampPointToBody(point, index));
+		this.clampTextBlockToBody(block, index);
 		this.textLayerDirty.add(page.id);
 		this.saveDebounced();
 		return block;
@@ -3330,11 +3900,13 @@ export class InkDocView extends ItemView {
 		const scale = Math.min(1, maxWidth / imageSize.width, maxHeight / imageSize.height);
 		const w = Math.max(INKDOC_IMAGE_MIN_WIDTH, Math.round(imageSize.width * scale));
 		const h = Math.max(INKDOC_IMAGE_MIN_HEIGHT, Math.round(imageSize.height * scale));
-		const blocks = this.getImageBlocks(page, index);
+		const decorationRegion = this.resolveDecorationRegionForPoint(index, point);
+		const targetPoint = decorationRegion ? point : this.clampPointToBody(point, index);
+		const blocks = decorationRegion ? this.getDecorationImages(decorationRegion) : this.getImageBlocks(page, index);
 		const block: InkDocImageBlock = {
 			id: createImageBlockId(),
-			x: point.x - w / 2,
-			y: point.y - h / 2,
+			x: targetPoint.x - w / 2,
+			y: targetPoint.y - h / 2,
 			w,
 			h,
 			src,
@@ -3343,35 +3915,57 @@ export class InkDocView extends ItemView {
 			skewY: 0,
 			flipX: false
 		};
+		if (!decorationRegion) {
+			this.clampImageBlockToBody(block, index);
+		} else {
+			this.clampImageBlockToDecorationRegion(block, decorationRegion);
+		}
 		blocks.push(block);
-		page.images = blocks;
-		this.imageLayerDirty.add(page.id);
+		if (!decorationRegion) {
+			page.images = blocks;
+			this.imageLayerDirty.add(page.id);
+		} else {
+			this.markDecorationDirty();
+		}
 		this.saveDebounced();
 		return block;
 	}
 
 	private openTextEditor(page: InkDocPage, index: number, block: InkDocTextBlock): void {
-		openTextEditorInstance(this.getTextEditingContext(), this.getTextEditingAccessors(), page, index, block);
+		const owner = this.resolveTextBlockOwner(page, index, block.id);
+		openTextEditorInstance(this.getTextEditingContext(), this.getTextEditingAccessors(), page, index, block, {
+			decorationRegion: owner.kind === "decoration" ? owner.region : undefined
+		});
 	}
 
 	private toggleImageMirror(page: InkDocPage, block: InkDocImageBlock): void {
 		block.flipX = !(block.flipX === true);
-		this.imageLayerDirty.add(page.id);
-		const state = this.canvasStates.get(page.id);
-		if (state) {
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
+		const owner = this.resolveImageBlockOwner(page, pageIndex, block.id);
+		if (owner.kind === "decoration") {
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			this.imageLayerDirty.add(page.id);
+			const state = this.canvasStates.get(page.id);
+			if (state) {
+				this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+			}
 		}
 		this.saveDebounced();
 	}
 
 	private openLatexEditor(page: InkDocPage, index: number, block: InkDocTextBlock): void {
 		this.latexColor = this.getLatexBlockColor(page, block);
-		openLatexEditorInstance(this.getTextEditingContext(), this.getTextEditingAccessors(), page, index, block);
+		const owner = this.resolveTextBlockOwner(page, index, block.id);
+		openLatexEditorInstance(this.getTextEditingContext(), this.getTextEditingAccessors(), page, index, block, {
+			decorationRegion: owner.kind === "decoration" ? owner.region : undefined
+		});
 		this.updateLatexToolbarUI();
 	}
 
 	private openInkMathModalForLatexBlock(page: InkDocPage, pageIndex: number, blockId: string): void {
-		const block = page.textBlocks?.find((entry) => entry.id === blockId);
+		const block = this.getTextBlockById(page, pageIndex, blockId);
 		if (!block || this.getBlockType(block) !== "latex") {
 			return;
 		}
@@ -3400,16 +3994,22 @@ export class InkDocView extends ItemView {
 		if (!page) {
 			return;
 		}
-		const block = page.textBlocks?.find((entry) => entry.id === blockId);
+		const block = this.getTextBlockById(page, pageIndex, blockId);
 		if (!block || this.getBlockType(block) !== "latex") {
 			return;
 		}
 		block.latex = latex;
 		await this.fitLatexBlockToRender(page, block);
-		this.textLayerDirty.add(page.id);
-		const state = this.canvasStates.get(page.id);
-		if (state) {
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const owner = this.resolveTextBlockOwner(page, pageIndex, blockId);
+		if (owner.kind === "decoration") {
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			this.textLayerDirty.add(page.id);
+			const state = this.canvasStates.get(page.id);
+			if (state) {
+				this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+			}
 		}
 		this.saveDebounced();
 	}
@@ -3463,10 +4063,17 @@ export class InkDocView extends ItemView {
 
 	private async handleLatexBlockCommitted(page: InkDocPage, block: InkDocTextBlock): Promise<void> {
 		await this.fitLatexBlockToRender(page, block);
-		this.textLayerDirty.add(page.id);
-		const state = this.canvasStates.get(page.id);
-		if (state) {
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
+		const owner = this.resolveTextBlockOwner(page, pageIndex, block.id);
+		if (owner.kind === "decoration") {
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			this.textLayerDirty.add(page.id);
+			const state = this.canvasStates.get(page.id);
+			if (state) {
+				this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+			}
 		}
 		this.saveDebounced();
 	}
@@ -3646,10 +4253,44 @@ export class InkDocView extends ItemView {
 			getCanvasSizePx: () => this.getCanvasSizePx(),
 			renderStrokes: (ctx, strokes, pageId) => this.renderStrokes(ctx, strokes, pageId),
 			saveDebounced: () => this.saveDebounced(),
+			saveNow: () => {
+				void this.saveToFile();
+			},
 			noteUserActivity: () => this.syncEngine.noteActivity(),
 			updateTextToolbarVisibility: () => this.updateTextToolbarVisibility(),
 			getDefaultBlockColor: (page) => this.getPageDefaultTextColor(page),
 			getWikiLinkTargets: () => this.getInkdocWikiLinkTargets(),
+			getDecorationTextBlock: (region, blockId) => this.getDecorationTextBlockById(region, blockId),
+			getVisiblePageIdsForDecoration: (region) =>
+				this.docData?.pages
+					.filter((_, pageIndex) => this.isDecorationVisible(region, pageIndex))
+					.map((entry) => entry.id) ?? [],
+			applyTextEdit: (edit, changes) => this.applyTextEditChanges(edit, changes),
+			resolveTextEditTarget: (edit) => {
+				if (!this.docData) {
+					return null;
+				}
+				const page = this.docData.pages.find((entry) => entry.id === edit.pageId) ?? this.docData.pages[edit.pageIndex];
+				if (!page) {
+					return null;
+				}
+				const owner = this.resolveTextBlockOwner(page, edit.pageIndex, edit.blockId);
+				const block = this.getTextBlockById(page, edit.pageIndex, edit.blockId);
+				if (!block) {
+					return null;
+				}
+				return {
+					page,
+					block,
+					affectedPageIds:
+						owner.kind === "decoration"
+							? this.docData.pages
+									.filter((_, pageIndex) => this.isDecorationVisible(owner.region, pageIndex))
+									.map((entry) => entry.id)
+							: [page.id]
+				};
+			},
+			refreshPageRender: (pageId) => this.refreshPage(pageId),
 			onLatexCommitted: (page, block) => {
 				void this.handleLatexBlockCommitted(page, block);
 			}
@@ -3688,7 +4329,7 @@ export class InkDocView extends ItemView {
 
 	private getTextEditingAccessors(): TextEditingAccessors {
 		return {
-			getTextEditor: () => this.stickyTextEditorEl ?? this.textEditorEl,
+			getTextEditor: () => this.textEditorEl ?? this.stickyTextEditorEl,
 			setTextEditor: (value) => {
 				this.textEditorEl = value;
 			},
@@ -3722,7 +4363,10 @@ export class InkDocView extends ItemView {
 			getCanvasSizePx: () => this.getCanvasSizePx(),
 			getPointerPosition: (canvas, event) => this.getPointerPosition(canvas, event),
 			renderStrokes: (ctx, strokes, pageId) => this.renderStrokes(ctx, strokes, pageId),
-			saveDebounced: () => this.saveDebounced()
+			saveDebounced: () => this.saveDebounced(),
+			getBodyBounds: (pageIndex) => this.getBodyBounds(pageIndex),
+			clampTextBlockToBody: (block, pageIndex) => this.clampTextBlockToBody(block, pageIndex),
+			clampImageBlockToBody: (block, pageIndex) => this.clampImageBlockToBody(block, pageIndex)
 		};
 	}
 
@@ -3912,21 +4556,37 @@ export class InkDocView extends ItemView {
 		if (!this.docData) {
 			return;
 		}
-		const target =
-			this.docData.pages.find((entry) => entry.id === page.id) ?? this.docData.pages[index];
-		if (!target || !target.images) {
-			return;
-		}
-		target.images = target.images.filter((block) => block.id !== blockId);
-		page.images = target.images;
-		const selected = this.selectedImages.get(page.id);
-		if (selected?.has(blockId)) {
-			selected.delete(blockId);
-		}
-		this.imageLayerDirty.add(page.id);
-		const state = this.canvasStates.get(page.id);
-		if (state) {
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const owner = this.resolveImageBlockOwner(page, index, blockId);
+		if (owner.kind === "decoration") {
+			const blocks = this.getDecorationImages(owner.region);
+			const nextBlocks = blocks.filter((block) => block.id !== blockId);
+			const decorations = this.ensureDocumentDecorations();
+			if (decorations) {
+				if (owner.region === "header") {
+					decorations.header.images = nextBlocks;
+				} else {
+					decorations.footer.images = nextBlocks;
+				}
+			}
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			const target =
+				this.docData.pages.find((entry) => entry.id === page.id) ?? this.docData.pages[index];
+			if (!target || !target.images) {
+				return;
+			}
+			target.images = target.images.filter((block) => block.id !== blockId);
+			page.images = target.images;
+			const selected = this.selectedImages.get(page.id);
+			if (selected?.has(blockId)) {
+				selected.delete(blockId);
+			}
+			this.imageLayerDirty.add(page.id);
+			const state = this.canvasStates.get(page.id);
+			if (state) {
+				this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+			}
 		}
 		this.saveDebounced();
 	}
@@ -3935,17 +4595,33 @@ export class InkDocView extends ItemView {
 		if (!this.docData) {
 			return;
 		}
-		const target =
-			this.docData.pages.find((entry) => entry.id === page.id) ?? this.docData.pages[index];
-		if (!target || !target.textBlocks) {
-			return;
-		}
-		target.textBlocks = target.textBlocks.filter((block) => block.id !== blockId);
-		page.textBlocks = target.textBlocks;
-		this.textLayerDirty.add(page.id);
-		const state = this.canvasStates.get(page.id);
-		if (state) {
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		const owner = this.resolveTextBlockOwner(page, index, blockId);
+		if (owner.kind === "decoration") {
+			const blocks = this.getDecorationTextBlocks(owner.region);
+			const nextBlocks = blocks.filter((block) => block.id !== blockId);
+			const decorations = this.ensureDocumentDecorations();
+			if (decorations) {
+				if (owner.region === "header") {
+					decorations.header.textBlocks = nextBlocks;
+				} else {
+					decorations.footer.textBlocks = nextBlocks;
+				}
+			}
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else {
+			const target =
+				this.docData.pages.find((entry) => entry.id === page.id) ?? this.docData.pages[index];
+			if (!target || !target.textBlocks) {
+				return;
+			}
+			target.textBlocks = target.textBlocks.filter((block) => block.id !== blockId);
+			page.textBlocks = target.textBlocks;
+			this.textLayerDirty.add(page.id);
+			const state = this.canvasStates.get(page.id);
+			if (state) {
+				this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+			}
 		}
 		this.saveDebounced();
 	}
@@ -4664,7 +5340,11 @@ export class InkDocView extends ItemView {
 		this.selectedStrokes.set(page.id, new Set());
 		this.selectedTextBlocks.set(page.id, new Set());
 		const state = this.canvasStates.get(page.id);
-		if (state) {
+		const owner = this.resolveImageBlockOwner(page, index, block.id);
+		if (owner.kind === "decoration") {
+			this.markDecorationDirty();
+			this.refreshAllPages();
+		} else if (state) {
 			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
 		}
 	}
@@ -4686,6 +5366,18 @@ export class InkDocView extends ItemView {
 		const startPoint = this.getPointerPosition(state.canvas, event);
 		const startRect = { x: block.x, y: block.y, w: block.w, h: block.h };
 		const startRotation = block.rotation ?? 0;
+		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
+		const owner = this.resolveImageBlockOwner(page, pageIndex, block.id);
+		const interactionHost =
+			event.currentTarget instanceof HTMLElement
+				? event.currentTarget.closest<HTMLElement>(".inkdoc-image-block")
+				: null;
+		const visualHost = interactionHost?.querySelector<HTMLElement>(".inkdoc-image-visual") ?? null;
+		const { widthPx, heightPx } = this.getCanvasSizePx();
+		const canvasRect = state.canvas.getBoundingClientRect();
+		const zoom = this.zoomLevel || 1;
+		const scaleX = canvasRect.width / zoom / widthPx;
+		const scaleY = canvasRect.height / zoom / heightPx;
 		const center = { x: block.x + block.w / 2, y: block.y + block.h / 2 };
 		const startAngle = Math.atan2(startPoint.y - center.y, startPoint.x - center.x);
 		this.imagePointerCleanup = startWindowPointerInteraction({
@@ -4696,22 +5388,58 @@ export class InkDocView extends ItemView {
 				const point = this.getPointerPosition(state.canvas, moveEvent);
 				const dx = point.x - startPoint.x;
 				const dy = point.y - startPoint.y;
-				if (mode === "drag") {
-					block.x = startRect.x + dx;
-					block.y = startRect.y + dy;
-				} else if (mode === "resize") {
-					block.w = Math.max(INKDOC_IMAGE_MIN_WIDTH, startRect.w + dx);
-					block.h = Math.max(INKDOC_IMAGE_MIN_HEIGHT, startRect.h + dy);
-				} else if (mode === "rotate") {
-					const angle = Math.atan2(point.y - center.y, point.x - center.x);
-					block.rotation = startRotation + ((angle - startAngle) * 180) / Math.PI;
+				if (owner.kind === "decoration") {
+					const targetBlock = this.getDecorationImageBlockById(owner.region, block.id);
+					if (!targetBlock) {
+						return;
+					}
+					if (mode === "drag") {
+						targetBlock.x = startRect.x + dx;
+						targetBlock.y = startRect.y + dy;
+					} else if (mode === "resize") {
+						targetBlock.w = Math.max(INKDOC_IMAGE_MIN_WIDTH, startRect.w + dx);
+						targetBlock.h = Math.max(INKDOC_IMAGE_MIN_HEIGHT, startRect.h + dy);
+					} else if (mode === "rotate") {
+						const angle = Math.atan2(point.y - center.y, point.x - center.x);
+						targetBlock.rotation = startRotation + ((angle - startAngle) * 180) / Math.PI;
+					}
+					this.clampImageBlockToDecorationRegion(targetBlock, owner.region);
+					if (interactionHost) {
+						interactionHost.style.left = `${targetBlock.x * scaleX}px`;
+						interactionHost.style.top = `${targetBlock.y * scaleY}px`;
+						interactionHost.style.width = `${Math.max(INKDOC_IMAGE_MIN_WIDTH, targetBlock.w * scaleX)}px`;
+						interactionHost.style.height = `${Math.max(INKDOC_IMAGE_MIN_HEIGHT, targetBlock.h * scaleY)}px`;
+					}
+					if (visualHost) {
+						const rotation = targetBlock.rotation ?? 0;
+						const skewX = targetBlock.skewX ?? 0;
+						const skewY = targetBlock.skewY ?? 0;
+						const flipX = targetBlock.flipX === true ? -1 : 1;
+						visualHost.style.transform = `rotate(${rotation}deg) skew(${skewX}deg, ${skewY}deg) scaleX(${flipX})`;
+					}
+				} else {
+					if (mode === "drag") {
+						block.x = startRect.x + dx;
+						block.y = startRect.y + dy;
+					} else if (mode === "resize") {
+						block.w = Math.max(INKDOC_IMAGE_MIN_WIDTH, startRect.w + dx);
+						block.h = Math.max(INKDOC_IMAGE_MIN_HEIGHT, startRect.h + dy);
+					} else if (mode === "rotate") {
+						const angle = Math.atan2(point.y - center.y, point.x - center.x);
+						block.rotation = startRotation + ((angle - startAngle) * 180) / Math.PI;
+					}
+					this.clampImageBlockToBody(block, pageIndex);
+					this.imageLayerDirty.add(page.id);
+					this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
 				}
-				this.imageLayerDirty.add(page.id);
-				this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
 			},
 			onEnd: () => {
 				this.syncEngine.noteActivity();
 				this.imagePointerCleanup = null;
+				if (owner.kind === "decoration") {
+					this.markDecorationDirty();
+					this.refreshAllPages();
+				}
 				this.saveDebounced();
 			}
 		});

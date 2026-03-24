@@ -202,7 +202,7 @@ export const addTextBlock = (
 		w: 180,
 		h: 40,
 		text: "",
-		html: "",
+		html: undefined,
 		type: "text"
 	};
 	blocks.push(block);
@@ -224,7 +224,7 @@ export const addLatexBlock = (
 		w: 180,
 		h: 40,
 		text: "",
-		html: "",
+		html: undefined,
 		type: "latex",
 		latex: "",
 		color: INKDOC_DEFAULT_LATEX_COLOR

@@ -40,6 +40,23 @@ export type InkDocTextLayoutPadding = {
 	left: number;
 };
 
+export type InkDocDocumentDecorationRegion = "header" | "footer";
+
+export type InkDocDocumentDecorationContent = {
+	textBlocks?: InkDocTextBlock[];
+	images?: InkDocImageBlock[];
+};
+
+export type InkDocDocumentDecorations = {
+	headerEnabled?: boolean;
+	footerEnabled?: boolean;
+	firstPageWithoutDecorations?: boolean;
+	headerHeightPercent?: number;
+	footerHeightPercent?: number;
+	header?: InkDocDocumentDecorationContent;
+	footer?: InkDocDocumentDecorationContent;
+};
+
 export type InkDocPage = {
 	id: string;
 	strokes?: InkDocStroke[];
@@ -145,6 +162,7 @@ export type InkDocDocument = {
 		marginMm: number;
 		textPadding?: InkDocTextLayoutPadding;
 	};
+	decorations?: InkDocDocumentDecorations;
 	pages: InkDocPage[];
 	stickyNotes?: InkDocStickyNote[];
 };

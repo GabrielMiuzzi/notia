@@ -15,6 +15,7 @@ import { resolvePageColors, isInkDocPageBackground, DEFAULT_PAGE_BACKGROUND } fr
 import { isInkDocPageSize, resolvePageSize } from "./pageSizes";
 import { resolveInkDocStrokeStyle } from "./strokeStyles";
 import { resolveInkDocTextLayoutPadding } from "./textLayout";
+import { resolveInkDocDecorations } from "./documentDecorations";
 
 export const parseInkDocRaw = (raw: string): InkDocDocument => {
 	const parsed = JSON.parse(raw) as Partial<InkDocDocument>;
@@ -35,7 +36,10 @@ export const parseInkDocRaw = (raw: string): InkDocDocument => {
 					w: Math.max(INKDOC_TEXT_MIN_WIDTH, typeof block.w === "number" ? block.w : 180),
 					h: Math.max(INKDOC_TEXT_MIN_HEIGHT, typeof block.h === "number" ? block.h : 40),
 					text: typeof block.text === "string" ? block.text : "",
-					html: typeof block.html === "string" ? block.html : undefined,
+					html:
+						typeof block.html === "string" && block.html.trim().length > 0
+							? block.html
+							: undefined,
 					type: (block.type === "latex" ? "latex" : "text") as "latex" | "text",
 					latex: typeof block.latex === "string" ? block.latex : "",
 					color:
@@ -165,6 +169,7 @@ export const parseInkDocRaw = (raw: string): InkDocDocument => {
 					: DEFAULT_PAGE_MARGIN_MM,
 			textPadding: resolveInkDocTextLayoutPadding(parsed.page?.textPadding)
 		},
+		decorations: resolveInkDocDecorations(parsed.decorations),
 		pages,
 		stickyNotes
 	};
