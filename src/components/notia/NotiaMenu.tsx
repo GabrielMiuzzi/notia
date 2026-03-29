@@ -505,6 +505,7 @@ export function NotiaMenu() {
   })
   const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
+  const [graphChatSelectedPaths, setGraphChatSelectedPaths] = useState<string[]>([])
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [pendingCreation, setPendingCreation] = useState<{
     id: string
@@ -697,6 +698,35 @@ export function NotiaMenu() {
     treeNodes,
     revision: graphRevision,
   })
+  const graphChatAvailablePaths = useMemo(
+    () => graphModel.nodes.map((node) => node.path),
+    [graphModel.nodes],
+  )
+  const graphChatEffectivePaths = useMemo(
+    () => graphChatSelectedPaths.length > 0 ? graphChatSelectedPaths : graphChatAvailablePaths,
+    [graphChatAvailablePaths, graphChatSelectedPaths],
+  )
+  const graphChatContextSummary = useMemo(() => {
+    if (activeWorkspaceView !== 'graph') {
+      return null
+    }
+
+    if (graphChatSelectedPaths.length === 0) {
+      return graphChatAvailablePaths.length > 0
+        ? `Graph View: toda la libreria del grafo (${graphChatAvailablePaths.length} archivos)`
+        : 'Graph View: no hay archivos disponibles en el grafo'
+    }
+
+    return `Graph View: ${graphChatSelectedPaths.length} archivo${graphChatSelectedPaths.length === 1 ? '' : 's'} seleccionado${graphChatSelectedPaths.length === 1 ? '' : 's'}`
+  }, [activeWorkspaceView, graphChatAvailablePaths.length, graphChatSelectedPaths.length])
+
+  useEffect(() => {
+    const availablePathSet = new Set(graphChatAvailablePaths)
+    setGraphChatSelectedPaths((current) => {
+      const next = current.filter((path) => availablePathSet.has(path))
+      return next.length === current.length ? current : next
+    })
+  }, [graphChatAvailablePaths])
 
   const resetTabs = useCallback(() => {
     drawioControllersRef.current.clear()
@@ -2890,6 +2920,8 @@ export function NotiaMenu() {
             libraryName={libraryName}
             isLoading={isGraphLoading}
             onOpenFile={handleOpenFileFromView}
+            chatSelectedPaths={graphChatSelectedPaths}
+            onChatSelectedPathsChange={setGraphChatSelectedPaths}
           />
         ) : activeWorkspaceView === 'chat' ? (
           <ChatWorkspaceView
@@ -2970,7 +3002,17 @@ export function NotiaMenu() {
                     ? 'direct'
                     : null
               }
-              preferredContextScopeKey={activeWorkspaceView === 'task-manager' ? taskManagerChatContext?.scopeKey ?? null : null}
+              preferredContextScopeKey={
+                activeWorkspaceView === 'task-manager'
+                  ? taskManagerChatContext?.scopeKey ?? null
+                  : activeWorkspaceView === 'graph'
+                    ? 'graph-view:right-panel'
+                    : null
+              }
+              transientContextPaths={activeWorkspaceView === 'graph' ? graphChatEffectivePaths : []}
+              transientContextMode={activeWorkspaceView === 'graph' ? 'index' : null}
+              transientContextSummary={graphChatContextSummary}
+              persistTransientContext={false}
               selectMatchingChatOnly
               onChatCreated={() => refreshActiveLibraryTree()}
               onChatDeleted={() => refreshActiveLibraryTree()}

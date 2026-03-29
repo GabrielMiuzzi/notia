@@ -2155,11 +2155,28 @@
   border-radius: 14px;
   background: color-mix(in srgb, var(--color-main-bg) 44%, transparent);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: 34px minmax(0, 1fr) 38px;
   align-items: stretch;
   gap: 6px;
   padding: 6px;
   transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.notia-graph-search-result-check {
+  min-height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-graph-search-glow) 9%, transparent);
+  cursor: pointer;
+}
+
+.notia-graph-search-result-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-graph-search-accent);
+  cursor: pointer;
 }
 
 .notia-graph-search-result-main {

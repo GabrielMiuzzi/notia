@@ -168,6 +168,8 @@ interface GraphViewProps {
   libraryName: string
   isLoading: boolean
   onOpenFile: (filePath: string) => void
+  chatSelectedPaths?: string[]
+  onChatSelectedPathsChange?: (paths: string[]) => void
 }
 
 interface GraphSearchResult {
@@ -1005,7 +1007,15 @@ function clearGraphNodePositionsForLibrary(libraryName: string): void {
   window.localStorage.setItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY, JSON.stringify(nextStore))
 }
 
-export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoading, onOpenFile }: GraphViewProps) {
+export function GraphView({
+  graphModel,
+  graphSourcesByPath,
+  libraryName,
+  isLoading,
+  onOpenFile,
+  chatSelectedPaths = [],
+  onChatSelectedPathsChange,
+}: GraphViewProps) {
   const initialSettings = useMemo(() => readGraphViewSettings(), [])
   const graphModelSignature = useMemo(() => buildGraphModelSignature(graphModel), [graphModel])
   const stableGraphModel = useMemo(
@@ -1052,6 +1062,19 @@ export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoadi
       INPUT_MAX_NODE_SIZE_MULTIPLIER,
     ),
   )
+  const selectedChatPathSet = useMemo(() => new Set(chatSelectedPaths), [chatSelectedPaths])
+
+  const toggleChatContextPath = useCallback((path: string) => {
+    if (!onChatSelectedPathsChange) {
+      return
+    }
+
+    onChatSelectedPathsChange(
+      selectedChatPathSet.has(path)
+        ? chatSelectedPaths.filter((currentPath) => currentPath !== path)
+        : [...chatSelectedPaths, path],
+    )
+  }, [chatSelectedPaths, onChatSelectedPathsChange, selectedChatPathSet])
 
   useEffect(() => {
     viewportRef.current = viewport
@@ -2132,6 +2155,24 @@ export function GraphView({ graphModel, graphSourcesByPath, libraryName, isLoadi
                         setHoveredSearchResultPath((current) => (current === result.path ? null : current))
                       }}
                     >
+                      <label
+                        className="notia-graph-search-result-check"
+                        title={selectedChatPathSet.has(result.path)
+                          ? 'Quitar archivo del contexto del chat'
+                          : 'Sumar archivo al contexto del chat'}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedChatPathSet.has(result.path)}
+                          onChange={() => {
+                            toggleChatContextPath(result.path)
+                          }}
+                          aria-label={`Usar ${result.label} como contexto del chat`}
+                        />
+                      </label>
                       <button
                         type="button"
                         className="notia-graph-search-result-main"

@@ -22,6 +22,7 @@ export interface NetrunnerChatAttachments {
   files?: NetrunnerInlineFileAttachment[]
   useLlamaIndex?: boolean
   image?: NetrunnerImageAttachment | null
+  persistSelectedContext?: boolean
 }
 
 interface NetrunnerChatMemoryItem {
@@ -112,6 +113,7 @@ function buildChatRequestBody(
     inlineFiles: attachments?.files ?? [],
     image: attachments?.image ?? null,
     use_llama_index: attachments?.useLlamaIndex ?? false,
+    persist_selected_context: attachments?.persistSelectedContext ?? true,
     max_context_chars: 30000,
     chatMemory: toChatMemory(chatMemory),
     longTermMemories: toLongTermMemories(longTermMemories),

@@ -44,6 +44,10 @@ export interface ChatWorkspaceViewProps {
   preferredContextName?: string | null
   preferredContextMode?: ChatFileContextMode | null
   preferredContextScopeKey?: string | null
+  transientContextPaths?: string[]
+  transientContextMode?: ChatFileContextMode | null
+  transientContextSummary?: string | null
+  persistTransientContext?: boolean
   selectMatchingChatOnly?: boolean
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
@@ -118,14 +122,22 @@ function doesChatDocumentMatchPreferredContext(
   preferredContextScopeKey: string | null,
   resolvedPreferredContextPaths: string[],
 ): boolean {
-  if (!document || !preferredContextMode) {
+  if (!document) {
     return false
   }
 
   const matchesScopeKey = (document.contextScopeKey ?? null) === (preferredContextScopeKey ?? null)
-  return document.selectedContextMode === preferredContextMode
-    && areStringArraysEqual(document.selectedContextFiles, resolvedPreferredContextPaths)
-    && matchesScopeKey
+  if (preferredContextMode && resolvedPreferredContextPaths.length > 0) {
+    return document.selectedContextMode === preferredContextMode
+      && areStringArraysEqual(document.selectedContextFiles, resolvedPreferredContextPaths)
+      && matchesScopeKey
+  }
+
+  if (preferredContextScopeKey) {
+    return matchesScopeKey
+  }
+
+  return false
 }
 
 function readImageFileAsAttachment(file: File): Promise<SelectedImageAttachment> {
@@ -166,6 +178,10 @@ export function ChatWorkspaceView({
   preferredContextName = null,
   preferredContextMode = null,
   preferredContextScopeKey = null,
+  transientContextPaths = [],
+  transientContextMode = null,
+  transientContextSummary = null,
+  persistTransientContext = false,
   selectMatchingChatOnly = false,
   onChatCreated,
   onChatDeleted,
@@ -245,6 +261,11 @@ export function ChatWorkspaceView({
     () => preferredContextPaths.map((pathValue) => pathValue.trim()).filter(Boolean),
     [preferredContextPaths],
   )
+  const resolvedTransientContextPaths = useMemo(
+    () => transientContextPaths.map((pathValue) => pathValue.trim()).filter(Boolean),
+    [transientContextPaths],
+  )
+  const hasTransientContext = transientContextMode !== null && resolvedTransientContextPaths.length > 0
   const preferredContextSignature = useMemo(
     () => [
       preferredContextMode ?? '',
@@ -284,6 +305,9 @@ export function ChatWorkspaceView({
     const matchingChat = availablePreviousChats.find((chat) => chat.filePath === selectedChatFilePath)
     return normalizeChatTitle(matchingChat?.title ?? 'Chat')
   }, [availablePreviousChats, selectedChatFilePath])
+  const effectiveSelectedContextPaths = hasTransientContext ? resolvedTransientContextPaths : selectedLibraryFilePaths
+  const effectiveSelectedContextMode = hasTransientContext ? transientContextMode : selectedFileContextMode
+  const transientContextSummaryLabel = hasTransientContext ? transientContextSummary?.trim() || null : null
   const displayedMessages = optimisticThreadMessages ?? activeChatDocument?.messages ?? []
   const hasMessages = displayedMessages.length > 0
   const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library)
@@ -411,7 +435,7 @@ export function ChatWorkspaceView({
   ])
 
   useEffect(() => {
-    if ((!preferredContextScopeKey && resolvedPreferredContextPaths.length === 0) || !preferredContextMode) {
+    if (!preferredContextScopeKey && resolvedPreferredContextPaths.length === 0) {
       setMatchedPreferredChatFilePath(null)
       return
     }
@@ -428,11 +452,14 @@ export function ChatWorkspaceView({
         const boardPrefix = preferredTaskManagerBoardPrefix
         const exactScopeMatch = Boolean(preferredContextScopeKey) && document.contextScopeKey === preferredContextScopeKey
         const exactPathsMatch = (
-          document.selectedContextMode === preferredContextMode
+          Boolean(preferredContextMode)
+          && resolvedPreferredContextPaths.length > 0
+          && document.selectedContextMode === preferredContextMode
           && areStringArraysEqual(document.selectedContextFiles, resolvedPreferredContextPaths)
         )
         const boardFallbackMatch = (
           Boolean(boardPrefix)
+          && Boolean(preferredContextMode)
           && document.selectedContextMode === preferredContextMode
           && document.selectedContextFiles.length > 0
           && document.selectedContextFiles.every((pathValue) => pathValue.replace(/\\/g, '/').startsWith(boardPrefix ?? ''))
@@ -633,8 +660,7 @@ export function ChatWorkspaceView({
 
   useEffect(() => {
     if (
-      resolvedPreferredContextPaths.length === 0
-      || !preferredContextMode
+      (!preferredContextScopeKey && resolvedPreferredContextPaths.length === 0)
       || !activeChatDocument
       || !selectedChatFilePath
     ) {
@@ -642,9 +668,15 @@ export function ChatWorkspaceView({
     }
 
     const hasExpectedContext =
-      activeChatDocument.selectedContextMode === preferredContextMode
-      && areStringArraysEqual(activeChatDocument.selectedContextFiles, resolvedPreferredContextPaths)
-      && (activeChatDocument.contextScopeKey ?? null) === (preferredContextScopeKey ?? null)
+      (activeChatDocument.contextScopeKey ?? null) === (preferredContextScopeKey ?? null)
+      && (
+        !preferredContextMode
+        || resolvedPreferredContextPaths.length === 0
+        || (
+          activeChatDocument.selectedContextMode === preferredContextMode
+          && areStringArraysEqual(activeChatDocument.selectedContextFiles, resolvedPreferredContextPaths)
+        )
+      )
 
     if (hasExpectedContext) {
       return
@@ -653,8 +685,10 @@ export function ChatWorkspaceView({
     const nextDocument: StoredChatDocument = {
       ...activeChatDocument,
       contextScopeKey: preferredContextScopeKey,
-      selectedContextMode: preferredContextMode,
-      selectedContextFiles: resolvedPreferredContextPaths,
+      selectedContextMode: preferredContextMode ?? activeChatDocument.selectedContextMode,
+      selectedContextFiles: preferredContextMode && resolvedPreferredContextPaths.length > 0
+        ? resolvedPreferredContextPaths
+        : activeChatDocument.selectedContextFiles,
     }
 
     setActiveChatDocument(nextDocument)
@@ -787,26 +821,27 @@ export function ChatWorkspaceView({
         await onChatCreated?.(filePath)
         const createdDocument = await loadChatDocument(filePath, 'Chat')
         const shouldDisableLongTermMemoryForAutoCreatedIndexChat =
-          selectedFileContextMode === 'index'
-          && selectedLibraryFilePaths.length > 0
+          effectiveSelectedContextMode === 'index'
+          && effectiveSelectedContextPaths.length > 0
 
         const preparedDocument: StoredChatDocument = shouldDisableLongTermMemoryForAutoCreatedIndexChat
           ? {
             ...createdDocument,
-            contextScopeKey: preferredContextScopeKey,
+            contextScopeKey: preferredContextScopeKey ?? createdDocument.contextScopeKey,
             longTermMemoryEnabled: false,
-            selectedContextMode: 'index',
-            selectedContextFiles: selectedLibraryFilePaths,
+            selectedContextMode: persistTransientContext ? 'index' : createdDocument.selectedContextMode,
+            selectedContextFiles: persistTransientContext ? effectiveSelectedContextPaths : createdDocument.selectedContextFiles,
           }
           : {
             ...createdDocument,
-            contextScopeKey: preferredContextScopeKey,
-            selectedContextMode: selectedFileContextMode,
-            selectedContextFiles: selectedLibraryFilePaths,
+            contextScopeKey: preferredContextScopeKey ?? createdDocument.contextScopeKey,
+            selectedContextMode: persistTransientContext ? effectiveSelectedContextMode : createdDocument.selectedContextMode,
+            selectedContextFiles: persistTransientContext ? effectiveSelectedContextPaths : createdDocument.selectedContextFiles,
           }
 
         if (
           preparedDocument.longTermMemoryEnabled !== createdDocument.longTermMemoryEnabled
+          || preparedDocument.contextScopeKey !== createdDocument.contextScopeKey
           || preparedDocument.selectedContextMode !== createdDocument.selectedContextMode
           || preparedDocument.selectedContextFiles.join('\n') !== createdDocument.selectedContextFiles.join('\n')
         ) {
@@ -843,7 +878,7 @@ export function ChatWorkspaceView({
     const previousFileContextMode = selectedFileContextMode
 
     try {
-      inlineFileAttachments = await loadInlineFileAttachments(selectedLibraryFilePaths, selectedLibraryFileOptions)
+      inlineFileAttachments = await loadInlineFileAttachments(effectiveSelectedContextPaths, selectedLibraryFileOptions)
     } catch (error) {
       setDialogMessage(
         error instanceof Error && error.message.trim()
@@ -866,9 +901,13 @@ export function ChatWorkspaceView({
     setSelectedImageAttachment(null)
     setActiveChatDocument({
       ...targetChatDocument,
-      contextScopeKey: preferredContextScopeKey,
-      selectedContextFiles: selectedLibraryFilePaths,
-      selectedContextMode: selectedFileContextMode,
+      contextScopeKey: preferredContextScopeKey ?? targetChatDocument.contextScopeKey,
+      selectedContextFiles: hasTransientContext && !persistTransientContext
+        ? targetChatDocument.selectedContextFiles
+        : effectiveSelectedContextPaths,
+      selectedContextMode: hasTransientContext && !persistTransientContext
+        ? targetChatDocument.selectedContextMode
+        : effectiveSelectedContextMode,
       messages: optimisticMessages,
     })
 
@@ -884,8 +923,9 @@ export function ChatWorkspaceView({
         },
         {
           files: inlineFileAttachments,
-          useLlamaIndex: selectedFileContextMode === 'index',
+          useLlamaIndex: effectiveSelectedContextMode === 'index',
           image: selectedImageAttachment,
+          persistSelectedContext: !hasTransientContext || persistTransientContext,
         },
         {
           onThinkingDelta: (delta) => {
@@ -1207,7 +1247,7 @@ export function ChatWorkspaceView({
                   <span>{composerContextLabel}</span>
                 </div>
               ) : null}
-              {selectedImageAttachment || selectedLibraryFileSummary.length > 0 ? (
+              {selectedImageAttachment || selectedLibraryFileSummary.length > 0 || transientContextSummaryLabel ? (
                 <div className="notia-chat-attachments">
                   {selectedImageAttachment ? (
                     <div className="notia-chat-attachment-pill">
@@ -1224,7 +1264,13 @@ export function ChatWorkspaceView({
                       </button>
                     </div>
                   ) : null}
-                  {selectedLibraryFileSummary.map((fileOption) => (
+                  {transientContextSummaryLabel ? (
+                    <div className="notia-chat-attachment-pill">
+                      <Files size={14} />
+                      <span>{transientContextSummaryLabel}</span>
+                    </div>
+                  ) : null}
+                  {!hasTransientContext ? selectedLibraryFileSummary.map((fileOption) => (
                     <div key={fileOption.path} className="notia-chat-attachment-pill">
                       <Files size={14} />
                       <span>{fileOption.name}</span>
@@ -1238,8 +1284,8 @@ export function ChatWorkspaceView({
                         <X size={12} />
                       </button>
                     </div>
-                  ))}
-                  {selectedLibraryFilePaths
+                  )) : null}
+                  {!hasTransientContext ? selectedLibraryFilePaths
                     .filter((path) => !selectedLibraryFileSummary.some((option) => option.path === path))
                     .map((path) => (
                       <div key={path} className="notia-chat-attachment-pill">
@@ -1255,10 +1301,10 @@ export function ChatWorkspaceView({
                           <X size={12} />
                         </button>
                       </div>
-                    ))}
-                  {selectedLibraryFilePaths.length > 0 ? (
+                    )) : null}
+                  {effectiveSelectedContextPaths.length > 0 ? (
                     <div className="notia-chat-attachment-mode-badge">
-                      {selectedFileContextMode === 'index' ? 'Index' : 'Directo'}
+                      {effectiveSelectedContextMode === 'index' ? 'Index' : 'Directo'}
                     </div>
                   ) : null}
                 </div>
