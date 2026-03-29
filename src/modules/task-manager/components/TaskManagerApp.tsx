@@ -1,10 +1,11 @@
 import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
+import { TASKS_ROOT_FOLDER } from '../constants/taskManagerConstants'
 import { useTaskManager } from '../hooks/useTaskManager'
 import { toAbsoluteVaultPath } from '../utils/path'
 import { TaskBoardView } from './boards/TaskBoardView'
@@ -18,6 +19,11 @@ import '../styles/taskManager.css'
 const FINISHED_TAB_ID = '__finished__'
 const CANCELLED_TAB_ID = '__cancelled__'
 const POMODORO_TAB_ID = '__pomodoro__'
+
+export interface TaskManagerChatContext {
+  scopeKey: string
+  filePaths: string[]
+}
 
 const theme = createTheme({
   palette: {
@@ -38,13 +44,49 @@ interface TaskManagerAppProps {
   embedded?: boolean
   vault?: TaskManagerVaultRef | null
   onOpenTaskFile?: (taskPath: string) => void
+  onActivePanelChange?: (panelId: string) => void
+  onActiveChatContextChange?: (context: TaskManagerChatContext | null) => void
 }
 
-export function TaskManagerApp({ embedded = false, vault = null, onOpenTaskFile }: TaskManagerAppProps) {
+export function TaskManagerApp({
+  embedded = false,
+  vault = null,
+  onOpenTaskFile,
+  onActivePanelChange,
+  onActiveChatContextChange,
+}: TaskManagerAppProps) {
   const manager = useTaskManager(vault)
   const { confirm } = useConfirmationEngine()
 
   const activeBoard = manager.settings.activeTab
+
+  useEffect(() => {
+    onActivePanelChange?.(activeBoard)
+  }, [activeBoard, onActivePanelChange])
+
+  const activeTabIsBoard = manager.settings.boards.some((board) => board.name === activeBoard)
+
+  const activeBoardChatContext = useMemo(() => {
+    if (!activeTabIsBoard || !manager.settings.activeVaultPath) {
+      return null
+    }
+
+    const boardPrefix = `${TASKS_ROOT_FOLDER}/${activeBoard}/`
+    const filePaths = manager.snapshot.documents
+      .map((document) => document.path)
+      .filter((pathValue) => pathValue.startsWith(boardPrefix))
+      .map((pathValue) => toAbsoluteVaultPath(manager.settings.activeVaultPath as string, pathValue))
+      .sort((left, right) => left.localeCompare(right, 'es'))
+
+    return {
+      scopeKey: `task-manager:board:${activeBoard}`,
+      filePaths,
+    } satisfies TaskManagerChatContext
+  }, [activeBoard, activeTabIsBoard, manager.settings.activeVaultPath, manager.snapshot.documents])
+
+  useEffect(() => {
+    onActiveChatContextChange?.(activeBoardChatContext)
+  }, [activeBoardChatContext, onActiveChatContextChange])
 
   const visibleGroups = useMemo(
     () => manager.settings.groups.filter((group) => (group.board ?? 'default') === activeBoard),
@@ -60,8 +102,6 @@ export function TaskManagerApp({ embedded = false, vault = null, onOpenTaskFile 
     () => manager.snapshot.tasks.filter((task) => isTaskInCancelledFolder(task.filePath)),
     [manager.snapshot.tasks],
   )
-
-  const activeTabIsBoard = manager.settings.boards.some((board) => board.name === activeBoard)
 
   const activeBoardTasksCount = useMemo(
     () => manager.snapshot.tasks

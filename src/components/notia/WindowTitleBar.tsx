@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent } from 'react'
-import { ChevronLeft, ChevronRight, Moon, Sun } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Moon, PanelRightClose, PanelRightOpen, Sun } from 'lucide-react'
 import { startWindowDragging, startWindowDraggingWithRestore } from '../../services/window/windowRuntime'
 import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
@@ -33,6 +33,9 @@ interface WindowTitleBarProps {
   rightActions: NotiaIconAction[]
   theme: 'dark' | 'light'
   onToggleTheme: () => void
+  showRightPanelToggle?: boolean
+  isRightPanelOpen: boolean
+  onToggleRightPanel: () => void
   onWindowAction: (action: NotiaWindowAction) => void
 }
 
@@ -58,6 +61,9 @@ export function WindowTitleBar({
   rightActions,
   theme,
   onToggleTheme,
+  showRightPanelToggle = true,
+  isRightPanelOpen,
+  onToggleRightPanel,
   onWindowAction,
 }: WindowTitleBarProps) {
   const DRAG_START_DELAY_MS = 170
@@ -80,6 +86,8 @@ export function WindowTitleBar({
   const ToggleIcon = explorerActions[0]?.icon
   const ThemeIcon = theme === 'dark' ? Sun : Moon
   const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
+  const RightPanelIcon = isRightPanelOpen ? PanelRightClose : PanelRightOpen
+  const rightPanelLabel = isRightPanelOpen ? 'Ocultar panel derecho de chat' : 'Mostrar panel derecho de chat'
   const blockingSelector =
     'button, input, textarea, select, a, [role="button"], .notia-tab, .notia-tab-trigger, .notia-toolbar, .notia-explorer-actions, .notia-titlebar-controls, .notia-titlebar-tabs-scroll-button, .notia-search-panel'
 
@@ -427,6 +435,17 @@ export function WindowTitleBar({
           <NotiaButton size="icon" variant="ghost" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
             <ThemeIcon size={15} />
           </NotiaButton>
+          {showRightPanelToggle ? (
+            <NotiaButton
+              size="icon"
+              variant="ghost"
+              className={`notia-titlebar-button ${isRightPanelOpen ? 'notia-titlebar-button--active' : ''}`}
+              title={rightPanelLabel}
+              onClick={onToggleRightPanel}
+            >
+              <RightPanelIcon size={15} />
+            </NotiaButton>
+          ) : null}
           {rightActions.length > 0 ? <div className="notia-titlebar-separator" /> : null}
           {rightActions.map(({ id, label, icon: Icon }) => (
             <NotiaButton

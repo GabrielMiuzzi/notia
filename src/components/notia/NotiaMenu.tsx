@@ -38,6 +38,7 @@ import {
   saveExplorerRefreshIntervalMs,
 } from '../../services/preferences/explorerPanelStorage'
 import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import { loadNetrunnerPreferences, saveNetrunnerPreferences } from '../../services/preferences/netrunnerSettingsStorage'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import type { ColdPassEntry } from '../../types/coldpass'
@@ -64,8 +65,9 @@ import { SettingsModal } from './SettingsModal'
 import { WindowTitleBar } from './WindowTitleBar'
 import { WorkspaceFooter } from './WorkspaceFooter'
 import { GraphView } from './views/GraphView'
-import { TaskManagerApp } from '../../modules/task-manager/components/TaskManagerApp'
+import { TaskManagerApp, type TaskManagerChatContext } from '../../modules/task-manager/components/TaskManagerApp'
 import { ColdPassView } from './views/ColdPassView'
+import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassPasskeyModal } from './ColdPassPasskeyModal'
 import { ColdPassCredentialModal } from './ColdPassCredentialModal'
 import { pathExists, pickFile } from '../../services/files/filesystemEngine'
@@ -77,6 +79,7 @@ import {
 } from '../../services/coldpass/coldpassStorage'
 import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '../../services/coldpass/coldpassCsvImport'
 import type { DrawioDocumentController } from '../../modules/drawio/types'
+import { ensureChatLibraryStructure } from '../../services/chat/chatLibraryStructure'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
@@ -115,6 +118,74 @@ function getParentDirectory(filePath: string): string {
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function stripFileExtension(value: string): string {
+  const lastDotIndex = value.lastIndexOf('.')
+  if (lastDotIndex <= 0) {
+    return value
+  }
+  return value.slice(0, lastDotIndex)
+}
+
+function buildRightPanelChatContextLabel(
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'documents',
+  activeDocument: OpenFileDocument | null,
+  taskManagerPanelId: string,
+): string {
+  if (activeWorkspaceView === 'task-manager') {
+    if (taskManagerPanelId === '__finished__') {
+      return 'Contexto activo: Task Manager, panel Completadas'
+    }
+
+    if (taskManagerPanelId === '__cancelled__') {
+      return 'Contexto activo: Task Manager, panel Canceladas'
+    }
+
+    if (taskManagerPanelId === '__pomodoro__') {
+      return 'Contexto activo: Task Manager, panel Pomodoro'
+    }
+
+    if (taskManagerPanelId.trim()) {
+      return `Contexto activo: Task Manager, panel ${taskManagerPanelId}`
+    }
+
+    return 'Contexto activo: vista Task Manager'
+  }
+
+  if (activeWorkspaceView === 'coldpass') {
+    return 'Contexto activo: vista ColdPass'
+  }
+
+  if (activeWorkspaceView === 'graph') {
+    return 'Contexto activo: Graph view'
+  }
+
+  if (activeWorkspaceView === 'chat') {
+    return 'Contexto activo: vista principal de chat'
+  }
+
+  if (!activeDocument) {
+    return 'Contexto activo: sin pestaña seleccionada'
+  }
+
+  if (activeDocument.viewKind === 'markdown') {
+    return `Contexto activo: archivo Markdown ${activeDocument.name}`
+  }
+
+  if (activeDocument.viewKind === 'inkdoc') {
+    return `Contexto activo: archivo Inkdoc ${activeDocument.name}`
+  }
+
+  if (activeDocument.viewKind === 'drawio') {
+    return `Contexto activo: archivo Draw.io ${activeDocument.name}`
+  }
+
+  if (activeDocument.viewKind === 'image') {
+    return `Contexto activo: imagen ${activeDocument.name}`
+  }
+
+  return `Contexto activo: archivo de texto ${activeDocument.name}`
 }
 
 function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
@@ -315,11 +386,13 @@ interface WorkspaceTitleTab {
 
 interface OpenWorkspaceSpecialTabs {
   graph: boolean
+  chat: boolean
   taskManager: boolean
   coldPass: boolean
 }
 
 const GRAPH_WORKSPACE_TAB_PATH = '__workspace_graph__'
+const CHAT_WORKSPACE_TAB_PATH = '__workspace_chat__'
 const TASK_MANAGER_WORKSPACE_TAB_PATH = '__workspace_task_manager__'
 const COLDPASS_WORKSPACE_TAB_PATH = '__workspace_coldpass__'
 
@@ -384,6 +457,10 @@ function buildWorkspaceTitleTabs(
     tabs.push({ path: GRAPH_WORKSPACE_TAB_PATH, title: 'Graph view' })
   }
 
+  if (specialTabs.chat) {
+    tabs.push({ path: CHAT_WORKSPACE_TAB_PATH, title: 'Chat' })
+  }
+
   if (specialTabs.taskManager) {
     tabs.push({ path: TASK_MANAGER_WORKSPACE_TAB_PATH, title: 'Task manager' })
   }
@@ -401,6 +478,7 @@ function isOpenTextDocumentTab(tab: OpenDocumentTab | null): tab is OpenTextDocu
 
 export function NotiaMenu() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
+  const [isRightChatPanelOpen, setIsRightChatPanelOpen] = useState(false)
   const [graphRevision, setGraphRevision] = useState(0)
   const [activeHeaderAction, setActiveHeaderAction] = useState('')
   const [isSearchMenuOpen, setIsSearchMenuOpen] = useState(false)
@@ -412,6 +490,7 @@ export function NotiaMenu() {
   const [theme, setTheme] = useState<NotiaTheme>(() => loadThemePreference())
   const [explorerRefreshIntervalMs, setExplorerRefreshIntervalMs] = useState<number>(() => loadExplorerRefreshIntervalMs())
   const [inkdocPreferences, setInkdocPreferences] = useState(() => loadInkdocPreferences())
+  const [netrunnerPreferences, setNetrunnerPreferences] = useState(() => loadNetrunnerPreferences())
   const [libraries, setLibraries] = useState<NotiaLibrary[]>(() => loadLibraries())
   const [activeLibraryId, setActiveLibraryId] = useState<string | null>(() =>
     findInitialActiveLibrary(loadLibraries()),
@@ -420,9 +499,12 @@ export function NotiaMenu() {
   const [openTabs, setOpenTabs] = useState<OpenDocumentTab[]>([])
   const [openWorkspaceSpecialTabs, setOpenWorkspaceSpecialTabs] = useState<OpenWorkspaceSpecialTabs>({
     graph: false,
+    chat: false,
     taskManager: false,
     coldPass: false,
   })
+  const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
+  const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [pendingCreation, setPendingCreation] = useState<{
     id: string
@@ -502,6 +584,7 @@ export function NotiaMenu() {
   const openTabsRef = useRef<OpenDocumentTab[]>([])
   const openWorkspaceSpecialTabsRef = useRef<OpenWorkspaceSpecialTabs>({
     graph: false,
+    chat: false,
     taskManager: false,
     coldPass: false,
   })
@@ -528,11 +611,28 @@ export function NotiaMenu() {
   const activeDocument = activeTab?.document ?? null
   const activeWorkspaceView = activeTabPath === GRAPH_WORKSPACE_TAB_PATH
     ? 'graph'
+    : activeTabPath === CHAT_WORKSPACE_TAB_PATH
+      ? 'chat'
     : activeTabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       ? 'task-manager'
       : activeTabPath === COLDPASS_WORKSPACE_TAB_PATH
         ? 'coldpass'
       : 'documents'
+  const rightPanelChatContextLabel = useMemo(
+    () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId),
+    [activeDocument, activeWorkspaceView, taskManagerActivePanelId],
+  )
+  const rightPanelChatContextKey = useMemo(() => {
+    if (activeWorkspaceView === 'task-manager') {
+      return `task-manager:${taskManagerChatContext?.scopeKey ?? taskManagerActivePanelId}`
+    }
+
+    if (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio') {
+      return `${activeWorkspaceView}:${activeDocument.viewKind}:${activeDocument.path}`
+    }
+
+    return `${activeWorkspaceView}:default`
+  }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
   const isGraphViewActive = activeWorkspaceView === 'graph'
   const shouldRefreshVisibleExplorerTree =
     activeWorkspaceView !== 'task-manager' && (activeWorkspaceView === 'graph' || isSidebarOpen)
@@ -570,6 +670,26 @@ export function NotiaMenu() {
     collect(treeNodes)
     return paths
   }, [treeNodes])
+  const previousChatFiles = useMemo(() => {
+    const activeLibraryPath = activeLibrary?.path ? normalizePath(activeLibrary.path) : ''
+    if (!activeLibraryPath) {
+      return []
+    }
+
+    const chatDirectoryPrefix = `${activeLibraryPath}/chat/chats/`
+    return libraryFilePaths
+      .map((filePath) => normalizePath(filePath))
+      .filter((filePath) => filePath.startsWith(chatDirectoryPrefix) && filePath.toLowerCase().endsWith('.md'))
+      .sort((left, right) => right.localeCompare(left))
+      .map((filePath) => {
+        const fileName = filePath.slice(chatDirectoryPrefix.length)
+        return {
+          id: filePath,
+          filePath,
+          title: stripFileExtension(fileName),
+        }
+      })
+  }, [activeLibrary?.path, libraryFilePaths])
   const { graphModel, graphSourcesByPath, isGraphLoading } = useLibraryGraphData({
     enabled: isGraphViewActive,
     libraryPath: activeLibrary?.path ?? null,
@@ -583,6 +703,7 @@ export function NotiaMenu() {
     setOpenTabs([])
     setOpenWorkspaceSpecialTabs({
       graph: false,
+      chat: false,
       taskManager: false,
       coldPass: false,
     })
@@ -758,6 +879,10 @@ export function NotiaMenu() {
   }, [inkdocPreferences])
 
   useEffect(() => {
+    saveNetrunnerPreferences(netrunnerPreferences)
+  }, [netrunnerPreferences])
+
+  useEffect(() => {
     activeTabPathRef.current = activeTabPath
   }, [activeTabPath])
 
@@ -928,15 +1053,25 @@ export function NotiaMenu() {
     hasDeferredTreeRefreshRef.current = false
 
     let isCurrent = true
-    void readLibraryTree(activeLibrary.path, {
-      androidDirectoryUri: activeLibrary.androidTreeUri,
-    }).then((nodes) => {
+    void (async () => {
+      try {
+        await ensureChatLibraryStructure(activeLibrary)
+      } catch (error) {
+        console.warn('[notia] could not ensure chat library structure', {
+          libraryPath: activeLibrary.path,
+          error,
+        })
+      }
+
+      const nodes = await readLibraryTree(activeLibrary.path, {
+        androidDirectoryUri: activeLibrary.androidTreeUri,
+      })
       if (!isCurrent) {
         return
       }
 
       commitTreeNodesSnapshot(activeLibrary.id, nodes)
-    })
+    })()
 
     return () => {
       isCurrent = false
@@ -1108,6 +1243,16 @@ export function NotiaMenu() {
     })
   }, [])
 
+  const handleRightChatPanelToggle = useCallback(() => {
+    setIsRightChatPanelOpen((current) => !current)
+  }, [])
+
+  useEffect(() => {
+    if (activeWorkspaceView === 'chat') {
+      setIsRightChatPanelOpen(false)
+    }
+  }, [activeWorkspaceView])
+
   const handleHeaderActionClick = useCallback((id: string) => {
     if (id === 'layout') {
       handleSidebarToggle()
@@ -1154,6 +1299,19 @@ export function NotiaMenu() {
             }
       ))
       setActiveTabPath(GRAPH_WORKSPACE_TAB_PATH)
+      return
+    }
+
+    if (actionId === 'chat') {
+      setOpenWorkspaceSpecialTabs((current) => (
+        current.chat
+          ? current
+          : {
+              ...current,
+              chat: true,
+            }
+      ))
+      setActiveTabPath(CHAT_WORKSPACE_TAB_PATH)
       return
     }
 
@@ -1238,12 +1396,14 @@ export function NotiaMenu() {
   const handleActivateTab = useCallback((tabPath: string) => {
     if (
       tabPath === GRAPH_WORKSPACE_TAB_PATH
+      || tabPath === CHAT_WORKSPACE_TAB_PATH
       || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = openWorkspaceSpecialTabsRef.current
       if (
         (tabPath === GRAPH_WORKSPACE_TAB_PATH && !specialTabs.graph)
+        || (tabPath === CHAT_WORKSPACE_TAB_PATH && !specialTabs.chat)
         || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !specialTabs.taskManager)
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !specialTabs.coldPass)
       ) {
@@ -1360,12 +1520,14 @@ export function NotiaMenu() {
   const closeTabByPath = useCallback(async (tabPath: string) => {
     if (
       tabPath === GRAPH_WORKSPACE_TAB_PATH
+      || tabPath === CHAT_WORKSPACE_TAB_PATH
       || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = openWorkspaceSpecialTabsRef.current
       if (
         (tabPath === GRAPH_WORKSPACE_TAB_PATH && !currentSpecialTabs.graph)
+        || (tabPath === CHAT_WORKSPACE_TAB_PATH && !currentSpecialTabs.chat)
         || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !currentSpecialTabs.taskManager)
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !currentSpecialTabs.coldPass)
       ) {
@@ -1380,6 +1542,7 @@ export function NotiaMenu() {
 
       const nextSpecialTabs: OpenWorkspaceSpecialTabs = {
         graph: tabPath === GRAPH_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.graph,
+        chat: tabPath === CHAT_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.chat,
         taskManager: tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.taskManager,
         coldPass: tabPath === COLDPASS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.coldPass,
       }
@@ -2663,6 +2826,9 @@ export function NotiaMenu() {
         rightActions={titlebarRightActions}
         theme={theme}
         onToggleTheme={handleThemeToggle}
+        showRightPanelToggle={activeWorkspaceView !== 'chat'}
+        isRightPanelOpen={isRightChatPanelOpen}
+        onToggleRightPanel={handleRightChatPanelToggle}
         onWindowAction={handleWindowAction}
       />
       <div className="notia-workspace">
@@ -2673,6 +2839,8 @@ export function NotiaMenu() {
               activeActionId={
                 activeWorkspaceView === 'graph'
                   ? 'graph-view'
+                  : activeWorkspaceView === 'chat'
+                    ? 'chat'
                   : activeWorkspaceView === 'task-manager'
                     ? 'task-manager'
                     : activeWorkspaceView === 'coldpass'
@@ -2723,6 +2891,14 @@ export function NotiaMenu() {
             isLoading={isGraphLoading}
             onOpenFile={handleOpenFileFromView}
           />
+        ) : activeWorkspaceView === 'chat' ? (
+          <ChatWorkspaceView
+            library={activeLibrary}
+            netrunnerPreferences={netrunnerPreferences}
+            previousChats={previousChatFiles}
+            onChatCreated={() => refreshActiveLibraryTree()}
+            onChatDeleted={() => refreshActiveLibraryTree()}
+          />
         ) : activeWorkspaceView === 'task-manager' ? (
           <TaskManagerApp
             embedded
@@ -2733,6 +2909,8 @@ export function NotiaMenu() {
               }
               : null}
             onOpenTaskFile={handleOpenFile}
+            onActivePanelChange={setTaskManagerActivePanelId}
+            onActiveChatContextChange={setTaskManagerChatContext}
           />
         ) : activeWorkspaceView === 'coldpass' ? (
           <ColdPassView
@@ -2759,6 +2937,46 @@ export function NotiaMenu() {
             onOpenLinkedFile={handleOpenFileFromView}
           />
         )}
+        <aside className={`notia-right-panel ${isRightChatPanelOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`}>
+          {isRightChatPanelOpen ? (
+            <ChatWorkspaceView
+              key={rightPanelChatContextKey}
+              library={activeLibrary}
+              netrunnerPreferences={netrunnerPreferences}
+              previousChats={previousChatFiles}
+              title="Chat lateral"
+              description="Acceso rapido a Netrunner desde el panel derecho."
+              showHistoryPanel={false}
+              composerContextLabel={rightPanelChatContextLabel}
+              preferredContextPaths={
+                activeWorkspaceView === 'task-manager'
+                  ? (taskManagerChatContext?.filePaths ?? [])
+                  : activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio'
+                    ? [activeDocument.path]
+                    : []
+              }
+              preferredContextName={
+                activeWorkspaceView !== 'task-manager'
+                && (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio')
+                  ? activeDocument.name
+                  : null
+              }
+              preferredContextMode={
+                activeWorkspaceView === 'task-manager'
+                  ? 'index'
+                  : activeDocument?.viewKind === 'markdown'
+                  ? 'index'
+                  : activeDocument?.viewKind === 'drawio'
+                    ? 'direct'
+                    : null
+              }
+              preferredContextScopeKey={activeWorkspaceView === 'task-manager' ? taskManagerChatContext?.scopeKey ?? null : null}
+              selectMatchingChatOnly
+              onChatCreated={() => refreshActiveLibraryTree()}
+              onChatDeleted={() => refreshActiveLibraryTree()}
+            />
+          ) : null}
+        </aside>
       </div>
       <SettingsModal
         open={isSettingsOpen}
@@ -2767,6 +2985,8 @@ export function NotiaMenu() {
         onExplorerRefreshIntervalMsChange={setExplorerRefreshIntervalMs}
         inkdocPreferences={inkdocPreferences}
         onInkdocPreferencesChange={setInkdocPreferences}
+        netrunnerPreferences={netrunnerPreferences}
+        onNetrunnerPreferencesChange={setNetrunnerPreferences}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

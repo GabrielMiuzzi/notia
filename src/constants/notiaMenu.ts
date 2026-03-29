@@ -5,6 +5,7 @@ import {
   FolderPlus,
   GitBranch,
   Lock,
+  MessageSquare,
   ListChecks,
   PanelsTopLeft,
   PencilLine,
@@ -23,6 +24,7 @@ export const EXPLORER_HEADER_ACTIONS: NotiaIconAction[] = [
 
 export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
   { id: 'graph-view', label: 'Graph view', icon: GitBranch },
+  { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'task-manager', label: 'Task manager', icon: ListChecks },
   { id: 'coldpass', label: 'ColdPass', icon: Lock },
 ]

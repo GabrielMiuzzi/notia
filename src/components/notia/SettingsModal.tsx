@@ -2,13 +2,18 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { clampOcrDebounceMs, INKDOC_OCR_DEBOUNCE_MAX_MS, INKDOC_OCR_DEBOUNCE_MIN_MS, normalizeServiceUrl } from '../../modules/inkdoc/settings'
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import {
+  normalizeNetrunnerSettingsInput,
+  type NetrunnerPreferences,
+} from '../../services/preferences/netrunnerSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
+import { checkNetrunnerHealth } from '../../services/netrunner/netrunnerRuntime'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkDocs'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkDocs' | 'Netrunner'
 
 interface SettingsModalProps {
   open: boolean
@@ -17,9 +22,11 @@ interface SettingsModalProps {
   onExplorerRefreshIntervalMsChange: (value: number) => void
   inkdocPreferences: InkdocPreferences
   onInkdocPreferencesChange: (value: InkdocPreferences) => void
+  netrunnerPreferences: NetrunnerPreferences
+  onNetrunnerPreferencesChange: (value: NetrunnerPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs', 'Netrunner']
 
 export function SettingsModal({
   open,
@@ -28,9 +35,21 @@ export function SettingsModal({
   onExplorerRefreshIntervalMsChange,
   inkdocPreferences,
   onInkdocPreferencesChange,
+  netrunnerPreferences,
+  onNetrunnerPreferencesChange,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('General')
   const [inkmathServiceUrlDraft, setInkmathServiceUrlDraft] = useState(inkdocPreferences.inkmathServiceUrl)
+  const [netrunnerBaseUrlDraft, setNetrunnerBaseUrlDraft] = useState(netrunnerPreferences.baseUrl)
+  const [netrunnerRepoPathDraft, setNetrunnerRepoPathDraft] = useState(netrunnerPreferences.repoPath)
+  const [netrunnerHealthStatus, setNetrunnerHealthStatus] = useState<{
+    tone: 'idle' | 'success' | 'error'
+    message: string
+  }>({
+    tone: 'idle',
+    message: 'Todavia no se probo la conexion.',
+  })
+  const [isCheckingNetrunnerHealth, setIsCheckingNetrunnerHealth] = useState(false)
   const projectVersion = getAppVersion()
   const runtimeDevice = getRuntimeDevice()
   const refreshBounds = getExplorerRefreshIntervalBounds()
@@ -54,6 +73,15 @@ export function SettingsModal({
     setInkmathServiceUrlDraft(inkdocPreferences.inkmathServiceUrl)
   }, [inkdocPreferences.inkmathServiceUrl, open])
 
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    setNetrunnerBaseUrlDraft(netrunnerPreferences.baseUrl)
+    setNetrunnerRepoPathDraft(netrunnerPreferences.repoPath)
+  }, [netrunnerPreferences.baseUrl, netrunnerPreferences.repoPath, open])
+
   const commitInkMathServiceUrl = () => {
     const normalized = normalizeServiceUrl(inkmathServiceUrlDraft)
     setInkmathServiceUrlDraft(normalized)
@@ -61,6 +89,36 @@ export function SettingsModal({
       ...inkdocPreferences,
       inkmathServiceUrl: normalized,
     })
+  }
+
+  const commitNetrunnerPreferences = () => {
+    const normalized = normalizeNetrunnerSettingsInput({
+      baseUrl: netrunnerBaseUrlDraft,
+      repoPath: netrunnerRepoPathDraft,
+    })
+
+    setNetrunnerBaseUrlDraft(normalized.baseUrl)
+    setNetrunnerRepoPathDraft(normalized.repoPath)
+    onNetrunnerPreferencesChange(normalized)
+  }
+
+  const handleCheckNetrunnerConnection = async () => {
+    const normalized = normalizeNetrunnerSettingsInput({
+      baseUrl: netrunnerBaseUrlDraft,
+      repoPath: netrunnerRepoPathDraft,
+    })
+
+    setNetrunnerBaseUrlDraft(normalized.baseUrl)
+    setNetrunnerRepoPathDraft(normalized.repoPath)
+    onNetrunnerPreferencesChange(normalized)
+    setIsCheckingNetrunnerHealth(true)
+
+    const result = await checkNetrunnerHealth(normalized)
+    setNetrunnerHealthStatus({
+      tone: result.ok ? 'success' : 'error',
+      message: result.message,
+    })
+    setIsCheckingNetrunnerHealth(false)
   }
 
   if (!open) {
@@ -165,6 +223,74 @@ export function SettingsModal({
                         })
                       }}
                     />
+                  </div>
+                </div>
+              </>
+            ) : activeSection === 'Netrunner' ? (
+              <>
+                <div className="notia-settings-card">
+                  <div className="notia-settings-card-label">API base de Netrunner</div>
+                  <div className="notia-settings-card-value">{normalizeNetrunnerSettingsInput({
+                    baseUrl: netrunnerBaseUrlDraft,
+                    repoPath: netrunnerRepoPathDraft,
+                  }).baseUrl}</div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    URL base de la API FastAPI para chat, tools y health checks
+                  </div>
+                  <div className="notia-settings-input-wrap">
+                    <input
+                      className="notia-settings-input"
+                      type="text"
+                      value={netrunnerBaseUrlDraft}
+                      onChange={(event) => {
+                        setNetrunnerBaseUrlDraft(event.target.value)
+                      }}
+                      onBlur={commitNetrunnerPreferences}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          commitNetrunnerPreferences()
+                        }
+                      }}
+                      placeholder="http://127.0.0.1:8000"
+                    />
+                  </div>
+                </div>
+                <div className="notia-settings-card">
+                  <div className="notia-settings-card-label">Repo local de Netrunner</div>
+                  <div className="notia-settings-card-value notia-settings-card-value--path">
+                    {netrunnerRepoPathDraft.trim() || netrunnerPreferences.repoPath}
+                  </div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    Ruta del repo local donde vive el servicio a integrar
+                  </div>
+                  <div className="notia-settings-input-wrap">
+                    <input
+                      className="notia-settings-input"
+                      type="text"
+                      value={netrunnerRepoPathDraft}
+                      onChange={(event) => {
+                        setNetrunnerRepoPathDraft(event.target.value)
+                      }}
+                      onBlur={commitNetrunnerPreferences}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          commitNetrunnerPreferences()
+                        }
+                      }}
+                      placeholder="/home/gabriel/Desktop/repos/netrunner"
+                    />
+                  </div>
+                  <div className={`notia-settings-status notia-settings-status--${netrunnerHealthStatus.tone}`}>
+                    {netrunnerHealthStatus.message}
+                  </div>
+                  <div className="notia-settings-actions">
+                    <NotiaButton variant="secondary" onClick={() => {
+                      void handleCheckNetrunnerConnection()
+                    }} disabled={isCheckingNetrunnerHealth}>
+                      {isCheckingNetrunnerHealth ? 'Probando...' : 'Probar conexion'}
+                    </NotiaButton>
                   </div>
                 </div>
               </>
