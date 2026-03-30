@@ -466,14 +466,7 @@ pub fn resolve_android_tree_uri(
     let resolved = roots
         .get(directory_path)
         .cloned()
-        .or_else(|| roots.get(&normalized_key).cloned())
-        .or_else(|| {
-            if roots.len() == 1 {
-                roots.values().next().cloned()
-            } else {
-                None
-            }
-        });
+        .or_else(|| roots.get(&normalized_key).cloned());
     Ok(resolved)
 }
 

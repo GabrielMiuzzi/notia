@@ -23,12 +23,21 @@ import type {
   TaskFormData,
   TaskItem,
 } from '../types/taskManagerTypes'
+import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
 import { getBaseName, getBasenameWithoutExtension, getParentDirectory, toAbsoluteVaultPath, toRelativeVaultPath } from '../utils/path'
-import { createMarkdownFile, deleteEntry, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, writeFileContent } from './vaultRuntime'
+import { createMarkdownFile, deleteEntry, directoryExists, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, writeFileContent } from './vaultRuntime'
 
 const ALTERNATE_TASKS_ROOT_FOLDER = 'task-manager'
-let runtimeTasksRootFolder = TASKS_ROOT_FOLDER
-let runtimeTasksRootAtVaultRoot = false
+const forcedTasksRootInsideVaultPaths = new Set<string>()
+
+interface TaskWorkspaceRuntimeRoot {
+  folder: string
+  atVaultRoot: boolean
+  rootPath: string
+  toRuntimeRelativePath: (relativePath: string) => string
+  toCanonicalRelativePath: (relativePath: string) => string
+  toAbsolutePath: (relativePath: string) => string
+}
 
 export interface TaskManagerSnapshot {
   documents: MarkdownFileDocument[]
@@ -39,24 +48,26 @@ export interface TaskManagerSnapshot {
 async function resolveRuntimeTasksRoot(
   vaultPath: string,
 ): Promise<{ folder: string; atVaultRoot: boolean }> {
+  const normalizedVaultPath = normalizeVaultPathKey(vaultPath)
+  const forceInsideVault = forcedTasksRootInsideVaultPaths.has(normalizedVaultPath)
   const vaultBasename = getBaseName(vaultPath).trim().toLowerCase()
-  if (vaultBasename === TASKS_ROOT_FOLDER || vaultBasename === ALTERNATE_TASKS_ROOT_FOLDER) {
+  if (!forceInsideVault && (vaultBasename === TASKS_ROOT_FOLDER || vaultBasename === ALTERNATE_TASKS_ROOT_FOLDER)) {
     return {
       folder: vaultBasename,
       atVaultRoot: true,
     }
   }
 
-  const primaryDocuments = await readMarkdownFiles(toAbsoluteVaultPath(vaultPath, TASKS_ROOT_FOLDER))
-  if (primaryDocuments.length > 0) {
+  const primaryRootPath = toAbsoluteVaultPath(vaultPath, TASKS_ROOT_FOLDER)
+  if (await directoryExists(primaryRootPath)) {
     return {
       folder: TASKS_ROOT_FOLDER,
       atVaultRoot: false,
     }
   }
 
-  const alternateDocuments = await readMarkdownFiles(toAbsoluteVaultPath(vaultPath, ALTERNATE_TASKS_ROOT_FOLDER))
-  if (alternateDocuments.length > 0) {
+  const alternateRootPath = toAbsoluteVaultPath(vaultPath, ALTERNATE_TASKS_ROOT_FOLDER)
+  if (await directoryExists(alternateRootPath)) {
     return {
       folder: ALTERNATE_TASKS_ROOT_FOLDER,
       atVaultRoot: false,
@@ -69,93 +80,128 @@ async function resolveRuntimeTasksRoot(
   }
 }
 
-async function applyRuntimeTasksRoot(vaultPath: string): Promise<void> {
-  const runtimeRoot = await resolveRuntimeTasksRoot(vaultPath)
-  runtimeTasksRootFolder = runtimeRoot.folder
-  runtimeTasksRootAtVaultRoot = runtimeRoot.atVaultRoot
+function normalizeVaultPathKey(vaultPath: string | null | undefined): string {
+  return normalizeFilesystemPath(vaultPath ?? '').trim().replace(/[\\/]+$/, '')
 }
 
-function toRuntimeRelativePath(relativePath: string): string {
-  if (runtimeTasksRootAtVaultRoot) {
-    if (relativePath === TASKS_ROOT_FOLDER || relativePath === ALTERNATE_TASKS_ROOT_FOLDER) {
-      return ''
+async function resolveTaskWorkspaceRuntimeRoot(vaultPath: string): Promise<TaskWorkspaceRuntimeRoot> {
+  const normalizedVaultPath = normalizeVaultPathKey(vaultPath)
+  const runtimeRoot = await resolveRuntimeTasksRoot(normalizedVaultPath)
+
+  const toRuntimeRelativePath = (relativePath: string): string => {
+    if (runtimeRoot.atVaultRoot) {
+      if (relativePath === TASKS_ROOT_FOLDER || relativePath === ALTERNATE_TASKS_ROOT_FOLDER) {
+        return ''
+      }
+
+      if (relativePath.startsWith(`${TASKS_ROOT_FOLDER}/`)) {
+        return relativePath.slice(`${TASKS_ROOT_FOLDER}/`.length)
+      }
+
+      if (relativePath.startsWith(`${ALTERNATE_TASKS_ROOT_FOLDER}/`)) {
+        return relativePath.slice(`${ALTERNATE_TASKS_ROOT_FOLDER}/`.length)
+      }
+
+      return relativePath
+    }
+
+    if (runtimeRoot.folder === TASKS_ROOT_FOLDER) {
+      return relativePath
+    }
+
+    if (relativePath === TASKS_ROOT_FOLDER) {
+      return runtimeRoot.folder
     }
 
     if (relativePath.startsWith(`${TASKS_ROOT_FOLDER}/`)) {
-      return relativePath.slice(`${TASKS_ROOT_FOLDER}/`.length)
-    }
-
-    if (relativePath.startsWith(`${ALTERNATE_TASKS_ROOT_FOLDER}/`)) {
-      return relativePath.slice(`${ALTERNATE_TASKS_ROOT_FOLDER}/`.length)
+      return `${runtimeRoot.folder}/${relativePath.slice(`${TASKS_ROOT_FOLDER}/`.length)}`
     }
 
     return relativePath
   }
 
-  if (runtimeTasksRootFolder === TASKS_ROOT_FOLDER) {
-    return relativePath
-  }
+  const toCanonicalRelativePath = (relativePath: string): string => {
+    if (runtimeRoot.atVaultRoot) {
+      const normalizedPath = relativePath.trim().replace(/^\/+/, '')
+      if (!normalizedPath) {
+        return TASKS_ROOT_FOLDER
+      }
 
-  if (relativePath === TASKS_ROOT_FOLDER) {
-    return runtimeTasksRootFolder
-  }
+      if (normalizedPath === TASKS_ROOT_FOLDER || normalizedPath.startsWith(`${TASKS_ROOT_FOLDER}/`)) {
+        return normalizedPath
+      }
 
-  if (relativePath.startsWith(`${TASKS_ROOT_FOLDER}/`)) {
-    return `${runtimeTasksRootFolder}/${relativePath.slice(`${TASKS_ROOT_FOLDER}/`.length)}`
-  }
+      return `${TASKS_ROOT_FOLDER}/${normalizedPath}`
+    }
 
-  return relativePath
-}
+    if (runtimeRoot.folder === TASKS_ROOT_FOLDER) {
+      return relativePath
+    }
 
-function toCanonicalRelativePath(relativePath: string): string {
-  if (runtimeTasksRootAtVaultRoot) {
-    const normalizedPath = relativePath.trim().replace(/^\/+/, '')
-    if (!normalizedPath) {
+    if (relativePath === runtimeRoot.folder) {
       return TASKS_ROOT_FOLDER
     }
 
-    if (normalizedPath === TASKS_ROOT_FOLDER || normalizedPath.startsWith(`${TASKS_ROOT_FOLDER}/`)) {
-      return normalizedPath
+    if (relativePath.startsWith(`${runtimeRoot.folder}/`)) {
+      return `${TASKS_ROOT_FOLDER}/${relativePath.slice(`${runtimeRoot.folder}/`.length)}`
     }
 
-    return `${TASKS_ROOT_FOLDER}/${normalizedPath}`
-  }
-
-  if (runtimeTasksRootFolder === TASKS_ROOT_FOLDER) {
     return relativePath
   }
 
-  if (relativePath === runtimeTasksRootFolder) {
-    return TASKS_ROOT_FOLDER
+  return {
+    folder: runtimeRoot.folder,
+    atVaultRoot: runtimeRoot.atVaultRoot,
+    rootPath: runtimeRoot.atVaultRoot
+      ? normalizedVaultPath
+      : toAbsoluteVaultPath(normalizedVaultPath, runtimeRoot.folder),
+    toRuntimeRelativePath,
+    toCanonicalRelativePath,
+    toAbsolutePath: (relativePath: string) => {
+      const runtimeRelativePath = toRuntimeRelativePath(relativePath)
+      return runtimeRelativePath
+        ? toAbsoluteVaultPath(normalizedVaultPath, runtimeRelativePath)
+        : normalizedVaultPath
+    },
+  }
+}
+
+export function setTaskManagerRuntimeRootPolicy(vaultPath: string | null, options: {
+  forceInsideVault: boolean
+}): void {
+  const normalizedVaultPath = normalizeVaultPathKey(vaultPath)
+  if (!normalizedVaultPath) {
+    return
   }
 
-  if (relativePath.startsWith(`${runtimeTasksRootFolder}/`)) {
-    return `${TASKS_ROOT_FOLDER}/${relativePath.slice(`${runtimeTasksRootFolder}/`.length)}`
+  if (options.forceInsideVault) {
+    forcedTasksRootInsideVaultPaths.add(normalizedVaultPath)
+    return
   }
 
-  return relativePath
+  forcedTasksRootInsideVaultPaths.delete(normalizedVaultPath)
 }
 
 export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  await runWorkspaceStep('ensure-root-folder', () => ensureFolderPath(vaultPath, toRuntimeRelativePath(TASKS_ROOT_FOLDER)))
-  await runWorkspaceStep('ensure-finished-folder', () => ensureFolderPath(vaultPath, toRuntimeRelativePath(FINISHED_TASKS_FOLDER)))
-  await runWorkspaceStep('ensure-finished-subtasks-folder', () => ensureFolderPath(vaultPath, toRuntimeRelativePath(`${FINISHED_TASKS_FOLDER}/subTasks`)))
-  await runWorkspaceStep('ensure-cancelled-folder', () => ensureFolderPath(vaultPath, toRuntimeRelativePath(CANCELLED_TASKS_FOLDER)))
-  await runWorkspaceStep('ensure-cancelled-subtasks-folder', () => ensureFolderPath(vaultPath, toRuntimeRelativePath(`${CANCELLED_TASKS_FOLDER}/subTasks`)))
+  await runWorkspaceStep('ensure-root-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(TASKS_ROOT_FOLDER)))
+  await runWorkspaceStep('ensure-finished-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(FINISHED_TASKS_FOLDER)))
+  await runWorkspaceStep('ensure-finished-subtasks-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(`${FINISHED_TASKS_FOLDER}/subTasks`)))
+  await runWorkspaceStep('ensure-cancelled-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(CANCELLED_TASKS_FOLDER)))
+  await runWorkspaceStep('ensure-cancelled-subtasks-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(`${CANCELLED_TASKS_FOLDER}/subTasks`)))
 
   const boardNames = Array.from(new Set([DEFAULT_BOARD_NAME, ...boards.map((board) => board.name.trim().toLowerCase())]))
   for (const boardName of boardNames) {
     await runWorkspaceStep(`ensure-board-workspace:${boardName}`, () => ensureBoardWorkspace(vaultPath, boardName))
   }
 
-  await runWorkspaceStep('ensure-pomodoro-log-file', () => ensurePomodoroLogFile(vaultPath))
+  await runWorkspaceStep('ensure-pomodoro-log-file', () => ensurePomodoroLogFile(runtimeRoot))
   await runWorkspaceStep('sync-indexes-and-metadata', () => syncTaskIndexesAndMetadata(vaultPath, boardNames, boards))
 }
 
 export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames: string[]): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const normalizedBoards = Array.from(new Set(boardNames.map((boardName) => normalizeBoardName(boardName))))
   for (const boardName of normalizedBoards) {
@@ -164,7 +210,7 @@ export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames:
     }
 
     const result = await deleteEntry(
-      toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(getBoardFolder(boardName))),
+      runtimeRoot.toAbsolutePath(getBoardFolder(boardName)),
     )
     if (!result.ok && !isNotFoundError(result.error)) {
       console.warn('[task-manager] cleanup board skipped', { boardName, error: result.error })
@@ -173,11 +219,10 @@ export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames:
 }
 
 export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskManagerSnapshot> {
-  await applyRuntimeTasksRoot(vaultPath)
-  const taskRootPath = toAbsoluteVaultPath(vaultPath, runtimeTasksRootFolder)
-  const absoluteDocuments = await readMarkdownFiles(taskRootPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
+  const absoluteDocuments = await readMarkdownFiles(runtimeRoot.rootPath)
   const relativeDocuments = absoluteDocuments.map((document) => ({
-    path: toCanonicalRelativePath(toRelativeVaultPath(vaultPath, document.path)),
+    path: runtimeRoot.toCanonicalRelativePath(toRelativeVaultPath(vaultPath, document.path)),
     content: document.content,
   }))
 
@@ -192,7 +237,7 @@ export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskMa
 }
 
 export async function createTask(vaultPath: string, formData: TaskFormData, tasks: TaskItem[]): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const order = resolveNewTaskOrder(tasks, formData)
   const normalizedFormData: TaskFormData = {
@@ -205,14 +250,13 @@ export async function createTask(vaultPath: string, formData: TaskFormData, task
 
   await ensureFolderPath(
     vaultPath,
-    toRuntimeRelativePath(
+    runtimeRoot.toRuntimeRelativePath(
       normalizedFormData.parentTaskName.trim() ? getBoardSubtasksFolder(normalizedFormData.board) : getBoardFolder(normalizedFormData.board),
     ),
   )
 
   let uniqueRelativePath = resolveUniquePath(relativeDesiredPath, existingPaths)
-  let runtimeRelativePath = toRuntimeRelativePath(uniqueRelativePath)
-  let absolutePath = toAbsoluteVaultPath(vaultPath, runtimeRelativePath)
+  let absolutePath = runtimeRoot.toAbsolutePath(uniqueRelativePath)
 
   // Guard against collisions with non-task markdown files that are outside `tasks`.
   let createResult = await createMarkdownFile(getParentDirectory(absolutePath), getBaseName(absolutePath))
@@ -221,8 +265,7 @@ export async function createTask(vaultPath: string, formData: TaskFormData, task
     const baseName = getBasenameWithoutExtension(uniqueRelativePath)
     const parentPath = getParentDirectory(uniqueRelativePath)
     uniqueRelativePath = `${parentPath}/${baseName}-${collisionIndex}.md`
-    runtimeRelativePath = toRuntimeRelativePath(uniqueRelativePath)
-    absolutePath = toAbsoluteVaultPath(vaultPath, runtimeRelativePath)
+    absolutePath = runtimeRoot.toAbsolutePath(uniqueRelativePath)
     createResult = await createMarkdownFile(getParentDirectory(absolutePath), getBaseName(absolutePath))
     collisionIndex += 1
   }
@@ -238,9 +281,9 @@ export async function createTask(vaultPath: string, formData: TaskFormData, task
 }
 
 export async function updateTaskFrontmatter(vaultPath: string, taskPath: string, updates: Record<string, unknown>): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(taskPath))
+  const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
     throw new Error(readResult.error || 'No se pudo leer la tarea.')
@@ -254,7 +297,7 @@ export async function updateTaskFrontmatter(vaultPath: string, taskPath: string,
 }
 
 export async function moveTaskByState(vaultPath: string, task: TaskItem, nextState: string, existingRelativePaths: Set<string>): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const snapshot = await loadTaskManagerSnapshot(vaultPath)
   const sourceTask = snapshot.tasks.find((candidate) => candidate.filePath === task.filePath) ?? task
@@ -267,15 +310,15 @@ export async function moveTaskByState(vaultPath: string, task: TaskItem, nextSta
 
   for (const taskToMove of tasksToMove) {
     const targetFolder = resolveTaskMoveTarget(taskToMove, nextState)
-    await ensureFolderPath(vaultPath, toRuntimeRelativePath(targetFolder))
+    await ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(targetFolder))
 
-    const finalPath = await moveSingleTaskPath(vaultPath, taskToMove.filePath, targetFolder, knownPaths)
+    const finalPath = await moveSingleTaskPath(runtimeRoot, taskToMove.filePath, targetFolder, knownPaths)
     await updateTaskFrontmatter(vaultPath, finalPath, { estado: nextState })
   }
 }
 
 export async function deleteTask(vaultPath: string, taskPath: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const snapshot = await loadTaskManagerSnapshot(vaultPath)
   const sourceTask = snapshot.tasks.find((task) => task.filePath === taskPath)
@@ -291,7 +334,7 @@ export async function deleteTask(vaultPath: string, taskPath: string): Promise<v
   }
 
   for (const task of deletionOrder) {
-    const result = await deleteEntry(toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(task.filePath)))
+    const result = await deleteEntry(runtimeRoot.toAbsolutePath(task.filePath))
     if (!result.ok && !isNotFoundError(result.error)) {
       throw new Error(result.error || 'No se pudo borrar la tarea.')
     }
@@ -299,18 +342,18 @@ export async function deleteTask(vaultPath: string, taskPath: string): Promise<v
 }
 
 export async function ensureBoardWorkspace(vaultPath: string, boardName: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const normalizedBoardName = normalizeBoardName(boardName)
-  await ensureFolderPath(vaultPath, toRuntimeRelativePath(getBoardFolder(normalizedBoardName)))
-  await ensureFolderPath(vaultPath, toRuntimeRelativePath(getBoardSubtasksFolder(normalizedBoardName)))
+  await ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(getBoardFolder(normalizedBoardName)))
+  await ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(getBoardSubtasksFolder(normalizedBoardName)))
 
   const indexPath = getBoardTaskIndexPath(normalizedBoardName)
-  await ensureFile(vaultPath, indexPath, buildBoardTaskIndexContent([]))
+  await ensureFile(runtimeRoot, indexPath, buildBoardTaskIndexContent([]))
 }
 
 export async function removeBoardWorkspace(vaultPath: string, boardName: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const normalizedBoardName = normalizeBoardName(boardName)
   if (normalizedBoardName === DEFAULT_BOARD_NAME) {
@@ -318,7 +361,7 @@ export async function removeBoardWorkspace(vaultPath: string, boardName: string)
   }
 
   const result = await deleteEntry(
-    toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(getBoardFolder(normalizedBoardName))),
+    runtimeRoot.toAbsolutePath(getBoardFolder(normalizedBoardName)),
   )
   if (!result.ok) {
     throw new Error(result.error || 'No se pudo eliminar el tablero.')
@@ -326,7 +369,7 @@ export async function removeBoardWorkspace(vaultPath: string, boardName: string)
 }
 
 export async function renameBoardWorkspace(vaultPath: string, currentBoardName: string, nextBoardName: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const currentName = normalizeBoardName(currentBoardName)
   const nextName = normalizeBoardName(nextBoardName)
@@ -334,7 +377,7 @@ export async function renameBoardWorkspace(vaultPath: string, currentBoardName: 
     return
   }
 
-  const currentPath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(getBoardFolder(currentName)))
+  const currentPath = runtimeRoot.toAbsolutePath(getBoardFolder(currentName))
   const renameResult = await renameEntry(currentPath, nextName)
   if (!renameResult.ok) {
     throw new Error(renameResult.error || 'No se pudo renombrar el tablero.')
@@ -355,6 +398,7 @@ export async function syncTaskIndexesAndMetadata(
   boardNamesInput: string[],
   boardConfigsInput: Board[] = [],
 ): Promise<void> {
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
   const snapshot = await loadTaskManagerSnapshot(vaultPath)
   const documentsByPath = new Map(snapshot.documents.map((document) => [document.path, document.content]))
   const boardNamesFromDocuments = extractBoardNamesFromDocuments(snapshot.documents)
@@ -373,11 +417,11 @@ export async function syncTaskIndexesAndMetadata(
     ]),
   )
 
-  await ensureFile(vaultPath, ROOT_TASK_INDEX_PATH, buildRootTaskIndexContent(boardNames))
-  await ensureFile(vaultPath, FINISHED_TASK_INDEX_PATH, buildBoardTaskIndexContent([]))
-  await ensureFile(vaultPath, CANCELLED_TASK_INDEX_PATH, buildBoardTaskIndexContent([]))
+  await ensureFile(runtimeRoot, ROOT_TASK_INDEX_PATH, buildRootTaskIndexContent(boardNames))
+  await ensureFile(runtimeRoot, FINISHED_TASK_INDEX_PATH, buildBoardTaskIndexContent([]))
+  await ensureFile(runtimeRoot, CANCELLED_TASK_INDEX_PATH, buildBoardTaskIndexContent([]))
 
-  await writeIfChanged(vaultPath, ROOT_TASK_INDEX_PATH, buildRootTaskIndexContent(boardNames), documentsByPath)
+  await writeIfChanged(runtimeRoot, ROOT_TASK_INDEX_PATH, buildRootTaskIndexContent(boardNames), documentsByPath)
 
   for (const boardName of boardNames) {
     const boardIndexPath = getBoardTaskIndexPath(boardName)
@@ -388,8 +432,8 @@ export async function syncTaskIndexesAndMetadata(
       .filter((document) => !document.path.endsWith(`${boardName}TaskIndex.md`))
       .map((document) => getBasenameWithoutExtension(document.path))
 
-    await ensureFile(vaultPath, boardIndexPath, buildBoardTaskIndexContent(taskNames))
-    await writeIfChanged(vaultPath, boardIndexPath, buildBoardTaskIndexContent(taskNames), documentsByPath)
+    await ensureFile(runtimeRoot, boardIndexPath, buildBoardTaskIndexContent(taskNames))
+    await writeIfChanged(runtimeRoot, boardIndexPath, buildBoardTaskIndexContent(taskNames), documentsByPath)
   }
 
   const finishedTaskNames = snapshot.documents
@@ -402,8 +446,8 @@ export async function syncTaskIndexesAndMetadata(
     .filter((document) => document.path !== CANCELLED_TASK_INDEX_PATH)
     .map((document) => getBasenameWithoutExtension(document.path))
 
-  await writeIfChanged(vaultPath, FINISHED_TASK_INDEX_PATH, buildBoardTaskIndexContent(finishedTaskNames), documentsByPath)
-  await writeIfChanged(vaultPath, CANCELLED_TASK_INDEX_PATH, buildBoardTaskIndexContent(cancelledTaskNames), documentsByPath)
+  await writeIfChanged(runtimeRoot, FINISHED_TASK_INDEX_PATH, buildBoardTaskIndexContent(finishedTaskNames), documentsByPath)
+  await writeIfChanged(runtimeRoot, CANCELLED_TASK_INDEX_PATH, buildBoardTaskIndexContent(cancelledTaskNames), documentsByPath)
 
   for (const boardName of boardNames) {
     const boardTasks = snapshot.tasks
@@ -423,7 +467,7 @@ export async function syncTaskIndexesAndMetadata(
       }
 
       const nextTaskContent = updateMarkdownFrontmatter(currentTaskContent, { fechaFin: update.endDate })
-      await writeIfChanged(vaultPath, update.taskPath, nextTaskContent, documentsByPath)
+      await writeIfChanged(runtimeRoot, update.taskPath, nextTaskContent, documentsByPath)
     }
   }
 
@@ -440,16 +484,16 @@ export async function syncTaskIndexesAndMetadata(
       })
     }
 
-    await writeIfChanged(vaultPath, document.path, nextContent, documentsByPath)
+    await writeIfChanged(runtimeRoot, document.path, nextContent, documentsByPath)
   }
 }
 
 export async function appendPomodoroEntry(vaultPath: string, input: AppendPomodoroLogEntryInput): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  await ensurePomodoroLogFile(vaultPath)
+  await ensurePomodoroLogFile(runtimeRoot)
   const logPath = `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(logPath))
+  const absolutePath = runtimeRoot.toAbsolutePath(logPath)
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
     throw new Error(readResult.error || 'No se pudo leer el registro de pomodoro.')
@@ -463,11 +507,11 @@ export async function appendPomodoroEntry(vaultPath: string, input: AppendPomodo
 }
 
 export async function readPomodoroEntries(vaultPath: string): Promise<PomodoroLogEntry[]> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  await ensurePomodoroLogFile(vaultPath)
+  await ensurePomodoroLogFile(runtimeRoot)
   const logPath = `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`
-  const result = await readFileContent(toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(logPath)))
+  const result = await readFileContent(runtimeRoot.toAbsolutePath(logPath))
   if (!result.ok) {
     return []
   }
@@ -476,11 +520,11 @@ export async function readPomodoroEntries(vaultPath: string): Promise<PomodoroLo
 }
 
 export async function deletePomodoroEntry(vaultPath: string, entryId: string): Promise<boolean> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  await ensurePomodoroLogFile(vaultPath)
+  await ensurePomodoroLogFile(runtimeRoot)
   const logPath = `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(logPath))
+  const absolutePath = runtimeRoot.toAbsolutePath(logPath)
 
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
@@ -496,13 +540,13 @@ export async function deletePomodoroEntry(vaultPath: string, entryId: string): P
   return writeResult.ok
 }
 
-async function ensurePomodoroLogFile(vaultPath: string): Promise<void> {
+async function ensurePomodoroLogFile(runtimeRoot: TaskWorkspaceRuntimeRoot): Promise<void> {
   const logPath = `${TASKS_ROOT_FOLDER}/${POMODORO_LOG_BASENAME}.md`
-  await ensureFile(vaultPath, logPath, '')
+  await ensureFile(runtimeRoot, logPath, '')
 }
 
-async function ensureFile(vaultPath: string, relativePath: string, content: string): Promise<void> {
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(relativePath))
+async function ensureFile(runtimeRoot: TaskWorkspaceRuntimeRoot, relativePath: string, content: string): Promise<void> {
+  const absolutePath = runtimeRoot.toAbsolutePath(relativePath)
   const existing = await readFileContent(absolutePath)
   if (existing.ok) {
     return
@@ -520,7 +564,7 @@ async function ensureFile(vaultPath: string, relativePath: string, content: stri
 }
 
 async function writeIfChanged(
-  vaultPath: string,
+  runtimeRoot: TaskWorkspaceRuntimeRoot,
   relativePath: string,
   nextContent: string,
   currentContentsByPath: Map<string, string>,
@@ -531,7 +575,7 @@ async function writeIfChanged(
   }
 
   const writeResult = await writeFileContent(
-    toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(relativePath)),
+    runtimeRoot.toAbsolutePath(relativePath),
     nextContent,
   )
   if (!writeResult.ok) {
@@ -594,7 +638,7 @@ function collectTaskDescendants(parentTask: TaskItem, tasks: TaskItem[]): TaskIt
 }
 
 async function moveSingleTaskPath(
-  vaultPath: string,
+  runtimeRoot: TaskWorkspaceRuntimeRoot,
   currentRelativePath: string,
   targetFolder: string,
   knownPaths: Set<string>,
@@ -608,7 +652,7 @@ async function moveSingleTaskPath(
     const uniqueRelativePath = resolveUniquePath(targetRelativePath, knownPaths)
     const uniqueFileName = getBaseName(uniqueRelativePath)
     const renameResult = await renameEntry(
-      toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(currentRelativePath)),
+      runtimeRoot.toAbsolutePath(currentRelativePath),
       uniqueFileName,
     )
     if (!renameResult.ok) {
@@ -620,8 +664,8 @@ async function moveSingleTaskPath(
 
   if (!nextRelativePath.startsWith(`${targetFolder}/`)) {
     const moveResult = await moveEntry(
-      toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(nextRelativePath)),
-      toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(targetFolder)),
+      runtimeRoot.toAbsolutePath(nextRelativePath),
+      runtimeRoot.toAbsolutePath(targetFolder),
     )
     if (!moveResult.ok) {
       throw new Error(moveResult.error || 'No se pudo mover la tarea.')
@@ -725,9 +769,9 @@ export function buildTaskEditPayload(
 }
 
 export async function updateTaskBody(vaultPath: string, taskPath: string, contentUpdater: (content: string) => string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(taskPath))
+  const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
     throw new Error(readResult.error || 'No se pudo leer la tarea.')
@@ -741,9 +785,9 @@ export async function updateTaskBody(vaultPath: string, taskPath: string, conten
 }
 
 export async function readTaskMarkdownSource(vaultPath: string, taskPath: string): Promise<string> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(taskPath))
+  const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
     throw new Error(readResult.error || 'No se pudo leer el markdown de la tarea.')
@@ -753,9 +797,9 @@ export async function readTaskMarkdownSource(vaultPath: string, taskPath: string
 }
 
 export async function writeTaskMarkdownSource(vaultPath: string, taskPath: string, content: string): Promise<void> {
-  await applyRuntimeTasksRoot(vaultPath)
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  const absolutePath = toAbsoluteVaultPath(vaultPath, toRuntimeRelativePath(taskPath))
+  const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
   const writeResult = await writeFileContent(absolutePath, content)
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo guardar el markdown de la tarea.')

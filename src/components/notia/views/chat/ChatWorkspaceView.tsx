@@ -23,6 +23,7 @@ import {
   resolveNetrunnerLibraryRootPath,
   resolveNetrunnerPathFromLibraryPath,
 } from '../../../../services/netrunner/netrunnerLibraryPathRuntime'
+import { toStoredLibraryPath } from '../../../../services/libraries/libraryPathMapping'
 import { resolveLongTermMemoryFilePath } from '../../../../services/chat/chatLibraryStructure'
 import {
   buildAttachmentDisplayName,
@@ -97,7 +98,42 @@ function areStringArraysEqual(left: string[], right: string[]): boolean {
   return left.every((value, index) => value === right[index])
 }
 
-function inferTaskManagerBoardPrefix(scopeKey: string | null, contextPaths: string[]): string | null {
+function normalizeComparableContextPath(library: NotiaLibrary | null, pathValue: string): string {
+  const trimmedPath = pathValue.trim()
+  if (!trimmedPath) {
+    return ''
+  }
+
+  const storedPath = library ? toStoredLibraryPath(library.path, trimmedPath) : trimmedPath
+  return storedPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+function buildComparableContextPaths(
+  library: NotiaLibrary | null,
+  pathValues: string[],
+): string[] {
+  return pathValues
+    .map((pathValue) => normalizeComparableContextPath(library, pathValue))
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, 'es'))
+}
+
+function areComparableContextPathsEqual(
+  library: NotiaLibrary | null,
+  left: string[],
+  right: string[],
+): boolean {
+  return areStringArraysEqual(
+    buildComparableContextPaths(library, left),
+    buildComparableContextPaths(library, right),
+  )
+}
+
+function inferTaskManagerBoardPrefix(
+  library: NotiaLibrary | null,
+  scopeKey: string | null,
+  contextPaths: string[],
+): string | null {
   if (!scopeKey?.startsWith('task-manager:board:')) {
     return null
   }
@@ -107,8 +143,8 @@ function inferTaskManagerBoardPrefix(scopeKey: string | null, contextPaths: stri
     return null
   }
 
-  const normalizedPath = firstPath.replace(/\\/g, '/')
-  const marker = '/task-mannager/'
+  const normalizedPath = normalizeComparableContextPath(library, firstPath)
+  const marker = 'task-mannager/'
   const markerIndex = normalizedPath.indexOf(marker)
   if (markerIndex < 0) {
     return null
@@ -123,6 +159,7 @@ function inferTaskManagerBoardPrefix(scopeKey: string | null, contextPaths: stri
 }
 
 function doesChatDocumentMatchPreferredContext(
+  library: NotiaLibrary | null,
   document: StoredChatDocument | null,
   preferredContextMode: ChatFileContextMode | null,
   preferredContextScopeKey: string | null,
@@ -135,7 +172,7 @@ function doesChatDocumentMatchPreferredContext(
   const matchesScopeKey = (document.contextScopeKey ?? null) === (preferredContextScopeKey ?? null)
   if (preferredContextMode && resolvedPreferredContextPaths.length > 0) {
     return document.selectedContextMode === preferredContextMode
-      && areStringArraysEqual(document.selectedContextFiles, resolvedPreferredContextPaths)
+      && areComparableContextPathsEqual(library, document.selectedContextFiles, resolvedPreferredContextPaths)
       && matchesScopeKey
   }
 
@@ -144,6 +181,79 @@ function doesChatDocumentMatchPreferredContext(
   }
 
   return false
+}
+
+function doesDocumentContainOptimisticReply(
+  document: StoredChatDocument,
+  previousMessages: StoredChatMessage[],
+  userMessage: StoredChatMessage,
+  streamedAnswer: string,
+): boolean {
+  if (document.messages.length < previousMessages.length + 2) {
+    return false
+  }
+
+  const persistedMessages = document.messages.slice(previousMessages.length)
+  const [persistedUserMessage, persistedAssistantMessage] = persistedMessages
+
+  if (
+    persistedUserMessage?.role !== 'user'
+    || persistedUserMessage.content.trim() !== userMessage.content.trim()
+  ) {
+    return false
+  }
+
+  if (persistedAssistantMessage?.role !== 'assistant') {
+    return false
+  }
+
+  const normalizedAssistantReply = persistedAssistantMessage.content.trim()
+  if (!normalizedAssistantReply) {
+    return false
+  }
+
+  if (!streamedAnswer.trim()) {
+    return true
+  }
+
+  return normalizedAssistantReply === streamedAnswer.trim()
+}
+
+async function waitForPersistedChatReply(
+  filePath: string,
+  fallbackTitle: string,
+  library: NotiaLibrary,
+  previousMessages: StoredChatMessage[],
+  userMessage: StoredChatMessage,
+  streamedAnswer: string,
+): Promise<StoredChatDocument> {
+  const deadline = Date.now() + 30_000
+  let lastLoadedDocument: StoredChatDocument | null = null
+  let lastError: unknown = null
+
+  while (Date.now() <= deadline) {
+    try {
+      const document = await loadChatDocument(filePath, fallbackTitle, library)
+      lastLoadedDocument = document
+      if (doesDocumentContainOptimisticReply(document, previousMessages, userMessage, streamedAnswer)) {
+        return document
+      }
+    } catch (error) {
+      lastError = error
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 600))
+  }
+
+  if (lastLoadedDocument) {
+    return lastLoadedDocument
+  }
+
+  if (lastError instanceof Error && lastError.message.trim()) {
+    throw lastError
+  }
+
+  throw new Error('Netrunner todavia no persistio la respuesta del chat.')
 }
 
 function readImageFileAsAttachment(file: File): Promise<SelectedImageAttachment> {
@@ -278,13 +388,13 @@ export function ChatWorkspaceView({
     () => [
       preferredContextMode ?? '',
       preferredContextScopeKey ?? '',
-      resolvedPreferredContextPaths.join('\n'),
+      buildComparableContextPaths(library, resolvedPreferredContextPaths).join('\n'),
     ].join('::'),
-    [preferredContextMode, preferredContextScopeKey, resolvedPreferredContextPaths],
+    [library, preferredContextMode, preferredContextScopeKey, resolvedPreferredContextPaths],
   )
   const preferredTaskManagerBoardPrefix = useMemo(
-    () => inferTaskManagerBoardPrefix(preferredContextScopeKey, resolvedPreferredContextPaths),
-    [preferredContextScopeKey, resolvedPreferredContextPaths],
+    () => inferTaskManagerBoardPrefix(library, preferredContextScopeKey, resolvedPreferredContextPaths),
+    [library, preferredContextScopeKey, resolvedPreferredContextPaths],
   )
   const preferredContextOption = useMemo(() => {
     if (resolvedPreferredContextPaths.length !== 1) {
@@ -376,6 +486,7 @@ export function ChatWorkspaceView({
         !matchedPreferredChatFilePath
         && selectedChatFilePath
         && doesChatDocumentMatchPreferredContext(
+          library,
           activeChatDocument,
           preferredContextMode,
           preferredContextScopeKey,
@@ -394,6 +505,7 @@ export function ChatWorkspaceView({
         !matchedPreferredChatFilePath
         && selectedChatFilePath
         && doesChatDocumentMatchPreferredContext(
+          library,
           activeChatDocument,
           preferredContextMode,
           preferredContextScopeKey,
@@ -419,6 +531,7 @@ export function ChatWorkspaceView({
   }, [
     matchedPreferredChatFilePath,
     activeChatDocument,
+    library,
     pendingAutoCreatedChatFilePath,
     preferredContextMode,
     preferredContextScopeKey,
@@ -505,14 +618,16 @@ export function ChatWorkspaceView({
           Boolean(preferredContextMode)
           && resolvedPreferredContextPaths.length > 0
           && document.selectedContextMode === preferredContextMode
-          && areStringArraysEqual(document.selectedContextFiles, resolvedPreferredContextPaths)
+          && areComparableContextPathsEqual(library, document.selectedContextFiles, resolvedPreferredContextPaths)
         )
         const boardFallbackMatch = (
           Boolean(boardPrefix)
           && Boolean(preferredContextMode)
           && document.selectedContextMode === preferredContextMode
           && document.selectedContextFiles.length > 0
-          && document.selectedContextFiles.every((pathValue) => pathValue.replace(/\\/g, '/').startsWith(boardPrefix ?? ''))
+          && document.selectedContextFiles.every((pathValue) => (
+            normalizeComparableContextPath(library, pathValue).startsWith(boardPrefix ?? '')
+          ))
         )
 
         const score = exactScopeMatch ? 3 : exactPathsMatch ? 2 : boardFallbackMatch ? 1 : 0
@@ -702,7 +817,9 @@ export function ChatWorkspaceView({
         preferredContextOption
         && preferredContextMode
         && activeChatDocument.selectedContextMode === preferredContextMode
-        && activeChatDocument.selectedContextFiles.includes(preferredContextOption.path)
+        && activeChatDocument.selectedContextFiles.some((pathValue) => (
+          areComparableContextPathsEqual(library, [pathValue], [preferredContextOption.path])
+        ))
       ) {
         const nextOptions = current.filter((option) => option.path !== preferredContextOption.path)
         nextOptions.unshift(preferredContextOption)
@@ -731,7 +848,7 @@ export function ChatWorkspaceView({
         || resolvedPreferredContextPaths.length === 0
         || (
           activeChatDocument.selectedContextMode === preferredContextMode
-          && areStringArraysEqual(activeChatDocument.selectedContextFiles, resolvedPreferredContextPaths)
+          && areComparableContextPathsEqual(library, activeChatDocument.selectedContextFiles, resolvedPreferredContextPaths)
         )
       )
 
@@ -998,7 +1115,7 @@ export function ChatWorkspaceView({
     })
 
     try {
-      await streamNetrunnerChatReply(
+      const streamedAnswer = await streamNetrunnerChatReply(
         netrunnerPreferences,
         trimmedMessage,
         [],
@@ -1024,10 +1141,13 @@ export function ChatWorkspaceView({
         },
       )
 
-      const persistedDocument = await loadChatDocument(
+      const persistedDocument = await waitForPersistedChatReply(
         targetChatFilePath,
         targetChatDocument.title || 'Chat',
         library,
+        previousMessages,
+        userMessage,
+        streamedAnswer,
       )
       setActiveChatDocument(persistedDocument)
       setOptimisticThreadMessages(null)
@@ -1041,6 +1161,31 @@ export function ChatWorkspaceView({
         [targetChatFilePath]: normalizeChatTitle(persistedDocument.title),
       }))
     } catch (error) {
+      try {
+        const recoveredDocument = await waitForPersistedChatReply(
+          targetChatFilePath,
+          targetChatDocument.title || 'Chat',
+          library,
+          previousMessages,
+          userMessage,
+          '',
+        )
+        setActiveChatDocument(recoveredDocument)
+        setOptimisticThreadMessages(null)
+        if (pendingAutoCreatedChatFilePath === targetChatFilePath) {
+          setPendingAutoCreatedChatFilePath(null)
+        }
+        setStreamingThinking('')
+        setStreamingAssistantMessage('')
+        setChatTitleOverrides((current) => ({
+          ...current,
+          [targetChatFilePath]: normalizeChatTitle(recoveredDocument.title),
+        }))
+        return
+      } catch {
+        // Fall back to the original rollback path when the file never gets persisted.
+      }
+
       if (pendingAutoCreatedChatFilePath === targetChatFilePath) {
         setPendingAutoCreatedChatFilePath(null)
       }

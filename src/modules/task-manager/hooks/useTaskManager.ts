@@ -39,6 +39,7 @@ import {
   removeBoardWorkspace,
   readTaskMarkdownSource,
   renameBoardWorkspace,
+  setTaskManagerRuntimeRootPolicy,
   syncTaskIndexesAndMetadata,
   updateTaskBody,
   updateTaskFrontmatter,
@@ -295,14 +296,38 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     mode: 'create',
     group: null,
   })
+  const isExternallyControlled = Boolean(externalVault?.path)
+
+  useEffect(() => {
+    if (!externalVault?.path) {
+      return undefined
+    }
+
+    setTaskManagerRuntimeRootPolicy(externalVault.path, {
+      forceInsideVault: true,
+    })
+
+    return () => {
+      setTaskManagerRuntimeRootPolicy(externalVault.path, {
+        forceInsideVault: false,
+      })
+    }
+  }, [externalVault?.path])
 
   const updateSettings = useCallback((updater: (previous: TaskManagerSettings) => TaskManagerSettings) => {
     setSettings((previousSettings) => {
       const nextSettings = updater(previousSettings)
-      saveTaskManagerSettings(nextSettings)
+      saveTaskManagerSettings(
+        isExternallyControlled
+          ? {
+            ...nextSettings,
+            activeVaultPath: null,
+          }
+          : nextSettings,
+      )
       return nextSettings
     })
-  }, [])
+  }, [isExternallyControlled])
 
   const hydrateSettingsFromSnapshot = useCallback((nextSnapshot: TaskManagerSnapshot) => {
     updateSettings((previousSettings) => {
@@ -484,6 +509,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
   }, [setActiveVaultPath])
 
   useEffect(() => {
+    if (isExternallyControlled) {
+      return
+    }
+
     if (!settings.activeVaultPath) {
       return
     }
@@ -517,13 +546,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           : 'No se pudo cargar el estado del gestor de tareas.')
       })
       .finally(() => setIsLoading(false))
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, updateSettings])
+  }, [hydrateSettingsFromSnapshot, isExternallyControlled, settings.activeVaultPath, updateSettings])
 
   useEffect(() => {
     if (!externalVault?.path) {
-      if (settings.activeVaultPath) {
-        void setActiveVaultPath(null)
-      }
       return
     }
 
@@ -532,7 +558,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     void setActiveVaultPath(externalVault)
-  }, [externalVault, setActiveVaultPath, settings.activeVaultPath])
+  }, [externalVault, setActiveVaultPath])
 
   useEffect(() => {
     if (!settings.activeVaultPath) {

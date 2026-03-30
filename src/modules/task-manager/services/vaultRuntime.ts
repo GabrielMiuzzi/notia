@@ -1,12 +1,17 @@
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
+import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import {
   createLibraryEntry,
   getPathBaseName,
+  isDirectoryPath,
   performLibraryEntryOperation,
+  pathExists,
   pickDirectory,
+  readLibraryTree,
   readMarkdownDocuments,
   readTextFile,
   writeTextFile,
+  type FilesystemTreeNode,
   type FilesystemMarkdownDocument,
   type FilesystemOperationResult,
   type FilesystemReadTextResult,
@@ -46,6 +51,29 @@ function resolveAndroidDirectoryUri(pathValue: string): string | undefined {
   }
 
   return undefined
+}
+
+function isNestedPath(basePath: string, candidatePath: string): boolean {
+  const normalizedBasePath = normalizeFilesystemPath(basePath).replace(/[\\/]+$/, '')
+  const normalizedCandidatePath = normalizeFilesystemPath(candidatePath)
+  return normalizedCandidatePath === normalizedBasePath
+    || normalizedCandidatePath.startsWith(`${normalizedBasePath}/`)
+}
+
+function collectMarkdownPathsFromTree(
+  nodes: FilesystemTreeNode[],
+  target: string[],
+): void {
+  for (const node of nodes) {
+    if (node.type === 'file' && node.path && node.path.toLowerCase().endsWith('.md')) {
+      target.push(node.path)
+      continue
+    }
+
+    if (node.children && node.children.length > 0) {
+      collectMarkdownPathsFromTree(node.children, target)
+    }
+  }
 }
 
 export function setActiveTaskManagerVaultContext(vault: TaskManagerVaultRef | null): void {
@@ -90,10 +118,92 @@ export async function readMarkdownFiles(directoryPath: string): Promise<Markdown
   }
 
   try {
+    if (getRuntimeDevice() === 'Android') {
+      const vaultRef = activeTaskManagerVaultRef
+      if (vaultRef && isNestedPath(vaultRef.path, directoryPath)) {
+        const rootTree = await readLibraryTree(vaultRef.path, {
+          androidDirectoryUri: vaultRef.androidTreeUri,
+        })
+        const markdownPaths = new Set<string>()
+
+        if (normalizeFilesystemPath(directoryPath).replace(/[\\/]+$/, '') === normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')) {
+          const collectedRootMarkdownPaths: string[] = []
+          collectMarkdownPathsFromTree(rootTree, collectedRootMarkdownPaths)
+          for (const filePath of collectedRootMarkdownPaths) {
+            markdownPaths.add(filePath)
+          }
+        } else {
+          const stack = [...rootTree]
+          while (stack.length > 0) {
+            const node = stack.pop()
+            if (!node) {
+              continue
+            }
+
+            if (node.path && isNestedPath(directoryPath, node.path)) {
+              if (node.type === 'file' && node.path.toLowerCase().endsWith('.md')) {
+                markdownPaths.add(node.path)
+              }
+
+              if (node.children && node.children.length > 0) {
+                for (const child of node.children) {
+                  stack.push(child)
+                }
+              }
+              continue
+            }
+
+            if (node.children && node.children.length > 0) {
+              for (const child of node.children) {
+                stack.push(child)
+              }
+            }
+          }
+        }
+
+        const documents = await Promise.all(
+          Array.from(markdownPaths)
+            .sort((left, right) => left.localeCompare(right, 'es'))
+            .map(async (filePath) => {
+              const result = await readTextFile(filePath)
+              if (!result.ok) {
+                return null
+              }
+
+              return {
+                path: normalizeFilesystemPath(filePath),
+                content: result.content,
+              } satisfies MarkdownFileDocument
+            }),
+        )
+
+        return documents.filter((document): document is MarkdownFileDocument => Boolean(document))
+      }
+    }
+
     return await readMarkdownDocuments(normalizeFilesystemPath(directoryPath))
   } catch (error) {
     console.error('[task-manager] read_markdown_files failed', error)
     return []
+  }
+}
+
+export async function directoryExists(directoryPath: string): Promise<boolean> {
+  const normalizedPath = normalizeFilesystemPath(directoryPath)
+  if (!normalizedPath.trim()) {
+    return false
+  }
+
+  try {
+    const exists = await pathExists(normalizedPath)
+    if (!exists) {
+      return false
+    }
+
+    return await isDirectoryPath(normalizedPath)
+  } catch (error) {
+    console.error('[task-manager] directory_exists failed', error)
+    return false
   }
 }
 

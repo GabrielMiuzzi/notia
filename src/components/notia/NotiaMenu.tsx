@@ -81,6 +81,7 @@ import {
 import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '../../services/coldpass/coldpassCsvImport'
 import type { DrawioDocumentController } from '../../modules/drawio/types'
 import { ensureChatLibraryStructure } from '../../services/chat/chatLibraryStructure'
+import { toStoredLibraryPath } from '../../services/libraries/libraryPathMapping'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
@@ -127,6 +128,42 @@ function stripFileExtension(value: string): string {
     return value
   }
   return value.slice(0, lastDotIndex)
+}
+
+function collectFilesFromTree(nodes: NotiaFileNode[]): string[] {
+  const paths: string[] = []
+
+  const visit = (currentNodes: NotiaFileNode[]) => {
+    for (const node of currentNodes) {
+      if (node.type === 'file' && node.path) {
+        paths.push(node.path)
+      }
+
+      if (node.children && node.children.length > 0) {
+        visit(node.children)
+      }
+    }
+  }
+
+  visit(nodes)
+  return paths
+}
+
+function collectNestedChatHistoryFiles(nodes: NotiaFileNode[], remainingSegments: string[]): string[] {
+  if (remainingSegments.length === 0) {
+    return collectFilesFromTree(nodes)
+  }
+
+  const [nextSegment, ...restSegments] = remainingSegments
+  const matchingFolder = nodes.find((node) => (
+    node.type === 'folder' && node.name.trim().toLowerCase() === nextSegment
+  ))
+
+  if (!matchingFolder?.children) {
+    return []
+  }
+
+  return collectNestedChatHistoryFiles(matchingFolder.children, restSegments)
 }
 
 function buildRightPanelChatContextLabel(
@@ -638,7 +675,12 @@ export function NotiaMenu() {
   }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
   const isGraphViewActive = activeWorkspaceView === 'graph'
   const shouldRefreshVisibleExplorerTree =
-    activeWorkspaceView !== 'task-manager' && (activeWorkspaceView === 'graph' || isSidebarOpen)
+    activeWorkspaceView !== 'task-manager' && (
+      activeWorkspaceView === 'graph'
+      || activeWorkspaceView === 'chat'
+      || isRightChatPanelOpen
+      || isSidebarOpen
+    )
   const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
   const saveStatus = activeTab?.saveStatus ?? 'idle'
   const normalizedSearchQuery = searchQuery.trim()
@@ -657,42 +699,32 @@ export function NotiaMenu() {
     [activeLibrary?.path, isMarkdownDocumentActive, treeNodes],
   )
   const libraryFilePaths = useMemo(() => {
-    const paths: string[] = []
-    const collect = (nodes: NotiaFileNode[]) => {
-      for (const node of nodes) {
-        if (node.type === 'file' && node.path) {
-          paths.push(node.path)
-        }
-
-        if (node.children && node.children.length > 0) {
-          collect(node.children)
-        }
-      }
-    }
-
-    collect(treeNodes)
-    return paths
+    return collectFilesFromTree(treeNodes)
   }, [treeNodes])
   const previousChatFiles = useMemo(() => {
-    const activeLibraryPath = activeLibrary?.path ? normalizePath(activeLibrary.path) : ''
-    if (!activeLibraryPath) {
+    if (!activeLibrary?.path) {
       return []
     }
 
-    const chatDirectoryPrefix = `${activeLibraryPath}/chat/chats/`
-    return libraryFilePaths
-      .map((filePath) => normalizePath(filePath))
-      .filter((filePath) => filePath.startsWith(chatDirectoryPrefix) && filePath.toLowerCase().endsWith('.md'))
-      .sort((left, right) => right.localeCompare(left))
+    return collectNestedChatHistoryFiles(treeNodes, ['chat', 'chats'])
+      .map((filePath) => ({
+        runtimePath: normalizePath(filePath),
+        storedPath: normalizePath(toStoredLibraryPath(activeLibrary.path, filePath)),
+      }))
+      .filter(({ storedPath }) => (
+        storedPath.toLowerCase().startsWith('chat/chats/')
+        && storedPath.toLowerCase().endsWith('.md')
+      ))
+      .sort((left, right) => right.storedPath.localeCompare(left.storedPath, 'es'))
       .map((filePath) => {
-        const fileName = filePath.slice(chatDirectoryPrefix.length)
+        const relativeChatPath = filePath.storedPath.slice('chat/chats/'.length)
         return {
-          id: filePath,
-          filePath,
-          title: stripFileExtension(fileName),
+          id: filePath.storedPath,
+          filePath: filePath.runtimePath,
+          title: stripFileExtension(relativeChatPath),
         }
       })
-  }, [activeLibrary?.path, libraryFilePaths])
+  }, [activeLibrary?.path, treeNodes])
   const { graphModel, graphSourcesByPath, isGraphLoading } = useLibraryGraphData({
     enabled: isGraphViewActive,
     libraryPath: activeLibrary?.path ?? null,

@@ -532,23 +532,37 @@ fn read_library_file(
     }
 
     #[cfg(target_os = "android")]
-    if payload.file_path.starts_with("content://") {
-        match mobile_directory_picker::read_android_content_text(
-            android_picker_state.inner(),
-            &payload.file_path,
-        ) {
-            Ok(content) => {
-                return ReadLibraryFileResult {
-                    ok: true,
-                    content,
-                    error: None,
+    {
+        let resolved_android_uri = if payload.file_path.starts_with("content://") {
+            Some(payload.file_path.clone())
+        } else {
+            mobile_directory_picker::resolve_android_tree_uri(
+                android_picker_state.inner(),
+                &payload.file_path,
+                None,
+            )
+            .ok()
+            .flatten()
+        };
+
+        if let Some(content_uri) = resolved_android_uri {
+            match mobile_directory_picker::read_android_content_text(
+                android_picker_state.inner(),
+                &content_uri,
+            ) {
+                Ok(content) => {
+                    return ReadLibraryFileResult {
+                        ok: true,
+                        content,
+                        error: None,
+                    }
                 }
-            }
-            Err(_) => {
-                return ReadLibraryFileResult {
-                    ok: false,
-                    content: String::new(),
-                    error: Some("Could not read file.".to_string()),
+                Err(_) => {
+                    return ReadLibraryFileResult {
+                        ok: false,
+                        content: String::new(),
+                        error: Some("Could not read file.".to_string()),
+                    }
                 }
             }
         }
@@ -623,22 +637,36 @@ fn write_library_file(
     }
 
     #[cfg(target_os = "android")]
-    if payload.file_path.starts_with("content://") {
-        match mobile_directory_picker::write_android_content_text(
-            android_picker_state.inner(),
-            &payload.file_path,
-            &payload.content,
-        ) {
-            Ok(()) => {
-                return WriteLibraryFileResult {
-                    ok: true,
-                    error: None,
+    {
+        let resolved_android_uri = if payload.file_path.starts_with("content://") {
+            Some(payload.file_path.clone())
+        } else {
+            mobile_directory_picker::resolve_android_tree_uri(
+                android_picker_state.inner(),
+                &payload.file_path,
+                None,
+            )
+            .ok()
+            .flatten()
+        };
+
+        if let Some(content_uri) = resolved_android_uri {
+            match mobile_directory_picker::write_android_content_text(
+                android_picker_state.inner(),
+                &content_uri,
+                &payload.content,
+            ) {
+                Ok(()) => {
+                    return WriteLibraryFileResult {
+                        ok: true,
+                        error: None,
+                    }
                 }
-            }
-            Err(_) => {
-                return WriteLibraryFileResult {
-                    ok: false,
-                    error: Some("Could not write file.".to_string()),
+                Err(_) => {
+                    return WriteLibraryFileResult {
+                        ok: false,
+                        error: Some("Could not write file.".to_string()),
+                    }
                 }
             }
         }
@@ -731,9 +759,30 @@ fn create_library_directory(payload: CreateLibraryDirectoryPayload) -> Operation
 }
 
 #[tauri::command]
-fn path_exists(payload: PathExistsPayload) -> PathExistsResult {
+fn path_exists(
+    payload: PathExistsPayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> PathExistsResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     if payload.path.trim().is_empty() {
         return PathExistsResult { exists: false };
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        return PathExistsResult {
+            exists: payload.path.starts_with("content://")
+                || mobile_directory_picker::resolve_android_tree_uri(
+                    android_picker_state.inner(),
+                    &payload.path,
+                    None,
+                )
+                .ok()
+                .flatten()
+                .is_some(),
+        };
     }
 
     PathExistsResult {
@@ -742,10 +791,31 @@ fn path_exists(payload: PathExistsPayload) -> PathExistsResult {
 }
 
 #[tauri::command]
-fn is_directory_path(payload: PathExistsPayload) -> IsDirectoryPathResult {
+fn is_directory_path(
+    payload: PathExistsPayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> IsDirectoryPathResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     if payload.path.trim().is_empty() {
         return IsDirectoryPathResult {
             is_directory: false,
+        };
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        return IsDirectoryPathResult {
+            is_directory: payload.path.starts_with("content://")
+                || mobile_directory_picker::resolve_android_tree_uri(
+                    android_picker_state.inner(),
+                    &payload.path,
+                    None,
+                )
+                .ok()
+                .flatten()
+                .is_some(),
         };
     }
 
@@ -938,20 +1008,34 @@ fn library_entry_operation(
             };
 
             #[cfg(target_os = "android")]
-            if target_path_value.starts_with("content://") {
-                return match mobile_directory_picker::delete_android_tree_entry(
-                    android_picker_state.inner(),
-                    &target_path_value,
-                ) {
-                    Ok(()) => OperationResult {
-                        ok: true,
-                        error: None,
-                    },
-                    Err(_) => OperationResult {
-                        ok: false,
-                        error: Some("Could not delete entry.".to_string()),
-                    },
+            {
+                let resolved_android_uri = if target_path_value.starts_with("content://") {
+                    Some(target_path_value.clone())
+                } else {
+                    mobile_directory_picker::resolve_android_tree_uri(
+                        android_picker_state.inner(),
+                        &target_path_value,
+                        None,
+                    )
+                    .ok()
+                    .flatten()
                 };
+
+                if let Some(entry_uri) = resolved_android_uri {
+                    return match mobile_directory_picker::delete_android_tree_entry(
+                        android_picker_state.inner(),
+                        &entry_uri,
+                    ) {
+                        Ok(()) => OperationResult {
+                            ok: true,
+                            error: None,
+                        },
+                        Err(_) => OperationResult {
+                            ok: false,
+                            error: Some("Could not delete entry.".to_string()),
+                        },
+                    };
+                }
             }
 
             let target_path = PathBuf::from(target_path_value);
