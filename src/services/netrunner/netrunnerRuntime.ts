@@ -1,4 +1,5 @@
-import { normalizeNetrunnerSettingsInput, type NetrunnerPreferences } from '../preferences/netrunnerSettingsStorage'
+import type { NetrunnerPreferences } from '../preferences/netrunnerSettingsStorage'
+import { fetchNetrunner } from './netrunnerHttpClient'
 
 export interface NetrunnerHealthCheckResult {
   ok: boolean
@@ -8,10 +9,8 @@ export interface NetrunnerHealthCheckResult {
 export async function checkNetrunnerHealth(
   preferences: NetrunnerPreferences,
 ): Promise<NetrunnerHealthCheckResult> {
-  const normalizedPreferences = normalizeNetrunnerSettingsInput(preferences)
-
   try {
-    const response = await fetch(`${normalizedPreferences.baseUrl}/health`, {
+    const response = await fetchNetrunner(preferences, '/health', {
       method: 'GET',
       headers: {
         Accept: 'application/json',

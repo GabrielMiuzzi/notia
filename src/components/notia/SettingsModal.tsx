@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { clampOcrDebounceMs, INKDOC_OCR_DEBOUNCE_MAX_MS, INKDOC_OCR_DEBOUNCE_MIN_MS, normalizeServiceUrl } from '../../modules/inkdoc/settings'
+import type { NotiaLibrary } from '../../types/notia'
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import {
   normalizeNetrunnerSettingsInput,
   type NetrunnerPreferences,
 } from '../../services/preferences/netrunnerSettingsStorage'
+import {
+  normalizeNetrunnerDesktopPath,
+  resolveNetrunnerLibraryRootPath,
+} from '../../services/netrunner/netrunnerLibraryPathRuntime'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
@@ -24,6 +29,8 @@ interface SettingsModalProps {
   onInkdocPreferencesChange: (value: InkdocPreferences) => void
   netrunnerPreferences: NetrunnerPreferences
   onNetrunnerPreferencesChange: (value: NetrunnerPreferences) => void
+  activeLibrary: NotiaLibrary | null
+  onActiveLibraryNetrunnerDesktopPathChange: (value: string) => void
 }
 
 const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs', 'Netrunner']
@@ -37,11 +44,14 @@ export function SettingsModal({
   onInkdocPreferencesChange,
   netrunnerPreferences,
   onNetrunnerPreferencesChange,
+  activeLibrary,
+  onActiveLibraryNetrunnerDesktopPathChange,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('General')
   const [inkmathServiceUrlDraft, setInkmathServiceUrlDraft] = useState(inkdocPreferences.inkmathServiceUrl)
   const [netrunnerBaseUrlDraft, setNetrunnerBaseUrlDraft] = useState(netrunnerPreferences.baseUrl)
   const [netrunnerRepoPathDraft, setNetrunnerRepoPathDraft] = useState(netrunnerPreferences.repoPath)
+  const [netrunnerLibraryDesktopPathDraft, setNetrunnerLibraryDesktopPathDraft] = useState(activeLibrary?.netrunnerDesktopPath ?? '')
   const [netrunnerHealthStatus, setNetrunnerHealthStatus] = useState<{
     tone: 'idle' | 'success' | 'error'
     message: string
@@ -82,6 +92,14 @@ export function SettingsModal({
     setNetrunnerRepoPathDraft(netrunnerPreferences.repoPath)
   }, [netrunnerPreferences.baseUrl, netrunnerPreferences.repoPath, open])
 
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    setNetrunnerLibraryDesktopPathDraft(activeLibrary?.netrunnerDesktopPath ?? '')
+  }, [activeLibrary?.id, activeLibrary?.netrunnerDesktopPath, open])
+
   const commitInkMathServiceUrl = () => {
     const normalized = normalizeServiceUrl(inkmathServiceUrlDraft)
     setInkmathServiceUrlDraft(normalized)
@@ -100,6 +118,12 @@ export function SettingsModal({
     setNetrunnerBaseUrlDraft(normalized.baseUrl)
     setNetrunnerRepoPathDraft(normalized.repoPath)
     onNetrunnerPreferencesChange(normalized)
+  }
+
+  const commitActiveLibraryNetrunnerDesktopPath = () => {
+    const normalized = normalizeNetrunnerDesktopPath(netrunnerLibraryDesktopPathDraft) ?? ''
+    setNetrunnerLibraryDesktopPathDraft(normalized)
+    onActiveLibraryNetrunnerDesktopPathChange(normalized)
   }
 
   const handleCheckNetrunnerConnection = async () => {
@@ -124,6 +148,9 @@ export function SettingsModal({
   if (!open) {
     return null
   }
+
+  const activeLibraryDesktopRootPath = resolveNetrunnerLibraryRootPath(activeLibrary)
+  const activeLibraryLocalPath = activeLibrary?.path.trim() || 'Sin libreria activa'
 
   return (
     <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-settings-modal">
@@ -254,6 +281,49 @@ export function SettingsModal({
                       }}
                       placeholder="http://127.0.0.1:8000"
                     />
+                  </div>
+                </div>
+                <div className="notia-settings-card">
+                  <div className="notia-settings-card-label">Libreria activa</div>
+                  <div className="notia-settings-card-value">
+                    {activeLibrary?.name ?? 'Sin libreria activa'}
+                  </div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    Ruta local activa
+                  </div>
+                  <div className="notia-settings-card-value notia-settings-card-value--path">
+                    {activeLibraryLocalPath}
+                  </div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    Ruta desktop para Netrunner
+                  </div>
+                  <div className="notia-settings-card-value notia-settings-card-value--path">
+                    {activeLibraryDesktopRootPath ?? 'No configurada'}
+                  </div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    Se usa para que Netrunner opere sobre la copia desktop sincronizada de esta libreria
+                  </div>
+                  <div className="notia-settings-input-wrap">
+                    <input
+                      className="notia-settings-input"
+                      type="text"
+                      value={netrunnerLibraryDesktopPathDraft}
+                      onChange={(event) => {
+                        setNetrunnerLibraryDesktopPathDraft(event.target.value)
+                      }}
+                      onBlur={commitActiveLibraryNetrunnerDesktopPath}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          commitActiveLibraryNetrunnerDesktopPath()
+                        }
+                      }}
+                      placeholder="/home/gabriel/Desktop/tu-libreria"
+                      disabled={!activeLibrary}
+                    />
+                  </div>
+                  <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                    Si queda vacia en desktop, Notia usa la ruta local actual. En Android conviene completarla siempre.
                   </div>
                 </div>
                 <div className="notia-settings-card">

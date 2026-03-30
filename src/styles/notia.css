@@ -3708,6 +3708,7 @@
 
 .notia-settings-body {
   flex: 1;
+  min-height: 0;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -3715,6 +3716,7 @@
   align-items: stretch;
   color: var(--color-body-text);
   font-size: 13px;
+  overflow: auto;
 }
 
 .notia-settings-card {

@@ -39,6 +39,7 @@ import {
 } from '../../services/preferences/explorerPanelStorage'
 import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { loadNetrunnerPreferences, saveNetrunnerPreferences } from '../../services/preferences/netrunnerSettingsStorage'
+import { normalizeNetrunnerDesktopPath } from '../../services/netrunner/netrunnerLibraryPathRuntime'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import type { ColdPassEntry } from '../../types/coldpass'
@@ -228,6 +229,7 @@ function areLibrariesEquivalent(current: NotiaLibrary[], next: NotiaLibrary[]): 
     return library.id === candidate.id
       && library.path === candidate.path
       && (library.androidTreeUri ?? '') === (candidate.androidTreeUri ?? '')
+      && (library.netrunnerDesktopPath ?? '') === (candidate.netrunnerDesktopPath ?? '')
   })
 }
 
@@ -2720,6 +2722,18 @@ export function NotiaMenu() {
     setLibraries((current) => [...current, library])
     setActiveLibraryId(library.id)
   }
+  const handleActiveLibraryNetrunnerDesktopPathChange = useCallback((value: string) => {
+    if (!activeLibraryId) {
+      return
+    }
+
+    const normalizedDesktopPath = normalizeNetrunnerDesktopPath(value)
+    setLibraries((current) => current.map((library) => (
+      library.id === activeLibraryId
+        ? { ...library, netrunnerDesktopPath: normalizedDesktopPath }
+        : library
+    )))
+  }, [activeLibraryId])
   const handleLibraryRemoved = useCallback(async (library: NotiaLibrary) => {
     const shouldRemove = await confirm({
       title: 'Quitar libreria',
@@ -3029,6 +3043,8 @@ export function NotiaMenu() {
         onInkdocPreferencesChange={setInkdocPreferences}
         netrunnerPreferences={netrunnerPreferences}
         onNetrunnerPreferencesChange={setNetrunnerPreferences}
+        activeLibrary={activeLibrary}
+        onActiveLibraryNetrunnerDesktopPathChange={handleActiveLibraryNetrunnerDesktopPathChange}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

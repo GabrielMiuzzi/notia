@@ -18,6 +18,11 @@ import {
 } from '../../../../services/chat/chatDocumentStorage'
 import { streamNetrunnerChatReply } from '../../../../services/netrunner/netrunnerChatRuntime'
 import { checkNetrunnerHealth } from '../../../../services/netrunner/netrunnerRuntime'
+import {
+  getNetrunnerLibraryConfigurationMessage,
+  resolveNetrunnerLibraryRootPath,
+  resolveNetrunnerPathFromLibraryPath,
+} from '../../../../services/netrunner/netrunnerLibraryPathRuntime'
 import { resolveLongTermMemoryFilePath } from '../../../../services/chat/chatLibraryStructure'
 import {
   buildAttachmentDisplayName,
@@ -313,7 +318,16 @@ export function ChatWorkspaceView({
   const transientContextSummaryLabel = hasTransientContext ? transientContextSummary?.trim() || null : null
   const displayedMessages = optimisticThreadMessages ?? activeChatDocument?.messages ?? []
   const hasMessages = displayedMessages.length > 0
-  const isNetrunnerAvailable = !isCheckingNetrunnerHealth && !netrunnerHealthMessage
+  const netrunnerLibraryRootPath = useMemo(
+    () => resolveNetrunnerLibraryRootPath(library),
+    [library],
+  )
+  const netrunnerConfigurationMessage = useMemo(
+    () => getNetrunnerLibraryConfigurationMessage(library),
+    [library],
+  )
+  const netrunnerAvailabilityMessage = netrunnerConfigurationMessage ?? netrunnerHealthMessage
+  const isNetrunnerAvailable = !isCheckingNetrunnerHealth && !netrunnerAvailabilityMessage
   const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library) && isNetrunnerAvailable
 
   useEffect(() => {
@@ -430,10 +444,14 @@ export function ChatWorkspaceView({
       return
     }
 
+    if (!library) {
+      return
+    }
+
     let cancelled = false
     void Promise.all(availablePreviousChats.map(async (chat) => {
       try {
-        const document = await loadChatDocument(chat.filePath, chat.title)
+        const document = await loadChatDocument(chat.filePath, chat.title, library)
         return [chat.filePath, normalizeChatTitle(document.title)] as const
       } catch {
         return [chat.filePath, normalizeChatTitle(chat.title)] as const
@@ -449,7 +467,7 @@ export function ChatWorkspaceView({
     return () => {
       cancelled = true
     }
-  }, [availablePreviousChats])
+  }, [availablePreviousChats, library])
 
   useEffect(() => {
     if (selectMatchingChatOnly) {
@@ -473,10 +491,14 @@ export function ChatWorkspaceView({
       return
     }
 
+    if (!library) {
+      return
+    }
+
     let cancelled = false
     void Promise.all(availablePreviousChats.map(async (chat) => {
       try {
-        const document = await loadChatDocument(chat.filePath, chat.title)
+        const document = await loadChatDocument(chat.filePath, chat.title, library)
         const boardPrefix = preferredTaskManagerBoardPrefix
         const exactScopeMatch = Boolean(preferredContextScopeKey) && document.contextScopeKey === preferredContextScopeKey
         const exactPathsMatch = (
@@ -532,6 +554,7 @@ export function ChatWorkspaceView({
     preferredContextScopeKey,
     preferredTaskManagerBoardPrefix,
     availablePreviousChats,
+    library,
     resolvedPreferredContextPaths,
     selectedChatFilePath,
   ])
@@ -617,9 +640,13 @@ export function ChatWorkspaceView({
       return
     }
 
+    if (!library) {
+      return
+    }
+
     let cancelled = false
     setIsChatLoading(true)
-    void loadChatDocument(selectedChatFilePath, selectedChatFallbackTitle)
+    void loadChatDocument(selectedChatFilePath, selectedChatFallbackTitle, library)
       .then((document) => {
         if (cancelled) {
           return
@@ -659,6 +686,7 @@ export function ChatWorkspaceView({
     preferredContextMode,
     preferredContextOption,
     resolvedPreferredContextPaths,
+    library,
     selectedChatFallbackTitle,
     selectedChatFilePath,
   ])
@@ -691,6 +719,7 @@ export function ChatWorkspaceView({
       (!preferredContextScopeKey && resolvedPreferredContextPaths.length === 0)
       || !activeChatDocument
       || !selectedChatFilePath
+      || !library
     ) {
       return
     }
@@ -721,7 +750,7 @@ export function ChatWorkspaceView({
 
     setActiveChatDocument(nextDocument)
 
-    void saveChatDocument(selectedChatFilePath, nextDocument).catch((error) => {
+    void saveChatDocument(selectedChatFilePath, nextDocument, library).catch((error) => {
       setDialogMessage(
         error instanceof Error && error.message.trim()
           ? error.message
@@ -733,6 +762,7 @@ export function ChatWorkspaceView({
     preferredContextMode,
     preferredContextScopeKey,
     resolvedPreferredContextPaths,
+    library,
     selectedChatFilePath,
   ])
 
@@ -846,6 +876,14 @@ export function ChatWorkspaceView({
       return
     }
 
+    if (!netrunnerLibraryRootPath) {
+      setDialogMessage(
+        netrunnerConfigurationMessage
+          ?? 'Falta configurar la ruta desktop de esta librería para Netrunner.',
+      )
+      return
+    }
+
     setNetrunnerHealthMessage(null)
 
     let targetChatDocument = activeChatDocument
@@ -856,7 +894,7 @@ export function ChatWorkspaceView({
         const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
         setPendingAutoCreatedChatFilePath(filePath)
         await onChatCreated?.(filePath)
-        const createdDocument = await loadChatDocument(filePath, 'Chat')
+        const createdDocument = await loadChatDocument(filePath, 'Chat', library)
         const shouldDisableLongTermMemoryForAutoCreatedIndexChat =
           effectiveSelectedContextMode === 'index'
           && effectiveSelectedContextPaths.length > 0
@@ -882,7 +920,7 @@ export function ChatWorkspaceView({
           || preparedDocument.selectedContextMode !== createdDocument.selectedContextMode
           || preparedDocument.selectedContextFiles.join('\n') !== createdDocument.selectedContextFiles.join('\n')
         ) {
-          await saveChatDocument(filePath, preparedDocument)
+          await saveChatDocument(filePath, preparedDocument, library)
         }
 
         setSelectedChatFilePath(filePath)
@@ -915,13 +953,24 @@ export function ChatWorkspaceView({
     const previousFileContextMode = selectedFileContextMode
 
     try {
-      inlineFileAttachments = await loadInlineFileAttachments(effectiveSelectedContextPaths, selectedLibraryFileOptions)
+      inlineFileAttachments = await loadInlineFileAttachments(library, effectiveSelectedContextPaths, selectedLibraryFileOptions)
     } catch (error) {
       setDialogMessage(
         error instanceof Error && error.message.trim()
           ? error.message
           : 'No se pudieron preparar los archivos seleccionados.',
       )
+      return
+    }
+
+    const netrunnerChatFilePath = resolveNetrunnerPathFromLibraryPath(library, targetChatFilePath)
+    const netrunnerLongTermMemoryFilePath = resolveNetrunnerPathFromLibraryPath(
+      library,
+      resolveLongTermMemoryFilePath(library.path),
+    )
+
+    if (!netrunnerChatFilePath || !netrunnerLongTermMemoryFilePath) {
+      setDialogMessage('No se pudo resolver la ruta desktop de la librería para Netrunner.')
       return
     }
 
@@ -955,8 +1004,9 @@ export function ChatWorkspaceView({
         [],
         [],
         {
-          chatFilePath: targetChatFilePath,
-          longTermMemoryFilePath: resolveLongTermMemoryFilePath(library.path),
+          libraryRootPath: netrunnerLibraryRootPath,
+          chatFilePath: netrunnerChatFilePath,
+          longTermMemoryFilePath: netrunnerLongTermMemoryFilePath,
         },
         {
           files: inlineFileAttachments,
@@ -977,6 +1027,7 @@ export function ChatWorkspaceView({
       const persistedDocument = await loadChatDocument(
         targetChatFilePath,
         targetChatDocument.title || 'Chat',
+        library,
       )
       setActiveChatDocument(persistedDocument)
       setOptimisticThreadMessages(null)
@@ -1178,11 +1229,11 @@ export function ChatWorkspaceView({
                   <strong>Verificando Netrunner...</strong>
                   <p>Esperá un momento antes de abrir el chat.</p>
                 </div>
-              ) : netrunnerHealthMessage ? (
+              ) : netrunnerAvailabilityMessage ? (
                 <div className="notia-chat-empty">
                   <Bot size={18} />
                   <strong>Netrunner no está disponible</strong>
-                  <p>{netrunnerHealthMessage}</p>
+                  <p>{netrunnerAvailabilityMessage}</p>
                 </div>
               ) : hasMessages ? (
                 <>

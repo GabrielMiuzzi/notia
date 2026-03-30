@@ -1,5 +1,6 @@
 import { parseFrontmatterDocument, serializeFrontmatterDocument, type FrontmatterEntry } from '../../engines/markdown/frontmatterEngine'
 import type { NotiaLibrary } from '../../types/notia'
+import { fromStoredLibraryPath, toStoredLibraryPath } from '../libraries/libraryPathMapping'
 import { readLibraryFileContent, writeLibraryFileContent } from '../libraries/libraryDocumentRuntime'
 import { resolveLongTermMemoryFilePath } from './chatLibraryStructure'
 
@@ -161,17 +162,43 @@ export function serializeChatDocument(document: StoredChatDocument): string {
   })
 }
 
-export async function loadChatDocument(filePath: string, fallbackTitle: string): Promise<StoredChatDocument> {
+function toRuntimeChatDocument(document: StoredChatDocument, library: NotiaLibrary): StoredChatDocument {
+  return {
+    ...document,
+    selectedContextFiles: document.selectedContextFiles
+      .map((pathValue) => fromStoredLibraryPath(library.path, pathValue))
+      .filter(Boolean),
+  }
+}
+
+function toPersistedChatDocument(document: StoredChatDocument, library: NotiaLibrary): StoredChatDocument {
+  return {
+    ...document,
+    selectedContextFiles: document.selectedContextFiles
+      .map((pathValue) => toStoredLibraryPath(library.path, pathValue))
+      .filter(Boolean),
+  }
+}
+
+export async function loadChatDocument(
+  filePath: string,
+  fallbackTitle: string,
+  library: NotiaLibrary,
+): Promise<StoredChatDocument> {
   const result = await readLibraryFileContent(filePath)
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo leer el archivo del chat.')
   }
 
-  return parseChatDocument(result.content, fallbackTitle)
+  return toRuntimeChatDocument(parseChatDocument(result.content, fallbackTitle), library)
 }
 
-export async function saveChatDocument(filePath: string, document: StoredChatDocument): Promise<void> {
-  const result = await writeLibraryFileContent(filePath, serializeChatDocument(document))
+export async function saveChatDocument(
+  filePath: string,
+  document: StoredChatDocument,
+  library: NotiaLibrary,
+): Promise<void> {
+  const result = await writeLibraryFileContent(filePath, serializeChatDocument(toPersistedChatDocument(document, library)))
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo guardar el archivo del chat.')
   }

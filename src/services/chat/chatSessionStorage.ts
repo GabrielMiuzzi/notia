@@ -82,7 +82,7 @@ export async function createChatDraftFile(
     selectedContextMode: 'direct',
     selectedContextFiles: [],
     messages: [],
-  })
+  }, library)
 
   return { filePath }
 }

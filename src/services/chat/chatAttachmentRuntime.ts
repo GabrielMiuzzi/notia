@@ -1,4 +1,5 @@
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
+import { toStoredLibraryPath } from '../libraries/libraryPathMapping'
 import { getPathBaseName, readTextFile } from '../files/filesystemEngine'
 import { readLibraryTree } from '../libraries/libraryRuntime'
 
@@ -80,6 +81,7 @@ export function filterLibraryFileOptions(
 }
 
 export async function loadInlineFileAttachments(
+  library: NotiaLibrary,
   selectedPaths: string[],
   options: ChatLibraryFileOption[] = [],
 ): Promise<ChatInlineFileAttachment[]> {
@@ -90,7 +92,7 @@ export async function loadInlineFileAttachments(
     }
 
     return {
-      path: selectedPath,
+      path: toStoredLibraryPath(library.path, selectedPath),
       name: buildAttachmentDisplayName(selectedPath, options),
       content: result.content,
     } satisfies ChatInlineFileAttachment

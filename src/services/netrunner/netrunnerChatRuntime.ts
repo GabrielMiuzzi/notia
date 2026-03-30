@@ -1,7 +1,9 @@
 import type { StoredChatMessage } from '../chat/chatDocumentStorage'
-import { normalizeNetrunnerSettingsInput, type NetrunnerPreferences } from '../preferences/netrunnerSettingsStorage'
+import type { NetrunnerPreferences } from '../preferences/netrunnerSettingsStorage'
+import { fetchNetrunner } from './netrunnerHttpClient'
 
 interface NetrunnerPersistencePaths {
+  libraryRootPath?: string
   chatFilePath?: string
   longTermMemoryFilePath?: string
 }
@@ -65,8 +67,12 @@ function toLongTermMemories(memories: string[]): NetrunnerLongTermMemoryItem[] {
   return memories.map((memory) => ({ memory }))
 }
 
-async function postJson<TResponse>(baseUrl: string, path: string, body: unknown): Promise<TResponse> {
-  const response = await fetch(`${baseUrl}${path}`, {
+async function postJson<TResponse>(
+  preferences: NetrunnerPreferences,
+  path: string,
+  body: unknown,
+): Promise<TResponse> {
+  const response = await fetchNetrunner(preferences, path, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -90,9 +96,8 @@ export async function requestNetrunnerChatReply(
   longTermMemories: string[],
   attachments?: NetrunnerChatAttachments,
 ): Promise<string> {
-  const normalizedPreferences = normalizeNetrunnerSettingsInput(preferences)
   const response = await postJson<NetrunnerChatResponse>(
-    normalizedPreferences.baseUrl,
+    preferences,
     '/v1/chat-with-files',
     buildChatRequestBody(prompt, chatMemory, longTermMemories, undefined, attachments),
   )
@@ -117,6 +122,7 @@ function buildChatRequestBody(
     max_context_chars: 30000,
     chatMemory: toChatMemory(chatMemory),
     longTermMemories: toLongTermMemories(longTermMemories),
+    libraryRootPath: persistencePaths?.libraryRootPath ?? '',
     chatFilePath: persistencePaths?.chatFilePath ?? '',
     longTermMemoryFilePath: persistencePaths?.longTermMemoryFilePath ?? '',
   }
@@ -198,8 +204,7 @@ export async function streamNetrunnerChatReply(
   attachments?: NetrunnerChatAttachments,
   options: StreamNetrunnerChatReplyOptions = {},
 ): Promise<string> {
-  const normalizedPreferences = normalizeNetrunnerSettingsInput(preferences)
-  const response = await fetch(`${normalizedPreferences.baseUrl}/v1/chat-with-files-stream`, {
+  const response = await fetchNetrunner(preferences, '/v1/chat-with-files-stream', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -280,8 +285,7 @@ export async function requestNetrunnerChatMetadata(
   isFirstMessage: boolean,
   includeLongTermMemory: boolean,
 ): Promise<{ suggestedTitle: string; longTermMemories: string[] }> {
-  const normalizedPreferences = normalizeNetrunnerSettingsInput(preferences)
-  const response = await postJson<NetrunnerChatMetadataResponse>(normalizedPreferences.baseUrl, '/v1/tools-chat-metadata', {
+  const response = await postJson<NetrunnerChatMetadataResponse>(preferences, '/v1/tools-chat-metadata', {
     prompt,
     is_first_message: isFirstMessage,
     include_long_term_memory: includeLongTermMemory,
