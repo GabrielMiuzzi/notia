@@ -17,6 +17,7 @@ import {
   type StoredChatMessage,
 } from '../../../../services/chat/chatDocumentStorage'
 import { streamNetrunnerChatReply } from '../../../../services/netrunner/netrunnerChatRuntime'
+import { checkNetrunnerHealth } from '../../../../services/netrunner/netrunnerRuntime'
 import { resolveLongTermMemoryFilePath } from '../../../../services/chat/chatLibraryStructure'
 import {
   buildAttachmentDisplayName,
@@ -207,6 +208,8 @@ export function ChatWorkspaceView({
   const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false)
   const [attachmentMenuPosition, setAttachmentMenuPosition] = useState<AttachmentMenuPosition | null>(null)
   const [matchedPreferredChatFilePath, setMatchedPreferredChatFilePath] = useState<string | null>(null)
+  const [isCheckingNetrunnerHealth, setIsCheckingNetrunnerHealth] = useState(true)
+  const [netrunnerHealthMessage, setNetrunnerHealthMessage] = useState<string | null>(null)
   const [isLibraryFilesModalOpen, setIsLibraryFilesModalOpen] = useState(false)
   const [selectedLibraryFilePaths, setSelectedLibraryFilePaths] = useState<string[]>([])
   const [selectedLibraryFileOptions, setSelectedLibraryFileOptions] = useState<ChatLibraryFileOption[]>([])
@@ -310,7 +313,32 @@ export function ChatWorkspaceView({
   const transientContextSummaryLabel = hasTransientContext ? transientContextSummary?.trim() || null : null
   const displayedMessages = optimisticThreadMessages ?? activeChatDocument?.messages ?? []
   const hasMessages = displayedMessages.length > 0
-  const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library)
+  const isNetrunnerAvailable = !isCheckingNetrunnerHealth && !netrunnerHealthMessage
+  const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library) && isNetrunnerAvailable
+
+  useEffect(() => {
+    let cancelled = false
+    setIsCheckingNetrunnerHealth(true)
+    setNetrunnerHealthMessage(null)
+
+    void checkNetrunnerHealth(netrunnerPreferences)
+      .then((result) => {
+        if (cancelled) {
+          return
+        }
+
+        setNetrunnerHealthMessage(result.ok ? null : result.message || 'No se pudo conectar con Netrunner.')
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsCheckingNetrunnerHealth(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [netrunnerPreferences])
 
   useEffect(() => {
     if (!selectMatchingChatOnly) {
@@ -811,6 +839,15 @@ export function ChatWorkspaceView({
       return
     }
 
+    const healthResult = await checkNetrunnerHealth(netrunnerPreferences)
+    setIsCheckingNetrunnerHealth(false)
+    if (!healthResult.ok) {
+      setNetrunnerHealthMessage(healthResult.message || 'No se pudo conectar con Netrunner.')
+      return
+    }
+
+    setNetrunnerHealthMessage(null)
+
     let targetChatDocument = activeChatDocument
     let targetChatFilePath = selectedChatFilePath
 
@@ -1136,7 +1173,18 @@ export function ChatWorkspaceView({
             )}
 
             <section className="notia-chat-thread" aria-live="polite">
-              {hasMessages ? (
+              {isCheckingNetrunnerHealth ? (
+                <div className="notia-chat-empty">
+                  <strong>Verificando Netrunner...</strong>
+                  <p>Esperá un momento antes de abrir el chat.</p>
+                </div>
+              ) : netrunnerHealthMessage ? (
+                <div className="notia-chat-empty">
+                  <Bot size={18} />
+                  <strong>Netrunner no está disponible</strong>
+                  <p>{netrunnerHealthMessage}</p>
+                </div>
+              ) : hasMessages ? (
                 <>
                   {displayedMessages.map((message, index) => (
                     <article
@@ -1314,7 +1362,7 @@ export function ChatWorkspaceView({
                   value={draft}
                   rows={1}
                   placeholder={library ? 'Escribi tu mensaje...' : 'Primero elegí una librería activa...'}
-                  disabled={!library}
+                  disabled={!library || !isNetrunnerAvailable}
                   onChange={(event) => {
                     setDraft(event.target.value)
                   }}
@@ -1337,12 +1385,12 @@ export function ChatWorkspaceView({
                       title="Adjuntar contexto"
                       aria-label="Adjuntar contexto"
                       onClick={() => {
-                        if (!library) {
+                        if (!library || !isNetrunnerAvailable) {
                           return
                         }
                         setIsAttachmentMenuOpen((current) => !current)
                       }}
-                      disabled={!library || isSubmitting}
+                      disabled={!library || isSubmitting || !isNetrunnerAvailable}
                     >
                       <Plus size={16} />
                     </NotiaButton>
