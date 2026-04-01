@@ -38,8 +38,11 @@ import {
   saveExplorerRefreshIntervalMs,
 } from '../../services/preferences/explorerPanelStorage'
 import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
-import { loadNetrunnerPreferences, saveNetrunnerPreferences } from '../../services/preferences/netrunnerSettingsStorage'
-import { normalizeNetrunnerDesktopPath } from '../../services/netrunner/netrunnerLibraryPathRuntime'
+import {
+  loadAiPreferences,
+  normalizeAiSettingsInput,
+  saveAiPreferences,
+} from '../../services/preferences/aiSettingsStorage'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import type { ColdPassEntry } from '../../types/coldpass'
@@ -266,7 +269,6 @@ function areLibrariesEquivalent(current: NotiaLibrary[], next: NotiaLibrary[]): 
     return library.id === candidate.id
       && library.path === candidate.path
       && (library.androidTreeUri ?? '') === (candidate.androidTreeUri ?? '')
-      && (library.netrunnerDesktopPath ?? '') === (candidate.netrunnerDesktopPath ?? '')
   })
 }
 
@@ -529,7 +531,7 @@ export function NotiaMenu() {
   const [theme, setTheme] = useState<NotiaTheme>(() => loadThemePreference())
   const [explorerRefreshIntervalMs, setExplorerRefreshIntervalMs] = useState<number>(() => loadExplorerRefreshIntervalMs())
   const [inkdocPreferences, setInkdocPreferences] = useState(() => loadInkdocPreferences())
-  const [netrunnerPreferences, setNetrunnerPreferences] = useState(() => loadNetrunnerPreferences())
+  const [aiPreferences, setAiPreferences] = useState(() => loadAiPreferences())
   const [libraries, setLibraries] = useState<NotiaLibrary[]>(() => loadLibraries())
   const [activeLibraryId, setActiveLibraryId] = useState<string | null>(() =>
     findInitialActiveLibrary(loadLibraries()),
@@ -943,8 +945,20 @@ export function NotiaMenu() {
   }, [inkdocPreferences])
 
   useEffect(() => {
-    saveNetrunnerPreferences(netrunnerPreferences)
-  }, [netrunnerPreferences])
+    const normalizedPreferences = normalizeAiSettingsInput(aiPreferences)
+    if (
+      normalizedPreferences.ollamaUrl === aiPreferences.ollamaUrl
+      && normalizedPreferences.apiKey === aiPreferences.apiKey
+    ) {
+      return
+    }
+
+    setAiPreferences(normalizedPreferences)
+  }, [aiPreferences])
+
+  useEffect(() => {
+    saveAiPreferences(aiPreferences)
+  }, [aiPreferences])
 
   useEffect(() => {
     activeTabPathRef.current = activeTabPath
@@ -2754,18 +2768,6 @@ export function NotiaMenu() {
     setLibraries((current) => [...current, library])
     setActiveLibraryId(library.id)
   }
-  const handleActiveLibraryNetrunnerDesktopPathChange = useCallback((value: string) => {
-    if (!activeLibraryId) {
-      return
-    }
-
-    const normalizedDesktopPath = normalizeNetrunnerDesktopPath(value)
-    setLibraries((current) => current.map((library) => (
-      library.id === activeLibraryId
-        ? { ...library, netrunnerDesktopPath: normalizedDesktopPath }
-        : library
-    )))
-  }, [activeLibraryId])
   const handleLibraryRemoved = useCallback(async (library: NotiaLibrary) => {
     const shouldRemove = await confirm({
       title: 'Quitar libreria',
@@ -2972,7 +2974,7 @@ export function NotiaMenu() {
         ) : activeWorkspaceView === 'chat' ? (
           <ChatWorkspaceView
             library={activeLibrary}
-            netrunnerPreferences={netrunnerPreferences}
+            aiPreferences={aiPreferences}
             previousChats={previousChatFiles}
             onChatCreated={() => refreshActiveLibraryTree()}
             onChatDeleted={() => refreshActiveLibraryTree()}
@@ -3020,10 +3022,10 @@ export function NotiaMenu() {
             <ChatWorkspaceView
               key={rightPanelChatContextKey}
               library={activeLibrary}
-              netrunnerPreferences={netrunnerPreferences}
+              aiPreferences={aiPreferences}
               previousChats={previousChatFiles}
               title="Chat lateral"
-              description="Acceso rapido a Netrunner desde el panel derecho."
+              description="Acceso rapido a la IA desde el panel derecho."
               showHistoryPanel={false}
               composerContextLabel={rightPanelChatContextLabel}
               preferredContextPaths={
@@ -3073,10 +3075,8 @@ export function NotiaMenu() {
         onExplorerRefreshIntervalMsChange={setExplorerRefreshIntervalMs}
         inkdocPreferences={inkdocPreferences}
         onInkdocPreferencesChange={setInkdocPreferences}
-        netrunnerPreferences={netrunnerPreferences}
-        onNetrunnerPreferencesChange={setNetrunnerPreferences}
-        activeLibrary={activeLibrary}
-        onActiveLibraryNetrunnerDesktopPathChange={handleActiveLibraryNetrunnerDesktopPathChange}
+        aiPreferences={aiPreferences}
+        onAiPreferencesChange={setAiPreferences}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

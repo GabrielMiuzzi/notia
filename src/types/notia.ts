@@ -22,5 +22,4 @@ export interface NotiaLibrary {
   name: string
   path: string
   androidTreeUri?: string
-  netrunnerDesktopPath?: string
 }

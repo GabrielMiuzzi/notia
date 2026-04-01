@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Bot, FileImage, Files, Info, PanelLeftClose, PanelLeftOpen, Plus, Settings2, Sparkles, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import type { NotiaLibrary } from '../../../../types/notia'
-import type { NetrunnerPreferences } from '../../../../services/preferences/netrunnerSettingsStorage'
+import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import { CreateChatModal, type CreateChatModalSubmitPayload } from '../../CreateChatModal'
 import { createChatDraftFile, deleteChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
@@ -12,19 +12,19 @@ import { AppDialogModal } from '../../AppDialogModal'
 import {
   clearLongTermMemories,
   loadChatDocument,
+  loadLongTermMemories,
   saveChatDocument,
   type StoredChatDocument,
   type StoredChatMessage,
 } from '../../../../services/chat/chatDocumentStorage'
-import { streamNetrunnerChatReply } from '../../../../services/netrunner/netrunnerChatRuntime'
-import { checkNetrunnerHealth } from '../../../../services/netrunner/netrunnerRuntime'
+import { buildChatMemoryWindow, resolvePersistedChatTitle } from '../../../../services/chat/chatConversationRuntime'
 import {
-  getNetrunnerLibraryConfigurationMessage,
-  resolveNetrunnerLibraryRootPath,
-  resolveNetrunnerPathFromLibraryPath,
-} from '../../../../services/netrunner/netrunnerLibraryPathRuntime'
+  checkAiHealth,
+  streamAiChatReply,
+} from '../../../../services/ai/aiRuntime'
+import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatLongTermMemorySync'
+import { scheduleAiChatTitle } from '../../../../services/chat/chatTitleSync'
 import { toStoredLibraryPath } from '../../../../services/libraries/libraryPathMapping'
-import { resolveLongTermMemoryFilePath } from '../../../../services/chat/chatLibraryStructure'
 import {
   buildAttachmentDisplayName,
   loadInlineFileAttachments,
@@ -36,7 +36,7 @@ import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 
 export interface ChatWorkspaceViewProps {
   library: NotiaLibrary | null
-  netrunnerPreferences: NetrunnerPreferences
+  aiPreferences: AiPreferences
   previousChats?: Array<{
     id: string
     title: string
@@ -65,6 +65,8 @@ const DEFAULT_SUGGESTIONS = [
   'Conecta ideas relacionadas',
   'Dame proximos pasos concretos',
 ]
+const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
+const EMPTY_CONTEXT_PATHS: string[] = []
 
 function normalizeChatTitle(value: string): string {
   const trimmed = value.trim()
@@ -96,6 +98,33 @@ function areStringArraysEqual(left: string[], right: string[]): boolean {
   }
 
   return left.every((value, index) => value === right[index])
+}
+
+function areChatLibraryFileOptionsEqual(left: ChatLibraryFileOption[], right: ChatLibraryFileOption[]): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  return left.every((option, index) => {
+    const candidate = right[index]
+    return Boolean(candidate)
+      && option.path === candidate.path
+      && option.name === candidate.name
+      && option.relativePath === candidate.relativePath
+  })
+}
+
+function areChatTitleOverrideMapsEqual(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const leftEntries = Object.entries(left)
+  const rightEntries = Object.entries(right)
+  if (leftEntries.length !== rightEntries.length) {
+    return false
+  }
+
+  return leftEntries.every(([key, value]) => right[key] === value)
 }
 
 function normalizeComparableContextPath(library: NotiaLibrary | null, pathValue: string): string {
@@ -183,79 +212,6 @@ function doesChatDocumentMatchPreferredContext(
   return false
 }
 
-function doesDocumentContainOptimisticReply(
-  document: StoredChatDocument,
-  previousMessages: StoredChatMessage[],
-  userMessage: StoredChatMessage,
-  streamedAnswer: string,
-): boolean {
-  if (document.messages.length < previousMessages.length + 2) {
-    return false
-  }
-
-  const persistedMessages = document.messages.slice(previousMessages.length)
-  const [persistedUserMessage, persistedAssistantMessage] = persistedMessages
-
-  if (
-    persistedUserMessage?.role !== 'user'
-    || persistedUserMessage.content.trim() !== userMessage.content.trim()
-  ) {
-    return false
-  }
-
-  if (persistedAssistantMessage?.role !== 'assistant') {
-    return false
-  }
-
-  const normalizedAssistantReply = persistedAssistantMessage.content.trim()
-  if (!normalizedAssistantReply) {
-    return false
-  }
-
-  if (!streamedAnswer.trim()) {
-    return true
-  }
-
-  return normalizedAssistantReply === streamedAnswer.trim()
-}
-
-async function waitForPersistedChatReply(
-  filePath: string,
-  fallbackTitle: string,
-  library: NotiaLibrary,
-  previousMessages: StoredChatMessage[],
-  userMessage: StoredChatMessage,
-  streamedAnswer: string,
-): Promise<StoredChatDocument> {
-  const deadline = Date.now() + 30_000
-  let lastLoadedDocument: StoredChatDocument | null = null
-  let lastError: unknown = null
-
-  while (Date.now() <= deadline) {
-    try {
-      const document = await loadChatDocument(filePath, fallbackTitle, library)
-      lastLoadedDocument = document
-      if (doesDocumentContainOptimisticReply(document, previousMessages, userMessage, streamedAnswer)) {
-        return document
-      }
-    } catch (error) {
-      lastError = error
-    }
-
-    await new Promise((resolve) => window.setTimeout(resolve, 600))
-  }
-
-  if (lastLoadedDocument) {
-    return lastLoadedDocument
-  }
-
-  if (lastError instanceof Error && lastError.message.trim()) {
-    throw lastError
-  }
-
-  throw new Error('Netrunner todavia no persistio la respuesta del chat.')
-}
-
 function readImageFileAsAttachment(file: File): Promise<SelectedImageAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -283,18 +239,18 @@ function readImageFileAsAttachment(file: File): Promise<SelectedImageAttachment>
 
 export function ChatWorkspaceView({
   library,
-  netrunnerPreferences,
-  previousChats = [],
+  aiPreferences,
+  previousChats = EMPTY_PREVIOUS_CHATS,
   title = 'Notia Chat',
   description = 'Una vista de chat reutilizable para futuras integraciones.',
   suggestions = DEFAULT_SUGGESTIONS,
   showHistoryPanel = true,
   composerContextLabel,
-  preferredContextPaths = [],
+  preferredContextPaths = EMPTY_CONTEXT_PATHS,
   preferredContextName = null,
   preferredContextMode = null,
   preferredContextScopeKey = null,
-  transientContextPaths = [],
+  transientContextPaths = EMPTY_CONTEXT_PATHS,
   transientContextMode = null,
   transientContextSummary = null,
   persistTransientContext = false,
@@ -323,8 +279,8 @@ export function ChatWorkspaceView({
   const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false)
   const [attachmentMenuPosition, setAttachmentMenuPosition] = useState<AttachmentMenuPosition | null>(null)
   const [matchedPreferredChatFilePath, setMatchedPreferredChatFilePath] = useState<string | null>(null)
-  const [isCheckingNetrunnerHealth, setIsCheckingNetrunnerHealth] = useState(true)
-  const [netrunnerHealthMessage, setNetrunnerHealthMessage] = useState<string | null>(null)
+  const [isCheckingAiHealth, setIsCheckingAiHealth] = useState(true)
+  const [aiHealthMessage, setAiHealthMessage] = useState<string | null>(null)
   const [isLibraryFilesModalOpen, setIsLibraryFilesModalOpen] = useState(false)
   const [selectedLibraryFilePaths, setSelectedLibraryFilePaths] = useState<string[]>([])
   const [selectedLibraryFileOptions, setSelectedLibraryFileOptions] = useState<ChatLibraryFileOption[]>([])
@@ -375,13 +331,21 @@ export function ChatWorkspaceView({
     () => selectedLibraryFileOptions.filter((option) => selectedLibraryFilePaths.includes(option.path)),
     [selectedLibraryFileOptions, selectedLibraryFilePaths],
   )
-  const resolvedPreferredContextPaths = useMemo(
-    () => preferredContextPaths.map((pathValue) => pathValue.trim()).filter(Boolean),
+  const preferredContextPathsSignature = useMemo(
+    () => preferredContextPaths.map((pathValue) => pathValue.trim()).filter(Boolean).join('\n'),
     [preferredContextPaths],
   )
-  const resolvedTransientContextPaths = useMemo(
-    () => transientContextPaths.map((pathValue) => pathValue.trim()).filter(Boolean),
+  const transientContextPathsSignature = useMemo(
+    () => transientContextPaths.map((pathValue) => pathValue.trim()).filter(Boolean).join('\n'),
     [transientContextPaths],
+  )
+  const resolvedPreferredContextPaths = useMemo(
+    () => preferredContextPathsSignature ? preferredContextPathsSignature.split('\n') : EMPTY_CONTEXT_PATHS,
+    [preferredContextPathsSignature],
+  )
+  const resolvedTransientContextPaths = useMemo(
+    () => transientContextPathsSignature ? transientContextPathsSignature.split('\n') : EMPTY_CONTEXT_PATHS,
+    [transientContextPathsSignature],
   )
   const hasTransientContext = transientContextMode !== null && resolvedTransientContextPaths.length > 0
   const preferredContextSignature = useMemo(
@@ -424,45 +388,39 @@ export function ChatWorkspaceView({
     return normalizeChatTitle(matchingChat?.title ?? 'Chat')
   }, [availablePreviousChats, selectedChatFilePath])
   const effectiveSelectedContextPaths = hasTransientContext ? resolvedTransientContextPaths : selectedLibraryFilePaths
-  const effectiveSelectedContextMode = hasTransientContext ? transientContextMode : selectedFileContextMode
+  const effectiveSelectedContextMode: ChatFileContextMode = hasTransientContext
+    ? transientContextMode ?? 'direct'
+    : selectedFileContextMode
   const transientContextSummaryLabel = hasTransientContext ? transientContextSummary?.trim() || null : null
   const displayedMessages = optimisticThreadMessages ?? activeChatDocument?.messages ?? []
   const hasMessages = displayedMessages.length > 0
-  const netrunnerLibraryRootPath = useMemo(
-    () => resolveNetrunnerLibraryRootPath(library),
-    [library],
-  )
-  const netrunnerConfigurationMessage = useMemo(
-    () => getNetrunnerLibraryConfigurationMessage(library),
-    [library],
-  )
-  const netrunnerAvailabilityMessage = netrunnerConfigurationMessage ?? netrunnerHealthMessage
-  const isNetrunnerAvailable = !isCheckingNetrunnerHealth && !netrunnerAvailabilityMessage
-  const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library) && isNetrunnerAvailable
+  const aiAvailabilityMessage = aiHealthMessage
+  const isAiAvailable = !isCheckingAiHealth && !aiAvailabilityMessage
+  const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library) && isAiAvailable
 
   useEffect(() => {
     let cancelled = false
-    setIsCheckingNetrunnerHealth(true)
-    setNetrunnerHealthMessage(null)
+    setIsCheckingAiHealth(true)
+    setAiHealthMessage(null)
 
-    void checkNetrunnerHealth(netrunnerPreferences)
+    void checkAiHealth(aiPreferences)
       .then((result) => {
         if (cancelled) {
           return
         }
 
-        setNetrunnerHealthMessage(result.ok ? null : result.message || 'No se pudo conectar con Netrunner.')
+        setAiHealthMessage(result.ok ? null : result.message || 'No se pudo conectar con la IA.')
       })
       .finally(() => {
         if (!cancelled) {
-          setIsCheckingNetrunnerHealth(false)
+          setIsCheckingAiHealth(false)
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [netrunnerPreferences])
+  }, [aiPreferences])
 
   useEffect(() => {
     if (!selectMatchingChatOnly) {
@@ -553,7 +511,7 @@ export function ChatWorkspaceView({
 
   useEffect(() => {
     if (availablePreviousChats.length === 0) {
-      setChatTitleOverrides({})
+      setChatTitleOverrides((current) => (Object.keys(current).length === 0 ? current : {}))
       return
     }
 
@@ -574,7 +532,12 @@ export function ChatWorkspaceView({
         return
       }
 
-      setChatTitleOverrides(Object.fromEntries(entries))
+      const nextOverrides = Object.fromEntries(entries)
+      setChatTitleOverrides((current) => (
+        areChatTitleOverrideMapsEqual(current, nextOverrides)
+          ? current
+          : nextOverrides
+      ))
     })
 
     return () => {
@@ -692,7 +655,7 @@ export function ChatWorkspaceView({
 
       const nextOptions = current.filter((option) => option.path !== preferredContextOption.path)
       nextOptions.unshift(preferredContextOption)
-      return nextOptions
+      return areChatLibraryFileOptionsEqual(current, nextOptions) ? current : nextOptions
     })
   }, [preferredContextMode, preferredContextOption, resolvedPreferredContextPaths])
 
@@ -745,9 +708,19 @@ export function ChatWorkspaceView({
       setOptimisticThreadMessages(null)
       setStreamingThinking('')
       setStreamingAssistantMessage('')
-      setSelectedLibraryFilePaths(resolvedPreferredContextPaths)
-      setSelectedLibraryFileOptions(preferredContextOption ? [preferredContextOption] : [])
-      setSelectedFileContextMode(preferredContextMode ?? 'direct')
+      setSelectedLibraryFilePaths((current) => (
+        areStringArraysEqual(current, resolvedPreferredContextPaths)
+          ? current
+          : resolvedPreferredContextPaths
+      ))
+      setSelectedLibraryFileOptions((current) => {
+        const nextOptions = preferredContextOption ? [preferredContextOption] : []
+        return areChatLibraryFileOptionsEqual(current, nextOptions) ? current : nextOptions
+      })
+      setSelectedFileContextMode((current) => {
+        const nextMode = preferredContextMode ?? 'direct'
+        return current === nextMode ? current : nextMode
+      })
       return
     }
 
@@ -811,7 +784,11 @@ export function ChatWorkspaceView({
       return
     }
 
-    setSelectedLibraryFilePaths(activeChatDocument.selectedContextFiles)
+    setSelectedLibraryFilePaths((current) => (
+      areStringArraysEqual(current, activeChatDocument.selectedContextFiles)
+        ? current
+        : activeChatDocument.selectedContextFiles
+    ))
     setSelectedLibraryFileOptions((current) => {
       if (
         preferredContextOption
@@ -823,13 +800,17 @@ export function ChatWorkspaceView({
       ) {
         const nextOptions = current.filter((option) => option.path !== preferredContextOption.path)
         nextOptions.unshift(preferredContextOption)
-        return nextOptions
+        return areChatLibraryFileOptionsEqual(current, nextOptions) ? current : nextOptions
       }
 
-      return []
+      return current.length === 0 ? current : []
     })
-    setSelectedFileContextMode(activeChatDocument.selectedContextMode)
-  }, [activeChatDocument, preferredContextMode, preferredContextOption])
+    setSelectedFileContextMode((current) => (
+      current === activeChatDocument.selectedContextMode
+        ? current
+        : activeChatDocument.selectedContextMode
+    ))
+  }, [activeChatDocument, library, preferredContextMode, preferredContextOption])
 
   useEffect(() => {
     if (
@@ -986,22 +967,14 @@ export function ChatWorkspaceView({
       return
     }
 
-    const healthResult = await checkNetrunnerHealth(netrunnerPreferences)
-    setIsCheckingNetrunnerHealth(false)
+    const healthResult = await checkAiHealth(aiPreferences)
+    setIsCheckingAiHealth(false)
     if (!healthResult.ok) {
-      setNetrunnerHealthMessage(healthResult.message || 'No se pudo conectar con Netrunner.')
+      setAiHealthMessage(healthResult.message || 'No se pudo conectar con la IA.')
       return
     }
 
-    if (!netrunnerLibraryRootPath) {
-      setDialogMessage(
-        netrunnerConfigurationMessage
-          ?? 'Falta configurar la ruta desktop de esta librería para Netrunner.',
-      )
-      return
-    }
-
-    setNetrunnerHealthMessage(null)
+    setAiHealthMessage(null)
 
     let targetChatDocument = activeChatDocument
     let targetChatFilePath = selectedChatFilePath
@@ -1064,6 +1037,7 @@ export function ChatWorkspaceView({
       content: trimmedMessage,
     }
     let inlineFileAttachments = [] as Awaited<ReturnType<typeof loadInlineFileAttachments>>
+    let longTermMemories: string[] = []
     const previousImageAttachment = selectedImageAttachment
     const previousLibraryFilePaths = selectedLibraryFilePaths
     const previousLibraryFileOptions = selectedLibraryFileOptions
@@ -1080,29 +1054,24 @@ export function ChatWorkspaceView({
       return
     }
 
-    const netrunnerChatFilePath = resolveNetrunnerPathFromLibraryPath(library, targetChatFilePath)
-    const netrunnerLongTermMemoryFilePath = resolveNetrunnerPathFromLibraryPath(
-      library,
-      resolveLongTermMemoryFilePath(library.path),
-    )
-
-    if (!netrunnerChatFilePath || !netrunnerLongTermMemoryFilePath) {
-      setDialogMessage('No se pudo resolver la ruta desktop de la librería para Netrunner.')
-      return
+    if (targetChatDocument.longTermMemoryEnabled) {
+      try {
+        longTermMemories = await loadLongTermMemories(library)
+      } catch (error) {
+        setDialogMessage(
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : 'No se pudo leer LongTermMemory.md.',
+        )
+        return
+      }
     }
 
     const previousMessages = targetChatDocument.messages
+    const chatMemory = buildChatMemoryWindow(targetChatDocument)
     const optimisticMessages = [...previousMessages, userMessage]
     const previousDraft = draft
-
-    setDraft('')
-    setIsSubmitting(true)
-    setOptimisticThreadMessages(optimisticMessages)
-    setIsAttachmentMenuOpen(false)
-    setStreamingThinking('')
-    setStreamingAssistantMessage('')
-    setSelectedImageAttachment(null)
-    setActiveChatDocument({
+    const nextChatDocumentBase: StoredChatDocument = {
       ...targetChatDocument,
       contextScopeKey: preferredContextScopeKey ?? targetChatDocument.contextScopeKey,
       selectedContextFiles: hasTransientContext && !persistTransientContext
@@ -1112,43 +1081,91 @@ export function ChatWorkspaceView({
         ? targetChatDocument.selectedContextMode
         : effectiveSelectedContextMode,
       messages: optimisticMessages,
-    })
+    }
+
+    setDraft('')
+    setIsSubmitting(true)
+    setOptimisticThreadMessages(optimisticMessages)
+    setIsAttachmentMenuOpen(false)
+    setStreamingThinking('')
+    setStreamingAssistantMessage('')
+    setSelectedImageAttachment(null)
+    setActiveChatDocument(nextChatDocumentBase)
 
     try {
-      const streamedAnswer = await streamNetrunnerChatReply(
-        netrunnerPreferences,
-        trimmedMessage,
-        [],
-        [],
+      const streamedAnswer = await streamAiChatReply(
+        aiPreferences,
         {
-          libraryRootPath: netrunnerLibraryRootPath,
-          chatFilePath: netrunnerChatFilePath,
-          longTermMemoryFilePath: netrunnerLongTermMemoryFilePath,
-        },
-        {
+          prompt: trimmedMessage,
+          previousMessages: chatMemory,
+          longTermMemories,
           files: inlineFileAttachments,
-          useLlamaIndex: effectiveSelectedContextMode === 'index',
           image: selectedImageAttachment,
-          persistSelectedContext: !hasTransientContext || persistTransientContext,
+          selectedContextMode: effectiveSelectedContextMode,
         },
         {
-          onThinkingDelta: (delta) => {
-            setStreamingThinking((current) => current + delta)
-          },
           onMessageDelta: (delta) => {
             setStreamingAssistantMessage((current) => current + delta)
           },
         },
       )
 
-      const persistedDocument = await waitForPersistedChatReply(
-        targetChatFilePath,
+      const resolvedTitle = resolvePersistedChatTitle(
         targetChatDocument.title || 'Chat',
-        library,
         previousMessages,
-        userMessage,
-        streamedAnswer,
+        trimmedMessage,
       )
+
+      const persistedDocument: StoredChatDocument = {
+        ...nextChatDocumentBase,
+        title: resolvedTitle,
+        messages: [...optimisticMessages, {
+          role: 'assistant',
+          content: streamedAnswer,
+        }],
+      }
+      await saveChatDocument(targetChatFilePath, persistedDocument, library)
+
+      if (previousMessages.length === 0) {
+        scheduleAiChatTitle(
+          {
+            library,
+            aiPreferences,
+            filePath: targetChatFilePath,
+            document: persistedDocument,
+            prompt: trimmedMessage,
+          },
+          {
+            onPersisted: (title) => {
+              setActiveChatDocument((current) => (
+                current?.messages === persistedDocument.messages
+                  ? { ...current, title }
+                  : current
+              ))
+              setChatTitleOverrides((current) => (
+                current[targetChatFilePath] === title
+                  ? current
+                  : {
+                    ...current,
+                    [targetChatFilePath]: normalizeChatTitle(title),
+                  }
+              ))
+            },
+          },
+        )
+      }
+
+      if (persistedDocument.longTermMemoryEnabled) {
+        scheduleLongTermMemoriesForTurn({
+          library,
+          aiPreferences,
+          prompt: trimmedMessage,
+          assistantReply: streamedAnswer,
+          previousMessages,
+          existingLongTermMemories: longTermMemories,
+        })
+      }
+
       setActiveChatDocument(persistedDocument)
       setOptimisticThreadMessages(null)
       if (pendingAutoCreatedChatFilePath === targetChatFilePath) {
@@ -1161,31 +1178,6 @@ export function ChatWorkspaceView({
         [targetChatFilePath]: normalizeChatTitle(persistedDocument.title),
       }))
     } catch (error) {
-      try {
-        const recoveredDocument = await waitForPersistedChatReply(
-          targetChatFilePath,
-          targetChatDocument.title || 'Chat',
-          library,
-          previousMessages,
-          userMessage,
-          '',
-        )
-        setActiveChatDocument(recoveredDocument)
-        setOptimisticThreadMessages(null)
-        if (pendingAutoCreatedChatFilePath === targetChatFilePath) {
-          setPendingAutoCreatedChatFilePath(null)
-        }
-        setStreamingThinking('')
-        setStreamingAssistantMessage('')
-        setChatTitleOverrides((current) => ({
-          ...current,
-          [targetChatFilePath]: normalizeChatTitle(recoveredDocument.title),
-        }))
-        return
-      } catch {
-        // Fall back to the original rollback path when the file never gets persisted.
-      }
-
       if (pendingAutoCreatedChatFilePath === targetChatFilePath) {
         setPendingAutoCreatedChatFilePath(null)
       }
@@ -1201,7 +1193,7 @@ export function ChatWorkspaceView({
       setDialogMessage(
         error instanceof Error && error.message.trim()
           ? error.message
-          : 'No se pudo completar la consulta con Netrunner.',
+          : 'No se pudo completar la consulta con la IA.',
       )
     } finally {
       setIsSubmitting(false)
@@ -1369,16 +1361,16 @@ export function ChatWorkspaceView({
             )}
 
             <section className="notia-chat-thread" aria-live="polite">
-              {isCheckingNetrunnerHealth ? (
+              {isCheckingAiHealth ? (
                 <div className="notia-chat-empty">
-                  <strong>Verificando Netrunner...</strong>
+                  <strong>Verificando IA...</strong>
                   <p>Esperá un momento antes de abrir el chat.</p>
                 </div>
-              ) : netrunnerAvailabilityMessage ? (
+              ) : aiAvailabilityMessage ? (
                 <div className="notia-chat-empty">
                   <Bot size={18} />
-                  <strong>Netrunner no está disponible</strong>
-                  <p>{netrunnerAvailabilityMessage}</p>
+                  <strong>La IA no está disponible</strong>
+                  <p>{aiAvailabilityMessage}</p>
                 </div>
               ) : hasMessages ? (
                 <>
@@ -1441,7 +1433,7 @@ export function ChatWorkspaceView({
                   <strong>{selectedChatFilePath ? 'Empeza una conversacion' : 'Selecciona o crea un chat'}</strong>
                   <p>
                     {selectedChatFilePath
-                      ? 'Usa una sugerencia o escribi abajo para iniciar el chat con Netrunner.'
+                      ? 'Usa una sugerencia o escribi abajo para iniciar el chat con la IA.'
                       : showHistoryPanel
                         ? 'Escribí abajo para crear un chat automático o elegí uno existente para continuar.'
                         : 'Escribí abajo y el panel lateral crea un chat automático con la configuración rápida.'}
@@ -1558,7 +1550,7 @@ export function ChatWorkspaceView({
                   value={draft}
                   rows={1}
                   placeholder={library ? 'Escribi tu mensaje...' : 'Primero elegí una librería activa...'}
-                  disabled={!library || !isNetrunnerAvailable}
+                  disabled={!library || !isAiAvailable}
                   onChange={(event) => {
                     setDraft(event.target.value)
                   }}
@@ -1581,12 +1573,12 @@ export function ChatWorkspaceView({
                       title="Adjuntar contexto"
                       aria-label="Adjuntar contexto"
                       onClick={() => {
-                        if (!library || !isNetrunnerAvailable) {
+                        if (!library || !isAiAvailable) {
                           return
                         }
                         setIsAttachmentMenuOpen((current) => !current)
                       }}
-                      disabled={!library || isSubmitting || !isNetrunnerAvailable}
+                      disabled={!library || isSubmitting || !isAiAvailable}
                     >
                       <Plus size={16} />
                     </NotiaButton>
@@ -1674,7 +1666,7 @@ export function ChatWorkspaceView({
         <AppDialogModal
           open={isChatToolsModalOpen}
           title="Memoria del chat"
-          message="Administrá la memoria persistente compartida entre chats. Si borrás LongTermMemory, se vacía el archivo y Netrunner deja de usar esas memorias hasta que se vuelvan a generar."
+          message="Administrá la memoria persistente compartida entre chats. Si borrás LongTermMemory, se vacía el archivo y la IA deja de usar esas memorias hasta que vuelvas a completarlo."
           confirmLabel={isClearingLongTermMemory ? 'Borrando...' : 'Borrar LongTermMemory'}
           cancelLabel="Cerrar"
           onConfirm={() => {

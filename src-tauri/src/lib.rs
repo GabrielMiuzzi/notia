@@ -6,13 +6,16 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 mod commands {
+    pub mod ai;
     pub mod bluetooth;
 }
 mod dto {
     pub mod bluetooth;
 }
+mod mobile_ai_bridge;
 mod mobile_directory_picker;
 mod services {
+    pub mod ai_service;
     pub mod bluetooth_service;
 }
 mod state {
@@ -1262,6 +1265,10 @@ pub fn run() {
             write_binary_file,
             create_library_entry,
             library_entry_operation,
+            commands::ai::check_desktop_ai_health,
+            commands::ai::run_desktop_ai_chat,
+            mobile_ai_bridge::check_android_ai_health,
+            mobile_ai_bridge::run_android_ai_chat,
             mobile_directory_picker::pick_android_directory_tree,
             mobile_directory_picker::read_android_library_tree,
             commands::bluetooth::coldpass_bluetooth_status,
@@ -1274,6 +1281,7 @@ pub fn run() {
             start_window_dragging,
             start_window_dragging_with_restore,
         ])
+        .plugin(mobile_ai_bridge::init())
         .plugin(mobile_directory_picker::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

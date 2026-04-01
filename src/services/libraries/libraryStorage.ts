@@ -1,5 +1,4 @@
 import type { NotiaLibrary } from '../../types/notia'
-import { normalizeNetrunnerDesktopPath } from '../netrunner/netrunnerLibraryPathRuntime'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 
 const LIBRARIES_STORAGE_KEY = 'notia:libraries'
@@ -15,8 +14,7 @@ function isValidLibrary(value: unknown): value is NotiaLibrary {
     typeof candidate.id === 'string' &&
     typeof candidate.name === 'string' &&
     typeof candidate.path === 'string' &&
-    (typeof candidate.androidTreeUri === 'undefined' || typeof candidate.androidTreeUri === 'string') &&
-    (typeof candidate.netrunnerDesktopPath === 'undefined' || typeof candidate.netrunnerDesktopPath === 'string')
+    (typeof candidate.androidTreeUri === 'undefined' || typeof candidate.androidTreeUri === 'string')
   )
 }
 
@@ -37,7 +35,6 @@ export function loadLibraries(): NotiaLibrary[] {
       androidTreeUri: typeof library.androidTreeUri === 'string' && library.androidTreeUri.trim()
         ? library.androidTreeUri
         : undefined,
-      netrunnerDesktopPath: normalizeNetrunnerDesktopPath(library.netrunnerDesktopPath),
     }))
   } catch {
     return []
