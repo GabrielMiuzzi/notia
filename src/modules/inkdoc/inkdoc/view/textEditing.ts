@@ -59,6 +59,8 @@ export type TextEditingAccessors = {
 	getActiveLatexEdit: () => ActiveBlockEdit | null;
 	setActiveLatexEdit: (value: ActiveBlockEdit | null) => void;
 	isTextToolbarInteraction: () => boolean;
+	getSavedTextSelection: () => Range | null;
+	setSavedTextSelection: (value: Range | null) => void;
 };
 
 const escapeHtml = (value: string): string => {
@@ -100,6 +102,49 @@ const getCurrentParagraphElement = (editor: HTMLDivElement): HTMLElement | null 
 		return null;
 	}
 	return element.closest("p, div, h1, h2, h3, h4, h5, h6, blockquote, pre, li");
+};
+
+const captureEditorSelection = (editor: HTMLDivElement): Range | null => {
+	const selection = window.getSelection();
+	if (!selection || selection.rangeCount === 0) {
+		return null;
+	}
+	const range = selection.getRangeAt(0);
+	if (!editor.contains(range.commonAncestorContainer)) {
+		return null;
+	}
+	return range.cloneRange();
+};
+
+const restoreEditorSelection = (editor: HTMLDivElement, range: Range | null): boolean => {
+	if (!range) {
+		return false;
+	}
+	if (!editor.contains(range.commonAncestorContainer)) {
+		return false;
+	}
+	const selection = window.getSelection();
+	if (!selection) {
+		return false;
+	}
+	try {
+		selection.removeAllRanges();
+		selection.addRange(range.cloneRange());
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const focusEditorWithSavedSelection = (
+	editor: HTMLDivElement,
+	accessors: TextEditingAccessors
+): void => {
+	editor.focus();
+	const restored = restoreEditorSelection(editor, accessors.getSavedTextSelection());
+	if (!restored) {
+		moveCaretToEnd(editor);
+	}
 };
 
 const resolvePageByEdit = (
@@ -397,9 +442,10 @@ export const applyEditorCommand = (
 	if (!editor) {
 		return;
 	}
-	editor.focus();
+	focusEditorWithSavedSelection(editor, accessors);
 	document.execCommand("styleWithCSS", false, "true");
 	document.execCommand(command, false, value);
+	accessors.setSavedTextSelection(captureEditorSelection(editor));
 	syncActiveTextBlockFromEditor(context, accessors, false);
 };
 
@@ -412,7 +458,9 @@ const applyBlockStyleFromString = (
 	if (!editor) {
 		return;
 	}
+	focusEditorWithSavedSelection(editor, accessors);
 	editor.style.cssText = `${editor.style.cssText}; ${style}`;
+	accessors.setSavedTextSelection(captureEditorSelection(editor));
 	syncActiveTextBlockFromEditor(context, accessors, false);
 };
 
@@ -425,7 +473,7 @@ export const applySelectionStyle = (
 	if (!editor) {
 		return;
 	}
-	editor.focus();
+	focusEditorWithSavedSelection(editor, accessors);
 	const selection = window.getSelection();
 	if (!selection || selection.rangeCount === 0) {
 		applyBlockStyleFromString(context, accessors, style);
@@ -444,6 +492,7 @@ export const applySelectionStyle = (
 		const html = escapeHtml(range.toString());
 		document.execCommand("insertHTML", false, `<span style="${style}">${html}</span>`);
 	}
+	accessors.setSavedTextSelection(captureEditorSelection(editor));
 	syncActiveTextBlockFromEditor(context, accessors, false);
 };
 
@@ -464,7 +513,9 @@ export const applyBlockStyle = (
 	if (!editor) {
 		return;
 	}
+	focusEditorWithSavedSelection(editor, accessors);
 	Object.assign(editor.style, styles);
+	accessors.setSavedTextSelection(captureEditorSelection(editor));
 	syncActiveTextBlockFromEditor(context, accessors, false);
 };
 
@@ -477,8 +528,10 @@ export const applyParagraphStyle = (
 	if (!editor) {
 		return;
 	}
+	focusEditorWithSavedSelection(editor, accessors);
 	const paragraph = getCurrentParagraphElement(editor) ?? editor;
 	Object.assign(paragraph.style, styles);
+	accessors.setSavedTextSelection(captureEditorSelection(editor));
 	syncActiveTextBlockFromEditor(context, accessors, false);
 };
 
@@ -495,6 +548,7 @@ export const closeTextEditor = (
 	const page = resolvePageByEdit(context.docData, active);
 	accessors.setTextEditor(null);
 	accessors.setActiveTextEdit(null);
+	accessors.setSavedTextSelection(null);
 	if (commit) {
 		commitTextEditor(context, editor, active);
 	} else if (page) {
@@ -556,6 +610,7 @@ export const openTextEditor = (
 		blockId: block.id,
 		decorationRegion: options?.decorationRegion
 	});
+	accessors.setSavedTextSelection(null);
 	refreshTextLayer(context, page.id, page);
 	positionTextEditor(context, state.canvas, block, editor);
 	autoResizeTextEditor(editor);
@@ -644,6 +699,7 @@ export const openTextEditor = (
 	editor.addEventListener("input", () => {
 		context.noteUserActivity();
 		autoResizeTextEditor(editor);
+		accessors.setSavedTextSelection(captureEditorSelection(editor));
 		syncActiveTextBlockFromEditor(context, accessors, false);
 		context.saveDebounced();
 		refreshWikiLinkMenu();
@@ -656,10 +712,19 @@ export const openTextEditor = (
 	});
 	editor.addEventListener("click", (event) => {
 		event.stopPropagation();
-		window.setTimeout(refreshWikiLinkMenu, 0);
+		window.setTimeout(() => {
+			accessors.setSavedTextSelection(captureEditorSelection(editor));
+			refreshWikiLinkMenu();
+		}, 0);
 	});
 	editor.addEventListener("dblclick", (event) => {
 		event.stopPropagation();
+	});
+	editor.addEventListener("keyup", () => {
+		accessors.setSavedTextSelection(captureEditorSelection(editor));
+	});
+	editor.addEventListener("mouseup", () => {
+		window.setTimeout(() => accessors.setSavedTextSelection(captureEditorSelection(editor)), 0);
 	});
 	editor.addEventListener("keydown", (event) => {
 		context.noteUserActivity();
@@ -715,7 +780,7 @@ export const openTextEditor = (
 		closeWikiLinkSuggestionMenu(wikiLinkMenuEl);
 		wikiLinkMenuEl = null;
 		if (accessors.isTextToolbarInteraction()) {
-			window.setTimeout(() => editor.focus(), 0);
+			accessors.setSavedTextSelection(captureEditorSelection(editor));
 			return;
 		}
 		closeTextEditor(context, accessors, true);
@@ -726,6 +791,7 @@ export const openTextEditor = (
 		}
 		editor.focus();
 		moveCaretToEnd(editor);
+		accessors.setSavedTextSelection(captureEditorSelection(editor));
 		refreshWikiLinkMenu();
 	}, 0);
 	context.updateTextToolbarVisibility();

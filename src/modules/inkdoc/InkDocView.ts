@@ -189,6 +189,7 @@ export class InkDocView extends ItemView {
 	private latexSubmenuEngine: InkDocSubmenuEngine | null = null;
 	private activeLatexSubmenu: InkDocLatexSubmenu | null = null;
 	private isTextToolbarInteraction = false;
+	private savedTextSelectionRange: Range | null = null;
 	private latexColor = INKDOC_DEFAULT_LATEX_COLOR;
 	private textLayerByPage = new Map<string, HTMLDivElement>();
 	private textLayerDirty = new Set<string>();
@@ -994,6 +995,7 @@ export class InkDocView extends ItemView {
 	private buildTextMenu(root: HTMLDivElement): void {
 		const menu = root.createDiv({ cls: "inkdoc-pencil-floating inkdoc-text-floating" });
 		menu.setAttr("aria-hidden", "true");
+		menu.addEventListener("pointerdown", () => this.markTextToolbarInteraction());
 		menu.addEventListener("mousedown", () => this.markTextToolbarInteraction());
 		this.textMenuEl = menu;
 		this.textSubmenuEngine?.dispose();
@@ -1302,6 +1304,7 @@ export class InkDocView extends ItemView {
 	private buildLatexMenu(root: HTMLDivElement): void {
 		const menu = root.createDiv({ cls: "inkdoc-pencil-floating inkdoc-latex-floating" });
 		menu.setAttr("aria-hidden", "true");
+		menu.addEventListener("pointerdown", () => this.markTextToolbarInteraction());
 		menu.addEventListener("mousedown", () => this.markTextToolbarInteraction());
 		this.latexMenuEl = menu;
 		this.latexSubmenuEngine?.dispose();
@@ -4345,7 +4348,11 @@ export class InkDocView extends ItemView {
 			setActiveLatexEdit: (value) => {
 				this.activeLatexEdit = value;
 			},
-			isTextToolbarInteraction: () => this.isTextToolbarInteraction
+			isTextToolbarInteraction: () => this.isTextToolbarInteraction,
+			getSavedTextSelection: () => this.savedTextSelectionRange,
+			setSavedTextSelection: (value) => {
+				this.savedTextSelectionRange = value;
+			}
 		};
 	}
 
