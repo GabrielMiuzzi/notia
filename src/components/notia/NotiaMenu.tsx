@@ -949,6 +949,7 @@ export function NotiaMenu() {
     if (
       normalizedPreferences.ollamaUrl === aiPreferences.ollamaUrl
       && normalizedPreferences.apiKey === aiPreferences.apiKey
+      && normalizedPreferences.selectedModel === aiPreferences.selectedModel
     ) {
       return
     }

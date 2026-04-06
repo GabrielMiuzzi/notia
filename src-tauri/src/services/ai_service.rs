@@ -33,6 +33,12 @@ pub struct AiChatResult {
     pub answer: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelListResult {
+    pub models: Vec<String>,
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use reqwest::{Client, Url};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -55,6 +61,13 @@ struct OllamaTagsResponse {
 struct OllamaModelDescriptor {
     name: Option<String>,
     model: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -153,6 +166,41 @@ fn pick_default_model(payload: &OllamaTagsResponse) -> Option<String> {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn extract_model_name(model: &OllamaModelDescriptor) -> Option<String> {
+    model
+        .name
+        .as_deref()
+        .or(model.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_likely_multimodal_model_name(model: &str) -> bool {
+    let normalized = model.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    [
+        "vision",
+        "vl",
+        "llava",
+        "bakllava",
+        "moondream",
+        "minicpm-v",
+        "gemma3",
+        "gemma4",
+        "gemini",
+        "glm-ocr",
+        "qwen3.5",
+    ]
+    .iter()
+    .any(|token| normalized.contains(token))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn read_error_detail(response: reqwest::Response) -> String {
     let status = response.status();
     let detail = response
@@ -196,6 +244,97 @@ pub async fn check_ollama_health(settings: &AiHttpSettings) -> Result<AiHealthRe
             message: "Ollama respondio, pero no devolvio modelos disponibles.".to_string(),
             default_model: None,
         }
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn list_ollama_multimodal_models(
+    settings: &AiHttpSettings,
+) -> Result<AiModelListResult, String> {
+    let client = build_client(HEALTH_TIMEOUT_SECS)?;
+    let tags_endpoint = build_endpoint(&settings.ollama_url, "/api/tags")?;
+    let response = with_auth(
+        client
+            .get(tags_endpoint)
+            .header(reqwest::header::ACCEPT, "application/json"),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| describe_request_error(error, "No se pudo conectar con la IA."))?;
+
+    if !response.status().is_success() {
+        return Err(read_error_detail(response).await);
+    }
+
+    let payload = response
+        .json::<OllamaTagsResponse>()
+        .await
+        .map_err(|error| describe_request_error(error, "La respuesta de IA no se pudo interpretar."))?;
+
+    let available_models: Vec<String> = payload
+        .models
+        .iter()
+        .filter_map(extract_model_name)
+        .collect();
+
+    let likely_models: Vec<String> = available_models
+        .iter()
+        .filter(|model| is_likely_multimodal_model_name(model))
+        .cloned()
+        .collect();
+
+    let models_to_verify = if likely_models.is_empty() {
+        available_models.iter().take(12).cloned().collect::<Vec<_>>()
+    } else {
+        likely_models.clone()
+    };
+
+    let show_endpoint = build_endpoint(&settings.ollama_url, "/api/show")?;
+    let mut verified_models: Vec<String> = Vec::new();
+
+    for model in &models_to_verify {
+        let show_response = match with_auth(
+            client
+                .post(show_endpoint.clone())
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(&serde_json::json!({ "model": model })),
+            settings,
+        )
+        .send()
+        .await
+        {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+
+        if !show_response.status().is_success() {
+            continue;
+        }
+
+        let show_payload = match show_response.json::<OllamaShowResponse>().await {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
+
+        if show_payload
+            .capabilities
+            .iter()
+            .any(|capability| capability == "vision")
+        {
+            verified_models.push(model.clone());
+        }
+    }
+
+    if !verified_models.is_empty() {
+        return Ok(AiModelListResult {
+            models: verified_models,
+        });
+    }
+
+    Ok(AiModelListResult {
+        models: likely_models,
     })
 }
 

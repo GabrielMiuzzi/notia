@@ -11,6 +11,7 @@ const MAX_MEMORY_ITEMS = 50
 const MAX_CONTEXT_CHARS = 30_000
 const DESKTOP_AI_HEALTH_COMMANDS = ['check_desktop_ai_health'] as const
 const DESKTOP_AI_CHAT_COMMANDS = ['run_desktop_ai_chat'] as const
+const DESKTOP_AI_MODEL_LIST_COMMANDS = ['list_desktop_ai_models'] as const
 const ANDROID_AI_HEALTH_COMMANDS = [
   'check_android_ai_health',
   'mobile_ai_bridge::check_android_ai_health',
@@ -24,6 +25,10 @@ export interface AiHealthCheckResult {
   ok: boolean
   message: string
   defaultModel?: string
+}
+
+export interface AiModelOption {
+  name: string
 }
 
 export interface AiImageAttachment {
@@ -69,6 +74,10 @@ interface OllamaTagsResponse {
   }>
 }
 
+interface OllamaShowResponse {
+  capabilities?: unknown
+}
+
 interface OllamaStreamChunk {
   message?: {
     content?: unknown
@@ -86,6 +95,10 @@ interface BridgeAiHealthResponse {
 interface BridgeAiChatResponse {
   answer?: unknown
   error?: unknown
+}
+
+interface BridgeAiModelListResponse {
+  models?: unknown
 }
 
 function describeAiError(error: unknown, fallback: string): Error {
@@ -145,24 +158,127 @@ async function fetchJsonWithTimeout<TResponse>(
   }
 }
 
-function pickDefaultModel(payload: OllamaTagsResponse): string {
-  const modelNames = Array.isArray(payload.models)
-    ? payload.models
-      .map((model) => {
-        if (!model || typeof model !== 'object') {
-          return ''
-        }
+function extractModelName(model: unknown): string {
+  if (!model || typeof model !== 'object') {
+    return ''
+  }
 
-        return typeof model.name === 'string'
-          ? model.name.trim()
-          : typeof model.model === 'string'
-            ? model.model.trim()
-            : ''
-      })
-      .filter(Boolean)
+  const candidate = model as { name?: unknown; model?: unknown }
+  return typeof candidate.name === 'string'
+    ? candidate.name.trim()
+    : typeof candidate.model === 'string'
+      ? candidate.model.trim()
+      : ''
+}
+
+function isLikelyMultimodalModelName(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  if (!normalized) {
+    return false
+  }
+
+  return [
+    'vision',
+    'vl',
+    'llava',
+    'bakllava',
+    'moondream',
+    'minicpm-v',
+    'gemma3',
+    'gemma4',
+    'gemini',
+    'glm-ocr',
+    'qwen3.5',
+  ].some((token) => normalized.includes(token))
+}
+
+async function fetchAvailableOllamaModels(preferences: AiPreferences): Promise<string[]> {
+  const payload = await fetchJsonWithTimeout<OllamaTagsResponse>(
+    buildOllamaUrl(preferences, '/api/tags'),
+    {
+      method: 'GET',
+      headers: buildOllamaHeaders(preferences, 'application/json'),
+    },
+    AI_REQUEST_TIMEOUT_MS,
+  )
+
+  return Array.isArray(payload.models)
+    ? payload.models.map((model) => extractModelName(model)).filter(Boolean)
     : []
+}
 
-  return modelNames[0] ?? ''
+async function invokeDesktopAiModelList(preferences: AiPreferences): Promise<string[]> {
+  let lastError: unknown = null
+
+  for (const command of DESKTOP_AI_MODEL_LIST_COMMANDS) {
+    try {
+      const response = await invoke<BridgeAiModelListResponse>(command, {
+        payload: normalizeAiSettingsInput(preferences),
+      })
+
+      return Array.isArray(response.models)
+        ? response.models
+          .filter((model): model is string => typeof model === 'string')
+          .map((model) => model.trim())
+          .filter(Boolean)
+        : []
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw describeAiError(lastError, 'No se pudo listar los modelos de IA.')
+}
+
+async function checkModelSupportsVision(preferences: AiPreferences, model: string): Promise<boolean> {
+  const payload = await fetchJsonWithTimeout<OllamaShowResponse>(
+    buildOllamaUrl(preferences, '/api/show'),
+    {
+      method: 'POST',
+      headers: {
+        ...buildOllamaHeaders(preferences, 'application/json'),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+      }),
+    },
+    AI_REQUEST_TIMEOUT_MS,
+  )
+
+  return Array.isArray(payload.capabilities)
+    && payload.capabilities.some((capability) => capability === 'vision')
+}
+
+export async function listAiMultimodalModels(preferences: AiPreferences): Promise<AiModelOption[]> {
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
+  if (getRuntimeDevice() !== 'Android') {
+    try {
+      const models = await invokeDesktopAiModelList(normalizedPreferences)
+      return models.map((model) => ({ name: model }))
+    } catch {
+      // Fallback a fetch solo si el bridge de desktop no esta disponible.
+    }
+  }
+
+  const availableModels = await fetchAvailableOllamaModels(normalizedPreferences)
+  const likelyMultimodalModels = availableModels.filter((model) => isLikelyMultimodalModelName(model))
+  const modelsToVerify = likelyMultimodalModels.length > 0 ? likelyMultimodalModels : availableModels.slice(0, 12)
+  const verifiedModels: AiModelOption[] = []
+
+  for (const model of modelsToVerify) {
+    const supportsVision = await checkModelSupportsVision(normalizedPreferences, model).catch(() => false)
+    if (supportsVision) {
+      verifiedModels.push({ name: model })
+    }
+  }
+
+  if (verifiedModels.length > 0) {
+    return verifiedModels
+  }
+
+  // Fallback for Ollama Cloud when capability introspection is incomplete or rate-limited.
+  return likelyMultimodalModels.map((model) => ({ name: model }))
 }
 
 function buildLongTermMemorySection(longTermMemories: string[]): string {
@@ -397,25 +513,21 @@ function buildLongTermMemoryGenerationMessages(input: GenerateAiLongTermMemories
 
 async function checkDesktopAiHealthViaFetch(preferences: AiPreferences): Promise<AiHealthCheckResult> {
   try {
-    const payload = await fetchJsonWithTimeout<OllamaTagsResponse>(
-      buildOllamaUrl(preferences, '/api/tags'),
-      {
-        method: 'GET',
-        headers: buildOllamaHeaders(preferences, 'application/json'),
-      },
-      AI_REQUEST_TIMEOUT_MS,
-    )
-    const defaultModel = pickDefaultModel(payload)
+    const multimodalModels = await listAiMultimodalModels(preferences)
+    const selectedModel = normalizeAiSettingsInput(preferences).selectedModel
+    const resolvedModel = selectedModel && multimodalModels.some((model) => model.name === selectedModel)
+      ? selectedModel
+      : multimodalModels[0]?.name ?? ''
 
-    return defaultModel
+    return resolvedModel
       ? {
         ok: true,
         message: 'Conexion correcta con Ollama.',
-        defaultModel,
+        defaultModel: resolvedModel,
       }
       : {
         ok: false,
-        message: 'Ollama respondio, pero no devolvio modelos disponibles.',
+        message: 'Ollama respondio, pero no devolvio modelos multimodales disponibles.',
       }
   } catch (error) {
     return {
@@ -482,12 +594,18 @@ async function invokeAndroidAiHealth(preferences: AiPreferences): Promise<AiHeal
 }
 
 async function resolveDefaultModel(preferences: AiPreferences): Promise<string> {
-  const healthResult = await checkAiHealth(preferences)
-  if (!healthResult.ok || !healthResult.defaultModel) {
-    throw new Error(healthResult.message || 'No hay modelos disponibles en Ollama.')
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
+  const multimodalModels = await listAiMultimodalModels(normalizedPreferences)
+  if (multimodalModels.length === 0) {
+    throw new Error('No hay modelos multimodales disponibles en Ollama.')
   }
 
-  return healthResult.defaultModel
+  const selectedModel = normalizedPreferences.selectedModel
+  if (selectedModel && multimodalModels.some((model) => model.name === selectedModel)) {
+    return selectedModel
+  }
+
+  return multimodalModels[0].name
 }
 
 async function invokeAndroidAiChat(

@@ -1267,6 +1267,7 @@ pub fn run() {
             library_entry_operation,
             commands::ai::check_desktop_ai_health,
             commands::ai::run_desktop_ai_chat,
+            commands::ai::list_desktop_ai_models,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
             mobile_directory_picker::pick_android_directory_tree,

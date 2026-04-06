@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::services::ai_service::{AiChatMessage, AiChatResult, AiHealthResult};
+use crate::services::ai_service::{AiChatMessage, AiChatResult, AiHealthResult, AiModelListResult};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::services::ai_service::AiHttpSettings;
 
@@ -21,6 +21,14 @@ pub struct RunDesktopAiChatPayload {
     model: String,
     #[serde(default)]
     messages: Vec<AiChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDesktopAiModelsPayload {
+    ollama_url: String,
+    #[serde(default)]
+    api_key: String,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -71,5 +79,26 @@ pub async fn run_desktop_ai_chat(payload: RunDesktopAiChatPayload) -> Result<AiC
         } = payload;
         let _ = (ollama_url, api_key, model, messages);
         Err("El chat AI de desktop no esta disponible en esta plataforma.".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn list_desktop_ai_models(
+    payload: ListDesktopAiModelsPayload,
+) -> Result<AiModelListResult, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let settings = build_ai_settings(payload.ollama_url, payload.api_key);
+        return crate::services::ai_service::list_ollama_multimodal_models(&settings).await;
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let ListDesktopAiModelsPayload {
+            ollama_url,
+            api_key,
+        } = payload;
+        let _ = (ollama_url, api_key);
+        Err("El listado AI de desktop no esta disponible en esta plataforma.".to_string())
     }
 }

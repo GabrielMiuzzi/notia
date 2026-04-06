@@ -15,7 +15,7 @@ import {
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
-import { checkAiHealth } from '../../services/ai/aiRuntime'
+import { checkAiHealth, listAiMultimodalModels } from '../../services/ai/aiRuntime'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -49,6 +49,10 @@ export function SettingsModal({
   const [inkmathServiceUrlDraft, setInkmathServiceUrlDraft] = useState(inkdocPreferences.inkmathServiceUrl)
   const [ollamaUrlDraft, setOllamaUrlDraft] = useState(normalizedIncomingAiPreferences.ollamaUrl)
   const [apiKeyDraft, setApiKeyDraft] = useState(normalizedIncomingAiPreferences.apiKey)
+  const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
+  const [availableMultimodalModels, setAvailableMultimodalModels] = useState<string[]>([])
+  const [isLoadingModels, setIsLoadingModels] = useState(false)
+  const [modelsErrorMessage, setModelsErrorMessage] = useState<string | null>(null)
   const [aiHealthStatus, setAiHealthStatus] = useState<{
     tone: 'idle' | 'success' | 'error'
     message: string
@@ -74,6 +78,7 @@ export function SettingsModal({
   const normalizedAiPreferences = normalizeAiSettingsInput({
     ollamaUrl: ollamaUrlDraft,
     apiKey: apiKeyDraft,
+    selectedModel: selectedModelDraft,
   })
 
   useEffect(() => {
@@ -91,7 +96,69 @@ export function SettingsModal({
 
     setOllamaUrlDraft(normalizedIncomingAiPreferences.ollamaUrl)
     setApiKeyDraft(normalizedIncomingAiPreferences.apiKey)
-  }, [normalizedIncomingAiPreferences.apiKey, normalizedIncomingAiPreferences.ollamaUrl, open])
+    setSelectedModelDraft(normalizedIncomingAiPreferences.selectedModel)
+  }, [
+    normalizedIncomingAiPreferences.apiKey,
+    normalizedIncomingAiPreferences.ollamaUrl,
+    normalizedIncomingAiPreferences.selectedModel,
+    open,
+  ])
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    let cancelled = false
+    const currentPreferences = normalizeAiSettingsInput(aiPreferences)
+
+    setIsLoadingModels(true)
+    setModelsErrorMessage(null)
+
+    void listAiMultimodalModels(currentPreferences)
+      .then((models) => {
+        if (cancelled) {
+          return
+        }
+
+        const names = models.map((model) => model.name)
+        setAvailableMultimodalModels(names)
+
+        const nextSelectedModel = currentPreferences.selectedModel && names.includes(currentPreferences.selectedModel)
+          ? currentPreferences.selectedModel
+          : names[0] ?? ''
+
+        if (nextSelectedModel !== currentPreferences.selectedModel) {
+          onAiPreferencesChange({
+            ...currentPreferences,
+            selectedModel: nextSelectedModel,
+          })
+        }
+
+        setSelectedModelDraft(nextSelectedModel)
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+
+        setAvailableMultimodalModels([])
+        setModelsErrorMessage(
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : 'No se pudieron cargar los modelos multimodales.',
+        )
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingModels(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [aiPreferences, onAiPreferencesChange, open])
 
   const commitInkMathServiceUrl = () => {
     const normalized = normalizeServiceUrl(inkmathServiceUrlDraft)
@@ -106,10 +173,12 @@ export function SettingsModal({
     const normalized = normalizeAiSettingsInput({
       ollamaUrl: ollamaUrlDraft,
       apiKey: apiKeyDraft,
+      selectedModel: selectedModelDraft,
     })
 
     setOllamaUrlDraft(normalized.ollamaUrl)
     setApiKeyDraft(normalized.apiKey)
+    setSelectedModelDraft(normalized.selectedModel)
     onAiPreferencesChange(normalized)
   }
 
@@ -117,10 +186,12 @@ export function SettingsModal({
     const normalized = normalizeAiSettingsInput({
       ollamaUrl: ollamaUrlDraft,
       apiKey: apiKeyDraft,
+      selectedModel: selectedModelDraft,
     })
 
     setOllamaUrlDraft(normalized.ollamaUrl)
     setApiKeyDraft(normalized.apiKey)
+    setSelectedModelDraft(normalized.selectedModel)
     onAiPreferencesChange(normalized)
     setIsCheckingAiHealth(true)
 
@@ -265,6 +336,50 @@ export function SettingsModal({
                     placeholder={getDefaultOllamaApiUrl()}
                   />
                 </div>
+              </div>
+              <div className="notia-settings-card">
+                <div className="notia-settings-card-label">Modelo multimodal</div>
+                <div className="notia-settings-card-value">
+                  {normalizedAiPreferences.selectedModel || 'Sin seleccionar'}
+                </div>
+                <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                  El chat solo lista modelos con capacidad de vision para permitir envio de imagenes.
+                </div>
+                <div className="notia-settings-input-wrap">
+                  <select
+                    className="notia-settings-input"
+                    value={selectedModelDraft}
+                    onChange={(event) => {
+                      const nextValue = event.target.value
+                      setSelectedModelDraft(nextValue)
+                      onAiPreferencesChange({
+                        ...normalizeAiSettingsInput({
+                          ollamaUrl: ollamaUrlDraft,
+                          apiKey: apiKeyDraft,
+                          selectedModel: nextValue,
+                        }),
+                        selectedModel: nextValue,
+                      })
+                    }}
+                    disabled={isLoadingModels || availableMultimodalModels.length === 0}
+                  >
+                    {availableMultimodalModels.length === 0 ? (
+                      <option value="">
+                        {isLoadingModels ? 'Cargando modelos...' : 'No hay modelos multimodales'}
+                      </option>
+                    ) : null}
+                    {availableMultimodalModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {modelsErrorMessage ? (
+                  <div className="notia-settings-status notia-settings-status--error">
+                    {modelsErrorMessage}
+                  </div>
+                ) : null}
               </div>
               <div className="notia-settings-card">
                 <div className="notia-settings-card-label">API key</div>

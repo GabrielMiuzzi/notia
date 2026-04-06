@@ -12,9 +12,14 @@ const LEGACY_AI_DEFAULT_URLS = new Set([
 export interface AiPreferences {
   ollamaUrl: string
   apiKey: string
+  selectedModel: string
 }
 
 function normalizeApiKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeSelectedModel(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
@@ -52,13 +57,20 @@ function normalizeAiPreferences(value: unknown): AiPreferences {
     return {
       ollamaUrl: DEFAULT_OLLAMA_API_URL,
       apiKey: '',
+      selectedModel: '',
     }
   }
 
-  const candidate = value as Partial<AiPreferences> & { baseUrl?: unknown; apiKey?: unknown }
+  const candidate = value as Partial<AiPreferences> & {
+    baseUrl?: unknown
+    apiKey?: unknown
+    model?: unknown
+    selectedModel?: unknown
+  }
   return {
     ollamaUrl: normalizeOllamaApiUrl(candidate.ollamaUrl ?? candidate.baseUrl),
     apiKey: normalizeApiKey(candidate.apiKey),
+    selectedModel: normalizeSelectedModel(candidate.selectedModel ?? candidate.model),
   }
 }
 
