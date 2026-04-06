@@ -140,6 +140,16 @@ function normalizeDirectorySelection(value: unknown): FilesystemPickDirectoryRes
   }
 }
 
+function sortFilesystemTreeNodes(nodes: FilesystemTreeNode[]): FilesystemTreeNode[] {
+  return [...nodes].sort((left, right) => {
+    if (left.type === right.type) {
+      return 0
+    }
+
+    return left.type === 'folder' ? -1 : 1
+  })
+}
+
 export function normalizeFilesystemTreeNodes(value: unknown): FilesystemTreeNode[] {
   if (!Array.isArray(value)) {
     return []
@@ -172,7 +182,8 @@ export function normalizeFilesystemTreeNodes(value: unknown): FilesystemTreeNode
     })
   }
 
-  return nodes
+  // Keep backend order within each type, but always render folders before files.
+  return sortFilesystemTreeNodes(nodes)
 }
 
 export function getPathBaseName(pathValue: string): string {
