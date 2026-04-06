@@ -378,6 +378,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
       const groupsByKey = new Map<string, Group>()
       for (const task of nextSnapshot.tasks) {
+        if (task.state === 'Finalizada' || task.state === 'Cancelada') {
+          continue
+        }
+
         const boardName = normalizeBoardCandidate(task.board) ?? DEFAULT_BOARD_NAME
 
         const groupName = task.group.trim()
@@ -1098,11 +1102,49 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
   }, [closeGroupDialog, groupDialog.group, groupDialog.mode, settings.boards, settings.groups, updateSettings])
 
   const removeGroup = useCallback(async (groupName: string, board: string) => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      groups: previousSettings.groups.filter((group) => !(group.name === groupName && (group.board ?? DEFAULT_BOARD_NAME) === board)),
-    }))
-  }, [updateSettings])
+    if (!settings.activeVaultPath) {
+      return
+    }
+
+    try {
+      await runSync(async () => {
+        const candidateTasks = snapshot.tasks
+          .filter((task) => task.board === board)
+          .filter((task) => task.group === groupName)
+          .filter((task) => task.state !== 'Finalizada' && task.state !== 'Cancelada')
+        const candidateParentNames = new Set(
+          candidateTasks.flatMap((task) => [task.title.trim().toLowerCase(), task.fileName.trim().toLowerCase()]).filter(Boolean),
+        )
+        const tasksToDismiss = candidateTasks.filter((task) => {
+          const parentReference = task.parentTaskName.trim().toLowerCase()
+          if (!parentReference) {
+            return true
+          }
+
+          return !candidateParentNames.has(parentReference)
+        })
+
+        const existingPaths = new Set(snapshot.tasks.map((task) => task.filePath))
+        for (const task of tasksToDismiss) {
+          await moveTaskByState(settings.activeVaultPath as string, task, 'Cancelada', existingPaths)
+        }
+
+        updateSettings((previousSettings) => ({
+          ...previousSettings,
+          groups: previousSettings.groups.filter((group) => !(group.name === groupName && (group.board ?? DEFAULT_BOARD_NAME) === board)),
+        }))
+      })
+
+      closeGroupDialog()
+      setInfoMessage('Grupo eliminado.')
+    } catch (runtimeError) {
+      console.error(runtimeError)
+      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
+      setError(runtimeMessage
+        ? `No se pudo eliminar el grupo: ${runtimeMessage}`
+        : 'No se pudo eliminar el grupo.')
+    }
+  }, [closeGroupDialog, runSync, settings.activeVaultPath, snapshot.tasks, updateSettings])
 
   const reorderGroupsInBoard = useCallback(async (board: string, orderedGroupNames: string[]) => {
     const normalizedBoard = board.trim().toLowerCase() || DEFAULT_BOARD_NAME

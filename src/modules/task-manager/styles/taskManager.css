@@ -378,16 +378,19 @@
 
 .tareas-board-shell {
   min-height: 0;
+  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .tareas-board {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(280px, 320px);
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: var(--tareas-size-sm);
-  overflow-x: auto;
   align-items: start;
   padding: var(--tareas-radius-xs) var(--tareas-radius-xs) var(--tareas-size-sm);
+  width: 100%;
+  min-width: 0;
 }
 
 .tareas-board::-webkit-scrollbar {
@@ -405,6 +408,7 @@
   padding: var(--tareas-size-xs) var(--tareas-size-xs) var(--tareas-size-sm);
   background: var(--background-primary-alt);
   min-height: 120px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }

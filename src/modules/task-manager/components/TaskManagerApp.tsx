@@ -160,6 +160,27 @@ export function TaskManagerApp({
     await manager.deletePomodoroLogEntry(entryId)
   }, [confirm, manager])
 
+  const handleDeleteGroup = useCallback(async () => {
+    const group = manager.groupDialog.group
+    if (!group) {
+      return
+    }
+
+    const shouldDelete = await confirm({
+      title: 'Eliminar grupo',
+      message: `Desea eliminar el grupo "${group.name}"? Esta accion no se puede deshacer. Si tiene tareas activas, pasarán a desestimar.`,
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+
+    if (!shouldDelete) {
+      return
+    }
+
+    await manager.removeGroup(group.name, group.board ?? 'default')
+  }, [confirm, manager])
+
   return (
     <ThemeProvider theme={theme}>
       <div className={`tareas-root${embedded ? ' is-embedded' : ''}`}>
@@ -346,6 +367,7 @@ export function TaskManagerApp({
           activeBoard={activeBoard}
           onClose={manager.closeGroupDialog}
           onSubmit={manager.submitGroupDialog}
+          onDelete={handleDeleteGroup}
         />
 
         <Snackbar open={Boolean(manager.error)} autoHideDuration={4800} onClose={() => manager.setError(null)}>

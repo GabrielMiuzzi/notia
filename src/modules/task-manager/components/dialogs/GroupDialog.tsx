@@ -19,6 +19,7 @@ interface GroupDialogProps {
   activeBoard: string
   onClose: () => void
   onSubmit: (payload: { name: string; color: string; board: string }) => Promise<void>
+  onDelete: () => void
 }
 
 export function GroupDialog({
@@ -29,6 +30,7 @@ export function GroupDialog({
   activeBoard,
   onClose,
   onSubmit,
+  onDelete,
 }: GroupDialogProps) {
   const [name, setName] = useState('')
   const [color, setColor] = useState('#2e6db0')
@@ -96,6 +98,11 @@ export function GroupDialog({
         </Stack>
       </div>
       <div className="tareas-dialog-actions">
+        {mode === 'edit' && group ? (
+          <NotiaButton variant="danger" onClick={onDelete} disabled={isSubmitting}>
+            Eliminar grupo
+          </NotiaButton>
+        ) : null}
         <NotiaButton onClick={onClose} disabled={isSubmitting}>
           Cancelar
         </NotiaButton>
