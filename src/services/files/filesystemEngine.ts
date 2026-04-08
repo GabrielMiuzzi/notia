@@ -251,9 +251,14 @@ async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | n
 
   for (const command of ANDROID_PICK_DIRECTORY_COMMANDS) {
     try {
+      console.log('[filesystemEngine] Invoking Android command:', command)
       const selected = await invoke<unknown>(command)
-      return normalizeDirectorySelection(selected)
+      console.log('[filesystemEngine] Android command result:', selected)
+      const normalized = normalizeDirectorySelection(selected)
+      console.log('[filesystemEngine] Normalized selection:', normalized)
+      return normalized
     } catch (error) {
+      console.error('[filesystemEngine] Android command failed:', command, error)
       fallbackError = error
     }
   }
@@ -266,10 +271,15 @@ async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | n
 }
 
 export async function pickDirectory(title: string): Promise<FilesystemPickDirectoryResult | null> {
+  console.log('[filesystemEngine] pickDirectory called, device:', getRuntimeDevice())
   if (getRuntimeDevice() === 'Android') {
     try {
-      return await pickAndroidDirectory()
+      console.log('[filesystemEngine] Using Android picker')
+      const result = await pickAndroidDirectory()
+      console.log('[filesystemEngine] Android picker result:', result)
+      return result
     } catch (error) {
+      console.error('[filesystemEngine] Android picker error:', error)
       if (
         error instanceof Error
         && (

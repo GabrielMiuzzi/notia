@@ -8,7 +8,7 @@ import {
   DRAWIO_RUNTIME_PUBLIC_BASE,
 } from './build/drawioRuntime'
 
-const host = process.env.TAURI_DEV_HOST
+const host = process.env.TAURI_DEV_HOST || '192.168.1.41'
 const packageJsonPath = resolve(__dirname, 'package.json')
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version?: string }
 const appVersion = typeof packageJson.version === 'string' && packageJson.version.trim().length > 0
@@ -34,14 +34,12 @@ export default defineConfig(() => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: 'ws',
-          host,
-          port: 1421,
-        }
-      : undefined,
+    host: host,
+    hmr: {
+      protocol: 'ws',
+      host: host,
+      port: 1421,
+    },
     watch: {
       ignored: ['**/src-tauri/**'],
     },

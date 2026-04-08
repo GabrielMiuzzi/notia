@@ -56,9 +56,11 @@ async function resolveLibraryDirectoryFromSelection(selectedPath: string): Promi
 export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
   let selected: { path: string; uri?: string } | null = null
   try {
+    console.log('[libraryRuntime] Calling pickDirectory...')
     selected = await pickDirectory('Seleccionar libreria')
+    console.log('[libraryRuntime] pickDirectory returned:', selected)
   } catch (error) {
-    console.error('[notia] pick directory failed', error)
+    console.error('[libraryRuntime] pick directory failed:', error)
     if (error instanceof Error && error.message.trim()) {
       throw new Error(error.message)
     }
@@ -66,22 +68,28 @@ export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
   }
 
   if (!selected) {
+    console.log('[libraryRuntime] No selection made')
     return null
   }
 
+  console.log('[libraryRuntime] Processing selection:', selected)
   const selectedPath = normalizeFilesystemPath(selected.path)
+  console.log('[libraryRuntime] Normalized path:', selectedPath)
   const resolvedPath = getRuntimeDevice() === 'Android'
     ? selectedPath
     : await resolveLibraryDirectoryFromSelection(selectedPath)
+  console.log('[libraryRuntime] Resolved path:', resolvedPath)
   if (!resolvedPath) {
     throw new Error('No se pudo resolver una carpeta valida desde la seleccion.')
   }
 
-  return {
+  const result = {
     path: resolvedPath,
     name: buildLibraryNameFromPath(resolvedPath),
     androidTreeUri: selected.uri,
   }
+  console.log('[libraryRuntime] Returning result:', result)
+  return result
 }
 
 export async function filterExistingLibraries(libraries: NotiaLibrary[]): Promise<NotiaLibrary[]> {

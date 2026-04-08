@@ -162,21 +162,30 @@ pub fn pick_android_directory_tree(
 ) -> Result<PickAndroidDirectoryTreeResult, String> {
     #[cfg(target_os = "android")]
     {
+        println!("[mobile_directory_picker] pick_android_directory_tree called");
         let guard = state
             .handle
             .lock()
             .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
         let Some(handle) = guard.as_ref() else {
+            println!("[mobile_directory_picker] Plugin handle not available");
             return Err("El selector de carpetas no esta disponible.".to_string());
         };
 
+        println!("[mobile_directory_picker] Calling pickDirectoryTree plugin");
         let response = handle
             .run_mobile_plugin::<PickDirectoryTreeResponse>("pickDirectoryTree", ())
-            .map_err(|error| format!("No se pudo abrir el selector de carpetas: {error}"))?;
+            .map_err(|error| {
+                println!("[mobile_directory_picker] Plugin call failed: {}", error);
+                format!("No se pudo abrir el selector de carpetas: {error}")
+            })?;
+        println!("[mobile_directory_picker] Plugin response: path={:?}, uri={:?}", response.path, response.uri);
         let Some(path) = response.path else {
+            println!("[mobile_directory_picker] No path in response");
             return Err("No se pudo resolver la carpeta seleccionada.".to_string());
         };
         if path.trim().is_empty() {
+            println!("[mobile_directory_picker] Path is empty");
             return Err("No se pudo resolver la carpeta seleccionada.".to_string());
         }
 

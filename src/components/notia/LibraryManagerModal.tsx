@@ -33,11 +33,19 @@ export function LibraryManagerModal({
     setAddErrorMessage(null)
     setIsAdding(true)
     try {
+      console.log('[LibraryManager] Starting pickLibraryDirectory...')
       const selection = await pickLibraryDirectory()
+      console.log('[LibraryManager] pickLibraryDirectory result:', selection)
       if (!selection) {
+        console.log('[LibraryManager] No selection made (user cancelled)')
         return
       }
 
+      console.log('[LibraryManager] Creating new library:', {
+        name: selection.name,
+        path: selection.path,
+        androidTreeUri: selection.androidTreeUri,
+      })
       const newLibrary: NotiaLibrary = {
         id: crypto.randomUUID(),
         name: selection.name,
@@ -45,7 +53,9 @@ export function LibraryManagerModal({
         androidTreeUri: selection.androidTreeUri,
       }
       onLibraryAdded(newLibrary)
+      console.log('[LibraryManager] Library added successfully')
     } catch (error) {
+      console.error('[LibraryManager] Error adding library:', error)
       const fallbackMessage = 'No se pudo abrir el selector de carpetas en este dispositivo.'
       if (error instanceof Error && error.message.trim()) {
         setAddErrorMessage(error.message)

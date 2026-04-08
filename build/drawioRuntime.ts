@@ -14,6 +14,7 @@ const EMPTY_SOURCE_MAP_CONTENT = JSON.stringify({
 
 const PROJECT_ROOT_DIRECTORY = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const DEFAULT_DRAWIO_WEBAPP_DIRECTORIES = [
+  resolve(PROJECT_ROOT_DIRECTORY, 'externals/drawio/webapp'),
   resolve(PROJECT_ROOT_DIRECTORY, 'vendor/drawio/webapp'),
   resolve(PROJECT_ROOT_DIRECTORY, '../extrepos/drawio-desktop/drawio/src/main/webapp'),
 ]
