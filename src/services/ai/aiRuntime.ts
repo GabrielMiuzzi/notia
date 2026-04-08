@@ -20,6 +20,10 @@ const ANDROID_AI_CHAT_COMMANDS = [
   'run_android_ai_chat',
   'mobile_ai_bridge::run_android_ai_chat',
 ] as const
+const ANDROID_AI_MODEL_LIST_COMMANDS = [
+  'list_android_ai_models',
+  'mobile_ai_bridge::list_android_ai_models',
+] as const
 
 export interface AiHealthCheckResult {
   ok: boolean
@@ -252,7 +256,14 @@ async function checkModelSupportsVision(preferences: AiPreferences, model: strin
 
 export async function listAiMultimodalModels(preferences: AiPreferences): Promise<AiModelOption[]> {
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
-  if (getRuntimeDevice() !== 'Android') {
+  if (getRuntimeDevice() === 'Android') {
+    try {
+      const models = await invokeAndroidAiModelList(normalizedPreferences)
+      return models.map((model) => ({ name: model }))
+    } catch {
+      // Fallback a fetch si el bridge de Android no esta disponible.
+    }
+  } else {
     try {
       const models = await invokeDesktopAiModelList(normalizedPreferences)
       return models.map((model) => ({ name: model }))
@@ -929,4 +940,27 @@ export async function generateAiLongTermMemories(
     const answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, {})
     return parseGeneratedMemoryList(answer)
   }
+}
+
+async function invokeAndroidAiModelList(preferences: AiPreferences): Promise<string[]> {
+  let lastError: unknown = null
+
+  for (const command of ANDROID_AI_MODEL_LIST_COMMANDS) {
+    try {
+      const response = await invoke<BridgeAiModelListResponse>(command, {
+        payload: normalizeAiSettingsInput(preferences),
+      })
+
+      return Array.isArray(response.models)
+        ? response.models
+          .filter((model): model is string => typeof model === 'string')
+          .map((model) => model.trim())
+          .filter(Boolean)
+        : []
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw describeAiError(lastError, 'No se pudo listar los modelos de IA.')
 }

@@ -85,6 +85,11 @@ import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '
 import type { DrawioDocumentController } from '../../modules/drawio/types'
 import { ensureChatLibraryStructure } from '../../services/chat/chatLibraryStructure'
 import { toStoredLibraryPath } from '../../services/libraries/libraryPathMapping'
+import {
+  readLibraryConfig,
+  writeLibraryConfig,
+  type NotiaLibraryConfig,
+} from '../../services/libraries/libraryConfig'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
@@ -936,6 +941,129 @@ export function NotiaMenu() {
     saveThemePreference(theme)
   }, [theme])
 
+  // Load library config when active library changes
+  const libraryConfigLoadedRef = useRef(false)
+  const initialConfigRef = useRef<NotiaLibraryConfig | null>(null)
+  
+  useEffect(() => {
+    if (!activeLibrary) {
+      libraryConfigLoadedRef.current = false
+      initialConfigRef.current = null
+      return
+    }
+
+    let isCancelled = false
+    libraryConfigLoadedRef.current = false
+    initialConfigRef.current = null
+
+    void (async () => {
+      console.log('[NotiaMenu] Loading library config for:', activeLibrary.path)
+      const config = await readLibraryConfig(activeLibrary.path)
+      
+      if (isCancelled) {
+        return
+      }
+
+      if (config) {
+        console.log('[NotiaMenu] Found existing config:', config)
+        // Apply library-specific settings only if they exist
+        if (config.panelDesplegable?.refreshIntervalMs !== undefined) {
+          setExplorerRefreshIntervalMs(config.panelDesplegable.refreshIntervalMs)
+        }
+        if (config.inkdocs) {
+          setInkdocPreferences(config.inkdocs)
+        }
+        if (config.ia) {
+          setAiPreferences(config.ia)
+        }
+        // Store the loaded config as initial
+        initialConfigRef.current = config
+      } else {
+        console.log('[NotiaMenu] No existing config found')
+        // Store current values as initial
+        initialConfigRef.current = {
+          version: 1,
+          panelDesplegable: { refreshIntervalMs: explorerRefreshIntervalMs },
+          inkdocs: inkdocPreferences,
+          ia: aiPreferences,
+        }
+      }
+      
+      // Mark as loaded after state updates
+      libraryConfigLoadedRef.current = true
+      console.log('[NotiaMenu] Library config loading complete')
+    })()
+
+    return () => {
+      isCancelled = true
+      libraryConfigLoadedRef.current = false
+      initialConfigRef.current = null
+    }
+  }, [activeLibrary?.path])
+
+  // Save settings to library config when they change (debounced)
+  const libraryConfigTimeoutRef = useRef<number | null>(null)
+  const activeLibraryPathRef = useRef<string | null>(null)
+  
+  useEffect(() => {
+    if (!activeLibrary) {
+      return
+    }
+    
+    // Skip if config hasn't been loaded yet
+    if (!libraryConfigLoadedRef.current) {
+      console.log('[NotiaMenu] Skipping save - config not loaded yet')
+      return
+    }
+    
+    const config: NotiaLibraryConfig = {
+      version: 1,
+      panelDesplegable: {
+        refreshIntervalMs: explorerRefreshIntervalMs,
+      },
+      inkdocs: inkdocPreferences,
+      ia: aiPreferences,
+    }
+    
+    // Skip if matches initial config (prevents overwriting on load)
+    if (initialConfigRef.current) {
+      const initialJson = JSON.stringify(initialConfigRef.current)
+      const currentJson = JSON.stringify(config)
+      if (initialJson === currentJson) {
+        console.log('[NotiaMenu] Skipping save - matches initial config')
+        return
+      }
+    }
+    
+    activeLibraryPathRef.current = activeLibrary.path
+
+    // Clear previous timeout
+    if (libraryConfigTimeoutRef.current) {
+      window.clearTimeout(libraryConfigTimeoutRef.current)
+    }
+
+    // Debounce save
+    libraryConfigTimeoutRef.current = window.setTimeout(() => {
+      console.log('[NotiaMenu] Saving library config:', config)
+      
+      void writeLibraryConfig(activeLibraryPathRef.current!, config).then((result) => {
+        console.log('[NotiaMenu] Save result:', result)
+        if (result.ok) {
+          // Update initial config to prevent duplicate saves
+          initialConfigRef.current = config
+        }
+      })
+    }, 500)
+
+    return () => {
+      if (libraryConfigTimeoutRef.current) {
+        window.clearTimeout(libraryConfigTimeoutRef.current)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLibrary?.path, explorerRefreshIntervalMs, inkdocPreferences, aiPreferences])
+
+  // Also save to localStorage for backward compatibility
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)
   }, [explorerRefreshIntervalMs])

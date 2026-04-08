@@ -732,7 +732,13 @@ fn create_library_file(payload: CreateLibraryFilePayload) -> OperationResult {
 }
 
 #[tauri::command]
-fn create_library_directory(payload: CreateLibraryDirectoryPayload) -> OperationResult {
+fn create_library_directory(
+    payload: CreateLibraryDirectoryPayload,
+    android_picker_state: tauri::State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> OperationResult {
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
+
     if payload.directory_path.trim().is_empty() {
         return OperationResult {
             ok: false,
@@ -740,7 +746,62 @@ fn create_library_directory(payload: CreateLibraryDirectoryPayload) -> Operation
         };
     }
 
-    match fs::create_dir(payload.directory_path) {
+    #[cfg(target_os = "android")]
+    {
+        // On Android, try to create via SAF if it's a content URI or resolvable path
+        // First check if this is the .notia config directory
+        let is_config_dir = payload.directory_path.ends_with("/.notia") || payload.directory_path.ends_with("\\.notia");
+        
+        // Get the parent path (library root) and the directory name
+        let path_obj = std::path::Path::new(&payload.directory_path);
+        let dir_name = path_obj.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("new_folder");
+        
+        // Get parent path for resolving the tree URI
+        let parent_path = if is_config_dir {
+            path_obj.parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| payload.directory_path.clone())
+        } else {
+            payload.directory_path.clone()
+        };
+        
+        let resolved_android_uri = if parent_path.starts_with("content://") {
+            Some(parent_path.clone())
+        } else {
+            mobile_directory_picker::resolve_android_tree_uri(
+                android_picker_state.inner(),
+                &parent_path,
+                None,
+            )
+            .ok()
+            .flatten()
+        };
+
+        if let Some(content_uri) = resolved_android_uri {
+            match mobile_directory_picker::create_android_directory(
+                android_picker_state.inner(),
+                &content_uri,
+                dir_name,
+            ) {
+                Ok(_) => {
+                    return OperationResult {
+                        ok: true,
+                        error: None,
+                    }
+                }
+                Err(error) => {
+                    return OperationResult {
+                        ok: false,
+                        error: Some(format!("Could not create directory: {}", error)),
+                    }
+                }
+            }
+        }
+    }
+
+    match fs::create_dir_all(&payload.directory_path) {
         Ok(()) => OperationResult {
             ok: true,
             error: None,
@@ -748,14 +809,14 @@ fn create_library_directory(payload: CreateLibraryDirectoryPayload) -> Operation
         Err(error) => {
             if error.kind() == std::io::ErrorKind::AlreadyExists {
                 return OperationResult {
-                    ok: false,
-                    error: Some("An entry with that name already exists.".to_string()),
+                    ok: true,
+                    error: None,
                 };
             }
 
             OperationResult {
                 ok: false,
-                error: Some("Could not create directory.".to_string()),
+                error: Some(format!("Could not create directory: {}", error)),
             }
         }
     }
@@ -1270,6 +1331,7 @@ pub fn run() {
             commands::ai::list_desktop_ai_models,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
+            mobile_ai_bridge::list_android_ai_models,
             mobile_directory_picker::pick_android_directory_tree,
             mobile_directory_picker::read_android_library_tree,
             commands::bluetooth::coldpass_bluetooth_status,

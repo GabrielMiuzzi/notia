@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { BookPlus, Trash2, X } from 'lucide-react'
 import { pickLibraryDirectory } from '../../services/libraries/libraryRuntime'
+import { ensureLibraryConfigExists } from '../../services/libraries/libraryConfig'
+import { generateUUID } from '../../utils/uuid'
 import type { NotiaLibrary } from '../../types/notia'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
@@ -46,8 +48,13 @@ export function LibraryManagerModal({
         path: selection.path,
         androidTreeUri: selection.androidTreeUri,
       })
+      
+      // Ensure .notia config directory exists
+      await ensureLibraryConfigExists(selection.path)
+      console.log('[LibraryManager] Library config ensured')
+      
       const newLibrary: NotiaLibrary = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         name: selection.name,
         path: selection.path,
         androidTreeUri: selection.androidTreeUri,

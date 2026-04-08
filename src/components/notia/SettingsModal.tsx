@@ -182,6 +182,28 @@ export function SettingsModal({
     onAiPreferencesChange(normalized)
   }
 
+  // Save pending changes when modal closes
+  useEffect(() => {
+    if (!open) {
+      console.log('[SettingsModal] Modal closing, committing changes...')
+      // Commit any pending changes when closing
+      commitInkMathServiceUrl()
+      commitAiPreferences()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Also save when component unmounts
+  useEffect(() => {
+    return () => {
+      console.log('[SettingsModal] Component unmounting, committing changes...')
+      // Commit any pending changes when unmounting
+      commitInkMathServiceUrl()
+      commitAiPreferences()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const handleCheckAiConnection = async () => {
     const normalized = normalizeAiSettingsInput({
       ollamaUrl: ollamaUrlDraft,

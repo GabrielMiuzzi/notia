@@ -2173,9 +2173,9 @@ export class InkDocView extends ItemView {
 		}
 		const { widthPx, heightPx } = this.getCanvasSizePx();
 		const rect = state.canvas.getBoundingClientRect();
-		const zoom = this.zoomLevel || 1;
-		const scaleX = rect.width / zoom / widthPx;
-		const scaleY = rect.height / zoom / heightPx;
+		// CSS zoom property already scales the element, so rect is already zoomed
+		const scaleX = rect.width / widthPx;
+		const scaleY = rect.height / heightPx;
 		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
 		for (const block of blocks) {
 			const owner = this.resolveTextBlockOwner(page, pageIndex, block.id);
@@ -2461,9 +2461,9 @@ export class InkDocView extends ItemView {
 		}
 		const { widthPx, heightPx } = this.getCanvasSizePx();
 		const rect = state.canvas.getBoundingClientRect();
-		const zoom = this.zoomLevel || 1;
-		const scaleX = rect.width / zoom / widthPx;
-		const scaleY = rect.height / zoom / heightPx;
+		// CSS zoom property already scales the element, so rect is already zoomed
+		const scaleX = rect.width / widthPx;
+		const scaleY = rect.height / heightPx;
 		for (const block of blocks) {
 			const blockEl = layer.createDiv({ cls: "inkdoc-image-block" });
 			blockEl.tabIndex = 0;
@@ -3176,21 +3176,24 @@ export class InkDocView extends ItemView {
 
 	private getPointerPosition(canvas: HTMLCanvasElement, event: PointerEvent): InkDocPoint {
 		const rect = canvas.getBoundingClientRect();
-		const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
-		const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
-		const dpr = window.devicePixelRatio || 1;
-		return {
-			x: x / dpr,
-			y: y / dpr
-		};
+		const zoom = this.zoomLevel || 1;
+		// CSS zoom scales the visual size, so rect is already zoomed
+		// Convert client coordinates to canvas coordinates accounting for zoom
+		// Note: ctx.scale(dpr, dpr) is already applied, so we return CSS pixels
+		const x = (event.clientX - rect.left) / zoom;
+		const y = (event.clientY - rect.top) / zoom;
+		return { x, y };
 	}
 
 	private getMousePosition(canvas: HTMLCanvasElement, event: MouseEvent): InkDocPoint {
 		const rect = canvas.getBoundingClientRect();
-		const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
-		const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
-		const dpr = window.devicePixelRatio || 1;
-		return { x: x / dpr, y: y / dpr };
+		const zoom = this.zoomLevel || 1;
+		// CSS zoom scales the visual size, so rect is already zoomed
+		// Convert client coordinates to canvas coordinates accounting for zoom
+		// Note: ctx.scale(dpr, dpr) is already applied, so we return CSS pixels
+		const x = (event.clientX - rect.left) / zoom;
+		const y = (event.clientY - rect.top) / zoom;
+		return { x, y };
 	}
 
 	private getClientPointOnCanvas(
@@ -3199,25 +3202,26 @@ export class InkDocView extends ItemView {
 		clientY: number
 	): InkDocPoint {
 		const rect = canvas.getBoundingClientRect();
-		const x = ((clientX - rect.left) / rect.width) * canvas.width;
-		const y = ((clientY - rect.top) / rect.height) * canvas.height;
-		const dpr = window.devicePixelRatio || 1;
-		return {
-			x: x / dpr,
-			y: y / dpr
-		};
+		const zoom = this.zoomLevel || 1;
+		// CSS zoom scales the visual size, so rect is already zoomed
+		// Convert client coordinates to canvas coordinates accounting for zoom
+		// Note: ctx.scale(dpr, dpr) is already applied, so we return CSS pixels
+		const x = (clientX - rect.left) / zoom;
+		const y = (clientY - rect.top) / zoom;
+		return { x, y };
 	}
 
 	private getClientPointOnPagesContent(clientX: number, clientY: number): { x: number; y: number } | null {
 		if (!this.pagesContentEl) {
 			return null;
 		}
-		const zoom = Math.max(0.001, this.zoomLevel || 1);
+		// CSS zoom property already scales the element, so rect is already zoomed
+		// No need to divide by zoom again
 		const rect = this.pagesContentEl.getBoundingClientRect();
-		const rawX = (clientX - rect.left) / zoom;
-		const rawY = (clientY - rect.top) / zoom;
-		const maxX = Math.max(0, rect.width / zoom);
-		const maxY = Math.max(0, rect.height / zoom);
+		const rawX = clientX - rect.left;
+		const rawY = clientY - rect.top;
+		const maxX = Math.max(0, rect.width);
+		const maxY = Math.max(0, rect.height);
 		return {
 			x: Math.max(0, Math.min(maxX, rawX)),
 			y: Math.max(0, Math.min(maxY, rawY))
@@ -5383,8 +5387,8 @@ export class InkDocView extends ItemView {
 		const { widthPx, heightPx } = this.getCanvasSizePx();
 		const canvasRect = state.canvas.getBoundingClientRect();
 		const zoom = this.zoomLevel || 1;
-		const scaleX = canvasRect.width / zoom / widthPx;
-		const scaleY = canvasRect.height / zoom / heightPx;
+		const scaleX = canvasRect.width / widthPx;
+		const scaleY = canvasRect.height / heightPx;
 		const center = { x: block.x + block.w / 2, y: block.y + block.h / 2 };
 		const startAngle = Math.atan2(startPoint.y - center.y, startPoint.x - center.x);
 		this.imagePointerCleanup = startWindowPointerInteraction({

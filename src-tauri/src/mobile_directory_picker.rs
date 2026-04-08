@@ -405,6 +405,39 @@ pub fn create_android_tree_entry(
 }
 
 #[cfg(target_os = "android")]
+pub fn create_android_directory(
+    state: &AndroidDirectoryPickerState,
+    parent_uri: &str,
+    dir_name: &str,
+) -> Result<String, String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<CreateEntryResponse>(
+            "createEntry",
+            serde_json::json!({
+                "parentUri": parent_uri,
+                "name": dir_name,
+                "entryType": "folder",
+                "content": null,
+            }),
+        )
+        .map_err(|error| format!("No se pudo crear el directorio Android: {error}"))?;
+
+    let Some(path) = response.path else {
+        return Err("No se pudo crear el directorio Android.".to_string());
+    };
+
+    Ok(path)
+}
+
+#[cfg(target_os = "android")]
 pub fn delete_android_tree_entry(
     state: &AndroidDirectoryPickerState,
     entry_uri: &str,

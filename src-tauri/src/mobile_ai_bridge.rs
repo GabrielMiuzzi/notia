@@ -97,6 +97,13 @@ struct AndroidAiChatResponse {
     error: Option<String>,
 }
 
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidAiModelListResponse {
+    models: Option<Vec<String>>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AndroidAiHealthResult {
@@ -110,6 +117,12 @@ pub struct AndroidAiHealthResult {
 #[serde(rename_all = "camelCase")]
 pub struct AndroidAiChatResult {
     answer: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidAiModelListResult {
+    pub models: Vec<String>,
 }
 
 #[tauri::command]
@@ -243,6 +256,52 @@ pub fn run_android_ai_chat(
             selected_context_mode,
         );
         Err("El chat AI Android solo esta disponible en Android.".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn list_android_ai_models(
+    state: State<'_, AndroidAiBridgeState>,
+    payload: CheckAndroidAiHealthPayload,
+) -> Result<AndroidAiModelListResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        if payload.ollama_url.trim().is_empty() {
+            return Err("La URL de Ollama es obligatoria.".to_string());
+        }
+
+        let guard = state
+            .handle
+            .lock()
+            .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
+        let Some(handle) = guard.as_ref() else {
+            return Err("El bridge AI de Android no esta disponible.".to_string());
+        };
+
+        let response = handle
+            .run_mobile_plugin::<AndroidAiModelListResponse>(
+                "listModels",
+                serde_json::json!({
+                    "ollamaUrl": payload.ollama_url,
+                    "apiKey": payload.api_key,
+                }),
+            )
+            .map_err(|error| format!("No se pudieron listar los modelos en Android: {error}"))?;
+
+        return Ok(AndroidAiModelListResult {
+            models: response.models.unwrap_or_default(),
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = state;
+        let CheckAndroidAiHealthPayload {
+            ollama_url,
+            api_key,
+        } = payload;
+        let _ = (ollama_url, api_key);
+        Err("El listado de modelos AI Android solo esta disponible en Android.".to_string())
     }
 }
 
