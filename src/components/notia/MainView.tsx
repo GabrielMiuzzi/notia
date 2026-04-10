@@ -13,6 +13,7 @@ interface MainViewProps {
   onDrawioDocumentPersist: (filePath: string, nextSource: string) => Promise<void>
   onDrawioControllerReady: (filePath: string, controller: DrawioDocumentController | null) => void
   rootPath: string | null
+  libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
@@ -39,6 +40,7 @@ export function MainView({
   onDrawioDocumentPersist,
   onDrawioControllerReady,
   rootPath,
+  libraryAndroidTreeUri,
   libraryFilePaths,
   inkdocPreferences,
   markdownWikiLinkTargets,
@@ -81,6 +83,7 @@ export function MainView({
           onDrawioSourcePersist={onDrawioDocumentPersist}
           onDrawioControllerReady={onDrawioControllerReady}
           rootPath={rootPath}
+          libraryAndroidTreeUri={libraryAndroidTreeUri}
           libraryFilePaths={libraryFilePaths}
           inkdocPreferences={inkdocPreferences}
           wikiLinkTargets={markdownWikiLinkTargets}

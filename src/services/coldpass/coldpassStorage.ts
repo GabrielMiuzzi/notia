@@ -30,26 +30,30 @@ export function resolveColdPassPaths(libraryPath: string): { directoryPath: stri
   return { directoryPath, filePath }
 }
 
-async function ensureColdPassDirectory(directoryPath: string): Promise<void> {
-  if (await pathExists(directoryPath)) {
+async function ensureColdPassDirectory(directoryPath: string, androidDirectoryUri?: string): Promise<void> {
+  if (await pathExists(directoryPath, { androidDirectoryUri })) {
     return
   }
 
-  const result = await createDirectory(directoryPath)
+  const result = await createDirectory(directoryPath, { androidDirectoryUri })
   if (!result.ok) {
     throw new Error(result.error ?? 'Could not create ColdPass directory.')
   }
 }
 
-async function ensureEncryptedColdPassFile(filePath: string, passkey: string): Promise<string> {
+async function ensureEncryptedColdPassFile(
+  filePath: string,
+  passkey: string,
+  androidDirectoryUri?: string,
+): Promise<string> {
   const defaultMarkdown = createEmptyColdPassMarkdown()
   const encryptedContent = await encryptColdPassMarkdown(defaultMarkdown, passkey)
 
-  if (await pathExists(filePath)) {
+  if (await pathExists(filePath, { androidDirectoryUri })) {
     return encryptedContent
   }
 
-  const createResult = await createFile(filePath, encryptedContent)
+  const createResult = await createFile(filePath, encryptedContent, { androidDirectoryUri })
   if (!createResult.ok) {
     throw new Error(createResult.error ?? 'Could not create ColdPass file.')
   }
@@ -62,17 +66,19 @@ export async function unlockColdPassSession(
   passkey: string,
 ): Promise<ColdPassSessionData> {
   const { directoryPath, filePath } = resolveColdPassPaths(library.path)
-  await ensureColdPassDirectory(directoryPath)
+  await ensureColdPassDirectory(directoryPath, library.androidTreeUri)
 
   let encryptedContent = ''
-  if (await pathExists(filePath)) {
-    const readResult = await readLibraryFileContent(filePath)
+  if (await pathExists(filePath, { androidDirectoryUri: library.androidTreeUri })) {
+    const readResult = await readLibraryFileContent(filePath, {
+      androidDirectoryUri: library.androidTreeUri,
+    })
     if (!readResult.ok) {
       throw new Error(readResult.error ?? 'Could not read ColdPass file.')
     }
     encryptedContent = readResult.content
   } else {
-    encryptedContent = await ensureEncryptedColdPassFile(filePath, passkey)
+    encryptedContent = await ensureEncryptedColdPassFile(filePath, passkey, library.androidTreeUri)
   }
 
   const markdown = await decryptColdPassMarkdown(encryptedContent, passkey)
@@ -89,10 +95,11 @@ export async function saveColdPassEntries(
   filePath: string,
   passkey: string,
   entries: ColdPassEntry[],
+  androidDirectoryUri?: string,
 ): Promise<{ ok: boolean; error?: string; markdown: string }> {
   const markdown = stringifyColdPassMarkdown(entries)
   const encryptedContent = await encryptColdPassMarkdown(markdown, passkey)
-  const result = await writeLibraryFileContent(filePath, encryptedContent)
+  const result = await writeLibraryFileContent(filePath, encryptedContent, { androidDirectoryUri })
 
   if (!result.ok) {
     return { ok: false, error: result.error ?? 'Could not write ColdPass file.', markdown }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
 use tauri::{
@@ -18,6 +18,8 @@ pub struct AndroidDirectoryPickerState {
     roots: Mutex<HashMap<String, String>>,
     #[cfg(target_os = "android")]
     paths: Mutex<HashMap<String, String>>,
+    #[cfg(target_os = "android")]
+    root_entries: Mutex<HashMap<String, Vec<String>>>,
 }
 
 #[cfg(target_os = "android")]
@@ -36,6 +38,7 @@ impl AndroidDirectoryPickerState {
             handle: Mutex::new(Some(handle)),
             roots: Mutex::new(HashMap::new()),
             paths: Mutex::new(HashMap::new()),
+            root_entries: Mutex::new(HashMap::new()),
         }
     }
 
@@ -78,6 +81,15 @@ struct ReadFileResponse {
 #[cfg(target_os = "android")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct EntryInfoResponse {
+    ok: Option<bool>,
+    #[serde(rename = "type")]
+    node_type: Option<String>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WriteFileResponse {
     ok: bool,
 }
@@ -90,21 +102,45 @@ struct CreateEntryResponse {
 }
 
 #[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntryMutationResponse {
+    ok: Option<bool>,
+    path: Option<String>,
+}
+
+#[cfg(target_os = "android")]
+fn cache_android_path(
+    path_map: &mut HashMap<String, String>,
+    cached_keys: &mut HashSet<String>,
+    path: &str,
+    uri: &str,
+) {
+    path_map.insert(path.to_string(), uri.to_string());
+    cached_keys.insert(path.to_string());
+
+    let normalized_path = normalize_android_root_key(path);
+    if !normalized_path.is_empty() {
+        path_map.insert(normalized_path.clone(), uri.to_string());
+        cached_keys.insert(normalized_path);
+    }
+}
+
+#[cfg(target_os = "android")]
 fn cache_android_tree_nodes(
     path_map: &mut HashMap<String, String>,
+    cached_keys: &mut HashSet<String>,
     nodes: &[AndroidTreeNode],
 ) {
     for node in nodes {
         if let Some(path) = node.path.as_deref() {
-            let normalized_path = normalize_android_root_key(path);
-            if !normalized_path.is_empty() && node.id.starts_with("content://") {
-                path_map.insert(path.to_string(), node.id.clone());
-                path_map.insert(normalized_path, node.id.clone());
+            if node.id.starts_with("content://") {
+                cache_android_path(path_map, cached_keys, path, &node.id);
             }
         }
 
         if let Some(children) = node.children.as_deref() {
-            cache_android_tree_nodes(path_map, children);
+            cache_android_tree_nodes(path_map, cached_keys, children);
         }
     }
 }
@@ -126,11 +162,40 @@ pub fn refresh_android_tree_path_cache(
         .run_mobile_plugin::<ReadTreeResponse>("readTree", serde_json::json!({ "uri": tree_uri }))
         .map_err(|error| format!("No se pudo leer la carpeta Android: {error}"))?;
 
+    let root_paths = {
+        let roots = state
+            .roots
+            .lock()
+            .map_err(|_| "No se pudo acceder a las carpetas Android seleccionadas.".to_string())?;
+        roots
+            .iter()
+            .filter(|(_, uri)| uri.as_str() == tree_uri)
+            .map(|(path, uri)| (path.clone(), uri.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let mut cached_keys = HashSet::new();
     let mut paths = state
         .paths
         .lock()
         .map_err(|_| "No se pudo actualizar la cache Android.".to_string())?;
-    cache_android_tree_nodes(&mut paths, &response.nodes);
+    let mut root_entries = state
+        .root_entries
+        .lock()
+        .map_err(|_| "No se pudo actualizar la cache Android.".to_string())?;
+
+    if let Some(previous_keys) = root_entries.get(tree_uri) {
+        for key in previous_keys {
+            paths.remove(key);
+        }
+    }
+
+    for (root_path, root_uri) in &root_paths {
+        cache_android_path(&mut paths, &mut cached_keys, root_path, root_uri);
+    }
+
+    cache_android_tree_nodes(&mut paths, &mut cached_keys, &response.nodes);
+    root_entries.insert(tree_uri.to_string(), cached_keys.into_iter().collect());
     Ok(())
 }
 
@@ -292,13 +357,7 @@ pub fn read_android_library_tree(
             .run_mobile_plugin::<ReadTreeResponse>("readTree", serde_json::json!({ "uri": uri }))
             .map_err(|error| format!("No se pudo leer la carpeta Android: {error}"))?;
 
-        {
-            let mut paths = state
-                .paths
-                .lock()
-                .map_err(|_| "No se pudo actualizar la cache Android.".to_string())?;
-            cache_android_tree_nodes(&mut paths, &response.nodes);
-        }
+        let _ = refresh_android_tree_path_cache(state.inner(), &uri);
 
         return Ok(response.nodes);
     }
@@ -364,6 +423,37 @@ pub fn write_android_content_text(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub fn read_android_entry_type(
+    state: &AndroidDirectoryPickerState,
+    entry_uri: &str,
+) -> Result<String, String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<EntryInfoResponse>("statEntry", serde_json::json!({ "uri": entry_uri }))
+        .map_err(|error| format!("No se pudo leer la entrada Android: {error}"))?;
+
+    if !response.ok.unwrap_or(false) {
+        return Err("No se pudo leer la entrada Android.".to_string());
+    }
+
+    let Some(node_type) = response.node_type else {
+        return Err("No se pudo leer el tipo de la entrada Android.".to_string());
+    };
+    if node_type.trim().is_empty() {
+        return Err("No se pudo leer el tipo de la entrada Android.".to_string());
+    }
+
+    Ok(node_type)
 }
 
 #[cfg(target_os = "android")]
@@ -459,6 +549,119 @@ pub fn delete_android_tree_entry(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub fn rename_android_tree_entry(
+    state: &AndroidDirectoryPickerState,
+    entry_uri: &str,
+    new_name: &str,
+) -> Result<String, String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<EntryMutationResponse>(
+            "renameEntry",
+            serde_json::json!({ "uri": entry_uri, "newName": new_name }),
+        )
+        .map_err(|error| format!("No se pudo renombrar la entrada Android: {error}"))?;
+
+    if !response.ok.unwrap_or(false) {
+        return Err("No se pudo renombrar la entrada Android.".to_string());
+    }
+
+    let Some(path) = response.path else {
+        return Err("No se pudo renombrar la entrada Android.".to_string());
+    };
+    if path.trim().is_empty() {
+        return Err("No se pudo renombrar la entrada Android.".to_string());
+    }
+
+    Ok(path)
+}
+
+#[cfg(target_os = "android")]
+pub fn copy_android_tree_entry(
+    state: &AndroidDirectoryPickerState,
+    source_uri: &str,
+    target_parent_uri: &str,
+) -> Result<String, String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<EntryMutationResponse>(
+            "copyEntry",
+            serde_json::json!({
+                "sourceUri": source_uri,
+                "targetParentUri": target_parent_uri,
+            }),
+        )
+        .map_err(|error| format!("No se pudo copiar la entrada Android: {error}"))?;
+
+    if !response.ok.unwrap_or(false) {
+        return Err("No se pudo copiar la entrada Android.".to_string());
+    }
+
+    let Some(path) = response.path else {
+        return Err("No se pudo copiar la entrada Android.".to_string());
+    };
+    if path.trim().is_empty() {
+        return Err("No se pudo copiar la entrada Android.".to_string());
+    }
+
+    Ok(path)
+}
+
+#[cfg(target_os = "android")]
+pub fn move_android_tree_entry(
+    state: &AndroidDirectoryPickerState,
+    source_uri: &str,
+    source_parent_uri: &str,
+    target_parent_uri: &str,
+) -> Result<String, String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<EntryMutationResponse>(
+            "moveEntry",
+            serde_json::json!({
+                "sourceUri": source_uri,
+                "sourceParentUri": source_parent_uri,
+                "targetParentUri": target_parent_uri,
+            }),
+        )
+        .map_err(|error| format!("No se pudo mover la entrada Android: {error}"))?;
+
+    if !response.ok.unwrap_or(false) {
+        return Err("No se pudo mover la entrada Android.".to_string());
+    }
+
+    let Some(path) = response.path else {
+        return Err("No se pudo mover la entrada Android.".to_string());
+    };
+    if path.trim().is_empty() {
+        return Err("No se pudo mover la entrada Android.".to_string());
+    }
+
+    Ok(path)
 }
 
 #[cfg(target_os = "android")]

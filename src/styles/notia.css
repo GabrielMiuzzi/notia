@@ -1129,6 +1129,7 @@
   gap: 10px;
   align-items: flex-start;
   padding: 10px;
+  min-height: 52px;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -1149,15 +1150,22 @@
 }
 
 .notia-chat-files-modal-item strong {
+  display: block;
   color: var(--color-heading-text);
   font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .notia-chat-files-modal-item span {
+  display: block;
   color: var(--color-path-text);
   font-size: 12px;
   line-height: 1.4;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .notia-chat-files-modal-empty {
@@ -4056,6 +4064,7 @@
   background: color-mix(in srgb, var(--color-card-bg) 82%, transparent);
   color: var(--color-heading-text);
   padding: 12px 13px;
+  min-height: 66px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -4074,15 +4083,24 @@
 }
 
 .notia-chat-history-item span {
+  display: block;
   font-size: 13px;
   line-height: 1.35;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .notia-chat-history-item small {
+  display: block;
   color: var(--color-subtle-text);
   font-size: 11px;
   line-height: 1.35;
-  word-break: break-all;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .notia-chat-history-empty {

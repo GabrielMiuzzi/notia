@@ -15,6 +15,7 @@ interface FileViewHostProps {
   onDrawioSourcePersist: (filePath: string, nextSource: string) => Promise<void>
   onDrawioControllerReady: (filePath: string, controller: DrawioDocumentController | null) => void
   rootPath: string | null
+  libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
   wikiLinkTargets: MarkdownWikiLinkTarget[]
@@ -28,6 +29,7 @@ export function FileViewHost({
   onDrawioSourcePersist,
   onDrawioControllerReady,
   rootPath,
+  libraryAndroidTreeUri,
   libraryFilePaths,
   inkdocPreferences,
   wikiLinkTargets,
@@ -44,6 +46,7 @@ export function FileViewHost({
           filePath={document.path}
           source={document.source}
           rootPath={rootPath}
+          libraryAndroidTreeUri={libraryAndroidTreeUri}
           libraryFilePaths={libraryFilePaths}
           inkdocPreferences={inkdocPreferences}
           onSourcePersist={onInkdocSourcePersist}

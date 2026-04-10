@@ -15,6 +15,10 @@ export interface NotiaLibraryConfig {
   ia?: AiPreferences
 }
 
+interface LibraryConfigOptions {
+  androidDirectoryUri?: string
+}
+
 const DEFAULT_LIBRARY_CONFIG: NotiaLibraryConfig = {
   version: 1,
   panelDesplegable: {
@@ -44,16 +48,22 @@ export function getLibraryConfigDir(libraryPath: string): string {
   return join(libraryPath, NOTIA_CONFIG_DIR)
 }
 
-export async function libraryConfigExists(libraryPath: string): Promise<boolean> {
+export async function libraryConfigExists(
+  libraryPath: string,
+  options?: LibraryConfigOptions,
+): Promise<boolean> {
   const configPath = getLibraryConfigPath(libraryPath)
-  return pathExists(configPath)
+  return pathExists(configPath, options)
 }
 
-export async function readLibraryConfig(libraryPath: string): Promise<NotiaLibraryConfig | null> {
+export async function readLibraryConfig(
+  libraryPath: string,
+  options?: LibraryConfigOptions,
+): Promise<NotiaLibraryConfig | null> {
   const configPath = getLibraryConfigPath(libraryPath)
   
   try {
-    const result = await readTextFile(configPath)
+    const result = await readTextFile(configPath, options)
     if (!result.ok) {
       return null
     }
@@ -68,23 +78,24 @@ export async function readLibraryConfig(libraryPath: string): Promise<NotiaLibra
 export async function writeLibraryConfig(
   libraryPath: string,
   config: NotiaLibraryConfig,
+  options?: LibraryConfigOptions,
 ): Promise<{ ok: boolean; error?: string }> {
   const configDir = getLibraryConfigDir(libraryPath)
   const configPath = getLibraryConfigPath(libraryPath)
   
   try {
     // Check if config already exists - if so, just update the file
-    const exists = await libraryConfigExists(libraryPath)
+    const exists = await libraryConfigExists(libraryPath, options)
     if (!exists) {
       // Only create directory if it doesn't exist
-      const dirResult = await createDirectory(configDir)
+      const dirResult = await createDirectory(configDir, options)
       if (!dirResult.ok) {
         return { ok: false, error: 'No se pudo crear el directorio de configuracion.' }
       }
     }
     
     const content = JSON.stringify(config, null, 2)
-    const result = await writeTextFile(configPath, content)
+    const result = await writeTextFile(configPath, content, options)
     
     return result
   } catch (error) {
@@ -95,18 +106,22 @@ export async function writeLibraryConfig(
   }
 }
 
-export async function ensureLibraryConfigExists(libraryPath: string): Promise<void> {
-  const exists = await libraryConfigExists(libraryPath)
+export async function ensureLibraryConfigExists(
+  libraryPath: string,
+  options?: LibraryConfigOptions,
+): Promise<void> {
+  const exists = await libraryConfigExists(libraryPath, options)
   if (!exists) {
-    await writeLibraryConfig(libraryPath, DEFAULT_LIBRARY_CONFIG)
+    await writeLibraryConfig(libraryPath, DEFAULT_LIBRARY_CONFIG, options)
   }
 }
 
 export async function updateLibraryConfig(
   libraryPath: string,
   updates: Partial<NotiaLibraryConfig>,
+  options?: LibraryConfigOptions,
 ): Promise<{ ok: boolean; error?: string }> {
-  const currentConfig = await readLibraryConfig(libraryPath)
+  const currentConfig = await readLibraryConfig(libraryPath, options)
   const newConfig: NotiaLibraryConfig = {
     ...DEFAULT_LIBRARY_CONFIG,
     ...currentConfig,
@@ -114,5 +129,5 @@ export async function updateLibraryConfig(
     version: 1,
   }
   
-  return writeLibraryConfig(libraryPath, newConfig)
+  return writeLibraryConfig(libraryPath, newConfig, options)
 }

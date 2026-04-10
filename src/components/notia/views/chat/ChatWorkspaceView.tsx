@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Bot, FileImage, Files, Info, PanelLeftClose, PanelLeftOpen, Plus, Settings2, Sparkles, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
+import { useVirtualList } from '../../../../hooks/useVirtualList'
 import type { NotiaLibrary } from '../../../../types/notia'
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import { CreateChatModal, type CreateChatModalSubmitPayload } from '../../CreateChatModal'
@@ -31,6 +32,7 @@ import {
   type ChatFileContextMode,
   type ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
+import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
 import { ChatLibraryFilesModal } from './ChatLibraryFilesModal'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 
@@ -67,6 +69,7 @@ const DEFAULT_SUGGESTIONS = [
 ]
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
+const CHAT_HISTORY_ITEM_HEIGHT = 74
 
 function normalizeChatTitle(value: string): string {
   const trimmed = value.trim()
@@ -326,6 +329,16 @@ export function ChatWorkspaceView({
     })),
     [availablePreviousChats, chatTitleOverrides],
   )
+  const {
+    containerRef: chatHistoryListRef,
+    scrollToIndex: scrollChatHistoryToIndex,
+    totalSize: chatHistoryTotalSize,
+    virtualItems: virtualChatHistoryItems,
+  } = useVirtualList({
+    itemCount: resolvedPreviousChats.length,
+    itemSize: CHAT_HISTORY_ITEM_HEIGHT,
+    overscan: 8,
+  })
   const compactRecentChats = useMemo(() => resolvedPreviousChats.slice(0, 3), [resolvedPreviousChats])
   const selectedLibraryFileSummary = useMemo(
     () => selectedLibraryFileOptions.filter((option) => selectedLibraryFilePaths.includes(option.path)),
@@ -508,6 +521,17 @@ export function ChatWorkspaceView({
       setPendingAutoCreatedChatFilePath(null)
     }
   }, [availablePreviousChats, pendingAutoCreatedChatFilePath])
+
+  useEffect(() => {
+    if (!isHistoryPanelOpen || !selectedChatFilePath) {
+      return
+    }
+
+    const selectedIndex = resolvedPreviousChats.findIndex((chat) => chat.filePath === selectedChatFilePath)
+    if (selectedIndex >= 0) {
+      scrollChatHistoryToIndex(selectedIndex, 'nearest')
+    }
+  }, [isHistoryPanelOpen, resolvedPreviousChats, scrollChatHistoryToIndex, selectedChatFilePath])
 
   useEffect(() => {
     if (availablePreviousChats.length === 0) {
@@ -889,7 +913,7 @@ export function ChatWorkspaceView({
   }
 
   const handleDeleteChat = async () => {
-    if (!chatContextMenuState) {
+    if (!chatContextMenuState || !library) {
       return
     }
 
@@ -912,7 +936,7 @@ export function ChatWorkspaceView({
       setLocallyDeletedChatPaths((current) => (
         current.includes(targetChat.filePath) ? current : [...current, targetChat.filePath]
       ))
-      await deleteChatDraftFile(targetChat.filePath)
+      await deleteChatDraftFile(targetChat.filePath, library)
       if (selectedChatFilePath === targetChat.filePath) {
         setSelectedChatFilePath(null)
         setActiveChatDocument(null)
@@ -967,9 +991,20 @@ export function ChatWorkspaceView({
       return
     }
 
+    const submitMeasurement = startPerformanceMeasurement('chat.submit_message', {
+      chatFilePath: selectedChatFilePath ?? undefined,
+      contextFileCount: effectiveSelectedContextPaths.length,
+      hasImage: Boolean(selectedImageAttachment),
+      libraryId: library.id,
+      messageLength: trimmedMessage.length,
+    })
+
     const healthResult = await checkAiHealth(aiPreferences)
     setIsCheckingAiHealth(false)
     if (!healthResult.ok) {
+      submitMeasurement.error(new Error(healthResult.message || 'No se pudo conectar con la IA.'), {
+        stage: 'health_check',
+      })
       setAiHealthMessage(healthResult.message || 'No se pudo conectar con la IA.')
       return
     }
@@ -1023,6 +1058,9 @@ export function ChatWorkspaceView({
         targetChatDocument = preparedDocument
         targetChatFilePath = filePath
       } catch (error) {
+        submitMeasurement.error(error, {
+          stage: 'create_chat',
+        })
         setDialogMessage(
           error instanceof Error && error.message.trim()
             ? error.message
@@ -1046,6 +1084,9 @@ export function ChatWorkspaceView({
     try {
       inlineFileAttachments = await loadInlineFileAttachments(library, effectiveSelectedContextPaths, selectedLibraryFileOptions)
     } catch (error) {
+      submitMeasurement.error(error, {
+        stage: 'load_inline_attachments',
+      })
       setDialogMessage(
         error instanceof Error && error.message.trim()
           ? error.message
@@ -1058,6 +1099,9 @@ export function ChatWorkspaceView({
       try {
         longTermMemories = await loadLongTermMemories(library)
       } catch (error) {
+        submitMeasurement.error(error, {
+          stage: 'load_long_term_memory',
+        })
         setDialogMessage(
           error instanceof Error && error.message.trim()
             ? error.message
@@ -1092,6 +1136,13 @@ export function ChatWorkspaceView({
     setSelectedImageAttachment(null)
     setActiveChatDocument(nextChatDocumentBase)
 
+    let aiReplyMeasurement = startPerformanceMeasurement('chat.ai_reply', {
+      contextFileCount: effectiveSelectedContextPaths.length,
+      hasImage: Boolean(selectedImageAttachment),
+      libraryId: library.id,
+      messageLength: trimmedMessage.length,
+    })
+
     try {
       const streamedAnswer = await streamAiChatReply(
         aiPreferences,
@@ -1109,6 +1160,10 @@ export function ChatWorkspaceView({
           },
         },
       )
+      aiReplyMeasurement.success({
+        responseLength: streamedAnswer.length,
+      })
+      aiReplyMeasurement = null
 
       const resolvedTitle = resolvePersistedChatTitle(
         targetChatDocument.title || 'Chat',
@@ -1177,7 +1232,17 @@ export function ChatWorkspaceView({
         ...current,
         [targetChatFilePath]: normalizeChatTitle(persistedDocument.title),
       }))
+      submitMeasurement.success({
+        autoCreatedChat: !selectedChatFilePath,
+        contextFileCount: effectiveSelectedContextPaths.length,
+        responseLength: streamedAnswer.length,
+        totalMessageCount: persistedDocument.messages.length,
+      })
     } catch (error) {
+      aiReplyMeasurement?.error(error)
+      submitMeasurement.error(error, {
+        stage: 'stream_or_persist',
+      })
       if (pendingAutoCreatedChatFilePath === targetChatFilePath) {
         setPendingAutoCreatedChatFilePath(null)
       }
@@ -1263,39 +1328,60 @@ export function ChatWorkspaceView({
                         : 'Todavia no hay chats creados.'}
                     </span>
                   </div>
-                  <div className="notia-chat-history-list" aria-label="Chats previos">
-                    {resolvedPreviousChats.length > 0 ? resolvedPreviousChats.map((chat) => (
-                      <button
-                        key={chat.id}
-                        type="button"
-                        className={`notia-chat-history-item ${
-                          selectedChatFilePath === chat.filePath ? 'notia-chat-history-item--active' : ''
-                        }`}
-                        title={chat.filePath}
-                        onClick={() => {
-                          setSelectedChatFilePath(chat.filePath)
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          const panelWidth = 184
-                          const nextLeft = Math.min(
-                            Math.max(12, event.clientX),
-                            window.innerWidth - panelWidth - 12,
-                          )
+                  <div ref={chatHistoryListRef} className="notia-chat-history-list" aria-label="Chats previos">
+                    {resolvedPreviousChats.length > 0 ? (
+                      <div style={{ height: `${chatHistoryTotalSize}px`, position: 'relative' }}>
+                        {virtualChatHistoryItems.map((virtualItem) => {
+                          const chat = resolvedPreviousChats[virtualItem.index]
+                          if (!chat) {
+                            return null
+                          }
 
-                          setChatContextMenuState({
-                            chatId: chat.id,
-                            filePath: chat.filePath,
-                            title: chat.title,
-                            top: event.clientY,
-                            left: nextLeft,
-                          })
-                        }}
-                      >
-                        <span>{chat.title}</span>
-                        <small>{chat.filePath}</small>
-                      </button>
-                    )) : (
+                          return (
+                            <div
+                              key={chat.id}
+                              style={{
+                                position: 'absolute',
+                                top: `${virtualItem.start}px`,
+                                left: 0,
+                                right: 0,
+                                height: `${virtualItem.size}px`,
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className={`notia-chat-history-item ${
+                                  selectedChatFilePath === chat.filePath ? 'notia-chat-history-item--active' : ''
+                                }`}
+                                title={chat.filePath}
+                                onClick={() => {
+                                  setSelectedChatFilePath(chat.filePath)
+                                }}
+                                onContextMenu={(event) => {
+                                  event.preventDefault()
+                                  const panelWidth = 184
+                                  const nextLeft = Math.min(
+                                    Math.max(12, event.clientX),
+                                    window.innerWidth - panelWidth - 12,
+                                  )
+
+                                  setChatContextMenuState({
+                                    chatId: chat.id,
+                                    filePath: chat.filePath,
+                                    title: chat.title,
+                                    top: event.clientY,
+                                    left: nextLeft,
+                                  })
+                                }}
+                              >
+                                <span>{chat.title}</span>
+                                <small>{chat.filePath}</small>
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : (
                       <div className="notia-chat-history-empty">No hay archivos de chat en `chat/chats`.</div>
                     )}
                   </div>

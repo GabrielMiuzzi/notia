@@ -8,19 +8,18 @@ import {
   TOP_TOOLBAR_ACTIONS,
 } from '../../constants/notiaMenu'
 import {
-  loadActiveLibraryId,
-  loadLibraries,
-  saveActiveLibraryId,
-  saveLibraries,
-} from '../../services/libraries/libraryStorage'
-import {
   createLibraryEntry,
-  filterExistingLibraries,
   performLibraryEntryOperation,
   readLibraryTree,
   readLibraryTreeSignature,
   searchLibraryFiles,
 } from '../../services/libraries/libraryRuntime'
+import { dispatchLibraryTreeChanged } from '../../services/libraries/libraryTreeEvents'
+import {
+  startDesktopLibraryTreeWatch,
+  stopDesktopLibraryTreeWatch,
+  subscribeToDesktopLibraryTreeWatchBridge,
+} from '../../services/libraries/libraryTreeWatchRuntime'
 import {
   readLibraryFileContent,
   writeLibraryFileContent,
@@ -29,20 +28,14 @@ import { controlWindow } from '../../services/window/windowRuntime'
 import { applySearchMatchesToTree } from '../../engines/tree/applySearchMatchesToTree'
 import { isTextualViewKind, resolveFileViewKind } from '../../services/views/fileViewResolver'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
-import { useLibraryGraphData } from '../../hooks/useLibraryGraphData'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
 import {
   loadExplorerFolderExpandedState,
   loadExplorerRefreshIntervalMs,
   saveExplorerFolderExpandedState,
-  saveExplorerRefreshIntervalMs,
 } from '../../services/preferences/explorerPanelStorage'
-import { loadInkdocPreferences, saveInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
-import {
-  loadAiPreferences,
-  normalizeAiSettingsInput,
-  saveAiPreferences,
-} from '../../services/preferences/aiSettingsStorage'
+import { loadInkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import { loadAiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import type { ColdPassEntry } from '../../types/coldpass'
@@ -85,11 +78,10 @@ import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '
 import type { DrawioDocumentController } from '../../modules/drawio/types'
 import { ensureChatLibraryStructure } from '../../services/chat/chatLibraryStructure'
 import { toStoredLibraryPath } from '../../services/libraries/libraryPathMapping'
-import {
-  readLibraryConfig,
-  writeLibraryConfig,
-  type NotiaLibraryConfig,
-} from '../../services/libraries/libraryConfig'
+import { startPerformanceMeasurement } from '../../services/runtime/performanceBaseline'
+import { useGraphWorkspace } from './hooks/useGraphWorkspace'
+import { useLibraryConfigSync } from './hooks/useLibraryConfigSync'
+import { useLibrarySession } from './hooks/useLibrarySession'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
@@ -97,17 +89,6 @@ const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
 interface PendingTextSaveJob {
   source: string
   timeoutId: number
-}
-
-function findInitialActiveLibrary(libraries: NotiaLibrary[]): string | null {
-  if (libraries.length === 0) {
-    return null
-  }
-  const savedId = loadActiveLibraryId()
-  if (savedId && libraries.some((library) => library.id === savedId)) {
-    return savedId
-  }
-  return libraries[0].id
 }
 
 function getParentDirectory(filePath: string): string {
@@ -155,6 +136,22 @@ function collectFilesFromTree(nodes: NotiaFileNode[]): string[] {
 
   visit(nodes)
   return paths
+}
+
+function countTreeNodes(nodes: NotiaFileNode[]): number {
+  let count = 0
+
+  const visit = (currentNodes: NotiaFileNode[]) => {
+    for (const node of currentNodes) {
+      count += 1
+      if (node.children && node.children.length > 0) {
+        visit(node.children)
+      }
+    }
+  }
+
+  visit(nodes)
+  return count
 }
 
 function collectNestedChatHistoryFiles(nodes: NotiaFileNode[], remainingSegments: string[]): string[] {
@@ -258,23 +255,6 @@ function collectFolderExpandedState(
   }
 
   return stateByPath
-}
-
-function areLibrariesEquivalent(current: NotiaLibrary[], next: NotiaLibrary[]): boolean {
-  if (current.length !== next.length) {
-    return false
-  }
-
-  return current.every((library, index) => {
-    const candidate = next[index]
-    if (!candidate) {
-      return false
-    }
-
-    return library.id === candidate.id
-      && library.path === candidate.path
-      && (library.androidTreeUri ?? '') === (candidate.androidTreeUri ?? '')
-  })
 }
 
 function applyFolderExpandedState(nodes: NotiaFileNode[], stateByPath: Map<string, boolean>): NotiaFileNode[] {
@@ -537,10 +517,6 @@ export function NotiaMenu() {
   const [explorerRefreshIntervalMs, setExplorerRefreshIntervalMs] = useState<number>(() => loadExplorerRefreshIntervalMs())
   const [inkdocPreferences, setInkdocPreferences] = useState(() => loadInkdocPreferences())
   const [aiPreferences, setAiPreferences] = useState(() => loadAiPreferences())
-  const [libraries, setLibraries] = useState<NotiaLibrary[]>(() => loadLibraries())
-  const [activeLibraryId, setActiveLibraryId] = useState<string | null>(() =>
-    findInitialActiveLibrary(loadLibraries()),
-  )
   const [treeNodes, setTreeNodes] = useState<NotiaFileNode[]>([])
   const [openTabs, setOpenTabs] = useState<OpenDocumentTab[]>([])
   const [openWorkspaceSpecialTabs, setOpenWorkspaceSpecialTabs] = useState<OpenWorkspaceSpecialTabs>({
@@ -551,7 +527,6 @@ export function NotiaMenu() {
   })
   const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
-  const [graphChatSelectedPaths, setGraphChatSelectedPaths] = useState<string[]>([])
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [pendingCreation, setPendingCreation] = useState<{
     id: string
@@ -626,6 +601,14 @@ export function NotiaMenu() {
     () => (isAndroidRuntime ? [] : TITLEBAR_RIGHT_ACTIONS),
     [isAndroidRuntime],
   )
+  const {
+    activeLibrary,
+    activeLibraryId,
+    libraries,
+    resolveActiveLibraryAndroidDirectoryUri,
+    setActiveLibraryId,
+    setLibraries,
+  } = useLibrarySession()
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
@@ -643,14 +626,10 @@ export function NotiaMenu() {
   const isTreeSignatureProbeInFlightRef = useRef(false)
   const hasQueuedTreeRefreshRef = useRef(false)
   const hasDeferredTreeRefreshRef = useRef(false)
+  const lastAutomaticTreeProbeAtRef = useRef(0)
   const isGraphViewActiveRef = useRef(false)
   const lastKnownTreeSignatureRef = useRef('')
   const treeNodesLibraryIdRef = useRef<string | null>(null)
-
-  const activeLibrary = useMemo(
-    () => libraries.find((library) => library.id === activeLibraryId) ?? null,
-    [activeLibraryId, libraries],
-  )
   const activeTab = useMemo(
     () => openTabs.find((tab) => tab.document.path === activeTabPath) ?? null,
     [activeTabPath, openTabs],
@@ -680,7 +659,6 @@ export function NotiaMenu() {
 
     return `${activeWorkspaceView}:default`
   }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
-  const isGraphViewActive = activeWorkspaceView === 'graph'
   const shouldRefreshVisibleExplorerTree =
     activeWorkspaceView !== 'task-manager' && (
       activeWorkspaceView === 'graph'
@@ -732,42 +710,21 @@ export function NotiaMenu() {
         }
       })
   }, [activeLibrary?.path, treeNodes])
-  const { graphModel, graphSourcesByPath, isGraphLoading } = useLibraryGraphData({
-    enabled: isGraphViewActive,
-    libraryPath: activeLibrary?.path ?? null,
-    rootPath: activeLibrary?.path ?? null,
+  const {
+    graphChatContextSummary,
+    graphChatEffectivePaths,
+    graphChatSelectedPaths,
+    graphModel,
+    graphSourcesByPath,
+    isGraphLoading,
+    isGraphViewActive,
+    setGraphChatSelectedPaths,
+  } = useGraphWorkspace({
+    activeLibrary,
+    activeWorkspaceView,
+    graphRevision,
     treeNodes,
-    revision: graphRevision,
   })
-  const graphChatAvailablePaths = useMemo(
-    () => graphModel.nodes.map((node) => node.path),
-    [graphModel.nodes],
-  )
-  const graphChatEffectivePaths = useMemo(
-    () => graphChatSelectedPaths.length > 0 ? graphChatSelectedPaths : graphChatAvailablePaths,
-    [graphChatAvailablePaths, graphChatSelectedPaths],
-  )
-  const graphChatContextSummary = useMemo(() => {
-    if (activeWorkspaceView !== 'graph') {
-      return null
-    }
-
-    if (graphChatSelectedPaths.length === 0) {
-      return graphChatAvailablePaths.length > 0
-        ? `Graph View: toda la libreria del grafo (${graphChatAvailablePaths.length} archivos)`
-        : 'Graph View: no hay archivos disponibles en el grafo'
-    }
-
-    return `Graph View: ${graphChatSelectedPaths.length} archivo${graphChatSelectedPaths.length === 1 ? '' : 's'} seleccionado${graphChatSelectedPaths.length === 1 ? '' : 's'}`
-  }, [activeWorkspaceView, graphChatAvailablePaths.length, graphChatSelectedPaths.length])
-
-  useEffect(() => {
-    const availablePathSet = new Set(graphChatAvailablePaths)
-    setGraphChatSelectedPaths((current) => {
-      const next = current.filter((path) => availablePathSet.has(path))
-      return next.length === current.length ? current : next
-    })
-  }, [graphChatAvailablePaths])
 
   const resetTabs = useCallback(() => {
     drawioControllersRef.current.clear()
@@ -848,7 +805,9 @@ export function NotiaMenu() {
         )),
       )
 
-      const result = await writeLibraryFileContent(targetPath, targetSource)
+      const result = await writeLibraryFileContent(targetPath, targetSource, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
+      })
       const latestTab = openTabsRef.current.find((tab) => tab.document.path === targetPath)
       if (!latestTab || !isTextFileDocument(latestTab.document) || latestTab.document.source !== targetSource) {
         return true
@@ -892,7 +851,7 @@ export function NotiaMenu() {
       })
       return false
     },
-    [bumpGraphRevisionIfVisible],
+    [bumpGraphRevisionIfVisible, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   useEffect(() => {
@@ -900,194 +859,18 @@ export function NotiaMenu() {
   }, [isGraphViewActive])
 
   useEffect(() => {
-    saveLibraries(libraries)
-  }, [libraries])
-
-  useEffect(() => {
-    let isCancelled = false
-
-    void (async () => {
-      const existingLibraries = await filterExistingLibraries(libraries)
-      if (isCancelled || areLibrariesEquivalent(libraries, existingLibraries)) {
-        return
-      }
-
-      setLibraries(existingLibraries)
-    })()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!activeLibraryId) {
-      if (libraries.length > 0) {
-        setActiveLibraryId(libraries[0].id)
-      }
-      return
-    }
-
-    if (!libraries.some((library) => library.id === activeLibraryId)) {
-      setActiveLibraryId(libraries.length > 0 ? libraries[0].id : null)
-    }
-  }, [activeLibraryId, libraries])
-
-  useEffect(() => {
-    saveActiveLibraryId(activeLibraryId)
-  }, [activeLibraryId])
-
-  useEffect(() => {
     saveThemePreference(theme)
   }, [theme])
 
-  // Load library config when active library changes
-  const libraryConfigLoadedRef = useRef(false)
-  const initialConfigRef = useRef<NotiaLibraryConfig | null>(null)
-  
-  useEffect(() => {
-    if (!activeLibrary) {
-      libraryConfigLoadedRef.current = false
-      initialConfigRef.current = null
-      return
-    }
-
-    let isCancelled = false
-    libraryConfigLoadedRef.current = false
-    initialConfigRef.current = null
-
-    void (async () => {
-      console.log('[NotiaMenu] Loading library config for:', activeLibrary.path)
-      const config = await readLibraryConfig(activeLibrary.path)
-      
-      if (isCancelled) {
-        return
-      }
-
-      if (config) {
-        console.log('[NotiaMenu] Found existing config:', config)
-        // Apply library-specific settings only if they exist
-        if (config.panelDesplegable?.refreshIntervalMs !== undefined) {
-          setExplorerRefreshIntervalMs(config.panelDesplegable.refreshIntervalMs)
-        }
-        if (config.inkdocs) {
-          setInkdocPreferences(config.inkdocs)
-        }
-        if (config.ia) {
-          setAiPreferences(config.ia)
-        }
-        // Store the loaded config as initial
-        initialConfigRef.current = config
-      } else {
-        console.log('[NotiaMenu] No existing config found')
-        // Store current values as initial
-        initialConfigRef.current = {
-          version: 1,
-          panelDesplegable: { refreshIntervalMs: explorerRefreshIntervalMs },
-          inkdocs: inkdocPreferences,
-          ia: aiPreferences,
-        }
-      }
-      
-      // Mark as loaded after state updates
-      libraryConfigLoadedRef.current = true
-      console.log('[NotiaMenu] Library config loading complete')
-    })()
-
-    return () => {
-      isCancelled = true
-      libraryConfigLoadedRef.current = false
-      initialConfigRef.current = null
-    }
-  }, [activeLibrary?.path])
-
-  // Save settings to library config when they change (debounced)
-  const libraryConfigTimeoutRef = useRef<number | null>(null)
-  const activeLibraryPathRef = useRef<string | null>(null)
-  
-  useEffect(() => {
-    if (!activeLibrary) {
-      return
-    }
-    
-    // Skip if config hasn't been loaded yet
-    if (!libraryConfigLoadedRef.current) {
-      console.log('[NotiaMenu] Skipping save - config not loaded yet')
-      return
-    }
-    
-    const config: NotiaLibraryConfig = {
-      version: 1,
-      panelDesplegable: {
-        refreshIntervalMs: explorerRefreshIntervalMs,
-      },
-      inkdocs: inkdocPreferences,
-      ia: aiPreferences,
-    }
-    
-    // Skip if matches initial config (prevents overwriting on load)
-    if (initialConfigRef.current) {
-      const initialJson = JSON.stringify(initialConfigRef.current)
-      const currentJson = JSON.stringify(config)
-      if (initialJson === currentJson) {
-        console.log('[NotiaMenu] Skipping save - matches initial config')
-        return
-      }
-    }
-    
-    activeLibraryPathRef.current = activeLibrary.path
-
-    // Clear previous timeout
-    if (libraryConfigTimeoutRef.current) {
-      window.clearTimeout(libraryConfigTimeoutRef.current)
-    }
-
-    // Debounce save
-    libraryConfigTimeoutRef.current = window.setTimeout(() => {
-      console.log('[NotiaMenu] Saving library config:', config)
-      
-      void writeLibraryConfig(activeLibraryPathRef.current!, config).then((result) => {
-        console.log('[NotiaMenu] Save result:', result)
-        if (result.ok) {
-          // Update initial config to prevent duplicate saves
-          initialConfigRef.current = config
-        }
-      })
-    }, 500)
-
-    return () => {
-      if (libraryConfigTimeoutRef.current) {
-        window.clearTimeout(libraryConfigTimeoutRef.current)
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLibrary?.path, explorerRefreshIntervalMs, inkdocPreferences, aiPreferences])
-
-  // Also save to localStorage for backward compatibility
-  useEffect(() => {
-    saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)
-  }, [explorerRefreshIntervalMs])
-
-  useEffect(() => {
-    saveInkdocPreferences(inkdocPreferences)
-  }, [inkdocPreferences])
-
-  useEffect(() => {
-    const normalizedPreferences = normalizeAiSettingsInput(aiPreferences)
-    if (
-      normalizedPreferences.ollamaUrl === aiPreferences.ollamaUrl
-      && normalizedPreferences.apiKey === aiPreferences.apiKey
-      && normalizedPreferences.selectedModel === aiPreferences.selectedModel
-    ) {
-      return
-    }
-
-    setAiPreferences(normalizedPreferences)
-  }, [aiPreferences])
-
-  useEffect(() => {
-    saveAiPreferences(aiPreferences)
-  }, [aiPreferences])
+  useLibraryConfigSync({
+    activeLibrary,
+    aiPreferences,
+    explorerRefreshIntervalMs,
+    inkdocPreferences,
+    setAiPreferences,
+    setExplorerRefreshIntervalMs,
+    setInkdocPreferences,
+  })
 
   useEffect(() => {
     activeTabPathRef.current = activeTabPath
@@ -1157,11 +940,21 @@ export function NotiaMenu() {
     }
 
     isTreeRefreshInFlightRef.current = true
+    const refreshMeasurement = startPerformanceMeasurement('explorer.refresh_tree', {
+      libraryId: activeLibrary.id,
+      libraryPath: activeLibrary.path,
+    })
     try {
       const refreshedNodes = await readLibraryTree(activeLibrary.path, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
       commitTreeNodesSnapshot(activeLibrary.id, refreshedNodes)
+      refreshMeasurement.success({
+        nodeCount: countTreeNodes(refreshedNodes),
+      })
+    } catch (error) {
+      refreshMeasurement.error(error)
+      throw error
     } finally {
       isTreeRefreshInFlightRef.current = false
       if (hasQueuedTreeRefreshRef.current) {
@@ -1202,6 +995,44 @@ export function NotiaMenu() {
     }
   }, [activeLibrary, refreshActiveLibraryTree])
 
+  const requestAutomaticTreeProbe = useCallback(() => {
+    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+      return
+    }
+
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      return
+    }
+
+    const minimumIntervalMs = isAndroidRuntime
+      ? (explorerRefreshIntervalMs > 0 ? Math.max(5000, explorerRefreshIntervalMs) : 0)
+      : Math.max(1000, explorerRefreshIntervalMs)
+
+    if (minimumIntervalMs <= 0) {
+      return
+    }
+
+    const now = Date.now()
+    if ((now - lastAutomaticTreeProbeAtRef.current) < minimumIntervalMs) {
+      return
+    }
+
+    lastAutomaticTreeProbeAtRef.current = now
+    void probeActiveLibraryTreeChanges()
+  }, [
+    activeLibrary?.path,
+    explorerRefreshIntervalMs,
+    isAndroidRuntime,
+    probeActiveLibraryTreeChanges,
+    shouldRefreshVisibleExplorerTree,
+  ])
+
+  const notifyLibraryTreeChanged = useCallback((pathHint?: string) => {
+    dispatchLibraryTreeChanged({
+      pathHint: pathHint ?? activeLibrary?.path,
+    })
+  }, [activeLibrary?.path])
+
   useEffect(() => {
     if (!activeLibrary || normalizedSearchQuery.length === 0) {
       setSearchMatchedPaths([])
@@ -1241,6 +1072,7 @@ export function NotiaMenu() {
       treeNodesLibraryIdRef.current = null
       setPendingCreation(null)
       lastKnownTreeSignatureRef.current = ''
+      lastAutomaticTreeProbeAtRef.current = 0
       isTreeRefreshInFlightRef.current = false
       isTreeSignatureProbeInFlightRef.current = false
       hasQueuedTreeRefreshRef.current = false
@@ -1254,12 +1086,17 @@ export function NotiaMenu() {
 
     clearAllPendingTextSaves()
     lastKnownTreeSignatureRef.current = ''
+    lastAutomaticTreeProbeAtRef.current = 0
     isTreeRefreshInFlightRef.current = false
     isTreeSignatureProbeInFlightRef.current = false
     hasQueuedTreeRefreshRef.current = false
     hasDeferredTreeRefreshRef.current = false
 
     let isCurrent = true
+    const libraryLoadMeasurement = startPerformanceMeasurement('library.switch_load', {
+      libraryId: activeLibrary.id,
+      libraryPath: activeLibrary.path,
+    })
     void (async () => {
       try {
         await ensureChatLibraryStructure(activeLibrary)
@@ -1274,14 +1111,28 @@ export function NotiaMenu() {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
       if (!isCurrent) {
+        libraryLoadMeasurement.cancel()
         return
       }
 
       commitTreeNodesSnapshot(activeLibrary.id, nodes)
-    })()
+      libraryLoadMeasurement.success({
+        nodeCount: countTreeNodes(nodes),
+      })
+    })().catch((error) => {
+      if (!isCurrent) {
+        libraryLoadMeasurement.cancel()
+        return
+      }
+
+      libraryLoadMeasurement.error(error)
+    })
 
     return () => {
       isCurrent = false
+      libraryLoadMeasurement.cancel({
+        stage: 'cleanup',
+      })
     }
   }, [activeLibrary, clearAllPendingTextSaves, commitTreeNodesSnapshot])
 
@@ -1298,6 +1149,7 @@ export function NotiaMenu() {
     resetTabs()
     clearAllPendingTextSaves()
     lastKnownTreeSignatureRef.current = ''
+    lastAutomaticTreeProbeAtRef.current = 0
     isTreeSignatureProbeInFlightRef.current = false
     hasDeferredTreeRefreshRef.current = false
     hasQueuedTreeRefreshRef.current = false
@@ -1317,7 +1169,9 @@ export function NotiaMenu() {
 
     const openColdPassPrompt = async () => {
       const { filePath } = resolveColdPassPaths(activeLibrary.path)
-      const coldPassFileExists = await pathExists(filePath)
+      const coldPassFileExists = await pathExists(filePath, {
+        androidDirectoryUri: activeLibrary.androidTreeUri,
+      })
       if (cancelled) {
         return
       }
@@ -1642,7 +1496,9 @@ export function NotiaMenu() {
       }
 
       if (tab.document.viewKind === 'inkdoc' && tab.document.source !== tab.latestSavedSource) {
-        const result = await writeLibraryFileContent(tabPath, tab.document.source)
+        const result = await writeLibraryFileContent(tabPath, tab.document.source, {
+          androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(tabPath),
+        })
         if (result.ok) {
           bumpGraphRevisionIfVisible()
           return true
@@ -1699,7 +1555,9 @@ export function NotiaMenu() {
           return true
         }
 
-        const result = await writeLibraryFileContent(tabPath, tab.document.source)
+        const result = await writeLibraryFileContent(tabPath, tab.document.source, {
+          androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(tabPath),
+        })
         if (result.ok) {
           bumpGraphRevisionIfVisible()
           return true
@@ -2071,7 +1929,12 @@ export function NotiaMenu() {
       isSubmitting: true,
     })
 
-    void saveColdPassEntries(coldPassSession.filePath, coldPassSession.passkey, nextEntries)
+    void saveColdPassEntries(
+      coldPassSession.filePath,
+      coldPassSession.passkey,
+      nextEntries,
+      activeLibrary?.androidTreeUri,
+    )
       .then((result) => {
         if (!result.ok) {
           throw new Error(result.error ?? 'No se pudo guardar la credencial.')
@@ -2099,7 +1962,7 @@ export function NotiaMenu() {
           isSubmitting: false,
         })
       })
-  }, [coldPassCredentialModalState.editingIndex, coldPassCredentialModalState.mode, coldPassSession])
+  }, [activeLibrary?.androidTreeUri, coldPassCredentialModalState.editingIndex, coldPassCredentialModalState.mode, coldPassSession])
 
   const handleCloseColdPassDeletePrompt = useCallback(() => {
     setColdPassDeletePromptState({
@@ -2147,7 +2010,12 @@ export function NotiaMenu() {
       isSubmitting: true,
     }))
 
-    void saveColdPassEntries(coldPassSession.filePath, coldPassSession.passkey, nextEntries)
+    void saveColdPassEntries(
+      coldPassSession.filePath,
+      coldPassSession.passkey,
+      nextEntries,
+      activeLibrary?.androidTreeUri,
+    )
       .then((result) => {
         if (!result.ok) {
           throw new Error(result.error ?? 'No se pudo eliminar la credencial.')
@@ -2173,7 +2041,7 @@ export function NotiaMenu() {
           isSubmitting: false,
         }))
       })
-  }, [coldPassDeletePromptState.deletingIndex, coldPassSession])
+  }, [activeLibrary?.androidTreeUri, coldPassDeletePromptState.deletingIndex, coldPassSession])
 
   const handleSubmitColdPassImportPasskey = useCallback((passkey: string) => {
     if (!coldPassSession || !coldPassImportPromptState.pendingImport) {
@@ -2199,7 +2067,12 @@ export function NotiaMenu() {
       isSubmitting: true,
     }))
 
-    void saveColdPassEntries(coldPassSession.filePath, coldPassSession.passkey, nextEntries)
+    void saveColdPassEntries(
+      coldPassSession.filePath,
+      coldPassSession.passkey,
+      nextEntries,
+      activeLibrary?.androidTreeUri,
+    )
       .then((result) => {
         if (!result.ok) {
           throw new Error(result.error ?? 'No se pudo importar el vault.')
@@ -2233,7 +2106,7 @@ export function NotiaMenu() {
           isSubmitting: false,
         }))
       })
-  }, [coldPassImportPromptState.pendingImport, coldPassSession])
+  }, [activeLibrary?.androidTreeUri, coldPassImportPromptState.pendingImport, coldPassSession])
 
   const handleCloseActiveTab = useCallback(() => {
     const currentActiveTabPath = activeTabPathRef.current
@@ -2363,8 +2236,8 @@ export function NotiaMenu() {
       return
     }
 
-    void probeActiveLibraryTreeChanges()
-  }, [activeLibrary?.path, probeActiveLibraryTreeChanges, shouldRefreshVisibleExplorerTree])
+    requestAutomaticTreeProbe()
+  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshVisibleExplorerTree])
 
   useEffect(() => {
     const handleLibraryTreeChanged = (event: Event) => {
@@ -2414,36 +2287,71 @@ export function NotiaMenu() {
   }, [activeLibrary?.path, bumpGraphRevisionIfVisible, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
 
   useEffect(() => {
-    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+    if (!activeLibrary?.path) {
       return
     }
 
-    if (explorerRefreshIntervalMs <= 0) {
-      return
+    const requestProbe = () => {
+      if (!shouldRefreshVisibleExplorerTree) {
+        return
+      }
+
+      requestAutomaticTreeProbe()
     }
 
-    if (isAndroidRuntime && explorerRefreshIntervalMs < 5000) {
-      return
-    }
-
-    const intervalId = window.setInterval(() => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') {
         return
       }
 
-      void probeActiveLibraryTreeChanges()
-    }, explorerRefreshIntervalMs)
+      requestProbe()
+    }
+
+    window.addEventListener('focus', requestProbe)
+    window.addEventListener('pageshow', requestProbe)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
-      window.clearInterval(intervalId)
+      window.removeEventListener('focus', requestProbe)
+      window.removeEventListener('pageshow', requestProbe)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [
-    activeLibrary?.path,
-    explorerRefreshIntervalMs,
-    isAndroidRuntime,
-    probeActiveLibraryTreeChanges,
-    shouldRefreshVisibleExplorerTree,
-  ])
+  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshVisibleExplorerTree])
+
+  useEffect(() => {
+    if (isAndroidRuntime || !activeLibrary?.path) {
+      return
+    }
+
+    let isDisposed = false
+    let unsubscribe: (() => void) | null = null
+
+    void (async () => {
+      try {
+        const nextUnsubscribe = await subscribeToDesktopLibraryTreeWatchBridge()
+        if (isDisposed) {
+          nextUnsubscribe()
+          return
+        }
+
+        unsubscribe = nextUnsubscribe
+        await startDesktopLibraryTreeWatch(activeLibrary.path)
+      } catch (error) {
+        console.warn('[notia] could not start desktop library tree watch bridge', {
+          libraryPath: activeLibrary.path,
+          error,
+        })
+      }
+    })()
+
+    return () => {
+      isDisposed = true
+      if (unsubscribe) {
+        unsubscribe()
+      }
+      void stopDesktopLibraryTreeWatch()
+    }
+  }, [activeLibrary?.path, isAndroidRuntime])
 
   const handleOpenFile = useCallback(async (filePath: string) => {
     const existingTab = openTabsRef.current.find((tab) => tab.document.path === filePath)
@@ -2459,9 +2367,18 @@ export function NotiaMenu() {
     setPendingCreation(null)
     setRenamingPath(null)
 
+    const openFileMeasurement = startPerformanceMeasurement('document.open', {
+      extension,
+      filePath,
+      viewKind,
+    })
+
     if (isTextualViewKind(viewKind) || viewKind === 'inkdoc' || viewKind === 'drawio') {
-      const result = await readLibraryFileContent(filePath)
+      const result = await readLibraryFileContent(filePath, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
+      })
       if (!result.ok) {
+        openFileMeasurement.error(new Error(result.error ?? 'Could not read file.'))
         setDialogState({
           type: 'info',
           title: 'No se pudo abrir el archivo',
@@ -2480,6 +2397,9 @@ export function NotiaMenu() {
       }
 
       openDocumentInTab(nextDocument, result.content)
+      openFileMeasurement.success({
+        sourceLength: result.content.length,
+      })
       return
     }
 
@@ -2494,7 +2414,8 @@ export function NotiaMenu() {
       },
       '',
     )
-  }, [openDocumentInTab])
+    openFileMeasurement.success()
+  }, [openDocumentInTab, resolveActiveLibraryAndroidDirectoryUri])
 
   const handleTextDocumentChange = useCallback((nextSource: string) => {
     const targetPath = activeTabPathRef.current
@@ -2547,7 +2468,9 @@ export function NotiaMenu() {
         }),
       )
 
-      const result = await writeLibraryFileContent(targetPath, nextSource)
+      const result = await writeLibraryFileContent(targetPath, nextSource, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
+      })
       if (!result.ok) {
         throw new Error(result.error ?? 'No se pudo guardar el archivo Inkdoc.')
       }
@@ -2559,7 +2482,7 @@ export function NotiaMenu() {
       )
       bumpGraphRevisionIfVisible()
     },
-    [bumpGraphRevisionIfVisible],
+    [bumpGraphRevisionIfVisible, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   const handleDrawioDocumentPersist = useCallback(
@@ -2581,7 +2504,9 @@ export function NotiaMenu() {
         }),
       )
 
-      const result = await writeLibraryFileContent(targetPath, nextSource)
+      const result = await writeLibraryFileContent(targetPath, nextSource, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
+      })
       if (!result.ok) {
         setOpenTabs((current) =>
           current.map((tab) => (
@@ -2612,7 +2537,7 @@ export function NotiaMenu() {
       )
       bumpGraphRevisionIfVisible()
     },
-    [bumpGraphRevisionIfVisible],
+    [bumpGraphRevisionIfVisible, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   const handleDrawioControllerReady = useCallback(
@@ -2649,8 +2574,8 @@ export function NotiaMenu() {
     }
 
     setPendingCreation(null)
-    await refreshActiveLibraryTree()
-  }, [activeLibrary, pendingCreation, refreshActiveLibraryTree])
+    notifyLibraryTreeChanged(pendingCreation.parentPath)
+  }, [activeLibrary, notifyLibraryTreeChanged, pendingCreation])
 
   const handleCancelPendingCreation = useCallback(() => {
     setPendingCreation(null)
@@ -2668,7 +2593,13 @@ export function NotiaMenu() {
   }, [])
 
   const handleRenameSubmit = useCallback(async (path: string, name: string) => {
-    const result = await performLibraryEntryOperation({ action: 'rename', targetPath: path, newName: name })
+    const result = await performLibraryEntryOperation({
+      action: 'rename',
+      targetPath: path,
+      newName: name,
+    }, {
+      androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(path),
+    })
     if (!result.ok) {
       setDialogState({
         type: 'info',
@@ -2690,8 +2621,8 @@ export function NotiaMenu() {
     }
 
     setRenamingPath(null)
-    await refreshActiveLibraryTree()
-  }, [closeTabsByPath, refreshActiveLibraryTree, renameOpenTabPath])
+    notifyLibraryTreeChanged(path)
+  }, [closeTabsByPath, notifyLibraryTreeChanged, renameOpenTabPath, resolveActiveLibraryAndroidDirectoryUri])
 
   const handleContextMenuAction = async (actionId: string) => {
     if (!activeLibrary || !contextMenu) {
@@ -2783,6 +2714,9 @@ export function NotiaMenu() {
         sourcePath: clipboardEntry.path,
         targetDirectoryPath: targetDirectory || activeLibrary.path,
         mode: clipboardEntry.mode,
+      }, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetDirectory || activeLibrary.path)
+          ?? resolveActiveLibraryAndroidDirectoryUri(clipboardEntry.path),
       })
       if (!pasteResult.ok) {
         setDialogState({
@@ -2796,7 +2730,7 @@ export function NotiaMenu() {
       }
 
       setContextMenu(null)
-      await refreshActiveLibraryTree()
+      notifyLibraryTreeChanged(targetDirectory || clipboardEntry.path)
       return
     }
 
@@ -2817,6 +2751,8 @@ export function NotiaMenu() {
       const deleteResult = await performLibraryEntryOperation({
         action: 'delete',
         targetPath,
+      }, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
       })
 
       if (!deleteResult.ok) {
@@ -2831,7 +2767,7 @@ export function NotiaMenu() {
 
       closeTabsByPath(targetPath)
       setContextMenu(null)
-      await refreshActiveLibraryTree()
+      notifyLibraryTreeChanged(targetPath)
       return
     }
 
@@ -2948,6 +2884,9 @@ export function NotiaMenu() {
         sourcePath: normalizedSourcePath,
         targetDirectoryPath: normalizedTargetDirectoryPath,
         mode: 'move',
+      }, {
+        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(normalizedTargetDirectoryPath)
+          ?? resolveActiveLibraryAndroidDirectoryUri(normalizedSourcePath),
       })
 
       if (!moveResult.ok) {
@@ -2960,9 +2899,9 @@ export function NotiaMenu() {
       }
 
       closeTabsByPath(normalizedSourcePath)
-      await refreshActiveLibraryTree()
+      notifyLibraryTreeChanged(normalizedTargetDirectoryPath)
     })()
-  }, [activeLibrary, closeTabsByPath, refreshActiveLibraryTree])
+  }, [activeLibrary, closeTabsByPath, notifyLibraryTreeChanged, resolveActiveLibraryAndroidDirectoryUri])
   const handleCancelRename = useCallback(() => {
     setRenamingPath(null)
   }, [])
@@ -3105,8 +3044,8 @@ export function NotiaMenu() {
             library={activeLibrary}
             aiPreferences={aiPreferences}
             previousChats={previousChatFiles}
-            onChatCreated={() => refreshActiveLibraryTree()}
-            onChatDeleted={() => refreshActiveLibraryTree()}
+            onChatCreated={() => notifyLibraryTreeChanged(activeLibrary?.path)}
+            onChatDeleted={() => notifyLibraryTreeChanged(activeLibrary?.path)}
           />
         ) : activeWorkspaceView === 'task-manager' ? (
           <TaskManagerApp
@@ -3140,6 +3079,7 @@ export function NotiaMenu() {
             onDrawioDocumentPersist={handleDrawioDocumentPersist}
             onDrawioControllerReady={handleDrawioControllerReady}
             rootPath={activeLibrary?.path ?? null}
+            libraryAndroidTreeUri={activeLibrary?.androidTreeUri}
             libraryFilePaths={libraryFilePaths}
             inkdocPreferences={inkdocPreferences}
             markdownWikiLinkTargets={markdownWikiLinkTargets}
@@ -3191,8 +3131,8 @@ export function NotiaMenu() {
               transientContextSummary={graphChatContextSummary}
               persistTransientContext={false}
               selectMatchingChatOnly
-              onChatCreated={() => refreshActiveLibraryTree()}
-              onChatDeleted={() => refreshActiveLibraryTree()}
+              onChatCreated={() => notifyLibraryTreeChanged(activeLibrary?.path)}
+              onChatDeleted={() => notifyLibraryTreeChanged(activeLibrary?.path)}
             />
           ) : null}
         </aside>

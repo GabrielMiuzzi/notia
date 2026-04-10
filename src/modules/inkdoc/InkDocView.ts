@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf } from "./engines/platform/inkdocPlatform";
+import { ItemView, Notice, TFile, WorkspaceLeaf } from "./engines/platform/inkdocPlatform";
 import type InkDocPlugin from "./main";
 import type {
 	InkDocDocument,
@@ -108,6 +108,7 @@ import {
 import { stabilizePoint } from "./inkdoc/view/strokeSmoothing";
 import { setCompatibleIcon, setLegacyIcon, type LegacyIconName } from "./inkdoc/view/iconFallback";
 import { DocumentSyncEngine } from "./inkdoc/view/documentSyncEngine";
+import { renderLatexSegments } from "./inkdoc/view/latexRenderer";
 import {
 	createStickyNoteAtPoint,
 	createStickyNotesRuntime,
@@ -119,6 +120,13 @@ import {
 	createObjectHoverMenuController,
 	startWindowPointerInteraction
 } from "./inkdoc/view/objectBehavior";
+import {
+	getCanvasClientPoint,
+	getCanvasMousePosition,
+	getCanvasPointerPosition,
+	getPagesContentClientPoint,
+	InkDocViewportController
+} from "./inkdoc/view/viewportController";
 import {
 	confirmObjectCreation as openObjectCreationPrompt,
 	type InkDocCreatableObject
@@ -202,15 +210,7 @@ export class InkDocView extends ItemView {
 	private latexEditorEl: HTMLTextAreaElement | null = null;
 	private activeLatexEdit: ActiveBlockEdit | null = null;
 	private imagePointerCleanup: (() => void) | null = null;
-	private zoomLevel = 1;
-	private isPanning = false;
-	private handPanPointerId: number | null = null;
-	private handGesturePointers = new Map<number, { x: number; y: number }>();
-	private pinchStartDistance: number | null = null;
-	private pinchStartZoom = 1;
-	private pinchAnchorContent: { x: number; y: number } | null = null;
-	private panStart: { x: number; y: number } | null = null;
-	private panScrollStart: { left: number; top: number } | null = null;
+	private readonly viewportController: InkDocViewportController;
 	private activeTextEdit: ActiveBlockEdit | null = null;
 	private isMobileFastRenderEnabled = Boolean(window.matchMedia?.("(pointer: coarse)")?.matches);
 	private isLowLatencyModeEnabled = false;
@@ -249,6 +249,9 @@ export class InkDocView extends ItemView {
 		this.saveDebounced = () => {
 			this.syncEngine.requestSaveAfterActivity();
 		};
+		this.viewportController = new InkDocViewportController({
+			onZoomChanged: () => this.updateZoom()
+		});
 	}
 
 	public setSyncDebounceMs(value: number): void {
@@ -452,34 +455,19 @@ export class InkDocView extends ItemView {
 		this.pagesEl = root.createDiv({ cls: "inkdoc-pages" });
 		this.pagesContentEl = this.pagesEl.createDiv({ cls: "inkdoc-pages-content" });
 		this.updateZoom();
-			this.registerDomEvent(
-				this.pagesEl,
-				"wheel",
-				(event: WheelEvent) => {
-					if (this.activeTool !== "hand" || !event.ctrlKey) {
-						return;
-					}
-					event.preventDefault();
+		this.registerDomEvent(
+			this.pagesEl,
+			"wheel",
+			(event: WheelEvent) => {
+				if (this.activeTool !== "hand" || !event.ctrlKey) {
+					return;
+				}
+				event.preventDefault();
 				const target = this.pagesEl;
-				const content = this.pagesContentEl;
-			if (!target || !content) {
-				return;
-			}
-			const rect = target.getBoundingClientRect();
-			const pointerX = event.clientX - rect.left;
-			const pointerY = event.clientY - rect.top;
-			const startZoom = this.zoomLevel;
-			const direction = event.deltaY > 0 ? -1 : 1;
-			const nextZoom = this.clampZoom(startZoom * (direction > 0 ? 1.1 : 0.9));
-			if (nextZoom === startZoom) {
-				return;
-			}
-			const contentX = (target.scrollLeft + pointerX) / startZoom;
-			const contentY = (target.scrollTop + pointerY) / startZoom;
-			this.zoomLevel = nextZoom;
-			this.updateZoom();
-				target.scrollLeft = contentX * nextZoom - pointerX;
-				target.scrollTop = contentY * nextZoom - pointerY;
+				if (!target) {
+					return;
+				}
+				this.viewportController.handleWheelZoom(target, event);
 			},
 			{ passive: false }
 		);
@@ -499,7 +487,7 @@ export class InkDocView extends ItemView {
 				this.renderStickyNotes();
 				return;
 			}
-			const point = this.getClientPointOnPagesContent(event.clientX, event.clientY);
+			const point = getPagesContentClientPoint(this.pagesContentEl, event.clientX, event.clientY);
 			if (!point) {
 				return;
 			}
@@ -514,56 +502,28 @@ export class InkDocView extends ItemView {
 			if (this.activeTool !== "hand" || event.button !== 0 || !this.pagesEl) {
 				return;
 			}
-			this.handGesturePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-			this.pagesEl.setPointerCapture(event.pointerId);
-			if (this.handGesturePointers.size >= 2) {
-				this.beginHandPinchGesture();
-			} else {
-				this.isPanning = true;
-				this.handPanPointerId = event.pointerId;
-				this.panStart = { x: event.clientX, y: event.clientY };
-				this.panScrollStart = { left: this.pagesEl.scrollLeft, top: this.pagesEl.scrollTop };
-				this.pagesEl.classList.add("is-panning");
-			}
+			this.viewportController.handleHandPointerDown(this.pagesEl, event);
 			event.preventDefault();
 		});
 		this.registerDomEvent(this.pagesEl, "pointermove", (event: PointerEvent) => {
 			if (this.activeTool !== "hand" || !this.pagesEl) {
 				return;
 			}
-			if (this.handGesturePointers.has(event.pointerId)) {
-				this.handGesturePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-			}
-			if (this.handGesturePointers.size >= 2 && this.pinchStartDistance && this.pinchAnchorContent) {
-				this.updateHandPinchGesture();
+			if (this.viewportController.handleHandPointerMove(this.pagesEl, event)) {
 				event.preventDefault();
-				return;
 			}
-			if (
-				!this.isPanning ||
-				this.handPanPointerId !== event.pointerId ||
-				!this.panStart ||
-				!this.panScrollStart
-			) {
-				return;
-			}
-			const dx = event.clientX - this.panStart.x;
-			const dy = event.clientY - this.panStart.y;
-			this.pagesEl.scrollLeft = this.panScrollStart.left - dx;
-			this.pagesEl.scrollTop = this.panScrollStart.top - dy;
-			event.preventDefault();
 		});
 		this.registerDomEvent(this.pagesEl, "pointerup", (event: PointerEvent) => {
 			if (this.activeTool !== "hand" || !this.pagesEl) {
 				return;
 			}
-			this.finishHandGesturePointer(event.pointerId);
+			this.viewportController.finishHandGesturePointer(this.pagesEl, event.pointerId);
 		});
 		this.registerDomEvent(this.pagesEl, "pointercancel", (event: PointerEvent) => {
 			if (this.activeTool !== "hand" || !this.pagesEl) {
 				return;
 			}
-			this.finishHandGesturePointer(event.pointerId);
+			this.viewportController.finishHandGesturePointer(this.pagesEl, event.pointerId);
 		});
 		this.registerDomEvent(window, "resize", () => {
 			if (!this.pencilMenuEl) {
@@ -1403,30 +1363,6 @@ export class InkDocView extends ItemView {
 		return getContrastPageTextColor(page.colors);
 	}
 
-	private normalizeLatexForRender(value: string): string {
-		const trimmed = value.trim();
-		if (!trimmed) {
-			return "";
-		}
-		const bracketMatch = trimmed.match(/^\\\[\s*([\s\S]*?)\s*\\\]$/);
-		if (bracketMatch) {
-			return bracketMatch[1]?.trim() ?? "";
-		}
-		const parenMatch = trimmed.match(/^\\\(\s*([\s\S]*?)\s*\\\)$/);
-		if (parenMatch) {
-			return parenMatch[1]?.trim() ?? "";
-		}
-		const dollarMatch = trimmed.match(/^\$\$\s*([\s\S]*?)\s*\$\$$/);
-		if (dollarMatch) {
-			return dollarMatch[1]?.trim() ?? "";
-		}
-		const inlineDollarMatch = trimmed.match(/^\$\s*([\s\S]*?)\s*\$$/);
-		if (inlineDollarMatch) {
-			return inlineDollarMatch[1]?.trim() ?? "";
-		}
-		return trimmed;
-	}
-
 	private getTextBlockColor(page: InkDocPage, block: InkDocTextBlock): string {
 		if (typeof block.color === "string" && block.color.trim().length > 0) {
 			return block.color;
@@ -1829,8 +1765,9 @@ export class InkDocView extends ItemView {
 	private async renderPage(pagesEl: HTMLDivElement, page: InkDocPage, index: number): Promise<void> {
 		const { widthMm, heightMm } = getPageSizeMm(this.docData?.page.size);
 		const pageEl = pagesEl.createDiv({ cls: "inkdoc-page" });
-		pageEl.style.width = `${widthMm}mm`;
-		pageEl.style.height = `${heightMm}mm`;
+		pageEl.dataset.pageWidthMm = String(widthMm);
+		pageEl.dataset.pageHeightMm = String(heightMm);
+		this.viewportController.applyZoomToPageElement(pageEl);
 		setPageBackgroundAttribute(pageEl, page.background);
 		setPageColorVariables(pageEl, page.colors);
 		if (this.isDecorationVisible("header", index)) {
@@ -1915,11 +1852,11 @@ export class InkDocView extends ItemView {
 		});
 
 		const canvasEl = pageEl.createEl("canvas", { cls: "inkdoc-page-canvas" });
-		canvasEl.style.width = `${widthMm}mm`;
-		canvasEl.style.height = `${heightMm}mm`;
+		canvasEl.style.width = "100%";
+		canvasEl.style.height = "100%";
 		const previewCanvasEl = pageEl.createEl("canvas", { cls: "inkdoc-page-canvas inkdoc-page-canvas-preview" });
-		previewCanvasEl.style.width = `${widthMm}mm`;
-		previewCanvasEl.style.height = `${heightMm}mm`;
+		previewCanvasEl.style.width = "100%";
+		previewCanvasEl.style.height = "100%";
 		const { widthPx, heightPx } = this.getCanvasSizePx();
 		const dpr = window.devicePixelRatio || 1;
 		canvasEl.width = Math.round(widthPx * dpr);
@@ -2037,7 +1974,7 @@ export class InkDocView extends ItemView {
 			if (!file) {
 				return;
 			}
-			const point = this.getClientPointOnCanvas(canvasEl, event.clientX, event.clientY);
+			const point = getCanvasClientPoint(canvasEl, event.clientX, event.clientY, this.getCanvasSizePx());
 			void this.insertImageFromFile(page, index, point, file);
 		});
 	}
@@ -2217,8 +2154,10 @@ export class InkDocView extends ItemView {
 			}
 			blockEl.style.left = `${block.x * scaleX}px`;
 			blockEl.style.top = `${block.y * scaleY}px`;
-			blockEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, block.w * scaleX)}px`;
-			blockEl.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h * scaleY)}px`;
+			blockEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, block.w)}px`;
+			blockEl.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h)}px`;
+			blockEl.style.transform = `scale(${scaleX}, ${scaleY})`;
+			blockEl.style.transformOrigin = "top left";
 			const content = blockEl.createDiv({ cls: "inkdoc-text-block-content" });
 			if (this.getBlockType(block) === "latex") {
 				void this.renderLatexBlock(page, content, block);
@@ -2340,7 +2279,7 @@ export class InkDocView extends ItemView {
 					preventDefaultOnEnd: false,
 					onMove: (moveEvent) => {
 						this.syncEngine.noteActivity();
-						const currentZoom = Math.max(0.001, this.zoomLevel || 1);
+						const currentZoom = Math.max(0.001, this.viewportController.getZoomLevel() || 1);
 						const dx = (moveEvent.clientX - startX) / currentZoom;
 						const dy = (moveEvent.clientY - startY) / currentZoom;
 						if (owner.kind === "decoration") {
@@ -2394,7 +2333,7 @@ export class InkDocView extends ItemView {
 					captureTarget: resizeHandle,
 					onMove: (moveEvent) => {
 						this.syncEngine.noteActivity();
-						const currentZoom = Math.max(0.001, this.zoomLevel || 1);
+						const currentZoom = Math.max(0.001, this.viewportController.getZoomLevel() || 1);
 						const dx = (moveEvent.clientX - startX) / currentZoom;
 						const dy = (moveEvent.clientY - startY) / currentZoom;
 						if (owner.kind === "decoration") {
@@ -2407,8 +2346,8 @@ export class InkDocView extends ItemView {
 							this.clampTextBlockToDecorationRegion(targetBlock, owner.region);
 							blockEl.style.left = `${targetBlock.x * scaleX}px`;
 							blockEl.style.top = `${targetBlock.y * scaleY}px`;
-							blockEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, targetBlock.w * scaleX)}px`;
-							blockEl.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, targetBlock.h * scaleY)}px`;
+							blockEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, targetBlock.w)}px`;
+							blockEl.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, targetBlock.h)}px`;
 						} else {
 							block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, startW + dx);
 							block.h = Math.max(INKDOC_TEXT_MIN_HEIGHT, startH + dy);
@@ -2572,7 +2511,7 @@ export class InkDocView extends ItemView {
 						this.selectedStrokes.set(page.id, new Set());
 						this.selectedTextBlocks.set(page.id, new Set());
 						this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
-						const point = this.getMousePosition(state.canvas, event);
+						const point = getCanvasMousePosition(state.canvas, event, this.getCanvasSizePx());
 						this.openContextMenu(
 							state.canvas,
 							page,
@@ -2636,22 +2575,13 @@ export class InkDocView extends ItemView {
 	): Promise<void> {
 		container.empty();
 		container.style.color = this.getLatexBlockColor(page, block);
-		const latex = this.normalizeLatexForRender(block.latex ?? "");
+		const latex = block.latex?.trim() ?? "";
 		if (!latex) {
 			return;
 		}
-		try {
-			const katexModule = await import("katex");
-			const host = container.createDiv({
-				cls: "inkdoc-markdown-render inkdoc-markdown-render--math"
-			});
-			host.innerHTML = katexModule.renderToString(latex, {
-				throwOnError: false,
-				displayMode: true
-			});
-		} catch (error) {
-			console.error("Error al renderizar LaTeX:", error);
-			container.textContent = latex;
+		const rendered = await renderLatexSegments(container, latex);
+		if (!rendered) {
+			console.error("Error al renderizar LaTeX");
 		}
 	}
 
@@ -3062,7 +2992,7 @@ export class InkDocView extends ItemView {
 				this.closeTextBlockMenu();
 				return;
 			}
-			const point = this.getMousePosition(state.canvas, event);
+			const point = getCanvasMousePosition(state.canvas, event, this.getCanvasSizePx());
 			if (this.isTextLikeTool()) {
 				this.openTextBlockMenu(page, index, point, event.clientX, event.clientY);
 				return;
@@ -3085,7 +3015,7 @@ export class InkDocView extends ItemView {
 		};
 		const inputController = new InputController(
 			state.canvas,
-			(canvas, event) => this.getPointerPosition(canvas, event),
+			(canvas, event) => getCanvasPointerPosition(canvas, event, this.getCanvasSizePx()),
 			{
 				onPointerDown: handlePointerDown,
 				onPointerMove: handlePointerMove,
@@ -3174,65 +3104,12 @@ export class InkDocView extends ItemView {
 		page.strokes = target.strokes;
 	}
 
-	private getPointerPosition(canvas: HTMLCanvasElement, event: PointerEvent): InkDocPoint {
-		const rect = canvas.getBoundingClientRect();
-		const zoom = this.zoomLevel || 1;
-		// CSS zoom scales the visual size, so rect is already zoomed
-		// Convert client coordinates to canvas coordinates accounting for zoom
-		// Note: ctx.scale(dpr, dpr) is already applied, so we return CSS pixels
-		const x = (event.clientX - rect.left) / zoom;
-		const y = (event.clientY - rect.top) / zoom;
-		return { x, y };
-	}
-
-	private getMousePosition(canvas: HTMLCanvasElement, event: MouseEvent): InkDocPoint {
-		const rect = canvas.getBoundingClientRect();
-		const zoom = this.zoomLevel || 1;
-		// CSS zoom scales the visual size, so rect is already zoomed
-		// Convert client coordinates to canvas coordinates accounting for zoom
-		// Note: ctx.scale(dpr, dpr) is already applied, so we return CSS pixels
-		const x = (event.clientX - rect.left) / zoom;
-		const y = (event.clientY - rect.top) / zoom;
-		return { x, y };
-	}
-
-	private getClientPointOnCanvas(
-		canvas: HTMLCanvasElement,
-		clientX: number,
-		clientY: number
-	): InkDocPoint {
-		const rect = canvas.getBoundingClientRect();
-		const zoom = this.zoomLevel || 1;
-		// CSS zoom scales the visual size, so rect is already zoomed
-		// Convert client coordinates to canvas coordinates accounting for zoom
-		// Note: ctx.scale(dpr, dpr) is already applied, so we return CSS pixels
-		const x = (clientX - rect.left) / zoom;
-		const y = (clientY - rect.top) / zoom;
-		return { x, y };
-	}
-
-	private getClientPointOnPagesContent(clientX: number, clientY: number): { x: number; y: number } | null {
-		if (!this.pagesContentEl) {
-			return null;
-		}
-		// CSS zoom property already scales the element, so rect is already zoomed
-		// No need to divide by zoom again
-		const rect = this.pagesContentEl.getBoundingClientRect();
-		const rawX = clientX - rect.left;
-		const rawY = clientY - rect.top;
-		const maxX = Math.max(0, rect.width);
-		const maxY = Math.max(0, rect.height);
-		return {
-			x: Math.max(0, Math.min(maxX, rawX)),
-			y: Math.max(0, Math.min(maxY, rawY))
-		};
-	}
-
 	private createStickyNote(point: { x: number; y: number }) {
 		const anchor = this.getStickyNotesAnchorOffset();
+		const zoom = Math.max(0.001, this.viewportController.getZoomLevel() || 1);
 		const note = createStickyNoteAtPoint(this.docData, {
-			x: point.x - anchor.x,
-			y: point.y - anchor.y
+			x: (point.x - anchor.x) / zoom,
+			y: (point.y - anchor.y) / zoom
 		});
 		if (!note) {
 			return null;
@@ -3308,7 +3185,7 @@ export class InkDocView extends ItemView {
 			return {
 				page,
 				pageIndex: index,
-				point: this.getClientPointOnCanvas(state.canvas, clientX, clientY)
+				point: getCanvasClientPoint(state.canvas, clientX, clientY, this.getCanvasSizePx())
 			};
 		}
 		return null;
@@ -3324,7 +3201,7 @@ export class InkDocView extends ItemView {
 		}
 		this.setActiveTool(tool);
 		if (tool === "sticky") {
-			const point = this.getClientPointOnPagesContent(clientX, clientY);
+			const point = getPagesContentClientPoint(this.pagesContentEl, clientX, clientY);
 			if (!point) {
 				return;
 			}
@@ -3380,7 +3257,7 @@ export class InkDocView extends ItemView {
 			docData: this.docData,
 			hostEl: this.pagesContentEl,
 			isToolActive: () => this.activeTool === "sticky",
-			getZoomLevel: () => this.zoomLevel,
+			getZoomLevel: () => this.viewportController.getZoomLevel(),
 			getAnchorOffset: () => this.getStickyNotesAnchorOffset(),
 			saveDebounced: () => this.saveDebounced(),
 			noteActivity: () => this.syncEngine.noteActivity(),
@@ -4022,7 +3899,7 @@ export class InkDocView extends ItemView {
 	}
 
 	private async fitLatexBlockToRender(page: InkDocPage, block: InkDocTextBlock): Promise<void> {
-		const latex = this.normalizeLatexForRender(block.latex ?? "");
+		const latex = block.latex?.trim() ?? "";
 		if (!latex) {
 			return;
 		}
@@ -4044,14 +3921,10 @@ export class InkDocView extends ItemView {
 		host.appendChild(content);
 		document.body.appendChild(host);
 		try {
-			const katexModule = await import("katex");
-			const mathHost = content.createDiv({
-				cls: "inkdoc-markdown-render inkdoc-markdown-render--math"
-			});
-			mathHost.innerHTML = katexModule.renderToString(latex, {
-				throwOnError: false,
-				displayMode: true
-			});
+			const rendered = await renderLatexSegments(content, latex);
+			if (!rendered) {
+				return;
+			}
 			const rect = content.getBoundingClientRect();
 			const measuredWidth = Math.ceil(rect.width);
 			const measuredHeight = Math.ceil(rect.height);
@@ -4211,14 +4084,7 @@ export class InkDocView extends ItemView {
 		this.pagesEl.classList.toggle("is-hand-tool", this.activeTool === "hand");
 		this.pagesEl.classList.toggle("is-select-tool", this.activeTool === "select");
 		if (this.activeTool !== "hand") {
-			this.pagesEl.classList.remove("is-panning");
-			this.isPanning = false;
-			this.handPanPointerId = null;
-			this.handGesturePointers.clear();
-			this.pinchStartDistance = null;
-			this.pinchAnchorContent = null;
-			this.panStart = null;
-			this.panScrollStart = null;
+			this.viewportController.resetHandInteraction(this.pagesEl);
 		}
 	}
 
@@ -4256,7 +4122,7 @@ export class InkDocView extends ItemView {
 			docData: this.docData,
 			canvasStates: this.canvasStates,
 			textLayerDirty: this.textLayerDirty,
-			zoomLevel: this.zoomLevel,
+			zoomLevel: this.viewportController.getZoomLevel(),
 			getCanvasSizePx: () => this.getCanvasSizePx(),
 			renderStrokes: (ctx, strokes, pageId) => this.renderStrokes(ctx, strokes, pageId),
 			saveDebounced: () => this.saveDebounced(),
@@ -4372,7 +4238,7 @@ export class InkDocView extends ItemView {
 			textLayerDirty: this.textLayerDirty,
 			imageLayerDirty: this.imageLayerDirty,
 			getCanvasSizePx: () => this.getCanvasSizePx(),
-			getPointerPosition: (canvas, event) => this.getPointerPosition(canvas, event),
+			getPointerPosition: (canvas, event) => getCanvasPointerPosition(canvas, event, this.getCanvasSizePx()),
 			renderStrokes: (ctx, strokes, pageId) => this.renderStrokes(ctx, strokes, pageId),
 			saveDebounced: () => this.saveDebounced(),
 			getBodyBounds: (pageIndex) => this.getBodyBounds(pageIndex),
@@ -5083,108 +4949,17 @@ export class InkDocView extends ItemView {
 		return null;
 	}
 
-	private clampZoom(value: number): number {
-		return Math.min(2.5, Math.max(0.5, value));
-	}
-
-	private getHandGesturePair(): [{ x: number; y: number }, { x: number; y: number }] | null {
-		if (this.handGesturePointers.size < 2) {
-			return null;
-		}
-		const entries = Array.from(this.handGesturePointers.values());
-		const first = entries[0];
-		const second = entries[1];
-		if (!first || !second) {
-			return null;
-		}
-		return [first, second];
-	}
-
-	private beginHandPinchGesture(): void {
-		if (!this.pagesEl) {
-			return;
-		}
-		const pair = this.getHandGesturePair();
-		if (!pair) {
-			return;
-		}
-		const [first, second] = pair;
-		this.isPanning = false;
-		this.handPanPointerId = null;
-		this.panStart = null;
-		this.panScrollStart = null;
-		this.pagesEl.classList.remove("is-panning");
-		this.pinchStartDistance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
-		this.pinchStartZoom = this.zoomLevel;
-		const rect = this.pagesEl.getBoundingClientRect();
-		const midpointX = (first.x + second.x) * 0.5 - rect.left;
-		const midpointY = (first.y + second.y) * 0.5 - rect.top;
-		this.pinchAnchorContent = {
-			x: (this.pagesEl.scrollLeft + midpointX) / Math.max(0.001, this.zoomLevel),
-			y: (this.pagesEl.scrollTop + midpointY) / Math.max(0.001, this.zoomLevel)
-		};
-	}
-
-	private updateHandPinchGesture(): void {
-		if (!this.pagesEl || !this.pinchStartDistance || !this.pinchAnchorContent) {
-			return;
-		}
-		const pair = this.getHandGesturePair();
-		if (!pair) {
-			return;
-		}
-		const [first, second] = pair;
-		const nextDistance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
-		const nextZoom = this.clampZoom(this.pinchStartZoom * (nextDistance / this.pinchStartDistance));
-		const rect = this.pagesEl.getBoundingClientRect();
-		const midpointX = (first.x + second.x) * 0.5 - rect.left;
-		const midpointY = (first.y + second.y) * 0.5 - rect.top;
-		if (nextZoom !== this.zoomLevel) {
-			this.zoomLevel = nextZoom;
-			this.updateZoom();
-		}
-		this.pagesEl.scrollLeft = this.pinchAnchorContent.x * this.zoomLevel - midpointX;
-		this.pagesEl.scrollTop = this.pinchAnchorContent.y * this.zoomLevel - midpointY;
-	}
-
-	private finishHandGesturePointer(pointerId: number): void {
-		if (!this.pagesEl) {
-			return;
-		}
-		this.handGesturePointers.delete(pointerId);
-		if (this.pagesEl.hasPointerCapture(pointerId)) {
-			this.pagesEl.releasePointerCapture(pointerId);
-		}
-		if (this.handGesturePointers.size >= 2) {
-			this.beginHandPinchGesture();
-			return;
-		}
-		this.pinchStartDistance = null;
-		this.pinchAnchorContent = null;
-		this.isPanning = false;
-		this.handPanPointerId = null;
-		this.panStart = null;
-		this.panScrollStart = null;
-		this.pagesEl.classList.remove("is-panning");
-		if (this.handGesturePointers.size === 1) {
-			const remainingEntry = Array.from(this.handGesturePointers.entries())[0];
-			if (!remainingEntry) {
-				return;
-			}
-			const [remainingPointerId, remainingPoint] = remainingEntry;
-			this.isPanning = true;
-			this.handPanPointerId = remainingPointerId;
-			this.panStart = { x: remainingPoint.x, y: remainingPoint.y };
-			this.panScrollStart = { left: this.pagesEl.scrollLeft, top: this.pagesEl.scrollTop };
-			this.pagesEl.classList.add("is-panning");
-		}
-	}
-
 	private updateZoom(): void {
 		if (!this.pagesContentEl) {
 			return;
 		}
-		this.pagesContentEl.style.setProperty("zoom", String(this.zoomLevel));
+		this.pagesContentEl.style.removeProperty("zoom");
+		this.pagesContentEl.style.gap = `${72 * this.viewportController.getZoomLevel()}px`;
+		for (const state of this.canvasStates.values()) {
+			this.viewportController.applyZoomToPageElement(state.pageEl);
+		}
+		this.renderAllCanvases();
+		this.renderStickyNotes();
 	}
 
 	private eraseAtPoint(
@@ -5374,7 +5149,7 @@ export class InkDocView extends ItemView {
 			this.imagePointerCleanup();
 			this.imagePointerCleanup = null;
 		}
-		const startPoint = this.getPointerPosition(state.canvas, event);
+		const startPoint = getCanvasPointerPosition(state.canvas, event, this.getCanvasSizePx());
 		const startRect = { x: block.x, y: block.y, w: block.w, h: block.h };
 		const startRotation = block.rotation ?? 0;
 		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === page.id) ?? 0;
@@ -5386,7 +5161,6 @@ export class InkDocView extends ItemView {
 		const visualHost = interactionHost?.querySelector<HTMLElement>(".inkdoc-image-visual") ?? null;
 		const { widthPx, heightPx } = this.getCanvasSizePx();
 		const canvasRect = state.canvas.getBoundingClientRect();
-		const zoom = this.zoomLevel || 1;
 		const scaleX = canvasRect.width / widthPx;
 		const scaleY = canvasRect.height / heightPx;
 		const center = { x: block.x + block.w / 2, y: block.y + block.h / 2 };
@@ -5396,7 +5170,7 @@ export class InkDocView extends ItemView {
 			captureTarget: event.currentTarget instanceof HTMLElement ? event.currentTarget : null,
 			onMove: (moveEvent) => {
 				this.syncEngine.noteActivity();
-				const point = this.getPointerPosition(state.canvas, moveEvent);
+				const point = getCanvasPointerPosition(state.canvas, moveEvent, this.getCanvasSizePx());
 				const dx = point.x - startPoint.x;
 				const dy = point.y - startPoint.y;
 				if (owner.kind === "decoration") {
@@ -5501,6 +5275,6 @@ export class InkDocView extends ItemView {
 		if (activeElement instanceof HTMLElement && activeElement.closest(".inkdoc-sticky-note")) {
 			return true;
 		}
-		return this.isPanning;
+		return this.viewportController.isPanningActive();
 	}
 }

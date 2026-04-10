@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { MarkdownRenderer, type App } from "../../../engines/platform/inkdocPlatform";
+import type { App } from "../../../engines/platform/inkdocPlatform";
+import { renderLatexSegments } from "../latexRenderer";
 
 export const renderInkMathLatexPreview = async (
 	app: App,
@@ -13,11 +14,8 @@ export const renderInkMathLatexPreview = async (
 		return false;
 	}
 	container.empty();
-	try {
-		await MarkdownRenderer.render(app, `$$${trimmed}$$`, container, sourcePath, owner as never);
-		return true;
-	} catch {
-		container.textContent = trimmed;
-		return false;
-	}
+	void app;
+	void sourcePath;
+	void owner;
+	return renderLatexSegments(container, trimmed);
 };

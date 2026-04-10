@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { NotiaModalShell } from '../../NotiaModalShell'
 import { NotiaButton } from '../../../common/NotiaButton'
+import { useVirtualList } from '../../../../hooks/useVirtualList'
 import type { NotiaLibrary } from '../../../../types/notia'
 import {
   filterLibraryFileOptions,
@@ -22,6 +23,8 @@ interface ChatLibraryFilesModalProps {
     contextMode: ChatFileContextMode
   }) => void
 }
+
+const CHAT_LIBRARY_FILE_OPTION_HEIGHT = 60
 
 export function ChatLibraryFilesModal({
   open,
@@ -89,6 +92,19 @@ export function ChatLibraryFilesModal({
     () => filterLibraryFileOptions(options, query),
     [options, query],
   )
+  const { containerRef, scrollToIndex, totalSize, virtualItems } = useVirtualList({
+    itemCount: visibleOptions.length,
+    itemSize: CHAT_LIBRARY_FILE_OPTION_HEIGHT,
+    overscan: 8,
+  })
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    scrollToIndex(0, 'start')
+  }, [open, query, scrollToIndex])
 
   if (!open) {
     return null
@@ -147,35 +163,56 @@ export function ChatLibraryFilesModal({
           <span>{draftContextMode === 'index' ? 'Index usa LlamaIndex' : 'Directo envía el contenido completo'}</span>
         </div>
 
-        <div className="notia-chat-files-modal-list" role="list">
+        <div ref={containerRef} className="notia-chat-files-modal-list" role="list">
           {isLoading ? (
             <div className="notia-chat-files-modal-empty">Cargando archivos de la librería...</div>
           ) : errorMessage ? (
             <div className="notia-chat-files-modal-empty">{errorMessage}</div>
           ) : visibleOptions.length > 0 ? (
-            visibleOptions.map((option) => {
-              const checked = draftSelectedPaths.includes(option.path)
-              return (
-                <label key={option.path} className="notia-chat-files-modal-item">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => {
-                      setDraftSelectedPaths((current) => {
-                        if (event.target.checked) {
-                          return current.includes(option.path) ? current : [...current, option.path]
-                        }
-                        return current.filter((path) => path !== option.path)
-                      })
+            <div style={{ height: `${totalSize}px`, position: 'relative' }}>
+              {virtualItems.map((virtualItem) => {
+                const option = visibleOptions[virtualItem.index]
+                if (!option) {
+                  return null
+                }
+
+                const checked = draftSelectedPaths.includes(option.path)
+                return (
+                  <div
+                    key={option.path}
+                    style={{
+                      position: 'absolute',
+                      top: `${virtualItem.start}px`,
+                      left: 0,
+                      right: 0,
+                      height: `${virtualItem.size}px`,
                     }}
-                  />
-                  <div>
-                    <strong>{option.name}</strong>
-                    <span>{option.relativePath}</span>
+                  >
+                    <label
+                      className="notia-chat-files-modal-item"
+                      title={`${option.name}\n${option.relativePath}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          setDraftSelectedPaths((current) => {
+                            if (event.target.checked) {
+                              return current.includes(option.path) ? current : [...current, option.path]
+                            }
+                            return current.filter((path) => path !== option.path)
+                          })
+                        }}
+                      />
+                      <div>
+                        <strong>{option.name}</strong>
+                        <span>{option.relativePath}</span>
+                      </div>
+                    </label>
                   </div>
-                </label>
-              )
-            })
+                )
+              })}
+            </div>
           ) : (
             <div className="notia-chat-files-modal-empty">
               {query.trim() ? 'No hay archivos que coincidan con esa búsqueda.' : 'No hay archivos disponibles en la librería.'}

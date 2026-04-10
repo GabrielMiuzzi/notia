@@ -1,6 +1,7 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
+import { useVirtualList } from '../../hooks/useVirtualList'
 
 interface PendingCreation {
   id: string
@@ -29,13 +30,11 @@ interface FileTreeProps {
 
 interface TreeRowProps {
   node: NotiaFileNode
+  level: number
   isSearchActive: boolean
   searchMatchedFilePaths: ReadonlySet<string>
   onToggleFolder: (folderId: string) => void
   onOpenFile: (filePath: string) => void
-  pendingCreation: PendingCreation | null
-  onSubmitPendingCreation: (name: string) => void
-  onCancelPendingCreation: () => void
   renamingPath: string | null
   onSubmitRename: (path: string, name: string) => void
   onCancelRename: () => void
@@ -46,8 +45,23 @@ interface TreeRowProps {
   onDragEndNode: () => void
   onDragOverFolder: (targetPath: string) => boolean
   onDropOnFolder: (targetPath: string) => void
-  level?: number
 }
+
+type VisibleTreeRow =
+  | {
+    kind: 'node'
+    key: string
+    level: number
+    node: NotiaFileNode
+  }
+  | {
+    kind: 'pending'
+    key: string
+    level: number
+    pendingCreation: PendingCreation
+  }
+
+const TREE_ROW_HEIGHT = 27
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -64,13 +78,11 @@ function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
 
 function TreeRow({
   node,
+  level,
   isSearchActive,
   searchMatchedFilePaths,
   onToggleFolder,
   onOpenFile,
-  pendingCreation,
-  onSubmitPendingCreation,
-  onCancelPendingCreation,
   renamingPath,
   onSubmitRename,
   onCancelRename,
@@ -81,7 +93,6 @@ function TreeRow({
   onDragEndNode,
   onDragOverFolder,
   onDropOnFolder,
-  level = 0,
 }: TreeRowProps) {
   const isFolder = node.type === 'folder'
   const hasChildren = Boolean(node.children?.length)
@@ -95,10 +106,6 @@ function TreeRow({
     searchMatchedFilePaths.has(node.path)
   const isInteractive = canToggle || canOpenFile
   const isRenaming = Boolean(node.path && renamingPath === node.path)
-  const hasPendingInside =
-    Boolean(pendingCreation) &&
-    node.type === 'folder' &&
-    node.path === pendingCreation?.parentPath
   const inputRef = useRef<HTMLInputElement>(null)
   const nodePath = typeof node.path === 'string' ? node.path : null
   const isDragging = Boolean(nodePath && draggingPath === nodePath)
@@ -114,6 +121,10 @@ function TreeRow({
     inputRef.current?.focus()
     inputRef.current?.select()
   }, [isRenaming])
+
+  useEffect(() => {
+    setRenameValue(node.type === 'file' ? node.name.replace(/\.(md|inkdoc)$/i, '') : node.name)
+  }, [node.name, node.type])
 
   const handleRowClick = () => {
     if (isRenaming) {
@@ -142,134 +153,97 @@ function TreeRow({
   }
 
   return (
-    <div>
-      <div
-        className={`notia-tree-row ${node.selected ? 'notia-tree-row--selected' : ''} ${isInteractive ? 'notia-tree-row--toggleable' : ''} ${isSearchMatch ? 'notia-tree-row--search-match' : ''} ${isDragging ? 'notia-tree-row--dragging' : ''} ${isDropTarget ? 'notia-tree-row--drop-target' : ''}`}
-        style={{ paddingLeft: `${18 + level * 16}px` }}
-        onClick={handleRowClick}
-        draggable={Boolean(nodePath && !isRenaming)}
-        role={isInteractive ? 'button' : undefined}
-        tabIndex={isInteractive ? 0 : undefined}
-        onDragStart={
-          nodePath
-            ? (event) => {
-                event.dataTransfer.effectAllowed = 'move'
-                event.dataTransfer.setData('text/plain', nodePath)
-                onDragStartNode(nodePath)
+    <div
+      data-tree-row="true"
+      className={`notia-tree-row ${node.selected ? 'notia-tree-row--selected' : ''} ${isInteractive ? 'notia-tree-row--toggleable' : ''} ${isSearchMatch ? 'notia-tree-row--search-match' : ''} ${isDragging ? 'notia-tree-row--dragging' : ''} ${isDropTarget ? 'notia-tree-row--drop-target' : ''}`}
+      style={{ paddingLeft: `${18 + level * 16}px` }}
+      onClick={handleRowClick}
+      draggable={Boolean(nodePath && !isRenaming)}
+      role={isInteractive ? 'button' : undefined}
+      tabIndex={isInteractive ? 0 : undefined}
+      onDragStart={
+        nodePath
+          ? (event) => {
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('text/plain', nodePath)
+              onDragStartNode(nodePath)
+            }
+          : undefined
+      }
+      onDragEnd={onDragEndNode}
+      onDragOver={
+        isFolder && nodePath
+          ? (event) => {
+              if (!onDragOverFolder(nodePath)) {
+                return
               }
-            : undefined
-        }
-        onDragEnd={onDragEndNode}
-        onDragOver={
-          isFolder && nodePath
-            ? (event) => {
-                if (!onDragOverFolder(nodePath)) {
-                  return
-                }
 
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+            }
+          : undefined
+      }
+      onDrop={
+        isFolder && nodePath
+          ? (event) => {
+              event.preventDefault()
+              onDropOnFolder(nodePath)
+            }
+          : undefined
+      }
+      onKeyDown={
+        isInteractive
+          ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
-                event.dataTransfer.dropEffect = 'move'
+                handleRowClick()
               }
-            : undefined
-        }
-        onDrop={
-          isFolder && nodePath
-            ? (event) => {
-                event.preventDefault()
-                onDropOnFolder(nodePath)
-              }
-            : undefined
-        }
-        onKeyDown={
-          isInteractive
-            ? (event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  handleRowClick()
-                }
-              }
-            : undefined
-        }
-        onContextMenu={(event) => {
-          event.preventDefault()
-          onNodeContextMenu(node, { x: event.clientX, y: event.clientY })
-        }}
-      >
-        {isFolder ? (
-          <>
-            {hasChildren && isExpanded ? (
-              <ChevronDown size={13} className="notia-tree-chevron" />
-            ) : (
-              <ChevronRight size={13} className="notia-tree-chevron" />
-            )}
-            {isExpanded ? (
-              <FolderOpen size={12} className="notia-tree-folder notia-tree-folder--open" />
-            ) : (
-              <Folder size={12} className="notia-tree-folder" />
-            )}
-          </>
-        ) : (
-          <FileText size={12} className="notia-tree-file" />
-        )}
-        {isRenaming ? (
-          <input
-            ref={inputRef}
-            className="notia-tree-inline-input"
-            value={renameValue}
-            onChange={(event) => setRenameValue(event.target.value)}
-            onBlur={submitRename}
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                submitRename()
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                onCancelRename()
-              }
-            }}
-          />
-        ) : (
-          <span className="notia-tree-label">{node.name}</span>
-        )}
-      </div>
-      {isFolder && isExpanded ? (
-        <div>
-          {hasPendingInside && pendingCreation ? (
-            <PendingCreationRow
-              pendingCreation={pendingCreation}
-              onSubmit={onSubmitPendingCreation}
-              onCancel={onCancelPendingCreation}
-              level={level + 1}
-            />
-          ) : null}
-          {node.children!.map((child) => (
-            <TreeRow
-              key={child.id}
-              node={child}
-              isSearchActive={isSearchActive}
-              searchMatchedFilePaths={searchMatchedFilePaths}
-              onToggleFolder={onToggleFolder}
-              onOpenFile={onOpenFile}
-              pendingCreation={pendingCreation}
-              onSubmitPendingCreation={onSubmitPendingCreation}
-              onCancelPendingCreation={onCancelPendingCreation}
-              renamingPath={renamingPath}
-              onSubmitRename={onSubmitRename}
-              onCancelRename={onCancelRename}
-              onNodeContextMenu={onNodeContextMenu}
-              draggingPath={draggingPath}
-              dropTargetFolderPath={dropTargetFolderPath}
-              onDragStartNode={onDragStartNode}
-              onDragEndNode={onDragEndNode}
-              onDragOverFolder={onDragOverFolder}
-              onDropOnFolder={onDropOnFolder}
-              level={level + 1}
-            />
-          ))}
-        </div>
-      ) : null}
+            }
+          : undefined
+      }
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onNodeContextMenu(node, { x: event.clientX, y: event.clientY })
+      }}
+    >
+      {isFolder ? (
+        <>
+          {hasChildren && isExpanded ? (
+            <ChevronDown size={13} className="notia-tree-chevron" />
+          ) : (
+            <ChevronRight size={13} className="notia-tree-chevron" />
+          )}
+          {isExpanded ? (
+            <FolderOpen size={12} className="notia-tree-folder notia-tree-folder--open" />
+          ) : (
+            <Folder size={12} className="notia-tree-folder" />
+          )}
+        </>
+      ) : (
+        <FileText size={12} className="notia-tree-file" />
+      )}
+      {isRenaming ? (
+        <input
+          ref={inputRef}
+          className="notia-tree-inline-input"
+          value={renameValue}
+          onChange={(event) => setRenameValue(event.target.value)}
+          onBlur={submitRename}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              submitRename()
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              onCancelRename()
+            }
+          }}
+        />
+      ) : (
+        <span className="notia-tree-label">{node.name}</span>
+      )}
     </div>
   )
 }
@@ -300,7 +274,7 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
   }
 
   return (
-    <div className="notia-tree-row" style={{ paddingLeft: `${18 + level * 16}px` }}>
+    <div data-tree-row="true" className="notia-tree-row" style={{ paddingLeft: `${18 + level * 16}px` }}>
       {pendingCreation.kind === 'folder' ? (
         <Folder size={12} className="notia-tree-file" />
       ) : (
@@ -327,6 +301,54 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
   )
 }
 
+function buildVisibleTreeRows(
+  nodes: NotiaFileNode[],
+  pendingCreation: PendingCreation | null,
+  rootPath: string | null,
+): VisibleTreeRow[] {
+  const rows: VisibleTreeRow[] = []
+
+  if (pendingCreation && pendingCreation.parentPath === rootPath) {
+    rows.push({
+      kind: 'pending',
+      key: pendingCreation.id,
+      level: 0,
+      pendingCreation,
+    })
+  }
+
+  const visit = (currentNodes: NotiaFileNode[], level: number) => {
+    for (const node of currentNodes) {
+      rows.push({
+        kind: 'node',
+        key: node.id,
+        level,
+        node,
+      })
+
+      if (node.type !== 'folder' || !node.expanded) {
+        continue
+      }
+
+      if (pendingCreation && node.path === pendingCreation.parentPath) {
+        rows.push({
+          kind: 'pending',
+          key: pendingCreation.id,
+          level: level + 1,
+          pendingCreation,
+        })
+      }
+
+      if (node.children && node.children.length > 0) {
+        visit(node.children, level + 1)
+      }
+    }
+  }
+
+  visit(nodes, 0)
+  return rows
+}
+
 function FileTreeComponent({
   nodes,
   rootPath,
@@ -346,6 +368,15 @@ function FileTreeComponent({
 }: FileTreeProps) {
   const [draggingEntry, setDraggingEntry] = useState<{ path: string } | null>(null)
   const [dropTargetFolderPath, setDropTargetFolderPath] = useState<string | null>(null)
+  const visibleRows = useMemo(
+    () => buildVisibleTreeRows(nodes, pendingCreation, rootPath),
+    [nodes, pendingCreation, rootPath],
+  )
+  const { containerRef, scrollToIndex, totalSize, virtualItems } = useVirtualList({
+    itemCount: visibleRows.length,
+    itemSize: TREE_ROW_HEIGHT,
+    overscan: 10,
+  })
 
   const handleDragStartNode = (path: string) => {
     setDraggingEntry({ path })
@@ -386,51 +417,97 @@ function FileTreeComponent({
     onMoveNode(sourcePath, targetPath)
   }
 
-  if (nodes.length === 0 && !pendingCreation) {
+  useEffect(() => {
+    if (!pendingCreation) {
+      return
+    }
+
+    const pendingIndex = visibleRows.findIndex((row) => row.kind === 'pending' && row.key === pendingCreation.id)
+    if (pendingIndex >= 0) {
+      scrollToIndex(pendingIndex, 'nearest')
+    }
+  }, [pendingCreation, scrollToIndex, visibleRows])
+
+  useEffect(() => {
+    if (!renamingPath) {
+      return
+    }
+
+    const renamedRowIndex = visibleRows.findIndex((row) => (
+      row.kind === 'node' && row.node.path === renamingPath
+    ))
+    if (renamedRowIndex >= 0) {
+      scrollToIndex(renamedRowIndex, 'nearest')
+    }
+  }, [renamingPath, scrollToIndex, visibleRows])
+
+  if (visibleRows.length === 0) {
     return <div className="notia-tree-empty">No hay archivos para mostrar.</div>
   }
 
   return (
     <div
+      ref={containerRef}
       className="notia-tree-scroll"
       onContextMenu={(event) => {
-        if (event.target === event.currentTarget) {
-          event.preventDefault()
-          onEmptyContextMenu({ x: event.clientX, y: event.clientY })
+        const target = event.target instanceof HTMLElement ? event.target : null
+        if (target?.closest('[data-tree-row="true"]')) {
+          return
         }
+
+        event.preventDefault()
+        onEmptyContextMenu({ x: event.clientX, y: event.clientY })
       }}
     >
-      {pendingCreation && pendingCreation.parentPath === rootPath ? (
-        <PendingCreationRow
-          pendingCreation={pendingCreation}
-          onSubmit={onSubmitPendingCreation}
-          onCancel={onCancelPendingCreation}
-          level={0}
-        />
-      ) : null}
-      {nodes.map((node) => (
-        <TreeRow
-          key={node.id}
-          node={node}
-          isSearchActive={isSearchActive}
-          searchMatchedFilePaths={searchMatchedFilePaths}
-          onToggleFolder={onToggleFolder}
-          onOpenFile={onOpenFile}
-          pendingCreation={pendingCreation}
-          onSubmitPendingCreation={onSubmitPendingCreation}
-          onCancelPendingCreation={onCancelPendingCreation}
-          renamingPath={renamingPath}
-          onSubmitRename={onSubmitRename}
-          onCancelRename={onCancelRename}
-          onNodeContextMenu={onNodeContextMenu}
-          draggingPath={draggingEntry?.path ?? null}
-          dropTargetFolderPath={dropTargetFolderPath}
-          onDragStartNode={handleDragStartNode}
-          onDragEndNode={handleDragEndNode}
-          onDragOverFolder={handleDragOverFolder}
-          onDropOnFolder={handleDropOnFolder}
-        />
-      ))}
+      <div style={{ height: `${totalSize}px`, position: 'relative' }}>
+        {virtualItems.map((virtualItem) => {
+          const row = visibleRows[virtualItem.index]
+          if (!row) {
+            return null
+          }
+
+          return (
+            <div
+              key={row.key}
+              style={{
+                position: 'absolute',
+                top: `${virtualItem.start}px`,
+                left: 0,
+                right: 0,
+                height: `${virtualItem.size}px`,
+              }}
+            >
+              {row.kind === 'pending' ? (
+                <PendingCreationRow
+                  pendingCreation={row.pendingCreation}
+                  onSubmit={onSubmitPendingCreation}
+                  onCancel={onCancelPendingCreation}
+                  level={row.level}
+                />
+              ) : (
+                <TreeRow
+                  node={row.node}
+                  level={row.level}
+                  isSearchActive={isSearchActive}
+                  searchMatchedFilePaths={searchMatchedFilePaths}
+                  onToggleFolder={onToggleFolder}
+                  onOpenFile={onOpenFile}
+                  renamingPath={renamingPath}
+                  onSubmitRename={onSubmitRename}
+                  onCancelRename={onCancelRename}
+                  onNodeContextMenu={onNodeContextMenu}
+                  draggingPath={draggingEntry?.path ?? null}
+                  dropTargetFolderPath={dropTargetFolderPath}
+                  onDragStartNode={handleDragStartNode}
+                  onDragEndNode={handleDragEndNode}
+                  onDragOverFolder={handleDragOverFolder}
+                  onDropOnFolder={handleDropOnFolder}
+                />
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

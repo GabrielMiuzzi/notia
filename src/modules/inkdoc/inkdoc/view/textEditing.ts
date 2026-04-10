@@ -165,13 +165,14 @@ const positionTextEditor = (
 ): void => {
 	const { widthPx, heightPx } = context.getCanvasSizePx();
 	const rect = canvas.getBoundingClientRect();
-	const zoom = context.zoomLevel || 1;
-	const scaleX = rect.width / zoom / widthPx;
-	const scaleY = rect.height / zoom / heightPx;
+	const scaleX = rect.width / widthPx;
+	const scaleY = rect.height / heightPx;
 	editor.style.left = `${block.x * scaleX}px`;
 	editor.style.top = `${block.y * scaleY}px`;
-	editor.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, block.w * scaleX)}px`;
-	editor.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h * scaleY)}px`;
+	editor.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, block.w)}px`;
+	editor.style.height = `${Math.max(INKDOC_TEXT_MIN_HEIGHT, block.h)}px`;
+	editor.style.transform = `scale(${scaleX}, ${scaleY})`;
+	editor.style.transformOrigin = "top left";
 };
 
 const autoResizeTextEditor = (editor: HTMLDivElement): void => {

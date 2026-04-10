@@ -417,6 +417,30 @@ function buildGraphNodes(fileDescriptors: FileDescriptor[]): LibraryGraphNode[] 
     .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }))
 }
 
+function collectGraphStructureTokens(
+  nodes: NotiaFileNode[],
+  tokens: string[],
+  parentLogicalPath = '',
+): void {
+  for (const node of nodes) {
+    const logicalPath = parentLogicalPath ? `${parentLogicalPath}/${node.name}` : node.name
+
+    if (node.type === 'folder') {
+      tokens.push(`folder:${logicalPath}`)
+      collectGraphStructureTokens(node.children ?? [], tokens, logicalPath)
+      continue
+    }
+
+    tokens.push(`file:${logicalPath}\u0001${node.path ? normalizePath(node.path) : ''}`)
+  }
+}
+
+export function buildGraphFileStructureSignature(nodes: NotiaFileNode[]): string {
+  const tokens: string[] = []
+  collectGraphStructureTokens(nodes, tokens)
+  return tokens.join('\u0002')
+}
+
 export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
   const descriptors: FileDescriptor[] = []
   collectFileDescriptors(nodes, descriptors)

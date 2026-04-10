@@ -46,6 +46,7 @@ import {
   writeTaskMarkdownSource,
   type TaskManagerSnapshot,
 } from '../services/taskManagerService'
+import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
 import { pickVaultDirectory } from '../services/vaultRuntime'
 import { setActiveTaskManagerVaultContext } from '../services/vaultRuntime'
 
@@ -660,9 +661,9 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
       setSnapshot(nextSnapshot)
       hydrateSettingsFromSnapshot(nextSnapshot)
-      window.dispatchEvent(new CustomEvent('notia:library-tree-changed', {
-        detail: { vaultPath: settings.activeVaultPath },
-      }))
+      dispatchLibraryTreeChanged({
+        vaultPath: settings.activeVaultPath,
+      })
     } finally {
       setIsSyncing(false)
     }

@@ -67,6 +67,14 @@ interface CreateLibraryEntryOptions {
   androidDirectoryUri?: string
 }
 
+export interface AndroidFilesystemOptions {
+  androidDirectoryUri?: string
+}
+
+interface FilesystemEntryOperationOptions {
+  androidDirectoryUri?: string
+}
+
 const ANDROID_PICK_DIRECTORY_COMMANDS = [
   'pick_android_directory_tree',
   'mobile_directory_picker::pick_android_directory_tree',
@@ -196,7 +204,7 @@ export function getPathBaseName(pathValue: string): string {
   return segments[segments.length - 1] ?? pathValue
 }
 
-export async function isDirectoryPath(pathValue: string): Promise<boolean> {
+export async function isDirectoryPath(pathValue: string, options?: AndroidFilesystemOptions): Promise<boolean> {
   const normalizedPath = normalizePath(pathValue)
   if (!normalizedPath.trim()) {
     return false
@@ -204,7 +212,7 @@ export async function isDirectoryPath(pathValue: string): Promise<boolean> {
 
   try {
     const result = await invoke<IsDirectoryPathResult>('is_directory_path', {
-      payload: { path: normalizedPath },
+      payload: { path: normalizedPath, directoryUri: options?.androidDirectoryUri },
     })
     return Boolean(result.isDirectory)
   } catch {
@@ -212,7 +220,7 @@ export async function isDirectoryPath(pathValue: string): Promise<boolean> {
   }
 }
 
-export async function pathExists(pathValue: string): Promise<boolean> {
+export async function pathExists(pathValue: string, options?: AndroidFilesystemOptions): Promise<boolean> {
   const normalizedPath = normalizePath(pathValue)
   if (!normalizedPath.trim()) {
     return false
@@ -220,7 +228,7 @@ export async function pathExists(pathValue: string): Promise<boolean> {
 
   try {
     const result = await invoke<PathExistsResult>('path_exists', {
-      payload: { path: normalizedPath },
+      payload: { path: normalizedPath, directoryUri: options?.androidDirectoryUri },
     })
     return Boolean(result.exists)
   } catch {
@@ -471,7 +479,10 @@ export async function readMarkdownDocuments(
   }
 }
 
-export async function readTextFile(filePath: string): Promise<FilesystemReadTextResult> {
+export async function readTextFile(
+  filePath: string,
+  options?: AndroidFilesystemOptions,
+): Promise<FilesystemReadTextResult> {
   const normalizedPath = normalizePath(filePath)
   if (!normalizedPath.trim()) {
     return { ok: false, content: '', error: 'Invalid file path.' }
@@ -479,7 +490,7 @@ export async function readTextFile(filePath: string): Promise<FilesystemReadText
 
   try {
     return await invoke<FilesystemReadTextResult>('read_library_file', {
-      payload: { filePath: normalizedPath },
+      payload: { filePath: normalizedPath, directoryUri: options?.androidDirectoryUri },
     })
   } catch {
     return { ok: false, content: '', error: 'Could not read file.' }
@@ -489,6 +500,7 @@ export async function readTextFile(filePath: string): Promise<FilesystemReadText
 export async function writeTextFile(
   filePath: string,
   content: string,
+  options?: AndroidFilesystemOptions,
 ): Promise<FilesystemOperationResult> {
   const normalizedPath = normalizePath(filePath)
   if (!normalizedPath.trim()) {
@@ -497,7 +509,7 @@ export async function writeTextFile(
 
   try {
     return await invoke<FilesystemOperationResult>('write_library_file', {
-      payload: { filePath: normalizedPath, content },
+      payload: { filePath: normalizedPath, content, directoryUri: options?.androidDirectoryUri },
     })
   } catch {
     return { ok: false, error: 'Could not write file.' }
@@ -532,6 +544,7 @@ export async function createLibraryEntry(
 export async function createFile(
   filePath: string,
   content: string,
+  options?: AndroidFilesystemOptions,
 ): Promise<FilesystemOperationResult> {
   const normalizedPath = normalizePath(filePath)
   if (!normalizedPath.trim()) {
@@ -543,6 +556,7 @@ export async function createFile(
       payload: {
         filePath: normalizedPath,
         content,
+        directoryUri: options?.androidDirectoryUri,
       },
     })
   } catch {
@@ -552,6 +566,7 @@ export async function createFile(
 
 export async function createDirectory(
   directoryPath: string,
+  options?: AndroidFilesystemOptions,
 ): Promise<FilesystemOperationResult> {
   const normalizedPath = normalizePath(directoryPath)
   if (!normalizedPath.trim()) {
@@ -562,6 +577,7 @@ export async function createDirectory(
     return await invoke<FilesystemOperationResult>('create_library_directory', {
       payload: {
         directoryPath: normalizedPath,
+        directoryUri: options?.androidDirectoryUri,
       },
     })
   } catch {
@@ -592,6 +608,7 @@ export async function writeBinaryFile(
 
 export async function performLibraryEntryOperation(
   payload: FilesystemEntryOperationPayload,
+  options?: FilesystemEntryOperationOptions,
 ): Promise<FilesystemOperationResult> {
   const normalizedPayload: FilesystemEntryOperationPayload = {
     ...payload,
@@ -604,7 +621,10 @@ export async function performLibraryEntryOperation(
 
   try {
     return await invoke<FilesystemOperationResult>('library_entry_operation', {
-      payload: normalizedPayload,
+      payload: {
+        ...normalizedPayload,
+        directoryUri: options?.androidDirectoryUri,
+      },
     })
   } catch {
     return { ok: false, error: 'Could not perform operation.' }

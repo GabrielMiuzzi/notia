@@ -16,6 +16,7 @@ import {
   type FilesystemOperationResult,
   type FilesystemReadTextResult,
 } from '../../../services/files/filesystemEngine'
+import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 
 type OperationResult = FilesystemOperationResult
@@ -46,7 +47,7 @@ function resolveAndroidDirectoryUri(pathValue: string): string | undefined {
 
   const normalizedPath = normalizeFilesystemPath(pathValue)
   const normalizedVaultPath = normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')
-  if (normalizedPath === normalizedVaultPath) {
+  if (normalizedPath === normalizedVaultPath || normalizedPath.startsWith(`${normalizedVaultPath}/`)) {
     return vaultRef.androidTreeUri
   }
 
@@ -81,13 +82,9 @@ export function setActiveTaskManagerVaultContext(vault: TaskManagerVaultRef | nu
 }
 
 function notifyLibraryTreeChanged(pathHint: string) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  window.dispatchEvent(new CustomEvent('notia:library-tree-changed', {
-    detail: { pathHint: normalizeFilesystemPath(pathHint) },
-  }))
+  dispatchLibraryTreeChanged({
+    pathHint: normalizeFilesystemPath(pathHint),
+  })
 }
 
 export async function pickVaultDirectory(): Promise<TaskManagerVaultRef & { name: string } | null> {
@@ -165,7 +162,9 @@ export async function readMarkdownFiles(directoryPath: string): Promise<Markdown
           Array.from(markdownPaths)
             .sort((left, right) => left.localeCompare(right, 'es'))
             .map(async (filePath) => {
-              const result = await readTextFile(filePath)
+              const result = await readTextFile(filePath, {
+                androidDirectoryUri: resolveAndroidDirectoryUri(filePath),
+              })
               if (!result.ok) {
                 return null
               }
@@ -195,12 +194,16 @@ export async function directoryExists(directoryPath: string): Promise<boolean> {
   }
 
   try {
-    const exists = await pathExists(normalizedPath)
+    const exists = await pathExists(normalizedPath, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+    })
     if (!exists) {
       return false
     }
 
-    return await isDirectoryPath(normalizedPath)
+    return await isDirectoryPath(normalizedPath, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+    })
   } catch (error) {
     console.error('[task-manager] directory_exists failed', error)
     return false
@@ -211,7 +214,9 @@ export async function readFileContent(filePath: string): Promise<ReadLibraryFile
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
-    const result = await readTextFile(normalizedPath)
+    const result = await readTextFile(normalizedPath, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+    })
     if (result.ok || result.error) {
       return result
     }
@@ -226,7 +231,9 @@ export async function writeFileContent(filePath: string, content: string): Promi
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
-    const result = await writeTextFile(normalizedPath, content)
+    const result = await writeTextFile(normalizedPath, content, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+    })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
     }
@@ -286,6 +293,8 @@ export async function deleteEntry(targetPath: string): Promise<OperationResult> 
     const result = await performLibraryEntryOperation({
       action: 'delete',
       targetPath: normalizedPath,
+    }, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
@@ -304,6 +313,8 @@ export async function renameEntry(targetPath: string, newName: string): Promise<
       action: 'rename',
       targetPath: normalizedPath,
       newName,
+    }, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
@@ -324,6 +335,9 @@ export async function moveEntry(sourcePath: string, targetDirectoryPath: string)
       sourcePath: normalizedSourcePath,
       targetDirectoryPath: normalizedTargetDirectoryPath,
       mode: 'move',
+    }, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedTargetDirectoryPath)
+        ?? resolveAndroidDirectoryUri(normalizedSourcePath),
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedSourcePath)

@@ -86,7 +86,9 @@ export async function loadInlineFileAttachments(
   options: ChatLibraryFileOption[] = [],
 ): Promise<ChatInlineFileAttachment[]> {
   const loadedFiles = await Promise.all(selectedPaths.map(async (selectedPath) => {
-    const result = await readTextFile(selectedPath)
+    const result = await readTextFile(selectedPath, {
+      androidDirectoryUri: library.androidTreeUri,
+    })
     if (!result.ok) {
       throw new Error(result.error || `No se pudo leer ${selectedPath}.`)
     }

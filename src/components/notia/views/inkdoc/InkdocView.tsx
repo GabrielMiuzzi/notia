@@ -13,6 +13,7 @@ interface InkdocViewProps {
   filePath: string
   source: string
   rootPath: string | null
+  libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
   onSourcePersist: (nextSource: string) => Promise<void>
@@ -23,6 +24,7 @@ export function InkdocView({
   filePath,
   source,
   rootPath,
+  libraryAndroidTreeUri,
   libraryFilePaths,
   inkdocPreferences,
   onSourcePersist,
@@ -53,7 +55,9 @@ export function InkdocView({
           return sourceRef.current
         }
 
-        const result = await readLibraryFileContent(absolutePath)
+        const result = await readLibraryFileContent(absolutePath, {
+          androidDirectoryUri: libraryAndroidTreeUri,
+        })
         if (!result.ok) {
           throw new Error(result.error ?? 'Could not read file.')
         }
@@ -67,22 +71,26 @@ export function InkdocView({
           return
         }
 
-        const result = await writeLibraryFileContent(absolutePath, content)
+        const result = await writeLibraryFileContent(absolutePath, content, {
+          androidDirectoryUri: libraryAndroidTreeUri,
+        })
         if (!result.ok) {
           throw new Error(result.error ?? 'Could not write file.')
         }
       },
       createFile: async (absolutePath, content) => {
-        await createInkdocFile(absolutePath, content)
+        await createInkdocFile(absolutePath, content, libraryAndroidTreeUri)
       },
       createFolder: async (absolutePath) => {
-        await createInkdocFolder(absolutePath)
+        await createInkdocFolder(absolutePath, libraryAndroidTreeUri)
       },
       deletePath: async (absolutePath) => {
-        await performLibraryEntryOperation({ action: 'delete', targetPath: absolutePath })
+        await performLibraryEntryOperation({ action: 'delete', targetPath: absolutePath }, {
+          androidDirectoryUri: libraryAndroidTreeUri,
+        })
       },
       existsPath: async (absolutePath) => {
-        return pathExists(absolutePath)
+        return pathExists(absolutePath, libraryAndroidTreeUri)
       },
       writeBinaryFile: async (absolutePath, data) => {
         await writeBinaryFile(absolutePath, data)

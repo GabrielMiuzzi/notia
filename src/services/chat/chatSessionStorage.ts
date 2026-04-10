@@ -33,21 +33,28 @@ function buildTimestampParts(now: Date): {
   }
 }
 
-async function resolveAvailableChatFileName(chatDirectoryPath: string): Promise<{
+async function resolveAvailableChatFileName(
+  chatDirectoryPath: string,
+  library: NotiaLibrary,
+): Promise<{
   fileName: string
   readableStamp: string
 }> {
   const { fileStamp, readableStamp } = buildTimestampParts(new Date())
   const baseName = `Chat-${fileStamp}`
   const initialFileName = `${baseName}.md`
-  if (!(await pathExists(joinChatPath(chatDirectoryPath, initialFileName)))) {
+  if (!(await pathExists(joinChatPath(chatDirectoryPath, initialFileName), {
+    androidDirectoryUri: library.androidTreeUri,
+  }))) {
     return { fileName: initialFileName, readableStamp }
   }
 
   let suffix = 2
   while (suffix < 10_000) {
     const candidateFileName = `${baseName}-${suffix}.md`
-    if (!(await pathExists(joinChatPath(chatDirectoryPath, candidateFileName)))) {
+    if (!(await pathExists(joinChatPath(chatDirectoryPath, candidateFileName), {
+      androidDirectoryUri: library.androidTreeUri,
+    }))) {
       return { fileName: candidateFileName, readableStamp }
     }
     suffix += 1
@@ -63,7 +70,7 @@ export async function createChatDraftFile(
   await ensureChatLibraryStructure(library)
 
   const chatDirectoryPath = resolveChatHistoryDirectoryPath(library.path)
-  const { fileName, readableStamp } = await resolveAvailableChatFileName(chatDirectoryPath)
+  const { fileName, readableStamp } = await resolveAvailableChatFileName(chatDirectoryPath, library)
   const filePath = joinChatPath(chatDirectoryPath, fileName)
 
   const createResult = await createLibraryEntry(chatDirectoryPath, fileName, 'note', {
@@ -87,10 +94,12 @@ export async function createChatDraftFile(
   return { filePath }
 }
 
-export async function deleteChatDraftFile(filePath: string): Promise<void> {
+export async function deleteChatDraftFile(filePath: string, library: NotiaLibrary): Promise<void> {
   const result = await performLibraryEntryOperation({
     action: 'delete',
     targetPath: filePath,
+  }, {
+    androidDirectoryUri: library.androidTreeUri,
   })
 
   if (!result.ok) {

@@ -204,9 +204,12 @@ export async function createLibraryEntry(
 
 export async function performLibraryEntryOperation(
   payload: LibraryEntryOperationPayload,
+  options?: { androidDirectoryUri?: string },
 ): Promise<CreateLibraryEntryResult> {
   try {
-    return await performFilesystemEntryOperation(payload)
+    return await performFilesystemEntryOperation(payload, {
+      androidDirectoryUri: options?.androidDirectoryUri,
+    })
   } catch (error) {
     console.error('[notia] library_entry_operation failed', error)
     return { ok: false, error: 'Could not perform operation.' }

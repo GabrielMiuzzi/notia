@@ -28,7 +28,7 @@ export function resolveLongTermMemoryFilePath(libraryPath: string): string {
 
 async function ensureFolder(parentDirectoryPath: string, folderName: string, library: NotiaLibrary): Promise<void> {
   const targetDirectoryPath = joinChatPath(parentDirectoryPath, folderName)
-  if (await pathExists(targetDirectoryPath)) {
+  if (await pathExists(targetDirectoryPath, { androidDirectoryUri: library.androidTreeUri })) {
     return
   }
 
@@ -42,7 +42,7 @@ async function ensureFolder(parentDirectoryPath: string, folderName: string, lib
 
 async function ensureMarkdownFile(parentDirectoryPath: string, fileName: string, library: NotiaLibrary): Promise<void> {
   const targetFilePath = joinChatPath(parentDirectoryPath, fileName)
-  if (await pathExists(targetFilePath)) {
+  if (await pathExists(targetFilePath, { androidDirectoryUri: library.androidTreeUri })) {
     return
   }
 

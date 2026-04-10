@@ -363,6 +363,7 @@ const renderStickyNote = (
 	};
 
 	const updateVisualState = () => {
+		const zoom = Math.max(0.001, context.getZoomLevel());
 		const color = note.color ?? DEFAULT_STICKY_COLOR;
 		const kind = note.kind ?? DEFAULT_STICKY_KIND;
 		noteEl.style.setProperty("--inkdoc-sticky-note-color", color);
@@ -385,10 +386,12 @@ const renderStickyNote = (
 				option.toggleClass("is-active", isActive);
 			});
 		const visualHeight = note.collapsed ? COLLAPSED_STICKY_HEIGHT : Math.max(INKDOC_STICKY_NOTE_MIN_HEIGHT, note.h);
-		noteEl.style.left = `${anchor.x + note.x}px`;
-		noteEl.style.top = `${anchor.y + note.y}px`;
+		noteEl.style.left = `${anchor.x + note.x * zoom}px`;
+		noteEl.style.top = `${anchor.y + note.y * zoom}px`;
 		noteEl.style.width = `${Math.max(INKDOC_STICKY_NOTE_MIN_WIDTH, note.w)}px`;
 		noteEl.style.height = `${visualHeight}px`;
+		noteEl.style.transform = `scale(${zoom})`;
+		noteEl.style.transformOrigin = "top left";
 		resizeHandle.toggleClass("is-hidden", note.collapsed === true || note.locked === true);
 	};
 
@@ -551,8 +554,8 @@ const renderStickyNote = (
 				const dy = (moveEvent.clientY - startY) / zoom;
 				note.x = startLeft + dx;
 				note.y = startTop + dy;
-				noteEl.style.left = `${anchor.x + note.x}px`;
-				noteEl.style.top = `${anchor.y + note.y}px`;
+				noteEl.style.left = `${anchor.x + note.x * zoom}px`;
+				noteEl.style.top = `${anchor.y + note.y * zoom}px`;
 			},
 			onEnd: () => {
 				context.noteActivity();

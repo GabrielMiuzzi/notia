@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { Eye, Search, SlidersHorizontal, X } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
 import {
-  buildClusteredGraphLayout,
   type PositionedGraphEdge,
   type PositionedGraphNode,
+  type ClusteredGraphLayoutOptions,
 } from '../../../engines/graph/clusteredGraphLayoutEngine'
 import type { LibraryGraphModel } from '../../../types/graph/libraryGraph'
+import { useGraphDerivedData } from '../hooks/useGraphDerivedData'
 
 const MIN_ZOOM_EPSILON = 1e-9
 const MAX_ZOOM = 2.5
@@ -172,13 +173,6 @@ interface GraphViewProps {
   onChatSelectedPathsChange?: (paths: string[]) => void
 }
 
-interface GraphSearchResult {
-  path: string
-  label: string
-  preview: string
-  score: number
-}
-
 interface GraphSearchScrollSession {
   startClientY: number
   startScrollTop: number
@@ -209,61 +203,6 @@ function clampSignedMagnitude(value: number, limit: number): number {
     return -limit
   }
   return value
-}
-
-function normalizeSearchText(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
-function stripHtmlTags(value: string): string {
-  return value.replace(/<[^>]+>/g, ' ')
-}
-
-function extractSearchableContent(path: string, source: string): string {
-  if (path.toLowerCase().endsWith('.inkdoc')) {
-    try {
-      const parsed = JSON.parse(source) as {
-        pages?: Array<{
-          textBlocks?: Array<{
-            text?: string
-            html?: string
-          }>
-        }>
-      }
-      const blocks =
-        parsed.pages?.flatMap((page) =>
-          (page.textBlocks ?? []).map((block) => stripHtmlTags(block.html ?? block.text ?? '')),
-        ) ?? []
-      const extractedText = blocks.join(' ').replace(/\s+/g, ' ').trim()
-      return extractedText || source
-    } catch {
-      return source
-    }
-  }
-
-  return source
-}
-
-function buildSearchPreview(source: string, normalizedQuery: string): string {
-  const flattenedSource = source.replace(/\s+/g, ' ').trim()
-  if (!flattenedSource) {
-    return 'Coincidencia en el archivo'
-  }
-
-  const normalizedSource = normalizeSearchText(flattenedSource)
-  const matchIndex = normalizedSource.indexOf(normalizedQuery)
-  if (matchIndex < 0) {
-    return flattenedSource.slice(0, 140)
-  }
-
-  const previewStart = Math.max(0, matchIndex - 44)
-  const previewEnd = Math.min(flattenedSource.length, matchIndex + normalizedQuery.length + 72)
-  const prefix = previewStart > 0 ? '... ' : ''
-  const suffix = previewEnd < flattenedSource.length ? ' ...' : ''
-  return `${prefix}${flattenedSource.slice(previewStart, previewEnd)}${suffix}`
 }
 
 function easeInOutCubic(value: number): number {
@@ -1158,24 +1097,25 @@ export function GraphView({
     }
   }, [isControlsOpen])
 
-  const graphLayout = useMemo(
-    () =>
-      buildClusteredGraphLayout(stableGraphModel, canvasSize.width, canvasSize.height, {
-        spacingMultiplier: DEFAULT_SPACING_MULTIPLIER,
-        linkedSpacingMultiplier: DEFAULT_LINKED_SPACING_MULTIPLIER,
-        componentSpacingMultiplier: DEFAULT_COMPONENT_SPACING_MULTIPLIER,
-        componentSpacingScaleMultiplier: DEFAULT_COMPONENT_SPACING_SCALE_MULTIPLIER,
-        freeNodeSpacing: DEFAULT_FREE_NODE_SPACING,
-        freeNodeSpacingMultiplier: DEFAULT_FREE_NODE_SPACING_MULTIPLIER,
-        nodeSizeMultiplier,
-      }),
-    [
-      canvasSize.height,
-      canvasSize.width,
-      stableGraphModel,
+  const graphLayoutOptions = useMemo<ClusteredGraphLayoutOptions>(
+    () => ({
+      spacingMultiplier: DEFAULT_SPACING_MULTIPLIER,
+      linkedSpacingMultiplier: DEFAULT_LINKED_SPACING_MULTIPLIER,
+      componentSpacingMultiplier: DEFAULT_COMPONENT_SPACING_MULTIPLIER,
+      componentSpacingScaleMultiplier: DEFAULT_COMPONENT_SPACING_SCALE_MULTIPLIER,
+      freeNodeSpacing: DEFAULT_FREE_NODE_SPACING,
+      freeNodeSpacingMultiplier: DEFAULT_FREE_NODE_SPACING_MULTIPLIER,
       nodeSizeMultiplier,
-    ],
+    }),
+    [nodeSizeMultiplier],
   )
+  const { graphLayout, searchResults, isGraphDerivedDataLoading } = useGraphDerivedData({
+    graphModel: stableGraphModel,
+    graphSourcesByPath,
+    canvasSize,
+    layoutOptions: graphLayoutOptions,
+    searchQuery,
+  })
 
   const buildInitialSimulationNodes = useCallback(
     (): GraphSimulationNode[] =>
@@ -1248,42 +1188,6 @@ export function GraphView({
     }
     return map
   }, [renderedNodes])
-  const normalizedSearchQuery = useMemo(() => normalizeSearchText(searchQuery.trim()), [searchQuery])
-  const searchResults = useMemo(() => {
-    if (!normalizedSearchQuery) {
-      return [] as GraphSearchResult[]
-    }
-
-    const nextResults: GraphSearchResult[] = []
-    for (const node of graphModel.nodes) {
-      const normalizedLabel = normalizeSearchText(node.label)
-      const extractedContent = extractSearchableContent(node.path, graphSourcesByPath[node.path] ?? '')
-      const normalizedContent = normalizeSearchText(extractedContent)
-      const titleMatchIndex = normalizedLabel.indexOf(normalizedSearchQuery)
-      const contentMatchIndex = normalizedContent.indexOf(normalizedSearchQuery)
-      if (titleMatchIndex < 0 && contentMatchIndex < 0) {
-        continue
-      }
-
-      const titleScore = titleMatchIndex < 0 ? 0 : 600 - titleMatchIndex * 8
-      const contentScore = contentMatchIndex < 0 ? 0 : 240 - Math.min(contentMatchIndex, 180)
-      nextResults.push({
-        path: node.path,
-        label: node.label,
-        preview: buildSearchPreview(extractedContent, normalizedSearchQuery),
-        score: titleScore + contentScore + Math.min(node.degree, 12) * 4,
-      })
-    }
-
-    return nextResults
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score
-        }
-        return left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
-      })
-      .slice(0, 8)
-  }, [graphModel.nodes, graphSourcesByPath, normalizedSearchQuery])
   const searchMatchedPaths = useMemo(() => new Set(searchResults.map((result) => result.path)), [searchResults])
 
   const visibleEdges = useMemo(() => {
@@ -1881,7 +1785,8 @@ export function GraphView({
   }
 
   const hasNodes = graphLayout.nodes.length > 0
-  const shouldShowLoadingScreen = isLoading && !hasNodes
+  const isGraphBusy = isLoading || isGraphDerivedDataLoading
+  const shouldShowLoadingScreen = isGraphBusy && !hasNodes
 
   return (
     <main className="notia-main">
@@ -1908,8 +1813,8 @@ export function GraphView({
             </div>
           </div>
         ) : null}
-        {!isLoading && !hasNodes ? <div className="notia-graph-empty">No hay archivos para mostrar.</div> : null}
-        {(hasNodes || isLoading) ? (
+        {!isGraphBusy && !hasNodes ? <div className="notia-graph-empty">No hay archivos para mostrar.</div> : null}
+        {(hasNodes || isGraphBusy) ? (
           <div
             ref={canvasRef}
             className={`notia-graph-canvas ${isDragging ? 'notia-graph-canvas--dragging' : ''}`}

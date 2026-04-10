@@ -185,7 +185,9 @@ export async function loadChatDocument(
   fallbackTitle: string,
   library: NotiaLibrary,
 ): Promise<StoredChatDocument> {
-  const result = await readLibraryFileContent(filePath)
+  const result = await readLibraryFileContent(filePath, {
+    androidDirectoryUri: library.androidTreeUri,
+  })
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo leer el archivo del chat.')
   }
@@ -198,7 +200,11 @@ export async function saveChatDocument(
   document: StoredChatDocument,
   library: NotiaLibrary,
 ): Promise<void> {
-  const result = await writeLibraryFileContent(filePath, serializeChatDocument(toPersistedChatDocument(document, library)))
+  const result = await writeLibraryFileContent(
+    filePath,
+    serializeChatDocument(toPersistedChatDocument(document, library)),
+    { androidDirectoryUri: library.androidTreeUri },
+  )
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo guardar el archivo del chat.')
   }
@@ -206,7 +212,9 @@ export async function saveChatDocument(
 
 export async function loadLongTermMemories(library: NotiaLibrary): Promise<string[]> {
   const filePath = resolveLongTermMemoryFilePath(library.path)
-  const result = await readLibraryFileContent(filePath)
+  const result = await readLibraryFileContent(filePath, {
+    androidDirectoryUri: library.androidTreeUri,
+  })
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo leer LongTermMemory.md.')
   }
@@ -251,7 +259,9 @@ export async function appendLongTermMemories(library: NotiaLibrary, incomingMemo
     '',
   ].join('\n')
 
-  const result = await writeLibraryFileContent(filePath, nextContent)
+  const result = await writeLibraryFileContent(filePath, nextContent, {
+    androidDirectoryUri: library.androidTreeUri,
+  })
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo guardar LongTermMemory.md.')
   }
@@ -261,7 +271,9 @@ export async function appendLongTermMemories(library: NotiaLibrary, incomingMemo
 
 export async function clearLongTermMemories(library: NotiaLibrary): Promise<void> {
   const filePath = resolveLongTermMemoryFilePath(library.path)
-  const result = await writeLibraryFileContent(filePath, '# Long Term Memory\n\n')
+  const result = await writeLibraryFileContent(filePath, '# Long Term Memory\n\n', {
+    androidDirectoryUri: library.androidTreeUri,
+  })
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo vaciar LongTermMemory.md.')
   }

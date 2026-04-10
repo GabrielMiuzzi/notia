@@ -1,10 +1,11 @@
 // @ts-nocheck
-import { App, MarkdownRenderer, type TFile } from "../../engines/platform/inkdocPlatform";
+import { App, type TFile } from "../../engines/platform/inkdocPlatform";
 import type { InkDocDocument, InkDocImageBlock, InkDocPage, InkDocPoint, InkDocStroke, InkDocTextBlock } from "../types";
 import { getPageSizeMm } from "./pageSizes";
 import { renderPdfPageBackground } from "./pdfPageBackground";
 import { applyStrokeStyleToCanvas, applyStrokeStyleToPdf } from "./strokeStyles";
 import { ensureInkDocDecorations, isDecorationVisibleOnPage } from "./documentDecorations";
+import { renderLatexSegments } from "./latexRenderer";
 
 const PX_TO_MM = 25.4 / 96;
 
@@ -208,7 +209,10 @@ const toLatexCanvas = async (
 	host.style.background = "transparent";
 	host.style.color = block.color || "#000000";
 	try {
-		await MarkdownRenderer.render(app, `$$${latex}$$`, host, sourcePath, null as any);
+		const rendered = await renderLatexSegments(host, latex);
+		if (!rendered) {
+			return null;
+		}
 		return await html2canvas(host, {
 			backgroundColor: null,
 			scale: 2,

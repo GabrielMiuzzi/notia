@@ -19,7 +19,7 @@ const DESKTOP_EXPLORER_REFRESH_POLICY: ExplorerRefreshPolicy = {
 }
 
 const ANDROID_EXPLORER_REFRESH_POLICY: ExplorerRefreshPolicy = {
-  // On Android, full tree scans are expensive. Keep automatic polling optional.
+  // On Android, full tree scans are expensive. Keep automatic background checks optional.
   defaultMs: 0,
   minMs: 5000,
   maxMs: 60000,

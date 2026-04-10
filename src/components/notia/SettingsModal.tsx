@@ -71,8 +71,8 @@ export function SettingsModal({
     : Math.max(refreshBounds.minSeconds, Math.round(explorerRefreshIntervalMs / 1000))
   const refreshIntervalLabel = isAutoRefreshDisabled ? 'Manual' : `${refreshIntervalSeconds}s`
   const refreshIntervalRangeLabel = refreshBounds.allowDisabled
-    ? `Intervalo de escaneo (0 = manual, ${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
-    : `Intervalo de escaneo (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
+    ? `Cooldown del chequeo automatico (0 = manual, ${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
+    : `Cooldown del chequeo automatico (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
   const ocrDebounceMs = clampOcrDebounceMs(inkdocPreferences.inkmathDebounceMs)
   const ocrDebounceLabel = `${ocrDebounceMs} ms`
   const normalizedAiPreferences = normalizeAiSettingsInput({
@@ -256,7 +256,7 @@ export function SettingsModal({
             </div>
           ) : activeSection === 'Panel desplegable' ? (
             <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Refresco automatico del panel</div>
+              <div className="notia-settings-card-label">Chequeo automatico de cambios</div>
               <div className="notia-settings-card-value">{refreshIntervalLabel}</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">
                 {refreshIntervalRangeLabel}
