@@ -275,6 +275,13 @@ export class InkDocView extends ItemView {
 		point: InkDocPoint;
 		atMs: number;
 	} | null = null;
+	private lastTouchTextBlockTap: {
+		pageId: string;
+		blockId: string;
+		clientX: number;
+		clientY: number;
+		atMs: number;
+	} | null = null;
 	private textToolbarInteractionResetId: number | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: InkDocPlugin) {
@@ -2772,25 +2779,46 @@ export class InkDocView extends ItemView {
 			});
 
 			blockEl.addEventListener("dblclick", (event) => {
-				const canEdit =
-					isActiveToolForBlock ||
-					this.isSelectionTool() ||
-					(this.activeTool === "text" && blockType === "text") ||
-					(this.activeTool === "latex" && blockType === "latex");
-				if (!canEdit) {
+				event.preventDefault();
+				event.stopPropagation();
+				this.openTextLikeBlockEditor(page, pageIndex, block, blockType, isActiveToolForBlock, event.target);
+			});
+
+			blockEl.addEventListener("pointerup", (event) => {
+				if (event.pointerType !== "touch") {
 					return;
 				}
 				const target = event.target;
+				if (target instanceof HTMLElement && target.closest(".inkdoc-object-menu")) {
+					return;
+				}
 				if (target instanceof HTMLElement && target.closest(".inkdoc-wikilink")) {
+					return;
+				}
+				const previousTap = this.lastTouchTextBlockTap;
+				const now = Date.now();
+				this.lastTouchTextBlockTap = {
+					pageId: page.id,
+					blockId: block.id,
+					clientX: event.clientX,
+					clientY: event.clientY,
+					atMs: now
+				};
+				if (!previousTap || previousTap.pageId !== page.id || previousTap.blockId !== block.id) {
+					return;
+				}
+				if (now - previousTap.atMs > 420) {
+					return;
+				}
+				const dx = event.clientX - previousTap.clientX;
+				const dy = event.clientY - previousTap.clientY;
+				if (Math.hypot(dx, dy) > 28) {
 					return;
 				}
 				event.preventDefault();
 				event.stopPropagation();
-				if (blockType === "latex") {
-					this.openLatexEditor(page, pageIndex, block);
-				} else {
-					this.openTextEditor(page, pageIndex, block);
-				}
+				this.lastTouchTextBlockTap = null;
+				this.openTextLikeBlockEditor(page, pageIndex, block, blockType, isActiveToolForBlock, target);
 			});
 
 			blockEl.addEventListener("pointerdown", (event) => {
@@ -4176,6 +4204,32 @@ export class InkDocView extends ItemView {
 
 	private getTextBlocks(page: InkDocPage, index: number): InkDocTextBlock[] {
 		return ensureTextBlocks(this.docData, page, index);
+	}
+
+	private openTextLikeBlockEditor(
+		page: InkDocPage,
+		pageIndex: number,
+		block: InkDocTextBlock,
+		blockType: "text" | "latex",
+		isActiveToolForBlock: boolean,
+		target: EventTarget | null
+	): void {
+		const canEdit =
+			isActiveToolForBlock ||
+			this.isSelectionTool() ||
+			(this.activeTool === "text" && blockType === "text") ||
+			(this.activeTool === "latex" && blockType === "latex");
+		if (!canEdit) {
+			return;
+		}
+		if (target instanceof HTMLElement && target.closest(".inkdoc-wikilink")) {
+			return;
+		}
+		if (blockType === "latex") {
+			this.openLatexEditor(page, pageIndex, block);
+		} else {
+			this.openTextEditor(page, pageIndex, block);
+		}
 	}
 
 	private getImageBlocks(page: InkDocPage, index: number): InkDocImageBlock[] {
