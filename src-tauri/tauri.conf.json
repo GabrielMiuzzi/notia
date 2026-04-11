@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Notia",
-  "version": "1.0.10-ALPHA",
+  "version": "1.0.11-ALPHA",
   "identifier": "com.gabriel.notia",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://192.168.1.41:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },

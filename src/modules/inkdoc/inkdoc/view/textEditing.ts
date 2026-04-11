@@ -47,6 +47,7 @@ export type TextEditingContext = {
 	) => { page: InkDocPage; block: InkDocTextBlock; affectedPageIds?: string[] } | null;
 	refreshPageRender?: (pageId: string) => void;
 	onLatexCommitted?: (page: InkDocPage, block: InkDocTextBlock) => void;
+	applyLatexEditorStyle?: (editor: HTMLTextAreaElement, block: InkDocTextBlock) => void;
 };
 
 export type TextEditingAccessors = {
@@ -818,6 +819,7 @@ export const openLatexEditor = (
 	editor.style.color = typeof block.color === "string" && block.color.trim().length > 0
 		? block.color
 		: context.getDefaultBlockColor(page);
+	context.applyLatexEditorStyle?.(editor, block);
 	accessors.setLatexEditor(editor);
 	accessors.setActiveLatexEdit({
 		pageId: page.id,
@@ -852,7 +854,6 @@ export const openLatexEditor = (
 	});
 	editor.addEventListener("blur", () => {
 		if (accessors.isTextToolbarInteraction()) {
-			editor.focus();
 			return;
 		}
 		closeLatexEditor(context, accessors, true);

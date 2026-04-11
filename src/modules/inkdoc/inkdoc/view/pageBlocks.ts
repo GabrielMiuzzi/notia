@@ -227,7 +227,8 @@ export const addLatexBlock = (
 		html: undefined,
 		type: "latex",
 		latex: "",
-		color: INKDOC_DEFAULT_LATEX_COLOR
+		color: INKDOC_DEFAULT_LATEX_COLOR,
+		latexStyle: undefined
 	};
 	blocks.push(block);
 	page.textBlocks = blocks;

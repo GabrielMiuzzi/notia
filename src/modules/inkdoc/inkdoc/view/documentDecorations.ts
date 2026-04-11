@@ -22,6 +22,37 @@ export const INKDOC_DOCUMENT_DECORATION_MAX_HEIGHT_PERCENT = 18;
 
 const mmToPx = (mm: number): number => Math.max(1, Math.round((mm * 96) / 25.4));
 
+const normalizeLatexStyle = (value: unknown): InkDocTextBlock["latexStyle"] => {
+	if (!value || typeof value !== "object") {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	const style = {
+		fontSize: typeof raw.fontSize === "number" && Number.isFinite(raw.fontSize) ? raw.fontSize : undefined,
+		letterSpacing:
+			typeof raw.letterSpacing === "number" && Number.isFinite(raw.letterSpacing)
+				? raw.letterSpacing
+				: undefined,
+		lineHeight:
+			typeof raw.lineHeight === "number" && Number.isFinite(raw.lineHeight) ? raw.lineHeight : undefined,
+		textAlign:
+			raw.textAlign === "left" || raw.textAlign === "center" || raw.textAlign === "right"
+				? raw.textAlign
+				: undefined,
+		paddingTop:
+			typeof raw.paddingTop === "number" && Number.isFinite(raw.paddingTop) ? raw.paddingTop : undefined,
+		paddingBottom:
+			typeof raw.paddingBottom === "number" && Number.isFinite(raw.paddingBottom)
+				? raw.paddingBottom
+				: undefined,
+		paddingLeft:
+			typeof raw.paddingLeft === "number" && Number.isFinite(raw.paddingLeft) ? raw.paddingLeft : undefined,
+		paddingRight:
+			typeof raw.paddingRight === "number" && Number.isFinite(raw.paddingRight) ? raw.paddingRight : undefined
+	};
+	return Object.values(style).some((entry) => entry !== undefined) ? style : undefined;
+};
+
 const normalizeTextBlock = (block: Partial<InkDocTextBlock>, fallbackId: string): InkDocTextBlock => ({
 	id: typeof block.id === "string" ? block.id : fallbackId,
 	x: typeof block.x === "number" ? block.x : 0,
@@ -35,7 +66,8 @@ const normalizeTextBlock = (block: Partial<InkDocTextBlock>, fallbackId: string)
 			: undefined,
 	type: block.type === "latex" ? "latex" : "text",
 	latex: typeof block.latex === "string" ? block.latex : "",
-	color: typeof block.color === "string" && block.color.trim().length > 0 ? block.color : undefined
+	color: typeof block.color === "string" && block.color.trim().length > 0 ? block.color : undefined,
+	latexStyle: normalizeLatexStyle(block.latexStyle)
 });
 
 const normalizeImageBlock = (block: Partial<InkDocImageBlock>, fallbackId: string): InkDocImageBlock => ({
@@ -67,6 +99,7 @@ const normalizeTextBlockInPlace = (
 	target.type = normalized.type;
 	target.latex = normalized.latex;
 	target.color = normalized.color;
+	target.latexStyle = normalized.latexStyle;
 	return target;
 };
 

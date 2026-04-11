@@ -2027,15 +2027,39 @@
 
 .inkdoc-text-block.is-latex .inkdoc-text-block-content {
 	display: flex;
-	align-items: center;
-	justify-content: center;
-	text-align: center;
+	align-items: flex-start;
+	justify-content: flex-start;
+	text-align: left;
 	font-size: 18px;
 	line-height: 1.2;
 }
 
+.inkdoc-text-block.is-latex .inkdoc-latex-render-root {
+	width: 100%;
+	text-align: inherit;
+	line-height: inherit;
+}
+
+.inkdoc-text-block.is-latex .inkdoc-markdown-render--math,
+.inkdoc-text-block.is-latex .inkdoc-markdown-render--math-inline {
+	width: 100%;
+	text-align: inherit;
+	line-height: inherit;
+}
+
 .inkdoc-text-block.is-latex .inkdoc-text-block-content .katex {
 	color: inherit;
+}
+
+.inkdoc-text-block.is-latex .inkdoc-text-block-content .katex-display {
+	margin: 0;
+	text-align: inherit;
+	width: 100%;
+}
+
+.inkdoc-text-block.is-latex .inkdoc-text-block-content .katex-display > .katex {
+	display: block;
+	text-align: inherit;
 }
 
 .inkdoc-text-block-resize {
@@ -2106,6 +2130,7 @@
 	min-width: 80px;
 	min-height: 28px;
 	resize: none;
+	box-sizing: border-box;
 }
 
 .inkdoc-text-floating {
@@ -2248,8 +2273,8 @@
 }
 
 .inkdoc-latex-flyout {
-	min-width: 248px;
-	max-width: min(320px, calc(100vw - 92px));
+	min-width: 264px;
+	max-width: min(360px, calc(100vw - 92px));
 }
 
 .inkdoc-latex-color-inputs {

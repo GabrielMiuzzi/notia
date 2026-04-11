@@ -8,7 +8,7 @@ import {
   DRAWIO_RUNTIME_PUBLIC_BASE,
 } from './build/drawioRuntime'
 
-const host = process.env.TAURI_DEV_HOST || '192.168.1.41'
+const host = process.env.TAURI_DEV_HOST || '127.0.0.1'
 const packageJsonPath = resolve(__dirname, 'package.json')
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version?: string }
 const appVersion = typeof packageJson.version === 'string' && packageJson.version.trim().length > 0

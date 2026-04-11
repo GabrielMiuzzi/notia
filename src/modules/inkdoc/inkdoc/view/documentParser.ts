@@ -17,6 +17,37 @@ import { resolveInkDocStrokeStyle } from "./strokeStyles";
 import { resolveInkDocTextLayoutPadding } from "./textLayout";
 import { resolveInkDocDecorations } from "./documentDecorations";
 
+const normalizeLatexStyle = (value: unknown) => {
+	if (!value || typeof value !== "object") {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	const style = {
+		fontSize: typeof raw.fontSize === "number" && Number.isFinite(raw.fontSize) ? raw.fontSize : undefined,
+		letterSpacing:
+			typeof raw.letterSpacing === "number" && Number.isFinite(raw.letterSpacing)
+				? raw.letterSpacing
+				: undefined,
+		lineHeight:
+			typeof raw.lineHeight === "number" && Number.isFinite(raw.lineHeight) ? raw.lineHeight : undefined,
+		textAlign:
+			raw.textAlign === "left" || raw.textAlign === "center" || raw.textAlign === "right"
+				? raw.textAlign
+				: undefined,
+		paddingTop:
+			typeof raw.paddingTop === "number" && Number.isFinite(raw.paddingTop) ? raw.paddingTop : undefined,
+		paddingBottom:
+			typeof raw.paddingBottom === "number" && Number.isFinite(raw.paddingBottom)
+				? raw.paddingBottom
+				: undefined,
+		paddingLeft:
+			typeof raw.paddingLeft === "number" && Number.isFinite(raw.paddingLeft) ? raw.paddingLeft : undefined,
+		paddingRight:
+			typeof raw.paddingRight === "number" && Number.isFinite(raw.paddingRight) ? raw.paddingRight : undefined
+	};
+	return Object.values(style).some((entry) => entry !== undefined) ? style : undefined;
+};
+
 export const parseInkDocRaw = (raw: string): InkDocDocument => {
 	const parsed = JSON.parse(raw) as Partial<InkDocDocument>;
 	const pages = Array.isArray(parsed.pages)
@@ -45,7 +76,8 @@ export const parseInkDocRaw = (raw: string): InkDocDocument => {
 					color:
 						typeof block.color === "string" && block.color.trim().length > 0
 							? block.color
-							: undefined
+							: undefined,
+					latexStyle: normalizeLatexStyle(block.latexStyle)
 				}));
 				const rawImages = Array.isArray((safePage as InkDocPage | undefined)?.images)
 					? (safePage as InkDocPage).images ?? []

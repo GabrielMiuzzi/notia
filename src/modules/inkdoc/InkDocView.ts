@@ -3,6 +3,7 @@ import { ItemView, Notice, TFile, WorkspaceLeaf } from "./engines/platform/inkdo
 import type InkDocPlugin from "./main";
 import type {
 	InkDocDocument,
+	InkDocLatexStyle,
 	InkDocImageBlock,
 	InkDocPageBackground,
 	InkDocPageColors,
@@ -145,7 +146,7 @@ type InkDocBlockOwner =
 
 type InkDocPencilSubmenu = "brushes" | "stroke" | "colors" | "stylus";
 type InkDocTextSubmenu = "format" | "font" | "colors" | "paragraph" | "insert";
-type InkDocLatexSubmenu = "colors";
+type InkDocLatexSubmenu = "format" | "font" | "colors" | "paragraph" | "insert";
 type InkDocSelectionOcrSession = {
 	pageId: string;
 	pageIndex: number;
@@ -156,6 +157,19 @@ type InkDocSelectionOcrSession = {
 		right: number;
 		bottom: number;
 	};
+};
+
+type ResolvedInkDocLatexStyle = Required<InkDocLatexStyle>;
+
+const INKDOC_DEFAULT_LATEX_STYLE: ResolvedInkDocLatexStyle = {
+	fontSize: 24,
+	letterSpacing: 0,
+	lineHeight: 1.2,
+	textAlign: "left",
+	paddingTop: 0,
+	paddingBottom: 0,
+	paddingLeft: 0,
+	paddingRight: 0
 };
 
 export class InkDocView extends ItemView {
@@ -170,8 +184,10 @@ export class InkDocView extends ItemView {
 	private syncEngine: DocumentSyncEngine;
 	private activeTool: InkDocTool = "pen";
 	private strokeWidth = INKDOC_STROKE_WIDTH;
+	private preferredStrokeWidth = INKDOC_STROKE_WIDTH;
 	private strokeStyle: InkDocStrokeStyle = "solid";
 	private strokeColor = INKDOC_STROKE_COLOR;
+	private strokeColorFollowsFirstPageContrast = true;
 	private strokeOpacity = 1;
 	private strokeSmoothing = 0.35;
 	private strokeStabilizer = 0.75;
@@ -179,6 +195,13 @@ export class InkDocView extends ItemView {
 	private isStylusDynamicsEnabled = true;
 	private brushRegistry = new BrushRegistry();
 	private activeBrushId = "monoline";
+	private lastStrokeBrushId = "monoline";
+	private lastDrawableBrushId = "monoline";
+	private lastBrushByTool: Record<"pen" | "highlighter" | "eraser", string> = {
+		pen: "monoline",
+		highlighter: "highlighter",
+		eraser: "eraser"
+	};
 	private stylusAvailable = false;
 	private strokeEraserMode: "point" | "stroke" = "point";
 	private recentStrokeColors: string[] = [];
@@ -252,12 +275,14 @@ export class InkDocView extends ItemView {
 		point: InkDocPoint;
 		atMs: number;
 	} | null = null;
+	private textToolbarInteractionResetId: number | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: InkDocPlugin) {
 		super(leaf);
 		this.plugin = plugin;
 		const initial = this.getActiveBrushPreset();
 		this.strokeWidth = initial.defaultWidth;
+		this.preferredStrokeWidth = initial.defaultWidth;
 		this.strokeOpacity = initial.defaultOpacity;
 		this.strokeStyle = initial.style;
 		this.strokeSmoothing = initial.smoothing;
@@ -680,7 +705,16 @@ export class InkDocView extends ItemView {
 		};
 
 		const brushesToggle = createRailButton("brushes", "Brushes", "pencil", "P");
-		brushesToggle.addEventListener("click", () => this.togglePencilSubmenu("brushes"));
+		brushesToggle.addEventListener("click", (event) => {
+			if (event.detail > 1) {
+				return;
+			}
+			this.handlePencilBrushRailClick();
+		});
+		brushesToggle.addEventListener("dblclick", (event) => {
+			event.preventDefault();
+			this.handlePencilBrushRailDoubleClick();
+		});
 
 		const eraserQuickButton = rail.createEl("button", {
 			cls: "inkdoc-pencil-fab",
@@ -1338,15 +1372,100 @@ export class InkDocView extends ItemView {
 		this.activeLatexSubmenu = null;
 
 		const rail = menu.createDiv({ cls: "inkdoc-pencil-fab-rail" });
-		const colorToggle = rail.createEl("button", {
-			cls: "inkdoc-pencil-fab",
-			attr: { "aria-label": "Color de formula", title: "Color de formula" }
-		});
-		const colorGlyph = colorToggle.createSpan({ cls: "inkdoc-pencil-fab-glyph" });
-		setCompatibleIcon(colorGlyph, "palette", "C");
-		colorToggle.addEventListener("click", () => this.toggleLatexSubmenu("colors"));
+		const createRailButton = (
+			submenu: InkDocLatexSubmenu,
+			label: string,
+			icon: string,
+			fallback: string
+		): HTMLButtonElement => {
+			const button = rail.createEl("button", {
+				cls: "inkdoc-pencil-fab",
+				attr: { "aria-label": label, title: label }
+			});
+			button.dataset.latexSubmenuTrigger = submenu;
+			const glyph = button.createSpan({ cls: "inkdoc-pencil-fab-glyph" });
+			setCompatibleIcon(glyph, icon, fallback);
+			button.addEventListener("click", () => this.toggleLatexSubmenu(submenu));
+			return button;
+		};
+
+		const formatToggle = createRailButton("format", "Formato", "wand", "F");
+		const fontToggle = createRailButton("font", "Tipografía", "type", "T");
+		const colorsToggle = createRailButton("colors", "Color", "palette", "C");
+		const paragraphToggle = createRailButton("paragraph", "Párrafo", "align-left", "P");
+		const insertToggle = createRailButton("insert", "Insertar", "plus", "+");
 
 		const flyouts = menu.createDiv({ cls: "inkdoc-pencil-flyouts" });
+
+		const formatFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-latex-flyout",
+			attr: { "data-latex-submenu": "format" }
+		});
+		const formatCard = formatFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		formatCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Formato" });
+		const formatButtons = formatCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(formatButtons, "wand", "InkMath", () => this.openActiveLatexInkMathModal());
+		this.createTextIconButton(formatButtons, "sigma", "Insertar fracción", () =>
+			this.insertLatexSnippet("\\frac{__SELECTION__}{}")
+		);
+		this.createTextIconButton(formatButtons, "pilcrow", "Raíz", () =>
+			this.insertLatexSnippet("\\sqrt{__SELECTION__}")
+		);
+		this.createTextIconButton(formatButtons, "align-left", "Alinear izquierda", () =>
+			this.applyLatexStyle({ textAlign: "left" })
+		);
+		this.createTextIconButton(formatButtons, "align-center", "Alinear centro", () =>
+			this.applyLatexStyle({ textAlign: "center" })
+		);
+		this.createTextIconButton(formatButtons, "align-right", "Alinear derecha", () =>
+			this.applyLatexStyle({ textAlign: "right" })
+		);
+		this.createTextIconButton(formatButtons, "scan-search", "Ajustar bloque", () =>
+			this.fitActiveLatexBlockToContent()
+		);
+
+		const fontFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-latex-flyout",
+			attr: { "data-latex-submenu": "font" }
+		});
+		const fontCard = fontFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		fontCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Tipografía" });
+		const fontGrid = fontCard.createDiv({ cls: "inkdoc-text-form-grid" });
+		this.createLatexSelectControl(fontGrid, "Tamaño", "font-size", [
+			{ label: "10", value: "10" },
+			{ label: "12", value: "12" },
+			{ label: "14", value: "14" },
+			{ label: "16", value: "16" },
+			{ label: "18", value: "18" },
+			{ label: "20", value: "20" },
+			{ label: "24", value: "24" },
+			{ label: "28", value: "28" },
+			{ label: "32", value: "32" },
+			{ label: "40", value: "40" }
+		], (value) => this.applyLatexStyle({ fontSize: Number(value) }));
+		this.createLatexSelectControl(fontGrid, "Espaciado letra", "letter-spacing", [
+			{ label: "0", value: "0" },
+			{ label: "0.5", value: "0.5" },
+			{ label: "1", value: "1" },
+			{ label: "1.5", value: "1.5" },
+			{ label: "2", value: "2" },
+			{ label: "3", value: "3" }
+		], (value) => this.applyLatexStyle({ letterSpacing: Number(value) }));
+		this.createLatexSelectControl(fontGrid, "Margen izq.", "padding-left", [
+			{ label: "0", value: "0" },
+			{ label: "8", value: "8" },
+			{ label: "12", value: "12" },
+			{ label: "16", value: "16" },
+			{ label: "24", value: "24" }
+		], (value) => this.applyLatexStyle({ paddingLeft: Number(value) }));
+		this.createLatexSelectControl(fontGrid, "Margen der.", "padding-right", [
+			{ label: "0", value: "0" },
+			{ label: "8", value: "8" },
+			{ label: "12", value: "12" },
+			{ label: "16", value: "16" },
+			{ label: "24", value: "24" }
+		], (value) => this.applyLatexStyle({ paddingRight: Number(value) }));
+
 		const colorsFlyout = flyouts.createDiv({
 			cls: "inkdoc-pencil-flyout inkdoc-latex-flyout",
 			attr: { "data-latex-submenu": "colors" }
@@ -1382,7 +1501,99 @@ export class InkDocView extends ItemView {
 			});
 		}
 
-		this.latexSubmenuEngine.register("colors", colorToggle, colorsFlyout);
+		const paragraphFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-latex-flyout",
+			attr: { "data-latex-submenu": "paragraph" }
+		});
+		const paragraphCard = paragraphFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		paragraphCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Párrafo" });
+		const paragraphButtons = paragraphCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(paragraphButtons, "align-left", "Alinear izquierda", () =>
+			this.applyLatexStyle({ textAlign: "left" })
+		);
+		this.createTextIconButton(paragraphButtons, "align-center", "Alinear centro", () =>
+			this.applyLatexStyle({ textAlign: "center" })
+		);
+		this.createTextIconButton(paragraphButtons, "align-right", "Alinear derecha", () =>
+			this.applyLatexStyle({ textAlign: "right" })
+		);
+		this.createTextIconButton(paragraphButtons, "scan-search", "Ajustar bloque", () =>
+			this.fitActiveLatexBlockToContent()
+		);
+		const spacingCard = paragraphFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-subcard" });
+		spacingCard.createDiv({ cls: "inkdoc-pencil-subtitle", text: "Espaciado" });
+		const spacingGrid = spacingCard.createDiv({ cls: "inkdoc-text-form-grid" });
+		this.createLatexSelectControl(spacingGrid, "Interlineado", "line-height", [
+			{ label: "0.6", value: "0.6" },
+			{ label: "0.7", value: "0.7" },
+			{ label: "0.8", value: "0.8" },
+			{ label: "0.9", value: "0.9" },
+			{ label: "1.0", value: "1" },
+			{ label: "1.15", value: "1.15" },
+			{ label: "1.2", value: "1.2" },
+			{ label: "1.3", value: "1.3" },
+			{ label: "1.5", value: "1.5" },
+			{ label: "2.0", value: "2" }
+		], (value) => this.applyLatexStyle({ lineHeight: Number(value) }));
+		this.createLatexSelectControl(spacingGrid, "Antes", "padding-top", [
+			{ label: "0", value: "0" },
+			{ label: "4", value: "4" },
+			{ label: "8", value: "8" },
+			{ label: "12", value: "12" },
+			{ label: "16", value: "16" }
+		], (value) => this.applyLatexStyle({ paddingTop: Number(value) }));
+		this.createLatexSelectControl(spacingGrid, "Después", "padding-bottom", [
+			{ label: "0", value: "0" },
+			{ label: "4", value: "4" },
+			{ label: "8", value: "8" },
+			{ label: "12", value: "12" },
+			{ label: "16", value: "16" }
+		], (value) => this.applyLatexStyle({ paddingBottom: Number(value) }));
+		this.createLatexSelectControl(spacingGrid, "Ancho bloque", "block-width", [
+			{ label: "180", value: "180" },
+			{ label: "220", value: "220" },
+			{ label: "280", value: "280" },
+			{ label: "360", value: "360" },
+			{ label: "440", value: "440" }
+		], (value) => this.applyLatexBlockWidth(Number(value)));
+
+		const insertFlyout = flyouts.createDiv({
+			cls: "inkdoc-pencil-flyout inkdoc-latex-flyout",
+			attr: { "data-latex-submenu": "insert" }
+		});
+		const insertCard = insertFlyout.createDiv({ cls: "inkdoc-pencil-card inkdoc-pencil-panel-card" });
+		insertCard.createDiv({ cls: "inkdoc-pencil-card-title", text: "Insertar" });
+		const insertButtons = insertCard.createDiv({ cls: "inkdoc-text-action-grid" });
+		this.createTextIconButton(insertButtons, "sigma", "Fracción", () =>
+			this.insertLatexSnippet("\\frac{__SELECTION__}{}")
+		);
+		this.createTextIconButton(insertButtons, "pilcrow", "Raíz", () =>
+			this.insertLatexSnippet("\\sqrt{__SELECTION__}")
+		);
+		this.createTextIconButton(insertButtons, "superscript", "Superíndice", () =>
+			this.insertLatexSnippet("^{__SELECTION__}")
+		);
+		this.createTextIconButton(insertButtons, "subscript", "Subíndice", () =>
+			this.insertLatexSnippet("_{__SELECTION__}")
+		);
+		this.createTextIconButton(insertButtons, "parentheses", "Paréntesis", () =>
+			this.insertLatexSnippet("\\left(__SELECTION__\\right)")
+		);
+		this.createTextIconButton(insertButtons, "braces", "Llaves", () =>
+			this.insertLatexSnippet("\\left\\{__SELECTION__\\right\\}")
+		);
+		this.createTextIconButton(insertButtons, "minus", "Sumatoria", () =>
+			this.insertLatexSnippet("\\sum_{i=1}^{n} __SELECTION__")
+		);
+		this.createTextIconButton(insertButtons, "separator-horizontal", "Integral", () =>
+			this.insertLatexSnippet("\\int_{a}^{b} __SELECTION__ \\, dx")
+		);
+
+		this.latexSubmenuEngine.register("format", formatToggle, formatFlyout);
+		this.latexSubmenuEngine.register("font", fontToggle, fontFlyout);
+		this.latexSubmenuEngine.register("colors", colorsToggle, colorsFlyout);
+		this.latexSubmenuEngine.register("paragraph", paragraphToggle, paragraphFlyout);
+		this.latexSubmenuEngine.register("insert", insertToggle, insertFlyout);
 		this.setActiveLatexSubmenu(null);
 		this.updateLatexToolbarUI();
 	}
@@ -1423,6 +1634,25 @@ export class InkDocView extends ItemView {
 		if (preview) {
 			preview.style.background = this.latexColor;
 		}
+		const target = this.getActiveLatexTarget();
+		if (!target) {
+			return;
+		}
+		const style = this.getResolvedLatexStyle(target.block);
+		const syncSelect = (role: string, value: string) => {
+			const select = this.latexMenuEl?.querySelector<HTMLSelectElement>(`[data-role='latex-${role}']`);
+			if (select) {
+				select.value = value;
+			}
+		};
+		syncSelect("font-size", String(style.fontSize));
+		syncSelect("letter-spacing", String(style.letterSpacing));
+		syncSelect("line-height", String(style.lineHeight));
+		syncSelect("padding-top", String(style.paddingTop));
+		syncSelect("padding-bottom", String(style.paddingBottom));
+		syncSelect("padding-left", String(style.paddingLeft));
+		syncSelect("padding-right", String(style.paddingRight));
+		syncSelect("block-width", String(Math.max(INKDOC_TEXT_MIN_WIDTH, Math.round(target.block.w))));
 	}
 
 	private getSelectedStrokeOcrSession(): InkDocSelectionOcrSession | null {
@@ -1508,6 +1738,18 @@ export class InkDocView extends ItemView {
 		return getContrastPageTextColor(page.colors);
 	}
 
+	private syncAutoStrokeColorFromFirstPage(): void {
+		if (!this.strokeColorFollowsFirstPageContrast) {
+			return;
+		}
+		const firstPage = this.docData?.pages[0];
+		if (!firstPage) {
+			return;
+		}
+		this.strokeColor = this.getPageDefaultTextColor(firstPage);
+		this.updatePencilMenuUI();
+	}
+
 	private getTextBlockColor(page: InkDocPage, block: InkDocTextBlock): string {
 		if (typeof block.color === "string" && block.color.trim().length > 0) {
 			return block.color;
@@ -1522,31 +1764,188 @@ export class InkDocView extends ItemView {
 		return this.getPageDefaultTextColor(page);
 	}
 
+	private getResolvedLatexStyle(block: InkDocTextBlock | null | undefined): ResolvedInkDocLatexStyle {
+		const style = block?.latexStyle;
+		return {
+			fontSize:
+				typeof style?.fontSize === "number" && Number.isFinite(style.fontSize)
+					? Math.max(10, style.fontSize)
+					: INKDOC_DEFAULT_LATEX_STYLE.fontSize,
+			letterSpacing:
+				typeof style?.letterSpacing === "number" && Number.isFinite(style.letterSpacing)
+					? style.letterSpacing
+					: INKDOC_DEFAULT_LATEX_STYLE.letterSpacing,
+			lineHeight:
+				typeof style?.lineHeight === "number" && Number.isFinite(style.lineHeight)
+					? Math.max(0.6, style.lineHeight)
+					: INKDOC_DEFAULT_LATEX_STYLE.lineHeight,
+			textAlign:
+				style?.textAlign === "center" || style?.textAlign === "right" || style?.textAlign === "left"
+					? style.textAlign
+					: INKDOC_DEFAULT_LATEX_STYLE.textAlign,
+			paddingTop:
+				typeof style?.paddingTop === "number" && Number.isFinite(style.paddingTop)
+					? Math.max(0, style.paddingTop)
+					: INKDOC_DEFAULT_LATEX_STYLE.paddingTop,
+			paddingBottom:
+				typeof style?.paddingBottom === "number" && Number.isFinite(style.paddingBottom)
+					? Math.max(0, style.paddingBottom)
+					: INKDOC_DEFAULT_LATEX_STYLE.paddingBottom,
+			paddingLeft:
+				typeof style?.paddingLeft === "number" && Number.isFinite(style.paddingLeft)
+					? Math.max(0, style.paddingLeft)
+					: INKDOC_DEFAULT_LATEX_STYLE.paddingLeft,
+			paddingRight:
+				typeof style?.paddingRight === "number" && Number.isFinite(style.paddingRight)
+					? Math.max(0, style.paddingRight)
+					: INKDOC_DEFAULT_LATEX_STYLE.paddingRight
+		};
+	}
+
+	private applyLatexBlockStyleToElement(
+		element: HTMLElement,
+		block: InkDocTextBlock,
+		options: { editing?: boolean; intrinsic?: boolean } = {}
+	): void {
+		const style = this.getResolvedLatexStyle(block);
+		const justifyContent =
+			style.textAlign === "right"
+				? "flex-end"
+				: style.textAlign === "center"
+					? "center"
+					: "flex-start";
+		const alignItems =
+			style.textAlign === "right"
+				? "flex-end"
+				: style.textAlign === "center"
+					? "center"
+					: "flex-start";
+		element.style.display = options.editing ? "block" : "flex";
+		element.style.flexDirection = "column";
+		element.style.fontSize = `${style.fontSize}px`;
+		element.style.letterSpacing = `${style.letterSpacing}px`;
+		element.style.lineHeight = String(style.lineHeight);
+		element.style.textAlign = style.textAlign;
+		element.style.justifyContent = justifyContent;
+		element.style.alignItems = options.editing ? "stretch" : alignItems;
+		element.style.paddingTop = `${style.paddingTop + (options.editing ? 6 : 0)}px`;
+		element.style.paddingBottom = `${style.paddingBottom + (options.editing ? 6 : 0)}px`;
+		element.style.paddingLeft = `${style.paddingLeft + (options.editing ? 6 : 0)}px`;
+		element.style.paddingRight = `${style.paddingRight + (options.editing ? 6 : 0)}px`;
+		if (!options.editing && !options.intrinsic) {
+			element.style.width = "100%";
+			element.style.height = "100%";
+			element.style.boxSizing = "border-box";
+		}
+	}
+
+	private getActiveLatexTarget():
+		| { page: InkDocPage; block: InkDocTextBlock; affectedPageIds: string[] }
+		| null {
+		const active = this.activeLatexEdit;
+		if (!active || !this.docData) {
+			return null;
+		}
+		return this.applyTextEditChanges(active, {});
+	}
+
 	private applyLatexColor(color: string): void {
 		if (!color || color === this.latexColor) {
 			return;
 		}
 		this.latexColor = color;
 		this.updateLatexToolbarUI();
-		const active = this.activeLatexEdit;
-		if (!active || !this.docData) {
+		const target = this.getActiveLatexTarget();
+		if (!target || this.getBlockType(target.block) !== "latex") {
 			return;
 		}
-		const page = this.docData.pages.find((entry) => entry.id === active.pageId) ?? this.docData.pages[active.pageIndex];
-		const block = page?.textBlocks?.find((entry) => entry.id === active.blockId);
-		if (!page || !block || this.getBlockType(block) !== "latex") {
-			return;
-		}
-		block.color = color;
+		target.block.color = color;
 		if (this.latexEditorEl) {
 			this.latexEditorEl.style.color = color;
 		}
-		this.textLayerDirty.add(page.id);
-		const state = this.canvasStates.get(page.id);
-		if (state) {
-			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		for (const pageId of target.affectedPageIds) {
+			this.textLayerDirty.add(pageId);
+			this.refreshPage(pageId);
 		}
 		this.saveDebounced();
+	}
+
+	private applyLatexStyle(changes: Partial<InkDocLatexStyle>): void {
+		const target = this.getActiveLatexTarget();
+		if (!target) {
+			return;
+		}
+		const nextStyle = {
+			...this.getResolvedLatexStyle(target.block),
+			...changes
+		};
+		target.block.latexStyle = nextStyle;
+		if (this.latexEditorEl) {
+			this.applyLatexBlockStyleToElement(this.latexEditorEl, target.block, { editing: true });
+			window.requestAnimationFrame(() => {
+				if (this.latexEditorEl) {
+					this.latexEditorEl.style.height = "auto";
+					this.latexEditorEl.style.height = `${this.latexEditorEl.scrollHeight}px`;
+				}
+			});
+		}
+		for (const pageId of target.affectedPageIds) {
+			this.textLayerDirty.add(pageId);
+			this.refreshPage(pageId);
+		}
+		this.updateLatexToolbarUI();
+		this.saveDebounced();
+	}
+
+	private applyLatexBlockWidth(width: number): void {
+		const target = this.getActiveLatexTarget();
+		if (!target) {
+			return;
+		}
+		target.block.w = Math.max(INKDOC_TEXT_MIN_WIDTH, width);
+		if (this.latexEditorEl) {
+			this.latexEditorEl.style.width = `${Math.max(INKDOC_TEXT_MIN_WIDTH, target.block.w)}px`;
+		}
+		for (const pageId of target.affectedPageIds) {
+			this.textLayerDirty.add(pageId);
+			this.refreshPage(pageId);
+		}
+		this.updateLatexToolbarUI();
+		this.saveDebounced();
+	}
+
+	private insertLatexSnippet(snippet: string): void {
+		const editor = this.latexEditorEl;
+		if (!editor) {
+			return;
+		}
+		const start = editor.selectionStart ?? editor.value.length;
+		const end = editor.selectionEnd ?? editor.value.length;
+		const selected = editor.value.slice(start, end);
+		const replacement = snippet.includes("__SELECTION__")
+			? snippet.replace("__SELECTION__", selected || "x")
+			: `${snippet}${selected}`;
+		editor.setRangeText(replacement, start, end, "end");
+		editor.dispatchEvent(new Event("input", { bubbles: true }));
+		editor.focus();
+	}
+
+	private fitActiveLatexBlockToContent(): void {
+		const target = this.getActiveLatexTarget();
+		if (!target) {
+			return;
+		}
+		void this.handleLatexBlockCommitted(target.page, target.block);
+	}
+
+	private openActiveLatexInkMathModal(): void {
+		const active = this.activeLatexEdit;
+		const target = this.getActiveLatexTarget();
+		if (!active || !target) {
+			return;
+		}
+		const pageIndex = this.docData?.pages.findIndex((entry) => entry.id === target.page.id) ?? active.pageIndex;
+		this.openInkMathModalForLatexBlock(target.page, pageIndex, target.block.id);
 	}
 
 	private updatePencilMenuVisibility(): void {
@@ -1901,6 +2300,7 @@ export class InkDocView extends ItemView {
 		if (firstPage) {
 			this.latexColor = this.getPageDefaultTextColor(firstPage);
 			this.updateLatexToolbarUI();
+			this.syncAutoStrokeColorFromFirstPage();
 		}
 		this.updatePageInputMode();
 		this.renderStickyNotes();
@@ -2722,6 +3122,7 @@ export class InkDocView extends ItemView {
 	): Promise<void> {
 		container.empty();
 		container.style.color = this.getLatexBlockColor(page, block);
+		this.applyLatexBlockStyleToElement(container, block);
 		const latex = block.latex?.trim() ?? "";
 		if (!latex) {
 			return;
@@ -2834,6 +3235,10 @@ export class InkDocView extends ItemView {
 		const state = this.canvasStates.get(page.id);
 		if (state) {
 			setPageColorVariables(state.pageEl, resolved);
+		}
+		const firstPage = this.docData.pages[0];
+		if (firstPage && firstPage.id === target.id) {
+			this.syncAutoStrokeColorFromFirstPage();
 		}
 		if (this.activeTool === "latex") {
 			this.latexColor = this.getPageDefaultTextColor(page);
@@ -3476,20 +3881,24 @@ export class InkDocView extends ItemView {
 			}
 		}
 		if (tool === "pen" || tool === "highlighter" || tool === "eraser") {
-			const currentBrush = this.getActiveBrushPreset();
-			if (currentBrush.tool !== tool) {
+			const rememberedBrushId = this.lastBrushByTool[tool];
+			const rememberedBrush = this.brushRegistry.get(rememberedBrushId);
+			if (rememberedBrush.tool === tool) {
+				this.activeBrushId = rememberedBrush.id;
+			} else {
 				const fallback = this.brushRegistry
 					.list()
 					.find((preset) => preset.tool === tool);
 				if (fallback) {
 					this.activeBrushId = fallback.id;
-					this.strokeWidth = fallback.defaultWidth;
-					this.strokeOpacity = fallback.defaultOpacity;
-					this.strokeStyle = fallback.style;
-					this.strokeSmoothing = fallback.smoothing;
-					this.strokeStabilizer = fallback.stabilizer;
+					this.lastBrushByTool[tool] = fallback.id;
 				}
 			}
+			this.lastStrokeBrushId = this.activeBrushId;
+			if (tool !== "eraser") {
+				this.lastDrawableBrushId = this.activeBrushId;
+			}
+			this.strokeWidth = this.clampStrokeWidthForActiveBrush(this.preferredStrokeWidth);
 		}
 		this.updateToolButtons();
 		this.updateHandToolState();
@@ -3497,6 +3906,7 @@ export class InkDocView extends ItemView {
 		this.updatePencilMenuVisibility();
 		this.updatePencilMenuUI();
 		this.updateTextToolbarVisibility();
+		this.updateLatexToolbarUI();
 		this.updateSelectionAiMenu();
 		this.renderAllCanvases();
 		this.renderStickyNotes();
@@ -4085,6 +4495,7 @@ export class InkDocView extends ItemView {
 		content.style.height = "fit-content";
 		content.style.overflow = "visible";
 		content.style.color = this.getLatexBlockColor(page, block);
+		this.applyLatexBlockStyleToElement(content, block, { intrinsic: true });
 		host.appendChild(content);
 		document.body.appendChild(host);
 		try {
@@ -4134,14 +4545,22 @@ export class InkDocView extends ItemView {
 	}
 
 	private setStrokeWidth(width: number): void {
-		const brush = this.getActiveBrushPreset();
 		const rounded = Math.max(1, Math.round(width));
-		this.strokeWidth = Math.max(brush.minWidth, Math.min(brush.maxWidth, rounded));
+		this.preferredStrokeWidth = rounded;
+		this.strokeWidth = this.clampStrokeWidthForActiveBrush(this.preferredStrokeWidth);
 		this.updatePencilMenuUI();
 	}
 
-	private setStrokeColor(color: string): void {
+	private clampStrokeWidthForActiveBrush(width: number): number {
+		const brush = this.getActiveBrushPreset();
+		return Math.max(brush.minWidth, Math.min(brush.maxWidth, width));
+	}
+
+	private setStrokeColor(color: string, options?: { preserveAuto?: boolean }): void {
 		this.strokeColor = color;
+		if (options?.preserveAuto !== true) {
+			this.strokeColorFollowsFirstPageContrast = false;
+		}
 		this.pushRecentStrokeColor(color);
 		this.updatePencilMenuUI();
 	}
@@ -4183,12 +4602,16 @@ export class InkDocView extends ItemView {
 	private setActiveBrush(brushId: string): void {
 		const preset = this.brushRegistry.get(brushId);
 		this.activeBrushId = preset.id;
-		const resolvedWidth = Number.isFinite(this.strokeWidth) ? this.strokeWidth : preset.defaultWidth;
+		this.lastStrokeBrushId = preset.id;
+		this.lastBrushByTool[preset.tool] = preset.id;
+		if (preset.tool !== "eraser") {
+			this.lastDrawableBrushId = preset.id;
+		}
+		const resolvedWidth = Number.isFinite(this.preferredStrokeWidth)
+			? this.preferredStrokeWidth
+			: preset.defaultWidth;
+		this.preferredStrokeWidth = resolvedWidth;
 		this.strokeWidth = Math.max(preset.minWidth, Math.min(preset.maxWidth, resolvedWidth));
-		this.strokeOpacity = preset.defaultOpacity;
-		this.strokeStyle = preset.style;
-		this.strokeSmoothing = preset.smoothing;
-		this.strokeStabilizer = preset.stabilizer;
 		if (preset.tool === "eraser") {
 			this.setActiveTool("eraser");
 		} else if (preset.tool === "highlighter") {
@@ -4239,7 +4662,10 @@ export class InkDocView extends ItemView {
 		}
 		const buttons = this.toolbarEl.querySelectorAll<HTMLButtonElement>("button[data-tool]");
 		buttons.forEach((button) => {
-			const isActive = button.dataset.tool === this.activeTool;
+			const buttonTool = button.dataset.tool;
+			const isActive =
+				(buttonTool === "pen" && this.isStrokeTool()) ||
+				buttonTool === this.activeTool;
 			button.classList.toggle("is-active", isActive);
 		});
 	}
@@ -4309,7 +4735,10 @@ export class InkDocView extends ItemView {
 				void this.saveToFile();
 			},
 			noteUserActivity: () => this.syncEngine.noteActivity(),
-			updateTextToolbarVisibility: () => this.updateTextToolbarVisibility(),
+			updateTextToolbarVisibility: () => {
+				this.updateTextToolbarVisibility();
+				this.updateLatexToolbarUI();
+			},
 			getDefaultBlockColor: (page) => this.getPageDefaultTextColor(page),
 			getWikiLinkTargets: () => this.getInkdocWikiLinkTargets(),
 			getDecorationTextBlock: (region, blockId) => this.getDecorationTextBlockById(region, blockId),
@@ -4345,6 +4774,9 @@ export class InkDocView extends ItemView {
 			refreshPageRender: (pageId) => this.refreshPage(pageId),
 			onLatexCommitted: (page, block) => {
 				void this.handleLatexBlockCommitted(page, block);
+			},
+			applyLatexEditorStyle: (editor, block) => {
+				this.applyLatexBlockStyleToElement(editor, block, { editing: true });
 			}
 		};
 	}
@@ -4928,6 +5360,23 @@ export class InkDocView extends ItemView {
 		this.pencilMenuEl.setAttr("aria-hidden", "true");
 	}
 
+	private handlePencilBrushRailClick(): void {
+		this.activateLastDrawableBrush();
+		this.setActivePencilSubmenu(null);
+		this.updatePencilMenuVisibility();
+	}
+
+	private handlePencilBrushRailDoubleClick(): void {
+		this.activateLastDrawableBrush();
+		this.setActivePencilSubmenu("brushes");
+		this.updatePencilMenuVisibility();
+	}
+
+	private activateLastDrawableBrush(): void {
+		const brushId = this.lastDrawableBrushId?.trim() || this.lastBrushByTool.pen || "monoline";
+		this.setActiveBrush(brushId);
+	}
+
 	private togglePencilSubmenu(submenu: InkDocPencilSubmenu): void {
 		const next = this.activePencilSubmenu === submenu ? null : submenu;
 		this.setActivePencilSubmenu(next);
@@ -5145,9 +5594,13 @@ export class InkDocView extends ItemView {
 
 	private markTextToolbarInteraction(): void {
 		this.isTextToolbarInteraction = true;
-		window.setTimeout(() => {
+		if (this.textToolbarInteractionResetId !== null) {
+			window.clearTimeout(this.textToolbarInteractionResetId);
+		}
+		this.textToolbarInteractionResetId = window.setTimeout(() => {
 			this.isTextToolbarInteraction = false;
-		}, 0);
+			this.textToolbarInteractionResetId = null;
+		}, 400);
 	}
 
 	private toggleTextSubmenu(submenu: InkDocTextSubmenu): void {
@@ -5199,6 +5652,38 @@ export class InkDocView extends ItemView {
 			entry.value = option.value;
 		});
 		select.addEventListener("change", () => onChange(select.value));
+		return field;
+	}
+
+	private createLatexSelectControl(
+		container: HTMLDivElement,
+		label: string,
+		role: string,
+		options: Array<{ label: string; value: string }>,
+		onChange: (value: string) => void
+	): HTMLDivElement {
+		const field = this.createTextSelectControl(container, label, options, onChange);
+		const select = field.querySelector<HTMLSelectElement>("select");
+		if (select) {
+			select.dataset.role = `latex-${role}`;
+			const preserveInteraction = () => this.markTextToolbarInteraction();
+			select.addEventListener("pointerdown", preserveInteraction);
+			select.addEventListener("mousedown", preserveInteraction);
+			select.addEventListener("focus", preserveInteraction);
+			select.addEventListener("click", preserveInteraction);
+			select.addEventListener("change", () => {
+				this.markTextToolbarInteraction();
+				const editor = this.latexEditorEl;
+				if (!editor) {
+					return;
+				}
+				window.requestAnimationFrame(() => {
+					if (this.latexEditorEl === editor) {
+						editor.focus();
+					}
+				});
+			});
+		}
 		return field;
 	}
 

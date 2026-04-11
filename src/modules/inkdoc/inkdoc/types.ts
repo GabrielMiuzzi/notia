@@ -138,6 +138,20 @@ export type InkDocTextBlock = {
 	type?: "text" | "latex";
 	latex?: string;
 	color?: string;
+	latexStyle?: InkDocLatexStyle;
+};
+
+export type InkDocLatexAlign = "left" | "center" | "right";
+
+export type InkDocLatexStyle = {
+	fontSize?: number;
+	letterSpacing?: number;
+	lineHeight?: number;
+	textAlign?: InkDocLatexAlign;
+	paddingTop?: number;
+	paddingBottom?: number;
+	paddingLeft?: number;
+	paddingRight?: number;
 };
 
 export type InkDocStickyNote = {

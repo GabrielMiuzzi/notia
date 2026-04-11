@@ -92,7 +92,11 @@ export const renderLatexSegments = async (
 		root.style.display = "flex";
 		root.style.flexDirection = "column";
 		root.style.alignItems = "stretch";
+		root.style.justifyContent = "flex-start";
+		root.style.width = "100%";
 		root.style.gap = "0.45em";
+		root.style.textAlign = "inherit";
+		root.style.lineHeight = "inherit";
 		let renderedAny = false;
 		for (const segment of segments) {
 			if (segment.type === "text") {
@@ -107,6 +111,9 @@ export const renderLatexSegments = async (
 					? "inkdoc-markdown-render inkdoc-markdown-render--math"
 					: "inkdoc-markdown-render inkdoc-markdown-render--math-inline"
 			});
+			host.style.width = "100%";
+			host.style.textAlign = "inherit";
+			host.style.lineHeight = "inherit";
 			host.innerHTML = katexModule.renderToString(segment.content, {
 				throwOnError: false,
 				displayMode: segment.displayMode

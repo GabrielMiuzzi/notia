@@ -3,6 +3,7 @@ set -euo pipefail
 
 launch_tauri() {
   echo "[notia] Tauri Linux backend: ${WINIT_UNIX_BACKEND}"
+  export TAURI_DEV_HOST="${TAURI_DEV_HOST:-127.0.0.1}"
   tauri dev "$@"
 }
 
