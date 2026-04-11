@@ -108,16 +108,16 @@ export function ColdPassView({
   }, [historyMenuState])
 
   return (
-    <main className="notia-main notia-coldpass-view">
-      <section className="notia-coldpass-hero">
+    <main className="notia-main notia-coldpass-view" data-notia-prevent-menu-close>
+      <section className="notia-coldpass-hero" data-notia-prevent-menu-close>
         <ColdPassBluetoothCard />
-        <div className="notia-coldpass-actions">
+        <div className="notia-coldpass-actions" data-notia-prevent-menu-close>
           <NotiaButton variant="primary" onClick={onCreateCredential} disabled={!isUnlocked}>Nueva credencial</NotiaButton>
           <NotiaButton variant="secondary" onClick={onImportVault} disabled={!isUnlocked || isImportingVault}>
             {isImportingVault ? 'Importando...' : 'Importar vault'}
           </NotiaButton>
         </div>
-        <label className="notia-coldpass-search-bar" aria-label="Buscar credenciales">
+        <label className="notia-coldpass-search-bar" aria-label="Buscar credenciales" data-notia-prevent-menu-close>
           <Search size={16} />
           <input
             type="search"

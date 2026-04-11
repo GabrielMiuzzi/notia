@@ -1,5 +1,6 @@
 import { FileViewHost } from './views/FileViewHost'
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
 import { NotiaButton } from '../common/NotiaButton'
@@ -16,6 +17,7 @@ interface MainViewProps {
   libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
+  aiPreferences: AiPreferences
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -43,12 +45,13 @@ export function MainView({
   libraryAndroidTreeUri,
   libraryFilePaths,
   inkdocPreferences,
+  aiPreferences,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
 }: MainViewProps) {
   if (!activeDocument) {
     return (
-      <main className="notia-main">
+      <main className="notia-main" data-notia-prevent-menu-close>
         <div className="notia-main-empty">
           <NotiaButton>Create new note (Ctrl + N)</NotiaButton>
           <NotiaButton>Go to file (Ctrl + O)</NotiaButton>
@@ -63,9 +66,9 @@ export function MainView({
   const shouldShowSaveStatus = isTextDocument || activeDocument.viewKind === 'drawio'
 
   return (
-    <main className="notia-main">
-      <header className="notia-main-header">
-        <div className="notia-main-title-group">
+    <main className="notia-main" data-notia-prevent-menu-close>
+      <header className="notia-main-header" data-notia-prevent-menu-close>
+        <div className="notia-main-title-group" data-notia-prevent-menu-close>
           <h2>{activeDocument.name}</h2>
           <span>{extensionLabel}</span>
         </div>
@@ -75,7 +78,7 @@ export function MainView({
           </span>
         ) : null}
       </header>
-      <section className="notia-main-content">
+      <section className="notia-main-content" data-notia-prevent-menu-close>
         <FileViewHost
           document={activeDocument}
           onTextSourceChange={onTextDocumentChange}
@@ -86,6 +89,7 @@ export function MainView({
           libraryAndroidTreeUri={libraryAndroidTreeUri}
           libraryFilePaths={libraryFilePaths}
           inkdocPreferences={inkdocPreferences}
+          aiPreferences={aiPreferences}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
         />

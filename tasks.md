@@ -18,3 +18,12 @@
 
 7. Revisar scripts y artefactos de desarrollo para dejar el repo más limpio.
    Conviene ordenar scripts, documentar variables de entorno, revisar la copia/runtime de Drawio, confirmar que los artefactos generados no ensucien el flujo diario y dejar un setup de desarrollo más predecible.
+
+8. Corregir el autosave de InkDoc para que reintente de verdad ante fallos.
+   Hoy `DocumentSyncEngine` consume el guardado pendiente antes de confirmar la escritura y `InkDocView` absorbe errores de persistencia; hay que reencolar el save, propagar el error y evitar que un fallo transitorio deje cambios sin reintento hasta la próxima edición.
+
+9. Reactivar el autosave de texto después de errores transitorios de filesystem o SAF.
+   En markdown y texto, una tab que cae en `saveStatus: 'error'` sale del scheduler automático; conviene agregar estrategia de retry o backoff, y reanudar guardado sin obligar al usuario a volver a escribir para destrabarlo.
+
+10. Unificar estados de guardado y feedback de persistencia entre Markdown, InkDoc y Drawio.
+   InkDoc no expone hoy la misma semántica de `saving/error` ni el mismo feedback visible que los otros editores; hace falta un contrato común de persistencia, indicadores consistentes en la UI y manejo parejo de errores al guardar o cerrar pestañas.

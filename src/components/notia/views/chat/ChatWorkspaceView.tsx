@@ -32,7 +32,7 @@ import {
   type ChatFileContextMode,
   type ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
-import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
+import { startPerformanceMeasurement, type NotiaPerformanceMeasurementController } from '../../../../services/runtime/performanceBaseline'
 import { ChatLibraryFilesModal } from './ChatLibraryFilesModal'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 
@@ -1136,7 +1136,7 @@ export function ChatWorkspaceView({
     setSelectedImageAttachment(null)
     setActiveChatDocument(nextChatDocumentBase)
 
-    let aiReplyMeasurement = startPerformanceMeasurement('chat.ai_reply', {
+    let aiReplyMeasurement: NotiaPerformanceMeasurementController | null = startPerformanceMeasurement('chat.ai_reply', {
       contextFileCount: effectiveSelectedContextPaths.length,
       hasImage: Boolean(selectedImageAttachment),
       libraryId: library.id,
@@ -1266,16 +1266,17 @@ export function ChatWorkspaceView({
   }
 
   return (
-    <main className="notia-main notia-chat-view">
-      <section className="notia-chat-shell">
-        <div className="notia-chat-layout">
+    <main className="notia-main notia-chat-view" data-notia-prevent-menu-close>
+      <section className="notia-chat-shell" data-notia-prevent-menu-close>
+        <div className="notia-chat-layout" data-notia-prevent-menu-close>
           {showHistoryPanel ? (
             <aside
               className={`notia-chat-history-panel ${
                 isHistoryPanelOpen ? 'notia-chat-history-panel--open' : 'notia-chat-history-panel--closed'
               }`}
+              data-notia-prevent-menu-close
             >
-              <div className="notia-chat-history-header">
+              <div className="notia-chat-history-header" data-notia-prevent-menu-close>
                 <NotiaButton
                   variant="secondary"
                   className="notia-chat-history-toggle"

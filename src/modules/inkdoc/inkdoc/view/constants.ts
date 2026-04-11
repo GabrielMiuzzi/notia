@@ -50,6 +50,7 @@ export type InkDocTool =
 	| "highlighter"
 	| "eraser"
 	| "select"
+	| "lasso"
 	| "text"
 	| "latex"
 	| "hand"
@@ -70,6 +71,7 @@ export type CanvasPageState = {
 		start: InkDocPoint | null;
 		current: InkDocPoint | null;
 		lastDragPoint: InkDocPoint | null;
+		lassoPoints: InkDocPoint[];
 	};
 	text: {
 		isDragging: boolean;

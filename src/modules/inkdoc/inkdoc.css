@@ -2112,6 +2112,31 @@
 	z-index: 38;
 }
 
+.inkdoc-selection-floating {
+	position: absolute;
+	z-index: 39;
+	display: none;
+	pointer-events: none;
+}
+
+.inkdoc-selection-floating.is-open {
+	display: block;
+}
+
+.inkdoc-selection-ai-action {
+	pointer-events: auto;
+}
+
+.inkdoc-selection-ai-action.is-busy {
+	opacity: 0.72;
+	cursor: progress;
+}
+
+.inkdoc-selection-ai-action:disabled {
+	opacity: 0.72;
+	cursor: progress;
+}
+
 .inkdoc-text-flyout {
 	min-width: 264px;
 	max-width: min(360px, calc(100vw - 92px));

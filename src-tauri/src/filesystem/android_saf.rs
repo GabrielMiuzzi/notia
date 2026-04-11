@@ -55,7 +55,11 @@ fn resolve_entry_uri(
     if path.starts_with("content://") {
         Some(path.to_string())
     } else {
-        mobile_directory_picker::resolve_android_tree_uri(state, path, root_tree_uri)
+        // The root tree URI is only for refreshing the SAF cache. Resolving a nested
+        // entry must come from the cached path map, otherwise we risk treating the
+        // root tree URI as if it were the URI of the file/folder being accessed.
+        let _ = root_tree_uri;
+        mobile_directory_picker::resolve_android_tree_uri(state, path, None)
             .ok()
             .flatten()
     }

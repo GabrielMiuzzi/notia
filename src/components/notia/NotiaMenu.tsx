@@ -1099,34 +1099,35 @@ export function NotiaMenu() {
     })
     void (async () => {
       try {
-        await ensureChatLibraryStructure(activeLibrary)
-      } catch (error) {
-        console.warn('[notia] could not ensure chat library structure', {
-          libraryPath: activeLibrary.path,
-          error,
+        try {
+          await ensureChatLibraryStructure(activeLibrary)
+        } catch (error) {
+          console.warn('[notia] could not ensure chat library structure', {
+            libraryPath: activeLibrary.path,
+            error,
+          })
+        }
+
+        const nodes = await readLibraryTree(activeLibrary.path, {
+          androidDirectoryUri: activeLibrary.androidTreeUri,
         })
-      }
+        if (!isCurrent) {
+          libraryLoadMeasurement.cancel()
+          return
+        }
 
-      const nodes = await readLibraryTree(activeLibrary.path, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      })
-      if (!isCurrent) {
-        libraryLoadMeasurement.cancel()
-        return
+        commitTreeNodesSnapshot(activeLibrary.id, nodes)
+        libraryLoadMeasurement.success({
+          nodeCount: countTreeNodes(nodes),
+        })
+      } catch (error) {
+        if (!isCurrent) {
+          libraryLoadMeasurement.cancel()
+          return
+        }
+        libraryLoadMeasurement.error(error instanceof Error ? error : new Error(String(error)))
       }
-
-      commitTreeNodesSnapshot(activeLibrary.id, nodes)
-      libraryLoadMeasurement.success({
-        nodeCount: countTreeNodes(nodes),
-      })
-    })().catch((error) => {
-      if (!isCurrent) {
-        libraryLoadMeasurement.cancel()
-        return
-      }
-
-      libraryLoadMeasurement.error(error)
-    })
+    })()
 
     return () => {
       isCurrent = false
@@ -1200,7 +1201,11 @@ export function NotiaMenu() {
   }, [activeLibraryId, activeTabPath, setTreeNodesForLibrary])
 
   useEffect(() => {
-    const handleGlobalClick = () => {
+    const handleGlobalClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      if (target.closest('[data-notia-prevent-menu-close]')) {
+        return
+      }
       setContextMenu(null)
     }
     const handleEscape = (event: KeyboardEvent) => {
@@ -2827,11 +2832,13 @@ export function NotiaMenu() {
         )))
       }
       setActiveLibraryId(existingLibrary.id)
+      setIsLibraryManagerOpen(false)
       return
     }
 
     setLibraries((current) => [...current, library])
     setActiveLibraryId(library.id)
+    setIsLibraryManagerOpen(false)
   }
   const handleLibraryRemoved = useCallback(async (library: NotiaLibrary) => {
     const shouldRemove = await confirm({
@@ -2977,9 +2984,9 @@ export function NotiaMenu() {
         onToggleRightPanel={handleRightChatPanelToggle}
         onWindowAction={handleWindowAction}
       />
-      <div className="notia-workspace">
-        <aside className={`notia-sidebar ${isSidebarOpen ? 'notia-sidebar--open' : 'notia-sidebar--closed'}`}>
-          <div className="notia-primary-rail">
+      <div className="notia-workspace" data-notia-prevent-menu-close>
+        <aside className={`notia-sidebar ${isSidebarOpen ? 'notia-sidebar--open' : 'notia-sidebar--closed'}`} data-notia-prevent-menu-close>
+          <div className="notia-primary-rail" data-notia-prevent-menu-close>
             <IconRail
               actions={LEFT_RAIL_ACTIONS}
               activeActionId={
@@ -2997,8 +3004,8 @@ export function NotiaMenu() {
             />
           </div>
           {isSidebarOpen ? (
-            <div className="notia-panel">
-              <div className="notia-files-pane">
+            <div className="notia-panel" data-notia-prevent-menu-close>
+              <div className="notia-files-pane" data-notia-prevent-menu-close>
                 <FileTree
                   nodes={displayedTreeNodes}
                   rootPath={activeLibrary?.path ?? null}
@@ -3016,15 +3023,17 @@ export function NotiaMenu() {
                   onEmptyContextMenu={handleEmptyContextMenu}
                   onMoveNode={handleMoveNode}
                 />
-                <WorkspaceFooter
-                  name={libraryName}
-                  icon={Bot}
-                  libraries={libraries}
-                  activeLibraryId={activeLibraryId}
-                  onSelectLibrary={handleSelectLibrary}
-                  onOpenLibraryManager={handleOpenLibraryManager}
-                  onOpenSettings={handleOpenSettings}
-                />
+                <div data-notia-prevent-menu-close>
+                  <WorkspaceFooter
+                    name={libraryName}
+                    icon={Bot}
+                    libraries={libraries}
+                    activeLibraryId={activeLibraryId}
+                    onSelectLibrary={handleSelectLibrary}
+                    onOpenLibraryManager={handleOpenLibraryManager}
+                    onOpenSettings={handleOpenSettings}
+                  />
+                </div>
               </div>
             </div>
           ) : null}
@@ -3082,6 +3091,7 @@ export function NotiaMenu() {
             libraryAndroidTreeUri={activeLibrary?.androidTreeUri}
             libraryFilePaths={libraryFilePaths}
             inkdocPreferences={inkdocPreferences}
+            aiPreferences={aiPreferences}
             markdownWikiLinkTargets={markdownWikiLinkTargets}
             onOpenLinkedFile={handleOpenFileFromView}
           />

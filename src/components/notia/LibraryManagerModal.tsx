@@ -49,8 +49,10 @@ export function LibraryManagerModal({
         androidTreeUri: selection.androidTreeUri,
       })
       
-      // Ensure .notia config directory exists
-      await ensureLibraryConfigExists(selection.path)
+      // Ensure .notia config directory exists using SAF context on Android.
+      await ensureLibraryConfigExists(selection.path, {
+        androidDirectoryUri: selection.androidTreeUri,
+      })
       console.log('[LibraryManager] Library config ensured')
       
       const newLibrary: NotiaLibrary = {
@@ -60,6 +62,7 @@ export function LibraryManagerModal({
         androidTreeUri: selection.androidTreeUri,
       }
       onLibraryAdded(newLibrary)
+      onClose()
       console.log('[LibraryManager] Library added successfully')
     } catch (error) {
       console.error('[LibraryManager] Error adding library:', error)

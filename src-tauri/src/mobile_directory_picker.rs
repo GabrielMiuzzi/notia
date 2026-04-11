@@ -345,17 +345,19 @@ pub fn read_android_library_tree(
             return Err("No se encontro la referencia Android de la carpeta seleccionada.".to_string());
         };
 
-        let guard = state
-            .handle
-            .lock()
-            .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
-        let Some(handle) = guard.as_ref() else {
-            return Err("El selector de carpetas no esta disponible.".to_string());
-        };
+        let response = {
+            let guard = state
+                .handle
+                .lock()
+                .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+            let Some(handle) = guard.as_ref() else {
+                return Err("El selector de carpetas no esta disponible.".to_string());
+            };
 
-        let response = handle
-            .run_mobile_plugin::<ReadTreeResponse>("readTree", serde_json::json!({ "uri": uri }))
-            .map_err(|error| format!("No se pudo leer la carpeta Android: {error}"))?;
+            handle
+                .run_mobile_plugin::<ReadTreeResponse>("readTree", serde_json::json!({ "uri": uri }))
+                .map_err(|error| format!("No se pudo leer la carpeta Android: {error}"))?
+        };
 
         let _ = refresh_android_tree_path_cache(state.inner(), &uri);
 

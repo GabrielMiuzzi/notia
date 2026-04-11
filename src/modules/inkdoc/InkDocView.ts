@@ -70,6 +70,7 @@ import {
 	getSelectionBoundsForPage,
 	getSelectionPageIdMaps,
 	hasAnySelectionMaps,
+	updateSelectionFromPolygonMaps,
 	updateSelectionFromRectMaps
 } from "./inkdoc/view/selectionState";
 import {
@@ -93,7 +94,7 @@ import {
 	type TextEditingAccessors,
 	type TextEditingContext
 } from "./inkdoc/view/textEditing";
-import { getRectFromPoints, pointInRect, strokeHitsPoint } from "./inkdoc/view/geometry";
+import { getRectFromPoints, getStrokeBounds, pointInRect, strokeHitsPoint } from "./inkdoc/view/geometry";
 import {
 	resolveInkDocStrokeStyle
 } from "./inkdoc/view/strokeStyles";
@@ -133,6 +134,10 @@ import {
 } from "./inkdoc/view/objectCreationPrompt";
 import { createInkDocSubmenuEngine, type InkDocSubmenuEngine } from "./inkdoc/view/submenuEngine";
 import type { MarkdownWikiLinkTarget } from "../../types/views/markdownWikiLink";
+import type { AiPreferences } from "../../services/preferences/aiSettingsStorage";
+import { normalizeAiSettingsInput } from "../../services/preferences/aiSettingsStorage";
+import type { AiImageAttachment, InkdocOcrBlock } from "../../services/ai/aiRuntime";
+import { recognizeInkdocSelectionWithAi } from "../../services/ai/aiRuntime";
 
 type InkDocBlockOwner =
 	| { kind: "page" }
@@ -141,6 +146,17 @@ type InkDocBlockOwner =
 type InkDocPencilSubmenu = "brushes" | "stroke" | "colors" | "stylus";
 type InkDocTextSubmenu = "format" | "font" | "colors" | "paragraph" | "insert";
 type InkDocLatexSubmenu = "colors";
+type InkDocSelectionOcrSession = {
+	pageId: string;
+	pageIndex: number;
+	strokes: InkDocStroke[];
+	bounds: {
+		left: number;
+		top: number;
+		right: number;
+		bottom: number;
+	};
+};
 
 export class InkDocView extends ItemView {
 	private plugin: InkDocPlugin;
@@ -196,6 +212,14 @@ export class InkDocView extends ItemView {
 	private latexMenuEl: HTMLDivElement | null = null;
 	private latexSubmenuEngine: InkDocSubmenuEngine | null = null;
 	private activeLatexSubmenu: InkDocLatexSubmenu | null = null;
+	private selectionAiMenuEl: HTMLDivElement | null = null;
+	private selectionAiButtonEl: HTMLButtonElement | null = null;
+	private isSelectionOcrRunning = false;
+	private aiPreferences: AiPreferences = normalizeAiSettingsInput({
+		ollamaUrl: "",
+		apiKey: "",
+		selectedModel: ""
+	});
 	private isTextToolbarInteraction = false;
 	private savedTextSelectionRange: Range | null = null;
 	private latexColor = INKDOC_DEFAULT_LATEX_COLOR;
@@ -256,6 +280,10 @@ export class InkDocView extends ItemView {
 
 	public setSyncDebounceMs(value: number): void {
 		this.syncEngine.setDebounceMs(value);
+	}
+
+	public setAiPreferences(value: AiPreferences): void {
+		this.aiPreferences = normalizeAiSettingsInput(value);
 	}
 
 	getViewType(): string {
@@ -395,6 +423,18 @@ export class InkDocView extends ItemView {
 			this.closePencilMenu();
 		});
 
+		const lassoButton = this.toolbarEl.createEl("button", {
+			cls: "inkdoc-toolbar-icon",
+			attr: { "aria-label": "Lazo", title: "Lazo" }
+		});
+		const lassoIcon = lassoButton.createSpan({ cls: "inkdoc-toolbar-icon-glyph" });
+		setCompatibleIcon(lassoIcon, "lasso-select", "L");
+		lassoButton.dataset.tool = "lasso";
+		lassoButton.addEventListener("click", () => {
+			this.setActiveTool("lasso");
+			this.closePencilMenu();
+		});
+
 		const imageButton = this.toolbarEl.createEl("button", {
 			cls: "inkdoc-toolbar-icon",
 			attr: { "aria-label": "Imagen", title: "Imagen" }
@@ -527,12 +567,14 @@ export class InkDocView extends ItemView {
 		});
 		this.registerDomEvent(window, "resize", () => {
 			if (!this.pencilMenuEl) {
+				this.updateSelectionAiMenu();
 				this.renderStickyNotes();
 				return;
 			}
 			window.requestAnimationFrame(() => {
 				this.updatePencilMenuUI();
 				this.updateLatexToolbarUI();
+				this.updateSelectionAiMenu();
 				this.renderStickyNotes();
 			});
 		});
@@ -586,6 +628,30 @@ export class InkDocView extends ItemView {
 		this.buildPencilMenu(root);
 		this.buildTextMenu(root);
 		this.buildLatexMenu(root);
+		this.buildSelectionAiMenu(root);
+		this.registerDomEvent(this.pagesEl, "scroll", () => this.updateSelectionAiMenu());
+	}
+
+	private buildSelectionAiMenu(root: HTMLDivElement): void {
+		const menu = root.createDiv({ cls: "inkdoc-selection-floating" });
+		menu.setAttr("aria-hidden", "true");
+		this.selectionAiMenuEl = menu;
+		const rail = menu.createDiv({ cls: "inkdoc-pencil-fab-rail" });
+		const button = rail.createEl("button", {
+			cls: "inkdoc-pencil-fab inkdoc-selection-ai-action",
+			attr: {
+				type: "button",
+				"aria-label": "OCR con IA",
+				title: "Convertir selección a OCR"
+			}
+		});
+		button.dataset.role = "selection-ocr";
+		const glyph = button.createSpan({ cls: "inkdoc-pencil-fab-glyph" });
+		setCompatibleIcon(glyph, "sparkles", "IA");
+		button.addEventListener("click", () => {
+			void this.handleSelectionAiOcrAction();
+		});
+		this.selectionAiButtonEl = button;
 	}
 
 	private buildPencilMenu(root: HTMLDivElement): void {
@@ -1359,6 +1425,85 @@ export class InkDocView extends ItemView {
 		}
 	}
 
+	private getSelectedStrokeOcrSession(): InkDocSelectionOcrSession | null {
+		if (!this.docData) {
+			return null;
+		}
+		const pageId = this.getSelectionPageId();
+		if (!pageId) {
+			return null;
+		}
+		const pageIndex = this.docData.pages.findIndex((entry) => entry.id === pageId);
+		if (pageIndex < 0) {
+			return null;
+		}
+		const page = this.docData.pages[pageIndex];
+		if (!page) {
+			return null;
+		}
+		const selectedStrokeIds = this.selectedStrokes.get(pageId);
+		if (!selectedStrokeIds || selectedStrokeIds.size === 0) {
+			return null;
+		}
+		const strokes = (page.strokes ?? []).filter((stroke) => selectedStrokeIds.has(stroke.id));
+		if (strokes.length === 0) {
+			return null;
+		}
+		let bounds: InkDocSelectionOcrSession["bounds"] | null = null;
+		for (const stroke of strokes) {
+			const strokeBounds = getStrokeBounds(stroke);
+			if (!bounds) {
+				bounds = { ...strokeBounds };
+				continue;
+			}
+			bounds.left = Math.min(bounds.left, strokeBounds.left);
+			bounds.top = Math.min(bounds.top, strokeBounds.top);
+			bounds.right = Math.max(bounds.right, strokeBounds.right);
+			bounds.bottom = Math.max(bounds.bottom, strokeBounds.bottom);
+		}
+		if (!bounds) {
+			return null;
+		}
+		return {
+			pageId,
+			pageIndex,
+			strokes,
+			bounds
+		};
+	}
+
+	private updateSelectionAiMenu(): void {
+		if (!this.selectionAiMenuEl || !this.pagesEl || !this.pagesContentEl) {
+			return;
+		}
+		const session = this.getSelectedStrokeOcrSession();
+		const shouldShow = this.isSelectionTool() && Boolean(session);
+		this.selectionAiMenuEl.classList.toggle("is-open", shouldShow);
+		this.selectionAiMenuEl.setAttr("aria-hidden", shouldShow ? "false" : "true");
+		if (!shouldShow || !session) {
+			return;
+		}
+		this.selectionAiButtonEl?.classList.toggle("is-busy", this.isSelectionOcrRunning);
+		if (this.selectionAiButtonEl) {
+			this.selectionAiButtonEl.disabled = this.isSelectionOcrRunning;
+		}
+		const pageState = this.canvasStates.get(session.pageId);
+		const page = this.docData?.pages[session.pageIndex];
+		const bounds = page ? this.getSelectionBounds(page) ?? session.bounds : session.bounds;
+		if (!pageState) {
+			return;
+		}
+		const rootRect = this.contentEl.getBoundingClientRect();
+		const pageRect = pageState.pageEl.getBoundingClientRect();
+		const { widthPx, heightPx } = this.getCanvasSizePx();
+		const scaleX = pageRect.width / Math.max(1, widthPx);
+		const scaleY = pageRect.height / Math.max(1, heightPx);
+		const leftPx = pageRect.left + bounds.left * scaleX - rootRect.left - 46;
+		const topPx = pageRect.top + bounds.top * scaleY - rootRect.top;
+		this.selectionAiMenuEl.style.left = `${Math.max(8, leftPx)}px`;
+		this.selectionAiMenuEl.style.top = `${Math.max(70, topPx)}px`;
+	}
+
 	private getPageDefaultTextColor(page: InkDocPage): string {
 		return getContrastPageTextColor(page.colors);
 	}
@@ -1893,7 +2038,8 @@ export class InkDocView extends ItemView {
 				isDragging: false,
 				start: null,
 				current: null,
-				lastDragPoint: null
+				lastDragPoint: null,
+				lassoPoints: []
 			},
 			text: {
 				isDragging: false,
@@ -1997,17 +2143,18 @@ export class InkDocView extends ItemView {
 			const selectedImages = this.selectedImages.get(pageId);
 			this.renderImageLayer(
 				page,
-				this.activeTool === "select" || this.activeTool === "image",
-				this.activeTool === "select" ? selectedImages ?? null : null
+				this.isSelectionTool() || this.activeTool === "image",
+				this.isSelectionTool() ? selectedImages ?? null : null
 			);
 			const selectedText = this.selectedTextBlocks.get(pageId);
 			this.renderTextLayer(
 				page,
 				this.isTextLikeTool(),
-				this.activeTool === "select" ? selectedText ?? null : null
+				this.isSelectionTool() ? selectedText ?? null : null
 			);
 		}
-		this.renderSelectionRect(ctx, pageId);
+		this.renderSelectionOverlay(ctx, pageId);
+		this.updateSelectionAiMenu();
 	}
 
 	private clearStrokePreview(pageId: string): void {
@@ -2227,7 +2374,7 @@ export class InkDocView extends ItemView {
 			blockEl.addEventListener("dblclick", (event) => {
 				const canEdit =
 					isActiveToolForBlock ||
-					this.activeTool === "select" ||
+					this.isSelectionTool() ||
 					(this.activeTool === "text" && blockType === "text") ||
 					(this.activeTool === "latex" && blockType === "latex");
 				if (!canEdit) {
@@ -2261,7 +2408,7 @@ export class InkDocView extends ItemView {
 					return;
 				}
 				const canMove =
-					this.activeTool === "select" ||
+					this.isSelectionTool() ||
 					(this.activeTool === "text" && blockType === "text") ||
 					(this.activeTool === "latex" && blockType === "latex");
 				if (!canMove) {
@@ -2316,7 +2463,7 @@ export class InkDocView extends ItemView {
 				}
 				const blockType = this.getBlockType(block);
 				const canResize =
-					this.activeTool === "select" ||
+					this.isSelectionTool() ||
 					(this.activeTool === "text" && blockType === "text") ||
 					(this.activeTool === "latex" && blockType === "latex");
 				if (!canResize) {
@@ -2379,7 +2526,7 @@ export class InkDocView extends ItemView {
 			return;
 		}
 		const shouldSkipUpdate =
-			this.activeTool !== "select" &&
+			!this.isSelectionTool() &&
 			this.activeTool !== "image" &&
 			!this.imageLayerDirty.has(page.id);
 		if (shouldSkipUpdate) {
@@ -2506,7 +2653,7 @@ export class InkDocView extends ItemView {
 				blockEl.addEventListener("contextmenu", (event) => {
 					event.preventDefault();
 					event.stopPropagation();
-					if (this.activeTool === "select") {
+					if (this.isSelectionTool()) {
 						this.selectedImages.set(page.id, new Set([block.id]));
 						this.selectedStrokes.set(page.id, new Set());
 						this.selectedTextBlocks.set(page.id, new Set());
@@ -2539,7 +2686,7 @@ export class InkDocView extends ItemView {
 					}
 					event.preventDefault();
 					event.stopPropagation();
-					if (this.activeTool === "select") {
+					if (this.isSelectionTool()) {
 						this.selectedImages.set(page.id, new Set([block.id]));
 						this.selectedStrokes.set(page.id, new Set());
 						this.selectedTextBlocks.set(page.id, new Set());
@@ -2859,7 +3006,7 @@ export class InkDocView extends ItemView {
 				this.eraseAtPoint(page, index, point, widthPx, heightPx);
 				return;
 			}
-			if (this.activeTool === "select") {
+			if (this.isSelectionTool()) {
 				if (sample.button !== 0) {
 					return;
 				}
@@ -2888,11 +3035,19 @@ export class InkDocView extends ItemView {
 				state.selection.lastDragPoint = point;
 				if (!isInsideSelection) {
 					this.clearSelection(page.id);
-					state.selection.start = point;
-					state.selection.current = point;
+					if (this.activeTool === "lasso") {
+						state.selection.start = null;
+						state.selection.current = point;
+						state.selection.lassoPoints = [point];
+					} else {
+						state.selection.start = point;
+						state.selection.current = point;
+						state.selection.lassoPoints = [];
+					}
 				} else {
 					state.selection.start = null;
 					state.selection.current = null;
+					state.selection.lassoPoints = [];
 				}
 				state.canvas.setPointerCapture(event.pointerId);
 				this.renderStrokes(ctx, page.strokes ?? [], page.id);
@@ -2925,7 +3080,7 @@ export class InkDocView extends ItemView {
 				this.eraseAtPoint(page, index, point, widthPx, heightPx);
 					this.requestPageRender(page.id, this.getInteractiveRenderQuality());
 			}
-			if (this.activeTool === "select" && state.selection.isSelecting) {
+			if (this.isSelectionTool() && state.selection.isSelecting) {
 				if (activePointerId !== null && sample.pointerId !== activePointerId) {
 					return;
 				}
@@ -2933,7 +3088,17 @@ export class InkDocView extends ItemView {
 					this.dragSelection(page, index, point);
 				} else {
 					state.selection.current = point;
-					this.updateSelectionFromRect(page, state.selection.start, point);
+					if (this.activeTool === "lasso") {
+						const lastPoint = state.selection.lassoPoints[state.selection.lassoPoints.length - 1];
+						if (!lastPoint || Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) >= 2) {
+							state.selection.lassoPoints.push(point);
+						} else {
+							state.selection.lassoPoints[state.selection.lassoPoints.length - 1] = point;
+						}
+						this.updateSelectionFromLasso(page, state.selection.lassoPoints);
+					} else {
+						this.updateSelectionFromRect(page, state.selection.start, point);
+					}
 				}
 					this.requestPageRender(page.id, this.getInteractiveRenderQuality());
 			}
@@ -2943,7 +3108,7 @@ export class InkDocView extends ItemView {
 			this.syncEngine.noteActivity();
 			const { event } = sample;
 			if (
-				(this.isStrokeTool() || this.activeTool === "eraser" || this.activeTool === "select") &&
+				(this.isStrokeTool() || this.activeTool === "eraser" || this.isSelectionTool()) &&
 				activePointerId !== null &&
 				sample.pointerId !== activePointerId
 			) {
@@ -2969,7 +3134,7 @@ export class InkDocView extends ItemView {
 			) {
 				state.canvas.releasePointerCapture(event.pointerId);
 			}
-			if (this.activeTool === "select") {
+			if (this.isSelectionTool()) {
 				if (state.selection.isDragging) {
 					this.dropSelectionOnPage(page, index, event);
 				}
@@ -2978,6 +3143,7 @@ export class InkDocView extends ItemView {
 				state.selection.lastDragPoint = null;
 				state.selection.start = null;
 				state.selection.current = null;
+				state.selection.lassoPoints = [];
 				if (state.canvas.hasPointerCapture(event.pointerId)) {
 					state.canvas.releasePointerCapture(event.pointerId);
 				}
@@ -3007,7 +3173,7 @@ export class InkDocView extends ItemView {
 				this.closeContextMenu();
 				return;
 			}
-			if (this.activeTool !== "select") {
+			if (!this.isSelectionTool()) {
 				this.closeContextMenu();
 				return;
 			}
@@ -3331,6 +3497,7 @@ export class InkDocView extends ItemView {
 		this.updatePencilMenuVisibility();
 		this.updatePencilMenuUI();
 		this.updateTextToolbarVisibility();
+		this.updateSelectionAiMenu();
 		this.renderAllCanvases();
 		this.renderStickyNotes();
 	}
@@ -4082,7 +4249,7 @@ export class InkDocView extends ItemView {
 			return;
 		}
 		this.pagesEl.classList.toggle("is-hand-tool", this.activeTool === "hand");
-		this.pagesEl.classList.toggle("is-select-tool", this.activeTool === "select");
+		this.pagesEl.classList.toggle("is-select-tool", this.isSelectionTool());
 		if (this.activeTool !== "hand") {
 			this.viewportController.resetHandInteraction(this.pagesEl);
 		}
@@ -4102,6 +4269,18 @@ export class InkDocView extends ItemView {
 			page,
 			start,
 			current
+		);
+	}
+
+	private updateSelectionFromLasso(page: InkDocPage, points: InkDocPoint[]): void {
+		updateSelectionFromPolygonMaps(
+			{
+				strokes: this.selectedStrokes,
+				textBlocks: this.selectedTextBlocks,
+				images: this.selectedImages
+			},
+			page,
+			points
 		);
 	}
 
@@ -4256,6 +4435,7 @@ export class InkDocView extends ItemView {
 			},
 			pageId
 		);
+		this.updateSelectionAiMenu();
 	}
 
 	private getSelectionBounds(page: InkDocPage): {
@@ -4274,6 +4454,186 @@ export class InkDocView extends ItemView {
 		);
 	}
 
+	private async handleSelectionAiOcrAction(): Promise<void> {
+		const session = this.getSelectedStrokeOcrSession();
+		if (!session || !this.docData) {
+			new Notice("No hay trazos seleccionados para convertir.");
+			return;
+		}
+		const confirmed = window.confirm("¿Querés convertir los trazos seleccionados a OCR con IA?");
+		if (!confirmed) {
+			return;
+		}
+		const image = this.createSelectionOcrImage(session);
+		if (!image) {
+			new Notice("No se pudo preparar la imagen de la selección.");
+			return;
+		}
+		this.isSelectionOcrRunning = true;
+		this.updateSelectionAiMenu();
+		try {
+			const blocks = await recognizeInkdocSelectionWithAi(this.aiPreferences, image);
+			if (blocks.length === 0) {
+				throw new Error("La IA no devolvió bloques utilizables.");
+			}
+			this.replaceSelectedStrokesWithOcrBlocks(session, blocks);
+			new Notice("Selección convertida a OCR.");
+		} catch (error) {
+			const message =
+				error instanceof Error && error.message.trim()
+					? error.message.trim()
+					: "No se pudo convertir la selección a OCR.";
+			new Notice(message);
+		} finally {
+			this.isSelectionOcrRunning = false;
+			this.updateSelectionAiMenu();
+		}
+	}
+
+	private createSelectionOcrImage(session: InkDocSelectionOcrSession): AiImageAttachment | null {
+		const margin = 24;
+		const width = Math.max(48, Math.ceil(session.bounds.right - session.bounds.left + margin * 2));
+		const height = Math.max(48, Math.ceil(session.bounds.bottom - session.bounds.top + margin * 2));
+		const canvas = document.createElement("canvas");
+		canvas.width = width;
+		canvas.height = height;
+		const ctx = canvas.getContext("2d");
+		if (!ctx) {
+			return null;
+		}
+		ctx.fillStyle = "#ffffff";
+		ctx.fillRect(0, 0, width, height);
+		ctx.lineCap = "round";
+		ctx.lineJoin = "round";
+		ctx.strokeStyle = "#111111";
+		ctx.fillStyle = "#111111";
+		for (const stroke of session.strokes) {
+			const points = stroke.points;
+			if (!points || points.length === 0) {
+				continue;
+			}
+			const renderWidth = Math.max(1.2, stroke.width);
+			ctx.lineWidth = renderWidth;
+			if (points.length === 1) {
+				const point = points[0];
+				if (!point) {
+					continue;
+				}
+				ctx.beginPath();
+				ctx.arc(
+					point.x - session.bounds.left + margin,
+					point.y - session.bounds.top + margin,
+					renderWidth * 0.5,
+					0,
+					Math.PI * 2
+				);
+				ctx.fill();
+				continue;
+			}
+			ctx.beginPath();
+			const firstPoint = points[0];
+			if (!firstPoint) {
+				continue;
+			}
+			ctx.moveTo(
+				firstPoint.x - session.bounds.left + margin,
+				firstPoint.y - session.bounds.top + margin
+			);
+			for (let index = 1; index < points.length; index += 1) {
+				const point = points[index];
+				if (!point) {
+					continue;
+				}
+				ctx.lineTo(
+					point.x - session.bounds.left + margin,
+					point.y - session.bounds.top + margin
+				);
+			}
+			ctx.stroke();
+		}
+		const dataUrl = canvas.toDataURL("image/png");
+		const base64 = dataUrl.replace(/^data:image\/png;base64,/, "").trim();
+		if (!base64) {
+			return null;
+		}
+		return {
+			name: "inkdoc-selection-ocr.png",
+			mimeType: "image/png",
+			base64
+		};
+	}
+
+	private estimateOcrBlockHeight(block: InkdocOcrBlock): number {
+		const lines = Math.max(1, block.content.split(/\r?\n/).length);
+		if (block.type === "latex") {
+			return Math.max(56, lines * 30 + 20);
+		}
+		return Math.max(40, lines * 24 + 20);
+	}
+
+	private buildOcrTextHtml(value: string): string {
+		return this.escapeHtml(value).replace(/\r?\n/g, "<br>");
+	}
+
+	private replaceSelectedStrokesWithOcrBlocks(
+		session: InkDocSelectionOcrSession,
+		blocks: InkdocOcrBlock[]
+	): void {
+		if (!this.docData) {
+			return;
+		}
+		const page = this.docData.pages[session.pageIndex];
+		if (!page || page.id !== session.pageId) {
+			return;
+		}
+		const selectedIds = new Set(session.strokes.map((stroke) => stroke.id));
+		page.strokes = (page.strokes ?? []).filter((stroke) => !selectedIds.has(stroke.id));
+		const bodyBounds = this.getBodyBounds(session.pageIndex);
+		const { widthPx } = this.getCanvasSizePx();
+		const blockWidth = Math.max(
+			220,
+			Math.min(widthPx - 24, Math.max(180, session.bounds.right - session.bounds.left + 36))
+		);
+		let currentTop = Math.max(bodyBounds.top, session.bounds.top);
+		const createdTextBlockIds = new Set<string>();
+		for (const block of blocks) {
+			const point = {
+				x: Math.max(12, Math.min(widthPx - blockWidth - 12, session.bounds.left)),
+				y: currentTop
+			};
+			const nextBlock =
+				block.type === "latex"
+					? addLatexBlock(this.docData, page, session.pageIndex, point)
+					: addTextBlock(this.docData, page, session.pageIndex, point);
+			nextBlock.w = blockWidth;
+			nextBlock.h = this.estimateOcrBlockHeight(block);
+			if (block.type === "latex") {
+				nextBlock.type = "latex";
+				nextBlock.text = block.content;
+				nextBlock.latex = block.content;
+				nextBlock.html = undefined;
+				nextBlock.color = this.latexColor;
+			} else {
+				nextBlock.type = "text";
+				nextBlock.text = block.content;
+				nextBlock.html = this.buildOcrTextHtml(block.content);
+			}
+			this.clampTextBlockToBody(nextBlock, session.pageIndex);
+			createdTextBlockIds.add(nextBlock.id);
+			currentTop = nextBlock.y + nextBlock.h + 12;
+		}
+		this.selectedStrokes.set(page.id, new Set());
+		this.selectedTextBlocks.set(page.id, createdTextBlockIds);
+		this.selectedImages.set(page.id, new Set());
+		this.textLayerDirty.add(page.id);
+		this.imageLayerDirty.add(page.id);
+		const state = this.canvasStates.get(page.id);
+		if (state) {
+			this.renderStrokes(state.ctx, page.strokes ?? [], page.id);
+		}
+		this.saveDebounced();
+	}
+
 	private hasAnySelection(): boolean {
 		return hasAnySelectionMaps({
 			strokes: this.selectedStrokes,
@@ -4290,20 +4650,36 @@ export class InkDocView extends ItemView {
 		});
 	}
 
-	private renderSelectionRect(ctx: CanvasRenderingContext2D, pageId: string): void {
+	private renderSelectionOverlay(ctx: CanvasRenderingContext2D, pageId: string): void {
 		const state = this.canvasStates.get(pageId);
-		if (!state || !state.selection.start || !state.selection.current) {
+		if (!state || !state.selection.current) {
 			return;
 		}
 		if (!state.selection.isSelecting || state.selection.isDragging) {
 			return;
 		}
-		const rect = getRectFromPoints(state.selection.start, state.selection.current);
 		ctx.save();
 		ctx.strokeStyle = "rgba(88, 169, 255, 0.8)";
 		ctx.lineWidth = 1;
 		ctx.setLineDash([6, 4]);
-		ctx.strokeRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+		if (this.activeTool === "lasso" && state.selection.lassoPoints.length > 1) {
+			ctx.fillStyle = "rgba(88, 169, 255, 0.12)";
+			ctx.beginPath();
+			ctx.moveTo(state.selection.lassoPoints[0].x, state.selection.lassoPoints[0].y);
+			for (let index = 1; index < state.selection.lassoPoints.length; index += 1) {
+				const point = state.selection.lassoPoints[index];
+				if (!point) {
+					continue;
+				}
+				ctx.lineTo(point.x, point.y);
+			}
+			ctx.closePath();
+			ctx.fill();
+			ctx.stroke();
+		} else if (state.selection.start) {
+			const rect = getRectFromPoints(state.selection.start, state.selection.current);
+			ctx.strokeRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+		}
 		ctx.restore();
 	}
 
@@ -4854,6 +5230,10 @@ export class InkDocView extends ItemView {
 
 	private isStrokeTool(tool: InkDocTool = this.activeTool): tool is "pen" | "highlighter" {
 		return tool === "pen" || tool === "highlighter";
+	}
+
+	private isSelectionTool(tool: InkDocTool = this.activeTool): tool is "select" | "lasso" {
+		return tool === "select" || tool === "lasso";
 	}
 
 	private isTextLikeTool(tool: InkDocTool = this.activeTool): tool is "text" | "latex" {

@@ -10,7 +10,7 @@ interface IconRailProps {
 
 export function IconRail({ actions, className, activeActionId, onActionClick }: IconRailProps) {
   return (
-    <div className={`notia-icon-rail ${className ?? ''}`.trim()}>
+    <div className={`notia-icon-rail ${className ?? ''}`.trim()} data-notia-prevent-menu-close>
       {actions.map(({ id, icon: Icon, label, active }) => (
         <NotiaButton
           key={id}

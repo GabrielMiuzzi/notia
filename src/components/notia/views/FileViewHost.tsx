@@ -1,6 +1,7 @@
 import { isTextFileDocument, type OpenFileDocument } from '../../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import type { InkdocPreferences } from '../../../services/preferences/inkdocSettingsStorage'
+import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import { ImageView } from './ImageView'
 import { InkdocView } from './inkdoc/InkdocView'
 import { MarkdownView } from './MarkdownView'
@@ -18,6 +19,7 @@ interface FileViewHostProps {
   libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
+  aiPreferences: AiPreferences
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -32,6 +34,7 @@ export function FileViewHost({
   libraryAndroidTreeUri,
   libraryFilePaths,
   inkdocPreferences,
+  aiPreferences,
   wikiLinkTargets,
   onOpenLinkedFile,
 }: FileViewHostProps) {
@@ -49,6 +52,7 @@ export function FileViewHost({
           libraryAndroidTreeUri={libraryAndroidTreeUri}
           libraryFilePaths={libraryFilePaths}
           inkdocPreferences={inkdocPreferences}
+          aiPreferences={aiPreferences}
           onSourcePersist={onInkdocSourcePersist}
           onOpenLinkedFile={onOpenLinkedFile}
         />

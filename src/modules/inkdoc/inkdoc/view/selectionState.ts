@@ -1,6 +1,14 @@
 // @ts-nocheck
 import type { InkDocPage, InkDocPoint } from "../types";
-import { getImageBlockBounds, getRectFromPoints, getStrokeBounds, getTextBlockBounds, rectIntersects } from "./geometry";
+import {
+	getImageBlockBounds,
+	getRectFromPoints,
+	getStrokeBounds,
+	getTextBlockBounds,
+	pointInPolygon,
+	rectContainedInPolygon,
+	rectIntersects
+} from "./geometry";
 
 export type SelectionMaps = {
 	strokes: Map<string, Set<string>>;
@@ -43,6 +51,42 @@ export const updateSelectionFromRectMaps = (
 	const imageHits = new Set<string>();
 	for (const block of page.images ?? []) {
 		if (rectIntersects(rect, getImageBlockBounds(block))) {
+			imageHits.add(block.id);
+		}
+	}
+	maps.images.set(page.id, imageHits);
+};
+
+export const updateSelectionFromPolygonMaps = (
+	maps: SelectionMaps,
+	page: InkDocPage,
+	polygon: InkDocPoint[]
+): void => {
+	if (polygon.length < 3) {
+		clearSelectionForPage(maps, page.id);
+		return;
+	}
+
+	const strokeHits = new Set<string>();
+	for (const stroke of page.strokes ?? []) {
+		const allPointsInside = stroke.points.length > 0 && stroke.points.every((point) => pointInPolygon(point, polygon));
+		if (allPointsInside) {
+			strokeHits.add(stroke.id);
+		}
+	}
+	maps.strokes.set(page.id, strokeHits);
+
+	const textHits = new Set<string>();
+	for (const block of page.textBlocks ?? []) {
+		if (rectContainedInPolygon(getTextBlockBounds(block), polygon)) {
+			textHits.add(block.id);
+		}
+	}
+	maps.textBlocks.set(page.id, textHits);
+
+	const imageHits = new Set<string>();
+	for (const block of page.images ?? []) {
+		if (rectContainedInPolygon(getImageBlockBounds(block), polygon)) {
 			imageHits.add(block.id);
 		}
 	}

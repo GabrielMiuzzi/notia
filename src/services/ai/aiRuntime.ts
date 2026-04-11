@@ -41,6 +41,11 @@ export interface AiImageAttachment {
   base64: string
 }
 
+export interface InkdocOcrBlock {
+  type: 'text' | 'latex'
+  content: string
+}
+
 interface AiMessagePayload {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -413,6 +418,49 @@ function extractJsonArrayCandidate(value: string): string {
   return value.trim()
 }
 
+function extractJsonObjectCandidate(value: string): string {
+  const fencedMatch = /```(?:json)?\s*([\s\S]*?)```/i.exec(value)
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim()
+  }
+
+  const firstBraceIndex = value.indexOf('{')
+  const lastBraceIndex = value.lastIndexOf('}')
+  if (firstBraceIndex >= 0 && lastBraceIndex > firstBraceIndex) {
+    return value.slice(firstBraceIndex, lastBraceIndex + 1)
+  }
+
+  return value.trim()
+}
+
+function parseInkdocOcrBlocks(value: string): InkdocOcrBlock[] {
+  const candidate = extractJsonObjectCandidate(value)
+
+  try {
+    const parsed = JSON.parse(candidate) as { blocks?: unknown }
+    if (!Array.isArray(parsed.blocks)) {
+      return []
+    }
+
+    return parsed.blocks.flatMap((block) => {
+      if (!block || typeof block !== 'object') {
+        return []
+      }
+
+      const candidateBlock = block as { type?: unknown; content?: unknown }
+      const type = candidateBlock.type === 'latex' ? 'latex' : candidateBlock.type === 'text' ? 'text' : null
+      const content = typeof candidateBlock.content === 'string' ? candidateBlock.content.trim() : ''
+      if (!type || !content) {
+        return []
+      }
+
+      return [{ type, content }]
+    })
+  } catch {
+    return []
+  }
+}
+
 function parseGeneratedMemoryList(value: string): string[] {
   const candidate = extractJsonArrayCandidate(value)
 
@@ -518,6 +566,34 @@ function buildLongTermMemoryGenerationMessages(input: GenerateAiLongTermMemories
     {
       role: 'user',
       content: sections.join('\n'),
+    },
+  ]
+}
+
+function buildInkdocOcrMessages(image: AiImageAttachment): AiMessagePayload[] {
+  return [
+    {
+      role: 'system',
+      content: [
+        'Sos un OCR estructurado para Notia InkDoc.',
+        'Analiza escritura manuscrita y formulas matematicas.',
+        'Debes responder solo JSON valido.',
+        'Formato exacto: {"blocks":[{"type":"text"|"latex","content":"..."}]}',
+        'Usa type="text" para lenguaje natural y type="latex" para expresiones o bloques matematicos.',
+        'Si hay mezcla de texto y formulas, separalas en bloques distintos y manten el orden visual de arriba hacia abajo.',
+        'En bloques latex devuelve solo el contenido LaTeX, sin fences y sin texto extra.',
+        'No inventes contenido que no se vea.',
+      ].join(' '),
+    },
+    {
+      role: 'user',
+      content: [
+        'Convierte esta seleccion manuscrita en bloques estructurados.',
+        'Si hay parrafos y formulas separadas, devuelve multiples bloques.',
+        'Si una formula es multilinea, conserva su estructura.',
+        'No agregues explicaciones.',
+      ].join('\n'),
+      images: [image.base64.trim()],
     },
   ]
 }
@@ -939,6 +1015,51 @@ export async function generateAiLongTermMemories(
   } catch {
     const answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, {})
     return parseGeneratedMemoryList(answer)
+  }
+}
+
+export async function recognizeInkdocSelectionWithAi(
+  preferences: AiPreferences,
+  image: AiImageAttachment,
+): Promise<InkdocOcrBlock[]> {
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
+  const model = await resolveDefaultModel(normalizedPreferences)
+
+  if (!image.base64.trim()) {
+    throw new Error('La imagen OCR esta vacia.')
+  }
+
+  if (getRuntimeDevice() === 'Android') {
+    const answer = await invokeAndroidAiChat(
+      normalizedPreferences,
+      model,
+      {
+        prompt: [
+          'Convierte esta seleccion manuscrita en JSON.',
+          'Responde solo con {"blocks":[{"type":"text"|"latex","content":"..."}]}.',
+          'Separa texto natural y formulas matematicas en bloques distintos.',
+          'Mantene el orden visual.',
+        ].join('\n'),
+        previousMessages: [],
+        longTermMemories: [],
+        files: [],
+        image,
+        selectedContextMode: 'direct',
+      },
+      {},
+    )
+
+    return parseInkdocOcrBlocks(answer)
+  }
+
+  const messages = buildInkdocOcrMessages(image)
+
+  try {
+    const answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, {})
+    return parseInkdocOcrBlocks(answer)
+  } catch {
+    const answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, {})
+    return parseInkdocOcrBlocks(answer)
   }
 }
 

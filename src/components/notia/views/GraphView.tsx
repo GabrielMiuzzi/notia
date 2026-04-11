@@ -1789,13 +1789,13 @@ export function GraphView({
   const shouldShowLoadingScreen = isGraphBusy && !hasNodes
 
   return (
-    <main className="notia-main">
-      <header className="notia-main-header">
-        <div className="notia-main-title-group">
+    <main className="notia-main" data-notia-prevent-menu-close>
+      <header className="notia-main-header" data-notia-prevent-menu-close>
+        <div className="notia-main-title-group" data-notia-prevent-menu-close>
           <h2>Graph view</h2>
           <span>{libraryName}</span>
         </div>
-        <div className="notia-graph-meta">
+        <div className="notia-graph-meta" data-notia-prevent-menu-close>
           <span>{graphLayout.nodes.length} archivos</span>
           <span>{graphLayout.edges.length} enlaces</span>
           <NotiaButton type="button" variant="secondary" className="notia-graph-reset" onClick={handleResetViewport}>
@@ -1803,7 +1803,7 @@ export function GraphView({
           </NotiaButton>
         </div>
       </header>
-      <section className="notia-main-content notia-graph-content">
+      <section className="notia-main-content notia-graph-content" data-notia-prevent-menu-close>
         {shouldShowLoadingScreen ? (
           <div className="notia-graph-loading-screen" role="status" aria-live="polite">
             <div className="notia-graph-loading-card">

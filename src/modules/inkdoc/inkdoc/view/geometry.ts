@@ -76,6 +76,40 @@ export function rectIntersects(a: RectBounds, b: RectBounds): boolean {
 	return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
 }
 
+export function pointInPolygon(point: InkDocPoint, polygon: InkDocPoint[]): boolean {
+	if (polygon.length < 3) {
+		return false;
+	}
+	let isInside = false;
+	for (let currentIndex = 0, previousIndex = polygon.length - 1; currentIndex < polygon.length; previousIndex = currentIndex++) {
+		const currentPoint = polygon[currentIndex];
+		const previousPoint = polygon[previousIndex];
+		if (!currentPoint || !previousPoint) {
+			continue;
+		}
+		const intersects =
+			(currentPoint.y > point.y) !== (previousPoint.y > point.y) &&
+			point.x <
+				((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) /
+					((previousPoint.y - currentPoint.y) || Number.EPSILON) +
+					currentPoint.x;
+		if (intersects) {
+			isInside = !isInside;
+		}
+	}
+	return isInside;
+}
+
+export function rectContainedInPolygon(rect: RectBounds, polygon: InkDocPoint[]): boolean {
+	const corners: InkDocPoint[] = [
+		{ x: rect.left, y: rect.top },
+		{ x: rect.right, y: rect.top },
+		{ x: rect.right, y: rect.bottom },
+		{ x: rect.left, y: rect.bottom }
+	];
+	return corners.every((corner) => pointInPolygon(corner, polygon));
+}
+
 export function distanceToSegment(p: InkDocPoint, a: InkDocPoint, b: InkDocPoint): number {
 	const dx = b.x - a.x;
 	const dy = b.y - a.y;

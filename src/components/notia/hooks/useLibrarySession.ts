@@ -5,7 +5,7 @@ import {
   saveActiveLibraryId,
   saveLibraries,
 } from '../../../services/libraries/libraryStorage'
-import { filterExistingLibraries } from '../../../services/libraries/libraryRuntime'
+import { pathExists } from '../../../services/files/filesystemEngine'
 import type { NotiaLibrary } from '../../../types/notia'
 
 function findInitialActiveLibrary(libraries: NotiaLibrary[]): string | null {
@@ -78,14 +78,40 @@ export function useLibrarySession() {
   useEffect(() => {
     let isCancelled = false
 
-    void (async () => {
-      const existingLibraries = await filterExistingLibraries(libraries)
-      if (isCancelled || areLibrariesEquivalent(libraries, existingLibraries)) {
-        return
+    const checkLibraries = async () => {
+      // Procesar en chunks para no bloquear la UI en Android
+      const chunkSize = 2
+      const existingLibraries: NotiaLibrary[] = []
+      
+      for (let i = 0; i < libraries.length; i += chunkSize) {
+        if (isCancelled) return
+        
+        const chunk = libraries.slice(i, i + chunkSize)
+        const checks = await Promise.all(
+          chunk.map(async (library) => {
+            // En Android, si tenemos androidTreeUri, asumimos que existe
+            // La validación real se hará cuando se intente acceder
+            if (library.androidTreeUri) {
+              return library
+            }
+            
+            const exists = await pathExists(library.path)
+            return exists ? library : null
+          })
+        )
+        
+        existingLibraries.push(...checks.filter((l): l is NotiaLibrary => l !== null))
+        
+        // Yield al event loop para no bloquear
+        await new Promise(resolve => setTimeout(resolve, 0))
       }
-
-      setLibraries(existingLibraries)
-    })()
+      
+      if (!isCancelled && !areLibrariesEquivalent(libraries, existingLibraries)) {
+        setLibraries(existingLibraries)
+      }
+    }
+    
+    checkLibraries()
 
     return () => {
       isCancelled = true

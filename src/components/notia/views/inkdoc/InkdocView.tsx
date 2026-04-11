@@ -4,6 +4,7 @@ import { createInkdocApp, type InkdocHostBridge } from '../../../../modules/inkd
 import InkDocPlugin from '../../../../modules/inkdoc/main'
 import { createInkdocFile, createInkdocFolder, pathExists, writeBinaryFile } from '../../../../modules/inkdoc/services/inkdocFilesystemRuntime'
 import type { InkdocPreferences } from '../../../../services/preferences/inkdocSettingsStorage'
+import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import { readLibraryFileContent, writeLibraryFileContent } from '../../../../services/libraries/libraryDocumentRuntime'
 import { performLibraryEntryOperation } from '../../../../services/libraries/libraryRuntime'
 import '../../../../modules/inkdoc/inkdoc.css'
@@ -16,6 +17,7 @@ interface InkdocViewProps {
   libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
   inkdocPreferences: InkdocPreferences
+  aiPreferences: AiPreferences
   onSourcePersist: (nextSource: string) => Promise<void>
   onOpenLinkedFile: (filePath: string) => void
 }
@@ -27,6 +29,7 @@ export function InkdocView({
   libraryAndroidTreeUri,
   libraryFilePaths,
   inkdocPreferences,
+  aiPreferences,
   onSourcePersist,
   onOpenLinkedFile,
 }: InkdocViewProps) {
@@ -114,6 +117,7 @@ export function InkdocView({
     })
     const leaf = app.workspace.getLeaf(false)
     const view = new InkDocView(leaf, plugin)
+    view.setAiPreferences(aiPreferences)
 
     let cancelled = false
 
@@ -134,7 +138,7 @@ export function InkdocView({
       void view.onClose()
       mountNode.empty()
     }
-  }, [bridge, filePath, inkdocPreferences.inkmathDebounceMs, inkdocPreferences.inkmathServiceUrl])
+  }, [aiPreferences, bridge, filePath, inkdocPreferences.inkmathDebounceMs, inkdocPreferences.inkmathServiceUrl])
 
   return <div ref={mountRef} className="notia-inkdoc-host" />
 }

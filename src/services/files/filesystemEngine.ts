@@ -227,11 +227,23 @@ export async function pathExists(pathValue: string, options?: AndroidFilesystemO
   }
 
   try {
+    console.log('[filesystemEngine] Checking path exists:', {
+      path: normalizedPath,
+      isAndroid: getRuntimeDevice() === 'Android',
+      androidUri: options?.androidDirectoryUri,
+    })
     const result = await invoke<PathExistsResult>('path_exists', {
       payload: { path: normalizedPath, directoryUri: options?.androidDirectoryUri },
     })
+    console.log('[filesystemEngine] Path exists result:', result)
     return Boolean(result.exists)
-  } catch {
+  } catch (error) {
+    console.error('[filesystemEngine] pathExists failed:', {
+      path: normalizedPath,
+      isAndroid: getRuntimeDevice() === 'Android',
+      androidUri: options?.androidDirectoryUri,
+      error,
+    })
     return false
   }
 }
@@ -376,12 +388,17 @@ export async function readLibraryTree(
 
   try {
     if (getRuntimeDevice() === 'Android') {
+      console.log('[filesystemEngine] Reading Android library tree:', {
+        directoryPath: normalizedDirectoryPath,
+        directoryUri: options?.androidDirectoryUri,
+      })
       const rawTree = await invoke<unknown>('read_android_library_tree', {
         payload: {
           directoryPath: normalizedDirectoryPath,
           directoryUri: options?.androidDirectoryUri,
         },
       })
+      console.log('[filesystemEngine] Android library tree result:', rawTree)
       return normalizeFilesystemTreeNodes(rawTree)
     }
 
@@ -389,7 +406,13 @@ export async function readLibraryTree(
       payload: { directoryPath: normalizedDirectoryPath },
     })
     return normalizeFilesystemTreeNodes(rawTree)
-  } catch {
+  } catch (error) {
+    console.error('[filesystemEngine] Failed to read library tree:', {
+      directoryPath: normalizedDirectoryPath,
+      isAndroid: getRuntimeDevice() === 'Android',
+      androidUri: options?.androidDirectoryUri,
+      error,
+    })
     return []
   }
 }

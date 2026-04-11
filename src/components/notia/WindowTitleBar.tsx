@@ -288,6 +288,7 @@ export function WindowTitleBar({
       onMouseUp={cancelPendingWindowDrag}
       onMouseLeave={cancelPendingWindowDrag}
       onDoubleClick={handleTitlebarDoubleClick}
+      data-notia-prevent-menu-close
     >
       <div
         className={`notia-titlebar-sidebar ${
@@ -306,10 +307,10 @@ export function WindowTitleBar({
           </NotiaButton>
         </div>
         {isSidebarOpen ? (
-          <div className="notia-titlebar-explorer">
-            <div className="notia-explorer-actions">
+          <div className="notia-titlebar-explorer" data-notia-prevent-menu-close>
+            <div className="notia-explorer-actions" data-notia-prevent-menu-close>
               {explorerActions.slice(1).map(({ id, label, icon: Icon }) => (
-                <div key={id} className="notia-explorer-action-slot">
+                <div key={id} className="notia-explorer-action-slot" data-notia-prevent-menu-close>
                   <NotiaButton
                     ref={id === 'search' ? searchButtonRef : undefined}
                     size="icon"
@@ -363,8 +364,8 @@ export function WindowTitleBar({
         ) : null}
       </div>
 
-      <div className="notia-titlebar-main">
-        <div className="notia-titlebar-tabs-shell">
+      <div className="notia-titlebar-main" data-notia-prevent-menu-close>
+        <div className="notia-titlebar-tabs-shell" data-notia-prevent-menu-close>
           {isTabsOverflowing ? (
             <NotiaButton
               size="icon"
@@ -377,9 +378,9 @@ export function WindowTitleBar({
               <ChevronLeft size={14} />
             </NotiaButton>
           ) : null}
-          <div className="notia-titlebar-tabs" ref={tabsScrollRef}>
+          <div className="notia-titlebar-tabs" ref={tabsScrollRef} data-notia-prevent-menu-close>
             {tabs.length === 0 ? (
-              <div className="notia-tab notia-tab--active notia-tab--placeholder">
+              <div className="notia-tab notia-tab--active notia-tab--placeholder" data-notia-prevent-menu-close>
                 <TabIcon size={14} />
                 <span className="notia-tab-title">New tab</span>
               </div>
@@ -393,6 +394,7 @@ export function WindowTitleBar({
                       tabElementRefs.current[tab.path] = element
                     }}
                     className={`notia-tab ${isActive ? 'notia-tab--active' : ''}`}
+                    data-notia-prevent-menu-close
                   >
                     <NotiaButton
                       variant="ghost"
@@ -431,7 +433,7 @@ export function WindowTitleBar({
           ) : null}
         </div>
 
-        <div className="notia-titlebar-controls">
+        <div className="notia-titlebar-controls" data-notia-prevent-menu-close>
           <NotiaButton size="icon" variant="ghost" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
             <ThemeIcon size={15} />
           </NotiaButton>

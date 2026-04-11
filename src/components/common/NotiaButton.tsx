@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { forwardRef, useCallback, type ButtonHTMLAttributes, type ReactNode, type TouchEvent } from 'react'
 
 type NotiaButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
 type NotiaButtonSize = 'sm' | 'md' | 'icon'
@@ -28,12 +28,29 @@ export const NotiaButton = forwardRef<HTMLButtonElement, NotiaButtonProps>(funct
     className,
     type = 'button',
     children,
+    onClick,
+    onTouchEnd,
     ...rest
   },
   ref,
 ) {
+  const handleTouchEnd = useCallback((event: TouchEvent<HTMLButtonElement>) => {
+    onTouchEnd?.(event)
+    if (!event.defaultPrevented && onClick) {
+      event.preventDefault()
+      onClick(event as unknown as React.MouseEvent<HTMLButtonElement>)
+    }
+  }, [onClick, onTouchEnd])
+
   return (
-    <button ref={ref} type={type} className={buildClassName(variant, size, className)} {...rest}>
+    <button 
+      ref={ref} 
+      type={type} 
+      className={buildClassName(variant, size, className)} 
+      onClick={onClick}
+      onTouchEnd={handleTouchEnd}
+      {...rest}
+    >
       {children}
     </button>
   )
