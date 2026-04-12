@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type TouchEvent, type WheelEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type TouchEvent, type WheelEvent } from 'react'
 import { Eye, Search, SlidersHorizontal, X } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
 import {
@@ -54,6 +54,8 @@ const GRAPH_PHYSICS_SETTLE_REST_LENGTH_EPSILON = 0.22
 const GRAPH_VIEW_FOCUS_ANIMATION_DURATION_MS = 320
 const GRAPH_MODEL_SIGNATURE_CACHE_LIMIT = 24
 const graphModelBySignatureCache = new Map<string, LibraryGraphModel>()
+const FALLBACK_GRAPH_CANVAS_WIDTH = 960
+const FALLBACK_GRAPH_CANVAS_HEIGHT = 640
 
 interface GraphViewSettings {
   nodeSizeMultiplier: number
@@ -946,7 +948,7 @@ function clearGraphNodePositionsForLibrary(libraryName: string): void {
   window.localStorage.setItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY, JSON.stringify(nextStore))
 }
 
-export function GraphView({
+function GraphViewComponent({
   graphModel,
   graphSourcesByPath,
   libraryName,
@@ -1037,14 +1039,8 @@ export function GraphView({
       return
     }
 
-    const resizeObserver = new ResizeObserver((entries) => {
-      const firstEntry = entries[0]
-      if (!firstEntry) {
-        return
-      }
-
-      const nextWidth = Math.floor(firstEntry.contentRect.width)
-      const nextHeight = Math.floor(firstEntry.contentRect.height)
+    let frameId: number | null = null
+    const updateCanvasSize = (nextWidth: number, nextHeight: number) => {
       setCanvasSize((current) => {
         if (current.width === nextWidth && current.height === nextHeight) {
           return current
@@ -1055,10 +1051,50 @@ export function GraphView({
           height: nextHeight,
         }
       })
+    }
+
+    const measureCanvasElement = () => {
+      const rect = canvasElement.getBoundingClientRect()
+      const parentRect = canvasElement.parentElement?.getBoundingClientRect()
+      const nextWidth = Math.floor(
+        rect.width
+        || parentRect?.width
+        || canvasElement.clientWidth
+        || canvasElement.parentElement?.clientWidth
+        || 0,
+      )
+      const nextHeight = Math.floor(
+        rect.height
+        || parentRect?.height
+        || canvasElement.clientHeight
+        || canvasElement.parentElement?.clientHeight
+        || 0,
+      )
+      updateCanvasSize(nextWidth, nextHeight)
+    }
+
+    measureCanvasElement()
+    frameId = window.requestAnimationFrame(() => {
+      frameId = null
+      measureCanvasElement()
+    })
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const firstEntry = entries[0]
+      if (!firstEntry) {
+        return
+      }
+
+      const nextWidth = Math.floor(firstEntry.contentRect.width)
+      const nextHeight = Math.floor(firstEntry.contentRect.height)
+      updateCanvasSize(nextWidth, nextHeight)
     })
 
     resizeObserver.observe(canvasElement)
     return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
       resizeObserver.disconnect()
     }
   }, [])
@@ -1109,10 +1145,27 @@ export function GraphView({
     }),
     [nodeSizeMultiplier],
   )
+  const effectiveCanvasSize = useMemo(() => {
+    if (canvasSize.width > 0 && canvasSize.height > 0) {
+      return canvasSize
+    }
+
+    if (typeof window !== 'undefined') {
+      return {
+        width: Math.max(FALLBACK_GRAPH_CANVAS_WIDTH, Math.floor(window.innerWidth * 0.72)),
+        height: Math.max(FALLBACK_GRAPH_CANVAS_HEIGHT, Math.floor(window.innerHeight * 0.7)),
+      }
+    }
+
+    return {
+      width: FALLBACK_GRAPH_CANVAS_WIDTH,
+      height: FALLBACK_GRAPH_CANVAS_HEIGHT,
+    }
+  }, [canvasSize])
   const { graphLayout, searchResults, isGraphDerivedDataLoading } = useGraphDerivedData({
     graphModel: stableGraphModel,
     graphSourcesByPath,
-    canvasSize,
+    canvasSize: effectiveCanvasSize,
     layoutOptions: graphLayoutOptions,
     searchQuery,
   })
@@ -1211,36 +1264,36 @@ export function GraphView({
   const resolveGraphCoordinatesFromClientPoint = useCallback(
     (clientX: number, clientY: number) => {
       const canvasElement = canvasRef.current
-      if (!canvasElement || canvasSize.width <= 0 || canvasSize.height <= 0) {
+      if (!canvasElement || effectiveCanvasSize.width <= 0 || effectiveCanvasSize.height <= 0) {
         return null
       }
 
       const rect = canvasElement.getBoundingClientRect()
-      const localX = clientX - rect.left - canvasSize.width / 2
-      const localY = clientY - rect.top - canvasSize.height / 2
+      const localX = clientX - rect.left - effectiveCanvasSize.width / 2
+      const localY = clientY - rect.top - effectiveCanvasSize.height / 2
 
       return {
         x: (localX - viewport.x) / viewport.scale,
         y: (localY - viewport.y) / viewport.scale,
       }
     },
-    [canvasSize.height, canvasSize.width, viewport.scale, viewport.x, viewport.y],
+    [effectiveCanvasSize.height, effectiveCanvasSize.width, viewport.scale, viewport.x, viewport.y],
   )
 
   const resolveCanvasLocalCoordinatesFromClientPoint = useCallback(
     (clientX: number, clientY: number) => {
       const canvasElement = canvasRef.current
-      if (!canvasElement || canvasSize.width <= 0 || canvasSize.height <= 0) {
+      if (!canvasElement || effectiveCanvasSize.width <= 0 || effectiveCanvasSize.height <= 0) {
         return null
       }
 
       const rect = canvasElement.getBoundingClientRect()
       return {
-        x: clientX - rect.left - canvasSize.width / 2,
-        y: clientY - rect.top - canvasSize.height / 2,
+        x: clientX - rect.left - effectiveCanvasSize.width / 2,
+        y: clientY - rect.top - effectiveCanvasSize.height / 2,
       }
     },
-    [canvasSize.height, canvasSize.width],
+    [effectiveCanvasSize.height, effectiveCanvasSize.width],
   )
 
   const updateNodeDragTarget = useCallback(
@@ -1438,8 +1491,8 @@ export function GraphView({
     }
 
     const rect = canvasElement.getBoundingClientRect()
-    const pointerX = event.clientX - rect.left - canvasSize.width / 2
-    const pointerY = event.clientY - rect.top - canvasSize.height / 2
+    const pointerX = event.clientX - rect.left - effectiveCanvasSize.width / 2
+    const pointerY = event.clientY - rect.top - effectiveCanvasSize.height / 2
     const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9
 
     setViewport((current) => {
@@ -1784,9 +1837,10 @@ export function GraphView({
     searchScrollSessionRef.current = null
   }
 
-  const hasNodes = graphLayout.nodes.length > 0
+  const hasModelNodes = graphModel.nodes.length > 0
+  const hasLayoutNodes = graphLayout.nodes.length > 0
   const isGraphBusy = isLoading || isGraphDerivedDataLoading
-  const shouldShowLoadingScreen = isGraphBusy && !hasNodes
+  const shouldShowLoadingScreen = isGraphBusy && !hasLayoutNodes
 
   return (
     <main className="notia-main" data-notia-prevent-menu-close>
@@ -1796,8 +1850,8 @@ export function GraphView({
           <span>{libraryName}</span>
         </div>
         <div className="notia-graph-meta" data-notia-prevent-menu-close>
-          <span>{graphLayout.nodes.length} archivos</span>
-          <span>{graphLayout.edges.length} enlaces</span>
+          <span>{graphModel.nodes.length} archivos</span>
+          <span>{graphModel.edges.length} enlaces</span>
           <NotiaButton type="button" variant="secondary" className="notia-graph-reset" onClick={handleResetViewport}>
             Reset view
           </NotiaButton>
@@ -1813,8 +1867,8 @@ export function GraphView({
             </div>
           </div>
         ) : null}
-        {!isGraphBusy && !hasNodes ? <div className="notia-graph-empty">No hay archivos para mostrar.</div> : null}
-        {(hasNodes || isGraphBusy) ? (
+        {!isGraphBusy && !hasModelNodes ? <div className="notia-graph-empty">No hay archivos para mostrar.</div> : null}
+        {(hasLayoutNodes || isGraphBusy) ? (
           <div
             ref={canvasRef}
             className={`notia-graph-canvas ${isDragging ? 'notia-graph-canvas--dragging' : ''}`}
@@ -1899,10 +1953,10 @@ export function GraphView({
                 </div>
               ) : null}
             </div>
-            <svg className="notia-graph-svg" viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}>
+            <svg className="notia-graph-svg" viewBox={`0 0 ${effectiveCanvasSize.width} ${effectiveCanvasSize.height}`}>
               <g
-                transform={`translate(${canvasSize.width / 2 + viewport.x} ${
-                  canvasSize.height / 2 + viewport.y
+                transform={`translate(${effectiveCanvasSize.width / 2 + viewport.x} ${
+                  effectiveCanvasSize.height / 2 + viewport.y
                 }) scale(${viewport.scale})`}
               >
                 {visibleEdges.map((edge) => {
@@ -2120,3 +2174,6 @@ export function GraphView({
     </main>
   )
 }
+
+export const GraphView = memo(GraphViewComponent)
+GraphView.displayName = 'GraphView'

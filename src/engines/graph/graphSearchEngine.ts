@@ -7,7 +7,7 @@ export interface GraphSearchResult {
   score: number
 }
 
-function normalizeGraphSearchText(value: string): string {
+export function normalizeGraphSearchText(value: string): string {
   return value
     .toLowerCase()
     .normalize('NFD')
@@ -18,7 +18,7 @@ function stripHtmlTags(value: string): string {
   return value.replace(/<[^>]+>/g, ' ')
 }
 
-function extractSearchableContent(path: string, source: string): string {
+export function extractSearchableContent(path: string, source: string): string {
   if (path.toLowerCase().endsWith('.inkdoc')) {
     try {
       const parsed = JSON.parse(source) as {

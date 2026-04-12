@@ -13,6 +13,8 @@ const EMPTY_GRAPH_LAYOUT: ClusteredGraphLayout = {
   nodes: [],
   edges: [],
 }
+const MAIN_THREAD_GRAPH_NODE_THRESHOLD = 240
+const MAIN_THREAD_GRAPH_EDGE_THRESHOLD = 960
 
 interface UseGraphDerivedDataParams {
   enabled?: boolean
@@ -37,6 +39,9 @@ export function useGraphDerivedData({
   searchQuery,
 }: UseGraphDerivedDataParams) {
   const deferredSearchQuery = useDeferredValue(searchQuery)
+  const shouldPreferMainThreadDerivation =
+    graphModel.nodes.length <= MAIN_THREAD_GRAPH_NODE_THRESHOLD
+    && graphModel.edges.length <= MAIN_THREAD_GRAPH_EDGE_THRESHOLD
   const [graphLayout, setGraphLayout] = useState<ClusteredGraphLayout>(EMPTY_GRAPH_LAYOUT)
   const [searchResults, setSearchResults] = useState<GraphSearchResult[]>([])
   const [isGraphDerivedDataLoading, setIsGraphDerivedDataLoading] = useState(false)
@@ -161,7 +166,7 @@ export function useGraphDerivedData({
 
   useEffect(() => {
     const activeWorker = workerRef.current
-    if (!enabled || workerMode !== 'worker' || !isWorkerReady || !activeWorker) {
+    if (!enabled || shouldPreferMainThreadDerivation || workerMode !== 'worker' || !isWorkerReady || !activeWorker) {
       return
     }
 
@@ -170,7 +175,7 @@ export function useGraphDerivedData({
       graphModel,
       graphSourcesByPath,
     })
-  }, [enabled, graphModel, graphSourcesByPath, isWorkerReady, workerMode])
+  }, [enabled, graphModel, graphSourcesByPath, isWorkerReady, shouldPreferMainThreadDerivation, workerMode])
 
   useEffect(() => {
     if (!enabled || canvasSize.width <= 0 || canvasSize.height <= 0) {
@@ -178,7 +183,7 @@ export function useGraphDerivedData({
       return
     }
 
-    if (workerMode === 'worker' && (!isWorkerReady || !workerRef.current)) {
+    if (!shouldPreferMainThreadDerivation && workerMode === 'worker' && (!isWorkerReady || !workerRef.current)) {
       return
     }
 
@@ -201,7 +206,7 @@ export function useGraphDerivedData({
     }
     setIsGraphDerivedDataLoading(true)
 
-    if (workerMode === 'worker') {
+    if (!shouldPreferMainThreadDerivation && workerMode === 'worker') {
       activeWorker?.postMessage({
         type: 'computeGraphDerivedData',
         requestId,
@@ -251,6 +256,7 @@ export function useGraphDerivedData({
     graphSourcesByPath,
     isWorkerReady,
     layoutOptions,
+    shouldPreferMainThreadDerivation,
     workerMode,
   ])
 
