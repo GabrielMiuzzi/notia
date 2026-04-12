@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
@@ -46,9 +46,13 @@ import {
   writeTaskMarkdownSource,
   type TaskManagerSnapshot,
 } from '../services/taskManagerService'
-import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
-import { pickVaultDirectory } from '../services/vaultRuntime'
-import { setActiveTaskManagerVaultContext } from '../services/vaultRuntime'
+import {
+  flushPendingTaskManagerLibraryTreeChanges,
+  pickVaultDirectory,
+  setActiveTaskManagerVaultContext,
+} from '../services/vaultRuntime'
+import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
+import { readTaskManagerVaultCache, writeTaskManagerVaultCache } from '../services/taskManagerVaultCache'
 
 interface TaskDialogState {
   open: boolean
@@ -269,8 +273,22 @@ function areSameVaultRef(left: TaskManagerVaultRef | null, right: TaskManagerVau
     && (left?.androidTreeUri ?? '') === (right?.androidTreeUri ?? '')
 }
 
+function resolveCachedViewStateActiveTab(
+  activeTab: string,
+  boards: Board[],
+): string {
+  if (NON_BOARD_TABS.has(activeTab)) {
+    return activeTab
+  }
+
+  return boards.some((board) => board.name === activeTab)
+    ? activeTab
+    : boards[0]?.name ?? DEFAULT_BOARD_NAME
+}
+
 export function useTaskManager(externalVault: TaskManagerVaultRef | null = null): UseTaskManagerResult {
   const activeVaultRef = useRef<TaskManagerVaultRef | null>(null)
+  const isAndroidRuntime = useMemo(() => getRuntimeDevice() === 'Android', [])
   const [settings, setSettings] = useState<TaskManagerSettings>(() => loadTaskManagerSettings())
   const [snapshot, setSnapshot] = useState<TaskManagerSnapshot>(EMPTY_SNAPSHOT)
   const [isLoading, setIsLoading] = useState(false)
@@ -434,9 +452,51 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     })
   }, [updateSettings])
 
+  const applySnapshotState = useCallback((nextSnapshot: TaskManagerSnapshot) => {
+    startTransition(() => {
+      setSnapshot(nextSnapshot)
+      hydrateSettingsFromSnapshot(nextSnapshot)
+    })
+  }, [hydrateSettingsFromSnapshot])
+
+  const applyCachedVaultState = useCallback((vault: TaskManagerVaultRef | null): boolean => {
+    const cachedEntry = readTaskManagerVaultCache(vault)
+    if (!cachedEntry) {
+      return false
+    }
+
+    startTransition(() => {
+      setSnapshot(cachedEntry.snapshot)
+      updateSettings((previousSettings) => ({
+        ...previousSettings,
+        activeVaultPath: vault?.path ?? previousSettings.activeVaultPath,
+        boards: cachedEntry.viewState.boards,
+        groups: cachedEntry.viewState.groups,
+        activeTab: resolveCachedViewStateActiveTab(cachedEntry.viewState.activeTab, cachedEntry.viewState.boards),
+      }))
+    })
+
+    return true
+  }, [updateSettings])
+
+  useEffect(() => {
+    if (!activeVaultRef.current?.path || !settings.activeVaultPath) {
+      return
+    }
+
+    writeTaskManagerVaultCache(activeVaultRef.current, {
+      snapshot,
+      viewState: {
+        boards: settings.boards,
+        groups: settings.groups,
+        activeTab: settings.activeTab,
+      },
+    })
+  }, [settings.activeTab, settings.activeVaultPath, settings.boards, settings.groups, snapshot])
+
   const reload = useCallback(async () => {
     if (!settings.activeVaultPath) {
-      setSnapshot(EMPTY_SNAPSHOT)
+      applySnapshotState(EMPTY_SNAPSHOT)
       return
     }
 
@@ -451,9 +511,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
-    setSnapshot(nextSnapshot)
-    hydrateSettingsFromSnapshot(nextSnapshot)
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards])
+    applySnapshotState(nextSnapshot)
+  }, [applySnapshotState, settings.activeVaultPath, settings.boards])
 
   const setActiveVaultPath = useCallback(async (vault: TaskManagerVaultRef | null) => {
     if (!vault?.path) {
@@ -473,6 +532,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
     activeVaultRef.current = normalizedVault
     setActiveTaskManagerVaultContext(normalizedVault)
+    applyCachedVaultState(normalizedVault)
     setIsLoading(true)
     try {
       const bootstrapSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
@@ -486,8 +546,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       const bootstrapBoards = resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot)
       await ensureTaskWorkspace(normalizedVault.path, bootstrapBoards)
       const nextSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
-      setSnapshot(nextSnapshot)
-      hydrateSettingsFromSnapshot(nextSnapshot)
+      applySnapshotState(nextSnapshot)
       updateSettings((previousSettings) => ({
         ...previousSettings,
         activeVaultPath: normalizedVault.path,
@@ -502,7 +561,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     } finally {
       setIsLoading(false)
     }
-  }, [hydrateSettingsFromSnapshot, updateSettings])
+  }, [applyCachedVaultState, applySnapshotState, updateSettings])
 
   const selectVault = useCallback(async () => {
     const selected = await pickVaultDirectory()
@@ -513,15 +572,76 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     await setActiveVaultPath(selected)
   }, [setActiveVaultPath])
 
+  const bootstrapExternalVaultFast = useCallback(async (vault: TaskManagerVaultRef) => {
+    const normalizedVault: TaskManagerVaultRef = {
+      path: vault.path,
+      androidTreeUri: vault.androidTreeUri,
+    }
+
+    activeVaultRef.current = normalizedVault
+    setActiveTaskManagerVaultContext(normalizedVault)
+    updateSettings((previousSettings) => ({
+      ...previousSettings,
+      activeVaultPath: normalizedVault.path,
+    }))
+    applyCachedVaultState(normalizedVault)
+    setIsLoading(true)
+
+    try {
+      const bootstrapSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
+      applySnapshotState(bootstrapSnapshot)
+      setInfoMessage(null)
+
+      void (async () => {
+        try {
+          if (bootstrapSnapshot.tasks.length === 0) {
+            updateSettings((previousSettings) => resolveSettingsForEmptySnapshot(previousSettings))
+            await cleanupEmptyWorkspaceBoards(
+              normalizedVault.path,
+              resolveCleanupBoardCandidates(bootstrapSnapshot),
+            )
+          }
+
+          await ensureTaskWorkspace(
+            normalizedVault.path,
+            resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot),
+          )
+
+          const refreshedSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
+          applySnapshotState(refreshedSnapshot)
+        } catch (runtimeError) {
+          console.warn('[task-manager] Android fast bootstrap finalize failed', runtimeError)
+        }
+      })()
+    } catch (runtimeError) {
+      console.error(runtimeError)
+      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
+      setError(runtimeMessage
+        ? `No se pudo inicializar el vault seleccionado: ${runtimeMessage}`
+        : 'No se pudo inicializar el vault seleccionado.')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [applyCachedVaultState, applySnapshotState, updateSettings])
+
   useEffect(() => {
     if (isExternallyControlled) {
       return
     }
 
     if (!settings.activeVaultPath) {
+      activeVaultRef.current = null
+      setActiveTaskManagerVaultContext(null)
       return
     }
 
+    activeVaultRef.current = {
+      path: settings.activeVaultPath,
+    }
+    setActiveTaskManagerVaultContext(activeVaultRef.current)
+    applyCachedVaultState({
+      path: settings.activeVaultPath,
+    })
     setIsLoading(true)
     loadTaskManagerSnapshot(settings.activeVaultPath)
       .then(async (bootstrapSnapshot) => {
@@ -540,8 +660,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       })
       .then(() => loadTaskManagerSnapshot(settings.activeVaultPath as string))
       .then((nextSnapshot) => {
-        setSnapshot(nextSnapshot)
-        hydrateSettingsFromSnapshot(nextSnapshot)
+        applySnapshotState(nextSnapshot)
       })
       .catch((runtimeError) => {
         console.error(runtimeError)
@@ -551,7 +670,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           : 'No se pudo cargar el estado del gestor de tareas.')
       })
       .finally(() => setIsLoading(false))
-  }, [hydrateSettingsFromSnapshot, isExternallyControlled, settings.activeVaultPath, updateSettings])
+  }, [applyCachedVaultState, applySnapshotState, isExternallyControlled, settings.activeVaultPath, updateSettings])
 
   useEffect(() => {
     if (!externalVault?.path) {
@@ -562,8 +681,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       return
     }
 
+    if (isAndroidRuntime) {
+      void bootstrapExternalVaultFast(externalVault)
+      return
+    }
+
     void setActiveVaultPath(externalVault)
-  }, [externalVault, setActiveVaultPath])
+  }, [bootstrapExternalVaultFast, externalVault, isAndroidRuntime, setActiveVaultPath])
 
   useEffect(() => {
     if (!settings.activeVaultPath) {
@@ -627,8 +751,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           }
 
           const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath as string)
-          setSnapshot(nextSnapshot)
-          hydrateSettingsFromSnapshot(nextSnapshot)
+          applySnapshotState(nextSnapshot)
         } catch (runtimeError) {
           console.error(runtimeError)
         }
@@ -636,11 +759,12 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }, 1000)
 
     return () => window.clearInterval(interval)
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.pomodoro, snapshot.tasks, updateSettings])
+  }, [applySnapshotState, settings.activeVaultPath, settings.pomodoro, snapshot.tasks, updateSettings])
 
   const runSync = useCallback(async (
     runner: () => Promise<void>,
     syncBoardsOverride?: Board[],
+    options?: { syncStrategy?: 'full' | 'snapshot-only' },
   ) => {
     if (!settings.activeVaultPath) {
       throw new Error('No hay un vault activo.')
@@ -649,25 +773,24 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     setIsSyncing(true)
     try {
       await runner()
-      try {
-        await syncTaskIndexesAndMetadata(
-          settings.activeVaultPath,
-          (syncBoardsOverride ?? settings.boards).map((board) => board.name),
-          syncBoardsOverride ?? settings.boards,
-        )
-      } catch (syncError) {
-        console.warn('[task-manager] syncTaskIndexesAndMetadata failed after action', syncError)
+      if ((options?.syncStrategy ?? 'full') === 'full') {
+        try {
+          await syncTaskIndexesAndMetadata(
+            settings.activeVaultPath,
+            (syncBoardsOverride ?? settings.boards).map((board) => board.name),
+            syncBoardsOverride ?? settings.boards,
+          )
+        } catch (syncError) {
+          console.warn('[task-manager] syncTaskIndexesAndMetadata failed after action', syncError)
+        }
       }
       const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
-      setSnapshot(nextSnapshot)
-      hydrateSettingsFromSnapshot(nextSnapshot)
-      dispatchLibraryTreeChanged({
-        vaultPath: settings.activeVaultPath,
-      })
+      applySnapshotState(nextSnapshot)
+      flushPendingTaskManagerLibraryTreeChanges()
     } finally {
       setIsSyncing(false)
     }
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.boards])
+  }, [applySnapshotState, settings.activeVaultPath, settings.boards])
 
   const openTaskCreateDialog = useCallback((defaults?: { parentTaskName?: string; group?: string }) => {
     setTaskCreateDefaults(defaults ?? {})
@@ -744,7 +867,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         await updateTaskFrontmatter(settings.activeVaultPath as string, task.filePath, {
           prioridad: nextPriority,
         })
-      })
+      }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -764,7 +887,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         await updateTaskFrontmatter(settings.activeVaultPath as string, task.filePath, {
           dedicado: roundHours(Math.max(0, nextDedicatedHours)),
         })
-      })
+      }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -785,7 +908,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           prioridad: 'Urgente',
           estado: task.state === 'Pendiente' ? 'En progreso' : task.state,
         })
-      })
+      }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -821,7 +944,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         await updateTaskFrontmatter(settings.activeVaultPath as string, task.filePath, {
           estado: done ? 'Finalizada' : 'Pendiente',
         })
-      })
+      }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       setError('No se pudo actualizar la subtarea.')
@@ -854,7 +977,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           const normalizedContent = currentContent.trimEnd()
           return `${normalizedContent}\n\n${commentLine}\n`
         })
-      })
+      }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       setError('No se pudo agregar el comentario.')
@@ -1285,8 +1408,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           }
 
           const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
-          setSnapshot(nextSnapshot)
-          hydrateSettingsFromSnapshot(nextSnapshot)
+          applySnapshotState(nextSnapshot)
         } catch (runtimeError) {
           console.error(runtimeError)
         }
@@ -1297,7 +1419,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         pomodoro: resetPomodoro(previousSettings.pomodoro),
       }))
     })()
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.pomodoro, snapshot.tasks, updateSettings])
+  }, [applySnapshotState, settings.activeVaultPath, settings.pomodoro, snapshot.tasks, updateSettings])
 
   const enterPomodoroDeviationMode = useCallback(() => {
     updateSettings((previousSettings) => ({
@@ -1366,9 +1488,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
-    setSnapshot(nextSnapshot)
-    hydrateSettingsFromSnapshot(nextSnapshot)
-  }, [hydrateSettingsFromSnapshot, settings.activeVaultPath, settings.pomodoro.durations, settings.pomodoro.selectedTaskPath, snapshot.tasks, updateSettings])
+    applySnapshotState(nextSnapshot)
+  }, [applySnapshotState, settings.activeVaultPath, settings.pomodoro.durations, settings.pomodoro.selectedTaskPath, snapshot.tasks, updateSettings])
 
   const setPomodoroDurations = useCallback((durations: PomodoroDurations) => {
     updateSettings((previousSettings) => ({

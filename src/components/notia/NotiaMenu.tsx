@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { Bot } from 'lucide-react'
 import {
   EXPLORER_HEADER_ACTIONS,
@@ -12,9 +12,12 @@ import {
   performLibraryEntryOperation,
   readLibraryTree,
   readLibraryTreeSignature,
-  searchLibraryFiles,
 } from '../../services/libraries/libraryRuntime'
 import { dispatchLibraryTreeChanged } from '../../services/libraries/libraryTreeEvents'
+import {
+  invalidateLibrarySearchGraphIndex,
+  searchIndexedLibraryFiles,
+} from '../../services/libraries/librarySearchGraphIndex'
 import {
   startDesktopLibraryTreeWatch,
   stopDesktopLibraryTreeWatch,
@@ -81,10 +84,12 @@ import { toStoredLibraryPath } from '../../services/libraries/libraryPathMapping
 import { startPerformanceMeasurement } from '../../services/runtime/performanceBaseline'
 import { useGraphWorkspace } from './hooks/useGraphWorkspace'
 import { useLibraryConfigSync } from './hooks/useLibraryConfigSync'
+import { useRightPanelChatContext } from './hooks/useRightPanelChatContext'
 import { useLibrarySession } from './hooks/useLibrarySession'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
+const EMPTY_COLDPASS_ENTRIES: ColdPassEntry[] = []
 
 interface PendingTextSaveJob {
   source: string
@@ -169,66 +174,6 @@ function collectNestedChatHistoryFiles(nodes: NotiaFileNode[], remainingSegments
   }
 
   return collectNestedChatHistoryFiles(matchingFolder.children, restSegments)
-}
-
-function buildRightPanelChatContextLabel(
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'documents',
-  activeDocument: OpenFileDocument | null,
-  taskManagerPanelId: string,
-): string {
-  if (activeWorkspaceView === 'task-manager') {
-    if (taskManagerPanelId === '__finished__') {
-      return 'Contexto activo: Task Manager, panel Completadas'
-    }
-
-    if (taskManagerPanelId === '__cancelled__') {
-      return 'Contexto activo: Task Manager, panel Canceladas'
-    }
-
-    if (taskManagerPanelId === '__pomodoro__') {
-      return 'Contexto activo: Task Manager, panel Pomodoro'
-    }
-
-    if (taskManagerPanelId.trim()) {
-      return `Contexto activo: Task Manager, panel ${taskManagerPanelId}`
-    }
-
-    return 'Contexto activo: vista Task Manager'
-  }
-
-  if (activeWorkspaceView === 'coldpass') {
-    return 'Contexto activo: vista ColdPass'
-  }
-
-  if (activeWorkspaceView === 'graph') {
-    return 'Contexto activo: Graph view'
-  }
-
-  if (activeWorkspaceView === 'chat') {
-    return 'Contexto activo: vista principal de chat'
-  }
-
-  if (!activeDocument) {
-    return 'Contexto activo: sin pestaña seleccionada'
-  }
-
-  if (activeDocument.viewKind === 'markdown') {
-    return `Contexto activo: archivo Markdown ${activeDocument.name}`
-  }
-
-  if (activeDocument.viewKind === 'inkdoc') {
-    return `Contexto activo: archivo Inkdoc ${activeDocument.name}`
-  }
-
-  if (activeDocument.viewKind === 'drawio') {
-    return `Contexto activo: archivo Draw.io ${activeDocument.name}`
-  }
-
-  if (activeDocument.viewKind === 'image') {
-    return `Contexto activo: imagen ${activeDocument.name}`
-  }
-
-  return `Contexto activo: archivo de texto ${activeDocument.name}`
 }
 
 function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
@@ -505,7 +450,7 @@ function isOpenTextDocumentTab(tab: OpenDocumentTab | null): tab is OpenTextDocu
 export function NotiaMenu() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isRightChatPanelOpen, setIsRightChatPanelOpen] = useState(false)
-  const [graphRevision, setGraphRevision] = useState(0)
+  const [libraryIndexRevision, setLibraryIndexRevision] = useState(0)
   const [activeHeaderAction, setActiveHeaderAction] = useState('')
   const [isSearchMenuOpen, setIsSearchMenuOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -627,7 +572,6 @@ export function NotiaMenu() {
   const hasQueuedTreeRefreshRef = useRef(false)
   const hasDeferredTreeRefreshRef = useRef(false)
   const lastAutomaticTreeProbeAtRef = useRef(0)
-  const isGraphViewActiveRef = useRef(false)
   const lastKnownTreeSignatureRef = useRef('')
   const treeNodesLibraryIdRef = useRef<string | null>(null)
   const activeTab = useMemo(
@@ -644,21 +588,21 @@ export function NotiaMenu() {
       : activeTabPath === COLDPASS_WORKSPACE_TAB_PATH
         ? 'coldpass'
       : 'documents'
-  const rightPanelChatContextLabel = useMemo(
-    () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId),
-    [activeDocument, activeWorkspaceView, taskManagerActivePanelId],
+  const activeRailActionId = useMemo(() => (
+    activeWorkspaceView === 'graph'
+      ? 'graph-view'
+      : activeWorkspaceView === 'chat'
+        ? 'chat'
+        : activeWorkspaceView === 'task-manager'
+          ? 'task-manager'
+          : activeWorkspaceView === 'coldpass'
+            ? 'coldpass'
+            : null
+  ), [activeWorkspaceView])
+  const [mountedHeavyWorkspaceView, setMountedHeavyWorkspaceView] = useState<typeof activeWorkspaceView>(activeWorkspaceView)
+  const [isRightPanelChatMounted, setIsRightPanelChatMounted] = useState<boolean>(
+    !isAndroidRuntime ? isRightChatPanelOpen : false,
   )
-  const rightPanelChatContextKey = useMemo(() => {
-    if (activeWorkspaceView === 'task-manager') {
-      return `task-manager:${taskManagerChatContext?.scopeKey ?? taskManagerActivePanelId}`
-    }
-
-    if (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio') {
-      return `${activeWorkspaceView}:${activeDocument.viewKind}:${activeDocument.path}`
-    }
-
-    return `${activeWorkspaceView}:default`
-  }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
   const shouldRefreshVisibleExplorerTree =
     activeWorkspaceView !== 'task-manager' && (
       activeWorkspaceView === 'graph'
@@ -666,14 +610,20 @@ export function NotiaMenu() {
       || isRightChatPanelOpen
       || isSidebarOpen
     )
+  const normalizedSearchQuery = searchQuery.trim()
+  const isSearchActive = normalizedSearchQuery.length > 0
+  const shouldRefreshActiveLibraryTree = shouldRefreshVisibleExplorerTree || isSearchActive
   const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
   const saveStatus = activeTab?.saveStatus ?? 'idle'
-  const normalizedSearchQuery = searchQuery.trim()
   const searchMatchedPathSet = useMemo(() => new Set(searchMatchedPaths), [searchMatchedPaths])
-  const isSearchActive = normalizedSearchQuery.length > 0
+  const deferredSearchMatchedPaths = useDeferredValue(searchMatchedPaths)
+  const deferredSearchMatchedPathSet = useMemo(
+    () => new Set(deferredSearchMatchedPaths),
+    [deferredSearchMatchedPaths],
+  )
   const displayedTreeNodes = useMemo(
-    () => applySearchMatchesToTree(treeNodes, searchMatchedPathSet, isSearchActive),
-    [treeNodes, searchMatchedPathSet, isSearchActive],
+    () => applySearchMatchesToTree(treeNodes, deferredSearchMatchedPathSet, isSearchActive),
+    [deferredSearchMatchedPathSet, isSearchActive, treeNodes],
   )
   const titleBarTabs = useMemo(
     () => buildWorkspaceTitleTabs(openTabs, openWorkspaceSpecialTabs),
@@ -684,10 +634,15 @@ export function NotiaMenu() {
     [activeLibrary?.path, isMarkdownDocumentActive, treeNodes],
   )
   const libraryFilePaths = useMemo(() => {
+    if (activeWorkspaceView !== 'documents') {
+      return []
+    }
+
     return collectFilesFromTree(treeNodes)
-  }, [treeNodes])
+  }, [activeWorkspaceView, treeNodes])
   const previousChatFiles = useMemo(() => {
-    if (!activeLibrary?.path) {
+    const shouldPrepareChatHistory = activeWorkspaceView === 'chat' || isRightChatPanelOpen
+    if (!activeLibrary?.path || !shouldPrepareChatHistory) {
       return []
     }
 
@@ -709,7 +664,17 @@ export function NotiaMenu() {
           title: stripFileExtension(relativeChatPath),
         }
       })
-  }, [activeLibrary?.path, treeNodes])
+  }, [activeLibrary?.path, activeWorkspaceView, isRightChatPanelOpen, treeNodes])
+  const activeTaskManagerVault = useMemo(
+    () => (activeLibrary
+      ? {
+          path: activeLibrary.path,
+          androidTreeUri: activeLibrary.androidTreeUri,
+        }
+      : null),
+    [activeLibrary?.androidTreeUri, activeLibrary?.path],
+  )
+  const coldPassEntries = coldPassSession?.entries ?? EMPTY_COLDPASS_ENTRIES
   const {
     graphChatContextSummary,
     graphChatEffectivePaths,
@@ -717,14 +682,88 @@ export function NotiaMenu() {
     graphModel,
     graphSourcesByPath,
     isGraphLoading,
-    isGraphViewActive,
     setGraphChatSelectedPaths,
   } = useGraphWorkspace({
     activeLibrary,
     activeWorkspaceView,
-    graphRevision,
+    graphRevision: libraryIndexRevision,
     treeNodes,
   })
+  const {
+    preferredContextMode: rightPanelPreferredContextMode,
+    preferredContextName: rightPanelPreferredContextName,
+    preferredContextPaths: rightPanelPreferredContextPaths,
+    preferredContextScopeKey: rightPanelPreferredContextScopeKey,
+    rightPanelChatContextKey,
+    rightPanelChatContextLabel,
+    transientContextMode: rightPanelTransientContextMode,
+    transientContextPaths: rightPanelTransientContextPaths,
+    transientContextSummary: rightPanelTransientContextSummary,
+  } = useRightPanelChatContext({
+    activeDocument,
+    activeWorkspaceView,
+    graphChatContextSummary,
+    graphChatEffectivePaths,
+    taskManagerActivePanelId,
+    taskManagerChatContext,
+  })
+  const isHeavyWorkspaceView =
+    activeWorkspaceView === 'graph'
+    || activeWorkspaceView === 'chat'
+    || activeWorkspaceView === 'task-manager'
+  const shouldDeferHeavyWorkspaceMount =
+    isAndroidRuntime
+    && isHeavyWorkspaceView
+    && mountedHeavyWorkspaceView !== activeWorkspaceView
+
+  useEffect(() => {
+    if (!isAndroidRuntime || !isHeavyWorkspaceView) {
+      setMountedHeavyWorkspaceView(activeWorkspaceView)
+      return
+    }
+
+    if (mountedHeavyWorkspaceView === activeWorkspaceView) {
+      return
+    }
+
+    let frameId = 0
+    let nestedFrameId = 0
+    frameId = window.requestAnimationFrame(() => {
+      nestedFrameId = window.requestAnimationFrame(() => {
+        setMountedHeavyWorkspaceView(activeWorkspaceView)
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.cancelAnimationFrame(nestedFrameId)
+    }
+  }, [activeWorkspaceView, isAndroidRuntime, isHeavyWorkspaceView, mountedHeavyWorkspaceView])
+
+  useEffect(() => {
+    if (!isAndroidRuntime) {
+      setIsRightPanelChatMounted(isRightChatPanelOpen)
+      return
+    }
+
+    if (!isRightChatPanelOpen) {
+      setIsRightPanelChatMounted(false)
+      return
+    }
+
+    let frameId = 0
+    let nestedFrameId = 0
+    frameId = window.requestAnimationFrame(() => {
+      nestedFrameId = window.requestAnimationFrame(() => {
+        setIsRightPanelChatMounted(true)
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.cancelAnimationFrame(nestedFrameId)
+    }
+  }, [isAndroidRuntime, isRightChatPanelOpen])
 
   const resetTabs = useCallback(() => {
     drawioControllersRef.current.clear()
@@ -782,12 +821,8 @@ export function NotiaMenu() {
     pendingTextSaveByPathRef.current.clear()
   }, [])
 
-  const bumpGraphRevisionIfVisible = useCallback(() => {
-    if (!isGraphViewActiveRef.current) {
-      return
-    }
-
-    setGraphRevision((current) => current + 1)
+  const bumpLibraryIndexRevision = useCallback(() => {
+    setLibraryIndexRevision((current) => current + 1)
   }, [])
 
   const persistTextDocumentSource = useCallback(
@@ -814,6 +849,9 @@ export function NotiaMenu() {
       }
 
       if (result.ok) {
+        if (activeLibrary?.path) {
+          invalidateLibrarySearchGraphIndex(activeLibrary.path, targetPath)
+        }
         setOpenTabs((current) =>
           current.map((tab) => {
             if (tab.document.path !== targetPath) {
@@ -831,7 +869,7 @@ export function NotiaMenu() {
             }
           }),
         )
-        bumpGraphRevisionIfVisible()
+        bumpLibraryIndexRevision()
         return true
       }
 
@@ -851,12 +889,8 @@ export function NotiaMenu() {
       })
       return false
     },
-    [bumpGraphRevisionIfVisible, resolveActiveLibraryAndroidDirectoryUri],
+    [activeLibrary?.path, bumpLibraryIndexRevision, resolveActiveLibraryAndroidDirectoryUri],
   )
-
-  useEffect(() => {
-    isGraphViewActiveRef.current = isGraphViewActive
-  }, [isGraphViewActive])
 
   useEffect(() => {
     saveThemePreference(theme)
@@ -996,7 +1030,7 @@ export function NotiaMenu() {
   }, [activeLibrary, refreshActiveLibraryTree])
 
   const requestAutomaticTreeProbe = useCallback(() => {
-    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+    if (!activeLibrary?.path || !shouldRefreshActiveLibraryTree) {
       return
     }
 
@@ -1024,7 +1058,7 @@ export function NotiaMenu() {
     explorerRefreshIntervalMs,
     isAndroidRuntime,
     probeActiveLibraryTreeChanges,
-    shouldRefreshVisibleExplorerTree,
+    shouldRefreshActiveLibraryTree,
   ])
 
   const notifyLibraryTreeChanged = useCallback((pathHint?: string) => {
@@ -1033,8 +1067,18 @@ export function NotiaMenu() {
     })
   }, [activeLibrary?.path])
 
+  const handleChatWorkspaceTreeChanged = useCallback((pathHint?: string) => {
+    notifyLibraryTreeChanged(pathHint ?? activeLibrary?.path)
+  }, [activeLibrary?.path, notifyLibraryTreeChanged])
+
   useEffect(() => {
     if (!activeLibrary || normalizedSearchQuery.length === 0) {
+      setSearchMatchedPaths([])
+      setIsSearchLoading(false)
+      return
+    }
+
+    if (treeNodesLibraryIdRef.current !== activeLibrary.id) {
       setSearchMatchedPaths([])
       setIsSearchLoading(false)
       return
@@ -1044,7 +1088,12 @@ export function NotiaMenu() {
     setIsSearchLoading(true)
 
     const timeoutId = window.setTimeout(() => {
-      void searchLibraryFiles(activeLibrary.path, normalizedSearchQuery)
+      void searchIndexedLibraryFiles({
+        libraryPath: activeLibrary.path,
+        treeNodes,
+        query: normalizedSearchQuery,
+        androidDirectoryUri: activeLibrary.androidTreeUri,
+      })
         .then((paths) => {
           if (!isCurrent) {
             return
@@ -1063,7 +1112,7 @@ export function NotiaMenu() {
       isCurrent = false
       window.clearTimeout(timeoutId)
     }
-  }, [activeLibrary, normalizedSearchQuery])
+  }, [activeLibrary, normalizedSearchQuery, treeNodes, libraryIndexRevision])
 
   useEffect(() => {
     if (!activeLibrary) {
@@ -1505,7 +1554,10 @@ export function NotiaMenu() {
           androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(tabPath),
         })
         if (result.ok) {
-          bumpGraphRevisionIfVisible()
+          if (activeLibrary?.path) {
+            invalidateLibrarySearchGraphIndex(activeLibrary.path, tabPath)
+          }
+          bumpLibraryIndexRevision()
           return true
         }
 
@@ -1564,7 +1616,10 @@ export function NotiaMenu() {
           androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(tabPath),
         })
         if (result.ok) {
-          bumpGraphRevisionIfVisible()
+          if (activeLibrary?.path) {
+            invalidateLibrarySearchGraphIndex(activeLibrary.path, tabPath)
+          }
+          bumpLibraryIndexRevision()
           return true
         }
 
@@ -1584,7 +1639,7 @@ export function NotiaMenu() {
 
       return true
     },
-    [bumpGraphRevisionIfVisible, clearPendingTextSaveByPath, persistTextDocumentSource],
+    [activeLibrary?.path, bumpLibraryIndexRevision, clearPendingTextSaveByPath, persistTextDocumentSource],
   )
 
   const closeTabByPath = useCallback(async (tabPath: string) => {
@@ -2224,7 +2279,7 @@ export function NotiaMenu() {
   }, [handleCloseActiveTab, handleCycleToNextTab])
 
   useEffect(() => {
-    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+    if (!activeLibrary?.path || !shouldRefreshActiveLibraryTree) {
       return
     }
 
@@ -2234,15 +2289,15 @@ export function NotiaMenu() {
 
     hasDeferredTreeRefreshRef.current = false
     void refreshActiveLibraryTree()
-  }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
+  }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])
 
   useEffect(() => {
-    if (!activeLibrary?.path || !shouldRefreshVisibleExplorerTree) {
+    if (!activeLibrary?.path || !shouldRefreshActiveLibraryTree) {
       return
     }
 
     requestAutomaticTreeProbe()
-  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshVisibleExplorerTree])
+  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshActiveLibraryTree])
 
   useEffect(() => {
     const handleLibraryTreeChanged = (event: Event) => {
@@ -2267,17 +2322,19 @@ export function NotiaMenu() {
         window.clearTimeout(libraryTreeRefreshTimerRef.current)
       }
 
+      invalidateLibrarySearchGraphIndex(currentActiveLibraryPath, changedPathHint ?? currentActiveLibraryPath)
+
       libraryTreeRefreshTimerRef.current = window.setTimeout(() => {
         libraryTreeRefreshTimerRef.current = null
-        if (!shouldRefreshVisibleExplorerTree) {
+        if (!shouldRefreshActiveLibraryTree) {
           hasDeferredTreeRefreshRef.current = true
-          bumpGraphRevisionIfVisible()
+          bumpLibraryIndexRevision()
           return
         }
 
         hasDeferredTreeRefreshRef.current = false
         void refreshActiveLibraryTree()
-        bumpGraphRevisionIfVisible()
+        bumpLibraryIndexRevision()
       }, 120)
     }
 
@@ -2289,7 +2346,7 @@ export function NotiaMenu() {
         libraryTreeRefreshTimerRef.current = null
       }
     }
-  }, [activeLibrary?.path, bumpGraphRevisionIfVisible, refreshActiveLibraryTree, shouldRefreshVisibleExplorerTree])
+  }, [activeLibrary?.path, bumpLibraryIndexRevision, refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])
 
   useEffect(() => {
     if (!activeLibrary?.path) {
@@ -2297,7 +2354,7 @@ export function NotiaMenu() {
     }
 
     const requestProbe = () => {
-      if (!shouldRefreshVisibleExplorerTree) {
+      if (!shouldRefreshActiveLibraryTree) {
         return
       }
 
@@ -2321,7 +2378,7 @@ export function NotiaMenu() {
       window.removeEventListener('pageshow', requestProbe)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshVisibleExplorerTree])
+  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshActiveLibraryTree])
 
   useEffect(() => {
     if (isAndroidRuntime || !activeLibrary?.path) {
@@ -2480,14 +2537,17 @@ export function NotiaMenu() {
         throw new Error(result.error ?? 'No se pudo guardar el archivo Inkdoc.')
       }
 
+      if (activeLibrary?.path) {
+        invalidateLibrarySearchGraphIndex(activeLibrary.path, targetPath)
+      }
       setOpenTabs((current) =>
         current.map((tab) =>
           tab.document.path === targetPath ? { ...tab, latestSavedSource: nextSource, saveStatus: 'idle' } : tab,
         ),
       )
-      bumpGraphRevisionIfVisible()
+      bumpLibraryIndexRevision()
     },
-    [bumpGraphRevisionIfVisible, resolveActiveLibraryAndroidDirectoryUri],
+    [activeLibrary?.path, bumpLibraryIndexRevision, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   const handleDrawioDocumentPersist = useCallback(
@@ -2523,6 +2583,9 @@ export function NotiaMenu() {
         throw new Error(result.error ?? 'No se pudo guardar el archivo draw.io.')
       }
 
+      if (activeLibrary?.path) {
+        invalidateLibrarySearchGraphIndex(activeLibrary.path, targetPath)
+      }
       setOpenTabs((current) =>
         current.map((tab) => {
           if (tab.document.path !== targetPath || tab.document.viewKind !== 'drawio') {
@@ -2540,9 +2603,9 @@ export function NotiaMenu() {
           }
         }),
       )
-      bumpGraphRevisionIfVisible()
+      bumpLibraryIndexRevision()
     },
-    [bumpGraphRevisionIfVisible, resolveActiveLibraryAndroidDirectoryUri],
+    [activeLibrary?.path, bumpLibraryIndexRevision, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   const handleDrawioControllerReady = useCallback(
@@ -2956,7 +3019,11 @@ export function NotiaMenu() {
   }, [])
 
   return (
-    <div className={`notia-app-shell ${theme === 'dark' ? 'notia-theme-dark' : 'notia-theme-light'}`}>
+    <div
+      className={`notia-app-shell ${theme === 'dark' ? 'notia-theme-dark' : 'notia-theme-light'} ${
+        isAndroidRuntime ? 'notia-app-shell--android' : ''
+      }`.trim()}
+    >
       <WindowTitleBar
         tabs={titleBarTabs}
         activeTabPath={activeTabPath}
@@ -2989,17 +3056,7 @@ export function NotiaMenu() {
           <div className="notia-primary-rail" data-notia-prevent-menu-close>
             <IconRail
               actions={LEFT_RAIL_ACTIONS}
-              activeActionId={
-                activeWorkspaceView === 'graph'
-                  ? 'graph-view'
-                  : activeWorkspaceView === 'chat'
-                    ? 'chat'
-                  : activeWorkspaceView === 'task-manager'
-                    ? 'task-manager'
-                    : activeWorkspaceView === 'coldpass'
-                      ? 'coldpass'
-                    : null
-              }
+              activeActionId={activeRailActionId}
               onActionClick={handleRailActionClick}
             />
           </div>
@@ -3010,7 +3067,7 @@ export function NotiaMenu() {
                   nodes={displayedTreeNodes}
                   rootPath={activeLibrary?.path ?? null}
                   isSearchActive={isSearchActive}
-                  searchMatchedFilePaths={searchMatchedPathSet}
+                  searchMatchedFilePaths={deferredSearchMatchedPathSet}
                   onToggleFolder={handleToggleFolder}
                   onOpenFile={handleOpenFileFromView}
                   pendingCreation={pendingCreation}
@@ -3038,7 +3095,28 @@ export function NotiaMenu() {
             </div>
           ) : null}
         </aside>
-        {activeWorkspaceView === 'graph' ? (
+        {shouldDeferHeavyWorkspaceMount ? (
+          <main className="notia-main">
+            <div className="notia-workspace-deferred-view" role="status" aria-live="polite">
+              <div className="notia-workspace-deferred-card">
+                <strong>
+                  {activeWorkspaceView === 'graph'
+                    ? 'Preparando graph view'
+                    : activeWorkspaceView === 'task-manager'
+                      ? 'Preparando Task Manager'
+                      : 'Preparando chat'}
+                </strong>
+                <span>
+                  {activeWorkspaceView === 'graph'
+                    ? 'Android muestra primero la vista y completa la carga pesada justo despues.'
+                    : activeWorkspaceView === 'task-manager'
+                      ? 'Android abre primero el modulo y deja la lectura del vault para el siguiente frame.'
+                      : 'Android abre primero el espacio y completa la carga del historial a continuacion.'}
+                </span>
+              </div>
+            </div>
+          </main>
+        ) : activeWorkspaceView === 'graph' ? (
           <GraphView
             graphModel={graphModel}
             graphSourcesByPath={graphSourcesByPath}
@@ -3053,25 +3131,21 @@ export function NotiaMenu() {
             library={activeLibrary}
             aiPreferences={aiPreferences}
             previousChats={previousChatFiles}
-            onChatCreated={() => notifyLibraryTreeChanged(activeLibrary?.path)}
-            onChatDeleted={() => notifyLibraryTreeChanged(activeLibrary?.path)}
+            historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
+            onChatCreated={handleChatWorkspaceTreeChanged}
+            onChatDeleted={handleChatWorkspaceTreeChanged}
           />
         ) : activeWorkspaceView === 'task-manager' ? (
           <TaskManagerApp
             embedded
-            vault={activeLibrary
-              ? {
-                path: activeLibrary.path,
-                androidTreeUri: activeLibrary.androidTreeUri,
-              }
-              : null}
+            vault={activeTaskManagerVault}
             onOpenTaskFile={handleOpenFile}
             onActivePanelChange={setTaskManagerActivePanelId}
             onActiveChatContextChange={setTaskManagerChatContext}
           />
         ) : activeWorkspaceView === 'coldpass' ? (
           <ColdPassView
-            entries={coldPassSession?.entries ?? []}
+            entries={coldPassEntries}
             isUnlocked={Boolean(coldPassSession)}
             isImportingVault={coldPassImportPromptState.isSelectingFile}
             onCreateCredential={handleOpenColdPassCredentialModal}
@@ -3098,52 +3172,39 @@ export function NotiaMenu() {
         )}
         <aside className={`notia-right-panel ${isRightChatPanelOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`}>
           {isRightChatPanelOpen ? (
-            <ChatWorkspaceView
-              key={rightPanelChatContextKey}
-              library={activeLibrary}
-              aiPreferences={aiPreferences}
-              previousChats={previousChatFiles}
-              title="Chat lateral"
-              description="Acceso rapido a la IA desde el panel derecho."
-              showHistoryPanel={false}
-              composerContextLabel={rightPanelChatContextLabel}
-              preferredContextPaths={
-                activeWorkspaceView === 'task-manager'
-                  ? (taskManagerChatContext?.filePaths ?? [])
-                  : activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio'
-                    ? [activeDocument.path]
-                    : []
-              }
-              preferredContextName={
-                activeWorkspaceView !== 'task-manager'
-                && (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio')
-                  ? activeDocument.name
-                  : null
-              }
-              preferredContextMode={
-                activeWorkspaceView === 'task-manager'
-                  ? 'index'
-                  : activeDocument?.viewKind === 'markdown'
-                  ? 'index'
-                  : activeDocument?.viewKind === 'drawio'
-                    ? 'direct'
-                    : null
-              }
-              preferredContextScopeKey={
-                activeWorkspaceView === 'task-manager'
-                  ? taskManagerChatContext?.scopeKey ?? null
-                  : activeWorkspaceView === 'graph'
-                    ? 'graph-view:right-panel'
-                    : null
-              }
-              transientContextPaths={activeWorkspaceView === 'graph' ? graphChatEffectivePaths : []}
-              transientContextMode={activeWorkspaceView === 'graph' ? 'index' : null}
-              transientContextSummary={graphChatContextSummary}
-              persistTransientContext={false}
-              selectMatchingChatOnly
-              onChatCreated={() => notifyLibraryTreeChanged(activeLibrary?.path)}
-              onChatDeleted={() => notifyLibraryTreeChanged(activeLibrary?.path)}
-            />
+            isRightPanelChatMounted ? (
+              <ChatWorkspaceView
+                key={rightPanelChatContextKey}
+                library={activeLibrary}
+                aiPreferences={aiPreferences}
+                previousChats={previousChatFiles}
+                title="Chat lateral"
+                description="Acceso rapido a la IA desde el panel derecho."
+                showHistoryPanel={false}
+                composerContextLabel={rightPanelChatContextLabel}
+                preferredContextPaths={rightPanelPreferredContextPaths}
+                preferredContextName={rightPanelPreferredContextName}
+                preferredContextMode={rightPanelPreferredContextMode}
+                preferredContextScopeKey={rightPanelPreferredContextScopeKey}
+                transientContextPaths={rightPanelTransientContextPaths}
+                transientContextMode={rightPanelTransientContextMode}
+                transientContextSummary={rightPanelTransientContextSummary}
+                persistTransientContext={false}
+                selectMatchingChatOnly
+                historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
+                onChatCreated={handleChatWorkspaceTreeChanged}
+                onChatDeleted={handleChatWorkspaceTreeChanged}
+              />
+            ) : (
+              <main className="notia-main">
+                <div className="notia-workspace-deferred-view notia-workspace-deferred-view--panel" role="status" aria-live="polite">
+                  <div className="notia-workspace-deferred-card">
+                    <strong>Preparando chat lateral</strong>
+                    <span>Android abre primero el panel y carga el chat en el siguiente frame.</span>
+                  </div>
+                </div>
+              </main>
+            )
           ) : null}
         </aside>
       </div>

@@ -1,8 +1,7 @@
-import { Fragment, useMemo, useState, type CSSProperties } from 'react'
+import { Fragment, memo, useCallback, useMemo, useState, type CSSProperties } from 'react'
 import { TextField } from '@mui/material'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
-import { groupTopLevelTasks } from '../../engines/taskEngine'
 import type { Group, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { TaskManagerModal } from '../common/TaskManagerModal'
@@ -35,6 +34,7 @@ const STATUS_ACTIONS = [
   { id: 'finish', label: 'Finalizar', nextState: 'Finalizada', cls: 'is-finish' },
 ] as const
 const TASK_DROP_HYSTERESIS_RATIO = 0.15
+const EMPTY_TASKS: TaskItem[] = []
 
 interface TaskCommentDialogState {
   task: TaskItem
@@ -46,6 +46,14 @@ interface TaskSourceDialogState {
   source: string
   isLoading: boolean
   isSaving: boolean
+}
+
+interface BoardTaskDerivations {
+  boardTasks: TaskItem[]
+  groupedTopLevelTasks: Record<string, TaskItem[]>
+  topLevelTasks: TaskItem[]
+  subtasksByParentPath: Map<string, TaskItem[]>
+  parentTaskBySubtaskPath: Map<string, TaskItem>
 }
 
 export function TaskBoardView({
@@ -81,27 +89,81 @@ export function TaskBoardView({
   const [pinnedTaskDropTarget, setPinnedTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
   const [subtaskDropTarget, setSubtaskDropTarget] = useState<{ parentTaskPath: string; index: number } | null>(null)
 
-  const boardTasks = useMemo(
-    () => tasks
+  const { boardTasks, groupedTopLevelTasks, parentTaskBySubtaskPath, subtasksByParentPath, topLevelTasks } = useMemo<BoardTaskDerivations>(() => {
+    const nextBoardTasks = tasks
       .filter((task) => task.board === boardName)
-      .filter((task) => !task.filePath.includes('/finished/') && !task.filePath.includes('/cancelled/')),
-    [boardName, tasks],
-  )
+      .filter((task) => !task.filePath.includes('/finished/') && !task.filePath.includes('/cancelled/'))
 
-  const activeTopLevelTasks = useMemo(
-    () => boardTasks
-      .filter((task) => !task.parentTaskName.trim())
-      .filter((task) => task.state !== 'Finalizada' && task.state !== 'Cancelada'),
-    [boardTasks],
-  )
+    const nextTopLevelTasks: TaskItem[] = []
+    const topLevelByNormalizedParentName = new Map<string, TaskItem>()
+    const nextGroupedTopLevelTasks: Record<string, TaskItem[]> = {}
+    const nextSubtasksByParentPath = new Map<string, TaskItem[]>()
+    const nextParentTaskBySubtaskPath = new Map<string, TaskItem>()
 
-  const grouped = useMemo(() => groupTopLevelTasks(activeTopLevelTasks, groups), [activeTopLevelTasks, groups])
-  const topLevelTasks = useMemo(
-    () => boardTasks.filter((task) => !task.parentTaskName.trim()).sort((left, right) => left.order - right.order),
-    [boardTasks],
-  )
+    for (const group of groups) {
+      nextGroupedTopLevelTasks[group.name] = []
+    }
 
-  const toggleGroup = (group: Group) => {
+    for (const task of nextBoardTasks) {
+      if (task.parentTaskName.trim()) {
+        continue
+      }
+
+      nextTopLevelTasks.push(task)
+      nextSubtasksByParentPath.set(task.filePath, [])
+      topLevelByNormalizedParentName.set(task.fileName.trim().toLowerCase(), task)
+      topLevelByNormalizedParentName.set(task.title.trim().toLowerCase(), task)
+
+      if (task.state === 'Finalizada' || task.state === 'Cancelada') {
+        continue
+      }
+
+      const groupName = task.group || 'Sin grupo'
+      if (!nextGroupedTopLevelTasks[groupName]) {
+        nextGroupedTopLevelTasks[groupName] = []
+      }
+      nextGroupedTopLevelTasks[groupName].push(task)
+    }
+
+    nextTopLevelTasks.sort((left, right) => left.order - right.order)
+    for (const groupedTasks of Object.values(nextGroupedTopLevelTasks)) {
+      groupedTasks.sort((left, right) => left.order - right.order)
+    }
+
+    for (const task of nextBoardTasks) {
+      const normalizedParentTaskName = task.parentTaskName.trim().toLowerCase()
+      if (!normalizedParentTaskName) {
+        continue
+      }
+
+      const parentTask = topLevelByNormalizedParentName.get(normalizedParentTaskName)
+      if (!parentTask) {
+        continue
+      }
+
+      const subtasks = nextSubtasksByParentPath.get(parentTask.filePath)
+      if (!subtasks) {
+        continue
+      }
+
+      subtasks.push(task)
+      nextParentTaskBySubtaskPath.set(task.filePath, parentTask)
+    }
+
+    for (const subtasks of nextSubtasksByParentPath.values()) {
+      subtasks.sort((left, right) => left.order - right.order)
+    }
+
+    return {
+      boardTasks: nextBoardTasks,
+      groupedTopLevelTasks: nextGroupedTopLevelTasks,
+      parentTaskBySubtaskPath: nextParentTaskBySubtaskPath,
+      subtasksByParentPath: nextSubtasksByParentPath,
+      topLevelTasks: nextTopLevelTasks,
+    }
+  }, [boardName, groups, tasks])
+
+  const toggleGroup = useCallback((group: Group) => {
     const groupKey = getGroupKey(group)
     setExpandedGroups((previous) => {
       const next = new Set(previous)
@@ -112,9 +174,9 @@ export function TaskBoardView({
       }
       return next
     })
-  }
+  }, [])
 
-  const toggleSubtasks = (taskPath: string) => {
+  const toggleSubtasks = useCallback((taskPath: string) => {
     setExpandedSubtasks((previous) => {
       const next = new Set(previous)
       if (next.has(taskPath)) {
@@ -124,15 +186,40 @@ export function TaskBoardView({
       }
       return next
     })
-  }
+  }, [])
 
-  const openCommentDialog = (task: TaskItem) => {
+  const openCommentDialog = useCallback((task: TaskItem) => {
     setCommentDialog({ task, text: '' })
-  }
+  }, [])
+
+  const handleSubtaskDragOverTarget = useCallback((parentTaskPath: string, targetIndex: number) => {
+    setSubtaskDropTarget((previous) => {
+      if (previous?.parentTaskPath === parentTaskPath && previous.index === targetIndex) {
+        return previous
+      }
+
+      return { parentTaskPath, index: targetIndex }
+    })
+  }, [])
+
+  const handleSubtaskDragLeaveTarget = useCallback((parentTaskPath: string, targetIndex: number) => {
+    setSubtaskDropTarget((previous) => {
+      if (previous?.parentTaskPath === parentTaskPath && previous.index === targetIndex) {
+        return null
+      }
+
+      return previous
+    })
+  }, [])
+
+  const handleSubtaskDragEnd = useCallback(() => {
+    setDraggedSubtaskPath(null)
+    setSubtaskDropTarget(null)
+  }, [])
 
   const managedGroupNames = groups.map((group) => group.name)
 
-  const handleGroupDrop = async (targetGroupName: string) => {
+  const handleGroupDrop = useCallback(async (targetGroupName: string) => {
     if (!draggedGroupName || draggedGroupName === targetGroupName) {
       return
     }
@@ -147,9 +234,9 @@ export function TaskBoardView({
     setDraggedGroupName(null)
     setGroupDropTargetName(null)
     await onReorderGroups(boardName, ordered)
-  }
+  }, [boardName, draggedGroupName, managedGroupNames, onReorderGroups])
 
-  const handleTopLevelTaskDrop = async (targetGroupName: string, targetIndex: number) => {
+  const handleTopLevelTaskDrop = useCallback(async (targetGroupName: string, targetIndex: number) => {
     if (!draggedTaskPath) {
       return
     }
@@ -204,9 +291,9 @@ export function TaskBoardView({
     setTaskDropTarget(null)
     setPinnedTaskDropTarget(null)
     await onApplyTaskArrangement(updates)
-  }
+  }, [draggedTaskPath, onApplyTaskArrangement, pinnedTaskDropTarget, taskDropTarget, topLevelTasks])
 
-  const handleSubtaskDrop = async (targetParentTask: TaskItem, targetIndex: number) => {
+  const handleSubtaskDrop = useCallback(async (targetParentTask: TaskItem, targetIndex: number) => {
     if (!draggedSubtaskPath) {
       return
     }
@@ -217,16 +304,16 @@ export function TaskBoardView({
       return
     }
 
-    const sourceParentTask = resolveParentTaskForSubtask(draggedSubtask, topLevelTasks)
+    const sourceParentTask = parentTaskBySubtaskPath.get(draggedSubtask.filePath) ?? null
     if (!sourceParentTask) {
       setDraggedSubtaskPath(null)
       return
     }
 
-    const sourceSubtasks = getSubtasks(sourceParentTask, boardTasks)
+    const sourceSubtasks = subtasksByParentPath.get(sourceParentTask.filePath) ?? []
     const targetSubtasksInitial = sourceParentTask.filePath === targetParentTask.filePath
       ? sourceSubtasks
-      : getSubtasks(targetParentTask, boardTasks)
+      : (subtasksByParentPath.get(targetParentTask.filePath) ?? [])
 
     const sourceWithoutDragged = sourceSubtasks.filter((task) => task.filePath !== draggedSubtask.filePath)
     const targetSubtasks = targetSubtasksInitial.filter((task) => task.filePath !== draggedSubtask.filePath)
@@ -259,7 +346,7 @@ export function TaskBoardView({
     setDraggedSubtaskPath(null)
     setSubtaskDropTarget(null)
     await onApplyTaskArrangement(updates)
-  }
+  }, [boardTasks, draggedSubtaskPath, onApplyTaskArrangement, parentTaskBySubtaskPath, subtasksByParentPath])
 
   const resolveTaskDropIndexFromPointer = (
     groupName: string,
@@ -322,7 +409,7 @@ export function TaskBoardView({
     setCommentDialog(null)
   }
 
-  const openTaskSourceDialog = async (task: TaskItem) => {
+  const openTaskSourceDialog = useCallback(async (task: TaskItem) => {
     setSourceDialog({ task, source: '', isLoading: true, isSaving: false })
     try {
       const source = await onLoadTaskSource(task.filePath)
@@ -330,7 +417,7 @@ export function TaskBoardView({
     } catch {
       setSourceDialog({ task, source: '', isLoading: false, isSaving: false })
     }
-  }
+  }, [onLoadTaskSource])
 
   const saveTaskSourceDialog = async () => {
     if (!sourceDialog) {
@@ -347,7 +434,7 @@ export function TaskBoardView({
       <div className="tareas-board-shell">
         <div className="tareas-board">
           {groups.map((group) => {
-            const groupTasks = grouped[group.name] ?? []
+            const groupTasks = groupedTopLevelTasks[group.name] ?? []
             const isExpanded = expandedGroups.has(getGroupKey(group))
 
             return (
@@ -432,10 +519,7 @@ export function TaskBoardView({
                       }
                     }}
                   >
-                    {groupTasks
-                      .slice()
-                      .sort((left, right) => left.order - right.order)
-                      .map((task, index) => (
+                    {groupTasks.map((task, index) => (
                         <Fragment key={task.filePath}>
                           {taskDropTarget?.groupName === group.name && taskDropTarget.index === index ? (
                             <div
@@ -519,7 +603,7 @@ export function TaskBoardView({
                           >
                             <TaskCard
                               task={task}
-                              allTasks={boardTasks}
+                              subtasks={subtasksByParentPath.get(task.filePath) ?? EMPTY_TASKS}
                               isSubtasksExpanded={expandedSubtasks.has(task.filePath)}
                               onToggleSubtasks={toggleSubtasks}
                               onCreateTask={onCreateTask}
@@ -532,24 +616,14 @@ export function TaskBoardView({
                               onOpenTaskSource={openTaskSourceDialog}
                               onOpenTaskFile={onOpenTaskFile}
                               onOpenPomodoroTask={onOpenPomodoroTask}
-                              draggedSubtaskPath={draggedSubtaskPath}
-                              subtaskDropTarget={subtaskDropTarget}
+                              activeSubtaskDropIndex={
+                                subtaskDropTarget?.parentTaskPath === task.filePath ? subtaskDropTarget.index : null
+                              }
                               onSubtaskDragStart={setDraggedSubtaskPath}
-                              onSubtaskDragEnd={() => {
-                                setDraggedSubtaskPath(null)
-                                setSubtaskDropTarget(null)
-                              }}
-                              onSubtaskDragOverTarget={(targetIndex) => {
-                                setSubtaskDropTarget({ parentTaskPath: task.filePath, index: targetIndex })
-                              }}
-                              onSubtaskDragLeaveTarget={(targetIndex) => {
-                                if (subtaskDropTarget?.parentTaskPath === task.filePath && subtaskDropTarget.index === targetIndex) {
-                                  setSubtaskDropTarget(null)
-                                }
-                              }}
-                              onSubtaskDrop={(targetIndex) => {
-                                void handleSubtaskDrop(task, targetIndex)
-                              }}
+                              onSubtaskDragEnd={handleSubtaskDragEnd}
+                              onSubtaskDragOverTarget={handleSubtaskDragOverTarget}
+                              onSubtaskDragLeaveTarget={handleSubtaskDragLeaveTarget}
+                              onSubtaskDrop={handleSubtaskDrop}
                             />
                           </div>
                         </Fragment>
@@ -604,7 +678,7 @@ export function TaskBoardView({
             )
           })}
 
-          {grouped['Sin grupo']?.length ? (
+          {groupedTopLevelTasks['Sin grupo']?.length ? (
             <div className="tareas-group" data-group="Sin grupo">
               <div
                 className="tareas-group-header"
@@ -617,7 +691,7 @@ export function TaskBoardView({
                     : <TaskManagerIcon name={TASK_ICON_NAME.chevronRight} size={13} />}
                 </span>
                 <span className="tareas-badge">Sin grupo</span>
-                <span className="tareas-count">{grouped['Sin grupo'].length}</span>
+                <span className="tareas-count">{groupedTopLevelTasks['Sin grupo'].length}</span>
               </div>
 
               {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName })) ? (
@@ -646,18 +720,16 @@ export function TaskBoardView({
                       setPinnedTaskDropTarget(null)
                     }
 
-                    setTaskDropTarget({ groupName: 'Sin grupo', index: grouped['Sin grupo'].length })
+                    setTaskDropTarget({ groupName: 'Sin grupo', index: groupedTopLevelTasks['Sin grupo'].length })
                   }}
                   onDrop={(event) => {
                     event.preventDefault()
                     if (draggedTaskPath) {
-                      void handleTopLevelTaskDrop('Sin grupo', grouped['Sin grupo'].length)
+                      void handleTopLevelTaskDrop('Sin grupo', groupedTopLevelTasks['Sin grupo'].length)
                     }
                   }}
                 >
-                  {grouped['Sin grupo']
-                    .slice()
-                    .sort((left, right) => left.order - right.order)
+                  {groupedTopLevelTasks['Sin grupo']
                     .map((task, index) => (
                       <Fragment key={task.filePath}>
                         {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === index ? (
@@ -742,7 +814,7 @@ export function TaskBoardView({
                         >
                           <TaskCard
                             task={task}
-                            allTasks={boardTasks}
+                            subtasks={subtasksByParentPath.get(task.filePath) ?? EMPTY_TASKS}
                             isSubtasksExpanded={expandedSubtasks.has(task.filePath)}
                             onToggleSubtasks={toggleSubtasks}
                             onCreateTask={onCreateTask}
@@ -755,34 +827,24 @@ export function TaskBoardView({
                             onOpenTaskSource={openTaskSourceDialog}
                             onOpenTaskFile={onOpenTaskFile}
                             onOpenPomodoroTask={onOpenPomodoroTask}
-                            draggedSubtaskPath={draggedSubtaskPath}
-                            subtaskDropTarget={subtaskDropTarget}
+                            activeSubtaskDropIndex={
+                              subtaskDropTarget?.parentTaskPath === task.filePath ? subtaskDropTarget.index : null
+                            }
                             onSubtaskDragStart={setDraggedSubtaskPath}
-                            onSubtaskDragEnd={() => {
-                              setDraggedSubtaskPath(null)
-                              setSubtaskDropTarget(null)
-                            }}
-                            onSubtaskDragOverTarget={(targetIndex) => {
-                              setSubtaskDropTarget({ parentTaskPath: task.filePath, index: targetIndex })
-                            }}
-                            onSubtaskDragLeaveTarget={(targetIndex) => {
-                              if (subtaskDropTarget?.parentTaskPath === task.filePath && subtaskDropTarget.index === targetIndex) {
-                                setSubtaskDropTarget(null)
-                              }
-                            }}
-                            onSubtaskDrop={(targetIndex) => {
-                              void handleSubtaskDrop(task, targetIndex)
-                            }}
+                            onSubtaskDragEnd={handleSubtaskDragEnd}
+                            onSubtaskDragOverTarget={handleSubtaskDragOverTarget}
+                            onSubtaskDragLeaveTarget={handleSubtaskDragLeaveTarget}
+                            onSubtaskDrop={handleSubtaskDrop}
                           />
                         </div>
                       </Fragment>
                     ))}
 
-                  {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === grouped['Sin grupo'].length ? (
+                  {taskDropTarget?.groupName === 'Sin grupo' && taskDropTarget.index === groupedTopLevelTasks['Sin grupo'].length ? (
                     <div
                       className="tareas-task-drop-slot"
                       data-drop-group="Sin grupo"
-                      data-drop-index={grouped['Sin grupo'].length}
+                      data-drop-index={groupedTopLevelTasks['Sin grupo'].length}
                       style={draggedTaskHeight > 0 ? { height: `${draggedTaskHeight}px` } : undefined}
                       onDragOver={(event) => {
                         event.preventDefault()
@@ -793,16 +855,16 @@ export function TaskBoardView({
                         if (
                           !pinnedTaskDropTarget
                           || pinnedTaskDropTarget.groupName !== 'Sin grupo'
-                          || pinnedTaskDropTarget.index !== grouped['Sin grupo'].length
+                          || pinnedTaskDropTarget.index !== groupedTopLevelTasks['Sin grupo'].length
                         ) {
-                          setPinnedTaskDropTarget({ groupName: 'Sin grupo', index: grouped['Sin grupo'].length })
+                          setPinnedTaskDropTarget({ groupName: 'Sin grupo', index: groupedTopLevelTasks['Sin grupo'].length })
                         }
-                        if (taskDropTarget?.groupName !== 'Sin grupo' || taskDropTarget.index !== grouped['Sin grupo'].length) {
-                          setTaskDropTarget({ groupName: 'Sin grupo', index: grouped['Sin grupo'].length })
+                        if (taskDropTarget?.groupName !== 'Sin grupo' || taskDropTarget.index !== groupedTopLevelTasks['Sin grupo'].length) {
+                          setTaskDropTarget({ groupName: 'Sin grupo', index: groupedTopLevelTasks['Sin grupo'].length })
                         }
                       }}
                       onDragLeave={() => {
-                        if (pinnedTaskDropTarget?.groupName === 'Sin grupo' && pinnedTaskDropTarget.index === grouped['Sin grupo'].length) {
+                        if (pinnedTaskDropTarget?.groupName === 'Sin grupo' && pinnedTaskDropTarget.index === groupedTopLevelTasks['Sin grupo'].length) {
                           setPinnedTaskDropTarget(null)
                         }
                       }}
@@ -810,7 +872,7 @@ export function TaskBoardView({
                         event.preventDefault()
                         event.stopPropagation()
                         if (!draggedSubtaskPath) {
-                          void handleTopLevelTaskDrop('Sin grupo', grouped['Sin grupo'].length)
+                          void handleTopLevelTaskDrop('Sin grupo', groupedTopLevelTasks['Sin grupo'].length)
                         }
                       }}
                     />
@@ -894,7 +956,7 @@ export function TaskBoardView({
 
 interface TaskCardProps {
   task: TaskItem
-  allTasks: TaskItem[]
+  subtasks: TaskItem[]
   isSubtasksExpanded: boolean
   onToggleSubtasks: (taskPath: string) => void
   onCreateTask: (defaults?: { parentTaskName?: string; group?: string }) => void
@@ -907,18 +969,17 @@ interface TaskCardProps {
   onOpenTaskSource: (task: TaskItem) => void
   onOpenTaskFile?: (taskPath: string) => void
   onOpenPomodoroTask: (taskPath: string) => void
-  draggedSubtaskPath: string | null
-  subtaskDropTarget: { parentTaskPath: string; index: number } | null
+  activeSubtaskDropIndex: number | null
   onSubtaskDragStart: (taskPath: string) => void
   onSubtaskDragEnd: () => void
-  onSubtaskDragOverTarget: (targetIndex: number) => void
-  onSubtaskDragLeaveTarget: (targetIndex: number) => void
-  onSubtaskDrop: (targetIndex: number) => void
+  onSubtaskDragOverTarget: (parentTaskPath: string, targetIndex: number) => void
+  onSubtaskDragLeaveTarget: (parentTaskPath: string, targetIndex: number) => void
+  onSubtaskDrop: (task: TaskItem, targetIndex: number) => Promise<void>
 }
 
-function TaskCard({
+function TaskCardComponent({
   task,
-  allTasks,
+  subtasks,
   isSubtasksExpanded,
   onToggleSubtasks,
   onCreateTask,
@@ -931,15 +992,13 @@ function TaskCard({
   onOpenTaskSource,
   onOpenTaskFile,
   onOpenPomodoroTask,
-  draggedSubtaskPath,
-  subtaskDropTarget,
+  activeSubtaskDropIndex,
   onSubtaskDragStart,
   onSubtaskDragEnd,
   onSubtaskDragOverTarget,
   onSubtaskDragLeaveTarget,
   onSubtaskDrop,
 }: TaskCardProps) {
-  const subtasks = getSubtasks(task, allTasks)
   const progressPercent = task.estimatedHours > 0 ? (task.dedicatedHours / task.estimatedHours) * 100 : 0
   const isOverflow = progressPercent > 100
   const visiblePercent = isOverflow
@@ -1178,19 +1237,19 @@ function TaskCard({
           onDragOver={(event) => {
             event.preventDefault()
             event.stopPropagation()
-            onSubtaskDragOverTarget(subtasks.length)
+            onSubtaskDragOverTarget(task.filePath, subtasks.length)
           }}
           onDrop={(event) => {
             event.preventDefault()
             event.stopPropagation()
-            onSubtaskDrop(subtasks.length)
+            void onSubtaskDrop(task, subtasks.length)
           }}
         >
           {subtasks.map((subtask, index) => {
             const checked = subtask.state === 'Finalizada'
             return (
               <div
-                className={`tareas-card-subtask-row${draggedSubtaskPath === subtask.filePath ? ' is-dragging' : ''}${subtaskDropTarget?.parentTaskPath === task.filePath && subtaskDropTarget.index === index ? ' is-drop-target' : ''}`}
+                className={`tareas-card-subtask-row${activeSubtaskDropIndex === index ? ' is-drop-target' : ''}`}
                 key={subtask.filePath}
                 draggable
                 onDragStart={(event) => {
@@ -1204,13 +1263,13 @@ function TaskCard({
                 onDragOver={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
-                  onSubtaskDragOverTarget(index)
+                  onSubtaskDragOverTarget(task.filePath, index)
                 }}
-                onDragLeave={() => onSubtaskDragLeaveTarget(index)}
+                onDragLeave={() => onSubtaskDragLeaveTarget(task.filePath, index)}
                 onDrop={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
-                  onSubtaskDrop(index)
+                  void onSubtaskDrop(task, index)
                 }}
               >
                 <input
@@ -1259,7 +1318,7 @@ function TaskCard({
               </div>
             )
           })}
-          {subtaskDropTarget?.parentTaskPath === task.filePath && subtaskDropTarget.index === subtasks.length ? (
+          {activeSubtaskDropIndex === subtasks.length ? (
             <div className="tareas-drop-indicator tareas-drop-indicator-subtask" />
           ) : null}
         </div>
@@ -1350,27 +1409,8 @@ function TaskCard({
   )
 }
 
-function getSubtasks(task: TaskItem, allTasks: TaskItem[]): TaskItem[] {
-  return allTasks
-    .filter((candidate) => candidate.parentTaskName)
-    .filter((candidate) => {
-      const parentName = candidate.parentTaskName.trim().toLowerCase()
-      return parentName === task.title.trim().toLowerCase() || parentName === task.fileName.trim().toLowerCase()
-    })
-    .sort((left, right) => left.order - right.order)
-}
-
-function resolveParentTaskForSubtask(subtask: TaskItem, topLevelTasks: TaskItem[]): TaskItem | null {
-  const parentName = subtask.parentTaskName.trim().toLowerCase()
-  if (!parentName) {
-    return null
-  }
-
-  return topLevelTasks.find((task) => (
-    task.fileName.trim().toLowerCase() === parentName
-    || task.title.trim().toLowerCase() === parentName
-  )) ?? null
-}
+const TaskCard = memo(TaskCardComponent)
+TaskCard.displayName = 'TaskCard'
 
 function getGroupKey(group: Group): string {
   return `${group.board ?? 'default'}::${group.name}`

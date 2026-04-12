@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent } from 'react'
 import { ChevronLeft, ChevronRight, Moon, PanelRightClose, PanelRightOpen, Sun } from 'lucide-react'
 import { startWindowDragging, startWindowDraggingWithRestore } from '../../services/window/windowRuntime'
 import type { NotiaIconAction } from '../../types/notia'
@@ -39,7 +39,7 @@ interface WindowTitleBarProps {
   onWindowAction: (action: NotiaWindowAction) => void
 }
 
-export function WindowTitleBar({
+function WindowTitleBarComponent({
   tabs,
   activeTabPath,
   tabIcon: TabIcon,
@@ -434,14 +434,22 @@ export function WindowTitleBar({
         </div>
 
         <div className="notia-titlebar-controls" data-notia-prevent-menu-close>
-          <NotiaButton size="icon" variant="ghost" className="notia-titlebar-button" title={themeLabel} onClick={onToggleTheme}>
+          <NotiaButton
+            size="icon"
+            variant="ghost"
+            className="notia-titlebar-button notia-titlebar-theme-button"
+            title={themeLabel}
+            onClick={onToggleTheme}
+          >
             <ThemeIcon size={15} />
           </NotiaButton>
           {showRightPanelToggle ? (
             <NotiaButton
               size="icon"
               variant="ghost"
-              className={`notia-titlebar-button ${isRightPanelOpen ? 'notia-titlebar-button--active' : ''}`}
+              className={`notia-titlebar-button notia-titlebar-right-panel-button ${
+                isRightPanelOpen ? 'notia-titlebar-button--active' : ''
+              }`}
               title={rightPanelLabel}
               onClick={onToggleRightPanel}
             >
@@ -470,3 +478,6 @@ export function WindowTitleBar({
     </header>
   )
 }
+
+export const WindowTitleBar = memo(WindowTitleBarComponent)
+WindowTitleBar.displayName = 'WindowTitleBar'

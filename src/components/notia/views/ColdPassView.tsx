@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Copy, Eye, EyeOff, History, Pencil, Search, Trash2, X } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
 import type { ColdPassEntry } from '../../../types/coldpass'
@@ -26,7 +26,7 @@ interface ColdPassViewProps {
   onDeleteCredential: (index: number) => void
 }
 
-export function ColdPassView({
+function ColdPassViewComponent({
   entries,
   isUnlocked,
   isImportingVault = false,
@@ -55,24 +55,39 @@ export function ColdPassView({
     },
   })
 
-  const buildEntryKey = (entry: ColdPassEntry, index: number): string => entry.id || `${entry.name}-${entry.username}-${index}`
+  const buildEntryKey = useCallback(
+    (entry: ColdPassEntry, index: number): string => entry.id || `${entry.name}-${entry.username}-${index}`,
+    [],
+  )
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-  const filteredEntries = entries
-    .map((entry, index) => ({
-      entry,
-      originalIndex: index,
-    }))
-    .filter(({ entry }) => (
-      !normalizedSearchQuery
-      || [
-        entry.name,
-        entry.website,
-        entry.username,
-        entry.secondaryUsername,
-        entry.password,
-        entry.notes,
-      ].some((value) => value.toLowerCase().includes(normalizedSearchQuery))
-    ))
+  const filteredEntries = useMemo(
+    () => entries
+      .map((entry, index) => ({
+        entry,
+        originalIndex: index,
+        entryKey: buildEntryKey(entry, index),
+      }))
+      .filter(({ entry }) => (
+        !normalizedSearchQuery
+        || [
+          entry.name,
+          entry.website,
+          entry.username,
+          entry.secondaryUsername,
+          entry.password,
+          entry.notes,
+        ].some((value) => value.toLowerCase().includes(normalizedSearchQuery))
+      )),
+    [buildEntryKey, entries, normalizedSearchQuery],
+  )
+  const activeHistoryEntry = useMemo(
+    () => (
+      historyMenuState
+        ? entries.find((entry, index) => buildEntryKey(entry, index) === historyMenuState.entryKey) ?? null
+        : null
+    ),
+    [buildEntryKey, entries, historyMenuState],
+  )
 
   const handleCopyPassword = async (entryKey: string, password: string) => {
     await navigator.clipboard.writeText(password)
@@ -161,8 +176,8 @@ export function ColdPassView({
                 </tr>
               </thead>
               <tbody>
-                {filteredEntries.length > 0 ? filteredEntries.map(({ entry, originalIndex }) => (
-                  <tr key={buildEntryKey(entry, originalIndex)}>
+                {filteredEntries.length > 0 ? filteredEntries.map(({ entry, originalIndex, entryKey }) => (
+                  <tr key={entryKey}>
                     <td>{entry.name}</td>
                     <td>{entry.website}</td>
                     <td>{entry.username}</td>
@@ -174,32 +189,30 @@ export function ColdPassView({
                             ? entry.password
                             : '•'.repeat(Math.max(entry.password.length, 8))}
                         </span>
-                        <div className="notia-coldpass-password-actions">
+                          <div className="notia-coldpass-password-actions">
                           <NotiaButton
                             type="button"
                             size="icon"
                             variant="ghost"
                             className="notia-coldpass-password-action"
-                            title={visiblePasswords[buildEntryKey(entry, originalIndex)] ? 'Ocultar password' : 'Mostrar password'}
+                            title={visiblePasswords[entryKey] ? 'Ocultar password' : 'Mostrar password'}
                             onClick={() => {
-                              const entryKey = buildEntryKey(entry, originalIndex)
                               setVisiblePasswords((current) => ({
                                 ...current,
                                 [entryKey]: !current[entryKey],
                               }))
                             }}
                           >
-                            {visiblePasswords[buildEntryKey(entry, originalIndex)] ? <EyeOff size={16} /> : <Eye size={16} />}
+                            {visiblePasswords[entryKey] ? <EyeOff size={16} /> : <Eye size={16} />}
                           </NotiaButton>
                           <NotiaButton
                             type="button"
                             size="icon"
                             variant="ghost"
                             className="notia-coldpass-password-action"
-                            ref={historyMenuState?.entryKey === buildEntryKey(entry, originalIndex) ? historyTriggerRef : undefined}
+                            ref={historyMenuState?.entryKey === entryKey ? historyTriggerRef : undefined}
                             title="Historial de passwords"
                             onClick={(event) => {
-                              const entryKey = buildEntryKey(entry, originalIndex)
                               if (historyMenuState?.entryKey === entryKey) {
                                 setHistoryMenuState(null)
                                 return
@@ -228,10 +241,10 @@ export function ColdPassView({
                             className="notia-coldpass-password-action"
                             title="Copiar password"
                             onClick={() => {
-                              void handleCopyPassword(buildEntryKey(entry, originalIndex), entry.password)
+                              void handleCopyPassword(entryKey, entry.password)
                             }}
                           >
-                            {copiedPasswordKey === buildEntryKey(entry, originalIndex) ? <Check size={16} /> : <Copy size={16} />}
+                            {copiedPasswordKey === entryKey ? <Check size={16} /> : <Copy size={16} />}
                           </NotiaButton>
                         </div>
                       </div>
@@ -289,11 +302,9 @@ export function ColdPassView({
           style={{ top: `${historyMenuState.top}px`, left: `${historyMenuState.left}px` }}
         >
           <div className="notia-coldpass-password-history-title">Historial</div>
-          {entries.find((entry, index) => buildEntryKey(entry, index) === historyMenuState.entryKey)?.passwordHistory.length ? (
+          {activeHistoryEntry?.passwordHistory.length ? (
             <div className="notia-coldpass-password-history-list">
-              {entries
-                .find((entry, index) => buildEntryKey(entry, index) === historyMenuState.entryKey)!
-                .passwordHistory.map((password, historyIndex) => {
+              {activeHistoryEntry.passwordHistory.map((password, historyIndex) => {
                   const historyKey = `${historyMenuState.entryKey}-${historyIndex}`
                   return (
                     <div key={historyKey} className="notia-coldpass-password-history-item">
@@ -345,3 +356,6 @@ export function ColdPassView({
     </main>
   )
 }
+
+export const ColdPassView = memo(ColdPassViewComponent)
+ColdPassView.displayName = 'ColdPassView'

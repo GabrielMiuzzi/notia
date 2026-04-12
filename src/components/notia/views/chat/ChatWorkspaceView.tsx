@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Bot, FileImage, Files, Info, PanelLeftClose, PanelLeftOpen, Plus, Settings2, Sparkles, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { useVirtualList } from '../../../../hooks/useVirtualList'
@@ -58,6 +58,7 @@ export interface ChatWorkspaceViewProps {
   transientContextSummary?: string | null
   persistTransientContext?: boolean
   selectMatchingChatOnly?: boolean
+  historyHydrationMode?: 'full' | 'minimal'
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
 }
@@ -70,6 +71,7 @@ const DEFAULT_SUGGESTIONS = [
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
 const CHAT_HISTORY_ITEM_HEIGHT = 74
+const MINIMAL_HISTORY_HYDRATION_CHAT_LIMIT = 8
 
 function normalizeChatTitle(value: string): string {
   const trimmed = value.trim()
@@ -240,7 +242,7 @@ function readImageFileAsAttachment(file: File): Promise<SelectedImageAttachment>
   })
 }
 
-export function ChatWorkspaceView({
+function ChatWorkspaceViewComponent({
   library,
   aiPreferences,
   previousChats = EMPTY_PREVIOUS_CHATS,
@@ -258,6 +260,7 @@ export function ChatWorkspaceView({
   transientContextSummary = null,
   persistTransientContext = false,
   selectMatchingChatOnly = false,
+  historyHydrationMode = 'full',
   onChatCreated,
   onChatDeleted,
 }: ChatWorkspaceViewProps) {
@@ -313,14 +316,27 @@ export function ChatWorkspaceView({
       setIsAttachmentMenuOpen(false)
     },
   })
+  const deferredPreviousChats = useDeferredValue(previousChats)
+  const locallyDeletedChatPathSet = useMemo(
+    () => new Set(locallyDeletedChatPaths),
+    [locallyDeletedChatPaths],
+  )
 
   const visibleSuggestions = useMemo(
     () => suggestions.filter((suggestion) => suggestion.trim().length > 0).slice(0, 4),
     [suggestions],
   )
   const availablePreviousChats = useMemo(
-    () => previousChats.filter((chat) => !locallyDeletedChatPaths.includes(chat.filePath)),
-    [locallyDeletedChatPaths, previousChats],
+    () => deferredPreviousChats.filter((chat) => !locallyDeletedChatPathSet.has(chat.filePath)),
+    [deferredPreviousChats, locallyDeletedChatPathSet],
+  )
+  const historyHydrationCandidates = useMemo(
+    () => (
+      historyHydrationMode === 'minimal'
+        ? availablePreviousChats.slice(0, MINIMAL_HISTORY_HYDRATION_CHAT_LIMIT)
+        : availablePreviousChats
+    ),
+    [availablePreviousChats, historyHydrationMode],
   )
   const resolvedPreviousChats = useMemo(
     () => availablePreviousChats.map((chat) => ({
@@ -539,12 +555,16 @@ export function ChatWorkspaceView({
       return
     }
 
+    if (historyHydrationCandidates.length === 0) {
+      return
+    }
+
     if (!library) {
       return
     }
 
     let cancelled = false
-    void Promise.all(availablePreviousChats.map(async (chat) => {
+    void Promise.all(historyHydrationCandidates.map(async (chat) => {
       try {
         const document = await loadChatDocument(chat.filePath, chat.title, library)
         return [chat.filePath, normalizeChatTitle(document.title)] as const
@@ -567,7 +587,7 @@ export function ChatWorkspaceView({
     return () => {
       cancelled = true
     }
-  }, [availablePreviousChats, library])
+  }, [availablePreviousChats.length, historyHydrationCandidates, library])
 
   useEffect(() => {
     if (selectMatchingChatOnly) {
@@ -591,12 +611,17 @@ export function ChatWorkspaceView({
       return
     }
 
+    if (historyHydrationCandidates.length === 0) {
+      setMatchedPreferredChatFilePath(null)
+      return
+    }
+
     if (!library) {
       return
     }
 
     let cancelled = false
-    void Promise.all(availablePreviousChats.map(async (chat) => {
+    void Promise.all(historyHydrationCandidates.map(async (chat) => {
       try {
         const document = await loadChatDocument(chat.filePath, chat.title, library)
         const boardPrefix = preferredTaskManagerBoardPrefix
@@ -655,7 +680,8 @@ export function ChatWorkspaceView({
     preferredContextMode,
     preferredContextScopeKey,
     preferredTaskManagerBoardPrefix,
-    availablePreviousChats,
+    availablePreviousChats.length,
+    historyHydrationCandidates,
     library,
     resolvedPreferredContextPaths,
     selectedChatFilePath,
@@ -1802,3 +1828,6 @@ export function ChatWorkspaceView({
     </main>
   )
 }
+
+export const ChatWorkspaceView = memo(ChatWorkspaceViewComponent)
+ChatWorkspaceView.displayName = 'ChatWorkspaceView'

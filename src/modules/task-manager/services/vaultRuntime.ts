@@ -25,6 +25,8 @@ type WriteLibraryFileResult = FilesystemOperationResult
 type MarkdownFileDocument = FilesystemMarkdownDocument
 
 let activeTaskManagerVaultRef: TaskManagerVaultRef | null = null
+let pendingTreeChangeFlushTimerId: number | null = null
+const pendingTreeChangeHints = new Set<string>()
 
 function normalizeVaultRef(vault: TaskManagerVaultRef | null): TaskManagerVaultRef | null {
   if (!vault?.path.trim()) {
@@ -82,9 +84,118 @@ export function setActiveTaskManagerVaultContext(vault: TaskManagerVaultRef | nu
 }
 
 function notifyLibraryTreeChanged(pathHint: string) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const normalizedPathHint = normalizeFilesystemPath(pathHint)
+  if (!normalizedPathHint.trim()) {
+    return
+  }
+
+  pendingTreeChangeHints.add(normalizedPathHint)
+  if (pendingTreeChangeFlushTimerId !== null) {
+    return
+  }
+
+  const flushDelayMs = getRuntimeDevice() === 'Android' ? 260 : 120
+  pendingTreeChangeFlushTimerId = window.setTimeout(() => {
+    flushPendingTaskManagerLibraryTreeChanges()
+  }, flushDelayMs)
+}
+
+function resolveSharedPathHint(paths: string[]): string | undefined {
+  if (paths.length === 0) {
+    return undefined
+  }
+
+  const [firstPath, ...restPaths] = paths.map((pathValue) => normalizeFilesystemPath(pathValue))
+  let sharedSegments = firstPath.split('/').filter(Boolean)
+
+  for (const currentPath of restPaths) {
+    const currentSegments = currentPath.split('/').filter(Boolean)
+    let sharedLength = 0
+    while (
+      sharedLength < sharedSegments.length
+      && sharedLength < currentSegments.length
+      && sharedSegments[sharedLength] === currentSegments[sharedLength]
+    ) {
+      sharedLength += 1
+    }
+    sharedSegments = sharedSegments.slice(0, sharedLength)
+    if (sharedSegments.length === 0) {
+      break
+    }
+  }
+
+  if (sharedSegments.length === 0) {
+    return paths[0]
+  }
+
+  if (/^[a-zA-Z]:$/.test(sharedSegments[0] ?? '')) {
+    return `${sharedSegments[0]}/${sharedSegments.slice(1).join('/')}`.replace(/\/+$/, '')
+  }
+
+  return `/${sharedSegments.join('/')}`.replace(/\/+$/, '')
+}
+
+export function flushPendingTaskManagerLibraryTreeChanges(): void {
+  if (typeof window === 'undefined') {
+    pendingTreeChangeHints.clear()
+    pendingTreeChangeFlushTimerId = null
+    return
+  }
+
+  if (pendingTreeChangeFlushTimerId !== null) {
+    window.clearTimeout(pendingTreeChangeFlushTimerId)
+    pendingTreeChangeFlushTimerId = null
+  }
+
+  if (pendingTreeChangeHints.size === 0) {
+    return
+  }
+
+  const pathHints = Array.from(pendingTreeChangeHints)
+  pendingTreeChangeHints.clear()
   dispatchLibraryTreeChanged({
-    pathHint: normalizeFilesystemPath(pathHint),
+    vaultPath: activeTaskManagerVaultRef?.path,
+    pathHint: resolveSharedPathHint(pathHints),
   })
+}
+
+async function readMarkdownFilesFromPaths(
+  filePaths: string[],
+  concurrency: number,
+): Promise<MarkdownFileDocument[]> {
+  const normalizedConcurrency = Math.max(1, concurrency)
+  const documents: MarkdownFileDocument[] = []
+  let nextIndex = 0
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = nextIndex
+      nextIndex += 1
+      if (currentIndex >= filePaths.length) {
+        return
+      }
+
+      const filePath = filePaths[currentIndex]
+      const result = await readTextFile(filePath, {
+        androidDirectoryUri: resolveAndroidDirectoryUri(filePath),
+      })
+      if (!result.ok) {
+        continue
+      }
+
+      documents.push({
+        path: normalizeFilesystemPath(filePath),
+        content: result.content,
+      })
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(normalizedConcurrency, filePaths.length) }, () => worker()))
+  return documents.sort((left, right) => left.path.localeCompare(right.path, 'es'))
 }
 
 export async function pickVaultDirectory(): Promise<TaskManagerVaultRef & { name: string } | null> {
@@ -118,65 +229,30 @@ export async function readMarkdownFiles(directoryPath: string): Promise<Markdown
     if (getRuntimeDevice() === 'Android') {
       const vaultRef = activeTaskManagerVaultRef
       if (vaultRef && isNestedPath(vaultRef.path, directoryPath)) {
-        const rootTree = await readLibraryTree(vaultRef.path, {
-          androidDirectoryUri: vaultRef.androidTreeUri,
+        const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath).replace(/[\\/]+$/, '')
+        const normalizedVaultPath = normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')
+        const subtreeNodes = await readLibraryTree(normalizedDirectoryPath, {
+          androidDirectoryUri: resolveAndroidDirectoryUri(normalizedDirectoryPath) ?? vaultRef.androidTreeUri,
         })
-        const markdownPaths = new Set<string>()
 
-        if (normalizeFilesystemPath(directoryPath).replace(/[\\/]+$/, '') === normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')) {
-          const collectedRootMarkdownPaths: string[] = []
-          collectMarkdownPathsFromTree(rootTree, collectedRootMarkdownPaths)
-          for (const filePath of collectedRootMarkdownPaths) {
-            markdownPaths.add(filePath)
-          }
-        } else {
-          const stack = [...rootTree]
-          while (stack.length > 0) {
-            const node = stack.pop()
-            if (!node) {
-              continue
-            }
+        const collectedMarkdownPaths: string[] = []
+        collectMarkdownPathsFromTree(subtreeNodes, collectedMarkdownPaths)
 
-            if (node.path && isNestedPath(directoryPath, node.path)) {
-              if (node.type === 'file' && node.path.toLowerCase().endsWith('.md')) {
-                markdownPaths.add(node.path)
-              }
-
-              if (node.children && node.children.length > 0) {
-                for (const child of node.children) {
-                  stack.push(child)
-                }
-              }
-              continue
-            }
-
-            if (node.children && node.children.length > 0) {
-              for (const child of node.children) {
-                stack.push(child)
-              }
-            }
-          }
+        if (collectedMarkdownPaths.length === 0 && normalizedDirectoryPath !== normalizedVaultPath) {
+          const rootTree = await readLibraryTree(vaultRef.path, {
+            androidDirectoryUri: vaultRef.androidTreeUri,
+          })
+          collectMarkdownPathsFromTree(rootTree, collectedMarkdownPaths)
         }
 
-        const documents = await Promise.all(
-          Array.from(markdownPaths)
-            .sort((left, right) => left.localeCompare(right, 'es'))
-            .map(async (filePath) => {
-              const result = await readTextFile(filePath, {
-                androidDirectoryUri: resolveAndroidDirectoryUri(filePath),
-              })
-              if (!result.ok) {
-                return null
-              }
+        const filteredMarkdownPaths = Array.from(new Set(collectedMarkdownPaths))
+          .filter((filePath) => (
+            normalizedDirectoryPath === normalizedVaultPath
+            || isNestedPath(normalizedDirectoryPath, filePath)
+          ))
+          .sort((left, right) => left.localeCompare(right, 'es'))
 
-              return {
-                path: normalizeFilesystemPath(filePath),
-                content: result.content,
-              } satisfies MarkdownFileDocument
-            }),
-        )
-
-        return documents.filter((document): document is MarkdownFileDocument => Boolean(document))
+        return await readMarkdownFilesFromPaths(filteredMarkdownPaths, 6)
       }
     }
 

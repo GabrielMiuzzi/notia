@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from 'react'
+import { memo, useState, type ComponentType } from 'react'
 import { BookOpen, CircleHelp, Settings } from 'lucide-react'
 import type { NotiaLibrary } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
@@ -14,7 +14,7 @@ interface WorkspaceFooterProps {
   onOpenSettings: () => void
 }
 
-export function WorkspaceFooter({
+function WorkspaceFooterComponent({
   name,
   icon: Icon,
   libraries,
@@ -96,3 +96,6 @@ export function WorkspaceFooter({
     </div>
   )
 }
+
+export const WorkspaceFooter = memo(WorkspaceFooterComponent)
+WorkspaceFooter.displayName = 'WorkspaceFooter'

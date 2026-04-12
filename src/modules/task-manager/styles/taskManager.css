@@ -411,6 +411,8 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  content-visibility: auto;
+  contain-intrinsic-size: 520px;
 }
 
 .tareas-group-header {
@@ -486,6 +488,7 @@
   gap: 8px;
   margin-top: 8px;
   min-height: 40px;
+  contain: layout paint;
 }
 
 .tareas-task-drag-wrap.is-dragging {
@@ -521,6 +524,8 @@
   padding: 10px 12px;
   overflow: hidden;
   transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  content-visibility: auto;
+  contain-intrinsic-size: 220px;
 }
 
 .tareas-task-card:hover {
@@ -864,6 +869,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--tareas-radius-sm);
   background: var(--background-secondary);
+  contain: layout paint;
 }
 
 .tareas-card-subtask-row {
@@ -978,6 +984,37 @@
   text-align: center;
   padding: 0 2px;
   height: 13px;
+}
+
+@media (pointer: coarse) {
+  .tareas-tab-content-animate {
+    animation: none;
+  }
+
+  .tareas-group-header:hover {
+    background: color-mix(in srgb, var(--tareas-group-color, var(--background-secondary)) 36%, var(--background-secondary));
+  }
+
+  .tareas-group-edit-btn {
+    opacity: 0.7;
+  }
+
+  .tareas-group-header:hover .tareas-group-edit-btn {
+    opacity: 0.7;
+  }
+
+  .tareas-task-card {
+    transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  }
+
+  .tareas-task-card:hover {
+    border-color: var(--background-modifier-border-hover);
+    transform: none;
+  }
+
+  .tareas-card-meta-tag-trigger .tareas-icon {
+    transition: none;
+  }
 }
 
 .tareas-card-progress-inline-input:focus {

@@ -176,6 +176,10 @@
   justify-content: center;
   gap: 6px;
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .notia-button:hover:not(:disabled) {
@@ -645,6 +649,18 @@
   background: var(--color-accent-bg);
 }
 
+.notia-app-shell--android .notia-icon-button > svg {
+  width: 24px;
+  height: 24px;
+}
+
+.notia-app-shell--android .notia-toolbar-button > svg,
+.notia-app-shell--android .notia-titlebar-theme-button > svg,
+.notia-app-shell--android .notia-titlebar-right-panel-button > svg {
+  width: 22px;
+  height: 22px;
+}
+
 .notia-search-panel {
   position: absolute;
   top: calc(100% + 8px);
@@ -725,6 +741,9 @@
   padding-right: 10px;
   font-size: 13px;
   line-height: 1;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .notia-tree-row:hover {
@@ -2309,6 +2328,41 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
+}
+
+.notia-workspace-deferred-view {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.notia-workspace-deferred-view--panel {
+  padding: 16px;
+}
+
+.notia-workspace-deferred-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+  box-shadow: 0 14px 30px -24px var(--color-modal-shadow);
+}
+
+.notia-workspace-deferred-card strong {
+  font-size: 14px;
+  color: var(--color-heading-text);
+}
+
+.notia-workspace-deferred-card span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-subtle-text);
 }
 
 .notia-main-empty button {
@@ -4740,5 +4794,43 @@
 
   .notia-sidebar--open {
     width: 264px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .notia-toolbar-button,
+  .notia-icon-button,
+  .notia-footer-button,
+  .notia-titlebar-button,
+  .notia-button--icon {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    border-radius: 10px;
+  }
+
+  .notia-titlebar-tabs-scroll-button {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    border-radius: 8px;
+  }
+
+  .notia-icon-button {
+    margin: 6px auto;
+  }
+
+  .notia-tree-context-item {
+    min-height: 40px;
+  }
+
+  .notia-tree-row {
+    height: 36px;
+  }
+
+  .notia-tree-inline-input {
+    height: 28px;
   }
 }

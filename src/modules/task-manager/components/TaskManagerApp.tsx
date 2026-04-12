@@ -1,5 +1,5 @@
 import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
-import { useCallback, useEffect, useMemo } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
@@ -48,7 +48,7 @@ interface TaskManagerAppProps {
   onActiveChatContextChange?: (context: TaskManagerChatContext | null) => void
 }
 
-export function TaskManagerApp({
+function TaskManagerAppComponent({
   embedded = false,
   vault = null,
   onOpenTaskFile,
@@ -59,6 +59,9 @@ export function TaskManagerApp({
   const { confirm } = useConfirmationEngine()
 
   const activeBoard = manager.settings.activeTab
+  const deferredTasks = useDeferredValue(manager.snapshot.tasks)
+  const deferredDocuments = useDeferredValue(manager.snapshot.documents)
+  const deferredGroups = useDeferredValue(manager.settings.groups)
 
   useEffect(() => {
     onActivePanelChange?.(activeBoard)
@@ -72,7 +75,7 @@ export function TaskManagerApp({
     }
 
     const boardPrefix = `${TASKS_ROOT_FOLDER}/${activeBoard}/`
-    const filePaths = manager.snapshot.documents
+    const filePaths = deferredDocuments
       .map((document) => document.path)
       .filter((pathValue) => pathValue.startsWith(boardPrefix))
       .map((pathValue) => toAbsoluteVaultPath(manager.settings.activeVaultPath as string, pathValue))
@@ -82,32 +85,41 @@ export function TaskManagerApp({
       scopeKey: `task-manager:board:${activeBoard}`,
       filePaths,
     } satisfies TaskManagerChatContext
-  }, [activeBoard, activeTabIsBoard, manager.settings.activeVaultPath, manager.snapshot.documents])
+  }, [activeBoard, activeTabIsBoard, deferredDocuments, manager.settings.activeVaultPath])
 
   useEffect(() => {
     onActiveChatContextChange?.(activeBoardChatContext)
   }, [activeBoardChatContext, onActiveChatContextChange])
 
   const visibleGroups = useMemo(
-    () => manager.settings.groups.filter((group) => (group.board ?? 'default') === activeBoard),
-    [activeBoard, manager.settings.groups],
+    () => deferredGroups.filter((group) => (group.board ?? 'default') === activeBoard),
+    [activeBoard, deferredGroups],
   )
 
   const finishedTasks = useMemo(
-    () => manager.snapshot.tasks.filter((task) => isTaskInFinishedFolder(task.filePath)),
-    [manager.snapshot.tasks],
+    () => deferredTasks.filter((task) => isTaskInFinishedFolder(task.filePath)),
+    [deferredTasks],
   )
 
   const cancelledTasks = useMemo(
-    () => manager.snapshot.tasks.filter((task) => isTaskInCancelledFolder(task.filePath)),
-    [manager.snapshot.tasks],
+    () => deferredTasks.filter((task) => isTaskInCancelledFolder(task.filePath)),
+    [deferredTasks],
+  )
+
+  const activeBoardTasks = useMemo(
+    () => deferredTasks.filter((task) => task.board === activeBoard),
+    [activeBoard, deferredTasks],
   )
 
   const activeBoardTasksCount = useMemo(
-    () => manager.snapshot.tasks
-      .filter((task) => task.board === activeBoard)
+    () => activeBoardTasks
       .filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath)).length,
-    [activeBoard, manager.snapshot.tasks],
+    [activeBoardTasks],
+  )
+
+  const activePomodoroTasks = useMemo(
+    () => deferredTasks.filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath)),
+    [deferredTasks],
   )
 
   const activeBoardConfig = manager.settings.boards.find((board) => board.name === activeBoard) ?? null
@@ -272,7 +284,7 @@ export function TaskManagerApp({
             <TaskBoardView
               boardName={activeBoard}
               groups={visibleGroups}
-              tasks={manager.snapshot.tasks}
+              tasks={activeBoardTasks}
               onCreateTask={manager.openTaskCreateDialog}
               onEditTask={manager.openTaskEditDialog}
               onChangeTaskState={manager.updateTaskState}
@@ -321,7 +333,7 @@ export function TaskManagerApp({
           {manager.settings.activeTab === POMODORO_TAB_ID ? (
             <PomodoroPanel
               state={manager.settings.pomodoro}
-              tasks={manager.snapshot.tasks.filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath))}
+              tasks={activePomodoroTasks}
               entries={manager.snapshot.pomodoroEntries}
               onSelectTask={manager.selectPomodoroTask}
               onStart={manager.startPomodoroCycle}
@@ -385,3 +397,6 @@ export function TaskManagerApp({
     </ThemeProvider>
   )
 }
+
+export const TaskManagerApp = memo(TaskManagerAppComponent)
+TaskManagerApp.displayName = 'TaskManagerApp'

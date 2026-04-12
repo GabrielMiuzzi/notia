@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { FileViewHost } from './views/FileViewHost'
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
@@ -34,7 +35,7 @@ function getSaveStatusLabel(status: NotiaDocumentSaveStatus): string {
   return 'Guardado'
 }
 
-export function MainView({
+function MainViewComponent({
   activeDocument,
   saveStatus,
   onTextDocumentChange,
@@ -97,3 +98,6 @@ export function MainView({
     </main>
   )
 }
+
+export const MainView = memo(MainViewComponent)
+MainView.displayName = 'MainView'

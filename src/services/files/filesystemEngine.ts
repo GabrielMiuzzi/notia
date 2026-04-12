@@ -227,15 +227,9 @@ export async function pathExists(pathValue: string, options?: AndroidFilesystemO
   }
 
   try {
-    console.log('[filesystemEngine] Checking path exists:', {
-      path: normalizedPath,
-      isAndroid: getRuntimeDevice() === 'Android',
-      androidUri: options?.androidDirectoryUri,
-    })
     const result = await invoke<PathExistsResult>('path_exists', {
       payload: { path: normalizedPath, directoryUri: options?.androidDirectoryUri },
     })
-    console.log('[filesystemEngine] Path exists result:', result)
     return Boolean(result.exists)
   } catch (error) {
     console.error('[filesystemEngine] pathExists failed:', {
@@ -271,11 +265,8 @@ async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | n
 
   for (const command of ANDROID_PICK_DIRECTORY_COMMANDS) {
     try {
-      console.log('[filesystemEngine] Invoking Android command:', command)
       const selected = await invoke<unknown>(command)
-      console.log('[filesystemEngine] Android command result:', selected)
       const normalized = normalizeDirectorySelection(selected)
-      console.log('[filesystemEngine] Normalized selection:', normalized)
       return normalized
     } catch (error) {
       console.error('[filesystemEngine] Android command failed:', command, error)
@@ -291,13 +282,9 @@ async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | n
 }
 
 export async function pickDirectory(title: string): Promise<FilesystemPickDirectoryResult | null> {
-  console.log('[filesystemEngine] pickDirectory called, device:', getRuntimeDevice())
   if (getRuntimeDevice() === 'Android') {
     try {
-      console.log('[filesystemEngine] Using Android picker')
-      const result = await pickAndroidDirectory()
-      console.log('[filesystemEngine] Android picker result:', result)
-      return result
+      return await pickAndroidDirectory()
     } catch (error) {
       console.error('[filesystemEngine] Android picker error:', error)
       if (
@@ -388,17 +375,12 @@ export async function readLibraryTree(
 
   try {
     if (getRuntimeDevice() === 'Android') {
-      console.log('[filesystemEngine] Reading Android library tree:', {
-        directoryPath: normalizedDirectoryPath,
-        directoryUri: options?.androidDirectoryUri,
-      })
       const rawTree = await invoke<unknown>('read_android_library_tree', {
         payload: {
           directoryPath: normalizedDirectoryPath,
           directoryUri: options?.androidDirectoryUri,
         },
       })
-      console.log('[filesystemEngine] Android library tree result:', rawTree)
       return normalizeFilesystemTreeNodes(rawTree)
     }
 

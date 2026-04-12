@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -8,7 +9,7 @@ interface IconRailProps {
   onActionClick?: (actionId: string) => void
 }
 
-export function IconRail({ actions, className, activeActionId, onActionClick }: IconRailProps) {
+function IconRailComponent({ actions, className, activeActionId, onActionClick }: IconRailProps) {
   return (
     <div className={`notia-icon-rail ${className ?? ''}`.trim()} data-notia-prevent-menu-close>
       {actions.map(({ id, icon: Icon, label, active }) => (
@@ -29,3 +30,6 @@ export function IconRail({ actions, className, activeActionId, onActionClick }: 
     </div>
   )
 }
+
+export const IconRail = memo(IconRailComponent)
+IconRail.displayName = 'IconRail'

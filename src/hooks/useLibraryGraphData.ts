@@ -2,23 +2,19 @@ import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import {
   buildGraphFileStructureSignature,
   buildLibraryGraphModel,
-  collectGraphSourceFilePaths,
 } from '../engines/graph/libraryGraphEngine'
-import { readLibraryFileContent } from '../services/libraries/libraryDocumentRuntime'
+import { getIndexedLibraryGraphSourcesByPath } from '../services/libraries/librarySearchGraphIndex'
 import { startPerformanceMeasurement } from '../services/runtime/performanceBaseline'
 import type { NotiaFileNode } from '../types/notia'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
 import type { GraphModelWorkerResponse } from '../types/graph/graphWorker'
+import { getRuntimeDevice } from '../utils/platform/getRuntimeDevice'
 
-const GRAPH_SOURCE_SIGNATURE_SEPARATOR = '\u0001'
-const GRAPH_SOURCE_READ_BATCH_SIZE = 6
-const GRAPH_SOURCE_CACHE_LIMIT = 8
 const EMPTY_GRAPH_MODEL: LibraryGraphModel = {
   nodes: [],
   edges: [],
 }
-
-const graphSourceSnapshotCache = new Map<string, Record<string, string>>()
+const MAIN_THREAD_GRAPH_MODEL_TREE_NODE_THRESHOLD = 600
 
 interface UseLibraryGraphDataParams {
   enabled?: boolean
@@ -29,50 +25,20 @@ interface UseLibraryGraphDataParams {
   revision: number
 }
 
-async function loadGraphSourcesByPath(
-  filePaths: string[],
-  libraryAndroidTreeUri?: string,
-): Promise<Record<string, string>> {
-  const nextSourcesByPath: Record<string, string> = {}
+function countTreeNodes(nodes: NotiaFileNode[]): number {
+  let count = 0
 
-  for (let index = 0; index < filePaths.length; index += GRAPH_SOURCE_READ_BATCH_SIZE) {
-    const batchPaths = filePaths.slice(index, index + GRAPH_SOURCE_READ_BATCH_SIZE)
-    const batchEntries = await Promise.all(
-      batchPaths.map(async (pathValue) => {
-        const result = await readLibraryFileContent(pathValue, {
-          androidDirectoryUri: libraryAndroidTreeUri,
-        })
-        if (!result.ok) {
-          return null
-        }
-
-        return { path: pathValue, content: result.content }
-      }),
-    )
-
-    for (const entry of batchEntries) {
-      if (!entry) {
-        continue
+  const visit = (currentNodes: NotiaFileNode[]) => {
+    for (const node of currentNodes) {
+      count += 1
+      if (node.children && node.children.length > 0) {
+        visit(node.children)
       }
-
-      nextSourcesByPath[entry.path] = entry.content
     }
   }
 
-  return nextSourcesByPath
-}
-
-function cacheGraphSourceSnapshot(cacheKey: string, sourcesByPath: Record<string, string>): void {
-  graphSourceSnapshotCache.set(cacheKey, sourcesByPath)
-
-  if (graphSourceSnapshotCache.size <= GRAPH_SOURCE_CACHE_LIMIT) {
-    return
-  }
-
-  const oldestCacheKey = graphSourceSnapshotCache.keys().next().value
-  if (oldestCacheKey) {
-    graphSourceSnapshotCache.delete(oldestCacheKey)
-  }
+  visit(nodes)
+  return count
 }
 
 export function useLibraryGraphData({
@@ -83,9 +49,10 @@ export function useLibraryGraphData({
   treeNodes,
   revision,
 }: UseLibraryGraphDataParams) {
+  const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
   const [graphSourcesByPath, setGraphSourcesByPath] = useState<Record<string, string>>({})
-  const [activeSnapshotCacheKey, setActiveSnapshotCacheKey] = useState('')
   const [graphModel, setGraphModel] = useState<LibraryGraphModel>(EMPTY_GRAPH_MODEL)
+  const [isGraphSourcesPending, setIsGraphSourcesPending] = useState(false)
   const [isGraphModelPending, setIsGraphModelPending] = useState(false)
   const [workerMode, setWorkerMode] = useState<'worker' | 'fallback'>(() => (typeof Worker === 'undefined' ? 'fallback' : 'worker'))
   const [isWorkerReady, setIsWorkerReady] = useState(workerMode === 'fallback')
@@ -185,22 +152,10 @@ export function useLibraryGraphData({
   }, [enabled, treeNodes])
 
   const graphTreeNodes = useMemo(() => treeNodes, [graphFileStructureSignature])
-
-  const graphSourcePathSignature = useMemo(() => {
-    if (!enabled) {
-      return ''
-    }
-
-    const graphSourcePaths = collectGraphSourceFilePaths(graphTreeNodes).sort((left, right) =>
-      left.localeCompare(right, undefined, { sensitivity: 'base' }),
-    )
-    return graphSourcePaths.join(GRAPH_SOURCE_SIGNATURE_SEPARATOR)
-  }, [enabled, graphTreeNodes])
-
-  const currentSnapshotCacheKey =
-    enabled && libraryPath && graphSourcePathSignature
-      ? `${libraryPath}::${graphSourcePathSignature}`
-      : ''
+  const graphTreeNodeCount = useMemo(() => countTreeNodes(graphTreeNodes), [graphTreeNodes])
+  const shouldPreferMainThreadGraphModelBuild =
+    runtimeDevice !== 'Android'
+    && graphTreeNodeCount <= MAIN_THREAD_GRAPH_MODEL_TREE_NODE_THRESHOLD
 
   const graphStructureCacheKey =
     enabled && (libraryPath || rootPath) && graphFileStructureSignature
@@ -215,7 +170,9 @@ export function useLibraryGraphData({
     activeModelRequestIdRef.current = 0
     cancelPendingGraphModelMeasurement('disabled')
     startTransition(() => {
+      setGraphSourcesByPath({})
       setGraphModel(EMPTY_GRAPH_MODEL)
+      setIsGraphSourcesPending(false)
       setIsGraphModelPending(false)
     })
   }, [enabled])
@@ -234,7 +191,9 @@ export function useLibraryGraphData({
     activeModelRequestIdRef.current += 1
     cancelPendingGraphModelMeasurement('graph_structure_changed')
     startTransition(() => {
+      setGraphSourcesByPath({})
       setGraphModel(EMPTY_GRAPH_MODEL)
+      setIsGraphSourcesPending(false)
       setIsGraphModelPending(false)
     })
   }, [enabled, graphStructureCacheKey])
@@ -244,67 +203,55 @@ export function useLibraryGraphData({
       return
     }
 
-    if (!currentSnapshotCacheKey || !graphSourcePathSignature) {
+    if (!libraryPath) {
+      setGraphSourcesByPath({})
+      setIsGraphSourcesPending(false)
       return
     }
 
     let isCurrent = true
-    const cachedSnapshot = graphSourceSnapshotCache.get(currentSnapshotCacheKey)
-    if (cachedSnapshot) {
-      setGraphSourcesByPath(cachedSnapshot)
-      setActiveSnapshotCacheKey(currentSnapshotCacheKey)
-    }
-
-    const graphSourcePaths = graphSourcePathSignature.split(GRAPH_SOURCE_SIGNATURE_SEPARATOR)
+    setIsGraphSourcesPending(true)
     const graphLoadMeasurement = startPerformanceMeasurement('graph.load_sources', {
-      fileCount: graphSourcePaths.length,
       libraryPath: libraryPath ?? undefined,
       revision,
     })
-    void loadGraphSourcesByPath(graphSourcePaths, libraryAndroidTreeUri).then((nextSourcesByPath) => {
+    void getIndexedLibraryGraphSourcesByPath({
+      libraryPath,
+      treeNodes: graphTreeNodes,
+      androidDirectoryUri: libraryAndroidTreeUri,
+    }).then((nextSourcesByPath) => {
       if (!isCurrent) {
-        graphLoadMeasurement.cancel({
-          fileCount: graphSourcePaths.length,
-        })
+        graphLoadMeasurement.cancel()
         return
       }
 
-      cacheGraphSourceSnapshot(currentSnapshotCacheKey, nextSourcesByPath)
       setGraphSourcesByPath(nextSourcesByPath)
-      setActiveSnapshotCacheKey(currentSnapshotCacheKey)
+      setIsGraphSourcesPending(false)
       graphLoadMeasurement.success({
         loadedFileCount: Object.keys(nextSourcesByPath).length,
       })
     }).catch((error) => {
+      if (isCurrent) {
+        setIsGraphSourcesPending(false)
+      }
       graphLoadMeasurement.error(error, {
-        fileCount: graphSourcePaths.length,
+        libraryPath: libraryPath ?? undefined,
       })
     })
 
     return () => {
       isCurrent = false
-      graphLoadMeasurement.cancel({
-        fileCount: graphSourcePaths.length,
-      })
+      setIsGraphSourcesPending(false)
+      graphLoadMeasurement.cancel()
     }
-  }, [currentSnapshotCacheKey, enabled, graphSourcePathSignature, libraryAndroidTreeUri, libraryPath, revision])
-
-  const hasUsableSnapshot = Boolean(currentSnapshotCacheKey) && activeSnapshotCacheKey === currentSnapshotCacheKey
-
-  const effectiveGraphSourcesByPath = useMemo(() => {
-    if (!enabled || !hasUsableSnapshot) {
-      return {}
-    }
-
-    return graphSourcesByPath
-  }, [enabled, graphSourcesByPath, hasUsableSnapshot])
+  }, [enabled, graphTreeNodes, libraryAndroidTreeUri, libraryPath, revision])
 
   useEffect(() => {
     if (!enabled) {
       return
     }
 
-    if (workerMode === 'worker' && (!isWorkerReady || !workerRef.current)) {
+    if (!shouldPreferMainThreadGraphModelBuild && workerMode === 'worker' && (!isWorkerReady || !workerRef.current)) {
       return
     }
 
@@ -319,7 +266,7 @@ export function useLibraryGraphData({
       libraryPath: libraryPath ?? undefined,
       nodeTreeSize: graphTreeNodes.length,
       revision,
-      sourceCount: Object.keys(effectiveGraphSourcesByPath).length,
+      sourceCount: Object.keys(graphSourcesByPath).length,
     })
     pendingGraphModelMeasurementRef.current = {
       requestId,
@@ -327,13 +274,13 @@ export function useLibraryGraphData({
     }
     setIsGraphModelPending(true)
 
-    if (workerMode === 'worker') {
+    if (!shouldPreferMainThreadGraphModelBuild && workerMode === 'worker') {
       activeWorker?.postMessage({
         type: 'buildGraphModel',
         requestId,
         treeNodes: graphTreeNodes,
         rootPath,
-        graphSourcesByPath: effectiveGraphSourcesByPath,
+        graphSourcesByPath,
       })
 
       return () => {
@@ -344,7 +291,7 @@ export function useLibraryGraphData({
     }
 
     try {
-      const nextGraphModel = buildLibraryGraphModel(graphTreeNodes, rootPath, effectiveGraphSourcesByPath)
+      const nextGraphModel = buildLibraryGraphModel(graphTreeNodes, rootPath, graphSourcesByPath)
       graphModelMeasurement.success({
         edgeCount: nextGraphModel.edges.length,
         nodeCount: nextGraphModel.nodes.length,
@@ -364,21 +311,24 @@ export function useLibraryGraphData({
 
     return undefined
   }, [
-    effectiveGraphSourcesByPath,
     enabled,
+    graphSourcesByPath,
     graphTreeNodes,
+    graphTreeNodeCount,
     isWorkerReady,
     libraryPath,
     revision,
     rootPath,
+    runtimeDevice,
+    shouldPreferMainThreadGraphModelBuild,
     workerMode,
   ])
 
   return {
     graphModel,
-    graphSourcesByPath: effectiveGraphSourcesByPath,
+    graphSourcesByPath,
     isGraphLoading:
       enabled &&
-      ((Boolean(currentSnapshotCacheKey) && !hasUsableSnapshot) || isGraphModelPending),
+      (isGraphSourcesPending || isGraphModelPending),
   }
 }
