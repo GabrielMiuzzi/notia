@@ -2410,25 +2410,14 @@ export class InkDocView extends ItemView {
 		previewCanvasEl.style.width = "100%";
 		previewCanvasEl.style.height = "100%";
 		const { widthPx, heightPx } = this.getCanvasSizePx();
-		const dpr = window.devicePixelRatio || 1;
-		canvasEl.width = Math.round(widthPx * dpr);
-		canvasEl.height = Math.round(heightPx * dpr);
-		previewCanvasEl.width = Math.round(widthPx * dpr);
-		previewCanvasEl.height = Math.round(heightPx * dpr);
 
 		const ctx = canvasEl.getContext("2d");
 		const previewCtx = previewCanvasEl.getContext("2d");
 		if (!ctx || !previewCtx) {
 			return;
 		}
-		ctx.scale(dpr, dpr);
-		ctx.lineCap = "round";
-		ctx.lineJoin = "round";
 		ctx.strokeStyle = INKDOC_STROKE_COLOR;
 		ctx.lineWidth = INKDOC_STROKE_WIDTH;
-		previewCtx.scale(dpr, dpr);
-		previewCtx.lineCap = "round";
-		previewCtx.lineJoin = "round";
 		previewCtx.strokeStyle = INKDOC_STROKE_COLOR;
 		previewCtx.lineWidth = INKDOC_STROKE_WIDTH;
 
@@ -2475,6 +2464,7 @@ export class InkDocView extends ItemView {
 				skewStart: null
 			}
 		});
+		this.syncPageCanvasResolution(page.id);
 		this.textLayerDirty.add(page.id);
 		this.imageLayerDirty.add(page.id);
 
@@ -2538,7 +2528,11 @@ export class InkDocView extends ItemView {
 		pageId: string,
 		quality: "full" | "fast" = "full"
 	): void {
+		this.syncPageCanvasResolution(pageId);
+		ctx.save();
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+		ctx.restore();
 		this.clearStrokePreview(pageId);
 		const selected = this.selectedStrokes.get(pageId);
 		for (const stroke of strokes) {
@@ -2569,7 +2563,11 @@ export class InkDocView extends ItemView {
 		if (!state) {
 			return;
 		}
+		this.syncPageCanvasResolution(pageId);
+		state.previewCtx.save();
+		state.previewCtx.setTransform(1, 0, 0, 1, 0, 0);
 		state.previewCtx.clearRect(0, 0, state.previewCtx.canvas.width, state.previewCtx.canvas.height);
+		state.previewCtx.restore();
 	}
 
 	private renderActiveStrokePreview(page: InkDocPage, strokeId: string): void {
@@ -3352,6 +3350,44 @@ export class InkDocView extends ItemView {
 
 	private mmToPx(mm: number): number {
 		return Math.max(1, Math.round((mm * 96) / 25.4));
+	}
+
+	private syncCanvasResolution(
+		canvas: HTMLCanvasElement,
+		ctx: CanvasRenderingContext2D,
+		logicalWidthPx: number,
+		logicalHeightPx: number
+	): void {
+		const dpr = Math.max(1, window.devicePixelRatio || 1);
+		const rect = canvas.getBoundingClientRect();
+		const cssWidth = Math.max(1, Math.round(rect.width || canvas.clientWidth || logicalWidthPx));
+		const cssHeight = Math.max(1, Math.round(rect.height || canvas.clientHeight || logicalHeightPx));
+		const backingWidth = Math.max(1, Math.round(cssWidth * dpr));
+		const backingHeight = Math.max(1, Math.round(cssHeight * dpr));
+		if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+			canvas.width = backingWidth;
+			canvas.height = backingHeight;
+		}
+		ctx.setTransform(
+			backingWidth / Math.max(1, logicalWidthPx),
+			0,
+			0,
+			backingHeight / Math.max(1, logicalHeightPx),
+			0,
+			0
+		);
+		ctx.lineCap = "round";
+		ctx.lineJoin = "round";
+	}
+
+	private syncPageCanvasResolution(pageId: string): void {
+		const state = this.canvasStates.get(pageId);
+		if (!state) {
+			return;
+		}
+		const { widthPx, heightPx } = this.getCanvasSizePx();
+		this.syncCanvasResolution(state.canvas, state.ctx, widthPx, heightPx);
+		this.syncCanvasResolution(state.previewCanvas, state.previewCtx, widthPx, heightPx);
 	}
 
 	private resetPendingObjectCreationClick(): void {

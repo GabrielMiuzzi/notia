@@ -113,7 +113,7 @@ export class InputController {
 		const pressure = isStylus
 			? rawPressure <= 0
 				? event.buttons !== 0
-					? 0.18
+					? 0.5
 					: 0
 				: normalizeStylusPressure(rawPressure)
 			: clamp01(rawPressure);
