@@ -1,7 +1,7 @@
 {
   "name": "notia",
   "private": true,
-  "version": "1.0.11-ALPHA",
+  "version": "1.0.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "tauri": "./scripts/tauri-cli.sh",
+    "dev:tauri:windows": ".\\scripts\\tauri-dev-windows.cmd",
+    "build:tauri:windows": ".\\scripts\\tauri-build-windows.cmd",
     "dev:tauri": "./scripts/tauri-dev-linux.sh",
     "dev:tauri:linux": "./scripts/tauri-dev-linux.sh",
     "dev:tauri:auto": "./scripts/tauri-dev-linux.sh",

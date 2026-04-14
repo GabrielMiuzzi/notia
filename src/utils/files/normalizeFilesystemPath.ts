@@ -1,13 +1,27 @@
+function normalizeSlashSeparators(value: string): string {
+  const withForwardSlashes = value.replace(/\\/g, '/')
+
+  if (withForwardSlashes.startsWith('//')) {
+    return `//${withForwardSlashes.slice(2).replace(/\/+/g, '/')}`
+  }
+
+  return withForwardSlashes.replace(/\/+/g, '/')
+}
+
 export function normalizeFilesystemPath(pathValue: string): string {
   const trimmed = pathValue.trim()
+  if (!trimmed) {
+    return trimmed
+  }
+
   if (!trimmed.startsWith('file://')) {
-    return pathValue
+    return normalizeSlashSeparators(trimmed)
   }
 
   try {
     const parsedUrl = new URL(trimmed)
     if (parsedUrl.protocol !== 'file:') {
-      return pathValue
+      return normalizeSlashSeparators(trimmed)
     }
 
     const decodedPathname = decodeURIComponent(parsedUrl.pathname)
@@ -16,11 +30,11 @@ export function normalizeFilesystemPath(pathValue: string): string {
       : decodedPathname
 
     if (parsedUrl.hostname) {
-      return `//${parsedUrl.hostname}${normalizedWindowsPath}`
+      return normalizeSlashSeparators(`//${parsedUrl.hostname}${normalizedWindowsPath}`)
     }
 
-    return normalizedWindowsPath || pathValue
+    return normalizeSlashSeparators(normalizedWindowsPath || trimmed)
   } catch {
-    return pathValue
+    return normalizeSlashSeparators(trimmed)
   }
 }

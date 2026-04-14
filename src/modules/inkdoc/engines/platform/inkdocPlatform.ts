@@ -132,6 +132,10 @@ function resolveRelativePath(fromFilePath: string, targetPath: string): string {
   return normalizePathValue(joinPaths(sourceDir, targetPath))
 }
 
+function getNormalizedBridgeFilePaths(bridge: InkdocHostBridge): string[] {
+  return bridge.listFilePaths().map((filePath) => normalizePathValue(filePath))
+}
+
 function installDomHelpers(): void {
   const globalScope = globalThis as Record<string, unknown>
   if (globalScope[globalKey]) {
@@ -360,17 +364,18 @@ class Vault {
   }
 
   getFiles(): TFile[] {
-    return this.bridge.listFilePaths().map((filePath) => new TFile(filePath))
+    return getNormalizedBridgeFilePaths(this.bridge).map((filePath) => new TFile(filePath))
   }
 
   getAbstractFileByPath(path: string): TAbstractFile | null {
     const resolvedPath = resolveFromRoot(this.bridge.rootPath, path)
-    if (this.bridge.listFilePaths().includes(resolvedPath)) {
+    const filePaths = getNormalizedBridgeFilePaths(this.bridge)
+
+    if (filePaths.includes(resolvedPath)) {
       return new TFile(resolvedPath)
     }
 
-    const hasFileInside = this.bridge
-      .listFilePaths()
+    const hasFileInside = filePaths
       .some((filePath) => filePath.startsWith(`${resolvedPath}/`) || filePath === resolvedPath)
 
     if (hasFileInside || resolvedPath === normalizePathValue(this.bridge.rootPath)) {
@@ -416,7 +421,7 @@ class MetadataCache {
       }
     }
 
-    const files = this.bridge.listFilePaths()
+    const files = getNormalizedBridgeFilePaths(this.bridge)
     for (const candidate of candidates) {
       if (files.includes(candidate)) {
         return new TFile(candidate)
