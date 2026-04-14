@@ -313,7 +313,95 @@ function buildLongTermMemorySection(longTermMemories: string[]): string {
   ].join('\n')
 }
 
+function normalizePromptSearchValue(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+}
+
+function extractFileNameFromPath(pathValue: string): string {
+  const normalizedPath = pathValue.replace(/\\/g, '/')
+  const segments = normalizedPath.split('/').filter(Boolean)
+  return segments[segments.length - 1] ?? normalizedPath
+}
+
+function rankFileAgainstPrompt(file: ChatInlineFileAttachment, normalizedPrompt: string): number {
+  if (!normalizedPrompt) {
+    return 0
+  }
+
+  const normalizedName = normalizePromptSearchValue(file.name)
+  const normalizedPath = normalizePromptSearchValue(file.path)
+  const normalizedFileName = normalizePromptSearchValue(extractFileNameFromPath(file.path))
+  const fileStem = normalizedFileName.replace(/\.[a-z0-9]+$/i, '')
+  let score = 0
+
+  if (normalizedName && normalizedPrompt.includes(normalizedName)) {
+    score += 120
+  }
+
+  if (normalizedFileName && normalizedPrompt.includes(normalizedFileName)) {
+    score += 140
+  }
+
+  if (fileStem && normalizedPrompt.includes(fileStem)) {
+    score += 180
+  }
+
+  if (normalizedPath && normalizedPrompt.includes(normalizedPath)) {
+    score += 80
+  }
+
+  const promptTokens = Array.from(new Set(
+    normalizedPrompt
+      .split(/[^a-z0-9]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  ))
+
+  for (const token of promptTokens) {
+    if (normalizedName.includes(token)) {
+      score += 12
+    }
+    if (fileStem.includes(token)) {
+      score += 16
+    }
+    if (normalizedPath.includes(token)) {
+      score += 4
+    }
+  }
+
+  return score
+}
+
+function prioritizeFilesForPrompt(
+  files: ChatInlineFileAttachment[],
+  prompt: string,
+): ChatInlineFileAttachment[] {
+  const normalizedPrompt = normalizePromptSearchValue(prompt.trim())
+  if (!normalizedPrompt) {
+    return files
+  }
+
+  return files
+    .map((file, index) => ({
+      file,
+      index,
+      score: rankFileAgainstPrompt(file, normalizedPrompt),
+    }))
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score
+      }
+
+      return left.index - right.index
+    })
+    .map((entry) => entry.file)
+}
+
 function buildFileContextSection(
+  prompt: string,
   files: ChatInlineFileAttachment[],
   selectedContextMode: ChatFileContextMode,
 ): string {
@@ -326,9 +414,10 @@ function buildFileContextSection(
     : 'Archivos de contexto:'
 
   const sections: string[] = [header]
+  const prioritizedFiles = prioritizeFilesForPrompt(files, prompt)
   let consumedChars = 0
 
-  for (const file of files) {
+  for (const file of prioritizedFiles) {
     const normalizedContent = file.content.trim()
     if (!normalizedContent) {
       continue
@@ -368,7 +457,7 @@ function buildUserMessageContent(
   selectedContextMode: ChatFileContextMode,
 ): string {
   const sections = [
-    buildFileContextSection(files, selectedContextMode),
+    buildFileContextSection(prompt, files, selectedContextMode),
     `Pedido del usuario:\n${prompt.trim()}`,
   ].filter(Boolean)
 

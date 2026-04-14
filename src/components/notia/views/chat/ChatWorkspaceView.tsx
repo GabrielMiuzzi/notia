@@ -178,9 +178,13 @@ function inferTaskManagerBoardPrefix(
   }
 
   const normalizedPath = normalizeComparableContextPath(library, firstPath)
-  const marker = 'task-mannager/'
+  const marker = 'task-manager/'
+  const legacyMarker = 'task-mannager/'
   const markerIndex = normalizedPath.indexOf(marker)
-  if (markerIndex < 0) {
+  const legacyMarkerIndex = normalizedPath.indexOf(legacyMarker)
+  const resolvedMarker = markerIndex >= 0 ? marker : legacyMarkerIndex >= 0 ? legacyMarker : null
+  const resolvedMarkerIndex = markerIndex >= 0 ? markerIndex : legacyMarkerIndex
+  if (!resolvedMarker || resolvedMarkerIndex < 0) {
     return null
   }
 
@@ -189,7 +193,7 @@ function inferTaskManagerBoardPrefix(
     return null
   }
 
-  return `${normalizedPath.slice(0, markerIndex)}${marker}${boardName}/`
+  return `${normalizedPath.slice(0, resolvedMarkerIndex)}${resolvedMarker}${boardName}/`
 }
 
 function doesChatDocumentMatchPreferredContext(
