@@ -28,9 +28,9 @@ configure_android_toolchain() {
   export ANDROID_NDK_HOME="${ndk_dir}"
   export PATH="${toolchain_bin}:${PATH}"
   export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${toolchain_bin}/aarch64-linux-android24-clang"
-  export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="${toolchain_bin}/armv7a-linux-androideabi24-clang"
-  export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${toolchain_bin}/x86_64-linux-android24-clang"
-  export CARGO_TARGET_I686_LINUX_ANDROID_LINKER="${toolchain_bin}/i686-linux-android24-clang"
+  unset CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER
+  unset CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
+  unset CARGO_TARGET_I686_LINUX_ANDROID_LINKER
 }
 
 configure_android_device() {

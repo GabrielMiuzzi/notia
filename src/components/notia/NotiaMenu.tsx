@@ -557,6 +557,7 @@ export function NotiaMenu() {
 
   const activeTabPathRef = useRef<string | null>(null)
   const openTabsRef = useRef<OpenDocumentTab[]>([])
+  const openingDocumentPathsRef = useRef<Set<string>>(new Set())
   const openWorkspaceSpecialTabsRef = useRef<OpenWorkspaceSpecialTabs>({
     graph: false,
     chat: false,
@@ -1034,13 +1035,15 @@ export function NotiaMenu() {
       return
     }
 
+    if (isAndroidRuntime) {
+      return
+    }
+
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
       return
     }
 
-    const minimumIntervalMs = isAndroidRuntime
-      ? (explorerRefreshIntervalMs > 0 ? Math.max(5000, explorerRefreshIntervalMs) : 0)
-      : Math.max(1000, explorerRefreshIntervalMs)
+    const minimumIntervalMs = Math.max(1000, explorerRefreshIntervalMs)
 
     if (minimumIntervalMs <= 0) {
       return
@@ -1056,7 +1059,6 @@ export function NotiaMenu() {
   }, [
     activeLibrary?.path,
     explorerRefreshIntervalMs,
-    isAndroidRuntime,
     probeActiveLibraryTreeChanges,
     shouldRefreshActiveLibraryTree,
   ])
@@ -2244,13 +2246,13 @@ export function NotiaMenu() {
   }, [clearPendingTextSaveByPath])
 
   const openDocumentInTab = useCallback((document: OpenFileDocument, latestSavedSource: string) => {
-    const existingTab = openTabsRef.current.find((tab) => tab.document.path === document.path)
-    if (existingTab) {
-      setActiveTabPath(document.path)
-      return
-    }
+    setOpenTabs((current) => {
+      if (current.some((tab) => tab.document.path === document.path)) {
+        return current
+      }
 
-    setOpenTabs((current) => [...current, { document, latestSavedSource, saveStatus: 'idle' }])
+      return [...current, { document, latestSavedSource, saveStatus: 'idle' }]
+    })
     setActiveTabPath(document.path)
   }, [])
 
@@ -2422,6 +2424,11 @@ export function NotiaMenu() {
       return
     }
 
+    if (openingDocumentPathsRef.current.has(filePath)) {
+      setActiveTabPath(filePath)
+      return
+    }
+
     const extension = getFileExtension(filePath)
     const viewKind = resolveFileViewKind(extension)
 
@@ -2436,33 +2443,38 @@ export function NotiaMenu() {
     })
 
     if (isTextualViewKind(viewKind) || viewKind === 'inkdoc' || viewKind === 'drawio') {
-      const result = await readLibraryFileContent(filePath, {
-        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
-      })
-      if (!result.ok) {
-        openFileMeasurement.error(new Error(result.error ?? 'Could not read file.'))
-        setDialogState({
-          type: 'info',
-          title: 'No se pudo abrir el archivo',
-          message: result.error ?? 'No se pudo leer el contenido del archivo.',
+      openingDocumentPathsRef.current.add(filePath)
+      try {
+        const result = await readLibraryFileContent(filePath, {
+          androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
+        })
+        if (!result.ok) {
+          openFileMeasurement.error(new Error(result.error ?? 'Could not read file.'))
+          setDialogState({
+            type: 'info',
+            title: 'No se pudo abrir el archivo',
+            message: result.error ?? 'No se pudo leer el contenido del archivo.',
+          })
+          return
+        }
+
+        const name = filePath.split(/[\\/]/).pop() ?? filePath
+        const nextDocument: OpenFileDocument = {
+          path: filePath,
+          name,
+          extension,
+          viewKind,
+          source: result.content,
+        }
+
+        openDocumentInTab(nextDocument, result.content)
+        openFileMeasurement.success({
+          sourceLength: result.content.length,
         })
         return
+      } finally {
+        openingDocumentPathsRef.current.delete(filePath)
       }
-
-      const name = filePath.split(/[\\/]/).pop() ?? filePath
-      const nextDocument: OpenFileDocument = {
-        path: filePath,
-        name,
-        extension,
-        viewKind,
-        source: result.content,
-      }
-
-      openDocumentInTab(nextDocument, result.content)
-      openFileMeasurement.success({
-        sourceLength: result.content.length,
-      })
-      return
     }
 
     const name = filePath.split(/[\\/]/).pop() ?? filePath

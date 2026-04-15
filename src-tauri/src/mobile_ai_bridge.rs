@@ -21,6 +21,13 @@ impl AndroidAiBridgeState {
         }
     }
 
+    #[cfg(target_os = "android")]
+    fn unavailable() -> Self {
+        Self {
+            handle: Mutex::new(None),
+        }
+    }
+
     #[cfg(not(target_os = "android"))]
     fn empty() -> Self {
         Self {}
@@ -310,8 +317,17 @@ pub fn init() -> TauriPlugin<Wry> {
         .setup(|app, api| {
             #[cfg(target_os = "android")]
             {
-                let handle = api.register_android_plugin("com.gabriel.notia", "AiBridgePlugin")?;
-                app.manage(AndroidAiBridgeState::with_handle(handle));
+                match api.register_android_plugin("com.gabriel.notia", "AiBridgePlugin") {
+                    Ok(handle) => {
+                        app.manage(AndroidAiBridgeState::with_handle(handle));
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[mobile_ai_bridge] Android plugin not available, continuing without AI bridge: {error}"
+                        );
+                        app.manage(AndroidAiBridgeState::unavailable());
+                    }
+                }
             }
 
             #[cfg(not(target_os = "android"))]

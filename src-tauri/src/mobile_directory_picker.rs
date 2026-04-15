@@ -42,6 +42,16 @@ impl AndroidDirectoryPickerState {
         }
     }
 
+    #[cfg(target_os = "android")]
+    fn unavailable() -> Self {
+        Self {
+            handle: Mutex::new(None),
+            roots: Mutex::new(HashMap::new()),
+            paths: Mutex::new(HashMap::new()),
+            root_entries: Mutex::new(HashMap::new()),
+        }
+    }
+
     #[cfg(not(target_os = "android"))]
     fn empty() -> Self {
         Self {}
@@ -722,8 +732,17 @@ pub fn init() -> TauriPlugin<Wry> {
         .setup(|app, api| {
             #[cfg(target_os = "android")]
             {
-                let handle = api.register_android_plugin("com.gabriel.notia", "DirectoryPickerPlugin")?;
-                app.manage(AndroidDirectoryPickerState::with_handle(handle));
+                match api.register_android_plugin("com.gabriel.notia", "DirectoryPickerPlugin") {
+                    Ok(handle) => {
+                        app.manage(AndroidDirectoryPickerState::with_handle(handle));
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[mobile_directory_picker] Android plugin not available, continuing without directory picker: {error}"
+                        );
+                        app.manage(AndroidDirectoryPickerState::unavailable());
+                    }
+                }
             }
 
             #[cfg(not(target_os = "android"))]

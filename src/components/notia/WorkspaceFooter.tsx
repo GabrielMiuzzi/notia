@@ -1,4 +1,4 @@
-import { memo, useState, type ComponentType } from 'react'
+import { memo, useEffect, useRef, useState, type ComponentType } from 'react'
 import { BookOpen, CircleHelp, Settings } from 'lucide-react'
 import type { NotiaLibrary } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
@@ -24,10 +24,32 @@ function WorkspaceFooterComponent({
   onOpenSettings,
 }: WorkspaceFooterProps) {
   const [isLibraryMenuOpen, setIsLibraryMenuOpen] = useState(false)
+  const openLibraryManagerTimeoutRef = useRef<number | null>(null)
   const { triggerRef, panelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
     open: isLibraryMenuOpen,
     onClose: () => setIsLibraryMenuOpen(false),
   })
+
+  useEffect(() => () => {
+    if (openLibraryManagerTimeoutRef.current !== null) {
+      window.clearTimeout(openLibraryManagerTimeoutRef.current)
+    }
+  }, [])
+
+  const handleOpenLibraryManagerFromMenu = () => {
+    setIsLibraryMenuOpen(false)
+
+    if (openLibraryManagerTimeoutRef.current !== null) {
+      window.clearTimeout(openLibraryManagerTimeoutRef.current)
+    }
+
+    // On Android WebView, opening the modal in the same tap that closes the
+    // submenu can cause the modal to close immediately.
+    openLibraryManagerTimeoutRef.current = window.setTimeout(() => {
+      openLibraryManagerTimeoutRef.current = null
+      onOpenLibraryManager()
+    }, 0)
+  }
 
   return (
     <div className="notia-footer">
@@ -68,10 +90,7 @@ function WorkspaceFooterComponent({
             <NotiaButton
               className="notia-library-manage"
               variant="secondary"
-              onClick={() => {
-                setIsLibraryMenuOpen(false)
-                onOpenLibraryManager()
-              }}
+              onClick={handleOpenLibraryManagerFromMenu}
             >
               <BookOpen size={14} />
               <span>Administrar librerias</span>
