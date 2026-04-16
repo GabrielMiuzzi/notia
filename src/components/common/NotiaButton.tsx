@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -33,7 +34,7 @@ const buildClassName = (
   return classes.join(' ')
 }
 
-export const NotiaButton = forwardRef<HTMLButtonElement, NotiaButtonProps>(function NotiaButton(
+export const NotiaButton = memo(forwardRef<HTMLButtonElement, NotiaButtonProps>(function NotiaButton(
   {
     variant = 'secondary',
     size = 'md',
@@ -189,4 +190,4 @@ export const NotiaButton = forwardRef<HTMLButtonElement, NotiaButtonProps>(funct
       {children}
     </button>
   )
-})
+}))

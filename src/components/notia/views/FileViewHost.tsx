@@ -1,3 +1,4 @@
+import { memo, useCallback } from 'react'
 import { isTextFileDocument, type OpenFileDocument } from '../../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import type { InkdocPreferences } from '../../../services/preferences/inkdocSettingsStorage'
@@ -24,7 +25,7 @@ interface FileViewHostProps {
   onOpenLinkedFile: (filePath: string) => void
 }
 
-export function FileViewHost({
+function FileViewHostComponent({
   document,
   onTextSourceChange,
   onInkdocSourcePersist,
@@ -38,6 +39,13 @@ export function FileViewHost({
   wikiLinkTargets,
   onOpenLinkedFile,
 }: FileViewHostProps) {
+  const handleDrawioControllerReady = useCallback(
+    (controller: DrawioDocumentController | null) => {
+      onDrawioControllerReady(document.path, controller)
+    },
+    [document.path, onDrawioControllerReady],
+  )
+
   if (document.viewKind === 'image') {
     return <ImageView imageUrl={document.imageUrl} alt={document.name} />
   }
@@ -66,9 +74,7 @@ export function FileViewHost({
           filePath={document.path}
           source={document.source}
           onSourcePersist={onDrawioSourcePersist}
-          onControllerReady={(controller) => {
-            onDrawioControllerReady(document.path, controller)
-          }}
+          onControllerReady={handleDrawioControllerReady}
         />
       )
     }
@@ -94,3 +100,6 @@ export function FileViewHost({
 
   return null
 }
+
+export const FileViewHost = memo(FileViewHostComponent)
+FileViewHost.displayName = 'FileViewHost'

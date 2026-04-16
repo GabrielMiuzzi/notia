@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { FileViewHost } from './views/FileViewHost'
+import { FileViewHost } from './views/FileViewHost' // memoized export
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { InkDocView } from '../../../../modules/inkdoc/InkDocView'
 import { createInkdocApp, type InkdocHostBridge } from '../../../../modules/inkdoc/engines/platform/inkdocPlatform'
 import InkDocPlugin from '../../../../modules/inkdoc/main'
@@ -22,7 +22,7 @@ interface InkdocViewProps {
   onOpenLinkedFile: (filePath: string) => void
 }
 
-export function InkdocView({
+function InkdocViewInner({
   filePath,
   source,
   rootPath,
@@ -142,3 +142,6 @@ export function InkdocView({
 
   return <div ref={mountRef} className="notia-inkdoc-host" />
 }
+
+export const InkdocView = memo(InkdocViewInner)
+InkdocView.displayName = 'InkdocView'

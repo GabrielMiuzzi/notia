@@ -79,18 +79,22 @@ export async function writeLibraryConfig(
   libraryPath: string,
   config: NotiaLibraryConfig,
   options?: LibraryConfigOptions,
+  assumeDirectoryExists?: boolean,
 ): Promise<{ ok: boolean; error?: string }> {
   const configDir = getLibraryConfigDir(libraryPath)
   const configPath = getLibraryConfigPath(libraryPath)
   
   try {
-    // Check if config already exists - if so, just update the file
-    const exists = await libraryConfigExists(libraryPath, options)
-    if (!exists) {
-      // Only create directory if it doesn't exist
-      const dirResult = await createDirectory(configDir, options)
-      if (!dirResult.ok) {
-        return { ok: false, error: 'No se pudo crear el directorio de configuracion.' }
+    // Only check for directory existence if the caller hasn't confirmed it.
+    // When called from ensureLibraryConfigExists, the directory is created
+    // in the same flow, so we can skip the redundant pathExists check.
+    if (!assumeDirectoryExists) {
+      const exists = await libraryConfigExists(libraryPath, options)
+      if (!exists) {
+        const dirResult = await createDirectory(configDir, options)
+        if (!dirResult.ok) {
+          return { ok: false, error: 'No se pudo crear el directorio de configuracion.' }
+        }
       }
     }
     
@@ -110,10 +114,25 @@ export async function ensureLibraryConfigExists(
   libraryPath: string,
   options?: LibraryConfigOptions,
 ): Promise<void> {
-  const exists = await libraryConfigExists(libraryPath, options)
-  if (!exists) {
-    await writeLibraryConfig(libraryPath, DEFAULT_LIBRARY_CONFIG, options)
+  const configDir = getLibraryConfigDir(libraryPath)
+
+  // Try to read the config file directly. If it exists, we are done.
+  // This avoids a separate pathExists call that would trigger a full
+  // SAF tree cache refresh on Android.
+  const existingConfig = await readLibraryConfig(libraryPath, options)
+  if (existingConfig) {
+    return
   }
+
+  // Config file does not exist — create the directory first, then write
+  // the default config. We pass assumeDirectoryExists=true because we
+  // just created the directory in the line above.
+  const dirResult = await createDirectory(configDir, options)
+  if (!dirResult.ok) {
+    // If the directory already exists, createDirectory may fail — try
+    // to write the config file anyway.
+  }
+  await writeLibraryConfig(libraryPath, DEFAULT_LIBRARY_CONFIG, options, true)
 }
 
 export async function updateLibraryConfig(

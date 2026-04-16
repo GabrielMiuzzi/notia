@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
 import { useVirtualList } from '../../hooks/useVirtualList'
@@ -76,7 +76,7 @@ function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
   return normalizedCandidate.startsWith(`${normalizedBase}/`)
 }
 
-function TreeRow({
+const TreeRow = memo(function TreeRow({
   node,
   level,
   isSearchActive,
@@ -246,7 +246,7 @@ function TreeRow({
       )}
     </div>
   )
-}
+})
 
 interface PendingCreationRowProps {
   pendingCreation: PendingCreation
@@ -378,16 +378,16 @@ function FileTreeComponent({
     overscan: 10,
   })
 
-  const handleDragStartNode = (path: string) => {
+  const handleDragStartNode = useCallback((path: string) => {
     setDraggingEntry({ path })
-  }
+  }, [])
 
-  const handleDragEndNode = () => {
+  const handleDragEndNode = useCallback(() => {
     setDraggingEntry(null)
     setDropTargetFolderPath(null)
-  }
+  }, [])
 
-  const handleDragOverFolder = (targetPath: string): boolean => {
+  const handleDragOverFolder = useCallback((targetPath: string): boolean => {
     if (!draggingEntry) {
       return false
     }
@@ -399,9 +399,9 @@ function FileTreeComponent({
 
     setDropTargetFolderPath(targetPath)
     return true
-  }
+  }, [draggingEntry])
 
-  const handleDropOnFolder = (targetPath: string) => {
+  const handleDropOnFolder = useCallback((targetPath: string) => {
     if (!draggingEntry) {
       return
     }
@@ -415,7 +415,7 @@ function FileTreeComponent({
     }
 
     onMoveNode(sourcePath, targetPath)
-  }
+  }, [draggingEntry, onMoveNode])
 
   useEffect(() => {
     if (!pendingCreation) {

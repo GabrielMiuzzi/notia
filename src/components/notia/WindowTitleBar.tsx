@@ -5,67 +5,56 @@ import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
 import { NotiaSubmenuPanel } from './NotiaSubmenuPanel'
-
-interface WindowTitleTab {
-  path: string
-  title: string
-}
+import { useAppSelector, useAppDispatch } from '../../store/hooks'
+import { setSearchQuery } from '../../features/documents/documentsSlice'
+import { selectIsSidebarOpen, selectIsRightChatPanelOpen, selectIsSearchMenuOpen, selectActiveHeaderAction } from '../../features/ui/uiSelectors'
+import { selectTheme } from '../../features/preferences/preferencesSelectors'
+import { selectActiveTabPath, selectSearchQuery, selectIsSearchLoading, selectSearchMatchedCount, selectTitleBarTabs } from '../../features/documents/documentsSelectors'
+import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
 
 interface WindowTitleBarProps {
-  tabs: WindowTitleTab[]
-  activeTabPath: string | null
   tabIcon: ComponentType<{ size?: number }>
-  onActivateTab: (tabPath: string) => void
-  onCloseTab: (tabPath: string) => void
-  isSidebarOpen: boolean
-  onToggleSidebar: () => void
   explorerActions: NotiaIconAction[]
   explorerTools: NotiaIconAction[]
-  activeExplorerActionId: string
-  isSearchMenuOpen: boolean
-  searchQuery: string
-  searchResultCount: number
-  isSearchLoading: boolean
-  onExplorerActionClick: (id: string) => void
-  onExplorerToolClick: (id: string) => void
-  onSearchQueryChange: (value: string) => void
-  onSearchMenuClose: () => void
   rightActions: NotiaIconAction[]
-  theme: 'dark' | 'light'
-  onToggleTheme: () => void
   showRightPanelToggle?: boolean
-  isRightPanelOpen: boolean
-  onToggleRightPanel: () => void
-  onWindowAction: (action: NotiaWindowAction) => void
 }
 
 function WindowTitleBarComponent({
-  tabs,
-  activeTabPath,
   tabIcon: TabIcon,
-  onActivateTab,
-  onCloseTab,
-  isSidebarOpen,
-  onToggleSidebar,
   explorerActions,
   explorerTools,
-  activeExplorerActionId,
-  isSearchMenuOpen,
-  searchQuery,
-  searchResultCount,
-  isSearchLoading,
-  onExplorerActionClick,
-  onExplorerToolClick,
-  onSearchQueryChange,
-  onSearchMenuClose,
   rightActions,
-  theme,
-  onToggleTheme,
   showRightPanelToggle = true,
-  isRightPanelOpen,
-  onToggleRightPanel,
-  onWindowAction,
 }: WindowTitleBarProps) {
+  const actions = useNotiaActions()
+  const dispatch = useAppDispatch()
+
+  // Self-subscribed Redux selectors (previously passed as props from NotiaMenu)
+  const tabs = useAppSelector(selectTitleBarTabs)
+  const activeTabPath = useAppSelector(selectActiveTabPath)
+  const isSidebarOpen = useAppSelector(selectIsSidebarOpen)
+  const activeExplorerActionId = useAppSelector(selectActiveHeaderAction)
+  const isSearchMenuOpen = useAppSelector(selectIsSearchMenuOpen)
+  const searchQuery = useAppSelector(selectSearchQuery)
+  const searchResultCount = useAppSelector(selectSearchMatchedCount)
+  const isSearchLoading = useAppSelector(selectIsSearchLoading)
+  const theme = useAppSelector(selectTheme)
+  const isRightPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
+
+  // Stable dispatchers from context
+  const onActivateTab = actions.activateTab
+  const onCloseTab = actions.closeTab
+  const onToggleSidebar = actions.toggleSidebar
+  const onExplorerActionClick = actions.headerActionClick
+  const onExplorerToolClick = actions.explorerToolClick
+  const onSearchMenuClose = actions.closeSearchMenu
+  const onToggleTheme = actions.toggleTheme
+  const onToggleRightPanel = actions.toggleRightChatPanel
+  const onWindowAction = actions.windowAction
+
+  const onSearchQueryChange = useCallback((value: string) => { dispatch(setSearchQuery(value)) }, [dispatch])
+
   const DRAG_START_DELAY_MS = 170
   const DRAG_MOVE_THRESHOLD_PX = 8
   const tabsScrollRef = useRef<HTMLDivElement>(null)

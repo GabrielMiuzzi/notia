@@ -20,6 +20,9 @@ android-signing.properties
 # Rust / Tauri
 src-tauri/target
 src-tauri/gen
+src-tauri/target-check*/
+target-check*/
+.gradle-local/
 
 # Editor directories and files
 .vscode/*

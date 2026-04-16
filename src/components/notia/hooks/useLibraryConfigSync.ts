@@ -1,4 +1,4 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   normalizeAiSettingsInput,
   saveAiPreferences,
@@ -16,6 +16,8 @@ import {
   writeLibraryConfig,
   type NotiaLibraryConfig,
 } from '../../../services/libraries/libraryConfig'
+import { useAppSelector } from '../../../store/hooks'
+import { selectLibraryStatus } from '../../../features/library/librarySelectors'
 import type { NotiaLibrary } from '../../../types/notia'
 
 interface UseLibraryConfigSyncParams {
@@ -23,9 +25,9 @@ interface UseLibraryConfigSyncParams {
   aiPreferences: AiPreferences
   explorerRefreshIntervalMs: number
   inkdocPreferences: InkdocPreferences
-  setAiPreferences: Dispatch<SetStateAction<AiPreferences>>
-  setExplorerRefreshIntervalMs: Dispatch<SetStateAction<number>>
-  setInkdocPreferences: Dispatch<SetStateAction<InkdocPreferences>>
+  setAiPreferences: (value: AiPreferences) => void
+  setExplorerRefreshIntervalMs: (value: number) => void
+  setInkdocPreferences: (value: InkdocPreferences) => void
 }
 
 export function useLibraryConfigSync({
@@ -47,6 +49,11 @@ export function useLibraryConfigSync({
     inkdocPreferences,
   })
 
+  // Wait until the tree is fully loaded before reading/writing config.
+  // This avoids redundant SAF operations that race with the tree sync.
+  const libraryStatus = useAppSelector(selectLibraryStatus)
+  const isLibraryReady = libraryStatus === 'ready' || libraryStatus === 'idle'
+
   useEffect(() => {
     fallbackPreferencesRef.current = {
       aiPreferences,
@@ -67,12 +74,19 @@ export function useLibraryConfigSync({
       return
     }
 
+    // Don't read config until the library tree has finished loading.
+    // On Android, reading config triggers SAF operations that compete
+    // with the tree load; deferring avoids redundant cache refreshes.
+    if (!isLibraryReady) {
+      return
+    }
+
     let isCancelled = false
     libraryConfigLoadedRef.current = false
     initialConfigRef.current = null
 
     void (async () => {
-      console.log('[NotiaMenu] Loading library config for:', activeLibrary.path)
+      console.warn('[NotiaMenu] Loading library config for:', activeLibrary.path)
       const config = await readLibraryConfig(activeLibrary.path, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
@@ -82,7 +96,7 @@ export function useLibraryConfigSync({
       }
 
       if (config) {
-        console.log('[NotiaMenu] Found existing config:', config)
+        console.warn('[NotiaMenu] Found existing config:', config)
         if (config.panelDesplegable?.refreshIntervalMs !== undefined) {
           setExplorerRefreshIntervalMs(config.panelDesplegable.refreshIntervalMs)
         }
@@ -94,7 +108,7 @@ export function useLibraryConfigSync({
         }
         initialConfigRef.current = config
       } else {
-        console.log('[NotiaMenu] No existing config found')
+        console.warn('[NotiaMenu] No existing config found')
         initialConfigRef.current = {
           version: 1,
           panelDesplegable: {
@@ -106,7 +120,7 @@ export function useLibraryConfigSync({
       }
 
       libraryConfigLoadedRef.current = true
-      console.log('[NotiaMenu] Library config loading complete')
+      console.warn('[NotiaMenu] Library config loading complete')
     })()
 
     return () => {
@@ -114,7 +128,7 @@ export function useLibraryConfigSync({
       libraryConfigLoadedRef.current = false
       initialConfigRef.current = null
     }
-  }, [activeLibrary?.path, activeLibrary?.androidTreeUri])
+  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, isLibraryReady])
 
   useEffect(() => {
     if (!activeLibrary) {
@@ -122,7 +136,7 @@ export function useLibraryConfigSync({
     }
 
     if (!libraryConfigLoadedRef.current) {
-      console.log('[NotiaMenu] Skipping save - config not loaded yet')
+      console.warn('[NotiaMenu] Skipping save - config not loaded yet')
       return
     }
 
@@ -139,7 +153,7 @@ export function useLibraryConfigSync({
       const initialJson = JSON.stringify(initialConfigRef.current)
       const currentJson = JSON.stringify(config)
       if (initialJson === currentJson) {
-        console.log('[NotiaMenu] Skipping save - matches initial config')
+        console.warn('[NotiaMenu] Skipping save - matches initial config')
         return
       }
     }
@@ -151,12 +165,12 @@ export function useLibraryConfigSync({
     }
 
     libraryConfigTimeoutRef.current = window.setTimeout(() => {
-      console.log('[NotiaMenu] Saving library config:', config)
+      console.warn('[NotiaMenu] Saving library config:', config)
 
       void writeLibraryConfig(activeLibraryPathRef.current!, config, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       }).then((result) => {
-        console.log('[NotiaMenu] Save result:', result)
+        console.warn('[NotiaMenu] Save result:', result)
         if (result.ok) {
           initialConfigRef.current = config
         }

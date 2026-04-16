@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useAppSelector } from '../../../store/hooks'
+import { selectIndexRevision } from '../../../features/library/librarySelectors'
 import { useLibraryGraphData } from '../../../hooks/useLibraryGraphData'
 import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
 
 interface UseGraphWorkspaceParams {
   activeLibrary: NotiaLibrary | null
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'documents'
-  graphRevision: number
   treeNodes: NotiaFileNode[]
 }
 
 export function useGraphWorkspace({
   activeLibrary,
   activeWorkspaceView,
-  graphRevision,
   treeNodes,
 }: UseGraphWorkspaceParams) {
+  const graphRevision = useAppSelector(selectIndexRevision)
   const [graphChatSelectedPaths, setGraphChatSelectedPaths] = useState<string[]>([])
 
   const isGraphViewActive = activeWorkspaceView === 'graph'

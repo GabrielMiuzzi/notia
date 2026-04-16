@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
@@ -129,7 +129,7 @@ function insertWikiLinkSuggestion(
   view.dispatch(transaction.scrollIntoView())
 }
 
-export function MarkdownView({
+function MarkdownViewInner({
   source,
   onSourceChange,
   wikiLinkTargets,
@@ -390,3 +390,6 @@ export function MarkdownView({
     </div>
   )
 }
+
+export const MarkdownView = memo(MarkdownViewInner)
+MarkdownView.displayName = 'MarkdownView'

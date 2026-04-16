@@ -33,7 +33,17 @@ fn map_already_exists_error(error_message: String, fallback: &str) -> OperationR
 #[cfg(target_os = "android")]
 fn refresh_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: Option<&str>) {
     if let Some(tree_uri) = root_tree_uri {
-        let _ = mobile_directory_picker::refresh_android_tree_path_cache(state, tree_uri);
+        let _ = mobile_directory_picker::refresh_android_tree_path_cache(state, tree_uri, false);
+    }
+}
+
+/// Mark the SAF path cache as stale so that the next operation that needs a
+/// fresh cache will trigger a full `readTree`. This is used after mutations
+/// (create, delete, rename, paste) instead of eagerly doing a full refresh.
+#[cfg(target_os = "android")]
+fn invalidate_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: Option<&str>) {
+    if let Some(tree_uri) = root_tree_uri {
+        mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
     }
 }
 
@@ -55,13 +65,25 @@ fn resolve_entry_uri(
     if path.starts_with("content://") {
         Some(path.to_string())
     } else {
-        // The root tree URI is only for refreshing the SAF cache. Resolving a nested
-        // entry must come from the cached path map, otherwise we risk treating the
-        // root tree URI as if it were the URI of the file/folder being accessed.
-        let _ = root_tree_uri;
-        mobile_directory_picker::resolve_android_tree_uri(state, path, None)
+        // Try the cached path map first (most common case).
+        let resolved = mobile_directory_picker::resolve_android_tree_uri(state, path, None)
             .ok()
-            .flatten()
+            .flatten();
+        if resolved.is_some() {
+            return resolved;
+        }
+
+        // If the path is not in the cache but we have a root_tree_uri, use it
+        // as context for resolution. This is critical for multi-library setups
+        // where the paths HashMap may not have been populated yet for the new
+        // library.
+        if let Some(tree_uri) = root_tree_uri.map(str::trim).filter(|v| !v.is_empty()) {
+            mobile_directory_picker::resolve_android_tree_uri(state, path, Some(tree_uri))
+                .ok()
+                .flatten()
+        } else {
+            None
+        }
     }
 }
 
@@ -113,18 +135,20 @@ pub(crate) fn read_library_file(
         None => return None,
     };
 
-    Some(match mobile_directory_picker::read_android_content_text(state, &content_uri) {
-        Ok(content) => ReadLibraryFileResult {
-            ok: true,
-            content,
-            error: None,
+    Some(
+        match mobile_directory_picker::read_android_content_text(state, &content_uri) {
+            Ok(content) => ReadLibraryFileResult {
+                ok: true,
+                content,
+                error: None,
+            },
+            Err(_) => ReadLibraryFileResult {
+                ok: false,
+                content: String::new(),
+                error: Some("Could not read file.".to_string()),
+            },
         },
-        Err(_) => ReadLibraryFileResult {
-            ok: false,
-            content: String::new(),
-            error: Some("Could not read file.".to_string()),
-        },
-    })
+    )
 }
 
 #[cfg(not(target_os = "android"))]
@@ -155,16 +179,18 @@ pub(crate) fn write_library_file(
         None => return None,
     };
 
-    Some(match mobile_directory_picker::write_android_content_text(state, &content_uri, content) {
-        Ok(()) => WriteLibraryFileResult {
-            ok: true,
-            error: None,
+    Some(
+        match mobile_directory_picker::write_android_content_text(state, &content_uri, content) {
+            Ok(()) => WriteLibraryFileResult {
+                ok: true,
+                error: None,
+            },
+            Err(_) => WriteLibraryFileResult {
+                ok: false,
+                error: Some("Could not write file.".to_string()),
+            },
         },
-        Err(_) => WriteLibraryFileResult {
-            ok: false,
-            error: Some("Could not write file.".to_string()),
-        },
-    })
+    )
 }
 
 #[cfg(not(target_os = "android"))]
@@ -206,7 +232,7 @@ pub(crate) fn create_library_file(
             Some(content),
         ) {
             Ok(_) => {
-                refresh_root_tree_cache(state, root_tree_uri);
+                invalidate_root_tree_cache(state, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -247,9 +273,10 @@ pub(crate) fn create_library_directory(
     let directory_name = Path::new(directory_path).file_name()?.to_str()?;
 
     Some(
-        match mobile_directory_picker::create_android_directory(state, &parent_uri, directory_name) {
+        match mobile_directory_picker::create_android_directory(state, &parent_uri, directory_name)
+        {
             Ok(_) => {
-                refresh_root_tree_cache(state, root_tree_uri);
+                invalidate_root_tree_cache(state, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -362,13 +389,15 @@ pub(crate) fn create_library_entry(
             content,
         ) {
             Ok(_) => {
-                refresh_root_tree_cache(state, root_tree_uri);
+                invalidate_root_tree_cache(state, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
                 }
             }
-            Err(error_message) => map_already_exists_error(error_message, "Could not create entry."),
+            Err(error_message) => {
+                map_already_exists_error(error_message, "Could not create entry.")
+            }
         },
     )
 }
@@ -402,19 +431,21 @@ pub(crate) fn delete_entry(
         None => return None,
     };
 
-    Some(match mobile_directory_picker::delete_android_tree_entry(state, &entry_uri) {
-        Ok(()) => {
-            refresh_root_tree_cache(state, root_tree_uri);
-            OperationResult {
-                ok: true,
-                error: None,
+    Some(
+        match mobile_directory_picker::delete_android_tree_entry(state, &entry_uri) {
+            Ok(()) => {
+                invalidate_root_tree_cache(state, root_tree_uri);
+                OperationResult {
+                    ok: true,
+                    error: None,
+                }
             }
-        }
-        Err(_) => OperationResult {
-            ok: false,
-            error: Some("Could not delete entry.".to_string()),
+            Err(_) => OperationResult {
+                ok: false,
+                error: Some("Could not delete entry.".to_string()),
+            },
         },
-    })
+    )
 }
 
 #[cfg(not(target_os = "android"))]
@@ -448,13 +479,15 @@ pub(crate) fn rename_entry(
     Some(
         match mobile_directory_picker::rename_android_tree_entry(state, &entry_uri, new_name) {
             Ok(_) => {
-                refresh_root_tree_cache(state, root_tree_uri);
+                invalidate_root_tree_cache(state, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
                 }
             }
-            Err(error_message) => map_already_exists_error(error_message, "Could not rename entry."),
+            Err(error_message) => {
+                map_already_exists_error(error_message, "Could not rename entry.")
+            }
         },
     )
 }
@@ -547,7 +580,7 @@ pub(crate) fn paste_entry(
 
     Some(match operation_result {
         Ok(_) => {
-            refresh_root_tree_cache(state, root_tree_uri);
+            invalidate_root_tree_cache(state, root_tree_uri);
             OperationResult {
                 ok: true,
                 error: None,

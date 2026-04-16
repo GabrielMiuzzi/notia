@@ -3,13 +3,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
-use tauri::{
-    Manager,
-    plugin::{Builder as PluginBuilder, TauriPlugin},
-    State, Wry,
-};
+#[cfg(target_os = "android")]
+use std::time::Instant;
 #[cfg(target_os = "android")]
 use tauri::plugin::PluginHandle;
+use tauri::{
+    plugin::{Builder as PluginBuilder, TauriPlugin},
+    Manager, State, Wry,
+};
+
+/// TTL in seconds for the SAF tree path cache. When a cache entry is younger
+/// than this, `refresh_android_tree_path_cache` will skip the expensive
+/// recursive `readTree` call and reuse the cached path→URI mappings.
+#[cfg(target_os = "android")]
+const SAF_CACHE_TTL_SECS: u64 = 5;
 
 pub struct AndroidDirectoryPickerState {
     #[cfg(target_os = "android")]
@@ -20,6 +27,10 @@ pub struct AndroidDirectoryPickerState {
     paths: Mutex<HashMap<String, String>>,
     #[cfg(target_os = "android")]
     root_entries: Mutex<HashMap<String, Vec<String>>>,
+    /// Tracks the last successful cache refresh time per tree URI so that
+    /// repetitive refreshes within the TTL window can be skipped.
+    #[cfg(target_os = "android")]
+    last_cache_refresh_at: Mutex<HashMap<String, Instant>>,
 }
 
 #[cfg(target_os = "android")]
@@ -39,6 +50,7 @@ impl AndroidDirectoryPickerState {
             roots: Mutex::new(HashMap::new()),
             paths: Mutex::new(HashMap::new()),
             root_entries: Mutex::new(HashMap::new()),
+            last_cache_refresh_at: Mutex::new(HashMap::new()),
         }
     }
 
@@ -49,6 +61,7 @@ impl AndroidDirectoryPickerState {
             roots: Mutex::new(HashMap::new()),
             paths: Mutex::new(HashMap::new()),
             root_entries: Mutex::new(HashMap::new()),
+            last_cache_refresh_at: Mutex::new(HashMap::new()),
         }
     }
 
@@ -156,10 +169,87 @@ fn cache_android_tree_nodes(
 }
 
 #[cfg(target_os = "android")]
+fn is_cache_fresh(state: &AndroidDirectoryPickerState, tree_uri: &str) -> bool {
+    let Ok(timestamps) = state.last_cache_refresh_at.lock() else {
+        return false;
+    };
+    timestamps
+        .get(tree_uri)
+        .map(|instant| instant.elapsed().as_secs() < SAF_CACHE_TTL_SECS)
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "android")]
+fn mark_cache_fresh(state: &AndroidDirectoryPickerState, tree_uri: &str) {
+    if let Ok(mut timestamps) = state.last_cache_refresh_at.lock() {
+        timestamps.insert(tree_uri.to_string(), Instant::now());
+    }
+}
+
+/// Mark the SAF path cache as stale for the given tree URI without doing any
+/// I/O. The next call to `refresh_android_tree_path_cache` with `force=false`
+/// will perform a full `readTree` to rebuild the cache.
+#[cfg(target_os = "android")]
+pub fn invalidate_tree_cache(state: &AndroidDirectoryPickerState, tree_uri: &str) {
+    if let Ok(mut timestamps) = state.last_cache_refresh_at.lock() {
+        timestamps.remove(tree_uri);
+    }
+}
+
+/// Update cached path→URI mappings from tree nodes that have already been
+/// fetched (e.g. by `read_android_library_tree`). This avoids the redundant
+/// second `readTree` call that `refresh_android_tree_path_cache` would make.
+#[cfg(target_os = "android")]
+pub fn update_cache_from_nodes(
+    state: &AndroidDirectoryPickerState,
+    tree_uri: &str,
+    nodes: &[AndroidTreeNode],
+) {
+    let root_paths = {
+        let Ok(roots) = state.roots.lock() else {
+            return;
+        };
+        roots
+            .iter()
+            .filter(|(_, uri)| uri.as_str() == tree_uri)
+            .map(|(path, uri)| (path.clone(), uri.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let mut cached_keys = HashSet::new();
+
+    let Ok(mut paths) = state.paths.lock() else {
+        return;
+    };
+    let Ok(mut root_entries) = state.root_entries.lock() else {
+        return;
+    };
+
+    if let Some(previous_keys) = root_entries.get(tree_uri) {
+        for key in previous_keys {
+            paths.remove(key);
+        }
+    }
+
+    for (root_path, root_uri) in &root_paths {
+        cache_android_path(&mut paths, &mut cached_keys, root_path, root_uri);
+    }
+
+    cache_android_tree_nodes(&mut paths, &mut cached_keys, nodes);
+    root_entries.insert(tree_uri.to_string(), cached_keys.into_iter().collect());
+    mark_cache_fresh(state, tree_uri);
+}
+
+#[cfg(target_os = "android")]
 pub fn refresh_android_tree_path_cache(
     state: &AndroidDirectoryPickerState,
     tree_uri: &str,
+    force: bool,
 ) -> Result<(), String> {
+    if !force && is_cache_fresh(state, tree_uri) {
+        return Ok(());
+    }
+
     let guard = state
         .handle
         .lock()
@@ -171,6 +261,9 @@ pub fn refresh_android_tree_path_cache(
     let response = handle
         .run_mobile_plugin::<ReadTreeResponse>("readTree", serde_json::json!({ "uri": tree_uri }))
         .map_err(|error| format!("No se pudo leer la carpeta Android: {error}"))?;
+
+    // Release the handle lock before acquiring paths/root_entries.
+    drop(guard);
 
     let root_paths = {
         let roots = state
@@ -206,6 +299,7 @@ pub fn refresh_android_tree_path_cache(
 
     cache_android_tree_nodes(&mut paths, &mut cached_keys, &response.nodes);
     root_entries.insert(tree_uri.to_string(), cached_keys.into_iter().collect());
+    mark_cache_fresh(state, tree_uri);
     Ok(())
 }
 
@@ -254,7 +348,10 @@ pub fn pick_android_directory_tree(
                 println!("[mobile_directory_picker] Plugin call failed: {}", error);
                 format!("No se pudo abrir el selector de carpetas: {error}")
             })?;
-        println!("[mobile_directory_picker] Plugin response: path={:?}, uri={:?}", response.path, response.uri);
+        println!(
+            "[mobile_directory_picker] Plugin response: path={:?}, uri={:?}",
+            response.path, response.uri
+        );
         let Some(path) = response.path else {
             println!("[mobile_directory_picker] No path in response");
             return Err("No se pudo resolver la carpeta seleccionada.".to_string());
@@ -272,7 +369,12 @@ pub fn pick_android_directory_tree(
                 .map_err(|_| "No se pudo guardar la referencia de carpeta Android.".to_string())?;
             let normalized_key = normalize_android_root_key(&path);
             roots.insert(path.clone(), uri.clone());
-            roots.insert(normalized_key, uri);
+            roots.insert(normalized_key, uri.clone());
+
+            // Invalidate the Rust-side cache for this tree URI so that the
+            // next readTree will fetch fresh data (the directory may have
+            // changed externally since the last time it was accessed).
+            invalidate_tree_cache(state.inner(), &uri);
         }
 
         if let Some(uri) = selected_uri.as_deref() {
@@ -299,7 +401,7 @@ pub fn pick_android_directory_tree(
 }
 
 #[tauri::command]
-pub fn read_android_library_tree(
+pub async fn read_android_library_tree(
     state: State<'_, AndroidDirectoryPickerState>,
     payload: ReadAndroidTreePayload,
 ) -> Result<Vec<AndroidTreeNode>, String> {
@@ -311,50 +413,65 @@ pub fn read_android_library_tree(
 
         let uri = {
             let normalized_key = normalize_android_root_key(&payload.directory_path);
-            if let Some(uri) = payload.directory_uri.clone().filter(|value| !value.trim().is_empty()) {
-                let mut roots = state
-                    .roots
-                    .lock()
-                    .map_err(|_| "No se pudo acceder a las carpetas Android seleccionadas.".to_string())?;
+            if let Some(uri) = payload
+                .directory_uri
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+            {
+                let mut roots = state.roots.lock().map_err(|_| {
+                    "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
+                })?;
                 roots.insert(payload.directory_path.clone(), uri.clone());
                 roots.insert(normalized_key, uri.clone());
                 Some(uri)
             } else {
                 let exact_path_uri = {
-                    let paths = state
-                        .paths
-                        .lock()
-                        .map_err(|_| "No se pudo acceder a las carpetas Android seleccionadas.".to_string())?;
-                    paths.get(&payload.directory_path)
-                        .cloned()
-                        .or_else(|| paths.get(&normalized_key).cloned())
+                    let paths = state.paths.lock().map_err(|_| {
+                        "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
+                    })?;
+                    paths.get(&payload.directory_path).cloned().or_else(|| {
+                        paths
+                            .get(&normalize_android_root_key(&payload.directory_path))
+                            .cloned()
+                    })
                 };
                 if exact_path_uri.is_some() {
                     exact_path_uri
                 } else {
-                    let roots = state
-                        .roots
-                        .lock()
-                        .map_err(|_| "No se pudo acceder a las carpetas Android seleccionadas.".to_string())?;
-                roots
-                    .get(&payload.directory_path)
-                    .cloned()
-                    .or_else(|| roots.get(&normalized_key).cloned())
-                    .or_else(|| {
-                        if roots.len() == 1 {
-                            roots.values().next().cloned()
-                        } else {
-                            None
-                        }
-                    })
+                    let normalized_key = normalize_android_root_key(&payload.directory_path);
+                    let roots = state.roots.lock().map_err(|_| {
+                        "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
+                    })?;
+                    roots
+                        .get(&payload.directory_path)
+                        .cloned()
+                        .or_else(|| roots.get(&normalized_key).cloned())
+                        .or_else(|| {
+                            // Multi-root fallback: find the root whose path is a
+                            // prefix of the requested path (longest prefix wins).
+                            roots
+                                .iter()
+                                .filter(|(root_path, _)| {
+                                    let norm_root = normalize_android_root_key(root_path);
+                                    payload.directory_path.starts_with(root_path.as_str())
+                                        || payload.directory_path.starts_with(norm_root.as_str())
+                                })
+                                .max_by_key(|(root_path, _)| root_path.len())
+                                .map(|(_, uri)| uri.clone())
+                        })
                 }
             }
         };
 
         let Some(uri) = uri else {
-            return Err("No se encontro la referencia Android de la carpeta seleccionada.".to_string());
+            return Err(
+                "No se encontro la referencia Android de la carpeta seleccionada.".to_string(),
+            );
         };
 
+        // Fetch the tree and update the cache in one pass — no second readTree.
+        // This is an async command so the Tauri runtime can process other events
+        // (e.g. WebView rendering) while this command runs on the async thread pool.
         let response = {
             let guard = state
                 .handle
@@ -365,13 +482,18 @@ pub fn read_android_library_tree(
             };
 
             handle
-                .run_mobile_plugin::<ReadTreeResponse>("readTree", serde_json::json!({ "uri": uri }))
+                .run_mobile_plugin::<ReadTreeResponse>(
+                    "readTree",
+                    serde_json::json!({ "uri": uri }),
+                )
                 .map_err(|error| format!("No se pudo leer la carpeta Android: {error}"))?
         };
 
-        let _ = refresh_android_tree_path_cache(state.inner(), &uri);
+        // Update the path cache from the tree nodes we already fetched, avoiding
+        // the redundant second readTree that refresh_android_tree_path_cache would do.
+        update_cache_from_nodes(state.inner(), &uri, &response.nodes);
 
-        return Ok(response.nodes);
+        Ok(response.nodes)
     }
 
     #[cfg(not(target_os = "android"))]
@@ -400,7 +522,10 @@ pub fn read_android_content_text(
     };
 
     let response = handle
-        .run_mobile_plugin::<ReadFileResponse>("readFile", serde_json::json!({ "uri": content_uri }))
+        .run_mobile_plugin::<ReadFileResponse>(
+            "readFile",
+            serde_json::json!({ "uri": content_uri }),
+        )
         .map_err(|error| format!("No se pudo leer el archivo Android: {error}"))?;
     let Some(content) = response.content else {
         return Err("No se pudo leer el contenido del archivo Android.".to_string());
@@ -451,7 +576,10 @@ pub fn read_android_entry_type(
     };
 
     let response = handle
-        .run_mobile_plugin::<EntryInfoResponse>("statEntry", serde_json::json!({ "uri": entry_uri }))
+        .run_mobile_plugin::<EntryInfoResponse>(
+            "statEntry",
+            serde_json::json!({ "uri": entry_uri }),
+        )
         .map_err(|error| format!("No se pudo leer la entrada Android: {error}"))?;
 
     if !response.ok.unwrap_or(false) {
@@ -553,7 +681,10 @@ pub fn delete_android_tree_entry(
     };
 
     let response = handle
-        .run_mobile_plugin::<WriteFileResponse>("deleteEntry", serde_json::json!({ "uri": entry_uri }))
+        .run_mobile_plugin::<WriteFileResponse>(
+            "deleteEntry",
+            serde_json::json!({ "uri": entry_uri }),
+        )
         .map_err(|error| format!("No se pudo eliminar la entrada Android: {error}"))?;
 
     if !response.ok {
@@ -703,12 +834,14 @@ pub fn resolve_android_tree_uri(
         return Ok(Some(uri));
     }
 
+    // Try exact path match in the cached paths map first.
     let exact_path_uri = {
         let paths = state
             .paths
             .lock()
             .map_err(|_| "No se pudo acceder a las carpetas Android seleccionadas.".to_string())?;
-        paths.get(directory_path)
+        paths
+            .get(directory_path)
             .cloned()
             .or_else(|| paths.get(&normalized_key).cloned())
     };
@@ -716,6 +849,7 @@ pub fn resolve_android_tree_uri(
         return Ok(exact_path_uri);
     }
 
+    // Try exact match in roots.
     let roots = state
         .roots
         .lock()
@@ -723,7 +857,20 @@ pub fn resolve_android_tree_uri(
     let resolved = roots
         .get(directory_path)
         .cloned()
-        .or_else(|| roots.get(&normalized_key).cloned());
+        .or_else(|| roots.get(&normalized_key).cloned())
+        .or_else(|| {
+            // Multi-root fallback: find the root whose normalized path is a
+            // prefix of the requested normalized path (longest prefix wins).
+            roots
+                .iter()
+                .filter(|(root_path, _)| {
+                    let norm_root = normalize_android_root_key(root_path);
+                    normalized_key.starts_with(norm_root.as_str())
+                        || normalized_key.starts_with(root_path.as_str())
+                })
+                .max_by_key(|(root_path, _)| root_path.len())
+                .map(|(_, uri)| uri.clone())
+        });
     Ok(resolved)
 }
 
