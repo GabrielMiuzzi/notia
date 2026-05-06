@@ -4,14 +4,15 @@ import { setSearchMatchedPaths, setIsSearchLoading } from '../../../features/doc
 import { selectNormalizedSearchQuery } from '../../../features/documents/documentsSelectors'
 import { selectIndexRevision, selectActiveLibrary } from '../../../features/library/librarySelectors'
 import { searchIndexedLibraryFiles } from '../../../services/libraries/librarySearchGraphIndex'
-import type { NotiaFileNode } from '../../../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../../../types/notia'
 
 interface UseLibrarySearchParams {
   treeNodes: NotiaFileNode[]
   treeNodesLibraryId: string | null
+  flatFileList: NotiaFlatFileEntry[]
 }
 
-export function useLibrarySearch({ treeNodes, treeNodesLibraryId }: UseLibrarySearchParams) {
+export function useLibrarySearch({ treeNodes, treeNodesLibraryId, flatFileList }: UseLibrarySearchParams) {
   const dispatch = useAppDispatch()
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const normalizedSearchQuery = useAppSelector(selectNormalizedSearchQuery)
@@ -34,9 +35,12 @@ export function useLibrarySearch({ treeNodes, treeNodesLibraryId }: UseLibrarySe
     dispatch(setIsSearchLoading(true))
 
     const timeoutId = window.setTimeout(() => {
+      // Use flatFileList on Android when available, fall back to treeNodes
+      const hasFlatFileList = flatFileList.length > 0
       void searchIndexedLibraryFiles({
         libraryPath: activeLibrary.path,
-        treeNodes,
+        treeNodes: hasFlatFileList ? undefined : treeNodes,
+        flatFileList: hasFlatFileList ? flatFileList : undefined,
         query: normalizedSearchQuery,
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
@@ -58,5 +62,5 @@ export function useLibrarySearch({ treeNodes, treeNodesLibraryId }: UseLibrarySe
       isCurrent = false
       window.clearTimeout(timeoutId)
     }
-  }, [activeLibrary, normalizedSearchQuery, treeNodes, libraryIndexRevision, treeNodesLibraryId, dispatch])
+  }, [activeLibrary, normalizedSearchQuery, treeNodes, flatFileList, libraryIndexRevision, treeNodesLibraryId, dispatch])
 }

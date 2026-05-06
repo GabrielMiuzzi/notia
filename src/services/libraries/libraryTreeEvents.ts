@@ -1,5 +1,6 @@
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { notiaLog } from '../runtime/notiaLogger'
 
 export const LIBRARY_TREE_CHANGED_EVENT = 'notia:library-tree-changed'
 
@@ -74,6 +75,9 @@ function flushPendingLibraryTreeChangedEvents(): void {
   }
 
   const queuedDetails = pendingTreeChangeDetails.splice(0, pendingTreeChangeDetails.length)
+  notiaLog('treeEvents', 'flushing events', {
+    eventCount: queuedDetails.length,
+  })
   const groups = new Map<string, Array<{ vaultPath?: string; pathHint?: string }>>()
 
   for (const detail of queuedDetails) {
@@ -110,6 +114,10 @@ export function dispatchLibraryTreeChanged(detail: LibraryTreeChangedDetail): vo
   }
 
   pendingTreeChangeDetails.push(detail)
+  notiaLog('treeEvents', 'event enqueued', {
+    queueSize: pendingTreeChangeDetails.length,
+    pathHint: detail.pathHint,
+  })
   if (pendingDispatchTimerId !== null) {
     return
   }

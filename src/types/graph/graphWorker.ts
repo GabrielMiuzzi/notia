@@ -1,6 +1,6 @@
 import type { ClusteredGraphLayout, ClusteredGraphLayoutOptions } from '../../engines/graph/clusteredGraphLayoutEngine'
 import type { GraphSearchResult } from '../../engines/graph/graphSearchEngine'
-import type { NotiaFileNode } from '../notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../notia'
 import type { LibraryGraphModel } from './libraryGraph'
 
 export interface GraphModelWorkerBuildRequest {
@@ -9,6 +9,7 @@ export interface GraphModelWorkerBuildRequest {
   treeNodes: NotiaFileNode[]
   rootPath: string | null
   graphSourcesByPath: Record<string, string>
+  flatFileList?: NotiaFlatFileEntry[]
 }
 
 export interface GraphModelWorkerBuildSuccessResponse {

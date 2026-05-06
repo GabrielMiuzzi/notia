@@ -41,7 +41,7 @@ import { selectTheme, selectAiSettings, selectInkdocPreferences, selectExplorerR
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, resetTabs as resetTabsAction, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
-import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView } from '../../features/documents/documentsSelectors'
+import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 
 // --- Pure helper function ---
 
@@ -59,6 +59,7 @@ export function NotiaMenu() {
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const treeNodes = useAppSelector(selectTreeNodes)
+  const flatFileList = useAppSelector(selectFlatFileList)
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
 
@@ -266,6 +267,7 @@ export function NotiaMenu() {
   useLibrarySearch({
     treeNodes,
     treeNodesLibraryId: activeLibraryId,
+    flatFileList,
   })
 
   const handleWindowAction = useCallback((action: NotiaWindowAction) => { void controlWindow(action) }, [])

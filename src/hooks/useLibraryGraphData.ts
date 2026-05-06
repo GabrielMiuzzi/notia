@@ -1,11 +1,12 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import {
   buildGraphFileStructureSignature,
+  buildGraphFileStructureSignatureFromFlatList,
   buildLibraryGraphModel,
 } from '../engines/graph/libraryGraphEngine'
 import { getIndexedLibraryGraphSourcesByPath } from '../services/libraries/librarySearchGraphIndex'
 import { startPerformanceMeasurement } from '../services/runtime/performanceBaseline'
-import type { NotiaFileNode } from '../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../types/notia'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
 import type { GraphModelWorkerResponse } from '../types/graph/graphWorker'
 import { getRuntimeDevice } from '../utils/platform/getRuntimeDevice'
@@ -22,6 +23,7 @@ interface UseLibraryGraphDataParams {
   libraryAndroidTreeUri?: string
   rootPath: string | null
   treeNodes: NotiaFileNode[]
+  flatFileList: NotiaFlatFileEntry[]
   revision: number
 }
 
@@ -47,6 +49,7 @@ export function useLibraryGraphData({
   libraryAndroidTreeUri,
   rootPath,
   treeNodes,
+  flatFileList,
   revision,
 }: UseLibraryGraphDataParams) {
   const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
@@ -148,8 +151,13 @@ export function useLibraryGraphData({
       return ''
     }
 
+    // On Android with a flat file list, use it for a more complete signature
+    if (flatFileList.length > 0) {
+      return buildGraphFileStructureSignatureFromFlatList(flatFileList)
+    }
+
     return buildGraphFileStructureSignature(treeNodes)
-  }, [enabled, treeNodes])
+  }, [enabled, treeNodes, flatFileList])
 
   const graphTreeNodes = useMemo(() => treeNodes, [graphFileStructureSignature])
   const graphTreeNodeCount = useMemo(() => countTreeNodes(graphTreeNodes), [graphTreeNodes])
@@ -217,7 +225,8 @@ export function useLibraryGraphData({
     })
     void getIndexedLibraryGraphSourcesByPath({
       libraryPath,
-      treeNodes: graphTreeNodes,
+      treeNodes: flatFileList.length > 0 ? undefined : graphTreeNodes,
+      flatFileList: flatFileList.length > 0 ? flatFileList : undefined,
       androidDirectoryUri: libraryAndroidTreeUri,
     }).then((nextSourcesByPath) => {
       if (!isCurrent) {
@@ -281,6 +290,7 @@ export function useLibraryGraphData({
         treeNodes: graphTreeNodes,
         rootPath,
         graphSourcesByPath,
+        flatFileList: flatFileList.length > 0 ? flatFileList : undefined,
       })
 
       return () => {
@@ -291,7 +301,7 @@ export function useLibraryGraphData({
     }
 
     try {
-      const nextGraphModel = buildLibraryGraphModel(graphTreeNodes, rootPath, graphSourcesByPath)
+      const nextGraphModel = buildLibraryGraphModel(graphTreeNodes, rootPath, graphSourcesByPath, flatFileList.length > 0 ? flatFileList : undefined)
       graphModelMeasurement.success({
         edgeCount: nextGraphModel.edges.length,
         nodeCount: nextGraphModel.nodes.length,

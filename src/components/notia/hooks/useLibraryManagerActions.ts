@@ -17,7 +17,17 @@ export function useLibraryManagerActions({
   const { confirm } = useConfirmationEngine()
 
   const handleLibraryAdded = useCallback((library: NotiaLibrary) => {
-    const existingLibrary = store.getState().library.libraries.find((item) => item.path === library.path)
+    const existingLibrary = store.getState().library.libraries.find((item) => {
+      // On Android, the path may be a display name shared by multiple folders,
+      // so we also compare androidTreeUri when available.
+      if (item.path === library.path) {
+        if (item.androidTreeUri && library.androidTreeUri) {
+          return item.androidTreeUri === library.androidTreeUri
+        }
+        return true
+      }
+      return false
+    })
     if (existingLibrary) {
       if (!existingLibrary.androidTreeUri && library.androidTreeUri) {
         dispatch(updateLibraryAndroidTreeUri({ libraryId: existingLibrary.id, androidTreeUri: library.androidTreeUri }))

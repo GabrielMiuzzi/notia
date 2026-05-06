@@ -1,12 +1,13 @@
+use crate::notia_timer::NotiaTimer;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
-use tauri::{
-    Manager, State, Wry,
-    plugin::{Builder as PluginBuilder, TauriPlugin},
-};
 #[cfg(target_os = "android")]
 use tauri::plugin::PluginHandle;
+use tauri::{
+    plugin::{Builder as PluginBuilder, TauriPlugin},
+    Manager, State, Wry,
+};
 
 pub struct AndroidAiBridgeState {
     #[cfg(target_os = "android")]
@@ -139,6 +140,8 @@ pub fn check_android_ai_health(
 ) -> Result<AndroidAiHealthResult, String> {
     #[cfg(target_os = "android")]
     {
+        let _timer = NotiaTimer::new("check_android_ai_health")
+            .with_meta(format!("url={}", payload.ollama_url));
         if payload.ollama_url.trim().is_empty() {
             return Err("La URL de Ollama es obligatoria.".to_string());
         }
@@ -189,6 +192,8 @@ pub fn run_android_ai_chat(
 ) -> Result<AndroidAiChatResult, String> {
     #[cfg(target_os = "android")]
     {
+        let _timer =
+            NotiaTimer::new("run_android_ai_chat").with_meta(format!("model={}", payload.model));
         if payload.ollama_url.trim().is_empty() {
             return Err("La URL de Ollama es obligatoria.".to_string());
         }
@@ -273,6 +278,8 @@ pub fn list_android_ai_models(
 ) -> Result<AndroidAiModelListResult, String> {
     #[cfg(target_os = "android")]
     {
+        let _timer = NotiaTimer::new("list_android_ai_models")
+            .with_meta(format!("url={}", payload.ollama_url));
         if payload.ollama_url.trim().is_empty() {
             return Err("La URL de Ollama es obligatoria.".to_string());
         }
@@ -322,8 +329,8 @@ pub fn init() -> TauriPlugin<Wry> {
                         app.manage(AndroidAiBridgeState::with_handle(handle));
                     }
                     Err(error) => {
-                        eprintln!(
-                            "[mobile_ai_bridge] Android plugin not available, continuing without AI bridge: {error}"
+                        log::error!(
+                            "[notia:ai_bridge] Android plugin not available, continuing without AI bridge: {error}"
                         );
                         app.manage(AndroidAiBridgeState::unavailable());
                     }

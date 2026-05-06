@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { store } from '../../../store/index'
-import { setTreeNodes, setPendingCreation, setSearchQuery, setSearchMatchedPaths, setIsSearchLoading, setContextMenu, setDialogState, setRenamingPath } from '../../../features/documents/documentsSlice'
+import { setTreeNodes, setPendingCreation, setSearchQuery, setSearchMatchedPaths, setIsSearchLoading, setContextMenu, setDialogState, setRenamingPath, addLoadingFolderId, removeLoadingFolderId, setFlatFileList } from '../../../features/documents/documentsSlice'
 import { selectIsSidebarOpen, selectIsRightChatPanelOpen } from '../../../features/ui/uiSelectors'
 import { setSearchMenuOpen, setActiveHeaderAction } from '../../../features/ui/uiSlice'
 import { selectIsSearchActive, selectActiveWorkspaceView, selectActiveTabPath } from '../../../features/documents/documentsSelectors'
 import { selectActiveLibrary } from '../../../features/library/librarySelectors'
 import { selectExplorerRefreshIntervalMs } from '../../../features/preferences/preferencesSelectors'
 import { bumpIndexRevision, setLibraryStatus } from '../../../features/library/librarySlice'
+import { notiaLog, notiaTimer } from '../../../services/runtime/notiaLogger'
 import {
   readLibraryTree,
   readLibraryTreeSignature,
+  readLibraryDirectory,
+  readLibraryFlatFileList,
 } from '../../../services/libraries/libraryRuntime'
 import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
 import {
@@ -283,6 +286,9 @@ export function useLibraryTreeSync({
     }
     if (isTreeRefreshInFlightRef.current) {
       hasQueuedTreeRefreshRef.current = true
+      notiaLog('treeSync', 'refresh queued (already in flight)', {
+        libraryId: activeLibrary.id,
+      })
       return
     }
     isTreeRefreshInFlightRef.current = true
@@ -290,14 +296,19 @@ export function useLibraryTreeSync({
       libraryId: activeLibrary.id,
       libraryPath: activeLibrary.path,
     })
+    const refreshTimer = notiaTimer('treeSync', 'refreshActiveLibraryTree', {
+      libraryId: activeLibrary.id,
+    })
     try {
       const refreshedNodes = await readLibraryTree(activeLibrary.path, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
       commitTreeNodesSnapshot(activeLibrary.id, refreshedNodes)
       refreshMeasurement.success({ nodeCount: countTreeNodes(refreshedNodes) })
+      refreshTimer.success({ nodeCount: countTreeNodes(refreshedNodes) })
     } catch (error) {
       refreshMeasurement.error(error)
+      refreshTimer.error(error)
       throw error
     } finally {
       isTreeRefreshInFlightRef.current = false
@@ -313,6 +324,9 @@ export function useLibraryTreeSync({
       return
     }
     isTreeSignatureProbeInFlightRef.current = true
+    const probeTimer = notiaTimer('treeSync', 'probeActiveLibraryTreeChanges', {
+      libraryId: activeLibrary.id,
+    })
     try {
       const nextSignature = await readLibraryTreeSignature(activeLibrary.path, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
@@ -320,10 +334,18 @@ export function useLibraryTreeSync({
       if (!nextSignature) { return }
       if (!lastKnownTreeSignatureRef.current) {
         lastKnownTreeSignatureRef.current = nextSignature
+        probeTimer.success({ action: 'initial_signature' })
         return
       }
-      if (nextSignature === lastKnownTreeSignatureRef.current) { return }
+      if (nextSignature === lastKnownTreeSignatureRef.current) {
+        probeTimer.success({ action: 'no_change' })
+        return
+      }
       lastKnownTreeSignatureRef.current = nextSignature
+      notiaLog('treeSync', 'tree change detected, refreshing', {
+        libraryId: activeLibrary.id,
+      })
+      probeTimer.success({ action: 'change_detected' })
       await refreshActiveLibraryTree()
     } finally {
       isTreeSignatureProbeInFlightRef.current = false
@@ -363,8 +385,72 @@ export function useLibraryTreeSync({
 
   const handleToggleFolder = useCallback((folderId: string) => {
     const libraryId = store.getState().library.selectedLibraryId
+    const currentTreeNodes = treeNodesRef.current
+
+    // On Android with lazy loading, a folder may have hasChildren=true but
+    // children not yet loaded. In that case, we need to fetch the children
+    // before toggling expansion.
+    if (isAndroidRuntime) {
+      const findFolder = (nodes: NotiaFileNode[]): NotiaFileNode | null => {
+        for (const node of nodes) {
+          if (node.id === folderId) return node
+          if (node.type === 'folder' && node.expanded && node.children) {
+            const found = findFolder(node.children)
+            if (found) return found
+          }
+        }
+        return null
+      }
+
+      const folder = findFolder(currentTreeNodes)
+      if (folder && folder.type === 'folder' && folder.hasChildren && !folder.children?.length) {
+        // This folder hasn't loaded its children yet — fetch them lazily.
+        const folderPath = folder.path
+        // On Android, use the folder's content URI (node.id) as the directory URI
+        // for the read call. This ensures we read the correct subdirectory, not
+        // the library root. Fall back to the library tree URI only for the root.
+        const library = store.getState().library.libraries.find((l) => l.id === libraryId)
+        const androidUri = folder.id?.startsWith('content://')
+          ? folder.id
+          : library?.androidTreeUri
+
+        if (folderPath) {
+          store.dispatch(addLoadingFolderId(folderId))
+          void readLibraryDirectory(folderPath, { androidDirectoryUri: androidUri })
+            .then((children) => {
+              // Inject the loaded children into the tree
+              const injectChildren = (nodes: NotiaFileNode[]): NotiaFileNode[] =>
+                nodes.map((node) => {
+                  if (node.id === folderId) {
+                    return {
+                      ...node,
+                      expanded: true,
+                      hasChildren: Boolean(children.length) || node.hasChildren,
+                      children: children.length > 0 ? children : undefined,
+                    }
+                  }
+                  if (node.type === 'folder' && node.expanded && node.children) {
+                    return { ...node, children: injectChildren(node.children) }
+                  }
+                  return node
+                })
+
+              const updated = injectChildren(currentTreeNodes)
+              setTreeNodesForLibrary(libraryId, updated)
+            })
+            .catch((error) => {
+              console.error('[notia] failed to load folder children:', folderPath, error)
+            })
+            .finally(() => {
+              store.dispatch(removeLoadingFolderId(folderId))
+            })
+          return
+        }
+      }
+    }
+
     setTreeNodesForLibrary(libraryId, (current) => toggleFolderNodeExpanded(current, folderId))
-  }, [setTreeNodesForLibrary])
+  }, [isAndroidRuntime, setTreeNodesForLibrary])
 
   const handleCollapseAllFolders = useCallback(() => {
     if (!activeLibrary) { return }
@@ -408,6 +494,13 @@ export function useLibraryTreeSync({
     hasDeferredTreeRefreshRef.current = false
     store.dispatch(setLibraryStatus('loading'))
 
+    notiaLog('treeSync', 'library loading started', {
+      libraryId: activeLibrary.id,
+      libraryPath: activeLibrary.path,
+      refreshIntervalMs: explorerRefreshIntervalMs,
+      isAndroid: isAndroidRuntime,
+    })
+
     let isCurrent = true
     const libraryLoadMeasurement = startPerformanceMeasurement('library.switch_load', {
       libraryId: activeLibrary.id,
@@ -424,16 +517,46 @@ export function useLibraryTreeSync({
           })
         }
 
-        const nodes = await readLibraryTree(activeLibrary.path, {
-          androidDirectoryUri: activeLibrary.androidTreeUri,
-        })
+        const nodes = isAndroidRuntime
+          ? await readLibraryDirectory(activeLibrary.path, {
+              androidDirectoryUri: activeLibrary.androidTreeUri,
+            })
+          : await readLibraryTree(activeLibrary.path, {
+              androidDirectoryUri: activeLibrary.androidTreeUri,
+            })
         if (!isCurrent) {
           libraryLoadMeasurement.cancel()
           return
         }
+        notiaLog('treeSync', 'tree read completed', {
+          libraryId: activeLibrary.id,
+          nodeCount: nodes.length,
+        })
         commitTreeNodesSnapshot(activeLibrary.id, nodes)
         store.dispatch(setLibraryStatus('ready'))
+        notiaLog('treeSync', 'library ready', {
+          libraryId: activeLibrary.id,
+          nodeCount: nodes.length,
+        })
         libraryLoadMeasurement.success({ nodeCount: countTreeNodes(nodes) })
+
+        // On Android, trigger background flat file list fetch for search
+        // and graph engines. This does NOT block the UI — the flat file
+        // list populates search/index in the background.
+        if (isAndroidRuntime) {
+          void readLibraryFlatFileList(activeLibrary.path, {
+            androidDirectoryUri: activeLibrary.androidTreeUri,
+          }).then((flatFiles) => {
+            if (!isCurrent) { return }
+            notiaLog('treeSync', 'flat file list loaded', {
+              libraryId: activeLibrary.id,
+              fileCount: flatFiles.length,
+            })
+            store.dispatch(setFlatFileList(flatFiles))
+          }).catch((error) => {
+            console.error('[notia] failed to load flat file list:', error)
+          })
+        }
       } catch (error) {
         if (!isCurrent) {
           libraryLoadMeasurement.cancel()

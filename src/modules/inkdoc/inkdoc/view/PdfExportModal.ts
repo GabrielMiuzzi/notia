@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { App, Modal, Notice, normalizePath, type TFile } from "../../engines/platform/inkdocPlatform";
 import type { InkDocDocument } from "../types";
-import { exportInkDocToPdfBytes, resolvePdfName } from "./pdfExport";
+import { exportInkDocToPdfBytes, resolvePdfName, type PdfExportProgress } from "./pdfExport";
 import { attachInkDocModalEngine } from "./modalEngine";
 
 export class PdfExportModal extends Modal {
@@ -10,6 +10,7 @@ export class PdfExportModal extends Modal {
 	private exportButtonEl: HTMLButtonElement | null = null;
 	private loaderEl: HTMLDivElement | null = null;
 	private loadingLabelEl: HTMLParagraphElement | null = null;
+	private progressEl: HTMLParagraphElement | null = null;
 	private detachShell: (() => void) | null = null;
 
 	constructor(app: App, doc: InkDocDocument, file: TFile | null) {
@@ -41,8 +42,16 @@ export class PdfExportModal extends Modal {
 			cls: "inkdoc-pdf-export-loading-text",
 			text: "Exportando PDF..."
 		});
+		const progress = loadingWrap.createEl("p", {
+			cls: "inkdoc-pdf-export-progress-text",
+			text: ""
+		});
+		progress.style.margin = "0";
+		progress.style.fontSize = "0.85em";
+		progress.style.opacity = "0.75";
 		this.loaderEl = loadingWrap;
 		this.loadingLabelEl = loadingLabel;
+		this.progressEl = progress;
 	}
 
 	onClose(): void {
@@ -59,7 +68,9 @@ export class PdfExportModal extends Modal {
 		try {
 			const baseName = (this.file?.basename ?? this.doc.title ?? "InkDoc").trim() || "InkDoc";
 			const fileName = resolvePdfName(`${baseName}.pdf`);
-			const pdfBytes = await exportInkDocToPdfBytes(this.app, this.doc, this.file);
+			const pdfBytes = await exportInkDocToPdfBytes(this.app, this.doc, this.file, (progress) => {
+				this.updateProgress(progress);
+			});
 			const targetPath = await this.buildExportTargetPath(fileName);
 			await this.writePdfToVault(targetPath, pdfBytes);
 			new Notice(`PDF exportado: ${targetPath}`);
@@ -72,6 +83,20 @@ export class PdfExportModal extends Modal {
 		}
 	}
 
+	private updateProgress(progress: PdfExportProgress): void {
+		if (!this.progressEl || !this.loadingLabelEl) {
+			return;
+		}
+		const { currentPage, totalPages, phase } = progress;
+		if (phase === "assembling") {
+			this.loadingLabelEl.setText("Armando PDF...");
+			this.progressEl.setText("");
+			return;
+		}
+		this.loadingLabelEl.setText("Exportando PDF...");
+		this.progressEl.setText(`Página ${currentPage} de ${totalPages}`);
+	}
+
 	private setLoading(isLoading: boolean): void {
 		if (!this.exportButtonEl || !this.loaderEl) {
 			return;
@@ -79,7 +104,10 @@ export class PdfExportModal extends Modal {
 		this.exportButtonEl.disabled = isLoading;
 		this.loaderEl.classList.toggle("is-visible", isLoading);
 		if (this.loadingLabelEl) {
-			this.loadingLabelEl.setText(isLoading ? "Armando y guardando PDF..." : "Exportando PDF...");
+			this.loadingLabelEl.setText(isLoading ? "Exportando PDF..." : "Exportando PDF...");
+		}
+		if (this.progressEl && !isLoading) {
+			this.progressEl.setText("");
 		}
 	}
 

@@ -26,6 +26,7 @@ interface FileTreeProps {
   onNodeContextMenu: (node: NotiaFileNode, position: { x: number; y: number }) => void
   onEmptyContextMenu: (position: { x: number; y: number }) => void
   onMoveNode: (sourcePath: string, targetDirectoryPath: string) => void
+  loadingFolderIds?: ReadonlySet<string>
 }
 
 interface TreeRowProps {
@@ -45,6 +46,7 @@ interface TreeRowProps {
   onDragEndNode: () => void
   onDragOverFolder: (targetPath: string) => boolean
   onDropOnFolder: (targetPath: string) => void
+  isLoading?: boolean
 }
 
 type VisibleTreeRow =
@@ -93,11 +95,13 @@ const TreeRow = memo(function TreeRow({
   onDragEndNode,
   onDragOverFolder,
   onDropOnFolder,
+  isLoading: isLoading,
 }: TreeRowProps) {
   const isFolder = node.type === 'folder'
-  const hasChildren = Boolean(node.children?.length)
+  const hasChildren = Boolean(node.children?.length) || Boolean(node.hasChildren)
   const isExpanded = Boolean(node.expanded)
   const canToggle = isFolder && hasChildren
+  const isLoadingFolder = Boolean(isLoading && isFolder && hasChildren && !node.children?.length)
   const canOpenFile = node.type === 'file' && Boolean(node.path)
   const isSearchMatch =
     isSearchActive &&
@@ -207,8 +211,10 @@ const TreeRow = memo(function TreeRow({
       }}
     >
       {isFolder ? (
-        <>
-          {hasChildren && isExpanded ? (
+         <>
+          {isLoadingFolder ? (
+            <span className="notia-tree-chevron notia-tree-chevron--loading" title="Cargando..." />
+          ) : hasChildren && isExpanded ? (
             <ChevronDown size={13} className="notia-tree-chevron" />
           ) : (
             <ChevronRight size={13} className="notia-tree-chevron" />
@@ -365,6 +371,7 @@ function FileTreeComponent({
   onNodeContextMenu,
   onEmptyContextMenu,
   onMoveNode,
+  loadingFolderIds,
 }: FileTreeProps) {
   const [draggingEntry, setDraggingEntry] = useState<{ path: string } | null>(null)
   const [dropTargetFolderPath, setDropTargetFolderPath] = useState<string | null>(null)
@@ -502,6 +509,7 @@ function FileTreeComponent({
                   onDragEndNode={handleDragEndNode}
                   onDragOverFolder={handleDragOverFolder}
                   onDropOnFolder={handleDropOnFolder}
+                  isLoading={loadingFolderIds?.has(row.node.id) ?? false}
                 />
               )}
             </div>

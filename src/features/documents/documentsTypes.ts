@@ -1,4 +1,4 @@
-import type { NotiaFileNode } from '../../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import type { NotiaDocumentSaveStatus, OpenFileDocument } from '../../types/views/fileDocument'
 
 export type DocumentKind = 'markdown' | 'inkdoc' | 'drawio' | 'image' | 'text' | 'unknown'
@@ -40,4 +40,6 @@ export interface DocumentsState {
     | { type: 'node'; x: number; y: number; node: NotiaFileNode }
     | null
   dialogState: { type: 'info'; title: string; message: string } | null
+  loadingFolderIds: string[]
+  flatFileList: NotiaFlatFileEntry[]
 }

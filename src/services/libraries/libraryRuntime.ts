@@ -1,6 +1,7 @@
-import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry, NotiaLibrary } from '../../types/notia'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
 import {
   createLibraryEntry as createFilesystemEntry,
   getPathBaseName,
@@ -8,6 +9,8 @@ import {
   pathExists,
   performLibraryEntryOperation as performFilesystemEntryOperation,
   pickDirectory,
+  readLibraryDirectory as readFilesystemDirectory,
+  readLibraryFlatFileList as readFilesystemFlatFileList,
   readLibraryTree as readFilesystemTree,
   readLibraryTreeSignature as readFilesystemTreeSignature,
   searchLibraryFiles as searchFilesystemFiles,
@@ -23,8 +26,21 @@ interface PickedLibrary {
 type CreateLibraryEntryResult = FilesystemOperationResult
 type LibraryEntryOperationPayload = NotiaLibraryEntryOperationPayload
 
+const ANDROID_SAF_TIMEOUT_MS = 60_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
 const inFlightTreeReadByRequestKey = new Map<string, Promise<NotiaFileNode[]>>()
 const inFlightTreeSignatureReadByRequestKey = new Map<string, Promise<string>>()
+const inFlightDirectoryReadByRequestKey = new Map<string, Promise<NotiaFileNode[]>>()
 
 function buildLibraryNameFromPath(directoryPath: string): string {
   return getPathBaseName(directoryPath)
@@ -124,14 +140,25 @@ export async function readLibraryTree(
 
   const inFlightRead = inFlightTreeReadByRequestKey.get(requestKey)
   if (inFlightRead) {
+    notiaLog('libraryRuntime', 'readLibraryTree dedup hit', {
+      path: normalizedDirectoryPath,
+      requestKey,
+    })
     return inFlightRead
   }
 
   const request = (async () => {
-    const nodes = await readFilesystemTree(normalizedDirectoryPath, {
+    const timer = notiaTimer('libraryRuntime', 'readLibraryTree', {
+      path: normalizedDirectoryPath,
+      isAndroid: isAndroidRuntime,
+    })
+    const rawPromise = readFilesystemTree(normalizedDirectoryPath, {
       androidDirectoryUri: options?.androidDirectoryUri,
     })
-
+    const nodes = isAndroidRuntime
+      ? await withTimeout(rawPromise, ANDROID_SAF_TIMEOUT_MS, 'La lectura de la carpeta tardó demasiado. Intenta nuevamente.')
+      : await rawPromise
+    timer.success({ nodeCount: nodes.length })
     return nodes
   })()
 
@@ -139,6 +166,48 @@ export async function readLibraryTree(
   return request.finally(() => {
     if (inFlightTreeReadByRequestKey.get(requestKey) === request) {
       inFlightTreeReadByRequestKey.delete(requestKey)
+    }
+  })
+}
+
+export async function readLibraryDirectory(
+  directoryPath: string,
+  options?: { androidDirectoryUri?: string },
+): Promise<NotiaFileNode[]> {
+  const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
+  const isAndroidRuntime = getRuntimeDevice() === 'Android'
+  const requestKey = isAndroidRuntime
+    ? `dir:${normalizedDirectoryPath}::${options?.androidDirectoryUri ?? ''}`
+    : `dir:${normalizedDirectoryPath}`
+
+  const inFlightRead = inFlightDirectoryReadByRequestKey.get(requestKey)
+  if (inFlightRead) {
+    notiaLog('libraryRuntime', 'readLibraryDirectory dedup hit', {
+      path: normalizedDirectoryPath,
+      requestKey,
+    })
+    return inFlightRead
+  }
+
+  const request = (async () => {
+    const timer = notiaTimer('libraryRuntime', 'readLibraryDirectory', {
+      path: normalizedDirectoryPath,
+      isAndroid: isAndroidRuntime,
+    })
+    const rawPromise = readFilesystemDirectory(normalizedDirectoryPath, {
+      androidDirectoryUri: options?.androidDirectoryUri,
+    })
+    const nodes = isAndroidRuntime
+      ? await withTimeout(rawPromise, ANDROID_SAF_TIMEOUT_MS, 'La lectura del directorio tardó demasiado. Intenta nuevamente.')
+      : await rawPromise
+    timer.success({ nodeCount: nodes.length })
+    return nodes
+  })()
+
+  inFlightDirectoryReadByRequestKey.set(requestKey, request)
+  return request.finally(() => {
+    if (inFlightDirectoryReadByRequestKey.get(requestKey) === request) {
+      inFlightDirectoryReadByRequestKey.delete(requestKey)
     }
   })
 }
@@ -155,6 +224,10 @@ export async function readLibraryTreeSignature(
 
   const inFlightRead = inFlightTreeSignatureReadByRequestKey.get(requestKey)
   if (inFlightRead) {
+    notiaLog('libraryRuntime', 'readLibraryTreeSignature dedup hit', {
+      path: normalizedDirectoryPath,
+      requestKey,
+    })
     return inFlightRead
   }
 
@@ -215,4 +288,83 @@ export async function searchLibraryFiles(directoryPath: string, query: string): 
     console.error('[notia] search_library_files failed', error)
     return []
   }
+}
+
+const inFlightFlatFileListReadByRequestKey = new Map<string, Promise<NotiaFlatFileEntry[]>>()
+
+/** Read a flat (non-nested) list of ALL files and folders in the library.
+ *  On Android this calls the `readFlatFileList` Kotlin plugin which does a
+ *  recursive traversal but returns items without nesting. On desktop, it
+ *  falls back to flattening the full tree. The result is used by search
+ *  index and graph engine which need the complete file list regardless of
+ *  the lazy-loaded UI tree state. */
+export async function readLibraryFlatFileList(
+  directoryPath: string,
+  options?: { androidDirectoryUri?: string },
+): Promise<NotiaFlatFileEntry[]> {
+  const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
+  const requestKey = `flat:${normalizedDirectoryPath}::${options?.androidDirectoryUri ?? ''}`
+
+  const inFlightRead = inFlightFlatFileListReadByRequestKey.get(requestKey)
+  if (inFlightRead) {
+    notiaLog('libraryRuntime', 'readLibraryFlatFileList dedup hit', {
+      path: normalizedDirectoryPath,
+      requestKey,
+    })
+    return inFlightRead
+  }
+
+  const request = (async () => {
+    const timer = notiaTimer('libraryRuntime', 'readLibraryFlatFileList', {
+      path: normalizedDirectoryPath,
+      isAndroid: getRuntimeDevice() === 'Android',
+    })
+
+    try {
+      if (getRuntimeDevice() === 'Android') {
+        const rawPromise = readFilesystemFlatFileList(normalizedDirectoryPath, {
+          androidDirectoryUri: options?.androidDirectoryUri,
+        })
+        const files = await withTimeout(rawPromise, ANDROID_SAF_TIMEOUT_MS, 'La lectura de la lista de archivos tardó demasiado. Intenta nuevamente.')
+          .catch((error: unknown) => {
+            console.error('[libraryRuntime] readLibraryFlatFileList failed:', error)
+            return [] as NotiaFlatFileEntry[]
+          })
+        timer.success({ fileCount: files.length })
+        return files
+      }
+
+      // Desktop fallback: flatten the full tree
+      const treeNodes = await readFilesystemTree(normalizedDirectoryPath, {
+        androidDirectoryUri: options?.androidDirectoryUri,
+      })
+      const files: NotiaFlatFileEntry[] = []
+      const flatten = (nodes: NotiaFileNode[]) => {
+        for (const node of nodes) {
+          files.push({
+            path: node.path ?? node.name,
+            type: node.type,
+            name: node.name,
+          })
+          if (node.children && node.children.length > 0) {
+            flatten(node.children)
+          }
+        }
+      }
+      flatten(treeNodes)
+      timer.success({ fileCount: files.length, source: 'desktop-fallback' })
+      return files
+    } catch (error) {
+      timer.error(error)
+      console.error('[libraryRuntime] readLibraryFlatFileList failed:', error)
+      return [] as NotiaFlatFileEntry[]
+    }
+  })()
+
+  inFlightFlatFileListReadByRequestKey.set(requestKey, request)
+  return request.finally(() => {
+    if (inFlightFlatFileListReadByRequestKey.get(requestKey) === request) {
+      inFlightFlatFileListReadByRequestKey.delete(requestKey)
+    }
+  })
 }

@@ -15,6 +15,8 @@ export const selectRenamingPath = (state: RootState) => state.documents.renaming
 export const selectClipboardEntry = (state: RootState) => state.documents.clipboardEntry
 export const selectContextMenu = (state: RootState) => state.documents.contextMenu
 export const selectDialogState = (state: RootState) => state.documents.dialogState
+export const selectLoadingFolderIds = (state: RootState) => state.documents.loadingFolderIds
+export const selectFlatFileList = (state: RootState) => state.documents.flatFileList
 
 export const selectActiveTab = createSelector(
   [(state: RootState) => state.documents.openTabs, (state: RootState) => state.documents.activeTabPath],

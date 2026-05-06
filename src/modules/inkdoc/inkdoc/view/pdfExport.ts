@@ -1,13 +1,29 @@
 // @ts-nocheck
 import { App, type TFile } from "../../engines/platform/inkdocPlatform";
-import type { InkDocDocument, InkDocImageBlock, InkDocPage, InkDocPoint, InkDocStroke, InkDocTextBlock } from "../types";
+import type { InkDocDocument, InkDocImageBlock, InkDocLatexStyle, InkDocPage, InkDocPoint, InkDocStroke, InkDocTextBlock } from "../types";
 import { getPageSizeMm } from "./pageSizes";
 import { renderPdfPageBackground } from "./pdfPageBackground";
-import { applyStrokeStyleToCanvas, applyStrokeStyleToPdf } from "./strokeStyles";
+import { applyStrokeStyleToPdf } from "./strokeStyles";
 import { ensureInkDocDecorations, isDecorationVisibleOnPage } from "./documentDecorations";
 import { renderLatexSegments } from "./latexRenderer";
 
 const PX_TO_MM = 25.4 / 96;
+const INKDOC_DEFAULT_LATEX_STYLE: Required<InkDocLatexStyle> = {
+	fontSize: 16,
+	letterSpacing: 0,
+	lineHeight: 1.2,
+	textAlign: "left" as const,
+	paddingTop: 0,
+	paddingBottom: 0,
+	paddingLeft: 0,
+	paddingRight: 0
+};
+
+export type PdfExportProgress = {
+	currentPage: number;
+	totalPages: number;
+	phase: "rendering" | "assembling";
+};
 
 export const resolvePdfName = (fileName: string): string => {
 	const trimmed = fileName.trim();
@@ -49,31 +65,50 @@ const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
 	};
 };
 
-const toRgba = (hex: string, alpha: number): string => {
-	const { r, g, b } = hexToRgb(hex);
-	const a = Math.max(0, Math.min(1, alpha));
-	return `rgba(${r}, ${g}, ${b}, ${a})`;
-};
+const STRIP_HTML_PATTERN = /<[^>]*>/g;
 
 const parseHtmlToText = (block: InkDocTextBlock): string => {
 	if (typeof block.html === "string" && block.html.length > 0) {
-		const temp = document.createElement("div");
-		temp.innerHTML = block.html;
-		return temp.innerText || temp.textContent || block.text || "";
+		return block.html.replace(STRIP_HTML_PATTERN, " ").replace(/\s+/g, " ").trim() || block.text || "";
 	}
 	return block.text || "";
 };
 
-const writeInvisibleText = (pdf: any, text: string, x: number, y: number): void => {
+const resolveLatexBlockColor = (block: InkDocTextBlock): string => {
+	if (typeof block.color === "string" && block.color.trim().length > 0) {
+		return normalizeHexColor(block.color);
+	}
+	return "#000000";
+};
+
+const resolveLatexStyle = (block: InkDocTextBlock): Required<InkDocLatexStyle> => {
+	const s = block.latexStyle;
+	return {
+		fontSize: typeof s?.fontSize === "number" && Number.isFinite(s.fontSize) ? Math.max(10, s.fontSize) : INKDOC_DEFAULT_LATEX_STYLE.fontSize,
+		letterSpacing: typeof s?.letterSpacing === "number" && Number.isFinite(s.letterSpacing) ? s.letterSpacing : INKDOC_DEFAULT_LATEX_STYLE.letterSpacing,
+		lineHeight: typeof s?.lineHeight === "number" && Number.isFinite(s.lineHeight) ? Math.max(0.6, s.lineHeight) : INKDOC_DEFAULT_LATEX_STYLE.lineHeight,
+		textAlign: (s?.textAlign === "center" || s?.textAlign === "right" || s?.textAlign === "left") ? s.textAlign : INKDOC_DEFAULT_LATEX_STYLE.textAlign,
+		paddingTop: typeof s?.paddingTop === "number" && Number.isFinite(s.paddingTop) ? Math.max(0, s.paddingTop) : INKDOC_DEFAULT_LATEX_STYLE.paddingTop,
+		paddingBottom: typeof s?.paddingBottom === "number" && Number.isFinite(s.paddingBottom) ? Math.max(0, s.paddingBottom) : INKDOC_DEFAULT_LATEX_STYLE.paddingBottom,
+		paddingLeft: typeof s?.paddingLeft === "number" && Number.isFinite(s.paddingLeft) ? Math.max(0, s.paddingLeft) : INKDOC_DEFAULT_LATEX_STYLE.paddingLeft,
+		paddingRight: typeof s?.paddingRight === "number" && Number.isFinite(s.paddingRight) ? Math.max(0, s.paddingRight) : INKDOC_DEFAULT_LATEX_STYLE.paddingRight
+	};
+};
+
+const writeInvisibleText = (pdf: any, text: string, x: number, y: number, fontSizePt: number, maxWidthMm: number): void => {
 	if (!text.trim()) {
 		return;
 	}
 	pdf.internal.write("3 Tr");
-	pdf.text(text, x, y);
+	pdf.setFontSize(fontSizePt);
+	pdf.text(text, x, y, {
+		baseline: "top",
+		maxWidth: maxWidthMm
+	});
 	pdf.internal.write("0 Tr");
 };
 
-const renderStroke = (pdf: any, stroke: InkDocStroke): void => {
+const renderStrokeVector = (pdf: any, stroke: InkDocStroke): void => {
 	const points = stroke.points ?? [];
 	if (points.length === 0) {
 		return;
@@ -99,76 +134,47 @@ const renderStroke = (pdf: any, stroke: InkDocStroke): void => {
 	pdf.lines(deltas, pxToMm(first.x), pxToMm(first.y));
 };
 
-const getStrokeBounds = (points: InkDocPoint[], width: number): {
-	minX: number;
-	minY: number;
-	maxX: number;
-	maxY: number;
-} => {
-	let minX = Number.POSITIVE_INFINITY;
-	let minY = Number.POSITIVE_INFINITY;
-	let maxX = Number.NEGATIVE_INFINITY;
-	let maxY = Number.NEGATIVE_INFINITY;
-	for (const point of points) {
-		minX = Math.min(minX, point.x);
-		minY = Math.min(minY, point.y);
-		maxX = Math.max(maxX, point.x);
-		maxY = Math.max(maxY, point.y);
-	}
-	const pad = Math.max(2, width / 2 + 2);
-	return {
-		minX: minX - pad,
-		minY: minY - pad,
-		maxX: maxX + pad,
-		maxY: maxY + pad
-	};
-};
-
 const renderHighlighterStroke = (pdf: any, stroke: InkDocStroke): void => {
 	const points = stroke.points ?? [];
 	if (points.length === 0) {
 		return;
 	}
-	const width = Math.max(1, stroke.width || 1);
-	const bounds = getStrokeBounds(points, width);
-	const canvas = document.createElement("canvas");
-	canvas.width = Math.max(1, Math.ceil(bounds.maxX - bounds.minX));
-	canvas.height = Math.max(1, Math.ceil(bounds.maxY - bounds.minY));
-	const ctx = canvas.getContext("2d");
-	if (!ctx) {
-		return;
-	}
-	ctx.lineWidth = width;
-	ctx.lineCap = "butt";
-	ctx.lineJoin = "miter";
-	applyStrokeStyleToCanvas(ctx, stroke.style, width);
 	const alpha = typeof stroke.opacity === "number" ? Math.max(0.05, Math.min(1, stroke.opacity)) : 0.35;
-	ctx.strokeStyle = toRgba(normalizeHexColor(stroke.color), alpha);
-	ctx.beginPath();
+	const { r, g, b } = hexToRgb(normalizeHexColor(stroke.color));
+	try {
+		pdf.setGState(new pdf.GState({ opacity: alpha, strokeOpacity: alpha }));
+	} catch {
+		// fallback: render without transparency
+	}
+	pdf.setDrawColor(r, g, b);
+	pdf.setLineWidth(pxToMm(stroke.width || 1));
+	applyStrokeStyleToPdf(pdf, stroke.style);
 	const first = points[0];
 	if (!first) {
+		restorePdfOpacity(pdf);
 		return;
 	}
-	ctx.moveTo(first.x - bounds.minX, first.y - bounds.minY);
+	const deltas: [number, number][] = [];
 	for (let i = 1; i < points.length; i++) {
-		const point = points[i];
-		if (!point) {
+		const prev = points[i - 1];
+		const current = points[i];
+		if (!prev || !current) {
 			continue;
 		}
-		ctx.lineTo(point.x - bounds.minX, point.y - bounds.minY);
+		deltas.push([pxToMm(current.x - prev.x), pxToMm(current.y - prev.y)]);
 	}
-	ctx.stroke();
-	const data = canvas.toDataURL("image/png");
-	pdf.addImage(
-		data,
-		"PNG",
-		pxToMm(bounds.minX),
-		pxToMm(bounds.minY),
-		pxToMm(canvas.width),
-		pxToMm(canvas.height),
-		undefined,
-		"FAST"
-	);
+	pdf.setLineCap?.("round");
+	pdf.setLineJoin?.("round");
+	pdf.lines(deltas, pxToMm(first.x), pxToMm(first.y));
+	restorePdfOpacity(pdf);
+};
+
+const restorePdfOpacity = (pdf: any): void => {
+	try {
+		pdf.setGState(new pdf.GState({ opacity: 1, strokeOpacity: 1 }));
+	} catch {
+		// ignore
+	}
 };
 
 const renderTextBlock = (pdf: any, block: InkDocTextBlock): void => {
@@ -187,73 +193,122 @@ const renderTextBlock = (pdf: any, block: InkDocTextBlock): void => {
 	});
 };
 
-const toLatexCanvas = async (
-	app: App,
-	sourcePath: string,
-	block: InkDocTextBlock
-): Promise<HTMLCanvasElement | null> => {
-	const latex = block.latex?.trim() ?? "";
-	if (!latex) {
-		return null;
+const applyLatexStyleToWrapper = (wrapper: HTMLDivElement, block: InkDocTextBlock): void => {
+	const style = resolveLatexStyle(block);
+	const color = resolveLatexBlockColor(block);
+	const justifyContent = style.textAlign === "right" ? "flex-end" : style.textAlign === "center" ? "center" : "flex-start";
+	const alignItems = style.textAlign === "right" ? "flex-end" : style.textAlign === "center" ? "center" : "flex-start";
+	wrapper.style.display = "flex";
+	wrapper.style.flexDirection = "column";
+	wrapper.style.justifyContent = justifyContent;
+	wrapper.style.alignItems = alignItems;
+	wrapper.style.width = `${Math.max(80, block.w)}px`;
+	wrapper.style.minHeight = `${Math.max(28, block.h)}px`;
+	wrapper.style.fontSize = `${style.fontSize}px`;
+	wrapper.style.letterSpacing = `${style.letterSpacing}px`;
+	wrapper.style.lineHeight = String(style.lineHeight);
+	wrapper.style.textAlign = style.textAlign;
+	wrapper.style.paddingTop = `${style.paddingTop}px`;
+	wrapper.style.paddingBottom = `${style.paddingBottom}px`;
+	wrapper.style.paddingLeft = `${style.paddingLeft}px`;
+	wrapper.style.paddingRight = `${style.paddingRight}px`;
+	wrapper.style.color = color;
+	wrapper.style.background = "transparent";
+	wrapper.style.boxSizing = "border-box";
+	wrapper.style.overflow = "visible";
+};
+
+const getPageSizePx = (pageSize: string): { widthPx: number; heightPx: number } => {
+	const { widthMm, heightMm } = getPageSizeMm(pageSize);
+	const MM_TO_PX = 96 / 25.4;
+	return {
+		widthPx: Math.ceil(widthMm * MM_TO_PX),
+		heightPx: Math.ceil(heightMm * MM_TO_PX)
+	};
+};
+
+const renderPageLatexBatch = async (
+	blocks: InkDocTextBlock[],
+	html2canvas: any
+): Promise<Array<{ block: InkDocTextBlock; dataUrl: string | null; measuredHeightPx: number }>> => {
+	if (blocks.length === 0) {
+		return [];
 	}
-	const html2canvas = (await import("html2canvas")).default;
-	const host = document.body.createDiv({
-		cls: "inkdoc-export-latex-host"
-	});
-	host.style.position = "fixed";
-	host.style.left = "-99999px";
-	host.style.top = "0";
-	host.style.width = `${Math.max(80, block.w)}px`;
-	host.style.minHeight = `${Math.max(28, block.h)}px`;
-	host.style.padding = "6px";
-	host.style.background = "transparent";
-	host.style.color = block.color || "#000000";
-	try {
-		const rendered = await renderLatexSegments(host, latex);
-		if (!rendered) {
-			return null;
+
+	const results: Array<{ block: InkDocTextBlock; dataUrl: string | null; measuredHeightPx: number }> = [];
+
+	for (let i = 0; i < blocks.length; i++) {
+		const block = blocks[i];
+		const latex = block.latex?.trim() ?? "";
+		if (!latex) {
+			continue;
 		}
-		return await html2canvas(host, {
-			backgroundColor: null,
-			scale: 2,
-			useCORS: true,
-			logging: false
-		});
-	} finally {
-		host.remove();
+
+		const host = document.body.createDiv({ cls: "inkdoc-export-latex-host" });
+		host.style.position = "fixed";
+		host.style.left = "-99999px";
+		host.style.top = "0";
+		// Allow natural height - use minHeight instead of fixed height, no overflow hidden
+		const style = resolveLatexStyle(block);
+		const color = resolveLatexBlockColor(block);
+		const justifyContent = style.textAlign === "right" ? "flex-end" : style.textAlign === "center" ? "center" : "flex-start";
+		const alignItems = style.textAlign === "right" ? "flex-end" : style.textAlign === "center" ? "center" : "flex-start";
+		host.style.display = "flex";
+		host.style.flexDirection = "column";
+		host.style.justifyContent = justifyContent;
+		host.style.alignItems = alignItems;
+		host.style.width = `${Math.max(80, block.w)}px`;
+		host.style.minHeight = `${Math.max(28, block.h)}px`;
+		host.style.height = "auto";
+		host.style.fontSize = `${style.fontSize}px`;
+		host.style.letterSpacing = `${style.letterSpacing}px`;
+		host.style.lineHeight = String(style.lineHeight);
+		host.style.textAlign = style.textAlign;
+		host.style.paddingTop = `${style.paddingTop}px`;
+		host.style.paddingBottom = `${style.paddingBottom}px`;
+		host.style.paddingLeft = `${style.paddingLeft}px`;
+		host.style.paddingRight = `${style.paddingRight}px`;
+		host.style.color = color;
+		host.style.background = "transparent";
+		host.style.boxSizing = "border-box";
+		host.style.overflow = "visible";
+
+		try {
+			await renderLatexSegments(host, latex);
+
+			const canvasResult = await html2canvas(host, {
+				backgroundColor: null,
+				scale: 2,
+				useCORS: true,
+				logging: false
+			});
+
+			// Measure actual rendered height
+			const measuredHeightPx = Math.max(block.h, host.scrollHeight, canvasResult.height / 2);
+
+			results.push({
+				block,
+				dataUrl: canvasResult.toDataURL("image/png"),
+				measuredHeightPx
+			});
+
+			canvasResult.width = 0;
+			canvasResult.height = 0;
+		} catch {
+			results.push({ block, dataUrl: null, measuredHeightPx: block.h });
+		} finally {
+			host.remove();
+		}
+
+		if (i % 2 === 1) {
+			await yieldToMainThread();
+		}
 	}
+
+	return results;
 };
 
-const renderLatexBlock = async (
-	pdf: any,
-	app: App,
-	sourcePath: string,
-	block: InkDocTextBlock
-): Promise<void> => {
-	const latex = block.latex?.trim() ?? "";
-	if (!latex) {
-		return;
-	}
-	const canvas = await toLatexCanvas(app, sourcePath, block);
-	if (canvas) {
-		const data = canvas.toDataURL("image/png");
-		pdf.addImage(
-			data,
-			"PNG",
-			pxToMm(block.x),
-			pxToMm(block.y),
-			pxToMm(block.w),
-			pxToMm(block.h),
-			undefined,
-			"FAST"
-		);
-	}
-	pdf.setFont("courier", "normal");
-	pdf.setFontSize(9);
-	writeInvisibleText(pdf, latex, pxToMm(block.x) + 1, pxToMm(block.y) + pxToMm(block.h / 2));
-};
-
-const renderImageBlock = async (pdf: any, block: InkDocImageBlock): Promise<void> => {
+const renderImageBlock = (pdf: any, block: InkDocImageBlock): void => {
 	if (!block.src) {
 		return;
 	}
@@ -271,6 +326,33 @@ const renderImageBlock = async (pdf: any, block: InkDocImageBlock): Promise<void
 	);
 };
 
+const yieldToMainThread = (): Promise<void> =>
+	new Promise((resolve) => setTimeout(resolve, 0));
+
+const countLatexBlocks = (doc: InkDocDocument): number => {
+	let count = 0;
+	for (const page of doc.pages) {
+		for (const block of page.textBlocks ?? []) {
+			if (block.type === "latex" && block.latex?.trim()) {
+				count++;
+			}
+		}
+		if (doc.decorations) {
+			for (const region of ["header", "footer"] as const) {
+				const content = doc.decorations[region];
+				if (content) {
+					for (const block of content.textBlocks ?? []) {
+						if (block.type === "latex" && block.latex?.trim()) {
+							count++;
+						}
+					}
+				}
+			}
+		}
+	}
+	return count;
+};
+
 const renderPage = async (
 	pdf: any,
 	app: App,
@@ -279,7 +361,8 @@ const renderPage = async (
 	page: InkDocPage,
 	pageIndex: number,
 	pageWidthMm: number,
-	pageHeightMm: number
+	pageHeightMm: number,
+	html2canvas: any | null
 ): Promise<void> => {
 	renderPdfPageBackground(pdf, page, pageWidthMm, pageHeightMm);
 	const decorations = ensureInkDocDecorations(doc);
@@ -299,28 +382,81 @@ const renderPage = async (
 	for (const stroke of page.strokes ?? []) {
 		if (stroke.tool === "highlighter") {
 			renderHighlighterStroke(pdf, stroke);
-			continue;
+		} else {
+			renderStrokeVector(pdf, stroke);
 		}
-		renderStroke(pdf, stroke);
 	}
+
 	for (const image of effectiveImages) {
-		await renderImageBlock(pdf, image);
+		renderImageBlock(pdf, image);
 	}
+
+	const latexBlocks: InkDocTextBlock[] = [];
+	const textBlocks: InkDocTextBlock[] = [];
 	for (const block of effectiveTextBlocks) {
-		if (block.type === "latex") {
-			await renderLatexBlock(pdf, app, sourcePath, block);
-			continue;
+		if (block.type === "latex" && block.latex?.trim()) {
+			latexBlocks.push(block);
+		} else {
+			textBlocks.push(block);
 		}
+	}
+
+	for (const block of textBlocks) {
 		renderTextBlock(pdf, block);
+	}
+
+	if (latexBlocks.length > 0 && html2canvas) {
+		const results = await renderPageLatexBatch(latexBlocks, html2canvas);
+		// Sort by vertical position to process in order and avoid overlap issues
+		const sortedResults = [...results].sort((a, b) => a.block.y - b.block.y);
+		for (const { block, dataUrl, measuredHeightPx } of sortedResults) {
+			if (dataUrl) {
+				// Use measured height instead of block.h to avoid clipping
+				pdf.addImage(
+					dataUrl,
+					"PNG",
+					pxToMm(block.x),
+					pxToMm(block.y),
+					pxToMm(block.w),
+					pxToMm(measuredHeightPx),
+					undefined,
+					"FAST"
+				);
+			}
+			const latex = block.latex?.trim() ?? "";
+			if (latex) {
+				const style = resolveLatexStyle(block);
+				const fontSizePt = Math.max(6, Math.round(style.fontSize * 0.75));
+				pdf.setFont("courier", "normal");
+				writeInvisibleText(pdf, latex, pxToMm(block.x) + 1, pxToMm(block.y) + 1, fontSizePt, pxToMm(block.w) - 2);
+			}
+		}
+	} else if (latexBlocks.length > 0) {
+		for (const block of latexBlocks) {
+			const latex = block.latex?.trim() ?? "";
+			if (latex) {
+				const style = resolveLatexStyle(block);
+				const fontSizePt = Math.max(6, Math.round(style.fontSize * 0.75));
+				pdf.setFont("courier", "normal");
+				writeInvisibleText(pdf, latex, pxToMm(block.x) + 1, pxToMm(block.y) + 1, fontSizePt, pxToMm(block.w) - 2);
+			}
+		}
 	}
 };
 
 const buildInkDocPdf = async (
 	app: App,
 	doc: InkDocDocument,
-	sourceFile: TFile | null
+	sourceFile: TFile | null,
+	onProgress?: (progress: PdfExportProgress) => void
 ): Promise<any> => {
 	const { jsPDF } = await import("jspdf");
+	const hasLatex = countLatexBlocks(doc) > 0;
+	let html2canvas: any = null;
+	if (hasLatex) {
+		const html2canvasModule = await import("html2canvas");
+		html2canvas = html2canvasModule.default;
+	}
 	const { widthMm, heightMm } = getPageSizeMm(doc.page.size);
 	const orientation = widthMm > heightMm ? "landscape" : "portrait";
 	const pdf = new jsPDF({
@@ -329,22 +465,34 @@ const buildInkDocPdf = async (
 		format: [widthMm, heightMm],
 		compress: true
 	});
+	if (typeof pdf.GState === "function") {
+		try {
+			pdf.setGState(new pdf.GState({ opacity: 1, strokeOpacity: 1 }));
+		} catch {
+			// ignore
+		}
+	}
 	const sourcePath = sourceFile?.path ?? "";
+	const totalPages = doc.pages.length;
 	for (const [index, page] of doc.pages.entries()) {
+		onProgress?.({ currentPage: index + 1, totalPages, phase: "rendering" });
 		if (index > 0) {
 			pdf.addPage([widthMm, heightMm], orientation);
 		}
-		await renderPage(pdf, app, sourcePath, doc, page, index, widthMm, heightMm);
+		await renderPage(pdf, app, sourcePath, doc, page, index, widthMm, heightMm, html2canvas);
+		await yieldToMainThread();
 	}
+	onProgress?.({ currentPage: totalPages, totalPages, phase: "assembling" });
 	return pdf;
 };
 
 export const exportInkDocToPdfBytes = async (
 	app: App,
 	doc: InkDocDocument,
-	sourceFile: TFile | null
+	sourceFile: TFile | null,
+	onProgress?: (progress: PdfExportProgress) => void
 ): Promise<Uint8Array> => {
-	const pdf = await buildInkDocPdf(app, doc, sourceFile);
+	const pdf = await buildInkDocPdf(app, doc, sourceFile, onProgress);
 	const data = pdf.output("arraybuffer") as ArrayBuffer;
 	return new Uint8Array(data);
 };

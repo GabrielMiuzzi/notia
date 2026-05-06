@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State, Window};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::{Emitter, Manager};
+use tauri::{State, Window};
 
 use super::types::OperationResult;
 
@@ -87,17 +89,14 @@ pub fn start_library_tree_watch(
                     return;
                 }
 
-                let changed_path_hint = event
-                    .paths
-                    .iter()
-                    .find_map(|path| {
-                        let path_value = path.to_string_lossy().trim().to_string();
-                        if path_value.is_empty() {
-                            None
-                        } else {
-                            Some(path_value)
-                        }
-                    });
+                let changed_path_hint = event.paths.iter().find_map(|path| {
+                    let path_value = path.to_string_lossy().trim().to_string();
+                    if path_value.is_empty() {
+                        None
+                    } else {
+                        Some(path_value)
+                    }
+                });
 
                 let _ = app_handle.emit(
                     LIBRARY_TREE_CHANGED_EVENT,

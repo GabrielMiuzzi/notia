@@ -18,6 +18,7 @@ mod dto {
 mod filesystem;
 mod mobile_ai_bridge;
 mod mobile_directory_picker;
+mod notia_timer;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
@@ -30,6 +31,35 @@ mod state {
 #[serde(rename_all = "camelCase")]
 struct WindowControlPayload {
     action: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotiaLogPayload {
+    level: String,
+    module: String,
+    message: String,
+    #[serde(default)]
+    data: Option<String>,
+}
+
+#[tauri::command]
+fn notia_log(payload: NotiaLogPayload) {
+    let log_level = match payload.level.as_str() {
+        "error" => log::Level::Error,
+        "warn" => log::Level::Warn,
+        "info" => log::Level::Info,
+        "perf" => log::Level::Info,
+        _ => log::Level::Debug,
+    };
+    let data_suffix = payload.data.unwrap_or_default();
+    log::log!(
+        log_level,
+        "[notia:js:{}] {} {}",
+        payload.module,
+        payload.message,
+        data_suffix
+    );
 }
 
 #[tauri::command]
@@ -119,12 +149,15 @@ pub fn run() {
             mobile_ai_bridge::list_android_ai_models,
             mobile_directory_picker::pick_android_directory_tree,
             mobile_directory_picker::read_android_library_tree,
+            mobile_directory_picker::read_android_directory,
+            mobile_directory_picker::read_android_flat_file_list,
             commands::bluetooth::coldpass_bluetooth_status,
             commands::bluetooth::coldpass_bluetooth_connect,
             commands::bluetooth::coldpass_bluetooth_submit_pin,
             commands::bluetooth::coldpass_bluetooth_authenticate,
             commands::bluetooth::coldpass_bluetooth_send_message,
             commands::bluetooth::coldpass_bluetooth_disconnect,
+            notia_log,
             window_control,
             start_window_dragging,
             start_window_dragging_with_restore,

@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
 
 export interface FilesystemOperationResult {
   ok: boolean
@@ -23,6 +24,7 @@ export interface FilesystemTreeNode {
   path?: string
   type: 'folder' | 'file'
   expanded?: boolean
+  hasChildren?: boolean
   children?: FilesystemTreeNode[]
 }
 
@@ -164,6 +166,7 @@ export function normalizeFilesystemTreeNodes(value: unknown): FilesystemTreeNode
   }
 
   const nodes: FilesystemTreeNode[] = []
+  const seenIds = new Set<string>()
   for (const item of value) {
     if (!item || typeof item !== 'object') {
       continue
@@ -178,12 +181,20 @@ export function normalizeFilesystemTreeNodes(value: unknown): FilesystemTreeNode
       continue
     }
 
+    // Skip duplicate IDs within the same sibling list to prevent React key warnings.
+    // This can happen on Android SAF when the root directory is listed as its own child.
+    if (seenIds.has(candidate.id)) {
+      continue
+    }
+    seenIds.add(candidate.id)
+
     nodes.push({
       id: candidate.id,
       name: candidate.name,
       path: typeof candidate.path === 'string' ? normalizePath(candidate.path) : undefined,
       type: candidate.type,
       expanded: candidate.type === 'folder' ? Boolean(candidate.expanded) : undefined,
+      hasChildren: candidate.type === 'folder' ? Boolean(candidate.hasChildren) : undefined,
       children: candidate.type === 'folder'
         ? normalizeFilesystemTreeNodes(candidate.children ?? [])
         : undefined,
@@ -373,23 +384,147 @@ export async function readLibraryTree(
     return []
   }
 
+  const timer = notiaTimer('filesystem', 'readLibraryTree', {
+    path: normalizedDirectoryPath,
+    isAndroid: getRuntimeDevice() === 'Android',
+  })
+
   try {
+    let rawTree: unknown
     if (getRuntimeDevice() === 'Android') {
-      const rawTree = await invoke<unknown>('read_android_library_tree', {
+      rawTree = await invoke<unknown>('read_android_library_tree', {
         payload: {
           directoryPath: normalizedDirectoryPath,
           directoryUri: options?.androidDirectoryUri,
         },
       })
-      return normalizeFilesystemTreeNodes(rawTree)
+    } else {
+      rawTree = await invoke<unknown>('read_library_tree', {
+        payload: { directoryPath: normalizedDirectoryPath },
+      })
+    }
+    const nodes = normalizeFilesystemTreeNodes(rawTree)
+    timer.success({ nodeCount: nodes.length })
+    return nodes
+  } catch (error) {
+    timer.error(error)
+    console.error('[filesystemEngine] Failed to read library tree:', {
+      directoryPath: normalizedDirectoryPath,
+      isAndroid: getRuntimeDevice() === 'Android',
+      androidUri: options?.androidDirectoryUri,
+      error,
+    })
+    return []
+  }
+}
+
+export interface FilesystemFlatFileEntry {
+  path: string
+  type: 'folder' | 'file'
+  name: string
+}
+
+export async function readLibraryFlatFileList(
+  directoryPath: string,
+  options?: AndroidFilesystemOptions,
+): Promise<FilesystemFlatFileEntry[]> {
+  const normalizedDirectoryPath = normalizePath(directoryPath)
+  if (!normalizedDirectoryPath.trim()) {
+    return []
+  }
+
+  // Only available on Android — desktop uses the full tree which is fast
+  if (getRuntimeDevice() !== 'Android') {
+    return []
+  }
+
+  const timer = notiaTimer('filesystem', 'readLibraryFlatFileList', {
+    path: normalizedDirectoryPath,
+  })
+
+  try {
+    const rawFiles = await invoke<unknown>('read_android_flat_file_list', {
+      payload: {
+        directoryPath: normalizedDirectoryPath,
+        directoryUri: options?.androidDirectoryUri,
+      },
+    })
+    if (!Array.isArray(rawFiles)) {
+      timer.success({ fileCount: 0 })
+      return []
     }
 
+    const files: FilesystemFlatFileEntry[] = rawFiles
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .filter((item) => typeof item.path === 'string' && typeof item.name === 'string' && (item.type === 'folder' || item.type === 'file'))
+      .map((item) => ({
+        path: normalizePath(item.path as string),
+        type: item.type as 'folder' | 'file',
+        name: item.name as string,
+      }))
+
+    timer.success({ fileCount: files.length })
+    return files
+  } catch (error) {
+    timer.error(error)
+    console.error('[filesystemEngine] Failed to read library flat file list:', {
+      directoryPath: normalizedDirectoryPath,
+      androidUri: options?.androidDirectoryUri,
+      error,
+    })
+    return []
+  }
+}
+
+export async function readLibraryDirectory(
+  directoryPath: string,
+  options?: AndroidFilesystemOptions,
+): Promise<FilesystemTreeNode[]> {
+  const normalizedDirectoryPath = normalizePath(directoryPath)
+  if (!normalizedDirectoryPath.trim()) {
+    return []
+  }
+
+  // On Android, use the shallow readDirectory command (ls-style, non-recursive).
+  // On desktop, fall back to readLibraryTree and extract only the root-level children.
+  const timer = notiaTimer('filesystem', 'readLibraryDirectory', {
+    path: normalizedDirectoryPath,
+    isAndroid: getRuntimeDevice() === 'Android',
+  })
+
+  try {
+    if (getRuntimeDevice() === 'Android') {
+      const rawNodes = await invoke<unknown>('read_android_directory', {
+        payload: {
+          directoryPath: normalizedDirectoryPath,
+          directoryUri: options?.androidDirectoryUri,
+        },
+      })
+      const nodes = normalizeFilesystemTreeNodes(rawNodes)
+      timer.success({ nodeCount: nodes.length })
+      return nodes
+    }
+
+    // Desktop fallback: read the full tree and return only root-level children
     const rawTree = await invoke<unknown>('read_library_tree', {
       payload: { directoryPath: normalizedDirectoryPath },
     })
-    return normalizeFilesystemTreeNodes(rawTree)
+    const fullTree = normalizeFilesystemTreeNodes(rawTree)
+    // Mark folders with children using hasChildren, and strip children for shallow view
+    const shallowNodes = fullTree.map((node) => {
+      if (node.type === 'folder' && node.children && node.children.length > 0) {
+        return { ...node, hasChildren: true, children: undefined }
+      }
+      if (node.type === 'folder') {
+        return { ...node, hasChildren: false }
+      }
+      return node
+    })
+    timer.success({ nodeCount: shallowNodes.length, source: 'desktop-fallback' })
+    return shallowNodes
   } catch (error) {
-    console.error('[filesystemEngine] Failed to read library tree:', {
+    timer.error(error)
+    console.error('[filesystemEngine] Failed to read library directory:', {
       directoryPath: normalizedDirectoryPath,
       isAndroid: getRuntimeDevice() === 'Android',
       androidUri: options?.androidDirectoryUri,
@@ -408,12 +543,18 @@ export async function readLibraryTreeSignature(
     return ''
   }
 
+  const timer = notiaTimer('filesystem', 'readLibraryTreeSignature', {
+    path: normalizedDirectoryPath,
+    isAndroid: getRuntimeDevice() === 'Android',
+  })
+
   if (getRuntimeDevice() !== 'Android') {
     try {
       const signature = await invoke<string>('read_library_tree_signature', {
         payload: { directoryPath: normalizedDirectoryPath },
       })
       if (typeof signature === 'string' && signature.trim()) {
+        timer.success({ source: 'backend' })
         return signature
       }
     } catch {
@@ -421,8 +562,15 @@ export async function readLibraryTreeSignature(
     }
   }
 
+  notiaLog('filesystem', 'readLibraryTreeSignature falling back to client-side (full tree read)', {
+    path: normalizedDirectoryPath,
+    isAndroid: getRuntimeDevice() === 'Android',
+  })
+
   const treeNodes = await readLibraryTree(normalizedDirectoryPath, options)
-  return buildFilesystemTreeSignature(treeNodes)
+  const result = buildFilesystemTreeSignature(treeNodes)
+  timer.success({ source: 'client', nodeCount: treeNodes.length })
+  return result
 }
 
 export async function searchLibraryFiles(
@@ -493,11 +641,16 @@ export async function readTextFile(
     return { ok: false, content: '', error: 'Invalid file path.' }
   }
 
+  const timer = notiaTimer('filesystem', 'readTextFile', { path: normalizedPath })
+
   try {
-    return await invoke<FilesystemReadTextResult>('read_library_file', {
+    const result = await invoke<FilesystemReadTextResult>('read_library_file', {
       payload: { filePath: normalizedPath, directoryUri: options?.androidDirectoryUri },
     })
-  } catch {
+    timer.success({ ok: result.ok })
+    return result
+  } catch (error) {
+    timer.error(error)
     return { ok: false, content: '', error: 'Could not read file.' }
   }
 }
@@ -512,11 +665,16 @@ export async function writeTextFile(
     return { ok: false, error: 'Invalid file data.' }
   }
 
+  const timer = notiaTimer('filesystem', 'writeTextFile', { path: normalizedPath })
+
   try {
-    return await invoke<FilesystemOperationResult>('write_library_file', {
+    const result = await invoke<FilesystemOperationResult>('write_library_file', {
       payload: { filePath: normalizedPath, content, directoryUri: options?.androidDirectoryUri },
     })
-  } catch {
+    timer.success({ ok: result.ok })
+    return result
+  } catch (error) {
+    timer.error(error)
     return { ok: false, error: 'Could not write file.' }
   }
 }

@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
-import type { NotiaFileNode } from '../../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import type { NotiaDocumentSaveStatus } from '../../types/views/fileDocument'
 import type { DocumentsState, OpenDocumentTab, OpenWorkspaceSpecialTabs } from './documentsTypes'
 
@@ -28,6 +28,8 @@ const initialState: DocumentsState = {
   clipboardEntry: null,
   contextMenu: null,
   dialogState: null,
+  loadingFolderIds: [],
+  flatFileList: [],
 }
 
 const documentsSlice = createSlice({
@@ -144,6 +146,7 @@ const documentsSlice = createSlice({
     },
     resetForLibrarySwitch(state) {
       state.treeNodes = []
+      state.flatFileList = []
       state.pendingCreation = null
       state.renamingPath = null
       state.contextMenu = null
@@ -152,6 +155,17 @@ const documentsSlice = createSlice({
       state.searchMatchedPaths = []
       state.isSearchLoading = false
       state.clipboardEntry = null
+    },
+    addLoadingFolderId(state, action: PayloadAction<string>) {
+      if (!state.loadingFolderIds.includes(action.payload)) {
+        state.loadingFolderIds.push(action.payload)
+      }
+    },
+    removeLoadingFolderId(state, action: PayloadAction<string>) {
+      state.loadingFolderIds = state.loadingFolderIds.filter((id) => id !== action.payload)
+    },
+    setFlatFileList(state, action: PayloadAction<NotiaFlatFileEntry[]>) {
+      state.flatFileList = action.payload
     },
   },
 })
@@ -179,6 +193,9 @@ export const {
   setDialogState,
   resetTabs,
   resetForLibrarySwitch,
+  addLoadingFolderId,
+  removeLoadingFolderId,
+  setFlatFileList,
 } = documentsSlice.actions
 
 export default documentsSlice.reducer

@@ -3,10 +3,12 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
+use crate::notia_timer::NotiaTimer;
+
 use super::helpers::{
     canonical_or_original, collect_directory_signature, copy_entry_recursive,
-    default_inkdoc_content, has_invalid_entry_name, is_same_or_nested_path,
-    read_directory_tree, read_markdown_files_in_directory, search_library_files_in_directory,
+    default_inkdoc_content, has_invalid_entry_name, is_same_or_nested_path, read_directory_tree,
+    read_markdown_files_in_directory, search_library_files_in_directory,
 };
 use super::types::{
     FileNode, IsDirectoryPathResult, MarkdownFileDocument, OperationResult, PathExistsResult,
@@ -16,12 +18,21 @@ use super::types::{
 };
 
 pub(crate) fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
+    let _timer = NotiaTimer::new("desktop.read_library_tree")
+        .with_meta(format!("path={}", payload.directory_path));
     let directory_path = PathBuf::from(payload.directory_path);
     let mut visited_directories = HashSet::new();
-    read_directory_tree(&directory_path, &mut visited_directories)
+    let result = read_directory_tree(&directory_path, &mut visited_directories);
+    log::debug!(
+        "[notia:perf] desktop.read_library_tree node_count={}",
+        result.len()
+    );
+    result
 }
 
 pub(crate) fn read_library_tree_signature(payload: ReadLibraryTreePayload) -> String {
+    let _timer = NotiaTimer::new("desktop.read_library_tree_signature")
+        .with_meta(format!("path={}", payload.directory_path));
     if payload.directory_path.trim().is_empty() {
         return String::new();
     }
@@ -29,7 +40,11 @@ pub(crate) fn read_library_tree_signature(payload: ReadLibraryTreePayload) -> St
     let directory_path = PathBuf::from(payload.directory_path);
     let mut visited_directories = HashSet::new();
     let mut signature_hash: u32 = 2_166_136_261;
-    collect_directory_signature(&directory_path, &mut visited_directories, &mut signature_hash);
+    collect_directory_signature(
+        &directory_path,
+        &mut visited_directories,
+        &mut signature_hash,
+    );
     format!("{:08x}", signature_hash)
 }
 
@@ -49,6 +64,8 @@ pub(crate) fn read_library_file(file_path: &str) -> ReadLibraryFileResult {
 }
 
 pub(crate) fn search_library_files(payload: SearchLibraryFilesPayload) -> SearchLibraryFilesResult {
+    let _timer = NotiaTimer::new("desktop.search_library_files")
+        .with_meta(format!("path={}", payload.directory_path));
     let normalized_query = payload.query.trim().to_lowercase();
     if payload.directory_path.trim().is_empty() || normalized_query.is_empty() {
         return SearchLibraryFilesResult { paths: Vec::new() };
@@ -72,6 +89,8 @@ pub(crate) fn search_library_files(payload: SearchLibraryFilesPayload) -> Search
 }
 
 pub(crate) fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<MarkdownFileDocument> {
+    let _timer = NotiaTimer::new("desktop.read_markdown_files")
+        .with_meta(format!("path={}", payload.directory_path));
     if payload.directory_path.trim().is_empty() {
         return Vec::new();
     }
@@ -99,7 +118,11 @@ pub(crate) fn write_library_file(file_path: &str, content: &str) -> WriteLibrary
 }
 
 pub(crate) fn create_library_file(file_path: &str, content: &str) -> OperationResult {
-    match OpenOptions::new().write(true).create_new(true).open(file_path) {
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(file_path)
+    {
         Ok(mut file) => {
             use std::io::Write;
 

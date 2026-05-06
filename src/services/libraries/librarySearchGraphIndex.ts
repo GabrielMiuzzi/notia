@@ -1,7 +1,8 @@
 import { normalizeGraphSearchText, extractSearchableContent } from '../../engines/graph/graphSearchEngine'
-import type { NotiaFileNode } from '../../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import { getFileExtension } from '../../utils/files/getFileExtension'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
+import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
 import { readLibraryFileContent } from './libraryDocumentRuntime'
 import { resolveFileViewKind } from '../views/fileViewResolver'
 
@@ -36,7 +37,8 @@ interface SearchGraphIndexState {
 
 interface EnsureLibrarySearchGraphIndexParams {
   libraryPath: string
-  treeNodes: NotiaFileNode[]
+  treeNodes?: NotiaFileNode[]
+  flatFileList?: NotiaFlatFileEntry[]
   androidDirectoryUri?: string
   requireGraphSources?: boolean
   requireSearchableContent?: boolean
@@ -44,14 +46,16 @@ interface EnsureLibrarySearchGraphIndexParams {
 
 interface SearchIndexedLibraryFilesParams {
   libraryPath: string
-  treeNodes: NotiaFileNode[]
+  treeNodes?: NotiaFileNode[]
+  flatFileList?: NotiaFlatFileEntry[]
   query: string
   androidDirectoryUri?: string
 }
 
 interface GetIndexedGraphSourcesParams {
   libraryPath: string
-  treeNodes: NotiaFileNode[]
+  treeNodes?: NotiaFileNode[]
+  flatFileList?: NotiaFlatFileEntry[]
   androidDirectoryUri?: string
 }
 
@@ -94,6 +98,21 @@ function buildSearchGraphTreeSignature(
   return tokens.join('\u0002')
 }
 
+/** Build a signature from a flat file list. The path is the logical path
+ *  relative to the library root, so we can use it directly. */
+function buildSearchGraphFlatFileSignature(files: NotiaFlatFileEntry[]): string {
+  const tokens: string[] = []
+  for (const file of files) {
+    const logicalPath = file.path
+    if (file.type === 'folder') {
+      tokens.push(`folder:${logicalPath}`)
+    } else {
+      tokens.push(`file:${logicalPath}\u0001${normalizePath(logicalPath)}`)
+    }
+  }
+  return tokens.join('\u0002')
+}
+
 function collectSearchGraphDescriptors(
   nodes: NotiaFileNode[],
   descriptorsByPath: Map<string, SearchGraphDescriptor>,
@@ -118,6 +137,32 @@ function collectSearchGraphDescriptors(
       path: normalizedPath,
       label: logicalPath,
       normalizedLabel: normalizeGraphSearchText(`${logicalPath} ${node.name}`),
+      graphSource: viewKind === 'markdown' || viewKind === 'inkdoc',
+      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'drawio' || viewKind === 'text',
+    })
+  }
+}
+
+/** Collect descriptors from a flat file list. In the flat list, `path` IS the
+ *  logical path (relative to root), and for files it's also the full filesystem
+ *  path once prefixed with the library root. We derive both from `path`. */
+function collectSearchGraphDescriptorsFromFlatList(
+  files: NotiaFlatFileEntry[],
+  descriptorsByPath: Map<string, SearchGraphDescriptor>,
+): void {
+  for (const file of files) {
+    if (file.type === 'folder') {
+      continue
+    }
+
+    const logicalPath = file.path
+    const normalizedPath = normalizePath(logicalPath)
+    const extension = getFileExtension(normalizedPath)
+    const viewKind = resolveFileViewKind(extension)
+    descriptorsByPath.set(normalizedPath, {
+      path: normalizedPath,
+      label: logicalPath,
+      normalizedLabel: normalizeGraphSearchText(`${logicalPath} ${file.name}`),
       graphSource: viewKind === 'markdown' || viewKind === 'inkdoc',
       searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'drawio' || viewKind === 'text',
     })
@@ -204,6 +249,9 @@ async function loadEntriesIntoIndex(
   state: SearchGraphIndexState,
   descriptorsToLoad: SearchGraphDescriptor[],
 ): Promise<void> {
+  const timer = notiaTimer('searchIndex', 'loadEntriesIntoIndex', {
+    fileCount: descriptorsToLoad.length,
+  })
   for (let index = 0; index < descriptorsToLoad.length; index += INDEX_READ_BATCH_SIZE) {
     const batchDescriptors = descriptorsToLoad.slice(index, index + INDEX_READ_BATCH_SIZE)
     const batchEntries = await Promise.all(
@@ -267,17 +315,35 @@ async function loadEntriesIntoIndex(
       })
     }
   }
+
+  timer.success({ fileCount: descriptorsToLoad.length })
 }
 
 async function ensureLibrarySearchGraphIndex({
   libraryPath,
   treeNodes,
+  flatFileList,
   androidDirectoryUri,
   requireGraphSources = false,
   requireSearchableContent = false,
 }: EnsureLibrarySearchGraphIndexParams): Promise<SearchGraphIndexState> {
+  // Support either treeNodes (desktop/full tree) or flatFileList (Android background)
+  const useFlatList = Boolean(flatFileList && flatFileList.length > 0)
+  const effectiveNodeCount = useFlatList
+    ? flatFileList!.length
+    : (treeNodes?.length ?? 0)
+
+  const timer = notiaTimer('searchIndex', 'ensureLibrarySearchGraphIndex', {
+    libraryPath,
+    requireGraphSources,
+    requireSearchableContent,
+    nodeCount: effectiveNodeCount,
+    source: useFlatList ? 'flatFileList' : 'treeNodes',
+  })
   const cacheKey = buildLibraryCacheKey(libraryPath)
-  const expectedTreeSignature = buildSearchGraphTreeSignature(treeNodes)
+  const expectedTreeSignature = useFlatList
+    ? buildSearchGraphFlatFileSignature(flatFileList!)
+    : buildSearchGraphTreeSignature(treeNodes ?? [])
   const existingBuild = inFlightLibrarySearchGraphIndexBuilds.get(cacheKey)
   if (existingBuild) {
     const settledState = await existingBuild
@@ -294,7 +360,11 @@ async function ensureLibrarySearchGraphIndex({
   const buildPromise = (async () => {
     const state = getOrCreateLibraryIndexState(cacheKey, androidDirectoryUri)
     const nextDescriptorsByPath = new Map<string, SearchGraphDescriptor>()
-    collectSearchGraphDescriptors(treeNodes, nextDescriptorsByPath)
+    if (useFlatList) {
+      collectSearchGraphDescriptorsFromFlatList(flatFileList!, nextDescriptorsByPath)
+    } else {
+      collectSearchGraphDescriptors(treeNodes ?? [], nextDescriptorsByPath)
+    }
     const nextTreeSignature = expectedTreeSignature
 
     for (const pathValue of state.entriesByPath.keys()) {
@@ -338,6 +408,10 @@ async function ensureLibrarySearchGraphIndex({
     state.descriptorsByPath = nextDescriptorsByPath
     state.requiresFullRefresh = false
     state.dirtyPathHints.clear()
+    timer.success({
+      descriptorCount: nextDescriptorsByPath.size,
+      filesLoaded: descriptorsToLoad.length,
+    })
     return state
   })()
 

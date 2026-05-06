@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::mobile_directory_picker;
+use crate::notia_timer::NotiaTimer;
 
 use super::helpers::default_inkdoc_content;
 use super::types::{
@@ -33,7 +34,20 @@ fn map_already_exists_error(error_message: String, fallback: &str) -> OperationR
 #[cfg(target_os = "android")]
 fn refresh_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: Option<&str>) {
     if let Some(tree_uri) = root_tree_uri {
-        let _ = mobile_directory_picker::refresh_android_tree_path_cache(state, tree_uri, false);
+        let is_fresh = mobile_directory_picker::is_cache_fresh(state, tree_uri);
+        if is_fresh {
+            log::debug!("[notia:saf] cache hit uri={}", tree_uri);
+        } else {
+            // Instead of eagerly doing a full readTree, just invalidate the
+            // cache. The next operation that truly needs to resolve a path
+            // will trigger a lazy refresh. This avoids the expensive full
+            // tree traversal that refresh_android_tree_path_cache would do.
+            log::info!(
+                "[notia:saf] cache stale, invalidating (lazy refresh) uri={}",
+                tree_uri
+            );
+            mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
+        }
     }
 }
 
@@ -45,6 +59,27 @@ fn invalidate_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri
     if let Some(tree_uri) = root_tree_uri {
         mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
     }
+}
+
+/// Invalidate only the paths that are affected by an entry mutation (create,
+/// delete, rename, paste). Instead of clearing the entire path cache, only
+/// remove entries whose key starts with `path_prefix`. This allows subsequent
+/// reads of sibling or parent entries to still hit the cache.
+#[cfg(target_os = "android")]
+fn invalidate_paths_for_entry(
+    state: &AndroidDirectoryPickerState,
+    path_prefix: &str,
+    root_tree_uri: Option<&str>,
+) {
+    // 1. Invalidate the Kotlin tree cache timestamp so that the next readTree
+    //    or readFlatFileList will fetch fresh data from SAF.
+    if let Some(tree_uri) = root_tree_uri {
+        mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
+    }
+
+    // 2. Selectively remove cached path→URI entries that match the affected
+    //    path prefix. This way, reading an unrelated file still hits cache.
+    mobile_directory_picker::invalidate_paths_by_prefix(state, path_prefix);
 }
 
 #[cfg(target_os = "android")]
@@ -63,6 +98,10 @@ fn resolve_entry_uri(
     root_tree_uri: Option<&str>,
 ) -> Option<String> {
     if path.starts_with("content://") {
+        log::debug!(
+            "[notia:saf] resolve_entry_uri direct content:// path={}",
+            path
+        );
         Some(path.to_string())
     } else {
         // Try the cached path map first (most common case).
@@ -70,6 +109,7 @@ fn resolve_entry_uri(
             .ok()
             .flatten();
         if resolved.is_some() {
+            log::debug!("[notia:saf] resolve_entry_uri cache_hit path={}", path);
             return resolved;
         }
 
@@ -78,10 +118,63 @@ fn resolve_entry_uri(
         // where the paths HashMap may not have been populated yet for the new
         // library.
         if let Some(tree_uri) = root_tree_uri.map(str::trim).filter(|v| !v.is_empty()) {
-            mobile_directory_picker::resolve_android_tree_uri(state, path, Some(tree_uri))
-                .ok()
-                .flatten()
+            // Lazy cache refresh: if the cache is stale and we can't resolve
+            // the path, try refreshing the cache once via a full readTree,
+            // then retry the resolution.
+            if !mobile_directory_picker::is_cache_fresh(state, tree_uri) {
+                log::info!(
+                    "[notia:saf] resolve_entry_uri cache stale, lazy refresh path={} tree_uri={}",
+                    path,
+                    tree_uri
+                );
+                let refresh_result = mobile_directory_picker::refresh_android_tree_path_cache(
+                    state, tree_uri, false,
+                );
+                if let Err(ref e) = refresh_result {
+                    log::warn!(
+                        "[notia:saf] lazy cache refresh failed uri={} error={}",
+                        tree_uri,
+                        e
+                    );
+                } else {
+                    // Retry resolution after cache refresh
+                    let retry =
+                        mobile_directory_picker::resolve_android_tree_uri(state, path, None)
+                            .ok()
+                            .flatten();
+                    if retry.is_some() {
+                        log::info!(
+                            "[notia:saf] resolve_entry_uri resolved after refresh path={}",
+                            path
+                        );
+                        return retry;
+                    }
+                }
+            }
+
+            let fallback =
+                mobile_directory_picker::resolve_android_tree_uri(state, path, Some(tree_uri))
+                    .ok()
+                    .flatten();
+            if fallback.is_some() {
+                log::info!(
+                    "[notia:saf] resolve_entry_uri root_fallback path={} tree_uri={}",
+                    path,
+                    tree_uri
+                );
+            } else {
+                log::warn!(
+                    "[notia:saf] resolve_entry_uri failed path={} tree_uri={}",
+                    path,
+                    tree_uri
+                );
+            }
+            fallback
         } else {
+            log::warn!(
+                "[notia:saf] resolve_entry_uri failed no_context path={}",
+                path
+            );
             None
         }
     }
@@ -122,6 +215,7 @@ pub(crate) fn read_library_file(
     file_path: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<ReadLibraryFileResult> {
+    let _timer = NotiaTimer::new("saf.read_library_file").with_meta(format!("path={}", file_path));
     refresh_root_tree_cache(state, root_tree_uri);
     let content_uri = match resolve_entry_uri(state, file_path, root_tree_uri) {
         Some(content_uri) => content_uri,
@@ -167,6 +261,7 @@ pub(crate) fn write_library_file(
     content: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<WriteLibraryFileResult> {
+    let _timer = NotiaTimer::new("saf.write_library_file").with_meta(format!("path={}", file_path));
     refresh_root_tree_cache(state, root_tree_uri);
     let content_uri = match resolve_entry_uri(state, file_path, root_tree_uri) {
         Some(content_uri) => content_uri,
@@ -210,6 +305,8 @@ pub(crate) fn create_library_file(
     content: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<OperationResult> {
+    let _timer =
+        NotiaTimer::new("saf.create_library_file").with_meta(format!("path={}", file_path));
     refresh_root_tree_cache(state, root_tree_uri);
     let parent_uri = match resolve_parent_uri(state, file_path, root_tree_uri) {
         Some(parent_uri) => parent_uri,
@@ -232,7 +329,7 @@ pub(crate) fn create_library_file(
             Some(content),
         ) {
             Ok(_) => {
-                invalidate_root_tree_cache(state, root_tree_uri);
+                invalidate_paths_for_entry(state, file_path, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -259,6 +356,8 @@ pub(crate) fn create_library_directory(
     directory_path: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<OperationResult> {
+    let _timer = NotiaTimer::new("saf.create_library_directory")
+        .with_meta(format!("path={}", directory_path));
     refresh_root_tree_cache(state, root_tree_uri);
     let parent_uri = match resolve_parent_uri(state, directory_path, root_tree_uri) {
         Some(parent_uri) => parent_uri,
@@ -276,7 +375,7 @@ pub(crate) fn create_library_directory(
         match mobile_directory_picker::create_android_directory(state, &parent_uri, directory_name)
         {
             Ok(_) => {
-                invalidate_root_tree_cache(state, root_tree_uri);
+                invalidate_paths_for_entry(state, directory_path, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -305,6 +404,7 @@ pub(crate) fn path_exists(
     path: &str,
     root_tree_uri: Option<&str>,
 ) -> PathExistsResult {
+    let _timer = NotiaTimer::new("saf.path_exists").with_meta(format!("path={}", path));
     refresh_root_tree_cache(state, root_tree_uri);
 
     PathExistsResult {
@@ -327,6 +427,7 @@ pub(crate) fn is_directory_path(
     path: &str,
     root_tree_uri: Option<&str>,
 ) -> IsDirectoryPathResult {
+    let _timer = NotiaTimer::new("saf.is_directory_path").with_meta(format!("path={}", path));
     refresh_root_tree_cache(state, root_tree_uri);
     let Some(entry_uri) = resolve_entry_uri(state, path, root_tree_uri) else {
         return IsDirectoryPathResult {
@@ -360,6 +461,8 @@ pub(crate) fn create_library_entry(
     kind: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<OperationResult> {
+    let _timer = NotiaTimer::new("saf.create_library_entry")
+        .with_meta(format!("path={} kind={}", directory_path, kind));
     refresh_root_tree_cache(state, root_tree_uri);
     let parent_uri = match resolve_entry_uri(state, directory_path, root_tree_uri) {
         Some(parent_uri) => parent_uri,
@@ -389,7 +492,7 @@ pub(crate) fn create_library_entry(
             content,
         ) {
             Ok(_) => {
-                invalidate_root_tree_cache(state, root_tree_uri);
+                invalidate_paths_for_entry(state, directory_path, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -419,6 +522,7 @@ pub(crate) fn delete_entry(
     target_path: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<OperationResult> {
+    let _timer = NotiaTimer::new("saf.delete_entry").with_meta(format!("path={}", target_path));
     refresh_root_tree_cache(state, root_tree_uri);
     let entry_uri = match resolve_entry_uri(state, target_path, root_tree_uri) {
         Some(entry_uri) => entry_uri,
@@ -434,7 +538,7 @@ pub(crate) fn delete_entry(
     Some(
         match mobile_directory_picker::delete_android_tree_entry(state, &entry_uri) {
             Ok(()) => {
-                invalidate_root_tree_cache(state, root_tree_uri);
+                invalidate_paths_for_entry(state, target_path, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -464,6 +568,7 @@ pub(crate) fn rename_entry(
     new_name: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<OperationResult> {
+    let _timer = NotiaTimer::new("saf.rename_entry").with_meta(format!("path={}", target_path));
     refresh_root_tree_cache(state, root_tree_uri);
     let entry_uri = match resolve_entry_uri(state, target_path, root_tree_uri) {
         Some(entry_uri) => entry_uri,
@@ -479,7 +584,7 @@ pub(crate) fn rename_entry(
     Some(
         match mobile_directory_picker::rename_android_tree_entry(state, &entry_uri, new_name) {
             Ok(_) => {
-                invalidate_root_tree_cache(state, root_tree_uri);
+                invalidate_paths_for_entry(state, target_path, root_tree_uri);
                 OperationResult {
                     ok: true,
                     error: None,
@@ -510,6 +615,8 @@ pub(crate) fn paste_entry(
     mode: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<OperationResult> {
+    let _timer =
+        NotiaTimer::new("saf.paste_entry").with_meta(format!("src={} mode={}", source_path, mode));
     refresh_root_tree_cache(state, root_tree_uri);
     let source_name = Path::new(source_path).file_name()?.to_str()?;
     let target_path = PathBuf::from(target_directory_path).join(source_name);
@@ -580,7 +687,14 @@ pub(crate) fn paste_entry(
 
     Some(match operation_result {
         Ok(_) => {
-            invalidate_root_tree_cache(state, root_tree_uri);
+            // Invalidate both source and target paths. For a move, the source
+            // path is removed and the target path gets a new child. For a copy,
+            // the target gets a new child. Invalidate target_directory_path
+            // which covers both, and also source_path for moves.
+            invalidate_paths_for_entry(state, target_directory_path, root_tree_uri);
+            if mode == "move" {
+                invalidate_paths_for_entry(state, source_path, root_tree_uri);
+            }
             OperationResult {
                 ok: true,
                 error: None,

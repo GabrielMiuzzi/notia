@@ -20,7 +20,7 @@ graphModelWorker.onmessage = (event: MessageEvent<GraphModelWorkerRequest>) => {
   }
 
   try {
-    const graphModel = buildLibraryGraphModel(request.treeNodes, request.rootPath, request.graphSourcesByPath)
+    const graphModel = buildLibraryGraphModel(request.treeNodes, request.rootPath, request.graphSourcesByPath, request.flatFileList)
     const response: GraphModelWorkerResponse = {
       type: 'graphModelBuilt',
       requestId: request.requestId,

@@ -1,6 +1,6 @@
 import { findWikiLinkMatches } from '../markdown/wikiLinkEngine'
 import { resolveFileViewKind } from '../../services/views/fileViewResolver'
-import type { NotiaFileNode } from '../../types/notia'
+import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import type { LibraryGraphEdge, LibraryGraphModel, LibraryGraphNode } from '../../types/graph/libraryGraph'
 import { getFileExtension } from '../../utils/files/getFileExtension'
 
@@ -166,6 +166,33 @@ function collectFileDescriptors(
       fileName: node.name,
       fileNameWithoutExtension: stripFileExtension(node.name),
       isMarkdown: /\.md$/i.test(node.name),
+    })
+  }
+}
+
+/** Collect file descriptors from a flat file list (no nesting).
+ *  In a flat list, `path` IS the logical path (relative to root). */
+function collectFileDescriptorsFromFlatList(
+  files: NotiaFlatFileEntry[],
+  descriptors: FileDescriptor[],
+): void {
+  for (const file of files) {
+    if (file.type === 'folder') {
+      continue
+    }
+
+    const normalizedPath = normalizePath(file.path)
+    const logicalPath = file.path
+    const relativePath = logicalPath
+    descriptors.push({
+      path: normalizedPath,
+      label: relativePath,
+      logicalPath,
+      relativePath,
+      relativePathWithoutExtension: stripFileExtension(relativePath),
+      fileName: file.name,
+      fileNameWithoutExtension: stripFileExtension(file.name),
+      isMarkdown: /\.md$/i.test(file.name),
     })
   }
 }
@@ -441,6 +468,19 @@ export function buildGraphFileStructureSignature(nodes: NotiaFileNode[]): string
   return tokens.join('\u0002')
 }
 
+/** Build a signature from a flat file list. The path IS the logical path. */
+export function buildGraphFileStructureSignatureFromFlatList(files: NotiaFlatFileEntry[]): string {
+  const tokens: string[] = []
+  for (const file of files) {
+    if (file.type === 'folder') {
+      tokens.push(`folder:${file.path}`)
+    } else {
+      tokens.push(`file:${file.path}\u0001${normalizePath(file.path)}`)
+    }
+  }
+  return tokens.join('\u0002')
+}
+
 export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
   const descriptors: FileDescriptor[] = []
   collectFileDescriptors(nodes, descriptors)
@@ -454,13 +494,21 @@ export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
     .map((descriptor) => descriptor.path)
 }
 
+/** Build a graph model from tree nodes. Optionally provide a flat file list
+ *  for more complete coverage on Android (lazy-loaded trees may miss files
+ *  in collapsed folders). */
 export function buildLibraryGraphModel(
   nodes: NotiaFileNode[],
   _rootPath: string | null,
   markdownSourcesByPath: MarkdownSourcesByPath,
+  flatFileList?: NotiaFlatFileEntry[],
 ): LibraryGraphModel {
   const fileDescriptors: FileDescriptor[] = []
-  collectFileDescriptors(nodes, fileDescriptors)
+  if (flatFileList && flatFileList.length > 0) {
+    collectFileDescriptorsFromFlatList(flatFileList, fileDescriptors)
+  } else {
+    collectFileDescriptors(nodes, fileDescriptors)
+  }
   if (fileDescriptors.length === 0) {
     return { nodes: [], edges: [] }
   }

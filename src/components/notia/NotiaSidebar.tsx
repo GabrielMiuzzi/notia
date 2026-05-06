@@ -4,7 +4,7 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsSidebarOpen, selectActiveRailActionId } from '../../features/ui/uiSelectors'
 import { selectLibraries, selectSelectedLibraryId, selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
-import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes } from '../../features/documents/documentsSelectors'
+import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes, selectLoadingFolderIds } from '../../features/documents/documentsSelectors'
 import { LEFT_RAIL_ACTIONS } from '../../constants/notiaMenu'
 import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
 import { FileTree } from './FileTree'
@@ -26,6 +26,7 @@ function NotiaSidebarComponent() {
   const renamingPath = useAppSelector(selectRenamingPath)
   const searchMatchedPaths = useAppSelector(selectSearchMatchedPaths)
   const treeNodes = useAppSelector(selectTreeNodes)
+  const loadingFolderIdsList = useAppSelector(selectLoadingFolderIds)
 
   const rootPath = activeLibrary?.path ?? null
 
@@ -37,6 +38,10 @@ function NotiaSidebarComponent() {
   const displayedTreeNodes = useMemo(
     () => applySearchMatchesToTree(treeNodes, deferredSearchMatchedPathSet, isSearchActive),
     [deferredSearchMatchedPathSet, isSearchActive, treeNodes],
+  )
+  const loadingFolderIdSet = useMemo(
+    () => new Set<string>(loadingFolderIdsList),
+    [loadingFolderIdsList],
   )
 
   return (
@@ -67,6 +72,7 @@ function NotiaSidebarComponent() {
               onNodeContextMenu={actions.nodeContextMenu}
               onEmptyContextMenu={actions.emptyContextMenu}
               onMoveNode={actions.moveNode}
+              loadingFolderIds={loadingFolderIdSet}
             />
             <div data-notia-prevent-menu-close>
               <WorkspaceFooter

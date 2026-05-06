@@ -1,5 +1,6 @@
 import type { NotiaLibrary } from '../../types/notia'
-import { readLibraryTree, createLibraryEntry } from '../libraries/libraryRuntime'
+import { readLibraryTree, readLibraryDirectory, createLibraryEntry } from '../libraries/libraryRuntime'
+import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 const CHAT_ROOT_DIRECTORY_NAME = 'chat'
 const CHAT_HISTORY_DIRECTORY_NAME = 'chats'
@@ -31,11 +32,16 @@ export function resolveLongTermMemoryFilePath(libraryPath: string): string {
  * because it reuses the already-fetched tree and avoids extra cache refreshes.
  */
 function findDirectoryInTree(
-  nodes: Array<{ name: string; type: string; children?: Array<{ name: string; type: string }> }>,
+  nodes: Array<{ name: string; type: string; hasChildren?: boolean; children?: Array<{ name: string; type: string }> }>,
   directoryName: string,
-): Array<{ name: string; type: string; children?: Array<{ name: string; type: string }> }> | null {
+): { exists: boolean; children: Array<{ name: string; type: string }> | null } {
   const match = nodes.find((node) => node.type === 'folder' && node.name === directoryName)
-  return match?.children ?? null
+  if (!match) {
+    return { exists: false, children: null }
+  }
+  // If the folder exists but children haven't been loaded yet (lazy loading),
+  // report it as existing with null children (we'll need to load them separately).
+  return { exists: true, children: match.children ?? null }
 }
 
 async function ensureFolder(parentDirectoryPath: string, folderName: string, library: NotiaLibrary): Promise<void> {
@@ -61,31 +67,58 @@ async function ensureMarkdownFile(parentDirectoryPath: string, fileName: string,
 }
 
 export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise<void> {
-  // Optimisation: read the library tree ONCE and check whether the chat
-  // directories already exist in the cached tree. This avoids 3+ separate
-  // `pathExists` calls on Android SAF that each trigger a full tree cache
-  // refresh.
+  // Optimisation: on Android, use readLibraryDirectory (shallow, ls-style)
+  // instead of readLibraryTree (full recursive traversal) to check if the
+  // chat directory exists in the root-level nodes. This avoids the expensive
+  // full tree traversal on large libraries.
+  const isAndroid = getRuntimeDevice() === 'Android'
+
   try {
-    const treeNodes = await readLibraryTree(library.path, {
-      androidDirectoryUri: library.androidTreeUri,
-    })
+    const treeNodes = isAndroid
+      ? await readLibraryDirectory(library.path, {
+          androidDirectoryUri: library.androidTreeUri,
+        })
+      : await readLibraryTree(library.path, {
+          androidDirectoryUri: library.androidTreeUri,
+        })
 
-    const chatChildren = findDirectoryInTree(treeNodes, CHAT_ROOT_DIRECTORY_NAME)
-    if (chatChildren !== null) {
-      // chat/ exists — check for expected children before creating.
-      const hasLongTermMemory = chatChildren.some(
-        (n) => n.type === 'file' && n.name === LONG_TERM_MEMORY_FILE_NAME,
-      )
-      const hasChatsDir = chatChildren.some(
-        (n) => n.type === 'folder' && n.name === CHAT_HISTORY_DIRECTORY_NAME,
-      )
-
-      const chatDirectoryPath = resolveChatRootDirectoryPath(library.path)
-      if (!hasLongTermMemory) {
-        await ensureMarkdownFile(chatDirectoryPath, LONG_TERM_MEMORY_FILE_NAME, library)
+    const chatResult = findDirectoryInTree(treeNodes, CHAT_ROOT_DIRECTORY_NAME)
+    if (chatResult.exists) {
+      // chat/ exists — but children may not be loaded (lazy loading on Android).
+      // If children are null (not loaded), load them with a directory read.
+      let chatChildren = chatResult.children
+      if (!chatChildren && isAndroid) {
+        try {
+          const chatDirNodes = await readLibraryDirectory(
+            resolveChatRootDirectoryPath(library.path),
+            { androidDirectoryUri: library.androidTreeUri },
+          )
+          chatChildren = chatDirNodes
+        } catch {
+          // Fall through to create-if-missing path
+        }
       }
-      if (!hasChatsDir) {
-        await ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library)
+
+      if (chatChildren) {
+        const hasLongTermMemory = chatChildren.some(
+          (n) => n.type === 'file' && n.name === LONG_TERM_MEMORY_FILE_NAME,
+        )
+        const hasChatsDir = chatChildren.some(
+          (n) => n.type === 'folder' && n.name === CHAT_HISTORY_DIRECTORY_NAME,
+        )
+
+        const chatDirectoryPath = resolveChatRootDirectoryPath(library.path)
+        // Create missing children in parallel since they're independent
+        const pendingCreations: Promise<void>[] = []
+        if (!hasLongTermMemory) {
+          pendingCreations.push(ensureMarkdownFile(chatDirectoryPath, LONG_TERM_MEMORY_FILE_NAME, library))
+        }
+        if (!hasChatsDir) {
+          pendingCreations.push(ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library))
+        }
+        if (pendingCreations.length > 0) {
+          await Promise.allSettled(pendingCreations)
+        }
       }
       return
     }
@@ -94,8 +127,11 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
   }
 
   // chat/ does not exist — create the full structure.
+  // First create chat/ folder, then create the two children in parallel.
   await ensureFolder(library.path, CHAT_ROOT_DIRECTORY_NAME, library)
   const chatDirectoryPath = resolveChatRootDirectoryPath(library.path)
-  await ensureMarkdownFile(chatDirectoryPath, LONG_TERM_MEMORY_FILE_NAME, library)
-  await ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library)
+  await Promise.allSettled([
+    ensureMarkdownFile(chatDirectoryPath, LONG_TERM_MEMORY_FILE_NAME, library),
+    ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library),
+  ])
 }

@@ -25,6 +25,7 @@ export function LibraryManagerModal({
   onClose,
 }: LibraryManagerModalProps) {
   const [isAdding, setIsAdding] = useState(false)
+  const [addPhase, setAddPhase] = useState<string | null>(null)
   const [addErrorMessage, setAddErrorMessage] = useState<string | null>(null)
 
   if (!open) {
@@ -34,26 +35,18 @@ export function LibraryManagerModal({
   const handleAddLibrary = async () => {
     setAddErrorMessage(null)
     setIsAdding(true)
+    setAddPhase('picker')
     try {
-      console.log('[LibraryManager] Starting pickLibraryDirectory...')
       const selection = await pickLibraryDirectory()
-      console.log('[LibraryManager] pickLibraryDirectory result:', selection)
       if (!selection) {
-        console.log('[LibraryManager] No selection made (user cancelled)')
+        setAddPhase(null)
         return
       }
 
-      console.log('[LibraryManager] Creating new library:', {
-        name: selection.name,
-        path: selection.path,
-        androidTreeUri: selection.androidTreeUri,
-      })
-      
-      // Ensure .notia config directory exists using SAF context on Android.
+      setAddPhase('config')
       await ensureLibraryConfigExists(selection.path, {
         androidDirectoryUri: selection.androidTreeUri,
       })
-      console.log('[LibraryManager] Library config ensured')
       
       const newLibrary: NotiaLibrary = {
         id: generateUUID(),
@@ -61,9 +54,9 @@ export function LibraryManagerModal({
         path: selection.path,
         androidTreeUri: selection.androidTreeUri,
       }
+      setAddPhase('loading')
       onLibraryAdded(newLibrary)
       onClose()
-      console.log('[LibraryManager] Library added successfully')
     } catch (error) {
       console.error('[LibraryManager] Error adding library:', error)
       const fallbackMessage = 'No se pudo abrir el selector de carpetas en este dispositivo.'
@@ -74,8 +67,15 @@ export function LibraryManagerModal({
       }
     } finally {
       setIsAdding(false)
+      setAddPhase(null)
     }
   }
+
+  const phaseLabel = isAdding
+    ? addPhase === 'config' ? 'Configurando libreria...'
+    : addPhase === 'loading' ? 'Cargando archivos...'
+    : 'Seleccionando carpeta...'
+    : null
 
   return (
     <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-library-manager-modal">
@@ -132,7 +132,7 @@ export function LibraryManagerModal({
               disabled={isAdding}
             >
               <BookPlus size={14} />
-              <span>{isAdding ? 'Seleccionando carpeta...' : 'Agregar nueva libreria'}</span>
+              <span>{phaseLabel ?? 'Agregar nueva libreria'}</span>
             </NotiaButton>
             {addErrorMessage ? (
               <div className="notia-library-manager-error" role="status">

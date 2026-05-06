@@ -792,6 +792,20 @@
   flex-shrink: 0;
 }
 
+.notia-tree-chevron--loading {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--color-tree-chevron);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: notia-tree-spin 0.6s linear infinite;
+}
+
+@keyframes notia-tree-spin {
+  to { transform: rotate(360deg); }
+}
+
 .notia-tree-folder {
   color: var(--color-tree-folder);
   flex-shrink: 0;

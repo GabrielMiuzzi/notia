@@ -368,17 +368,29 @@ class Vault {
   }
 
   getAbstractFileByPath(path: string): TAbstractFile | null {
-    const resolvedPath = resolveFromRoot(this.bridge.rootPath, path)
     const filePaths = getNormalizedBridgeFilePaths(this.bridge)
+    const normalizedPath = normalizePathValue(path)
 
-    if (filePaths.includes(resolvedPath)) {
+    // Try direct match first — the path may already be fully resolved
+    // (e.g., on Android, display paths like "Library-name/file.inkdoc" are
+    // already relative to the library root and appear as-is in the file list).
+    if (filePaths.includes(normalizedPath)) {
+      return new TFile(normalizedPath)
+    }
+
+    // Try resolving from root (for relative paths, wiki-links, etc.)
+    const resolvedPath = resolveFromRoot(this.bridge.rootPath, path)
+    if (resolvedPath !== normalizedPath && filePaths.includes(resolvedPath)) {
       return new TFile(resolvedPath)
     }
 
+    // Check for folder matches (either direct or resolved)
     const hasFileInside = filePaths
-      .some((filePath) => filePath.startsWith(`${resolvedPath}/`) || filePath === resolvedPath)
+      .some((filePath) => filePath.startsWith(`${resolvedPath}/`) || filePath === resolvedPath
+        || filePath.startsWith(`${normalizedPath}/`) || filePath === normalizedPath)
 
-    if (hasFileInside || resolvedPath === normalizePathValue(this.bridge.rootPath)) {
+    if (hasFileInside || resolvedPath === normalizePathValue(this.bridge.rootPath)
+      || normalizedPath === normalizePathValue(this.bridge.rootPath)) {
       return new TFolder(resolvedPath)
     }
 

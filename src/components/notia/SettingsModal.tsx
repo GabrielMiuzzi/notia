@@ -193,17 +193,6 @@ export function SettingsModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // Also save when component unmounts
-  useEffect(() => {
-    return () => {
-      console.log('[SettingsModal] Component unmounting, committing changes...')
-      // Commit any pending changes when unmounting
-      commitInkMathServiceUrl()
-      commitAiPreferences()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   const handleCheckAiConnection = async () => {
     const normalized = normalizeAiSettingsInput({
       ollamaUrl: ollamaUrlDraft,

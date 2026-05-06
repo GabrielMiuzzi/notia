@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectIndexRevision } from '../../../features/library/librarySelectors'
+import { selectFlatFileList } from '../../../features/documents/documentsSelectors'
 import { useLibraryGraphData } from '../../../hooks/useLibraryGraphData'
 import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
 
@@ -16,6 +17,7 @@ export function useGraphWorkspace({
   treeNodes,
 }: UseGraphWorkspaceParams) {
   const graphRevision = useAppSelector(selectIndexRevision)
+  const flatFileList = useAppSelector(selectFlatFileList)
   const [graphChatSelectedPaths, setGraphChatSelectedPaths] = useState<string[]>([])
 
   const isGraphViewActive = activeWorkspaceView === 'graph'
@@ -25,6 +27,7 @@ export function useGraphWorkspace({
     libraryAndroidTreeUri: activeLibrary?.androidTreeUri,
     rootPath: activeLibrary?.path ?? null,
     treeNodes,
+    flatFileList,
     revision: graphRevision,
   })
 

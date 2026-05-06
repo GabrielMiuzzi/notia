@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::notia_timer::NotiaTimer;
+
 use super::types::{FileNode, MarkdownFileDocument};
 
 pub(crate) fn to_path_string(path: &Path) -> String {
@@ -55,6 +57,8 @@ pub(crate) fn read_directory_tree(
     directory_path: &Path,
     visited_directories: &mut HashSet<PathBuf>,
 ) -> Vec<FileNode> {
+    let _timer = NotiaTimer::new("helpers.read_directory_tree")
+        .with_meta(format!("path={}", directory_path.display()));
     let canonical_directory_path = canonical_or_original(directory_path);
     if visited_directories.contains(&canonical_directory_path) {
         return Vec::new();
@@ -133,6 +137,8 @@ pub(crate) fn collect_directory_signature(
     visited_directories: &mut HashSet<PathBuf>,
     current_hash: &mut u32,
 ) {
+    let _timer = NotiaTimer::new("helpers.collect_directory_signature")
+        .with_meta(format!("path={}", directory_path.display()));
     let canonical_directory_path = canonical_or_original(directory_path);
     if visited_directories.contains(&canonical_directory_path) {
         return;
@@ -286,6 +292,8 @@ pub(crate) fn read_markdown_files_in_directory(
     visited_directories: &mut HashSet<PathBuf>,
     documents: &mut Vec<MarkdownFileDocument>,
 ) {
+    let _timer = NotiaTimer::new("helpers.read_markdown_files_in_directory")
+        .with_meta(format!("path={}", directory_path.display()));
     let canonical_directory_path = canonical_or_original(directory_path);
     if visited_directories.contains(&canonical_directory_path) {
         return;
