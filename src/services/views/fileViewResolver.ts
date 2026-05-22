@@ -18,8 +18,8 @@ export function resolveFileViewKind(extension: string): NotiaFileViewKind {
     return 'inkdoc'
   }
 
-  if (extension === 'drawio') {
-    return 'drawio'
+  if (extension === 'mmd') {
+    return 'mermaid'
   }
 
   if (MARKDOWN_EXTENSIONS.has(extension)) {
@@ -33,6 +33,6 @@ export function resolveFileViewKind(extension: string): NotiaFileViewKind {
   return 'text'
 }
 
-export function isTextualViewKind(viewKind: NotiaFileViewKind): viewKind is 'markdown' | 'text' {
-  return viewKind === 'markdown' || viewKind === 'text'
+export function isTextualViewKind(viewKind: NotiaFileViewKind): viewKind is 'markdown' | 'text' | 'mermaid' {
+  return viewKind === 'markdown' || viewKind === 'text' || viewKind === 'mermaid'
 }

@@ -15,7 +15,6 @@ import { NotiaRightPanel } from './NotiaRightPanel'
 import { NotiaModals } from './NotiaModals'
 import { WindowTitleBar } from './WindowTitleBar'
 import { type TaskManagerChatContext } from '../../modules/task-manager/components/TaskManagerApp'
-import type { DrawioDocumentController } from '../../modules/drawio/types'
 import { useGraphWorkspace } from './hooks/useGraphWorkspace'
 import { useLibraryConfigSync } from './hooks/useLibraryConfigSync'
 import { useRightPanelChatContext } from './hooks/useRightPanelChatContext'
@@ -40,7 +39,7 @@ import { toggleTheme, setAiSettings, setInkdocPreferences, setExplorerRefreshInt
 import { selectTheme, selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
-import { setActiveTabPath, resetTabs as resetTabsAction, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
+import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 
 // --- Pure helper function ---
@@ -112,8 +111,6 @@ export function NotiaMenu() {
     return undefined
   }, [activeLibrary])
 
-  const drawioControllersRef = useRef<Map<string, DrawioDocumentController>>(new Map())
-
   // --- Stable callback refs for circular dependencies between hooks ---
   const persistTextDocumentSourceRef = useRef<((targetPath: string, targetSource: string) => Promise<boolean>) | null>(null)
   const bumpLibraryIndexRevisionRef = useRef<() => void>(() => {})
@@ -125,12 +122,10 @@ export function NotiaMenu() {
     ),
   })
 
-  // resetTabsAndClearDrawioControllers from useTabManager is needed by useLibraryTreeSync,
+  // resetTabs from useTabManager is needed by useLibraryTreeSync,
   // but bumpLibraryIndexRevision from useLibraryTreeSync is needed by useTabManager.
   // Break the cycle: useTabManager takes bumpLibraryIndexRevision via ref.
-  const resetTabsAndClearDrawioControllers = useCallback(() => {
-    drawioControllersRef.current.clear()
-    dispatch(resetTabsAction())
+  const resetTabsActionCallback = useCallback(() => {
     resetColdPassSession()
     dispatch(setActiveTabPath(null))
   }, [dispatch, resetColdPassSession])
@@ -144,7 +139,7 @@ export function NotiaMenu() {
   } = useLibraryTreeSync({
     activeLibraryId,
     clearAllPendingTextSaves,
-    resetTabsAndClearDrawioControllers,
+    resetTabsAndClearDrawioControllers: resetTabsActionCallback,
   })
 
   // Wire up the bumpLibraryIndexRevision ref so useTabManager can use it
@@ -153,7 +148,6 @@ export function NotiaMenu() {
   const tabManager = useTabManager({
     resolveActiveLibraryAndroidDirectoryUri,
     clearPendingTextSaveByPath,
-    drawioControllersRef,
     bumpLibraryIndexRevision: useCallback(() => { bumpLibraryIndexRevisionRef.current() }, []),
     resetColdPassSession,
     activeLibraryPath: activeLibrary?.path,
@@ -176,13 +170,10 @@ export function NotiaMenu() {
 
   const {
     handleInkdocDocumentPersist,
-    handleDrawioDocumentPersist,
-    handleDrawioControllerReady,
   } = useDocumentPersist({
     resolveActiveLibraryAndroidDirectoryUri,
     bumpLibraryIndexRevision,
     activeLibraryPath: activeLibrary?.path,
-    drawioControllersRef,
   })
 
   const {
@@ -352,8 +343,6 @@ export function NotiaMenu() {
     libraryRemoved: handleLibraryRemoved,
     textDocumentChange: tabManager.handleTextDocumentChange,
     inkdocDocumentPersist: handleInkdocDocumentPersist,
-    drawioDocumentPersist: handleDrawioDocumentPersist,
-    drawioControllerReady: handleDrawioControllerReady,
     chatWorkspaceTreeChanged: handleChatWorkspaceTreeChanged,
     windowAction: handleWindowAction,
     coldPassOpenCredentialModal: handleOpenColdPassCredentialModal,
@@ -385,8 +374,6 @@ export function NotiaMenu() {
     handleLibraryAdded,
     handleLibraryRemoved,
     handleInkdocDocumentPersist,
-    handleDrawioDocumentPersist,
-    handleDrawioControllerReady,
     handleChatWorkspaceTreeChanged,
     handleWindowAction,
     handleOpenColdPassCredentialModal,

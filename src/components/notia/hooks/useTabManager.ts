@@ -29,7 +29,6 @@ import {
   type OpenFileDocument,
   type NotiaDocumentSaveStatus,
 } from '../../../types/views/fileDocument'
-import type { DrawioDocumentController } from '../../../modules/drawio/types'
 
 interface OpenDocumentTab {
   document: OpenFileDocument
@@ -130,7 +129,6 @@ export function joinParentPath(parentPath: string, originalPath: string, name: s
 interface UseTabManagerParams {
   resolveActiveLibraryAndroidDirectoryUri: (pathValue?: string | null) => string | undefined
   clearPendingTextSaveByPath: (path: string) => void
-  drawioControllersRef: React.RefObject<Map<string, DrawioDocumentController>>
   bumpLibraryIndexRevision: () => void
   resetColdPassSession: () => void
   activeLibraryPath: string | undefined
@@ -139,7 +137,6 @@ interface UseTabManagerParams {
 export function useTabManager({
   resolveActiveLibraryAndroidDirectoryUri,
   clearPendingTextSaveByPath,
-  drawioControllersRef,
   bumpLibraryIndexRevision,
   resetColdPassSession,
   activeLibraryPath,
@@ -208,45 +205,9 @@ export function useTabManager({
         return false
       }
 
-      if (tab.document.viewKind === 'drawio') {
-        const controller = drawioControllersRef.current.get(tabPath)
-        if (controller) {
-          try {
-            await controller.flush()
-            return true
-          } catch (error) {
-            const message = error instanceof Error && error.message.trim()
-              ? error.message
-              : 'No se pudo guardar el archivo draw.io.'
-            dispatch(updateTabSaveStatus({ path: tabPath, status: 'error' }))
-            if (!store.getState().documents.dialogState) {
-              dispatch(setDialogState({ type: 'info', title: 'No se pudo guardar', message }))
-            }
-            return false
-          }
-        }
-        if (tab.document.source === tab.latestSavedSource) { return true }
-        const result = await writeLibraryFileContent(tabPath, tab.document.source, {
-          androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(tabPath),
-        })
-        if (result.ok) {
-          if (activeLibraryPath) { invalidateLibrarySearchGraphIndex(activeLibraryPath, tabPath) }
-          bumpLibraryIndexRevision()
-          return true
-        }
-        if (!store.getState().documents.dialogState) {
-          dispatch(setDialogState({
-            type: 'info',
-            title: 'No se pudo guardar',
-            message: result.error ?? 'No se pudo guardar el archivo draw.io.',
-          }))
-        }
-        return false
-      }
-
       return true
     },
-    [activeLibraryPath, bumpLibraryIndexRevision, clearPendingTextSaveByPath, dispatch, persistTextDocumentSource, resolveActiveLibraryAndroidDirectoryUri, drawioControllersRef],
+    [activeLibraryPath, bumpLibraryIndexRevision, clearPendingTextSaveByPath, dispatch, persistTextDocumentSource, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   const closeTabByPath = useCallback(async (tabPath: string) => {
@@ -351,7 +312,6 @@ export function useTabManager({
     for (const tab of currentTabs) {
       if (isSameOrNestedPath(path, tab.document.path)) {
         clearPendingTextSaveByPath(tab.document.path)
-        drawioControllersRef.current.delete(tab.document.path)
       }
     }
     const workspaceTabsAfterClose = buildWorkspaceTitleTabs(remainingDocumentTabs, store.getState().documents.specialTabs)
@@ -364,18 +324,13 @@ export function useTabManager({
           : null
     dispatch(setOpenTabs(remainingDocumentTabs))
     dispatch(setActiveTabPath(nextActiveTabPath))
-  }, [clearPendingTextSaveByPath, dispatch, drawioControllersRef])
+  }, [clearPendingTextSaveByPath, dispatch])
 
   const renameOpenTabPath = useCallback((path: string, nextPath: string, name: string) => {
     clearPendingTextSaveByPath(path)
-    const drawioController = drawioControllersRef.current.get(path)
-    if (drawioController) {
-      drawioControllersRef.current.delete(path)
-      drawioControllersRef.current.set(nextPath, drawioController)
-    }
     dispatch(renameTabPath({ oldPath: path, newPath: nextPath, name }))
     if (selectActiveTabPath(store.getState()) === path) { dispatch(setActiveTabPath(nextPath)) }
-  }, [clearPendingTextSaveByPath, dispatch, drawioControllersRef])
+  }, [clearPendingTextSaveByPath, dispatch])
 
   const openDocumentInTab = useCallback((document: OpenFileDocument, latestSavedSource: string) => {
     dispatch(addOpenTab({ document, saveStatus: 'idle', latestSavedSource }))
@@ -409,12 +364,11 @@ export function useTabManager({
     dispatch(updateTabSource({ path: targetPath, source: nextSource }))
   }, [dispatch])
 
-  const resetTabsAndClearDrawioControllers = useCallback(() => {
-    drawioControllersRef.current.clear()
+  const resetTabs = useCallback(() => {
     dispatch(resetTabsAction())
     resetColdPassSession()
     dispatch(setActiveTabPath(null))
-  }, [dispatch, drawioControllersRef, resetColdPassSession])
+  }, [dispatch, resetColdPassSession])
 
   return {
     closeTabByPath,
@@ -427,6 +381,6 @@ export function useTabManager({
     handleActivateTab,
     handleTextDocumentChange,
     persistTextDocumentSource,
-    resetTabsAndClearDrawioControllers,
+    resetTabs,
   }
 }

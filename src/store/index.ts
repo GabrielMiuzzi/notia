@@ -4,6 +4,7 @@ import preferencesReducer from '../features/preferences/preferencesSlice'
 import libraryReducer from '../features/library/librarySlice'
 import documentsReducer from '../features/documents/documentsSlice'
 import explorerReducer from '../features/explorer/explorerSlice'
+import mermaidViewerReducer from '../features/mermaidViewer/mermaidViewerSlice'
 
 export const store = configureStore({
   reducer: {
@@ -12,6 +13,7 @@ export const store = configureStore({
     library: libraryReducer,
     documents: documentsReducer,
     explorer: explorerReducer,
+    mermaidViewer: mermaidViewerReducer,
   },
 })
 

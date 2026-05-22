@@ -136,6 +136,11 @@ function NotiaModalsComponent({
       dispatch(setContextMenu(null))
       return
     }
+    if (actionId === 'new-mermaid-root') {
+      dispatch(setPendingCreation({ id: `pending-mermaid-${Date.now()}`, kind: 'mermaid', initialName: 'Nuevo diagrama', parentPath: activeLibrary.path }))
+      dispatch(setContextMenu(null))
+      return
+    }
     if (currentContextMenu.type !== 'node') { dispatch(setContextMenu(null)); return }
     const targetNode = currentContextMenu.node
     const targetPath = targetNode.path
@@ -225,6 +230,13 @@ function NotiaModalsComponent({
       dispatch(setContextMenu(null))
       return
     }
+    if (actionId === 'new-mermaid' && targetNode.type === 'folder') {
+      const currentTreeNodes = store.getState().documents.treeNodes
+      store.dispatch(setTreeNodes(setFolderExpandedByPath(currentTreeNodes, targetPath, true)))
+      dispatch(setPendingCreation({ id: `pending-mermaid-${Date.now()}`, kind: 'mermaid', initialName: 'Nuevo diagrama', parentPath: targetPath }))
+      dispatch(setContextMenu(null))
+      return
+    }
     dispatch(setContextMenu(null))
   }, [activeLibrary, activeLibraryAndroidDirectoryUri, actions, confirm, dispatch])
 
@@ -252,6 +264,7 @@ function NotiaModalsComponent({
         { id: 'new-folder-root', label: 'Crear carpeta nueva' },
         { id: 'new-note-root', label: 'Crear nota nueva' },
         { id: 'new-inkdoc-root', label: 'Crear inkdoc nuevo' },
+        { id: 'new-mermaid-root', label: 'Crear diagrama nuevo' },
       ]
     : contextMenu?.type === 'node'
       ? [
@@ -268,6 +281,7 @@ function NotiaModalsComponent({
                 { id: 'new-subfolder', label: 'Crear subcarpeta' },
                 { id: 'new-note', label: 'Crear nota' },
                 { id: 'new-inkdoc', label: 'Crear inkdoc' },
+                { id: 'new-mermaid', label: 'Crear diagrama' },
               ]
             : []),
         ]

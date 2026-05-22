@@ -37,7 +37,7 @@ export interface FilesystemPickFileResult {
   path: string
 }
 
-export type FilesystemCreateEntryKind = 'folder' | 'note' | 'inkdoc'
+export type FilesystemCreateEntryKind = 'folder' | 'note' | 'inkdoc' | 'mermaid'
 export type FilesystemEntryOperationMode = 'copy' | 'move'
 
 export interface FilesystemEntryOperationPayload {

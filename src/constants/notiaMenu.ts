@@ -10,6 +10,7 @@ import {
   PanelsTopLeft,
   PencilLine,
   FilePenLine,
+  Network,
   Search,
   X,
   Minus,
@@ -32,6 +33,7 @@ export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
 export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [
   { id: 'new-note', label: 'New Note', icon: PencilLine },
   { id: 'new-inkdoc', label: 'New InkDoc', icon: FilePenLine },
+  { id: 'new-mermaid', label: 'New Diagram', icon: Network },
   { id: 'new-folder', label: 'New Folder', icon: FolderPlus },
   { id: 'collapse-folders', label: 'Collapse Folders', icon: Folder },
   { id: 'expand-folders', label: 'Expand Folders', icon: FolderOpen },

@@ -1,7 +1,7 @@
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import type { NotiaDocumentSaveStatus, OpenFileDocument } from '../../types/views/fileDocument'
 
-export type DocumentKind = 'markdown' | 'inkdoc' | 'drawio' | 'image' | 'text' | 'unknown'
+export type DocumentKind = 'markdown' | 'inkdoc' | 'image' | 'text' | 'mermaid' | 'unknown'
 
 export interface OpenDocumentTab {
   document: OpenFileDocument
@@ -26,7 +26,7 @@ export interface DocumentsState {
   isSearchLoading: boolean
   pendingCreation: {
     id: string
-    kind: 'folder' | 'note' | 'inkdoc'
+    kind: 'folder' | 'note' | 'inkdoc' | 'mermaid'
     initialName: string
     parentPath: string
   } | null

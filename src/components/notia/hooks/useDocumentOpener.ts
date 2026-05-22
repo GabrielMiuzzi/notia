@@ -42,7 +42,7 @@ export function useDocumentOpener({
 
     const openFileMeasurement = startPerformanceMeasurement('document.open', { extension, filePath, viewKind })
 
-    if (isTextualViewKind(viewKind) || viewKind === 'inkdoc' || viewKind === 'drawio') {
+    if (isTextualViewKind(viewKind) || viewKind === 'inkdoc') {
       openingDocumentPathsRef.current.add(filePath)
       try {
         const result = await readLibraryFileContent(filePath, {

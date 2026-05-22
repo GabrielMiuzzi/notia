@@ -1,0 +1,3004 @@
+# README-TECH.md — Notia
+
+> Documentación técnica orientada a ingenieros de software.  
+> Stack: React 19 + TypeScript 5.9 + Vite 7 + Redux Toolkit + MUI v7 + Tauri v2 (Rust 2021).
+
+---
+
+## 1. Documentación General
+
+### 1.1 Descripción Técnica del Servicio
+
+Notia es una aplicación de gestión de conocimiento **local-first** construida con **Tauri v2**, que combina un frontend React 19 compilado con Vite 7 y un backend en Rust (edición 2021). La aplicación opera sin servidor cloud: todos los datos (notas Markdown, documentos InkDoc, diagramas Mermaid, credenciales ColdPass, tareas y sesiones de chat) persisten en el filesystem local del usuario. La comunicación entre frontend y backend se realiza exclusivamente mediante **Tauri Commands** (`invoke`/`listen`) y **Custom Events** internos del frontend.
+
+### 1.2 Stack de Tecnologías
+
+| Capa | Tecnología | Versión |
+|---|---|---|
+| Framework Desktop/Mobile | Tauri | v2 |
+| Frontend | React | 19.2.0 |
+| Lenguaje Frontend | TypeScript | ~5.9.3 |
+| Build Tool | Vite | 7.3.1 |
+| Estado Global | Redux Toolkit + React Redux | ^2.11.2 / ^9.2.0 |
+| UI Components | Material UI (MUI) | ^7.3.9 |
+| CSS-in-JS | Emotion (React/Styled) | ^11.14.0 / ^11.14.1 |
+| Iconos | Lucide React | ^0.577.0 |
+| Editor Markdown | @milkdown/crepe | ^7.19.0 |
+| Diagramas | Mermaid | ^11.14.0 |
+| Backend | Rust | Edition 2021 |
+| Serialización Rust | Serde + serde_json | ^1 |
+| HTTP Client Rust | reqwest | 0.13.2 |
+| Async Runtime Rust | Tokio | ^1 |
+| Bluetooth LE Rust | btleplug | 0.11.7 |
+| File Watcher Rust | notify | 6.1.1 |
+| Logging Rust | log + env_logger/android_logger | 0.4 / 0.11 / 0.14 |
+| Performance Timing Rust | `notia_timer.rs` (RAII scope timer) | internal |
+| Diálogos Nativos | tauri-plugin-dialog | ^2 |
+
+### 1.3 Cómo Levantar el Proyecto en Local
+
+#### Requisitos previos
+
+- **Node.js** 20+ y **npm** 10+.
+- **Rust toolchain** (`rustup`, `cargo`, `rustc`).
+- **Git**.
+- En **Linux**: paquetes del sistema listados en `README.md` (webkit2gtk, openssl, gtk3, appindicator, librsvg, dbus, bluez).
+- En **Android**: Android SDK + NDK (auto-detectado por los scripts en `$HOME/Android/Sdk/ndk/*`).
+
+#### Pasos
+
+```bash
+# 1. Clonar
+git clone <repository-url>
+cd notia
+
+# 2. Instalar dependencias Node
+npm install
+
+# 3. Desarrollo desktop (Linux auto-detecta Wayland/X11)
+npm run dev:tauri
+
+# 4. Desarrollo Android
+npm run dev:android
+```
+
+#### Scripts relevantes (`package.json`)
+
+| Script | Descripción |
+|---|---|
+| `npm run dev` | Vite dev server (solo web, puerto 1420) |
+| `npm run build` | Compilación TypeScript + build Vite |
+| `npm run lint` | ESLint |
+| `npm run dev:tauri` | Dev desktop Linux (auto-detect backend) |
+| `npm run dev:tauri:wayland` | Fuerza backend Wayland |
+| `npm run dev:tauri:wayland:fallback` | Wayland con fallback a X11 |
+| `npm run dev:tauri:x11` | Fuerza backend X11 |
+| `npm run dev:android` | Dev en dispositivo Android |
+| `npm run build:android:debug` | APK debug aarch64 |
+| `npm run build:android:release` | APK release firmado |
+| `npm run build:android:aab` | Android App Bundle (Play Store) |
+| `npm run install:android:release` | Instala APK release por adb |
+| `npm run build:tauri` | Build release empaquetado Tauri |
+
+### 1.4 Variables de Entorno Relevantes
+
+| Variable | Valores | Uso |
+|---|---|---|
+| `NOTIA_TAURI_BACKEND` | `wayland` \| `x11` | Forzar backend gráfico en Linux |
+| `NOTIA_TAURI_FALLBACK_X11` | `0` \| `1` | Si Wayland falla, reintentar en X11 |
+| `NOTIA_ANDROID_KEYSTORE_PATH` | ruta al `.keystore` | Firma release Android |
+| `NOTIA_ANDROID_KEYSTORE_PASSWORD` | string | Password del keystore |
+| `NOTIA_ANDROID_KEY_ALIAS` | string | Alias de la clave |
+| `NOTIA_ANDROID_KEY_PASSWORD` | string | Password de la clave |
+
+### 1.5 Decisiones Arquitectónicas Clave
+
+1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, InkDoc, ColdPass, Task Manager) se almacenan como archivos en el filesystem. No hay base de datos ni servidor. El estado en Redux modela solo UI, selección y datos derivados.
+2. **Cifrado de ColdPass en frontend**: la passkey nunca viaja al backend. El cifrado/descifrado AES-256-GCM con PBKDF2 (250k iteraciones) se ejecuta en el navegador vía **Web Crypto API**. El backend Rust solo lee/escribe bytes opacos.
+3. **Delegación de cómputo pesado a Web Workers**: el layout del grafo y la construcción del modelo de nodos/enlaces se delegan a `graphModelWorker.ts` y `graphViewWorker.ts` para evitar bloquear el hilo principal.
+4. **Redux Toolkit para estado global**: 5 slices (`ui`, `preferences`, `library`, `documents`, `explorer`) con persistencia de preferencias en `localStorage` dentro de los propios reducers.
+5. **Separación commands/services/dto en Rust**: los Tauri commands (`commands/`, `filesystem/commands.rs`) son una capa delgada que deserializa, valida y delega a `services/`. La lógica de negocio nunca vive en los commands.
+6. **Filesystem module auto-contenido**: el módulo `src-tauri/src/filesystem/` tiene su propia capa de commands → desktop/android_saf → helpers/validation/types, facilitando el mantenimiento multiplataforma.
+7. **Plataforma condicional**: uso de `#[cfg(...)]` en Rust y `getRuntimeDevice()` en TypeScript para proveer stubs en plataformas no soportadas, nunca dejando un command sin implementación.
+
+---
+
+## 2. Documentación Específica de Flujos
+
+> Para cada flujo documentado se incluyen: **entradas y salidas** (tipos, formatos, contratos), **validaciones aplicadas**, **pasos del proceso**, **comportamiento ante errores**, **dependencias con otros módulos**, y **ejemplos JSON completos** de request/response para los commands del backend.
+
+### 2.1 Filesystem — Sincronización de Árbol de Librería
+
+#### Descripción
+Carga y mantenimiento del árbol de archivos de la librería activa. En **desktop** se usa un file watcher nativo (`notify` crate). En **Android** se usa el Storage Access Framework (SAF) con polling opcional.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `read_library_tree` | Síncrono | `ReadLibraryTreePayload` | `Vec<FileNode>` |
+| `read_library_tree_signature` | Síncrono | `ReadLibraryTreePayload` | `String` (hash hex) |
+| `start_library_tree_watch` | Síncrono | `{ directoryPath: string }` | `{ ok: boolean }` |
+| `stop_library_tree_watch` | Síncrono | — | `{ ok: boolean }` |
+
+#### Ejemplo JSON — Request `read_library_tree`
+
+```json
+{
+  "payload": {
+    "directoryPath": "/home/usuario/Notas"
+  }
+}
+```
+
+#### Ejemplo JSON — Response `read_library_tree`
+
+```json
+[
+  {
+    "id": "folder-1",
+    "name": "Proyectos",
+    "path": "/home/usuario/Notas/Proyectos",
+    "type": "folder",
+    "expanded": false,
+    "children": [
+      {
+        "id": "file-1",
+        "name": "README.md",
+        "path": "/home/usuario/Notas/Proyectos/README.md",
+        "type": "file"
+      }
+    ]
+  },
+  {
+    "id": "file-2",
+    "name": "Ideas.md",
+    "path": "/home/usuario/Notas/Ideas.md",
+    "type": "file"
+  }
+]
+```
+
+#### Ejemplo JSON — Response `read_library_tree_signature`
+
+```json
+"a3f7b2c1"
+```
+
+#### Entradas
+- `directoryPath: string` — path absoluto de la librería (normalizado por `normalizeFilesystemPath`).
+- `androidDirectoryUri?: string` — URI de árbol SAF (solo Android).
+
+#### Salidas
+- `FilesystemTreeNode[]` — árbol jerárquico de `id`, `name`, `path`, `type`, `expanded`, `hasChildren`, `children`.
+- `string` — `treeSignature` (hash FNV-1a del árbol) para detectar cambios sin re-leer todo.
+- Evento `notia-library-tree-changed` (desktop) — payload con `watchedPath` y `changedPathHint`.
+
+#### Validaciones
+- **Frontend**: `normalizeFilesystemPath` sanitiza separadores (`\` → `/`). Rechaza strings vacíos.
+- **Backend**: `validation.rs` rechaza nombres con `/`, `\\`, `.`, `..`, strings vacíos.
+- **Backend**: canonicalización con `fs::canonicalize` (fallback al path original).
+
+#### Pasos del proceso (Desktop)
+
+1. **Inicialización**: `useLibraryTreeSync` (hook) detecta cambio de librería activa.
+2. **Carga inicial**: `filesystemEngine.readLibraryTree(path)` → `invoke('read_library_tree')` → Rust `filesystem::commands::read_library_tree` → `desktop::read_library_tree` → escaneo recursivo del filesystem → serialización de `FileNode[]`.
+3. **Firma**: `filesystemEngine.readLibraryTreeSignature(path)` → `invoke('read_library_tree_signature')` → hash FNV-1a de todos los nodos.
+4. **Watcher**: `libraryTreeWatchRuntime.startDesktopLibraryTreeWatch(path)` → `invoke('start_library_tree_watch')` → Rust `filesystem::watch` instancia `notify::RecommendedWatcher` sobre el directorio.
+5. **Evento de cambio**: el watcher detecta modificación externa → emite evento Tauri `notia-library-tree-changed`.
+6. **Frontend reacciona**: `subscribeToDesktopLibraryTreeWatchBridge` escucha el evento → `dispatchLibraryTreeChanged()` → CustomEvent `notia:library-tree-changed` → slices de Redux actualizan el árbol → re-render de `FileTree`.
+
+#### Pasos del proceso (Android)
+
+1. **Selección de carpeta**: `filesystemEngine.pickDirectory()` → `invoke('pick_android_directory_tree')` → Rust `mobile_directory_picker` → intent SAF nativo → retorna `path` + `uri`.
+2. **Lectura del árbol**: `invoke('read_android_library_tree')` → Rust `mobile_directory_picker::read_android_library_tree` → recorrido SAF recursivo → `FileNode[]`.
+3. **Polling (opcional)**: en Settings se configura `explorer-refresh-interval-ms`. El hook `useLibraryTreeSync` re-lee la firma periódicamente y compara con la anterior; si difiere, re-carga el árbol completo.
+4. **Flat file list**: para indexado de búsqueda y grafo, `readLibraryFlatFileList()` invoca `read_android_flat_file_list` (comando exclusivo de Android) para obtener lista plana sin recursión de árbol.
+
+#### Comportamiento ante errores
+- Si el path está vacío o normalizado a vacío: retorna `[]` silenciosamente.
+- Si el backend falla en desktop: consola con prefijo `[filesystemEngine]`; el árbol previo permanece.
+- Si el watcher falla al iniciar: retorna `false` en `startDesktopLibraryTreeWatch`; no se reintenta automáticamente.
+- En Android, si el comando `pick_android_directory_tree` no existe (backend desactualizado), se lanza error explícito pidiendo recompilar la app.
+
+#### Dependencias
+- **Frontend services**: `filesystemEngine.ts`, `libraryTreeWatchRuntime.ts`, `libraryTreeEvents.ts`, `notiaLogger.ts`.
+- **Redux slices**: `librarySlice` (librería activa), `documentsSlice` (nodos del árbol), `explorerSlice` (carpetas expandidas).
+- **Backend commands**: `read_library_tree`, `read_library_tree_signature`, `start_library_tree_watch`, `stop_library_tree_watch`, `pick_android_directory_tree`, `read_android_library_tree`, `read_android_flat_file_list`, `read_android_directory`.
+- **Backend services**: `desktop.rs`, `android_saf.rs`, `watch.rs`.
+
+---
+
+### 2.2 Filesystem — CRUD de Entradas
+
+#### Descripción
+Creación, lectura, actualización y eliminación de archivos y carpetas dentro de una librería, con soporte desktop y Android SAF.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `create_library_entry` | Síncrono | `CreateLibraryEntryPayload` | `OperationResult` |
+| `library_entry_operation` | Síncrono | `LibraryEntryOperationPayload` | `OperationResult` |
+| `read_library_file` | Síncrono | `ReadLibraryFilePayload` | `ReadLibraryFileResult` |
+| `write_library_file` | Síncrono | `WriteLibraryFilePayload` | `WriteLibraryFileResult` |
+| `path_exists` | Síncrono | `PathExistsPayload` | `PathExistsResult` |
+| `is_directory_path` | Síncrono | `PathExistsPayload` | `IsDirectoryPathResult` |
+
+#### Ejemplo JSON — Request `create_library_entry`
+
+```json
+{
+  "payload": {
+    "directoryPath": "/home/usuario/Notas/Proyectos",
+    "name": "Nueva Nota",
+    "kind": "note"
+  }
+}
+```
+
+#### Ejemplo JSON — Response `create_library_entry`
+
+```json
+{
+  "ok": true
+}
+```
+
+#### Ejemplo JSON — Request `library_entry_operation` (rename)
+
+```json
+{
+  "payload": {
+    "action": "rename",
+    "targetPath": "/home/usuario/Notas/Proyectos/ViejoNombre.md",
+    "newName": "NuevoNombre.md"
+  }
+}
+```
+
+#### Ejemplo JSON — Response `library_entry_operation`
+
+```json
+{
+  "ok": true
+}
+```
+
+#### Ejemplo JSON — Request `read_library_file`
+
+```json
+{
+  "payload": {
+    "filePath": "/home/usuario/Notas/Proyectos/README.md"
+  }
+}
+```
+
+#### Ejemplo JSON — Response `read_library_file`
+
+```json
+{
+  "ok": true,
+  "content": "# Proyecto Alpha\n\nEste es el README del proyecto.",
+  "error": null
+}
+```
+
+#### Ejemplo JSON — Request `write_library_file`
+
+```json
+{
+  "payload": {
+    "filePath": "/home/usuario/Notas/Proyectos/README.md",
+    "content": "# Proyecto Alpha\n\nContenido actualizado."
+  }
+}
+```
+
+#### Ejemplo JSON — Response `write_library_file`
+
+```json
+{
+  "ok": true,
+  "error": null
+}
+```
+
+#### Validaciones
+- `validate_create_library_entry_payload`: rechaza nombres vacíos, con `/`, `\\`, `.`, `..`.
+- `validate_library_entry_operation_payload`: parsea y normaliza la acción; valida que existan los paths requeridos según la acción.
+
+#### Pasos del proceso
+
+1. **Crear entrada**: frontend `filesystemEngine.createLibraryEntry()` → `invoke('create_library_entry')` → Rust valida nombre → determina extensión según `kind` (`.md`, `.inkdoc`, `.mmd`, sin extensión para carpetas) → crea en desktop con `fs::create_dir`/`fs::write` o en Android SAF.
+2. **Eliminar**: `invoke('library_entry_operation')` con `action: 'delete'` → Rust valida → `desktop::delete_entry` (o SAF) → `fs::remove_file`/`remove_dir_all`.
+3. **Renombrar**: `action: 'rename'` → `desktop::rename_entry` → `fs::rename`.
+4. **Copiar/Mover**: `action: 'paste'` con `mode: 'copy'` o `'move'` → lectura del source → escritura en target → si es move, eliminación del source.
+
+#### Comportamiento ante errores
+- Nombre inválido: retorna inmediatamente `OperationResult` con error descriptivo en español.
+- Path no existe: error de filesystem propagado como string al frontend.
+- Operación en Android sin `directoryUri`: puede fallar si SAF no tiene permiso persistido.
+
+#### Dependencias
+- **Frontend**: `filesystemEngine.ts`, `useFileTreeActions.ts`, `FileTreeContextMenu.tsx`.
+- **Backend**: `create_library_entry`, `library_entry_operation`, `validation.rs`, `desktop.rs`, `android_saf.rs`.
+
+---
+
+### 2.3 Markdown — Edición de Documentos
+
+#### Descripción
+Flujo completo de lectura, renderizado, edición, autosave y persistencia de un documento Markdown en Notia.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `read_library_file` | Síncrono | `ReadLibraryFilePayload` | `ReadLibraryFileResult` |
+| `write_library_file` | Síncrono | `WriteLibraryFilePayload` | `WriteLibraryFileResult` |
+| `read_markdown_files` | Síncrono | `{ directoryPath: string }` | `Vec<MarkdownFileDocument>` |
+
+#### Ejemplo JSON — Request `read_markdown_files`
+
+```json
+{
+  "payload": {
+    "directoryPath": "/home/usuario/Notas"
+  }
+}
+```
+
+#### Ejemplo JSON — Response `read_markdown_files`
+
+```json
+[
+  {
+    "path": "/home/usuario/Notas/Ideas.md",
+    "content": "# Ideas\n\n- Idea 1\n- Idea 2"
+  },
+  {
+    "path": "/home/usuario/Notas/Proyectos/README.md",
+    "content": "# Proyecto Alpha"
+  }
+]
+```
+
+#### Entradas
+- `filePath: string` — path absoluto del archivo Markdown.
+- `directoryUri?: string` — URI SAF (Android).
+
+#### Salidas
+- `ReadLibraryFileResult` — `{ ok, content, error? }`.
+- `WriteLibraryFileResult` — `{ ok, error? }`.
+- Estado local del documento (Milkdown editor) y pestañas abiertas en Redux.
+
+#### Validaciones
+- **Frontend**: path vacío rechazado antes de invocar.
+- **Backend**: path vacío retorna `{ ok: false, error: "Invalid file path." }`. En Android, intenta SAF primero; si falla, retorna error sin tocar desktop.
+
+#### Pasos del proceso
+
+1. **Apertura**: el usuario hace clic en un archivo `.md` en `FileTree` → `useDocumentOpener` verifica si ya está abierto (evita duplicados) → dispatch `documentsSlice.actions.openDocument({ path, title })`.
+2. **Lectura**: `useDocumentPersist` o `MarkdownView` invoca `filesystemEngine.readTextFile(path)` → `invoke('read_library_file')` → Rust `filesystem::commands::read_library_file` → `desktop::read_library_file` (o `android_saf::read_library_file`) → lectura con `fs::read_to_string` → retorna `{ ok: true, content }`.
+3. **Renderizado**: el contenido se inyecta en el editor **Milkdown Crepe** (`MarkdownView.tsx`). Se parsea frontmatter vía `frontmatterEngine.ts` y se muestra en `MarkdownPropertiesPanel`.
+4. **Wikilinks**: durante la edición, el plugin `wikiLinkPlugin.ts` detecta patrones `[[...]]` y muestra el menú de sugerencias `WikiLinkSuggestionMenu.tsx` con notas existentes.
+5. **Autosave**: `useTextDocumentAutosave.ts` establece un debounce (tipicamente ~1s de inactividad) tras el cual invoca `filesystemEngine.writeTextFile(path, content)`.
+6. **Persistencia**: `invoke('write_library_file')` → Rust `filesystem::commands::write_library_file` → valida path no vacío → `desktop::write_library_file` (o SAF) → `fs::write` → retorna `{ ok: true }`.
+7. **Indicadores**: el slice `documentsSlice` actualiza el flag `isSaving` / `saveError` para mostrar el indicador visual en la pestaña.
+
+#### Comportamiento ante errores
+- Lectura fallida: el editor se abre vacío o con mensaje de error; no se bloquea la UI.
+- Escritura fallida: indicador de error ✗ en la pestaña; el contenido modificado permanece en memoria (Redux + estado local del editor), permitiendo reintentar.
+- Path vacío: rechazo inmediato en frontend y backend con mensaje en inglés técnico ("Invalid file path.") que el frontend traduce a contexto amigable.
+
+#### Dependencias
+- **Frontend**: `MarkdownView.tsx`, `useDocumentPersist.ts`, `useTextDocumentAutosave.ts`, `wikiLinkPlugin.ts`, `frontmatterEngine.ts`, `filesystemEngine.ts`.
+- **Redux**: `documentsSlice` (tabs, activeTab, saving states).
+- **Backend**: `read_library_file`, `write_library_file`.
+
+---
+
+### 2.4 Graph View
+
+#### Descripción
+Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `read_markdown_files` | Síncrono | `{ directoryPath: string }` | `Vec<MarkdownFileDocument>` |
+
+#### Entradas
+- `treeNodes: FilesystemTreeNode[]` — árbol de archivos (para detectar archivos Markdown).
+- `rootPath: string` — path de la librería.
+- `graphSourcesByPath: Record<string, string>` — contenido de cada archivo (para extraer wikilinks).
+- `flatFileList: FilesystemFlatFileEntry[]` — lista plana de archivos (usada en Android para evitar escaneo recursivo).
+
+#### Salidas
+- `LibraryGraphModel` — `{ nodes: GraphNode[], edges: GraphEdge[] }`.
+- `GraphLayout` — posiciones de nodos en canvas.
+- `SearchResults` — nodos/edges resaltados por query de búsqueda.
+
+#### Validaciones
+- Los workers ignoran entradas no válidas (type-check en runtime).
+- Si no hay archivos Markdown, el modelo retorna nodos vacíos.
+
+#### Pasos del proceso
+
+1. **Obtención de datos**: `useLibraryGraphData.ts` lee todos los archivos Markdown de la librería vía `filesystemEngine.readMarkdownDocuments(path)` → `invoke('read_markdown_files')` → Rust escanea y lee solo `.md`.
+2. **Construcción del modelo**: el hook postea mensaje a `graphModelWorker.ts` con los datos. El worker ejecuta `buildLibraryGraphModel()` (en `engines/graph/libraryGraphEngine.ts`), que:
+   - Crea un nodo por cada archivo Markdown.
+   - Parsea wikilinks del contenido vía `wikiLinkEngine.ts`.
+   - Crea aristas entre nodos cuando un wikilink apunta a otro archivo existente.
+3. **Hidratación del layout**: `graphViewWorker.ts` recibe el modelo y los sources. Al recibir una petición `computeGraphDerivedData`:
+   - Ejecuta `buildClusteredGraphLayout()` (fuerzas, clustering, bounding box).
+   - Ejecuta `buildGraphSearchResults()` si hay query de búsqueda.
+4. **Renderizado**: `GraphView.tsx` recibe `graphLayout` y `searchResults` por mensaje del worker, renderiza nodos como elementos DOM/SVG posicionados absolutamente con líneas SVG para aristas.
+5. **Navegación**: clic en nodo → dispatch `documentsSlice.actions.openDocument()` → abre la nota en pestaña.
+
+#### Comportamiento ante errores
+- Worker falla en build: se captura en `onmessage` del worker, se posta `graphModelBuildError` al main thread; `GraphView.tsx` muestra estado vacío o mensaje de error.
+- Biblioteca sin archivos Markdown: grafo vacío, mensaje informativo.
+
+#### Dependencias
+- **Frontend**: `GraphView.tsx`, `useLibraryGraphData.ts`, `useGraphDerivedData.ts`, `graphModelWorker.ts`, `graphViewWorker.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `clusteredGraphLayoutEngine.ts`, `graphSearchEngine.ts`.
+- **Backend**: `read_markdown_files`.
+
+---
+
+### 2.5 AI Chat
+
+#### Descripción
+Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check, streaming de respuestas, listado de modelos, generación de títulos y memoria a largo plazo.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `check_desktop_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` |
+| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, messages[] }` | `{ answer?, error? }` |
+| `list_desktop_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` |
+| `check_android_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` |
+| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` |
+| `list_android_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` |
+
+#### Ejemplo JSON — Request `check_desktop_ai_health`
+
+```json
+{
+  "payload": {
+    "ollamaUrl": "http://localhost:11434",
+    "apiKey": ""
+  }
+}
+```
+
+#### Ejemplo JSON — Response `check_desktop_ai_health`
+
+```json
+{
+  "ok": true,
+  "message": "Conexion correcta con Ollama.",
+  "defaultModel": "llava:latest"
+}
+```
+
+#### Ejemplo JSON — Request `run_desktop_ai_chat`
+
+```json
+{
+  "payload": {
+    "ollamaUrl": "http://localhost:11434",
+    "apiKey": "",
+    "model": "llava:latest",
+    "messages": [
+      { "role": "system", "content": "Sos el asistente de Notia." },
+      { "role": "user", "content": "Resumime el concepto de wikilinks." }
+    ]
+  }
+}
+```
+
+#### Ejemplo JSON — Response `run_desktop_ai_chat`
+
+```json
+{
+  "answer": "Los wikilinks son enlaces bidireccionales entre notas...",
+  "error": null
+}
+```
+
+#### Ejemplo JSON — Request `list_desktop_ai_models`
+
+```json
+{
+  "payload": {
+    "ollamaUrl": "http://localhost:11434",
+    "apiKey": ""
+  }
+}
+```
+
+#### Ejemplo JSON — Response `list_desktop_ai_models`
+
+```json
+{
+  "models": ["llava:latest", "gemma3:latest", "qwen3.5:latest"]
+}
+```
+
+#### Validaciones
+- URL vacía rechazada en `normalizeAiSettingsInput()`.
+- Timeout de health check: 15s (`AI_REQUEST_TIMEOUT_MS`).
+- Timeout de chat: 180s (`AI_CHAT_TIMEOUT_MS`).
+- Límite de contexto: 30k caracteres (`MAX_CONTEXT_CHARS`).
+- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`).
+
+#### Pasos del proceso (Desktop)
+
+1. **Health check**: `aiRuntime.checkAiHealth(prefs)` → intenta `invoke('check_desktop_ai_health')` → Rust `commands::ai::check_desktop_ai_health` → `services::ai_service::check_ollama_health()` → HTTP GET `/api/tags` con reqwest (timeout 15s) → retorna estado y modelo default.
+2. **Listado de modelos**: `aiRuntime.listAiMultimodalModels(prefs)` → fallback chain:
+   - Intenta `invoke('list_desktop_ai_models')` → bridge Rust.
+   - Si falla, hace fetch directo a `/api/tags` desde el frontend.
+   - Filtra por nombres probables de modelos multimodales (`vision`, `llava`, etc.).
+   - Verifica capacidad `vision` vía `/api/show` para cada candidato.
+3. **Chat streaming**:
+   - Construye mensajes: system (con memoria LTM) + historial + user (con contexto de archivos si aplica).
+   - Intenta `invoke('run_desktop_ai_chat')` → bridge Rust que hace HTTP a Ollama.
+   - Si el bridge falla, hace **fetch directo** desde el frontend a `/api/chat` con `stream: true`, parseando NDJSON línea por línea y llamando `onMessageDelta` por cada chunk.
+4. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
+5. **Memoria LTM**: tras cada intercambio, `generateAiLongTermMemories()` envía el contexto reciente al modelo con instrucciones estrictas de devolver solo un JSON array de strings. Parsea con fallback a líneas si el JSON es inválido. Almacena en el documento de chat (`chatDocumentStorage`).
+
+#### Pasos del proceso (Android)
+
+1. Los comandos `check_android_ai_health`, `run_android_ai_chat`, `list_android_ai_models` son manejados por `mobile_ai_bridge.rs` (plugin Kotlin/Rust).
+2. El bridge recibe los payloads, realiza la solicitud HTTP a Ollama desde la capa nativa de Android y retorna la respuesta serializada al frontend.
+3. Si un comando del bridge no existe (backend desactualizado), el frontend cae en fallback a fetch directo (para health y modelos) o muestra error (para chat).
+
+#### Comportamiento ante errores
+- Ollama no responde: mensaje amigable en español ("No se pudo conectar con Ollama.").
+- Modelo no disponible: error indicando que no hay modelos multimodales.
+- Bridge no disponible: fallback silencioso a fetch directo en desktop; en Android, error pidiendo recompilar si falta el plugin.
+- Stream interrumpido: `AbortController` cancela la petición; el contenido parcial permanece visible.
+
+#### Dependencias
+- **Frontend**: `aiRuntime.ts`, `chatAttachmentRuntime.ts`, `chatDocumentStorage.ts`, `aiSettingsStorage.ts`, `ChatWorkspaceView.tsx`, `ChatMarkdownMessage.tsx`.
+- **Backend**: `commands::ai.rs`, `services::ai_service.rs`, `mobile_ai_bridge.rs`.
+
+---
+
+### 2.6 ColdPass
+
+#### Descripción
+Gestor de credenciales cifradas. El cifrado ocurre 100% en el frontend (Web Crypto API). El backend solo persiste bytes cifrados en el filesystem. La sincronización entre dispositivos usa Bluetooth LE con payloads cifrados (AES-256-CBC + PBKDF2 120k iteraciones).
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `coldpass_bluetooth_status` | Async | — | `ColdPassBluetoothStatusDto` |
+| `coldpass_bluetooth_connect` | Async | — | `ColdPassBluetoothStatusDto` |
+| `coldpass_bluetooth_submit_pin` | Async | `{ pin: string }` | `ColdPassBluetoothStatusDto` |
+| `coldpass_bluetooth_authenticate` | Async | `{ packet: string }` | `ColdPassBluetoothStatusDto` |
+| `coldpass_bluetooth_send_message` | Async | `{ packet: string }` | `ColdPassBluetoothStatusDto` |
+| `coldpass_bluetooth_disconnect` | Async | — | `ColdPassBluetoothStatusDto` |
+
+#### Ejemplo JSON — Request `coldpass_bluetooth_submit_pin`
+
+```json
+{
+  "payload": {
+    "pin": "123456"
+  }
+}
+```
+
+#### Ejemplo JSON — Response `coldpass_bluetooth_status`
+
+```json
+{
+  "supported": true,
+  "connected": false,
+  "phase": "awaiting-pin",
+  "applicationAuthenticated": false,
+  "deviceId": null,
+  "deviceName": null,
+  "serviceUuid": "8f95d4ef-6b74-4b7a-84b1-75a0ad8e4b61",
+  "promptMessage": "Buscá el dispositivo ColdPass para iniciar el pairing seguro.",
+  "errorMessage": null
+}
+```
+
+#### Ejemplo JSON — Response `coldpass_bluetooth_authenticate`
+
+```json
+{
+  "supported": true,
+  "connected": true,
+  "phase": "connected",
+  "applicationAuthenticated": true,
+  "deviceId": "AA:BB:CC:DD:EE:FF",
+  "deviceName": "ColdPass",
+  "serviceUuid": "8f95d4ef-6b74-4b7a-84b1-75a0ad8e4b61",
+  "promptMessage": "Canal seguro de aplicacion autenticado.",
+  "errorMessage": null
+}
+```
+
+#### Entradas
+- `library: NotiaLibrary` — librería activa (para determinar dónde crear `ColdPass/ColdPass.md`).
+- `passkey: string` — contraseña maestra del usuario.
+- `entries: ColdPassEntry[]` — lista de credenciales con nombre, usuario, contraseña, URL, notas.
+- `packet: string` — payload cifrado en base64 para transmisión Bluetooth.
+
+#### Salidas
+- `ColdPassSessionData` — `{ directoryPath, filePath, markdown, entries, passkey }`.
+- `ColdPassBluetoothStatus` — `{ supported, connected, phase, applicationAuthenticated, deviceId, deviceName, serviceUuid, promptMessage, errorMessage }`.
+
+#### Validaciones
+- **Frontend**: passkey vacía rechazada antes de derivar la clave.
+- **Backend (Bluetooth)**: PIN no vacío antes de enviar. Validación de fases: no se permite `authenticate` sin conexión previa; no se permite `send_message` sin autenticación de aplicación.
+
+#### Pasos del proceso (Cifrado local)
+
+1. **Unlock**: `unlockColdPassSession(library, passkey)` → `resolveColdPassPaths(library.path)` genera `ColdPass/ColdPass.md`.
+2. **Creación lazy**: si no existe la carpeta `ColdPass/`, se crea vía `filesystemEngine.createDirectory()`. Si no existe el archivo, se crea con contenido cifrado de una plantilla vacía vía `encryptColdPassMarkdown()`.
+3. **Descifrado**: `readLibraryFileContent()` lee el archivo cifrado → `decryptColdPassMarkdown(encrypted, passkey)` usa Web Crypto API:
+   - Deriva clave con PBKDF2 (SHA-256, 250k iteraciones, salt aleatorio).
+   - Descifra con AES-256-GCM.
+   - Retorna Markdown plano.
+4. **Parseo**: `parseColdPassMarkdown()` convierte el Markdown en estructura `ColdPassEntry[]`.
+5. **Guardado**: `saveColdPassEntries()` → serializa entries a Markdown → `encryptColdPassMarkdown()` → `writeLibraryFileContent()` → backend recibe bytes opacos y escribe al filesystem.
+
+#### Pasos del proceso (Sincronización Bluetooth)
+
+1. **Estado**: `getColdPassBluetoothStatus()` → retorna fase actual (`idle`, `searching`, `awaiting-pin`, `pairing`, `connected`).
+2. **Conexión**: `connectColdPassBluetooth()` → `invoke('coldpass_bluetooth_connect')`.
+   - En Linux: escanea dispositivos BLE con nombre "ColdPass", inicia pairing GATT, almacena sesión en `ColdPassBluetoothState` (Mutex).
+   - En Windows/macOS: stub limitado.
+   - En Android/iOS: retorna `unsupported_bluetooth_status()`.
+3. **PIN**: el usuario ingresa el PIN mostrado en el dispositivo ColdPass → `submitColdPassBluetoothPin(pin)` → envía el PIN al dispositivo vía GATT write.
+4. **Autenticación**: `authenticateColdPassBluetooth(packet)` donde `packet` es un challenge cifrado generado en el frontend.
+   - Lee valor baseline GATT, se suscribe a notificaciones, escribe el packet cifrado.
+   - Espera notificación `app_auth_ok` (timeout 4s).
+   - Si la respuesta es correcta, marca `applicationAuthenticated = true`.
+5. **Envío de mensaje**: `sendColdPassBluetoothMessage(packet)` con la bóveda cifrada completa.
+   - Verifica que `applicationAuthenticated === true`.
+   - Espera confirmación `msg_ok` (timeout 4s).
+
+#### Comportamiento ante errores
+- Passkey incorrecta: `decryptColdPassMarkdown` falla con excepción de Web Crypto (mensaje genérico mostrado al usuario).
+- Bluetooth no soportado: retorna `supported: false` con mensaje descriptivo.
+- GATT desconectado durante operación: error "No hay una sesion GATT autenticada con ColdPass.".
+- Timeout de notificación: error "ColdPass no confirmo la autenticacion del challenge.".
+
+#### Dependencias
+- **Frontend**: `coldpassStorage.ts`, `coldpassCrypto.ts`, `coldpassMarkdown.ts`, `coldpassBluetooth.ts`, `ColdPassView.tsx`, `useColdPassSession.ts`, `ColdPassBluetoothCard.tsx`.
+- **Backend**: `commands::bluetooth.rs`, `services::bluetooth_service.rs`, `dto::bluetooth.rs`, `state::bluetooth_state.rs`.
+
+---
+
+### 2.7 Task Manager
+
+#### Descripción
+Sistema completo de gestión de tareas con tableros, dos vistas (Kanban y tabla), y temporizador Pomodoro. La persistencia no usa un archivo JSON centralizado; cada tarea vive como un archivo Markdown individual con frontmatter YAML dentro de una estructura de carpetas bajo `task-mannager/` (o `task-manager/` como fallback). Los metadatos de tableros (nombres, colores, horas de actividad) se guardan en `localStorage` vía `taskManagerStorage.ts`.
+
+#### Endpoints
+No hay commands Tauri específicos para Task Manager. Utiliza los commands genéricos de filesystem (`read_library_tree`, `read_library_file`, `write_library_file`, `library_entry_operation`, `create_library_entry`) para leer/escribir archivos y carpetas.
+
+#### Entradas
+- Librería activa (`NotiaLibrary`) con `path` y `androidTreeUri`.
+- Operaciones CRUD de tableros, tareas, subtareas y comentarios (payloads definidos en `src/modules/task-manager/`).
+- Sesiones Pomodoro: inicio/pausa/reset con timestamp.
+
+#### Salidas
+- Archivos `.md` individuales con YAML frontmatter (`tarea`, `estado`, `tablero`, `equipo`, `prioridad`, `parent`, `childs`, `tags`, `fechaFin`, `horasEstimadas`, etc.) persistidos en el filesystem.
+- Archivo `task-mannager/PomodoroLog.md` con registro histórico de sesiones Pomodoro.
+- Archivos de índice (`TaskIndex.md`, `FinishedTaskIndex.md`, `CancelledTaskIndex.md`) que listan las tareas de cada tablero.
+- Estado UI en componentes locales (`useState`) y `taskManagerStorage.ts` para metadatos de tableros.
+
+#### Pasos del proceso
+
+1. **Carga inicial**: al abrir Task Manager, `vaultRuntime.ts` resuelve el directorio raíz (`task-mannager/` o `task-manager/`) y escanea vía `filesystemEngine.readMarkdownDocuments()` para obtener todos los archivos `.md` del workspace.
+2. **Parseo**: cada archivo `.md` se lee con `read_library_file`. El `frontmatterEngine.ts` extrae metadatos YAML. Las relaciones padre-hijo se resuelven por los campos `parent` / `childs` (strings o arrays de wikilinks). El `taskEngine.ts` convierte los documentos en `TaskItem[]`.
+3. **Vistas**: `TaskBoardView.tsx` renderiza la vista Kanban; `TaskTableView.tsx` renderiza la vista de tabla. Ambas consumen el mismo snapshot de tareas.
+4. **Edición**: el usuario modifica tareas (estado, prioridad, subtareas, comentarios, fecha de fin). Cada cambio re-serializa el frontmatter YAML + Markdown del `.md` afectado y se escribe vía `vaultRuntime.writeFileContent()`.
+5. **Archivado**: al completar o cancelar una tarea, `taskManagerService.moveTaskByState()` la mueve a la carpeta `finished/` o `cancelled/` respectivamente, actualizando su frontmatter.
+6. **Sincronización de índices**: `syncTaskIndexesAndMetadata()` reconstruye los archivos `TaskIndex.md` de cada tablero, sincroniza tags y recalcula fechas de fin según horas de actividad del tablero.
+7. **Pomodoro**: el panel Pomodoro gestiona un timer local (25 min trabajo / 5 min descanso). Al completar una sesión, `pomodoroLogEngine.ts` registra la entrada en `task-mannager/PomodoroLog.md` con timestamp y duración.
+
+#### Dependencias
+- **Frontend**: módulo `src/modules/task-manager/` (componentes, engines, hooks, services, types).
+- **Services**: `vaultRuntime.ts`, `taskManagerService.ts`, `taskManagerStorage.ts`, `taskManagerVaultCache.ts`, `filesystemEngine.ts`.
+- **Engines**: `frontmatterEngine.ts`, `taskEngine.ts`, `taskIndexEngine.ts`, `pomodoroLogEngine.ts`, `scheduleEngine.ts`, `completionEngine.ts`.
+
+---
+
+### 2.8 InkDoc
+
+#### Descripción
+Editor de documentos de tinta (InkDoc) que permite dibujar manuscritos con stylus/dedo, insertar bloques de texto, imágenes y notas adhesivas. El formato nativo es un archivo de texto JSON con extensión `.inkdoc`. No hay commands Tauri dedicados; reutiliza los genéricos de filesystem.
+
+#### Endpoints (Commands Tauri)
+No hay commands exclusivos. Se usan los genéricos de filesystem:
+- `create_library_entry` con `kind: "inkdoc"` — backend inyecta contenido JSON por defecto.
+- `read_library_file`
+- `write_library_file`
+- `write_binary_file` (para exportación de imágenes).
+
+#### Entradas
+- `filePath: string` — path absoluto del archivo `.inkdoc`.
+- `content`: objeto JSON conforme al esquema InkDoc (version, pages, strokes, textBlocks, etc.).
+
+#### Salidas
+- Archivo `.inkdoc` como JSON string en el filesystem.
+- Renderizado visual en `<canvas>` + capas DOM (textos, imágenes, sticky notes) via `InkDocView.ts`.
+
+#### Pasos del proceso
+1. **Creación**: elige **"New InkDoc"** → `create_library_entry` con `kind: "inkdoc"` → backend inyecta un JSON inicial con una página A4 en blanco.
+2. **Apertura**: `InkdocView.tsx` monta el motor, instancia `InkDocView`, lee el JSON vía `read_library_file` y lo parsea con `documentParser.ts`.
+3. **Edición**: el usuario dibuja strokes (presión/velocidad) en canvas, escribe textos (`contenteditable`), pega imágenes o agrega sticky notes.
+4. **Autosave**: `DocumentSyncEngine` debounce (1000 ms) detecta actividad. Cuando no hay interacción activa, serializa `docData` a JSON y escribe vía `inkdocFilesystemRuntime.ts` → `write_library_file`.
+5. **Conflictos**: el watcher no recarga el archivo si la modificación fue generada internamente (`internalModifyEvents`).
+
+#### Dependencias
+- **Frontend**: `InkdocView.tsx`, `InkDocView.ts`, `documentParser.ts`, `documentSyncEngine.ts`, `inkdocFilesystemRuntime.ts`, `strokeRenderers.ts`, `viewportController.ts`.
+- **Backend**: `filesystem::commands::{create_library_entry, read_library_file, write_library_file}`, `filesystem/helpers.rs` (default JSON).
+
+---
+
+### 2.9 Mermaid Editor
+
+#### Descripción
+Editor visual integrado para diagramas Mermaid. Crea, edita y persiste archivos `.mmd` con sintaxis Mermaid estándar. El editor ofrece canvas interactivo con nodos, conectores, paleta de formas y zoom/pan.
+
+#### Endpoints (Commands Tauri)
+No hay commands exclusivos. Reutiliza filesystem genérico:
+- `read_library_file`, `write_library_file`.
+
+#### Entradas
+- `source: string` — texto del diagrama Mermaid (ej. `flowchart TD`).
+- Interacciones de puntero: selección de nodos, modo conexión (`isConnecting`), colocación de formas (`placingShape`).
+
+#### Salidas
+- Archivo `.mmd` con sintaxis Mermaid canónica.
+- Estado local `MermaidDiagram` (nodos, aristas, `selectedNodeId`).
+
+#### Pasos del proceso
+1. **Apertura**: `MermaidView.tsx` recibe `source` y `onSourcePersist`.
+2. **Parseo**: `useMermaidEditor.ts` invoca `parseMermaidSource(source)` (en `mermaidEngine.ts`) para generar un `MermaidDiagram`.
+3. **Renderizado**: `MermaidCanvas.tsx` importa dinámicamente la librería `mermaid`, llama a `mermaid.render(id, source)` e inyecta el SVG resultante en el DOM. Agrega clases CSS para selección.
+4. **Edición**:
+   - **Nodo**: seleccionar en paleta → clic en canvas → `createNode`.
+   - **Conexión**: togglear modo conexión → clic nodo origen → clic nodo destino → `createEdge`.
+   - **Texto**: editar label del nodo/arista.
+5. **Persistencia**: `useTextDocumentAutosave.ts` debounce (800 ms) serializa el diagrama a texto Mermaid (`serializeMermaidDiagram`) y escribe vía `write_library_file`.
+
+#### Dependencias
+- **Frontend**: `MermaidView.tsx`, `useMermaidEditor.ts`, `MermaidCanvas.tsx`, `MermaidToolbar.tsx`, `MermaidShapePalette.tsx`, `mermaidEngine.ts`.
+- **Backend**: `read_library_file`, `write_library_file`.
+
+---
+
+### 2.10 Window Controls / App Runtime
+
+#### Descripción
+Gestión de ventana nativa (minimizar, maximizar, fullscreen, cerrar) y arrastre de ventana sin decoraciones (titlebar custom). Solo aplica a desktop; en Android/iOS son no-ops.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `window_control` | Síncrono | `{ action: string }` | `void` |
+| `start_window_dragging` | Síncrono | — | `void` |
+| `start_window_dragging_with_restore` | Síncrono | — | `void` |
+
+#### Ejemplo JSON — Request `window_control`
+```json
+{
+  "payload": {
+    "action": "maximize"
+  }
+}
+```
+
+#### Ejemplo JSON — Request `start_window_dragging`
+```json
+{}
+```
+
+#### Validaciones
+- `action` debe ser uno de: `minimize`, `maximize`, `fullscreen`, `close`.
+
+#### Pasos del proceso
+1. El usuario hace clic en un botón de la titlebar (React).
+2. `windowRuntime.ts` invoca el command correspondiente.
+3. En desktop, Rust ejecuta la operación sobre la ventana nativa de Tauri (`window.minimize()`, `window.maximize()`, etc.).
+4. En mobile, el command es no-op.
+
+#### Dependencias
+- **Frontend**: `src/services/window/windowRuntime.ts`, titlebar components.
+
+---
+
+### 2.11 Logging / Diagnóstico
+
+#### Descripción
+Bridge de logging del frontend JavaScript hacia el sistema de logs nativo de Rust (logcat en Android, consola en desktop). También incluye `performanceBaseline` para mediciones de rendimiento.
+
+#### Endpoints (Commands Tauri)
+
+| Command | Tipo | Payload | Response |
+|---|---|---|---|
+| `notia_log` | Síncrono | `{ level, module, message, data? }` | `void` |
+
+#### Ejemplo JSON — Request `notia_log`
+```json
+{
+  "payload": {
+    "level": "info",
+    "module": "filesystem",
+    "message": "Tree scanned successfully",
+    "data": "duration_ms=120"
+  }
+}
+```
+
+#### Pasos del proceso
+1. El frontend `notiaLogger.ts` decide si debe emitir un log (según `notia.logcat.enabled`).
+2. En Android llama `invoke('notia_log', payload)`; en desktop usa `console.info` directamente.
+3. Rust `lib.rs` recibe el payload, mapea `level` a `log::Level` y emite `[notia:js:{module}] {message} {data}` via el crate `log`.
+4. En Android, `android_logger` redirige a logcat bajo el tag `notia`.
+
+#### Storage Keys relacionadas
+| Key | Servicio | Descripción |
+|---|---|---|
+| `notia.logcat.enabled` | `notiaLogger` | Habilitar bridge a logcat (default `true` en Android). |
+| `notia.perfBaseline.logcat` | `performanceBaseline` | Enviar timings a logcat. |
+
+#### Dependencias
+- **Frontend**: `notiaLogger.ts`, `performanceBaseline.ts`.
+- **Backend**: `lib.rs` (`notia_log` command), `log` + `android_logger`.
+
+---
+
+### 2.12 Apéndice de Commands Tauri — Ejemplos JSON Completos
+
+> Esta sección complementa las descripciones de flujo con los JSON de request/response que faltaban para commands documentados en el mapa pero sin ejemplos previos.
+
+#### `create_library_file`
+**Request:**
+```json
+{
+  "payload": {
+    "filePath": "/home/usuario/Notas/Proyectos/Diario.md",
+    "content": "# Diario\n\nEntrada de hoy.",
+    "directoryUri": null
+  }
+}
+```
+**Response:**
+```json
+{
+  "ok": true,
+  "error": null
+}
+```
+
+#### `create_library_directory`
+**Request:**
+```json
+{
+  "payload": {
+    "directoryPath": "/home/usuario/Notas/Proyectos/NuevaCarpeta",
+    "directoryUri": null
+  }
+}
+```
+**Response:**
+```json
+{
+  "ok": true,
+  "error": null
+}
+```
+
+#### `path_exists`
+**Request:**
+```json
+{
+  "payload": {
+    "path": "/home/usuario/Notas/Proyectos/Diario.md",
+    "directoryUri": null
+  }
+}
+```
+**Response:**
+```json
+{
+  "exists": true
+}
+```
+
+#### `is_directory_path`
+**Request:**
+```json
+{
+  "payload": {
+    "path": "/home/usuario/Notas/Proyectos",
+    "directoryUri": null
+  }
+}
+```
+**Response:**
+```json
+{
+  "isDirectory": true
+}
+```
+
+#### `search_library_files`
+**Request:**
+```json
+{
+  "payload": {
+    "directoryPath": "/home/usuario/Notas",
+    "query": "diario"
+  }
+}
+```
+**Response:**
+```json
+{
+  "paths": [
+    "/home/usuario/Notas/Proyectos/Diario.md",
+    "/home/usuario/Notas/Personal/MiDiario.md"
+  ]
+}
+```
+
+#### `write_binary_file`
+**Request:**
+```json
+{
+  "payload": {
+    "filePath": "/home/usuario/Notas/Imagenes/logo.png",
+    "data": [137, 80, 78, 71, 13, 10, 26, 10]
+  }
+}
+```
+**Response:**
+```json
+{
+  "ok": true,
+  "error": null
+}
+```
+
+#### `check_android_ai_health`
+**Request:**
+```json
+{
+  "payload": {
+    "ollamaUrl": "http://192.168.1.50:11434",
+    "apiKey": ""
+  }
+}
+```
+**Response:**
+```json
+{
+  "ok": true,
+  "message": "Conexion correcta con Ollama.",
+  "defaultModel": "llava:latest"
+}
+```
+
+#### `run_android_ai_chat`
+**Request:**
+```json
+{
+  "payload": {
+    "ollamaUrl": "http://192.168.1.50:11434",
+    "apiKey": "",
+    "model": "llava:latest",
+    "prompt": "Resumime este texto.",
+    "previousMessages": [
+      { "role": "user", "content": "Hola" }
+    ],
+    "longTermMemories": [],
+    "files": [],
+    "image": null,
+    "selectedContextMode": "none"
+  }
+}
+```
+**Response:**
+```json
+{
+  "answer": "Este es un resumen generado por el modelo...",
+  "error": null
+}
+```
+
+#### `list_android_ai_models`
+**Request:**
+```json
+{
+  "payload": {
+    "ollamaUrl": "http://192.168.1.50:11434",
+    "apiKey": ""
+  }
+}
+```
+**Response:**
+```json
+{
+  "models": ["llava:latest", "gemma3:latest"]
+}
+```
+
+#### `pick_android_directory_tree`
+**Request:**
+```json
+{}
+```
+**Response:**
+```json
+{
+  "path": "/tree/primary:Notas",
+  "uri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
+}
+```
+
+#### `read_android_library_tree`
+**Request:**
+```json
+{
+  "payload": {
+    "directoryPath": "/tree/primary:Notas",
+    "directoryUri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
+  }
+}
+```
+**Response:**
+```json
+[
+  {
+    "id": "file-1",
+    "name": "Ideas.md",
+    "path": "/tree/primary:Notas/Ideas.md",
+    "type": "file",
+    "expanded": false,
+    "hasChildren": false,
+    "children": []
+  }
+]
+```
+
+#### `read_android_flat_file_list`
+**Request:**
+```json
+{
+  "payload": {
+    "directoryPath": "/tree/primary:Notas",
+    "directoryUri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
+  }
+}
+```
+**Response:**
+```json
+[
+  { "path": "Ideas.md", "type": "file", "name": "Ideas.md" },
+  { "path": "Proyectos", "type": "folder", "name": "Proyectos" }
+]
+```
+
+#### `read_android_directory`
+**Request:**
+```json
+{
+  "payload": {
+    "directoryPath": "/tree/primary:Notas/Proyectos",
+    "directoryUri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
+  }
+}
+```
+**Response:**
+```json
+[
+  {
+    "id": "file-2",
+    "name": "README.md",
+    "path": "/tree/primary:Notas/Proyectos/README.md",
+    "type": "file"
+  }
+]
+```
+
+#### `coldpass_bluetooth_connect`
+**Request:**
+```json
+{}
+```
+**Response:**
+```json
+{
+  "supported": true,
+  "connected": false,
+  "phase": "searching",
+  "applicationAuthenticated": false,
+  "deviceId": null,
+  "deviceName": null,
+  "serviceUuid": "8f95d4ef-6b74-4b7a-84b1-75a0ad8e4b61",
+  "promptMessage": "Buscando dispositivo ColdPass...",
+  "errorMessage": null
+}
+```
+
+#### `coldpass_bluetooth_send_message`
+**Request:**
+```json
+{
+  "payload": {
+    "packet": "AES256CBC_BASE64_ENCRYPTED_PAYLOAD..."
+  }
+}
+```
+**Response:**
+```json
+{
+  "supported": true,
+  "connected": true,
+  "phase": "connected",
+  "applicationAuthenticated": true,
+  "deviceId": "AA:BB:CC:DD:EE:FF",
+  "deviceName": "ColdPass",
+  "serviceUuid": "8f95d4ef-6b74-4b7a-84b1-75a0ad8e4b61",
+  "promptMessage": "Mensaje enviado correctamente.",
+  "errorMessage": null
+}
+```
+
+#### `coldpass_bluetooth_disconnect`
+**Request:**
+```json
+{}
+```
+**Response:**
+```json
+{
+  "supported": true,
+  "connected": false,
+  "phase": "idle",
+  "applicationAuthenticated": false,
+  "deviceId": null,
+  "deviceName": null,
+  "serviceUuid": null,
+  "promptMessage": "Desconectado.",
+  "errorMessage": null
+}
+```
+
+---
+
+## 3. Diagramas Mermaid
+
+> Según `AGENTS.md`, los diagramas se organizan **por unidad** (controller/vista). Cada unidad tiene su propio **diagrama de flujo**, su propio **diagrama de arquitectura de componentes** y su propio **diagrama de secuencia**. Además se incluyen diagramas generales del sistema.
+
+### 3.1 Diagramas Generales del Sistema
+
+#### 3.1.1 Arquitectura del Sistema (Diagrama de Componentes / Despliegue)
+
+```mermaid
+graph TB
+    subgraph Desktop["Desktop OS (Windows/macOS/Linux)"]
+        FS["Local Filesystem"]
+        Ollama["Ollama (opcional, localhost)"]
+    end
+
+    subgraph Android["Android OS"]
+        SAF["Storage Access Framework (SAF)"]
+        OllamaAndroid["Ollama (red local)"]
+    end
+
+    subgraph Frontend["Frontend (WebView / Vite)"]
+        direction TB
+        React["React 19 Components"]
+        Redux["Redux Toolkit Store<br/>(ui | preferences | library | documents | explorer)"]
+        Services["src/services/<br/>{ai | chat | coldpass | files | libraries | preferences | runtime | views | window}"]
+        Engines["src/engines/<br/>{graph | markdown | tree}"]
+        Workers["Web Workers<br/>graphModelWorker | graphViewWorker"]
+        Modules["src/modules/<br/>{inkdoc | mermaid | task-manager}"]
+
+        React --> Redux
+        React --> Services
+        Services --> Engines
+        Services --> Workers
+        React --> Modules
+    end
+
+    subgraph Backend["Backend (Tauri / Rust)"]
+        direction TB
+        Commands["commands/<br/>{ai.rs | bluetooth.rs}"]
+        FSCommands["filesystem/commands.rs"]
+        ServicesRust["services/<br/>{ai_service.rs | bluetooth_service.rs}"]
+        FSImpl["filesystem/<br/>{desktop.rs | android_saf.rs | watch.rs | validation.rs}"]
+        DTOs["dto/<br/>{bluetooth.rs}"]
+        State["state/<br/>bluetooth_state.rs"]
+        Mobile["mobile_ai_bridge.rs<br/>mobile_directory_picker.rs"]
+        NotiaTimer["notia_timer.rs<br/>RAII perf timer"]
+
+        Commands --> ServicesRust
+        FSCommands --> FSImpl
+        ServicesRust --> DTOs
+        Commands --> State
+        Mobile --> FSImpl
+        FSImpl --> NotiaTimer
+        ServicesRust --> NotiaTimer
+        Mobile --> NotiaTimer
+    end
+
+    Frontend --"invoke('command', payload)"--> Backend
+    Backend --"window.emit('event')"--> Frontend
+    Backend --"fs::read/write"--> FS
+    Backend --"SAF API"--> SAF
+    Services --"HTTP fetch"--> Ollama
+    Services --"HTTP (Android bridge)"--> OllamaAndroid
+```
+
+#### 3.1.2 Flujo de Datos General
+
+```mermaid
+flowchart LR
+    UI["React Components<br/>(views / modals / panels)"]
+    Hooks["React Hooks<br/>(useLibraryTreeSync / useDocumentPersist)"]
+    ServicesTS["TypeScript Services<br/>(filesystemEngine / aiRuntime / coldpassStorage)"]
+    EnginesTS["Engines<br/>(frontmatterEngine / wikiLinkEngine)"]
+    Redux["Redux Store<br/>(5 slices)"]
+    Workers["Web Workers<br/>(graphModel / graphView)"]
+    TauriAPI["Tauri API<br/>(invoke / listen)"]
+    CommandsRust["Rust Commands<br/>(#[tauri::command])"]
+    ServicesRust["Rust Services<br/>(ai_service / bluetooth_service)"]
+    FS["Filesystem<br/>(desktop / android_saf)"]
+
+    UI --> Hooks
+    Hooks --> ServicesTS
+    Hooks --> Redux
+    UI --> Redux
+    ServicesTS --> EnginesTS
+    ServicesTS --> Workers
+    ServicesTS --> TauriAPI
+    Workers --> EnginesTS
+    TauriAPI --> CommandsRust
+    CommandsRust --> ServicesRust
+    CommandsRust --> FS
+    ServicesRust --> FS
+    FS --"notia-library-tree-changed"--> TauriAPI
+    TauriAPI --"CustomEvent"--> Hooks
+```
+
+#### 3.1.3 Modelo de Datos (Diagrama de Clases Simplificado)
+
+```mermaid
+classDiagram
+    class NotiaLibrary {
+        +string id
+        +string name
+        +string path
+        +string? androidTreeUri
+    }
+
+    class NotiaFileNode {
+        +string id
+        +string name
+        +string? path
+        +string type
+        +boolean? expanded
+        +boolean? selected
+        +boolean? hasChildren
+        +NotiaFileNode[]? children
+    }
+
+    class DocumentTab {
+        +string id
+        +string path
+        +string title
+        +boolean isModified
+        +boolean isSaving
+        +boolean saveError
+    }
+
+    class ColdPassEntry {
+        +string id
+        +string name
+        +string? username
+        +string? password
+        +string? url
+        +string? notes
+        +string[]? tags
+    }
+
+    class AiChatSession {
+        +string id
+        +string title
+        +StoredChatMessage[] messages
+        +string[] longTermMemories
+        +Date createdAt
+    }
+
+    class StoredChatMessage {
+        +string id
+        +string role
+        +string content
+        +Date timestamp
+    }
+
+    class TaskBoard {
+        +string id
+        +string name
+        +TaskGroup[] groups
+        +PomodoroSession[] pomodoroSessions
+    }
+
+    class TaskGroup {
+        +string id
+        +string name
+        +TaskItem[] tasks
+    }
+
+    class TaskItem {
+        +string id
+        +string title
+        +string status
+        +string priority
+        +TaskItem[] subtasks
+        +Comment[] comments
+    }
+
+    class FilesystemTreeNode {
+        +string id
+        +string name
+        +string? path
+        +string type
+        +boolean? expanded
+        +boolean? hasChildren
+        +FilesystemTreeNode[]? children
+    }
+
+    NotiaLibrary "1" --> "0..*" NotiaFileNode : contains
+    DocumentTab "0..*" --> "1" NotiaFileNode : references path
+    AiChatSession "1" --> "0..*" StoredChatMessage : contains
+    TaskBoard "1" --> "0..*" TaskGroup : contains
+    TaskGroup "1" --> "0..*" TaskItem : contains
+    TaskItem "1" --> "0..*" TaskItem : subtasks
+    NotiaFileNode ..|> FilesystemTreeNode : equivalent structure
+```
+
+#### 3.1.4 Secuencia General del Sistema (invoke / listen / evento)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as React Component
+    participant Service as TypeScript Service
+    participant Tauri as Tauri API
+    participant RustCmd as Rust Command
+    participant RustSvc as Rust Service
+    participant FS as Filesystem / Ollama / BLE
+
+    User->>UI: Interacción (clic, input)
+    UI->>Service: Llamar función de service
+    Service->>Tauri: invoke('command_name', {payload})
+    Tauri->>RustCmd: Deserializar payload
+    RustCmd->>RustSvc: Delegar a service
+    RustSvc->>FS: Operación de I/O
+    FS-->>RustSvc: Resultado
+    RustSvc-->>RustCmd: Result<T, String>
+    RustCmd-->>Tauri: JSON serializado
+    Tauri-->>Service: Promise<T> resuelta
+    Service-->>UI: Actualizar estado / renderizar
+
+    alt Evento backend → frontend
+        FS->>RustCmd: Cambio detectado (watcher)
+        RustCmd->>Tauri: window.emit('event-name')
+        Tauri->>Service: listen('event-name')
+        Service->>UI: dispatch Redux / re-render
+    end
+```
+
+---
+
+#### 3.2.1 Filesystem Controller
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Frontend solicita operación filesystem]) --> Validate{Validar payload}
+    Validate -->|Inválido| ErrorResponse[Retornar OperationResult {ok:false}]
+    Validate -->|Válido| Platform{¿Plataforma?}
+    Platform -->|Android| SAF["android_saf::\u003coperation>"]
+    Platform -->|Desktop| Desktop["desktop::\u003coperation>"]
+    SAF --> FSOp["fs::write / create_dir / remove_file"]
+    Desktop --> FSOp
+    FSOp --> Result{¿Éxito?}
+    Result -->|Sí| OkResponse[Retornar OperationResult {ok:true}]
+    Result -->|No| ErrResponse[Retornar OperationResult {ok:false, error}]
+    OkResponse --> End([Fin])
+    ErrResponse --> End
+    ErrorResponse --> End
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph FilesystemController["Filesystem Controller"]
+        FSCommands["filesystem/commands.rs<br/>17 commands Tauri"]
+        Validation["filesystem/validation.rs"]
+        Types["filesystem/types.rs<br/>17 DTOs"]
+        Helpers["filesystem/helpers.rs"]
+    end
+
+    subgraph FilesystemImpl["Filesystem Implementación"]
+        Desktop["filesystem/desktop.rs"]
+        AndroidSAF["filesystem/android_saf.rs"]
+        Watch["filesystem/watch.rs"]
+    end
+
+    FSCommands --> Validation
+    FSCommands --> Desktop
+    FSCommands --> AndroidSAF
+    FSCommands --> Types
+    Desktop --> Helpers
+    AndroidSAF --> Helpers
+    Watch --> Desktop
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as React Component
+    participant FSEngine as filesystemEngine.ts
+    participant Tauri as Tauri API
+    participant RustCmd as filesystem::commands
+    participant RustFS as desktop.rs / android_saf.rs
+    participant FS as Local FS / SAF
+
+    User->>UI: Crear / Renombrar / Eliminar entrada
+    UI->>FSEngine: createLibraryEntry() / performLibraryEntryOperation()
+    FSEngine->>Tauri: invoke('create_library_entry', {payload})
+    Tauri->>RustCmd: Deserializar payload
+    RustCmd->>RustCmd: validation.rs valida nombre y path
+    RustCmd->>RustFS: Delegar operación (create_dir / rename / remove)
+    RustFS->>FS: fs::create_dir / fs::rename / fs::remove_file
+    FS-->>RustFS: Resultado de I/O
+    RustFS-->>RustCmd: Resultado opaco
+    RustCmd-->>Tauri: OperationResult {ok, error?}
+    Tauri-->>FSEngine: Promise resuelta
+    FSEngine-->>UI: Actualizar árbol y notificar éxito/error
+```
+
+#### 3.2.2 AI Controller
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Frontend invoca AI command]) --> Platform{¿Plataforma?}
+    Platform -->|Desktop| Bridge["commands::ai.rs<br/>→ services::ai_service.rs"]
+    Platform -->|Android| Mobile["mobile_ai_bridge.rs"]
+    Bridge --> HTTP["reqwest HTTP<br/>GET/POST a Ollama"]
+    Mobile --> HTTPAndroid["HTTP nativo Android<br/>→ Ollama"]
+    HTTP --> Parse["Parsear JSON<br/>{ok, message, defaultModel}"]
+    HTTPAndroid --> Parse
+    Parse --> Result{¿Éxito?}
+    Result -->|Sí| Ok["Retornar resultado JSON"]
+    Result -->|No| Err["Retornar error String<br/>en español"]
+    Ok --> End([Fin])
+    Err --> End
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph AIController["AI Controller"]
+        AICmd["commands/ai.rs<br/>3 commands desktop"]
+        AIService["services/ai_service.rs"]
+    end
+
+    subgraph AIMobile["AI Mobile Bridge"]
+        MobileBridge["mobile_ai_bridge.rs<br/>Plugin Kotlin/Rust"]
+    end
+
+    AICmd --> AIService
+    AIService -->|HTTP| Ollama["Ollama API<br/>/api/tags /api/chat"]
+    MobileBridge -->|HTTP| Ollama
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant ChatUI as ChatWorkspaceView.tsx
+    participant AIRuntime as aiRuntime.ts
+    participant Tauri as Tauri API
+    participant RustCmd as commands::ai.rs
+    participant RustSvc as services::ai_service.rs
+    participant Ollama as Ollama API
+
+    User->>ChatUI: Enviar mensaje
+    ChatUI->>AIRuntime: streamAiChatReply(settings, messages)
+    AIRuntime->>AIRuntime: buildConversationMessages()
+    AIRuntime->>Tauri: invoke('run_desktop_ai_chat', {payload})
+    Tauri->>RustCmd: Deserializar payload
+    RustCmd->>RustSvc: Delegar a ai_service
+    RustSvc->>Ollama: POST /api/chat (reqwest, timeout 180s)
+    Ollama-->>RustSvc: NDJSON stream
+    RustSvc-->>RustCmd: Respuesta completa
+    RustCmd-->>Tauri: JSON {answer, error?}
+    Tauri-->>AIRuntime: Promise resuelta
+    AIRuntime-->>ChatUI: onMessageDelta / onComplete
+    ChatUI->>ChatUI: ChatMarkdownMessage renderiza respuesta
+```
+
+#### 3.2.3 Bluetooth / ColdPass Controller
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Frontend invoca Bluetooth command]) --> Platform{¿Plataforma?}
+    Platform -->|Linux| Linux["commands/bluetooth.rs<br/>GATT completo"]
+    Platform -->|Windows/macOS| Stub["Stub limitado"]
+    Platform -->|Android/iOS| Unsupported["unsupported_bluetooth_status()"]
+    Linux --> Lock["Lock Mutex<br/>ColdPassBluetoothState"]
+    Lock --> BTService["services/bluetooth_service.rs<br/>btleplug GATT"]
+    BTService --> Device["Dispositivo BLE ColdPass"]
+    Device --> Response["Respuesta GATT<br/>app_auth_ok / msg_ok"]
+    Response --> Unlock["Unlock Mutex<br/>actualizar estado"]
+    Unlock --> Result["Retornar ColdPassBluetoothStatusDto"]
+    Stub --> Result
+    Unsupported --> Result
+    Result --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph BTController["Bluetooth Controller"]
+        BTCmd["commands/bluetooth.rs<br/>6 commands Tauri"]
+        BTService["services/bluetooth_service.rs"]
+        BTState["state/bluetooth_state.rs<br/>Mutex-based"]
+        BTDto["dto/bluetooth.rs"]
+    end
+
+    BTCmd --> BTService
+    BTCmd --> BTState
+    BTService --> BTDto
+    BTService -->|GATT| BLE["Dispositivo BLE<br/>ColdPass"]
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CPView as ColdPassView.tsx
+    participant CPBT as coldpassBluetooth.ts
+    participant Tauri as Tauri API
+    participant RustCmd as commands::bluetooth.rs
+    participant RustSvc as services::bluetooth_service.rs
+    participant BTState as state::bluetooth_state.rs
+    participant BLE as Dispositivo BLE ColdPass
+
+    User->>CPView: Clic "Conectar Bluetooth"
+    CPView->>CPBT: connectColdPassBluetooth()
+    CPBT->>Tauri: invoke('coldpass_bluetooth_connect')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustSvc: Delegar conexión
+    RustSvc->>BLE: btleplug: scan + connect GATT
+    BLE-->>RustSvc: Conexión establecida
+    RustSvc->>BTState: Lock Mutex, actualizar estado
+    BTState-->>RustSvc: Estado actualizado
+    RustSvc-->>RustCmd: ColdPassBluetoothStatusDto
+    RustCmd-->>Tauri: JSON serializado
+    Tauri-->>CPBT: Promise resuelta
+    CPBT-->>CPView: Actualizar fase a "awaiting-pin"
+
+    User->>CPView: Ingresar PIN y autenticar
+    CPView->>CPBT: submitColdPassBluetoothPin(pin)
+    CPBT->>Tauri: invoke('coldpass_bluetooth_submit_pin')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustSvc: Enviar PIN vía GATT write
+    RustSvc->>BLE: GATT write PIN
+    BLE-->>RustSvc: Notificación app_auth_ok
+    RustSvc->>BTState: Actualizar applicationAuthenticated
+    RustSvc-->>RustCmd: ColdPassBluetoothStatusDto
+    RustCmd-->>Tauri: JSON
+    Tauri-->>CPBT: Promise
+    CPBT-->>CPView: Fase "connected"
+```
+
+---
+
+#### 3.2.4 Window / App Runtime Controller
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Frontend invoca window command]) --> Platform{¿Plataforma?}
+    Platform -->|Desktop| Desktop["lib.rs window_control\nstart_window_dragging\nstart_window_dragging_with_restore"]
+    Platform -->|Mobile| NoOp["No-op stub"]
+    Desktop --> Action{¿Comando?}
+    Action -->|window_control| WC["Match action:\nminimize / maximize / fullscreen / close"]
+    Action -->|start_window_dragging| Drag["window.start_dragging()"]
+    Action -->|start_window_dragging_with_restore| DragRestore["restore_window_state()\nstart_dragging()"]
+    WC --> Result["Operación nativa sobre la ventana Tauri"]
+    Drag --> Result
+    DragRestore --> Result
+    NoOp --> Result
+    Result --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph WindowController["Window / Runtime Controller"]
+        LibCmd["lib.rs\n(window_control, start_window_dragging, start_window_dragging_with_restore, notia_log)"]
+        WinSvc["windowRuntime.ts"]
+        LogSvc["notiaLogger.ts"]
+    end
+
+    subgraph DesktopOS["Desktop OS"]
+        NativeWin["Native Window API\n(Tauri winit)"]
+    end
+
+    subgraph MobileOS["Android / iOS"]
+        NoOpStub["No-op stubs"]
+    end
+
+    WinSvc -->|invoke| LibCmd
+    LogSvc -->|invoke| LibCmd
+    LibCmd -->|desktop| NativeWin
+    LibCmd -->|mobile| NoOpStub
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant TitleBar as TitleBar Component
+    participant WinRuntime as windowRuntime.ts
+    participant Tauri as Tauri API
+    participant RustCmd as lib.rs (window_control)
+    participant NativeWin as Tauri Native Window
+
+    User->>TitleBar: Clic en botón Maximizar
+    TitleBar->>WinRuntime: controlWindow('maximize')
+    WinRuntime->>Tauri: invoke('window_control', {action:'maximize'})
+    Tauri->>RustCmd: Deserializar payload
+    RustCmd->>NativeWin: window.maximize()
+    NativeWin-->>RustCmd: Ok
+    RustCmd-->>Tauri: void
+    Tauri-->>WinRuntime: Promise resuelta
+
+    alt Arrastrar ventana
+        User->>TitleBar: MouseDown en titlebar
+        TitleBar->>WinRuntime: startWindowDraggingWithRestore()
+        WinRuntime->>Tauri: invoke('start_window_dragging_with_restore')
+        Tauri->>RustCmd: Deserializar
+        RustCmd->>NativeWin: restore_window_state() si maximized
+        RustCmd->>NativeWin: window.start_dragging()
+        NativeWin-->>RustCmd: Ok
+        RustCmd-->>Tauri: void
+    end
+```
+
+---
+
+### 3.3 Diagramas por Unidad — Frontend
+
+#### 3.3.1 Explorador de Archivos / Librerías
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario abre Notia]) --> LoadLibs["libraryStorage.ts<br/>loadLibraries()"]
+    LoadLibs --> ActiveLib{"¿Hay librería activa?"}
+    ActiveLib -->|No| EmptyState["Mostrar estado vacío<br/>'Administrar librerías'"]
+    ActiveLib -->|Sí| ReadTree["filesystemEngine.readLibraryTree()"]
+    ReadTree --> RenderTree["FileTree.tsx<br/>render árbol virtualizado"]
+    RenderTree --> UserAction{"¿Acción del usuario?"}
+    UserAction -->|Crear| CreateEntry["filesystemEngine.createLibraryEntry()"]
+    UserAction -->|Eliminar/Renombrar/Mover| Operation["filesystemEngine.performLibraryEntryOperation()"]
+    UserAction -->|Buscar| Search["filesystemEngine.searchLibraryFiles()"]
+    UserAction -->|Clic archivo| OpenDoc["useDocumentOpener<br/>dispatch openDocument"]
+    CreateEntry --> Refresh["Re-leer árbol"]
+    Operation --> Refresh
+    Refresh --> RenderTree
+    OpenDoc --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph ExplorerView["Vista: Explorador"]
+        FileTree["FileTree.tsx"]
+        FileTreeContext["FileTreeContextMenu.tsx"]
+        VirtualList["useVirtualList.ts"]
+    end
+
+    subgraph ExplorerHooks["Hooks Explorador"]
+        TreeSync["useLibraryTreeSync.ts"]
+        FileActions["useFileTreeActions.ts"]
+    end
+
+    subgraph ExplorerServices["Servicios Explorador"]
+        FSEngine["filesystemEngine.ts"]
+        LibStorage["libraryStorage.ts"]
+        WatchRuntime["libraryTreeWatchRuntime.ts"]
+    end
+
+    FileTree --> VirtualList
+    FileTree --> FileTreeContext
+    TreeSync --> FSEngine
+    TreeSync --> WatchRuntime
+    FileActions --> FSEngine
+    LibStorage --> FileTree
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant FileTree as FileTree.tsx
+    participant TreeSync as useLibraryTreeSync.ts
+    participant FSEngine as filesystemEngine.ts
+    participant ReduxLib as librarySlice
+    participant ReduxDoc as documentsSlice
+    participant Tauri as Tauri API
+    participant RustCmd as filesystem::commands
+    participant RustFS as desktop.rs / android_saf.rs
+
+    User->>FileTree: Clic en carpeta / expandir
+    FileTree->>TreeSync: library changed / refresh
+    TreeSync->>FSEngine: readLibraryTree(path)
+    FSEngine->>Tauri: invoke('read_library_tree', {payload})
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: read_library_tree(path)
+    RustFS->>RustFS: Escaneo recursivo
+    RustFS-->>RustCmd: Vec<FileNode>
+    RustCmd-->>Tauri: JSON serializado
+    Tauri-->>FSEngine: Promise<FileNode[]>
+    FSEngine->>ReduxDoc: dispatch setTreeNodes(nodes)
+    ReduxDoc-->>FileTree: Re-render con nuevo árbol
+    FileTree->>FileTree: useVirtualList renderiza nodos visibles
+
+    alt Desktop Watcher
+        RustFS->>RustCmd: notify detecta cambio externo
+        RustCmd->>Tauri: window.emit('notia-library-tree-changed')
+        Tauri->>TreeSync: listen('notia-library-tree-changed')
+        TreeSync->>ReduxDoc: dispatch notificación
+        ReduxDoc-->>FileTree: Re-render
+    end
+```
+
+#### 3.3.2 Markdown Editor
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario hace clic en .md]) --> OpenTab["documentsSlice<br/>openDocument({path, title})"]
+    OpenTab --> ReadFile["filesystemEngine.readTextFile(path)"]
+    ReadFile --> SetContent["MarkdownView.tsx<br/>Milkdown Crepe setMarkdown"]
+    SetContent --> RenderProps["frontmatterEngine.ts<br/>parse frontmatter<br/>MarkdownPropertiesPanel"]
+    RenderProps --> UserEdit["Usuario edita texto"]
+    UserEdit --> WikiLink["wikiLinkPlugin.ts<br/>detecta [[...]]"]
+    WikiLink --> Suggestions["WikiLinkSuggestionMenu.tsx"]
+    UserEdit --> Debounce["useTextDocumentAutosave<br/>debounce ~1s"]
+    Debounce --> WriteFile["filesystemEngine.writeTextFile(path, content)"]
+    WriteFile --> UpdateState["documentsSlice<br/>update save state ✓"]
+    UpdateState --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph MarkdownView["Vista: Markdown"]
+        View["MarkdownView.tsx"]
+        Milkdown["Milkdown Crepe Editor"]
+        WikiMenu["WikiLinkSuggestionMenu.tsx"]
+        PropsPanel["MarkdownPropertiesPanel.tsx"]
+    end
+
+    subgraph MarkdownHooks["Hooks Markdown"]
+        DocPersist["useDocumentPersist.ts"]
+        AutoSave["useTextDocumentAutosave.ts"]
+        DocOpener["useDocumentOpener.ts"]
+    end
+
+    subgraph MarkdownEngines["Engines Markdown"]
+        Frontmatter["frontmatterEngine.ts"]
+        WikiLink["wikiLinkPlugin.ts"]
+    end
+
+    View --> Milkdown
+    Milkdown --> WikiLink
+    WikiLink --> WikiMenu
+    DocPersist --> Frontmatter
+    Frontmatter --> PropsPanel
+    AutoSave --> DocPersist
+    DocOpener --> View
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant View as MarkdownView.tsx
+    participant Milkdown as Milkdown Crepe
+    participant AutoSave as useTextDocumentAutosave.ts
+    participant FSEngine as filesystemEngine.ts
+    participant ReduxDoc as documentsSlice
+    participant Tauri as Tauri API
+    participant RustCmd as filesystem::commands
+    participant RustFS as desktop.rs / android_saf.rs
+
+    User->>View: Clic en archivo .md
+    View->>FSEngine: readTextFile(path)
+    FSEngine->>Tauri: invoke('read_library_file', {payload})
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: read_library_file
+    RustFS->>RustFS: fs::read_to_string
+    RustFS-->>RustCmd: content
+    RustCmd-->>Tauri: {ok, content}
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>View: setMarkdown(content)
+    View->>Milkdown: Inyectar contenido
+
+    User->>Milkdown: Editar texto
+    Milkdown-->>View: onChange(newContent)
+    View->>AutoSave: trigger autosave
+    AutoSave->>AutoSave: debounce ~1s
+    AutoSave->>FSEngine: writeTextFile(path, newContent)
+    FSEngine->>ReduxDoc: dispatch isSaving = true
+    FSEngine->>Tauri: invoke('write_library_file', {payload})
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: write_library_file
+    RustFS->>RustFS: fs::write
+    RustFS-->>RustCmd: ok
+    RustCmd-->>Tauri: {ok}
+    Tauri-->>FSEngine: Promise
+    FSEngine->>ReduxDoc: dispatch isSaving = false / saved
+    ReduxDoc-->>View: Actualizar indicador ✓
+```
+
+#### 3.3.3 Graph View
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario abre Graph View]) --> ReadMD["filesystemEngine.readMarkdownDocuments()"]
+    ReadMD --> PostModel["Post mensaje a<br/>graphModelWorker.ts"]
+    PostModel --> BuildModel["buildLibraryGraphModel()<br/>nodos + wikilinks → aristas"]
+    BuildModel --> PostLayout["Post mensaje a<br/>graphViewWorker.ts"]
+    PostLayout --> BuildLayout["buildClusteredGraphLayout()<br/>fuerzas + clustering"]
+    BuildLayout --> Receive["GraphView.tsx recibe<br/>graphLayout + searchResults"]
+    Receive --> Render["Render SVG/DOM<br/>nodos posicionados + líneas"]
+    Render --> UserClick{"¿Clic en nodo?"}
+    UserClick -->|Sí| OpenDoc["dispatch openDocument<br/>abrir nota en pestaña"]
+    UserClick -->|No| End([Fin])
+    OpenDoc --> End
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph GraphView["Vista: Graph"]
+        GraphViewComp["GraphView.tsx"]
+        Canvas["Canvas / SVG Renderer"]
+    end
+
+    subgraph GraphHooks["Hooks Graph"]
+        GraphData["useLibraryGraphData.ts"]
+        GraphDerived["useGraphDerivedData.ts"]
+    end
+
+    subgraph GraphWorkers["Workers Graph"]
+        ModelWorker["graphModelWorker.ts"]
+        ViewWorker["graphViewWorker.ts"]
+    end
+
+    subgraph GraphEngines["Engines Graph"]
+        LibGraph["libraryGraphEngine.ts"]
+        Layout["clusteredGraphLayoutEngine.ts"]
+        Search["graphSearchEngine.ts"]
+        WikiLink["wikiLinkEngine.ts"]
+    end
+
+    GraphViewComp --> Canvas
+    GraphData --> ModelWorker
+    ModelWorker --> LibGraph
+    LibGraph --> WikiLink
+    GraphDerived --> ViewWorker
+    ViewWorker --> Layout
+    ViewWorker --> Search
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Graph as GraphView.tsx
+    participant GraphData as useLibraryGraphData.ts
+    participant GraphDerived as useGraphDerivedData.ts
+    participant FSEngine as filesystemEngine.ts
+    participant ModelWorker as graphModelWorker.ts
+    participant ViewWorker as graphViewWorker.ts
+    participant Tauri as Tauri API
+    participant RustCmd as filesystem::commands
+
+    User->>Graph: Abrir Graph View
+    Graph->>GraphData: Solicitar datos
+    GraphData->>FSEngine: readMarkdownDocuments(path)
+    FSEngine->>Tauri: invoke('read_markdown_files')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustCmd: Escaneo .md
+    RustCmd-->>Tauri: Vec<MarkdownFileDocument>
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>GraphData: documents[]
+
+    GraphData->>ModelWorker: postMessage({type:'build', documents})
+    ModelWorker->>ModelWorker: buildLibraryGraphModel()
+    ModelWorker->>ModelWorker: wikiLinkEngine.ts parsea wikilinks
+    ModelWorker-->>GraphData: {type:'model', nodes, edges}
+
+    GraphData->>GraphDerived: postModel + query?
+    GraphDerived->>ViewWorker: postMessage({type:'compute', model, sources, query})
+    ViewWorker->>ViewWorker: buildClusteredGraphLayout()
+    ViewWorker->>ViewWorker: buildGraphSearchResults() (si hay query)
+    ViewWorker-->>GraphDerived: {type:'layout', graphLayout, searchResults}
+
+    GraphDerived-->>Graph: Actualizar estado
+    Graph->>Graph: Render SVG/DOM nodos + líneas
+
+    User->>Graph: Clic en nodo
+    Graph->>Graph: dispatch openDocument(path)
+```
+
+#### 3.3.4 AI Chat
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario envía mensaje]) --> SaveUser["chatDocumentStorage<br/>guardar mensaje usuario"]
+    SaveUser --> BuildCtx["aiRuntime.ts<br/>buildConversationMessages()<br/>system + history + user + files"]
+    BuildCtx --> Bridge{"¿Bridge desktop<br/>disponible?"}
+    Bridge -->|Sí| Invoke["invoke('run_desktop_ai_chat')"]
+    Bridge -->|No| Fetch["fetch POST /api/chat<br/>stream:true NDJSON"]
+    Invoke --> RustCmd["commands::ai.rs<br/>→ ai_service.rs"]
+    RustCmd --> HTTP["reqwest HTTP Ollama"]
+    HTTP --> Answer["Respuesta completa"]
+    Fetch --> Stream["Parse NDJSON<br/>línea por línea"]
+    Stream --> Delta["onMessageDelta(delta)"]
+    Delta --> Render["ChatMarkdownMessage.tsx"]
+    Answer --> Render
+    Render --> SaveAsst["chatDocumentStorage<br/>guardar respuesta"]
+    SaveAsst --> GenTitle["generateAiChatTitle()"]
+    GenTitle --> GenMem["generateAiLongTermMemories()"]
+    GenMem --> PersistMem["Persistir memorias<br/>en chat document"]
+    PersistMem --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph ChatView["Vista: AI Chat"]
+        ChatWorkspace["ChatWorkspaceView.tsx"]
+        ChatMsg["ChatMarkdownMessage.tsx"]
+        ChatFilesModal["ChatLibraryFilesModal.tsx"]
+    end
+
+    subgraph ChatServices["Servicios Chat"]
+        AIRuntime["aiRuntime.ts"]
+        ChatAttach["chatAttachmentRuntime.ts"]
+        ChatDocStore["chatDocumentStorage.ts"]
+        AISettings["aiSettingsStorage.ts"]
+    end
+
+    subgraph ChatBackend["Backend Chat"]
+        AICmd["commands/ai.rs"]
+        AIService["services/ai_service.rs"]
+        MobileAI["mobile_ai_bridge.rs"]
+    end
+
+    ChatWorkspace --> ChatMsg
+    ChatWorkspace --> ChatFilesModal
+    ChatWorkspace --> AIRuntime
+    AIRuntime --> ChatAttach
+    AIRuntime --> ChatDocStore
+    AIRuntime --> AISettings
+    AIRuntime -->|invoke| AICmd
+    AIRuntime -->|fetch| Ollama["Ollama API"]
+    AICmd --> AIService
+    MobileAI --> Ollama
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant ChatUI as ChatWorkspaceView.tsx
+    participant AIRuntime as aiRuntime.ts
+    participant ChatDoc as chatDocumentStorage.ts
+    participant Tauri as Tauri API
+    participant RustCmd as commands::ai.rs
+    participant RustSvc as services::ai_service.rs
+    participant Ollama as Ollama API
+
+    User->>ChatUI: Escribir mensaje y enviar
+    ChatUI->>ChatDoc: Guardar mensaje usuario
+    ChatUI->>AIRuntime: streamAiChatReply(settings, messages, files?)
+    AIRuntime->>AIRuntime: buildConversationMessages(system+history+user)
+    AIRuntime->>Tauri: invoke('run_desktop_ai_chat', {payload})
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustSvc: Delegar a ai_service
+    RustSvc->>Ollama: POST /api/chat (reqwest, stream)
+    Ollama-->>RustSvc: NDJSON chunks
+    RustSvc-->>RustCmd: answer completo
+    RustCmd-->>Tauri: JSON {answer, error?}
+    Tauri-->>AIRuntime: Promise
+    AIRuntime-->>ChatUI: onMessageDelta(delta)
+    ChatUI->>ChatUI: ChatMarkdownMessage.tsx renderiza chunk
+
+    AIRuntime->>AIRuntime: generateAiChatTitle()
+    AIRuntime->>AIRuntime: generateAiLongTermMemories()
+    AIRuntime->>ChatDoc: Persistir título y memorias
+```
+
+#### 3.3.5 ColdPass
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario abre ColdPass]) --> Unlock["unlockColdPassSession(library, passkey)"]
+    Unlock --> Resolve["resolveColdPassPaths()<br/>ColdPass/ColdPass.md"]
+    Resolve --> Exists{"¿Existe archivo?"}
+    Exists -->|No| Create["createDirectory + createFile<br/>con plantilla cifrada"]
+    Exists -->|Sí| Read["readLibraryFileContent()"]
+    Create --> Decrypt
+    Read --> Decrypt["decryptColdPassMarkdown()<br/>Web Crypto PBKDF2 + AES-GCM"]
+    Decrypt --> Parse["parseColdPassMarkdown()<br/>entries[]"]
+    Parse --> Render["ColdPassView.tsx<br/>lista de credenciales"]
+    Render --> UserEdit{"¿Editar credenciales?"}
+    UserEdit -->|Sí| Update["Actualizar entries[]"]
+    Update --> Serialize["stringifyColdPassMarkdown()"]
+    Serialize --> Encrypt["encryptColdPassMarkdown()"]
+    Encrypt --> Write["writeLibraryFileContent()"]
+    Write --> Render
+    UserEdit -->|Bluetooth| BTSync["coldpassBluetooth.ts<br/>connect → auth → send"]
+    BTSync --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph ColdPassView["Vista: ColdPass"]
+        CPView["ColdPassView.tsx"]
+        CPBluetooth["ColdPassBluetoothCard.tsx"]
+        CPModal["ColdPassCredentialModal.tsx"]
+    end
+
+    subgraph ColdPassServices["Servicios ColdPass"]
+        CPStorage["coldpassStorage.ts"]
+        CPCrypto["coldpassCrypto.ts"]
+        CPMD["coldpassMarkdown.ts"]
+        CPBT["coldpassBluetooth.ts"]
+    end
+
+    subgraph ColdPassBackend["Backend ColdPass"]
+        BTCmd["commands/bluetooth.rs"]
+        BTService["services/bluetooth_service.rs"]
+        BTState["state/bluetooth_state.rs"]
+    end
+
+    CPView --> CPModal
+    CPView --> CPBluetooth
+    CPStorage --> CPCrypto
+    CPStorage --> CPMD
+    CPBluetooth --> CPBT
+    CPBT -->|invoke| BTCmd
+    CPCrypto -->|Web Crypto API| CPView
+    BTCmd --> BTService
+    BTCmd --> BTState
+    CPCrypto -->|Web Crypto API| CPView
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CPView as ColdPassView.tsx
+    participant CPStorage as coldpassStorage.ts
+    participant CPCrypto as coldpassCrypto.ts
+    participant FSEngine as filesystemEngine.ts
+    participant Tauri as Tauri API
+    participant RustCmd as filesystem::commands
+    participant RustFS as desktop.rs / android_saf.rs
+
+    User->>CPView: Ingresar passkey
+    CPView->>CPStorage: unlockColdPassSession(library, passkey)
+    CPStorage->>FSEngine: readLibraryFileContent(path)
+    FSEngine->>Tauri: invoke('read_library_file', {payload})
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: read_library_file
+    RustFS->>RustFS: fs::read_to_string
+    RustFS-->>RustCmd: contenido cifrado
+    RustCmd-->>Tauri: {ok, content}
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>CPStorage: encryptedMarkdown
+
+    CPStorage->>CPCrypto: decryptColdPassMarkdown(encrypted, passkey)
+    CPCrypto->>CPCrypto: PBKDF2 + AES-256-GCM (Web Crypto)
+    CPCrypto-->>CPStorage: plainMarkdown
+    CPStorage->>CPStorage: parseColdPassMarkdown()
+    CPStorage-->>CPView: entries[]
+    CPView->>CPView: Render lista de credenciales
+
+    User->>CPView: Agregar/editar credencial
+    CPView->>CPStorage: saveColdPassEntries(entries, passkey)
+    CPStorage->>CPStorage: stringifyColdPassMarkdown()
+    CPStorage->>CPCrypto: encryptColdPassMarkdown()
+    CPCrypto->>CPCrypto: PBKDF2 + AES-256-GCM
+    CPCrypto-->>CPStorage: encrypted
+    CPStorage->>FSEngine: writeLibraryFileContent(path, encrypted)
+    FSEngine->>Tauri: invoke('write_library_file', {payload})
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: fs::write
+    RustFS-->>RustCmd: ok
+    RustCmd-->>Tauri: {ok}
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>CPStorage: Confirmación
+    CPStorage-->>CPView: Actualizar UI
+```
+
+#### 3.3.6 Task Manager
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario abre Task Manager]) --> ResolveRoot["vaultRuntime.ts<br/>resolveTaskWorkspaceRuntimeRoot()"]
+    ResolveRoot --> ReadMD["readMarkdownDocuments()<br/>lee todos .md de task-mannager/"]
+    ReadMD --> Parse["taskEngine.ts + frontmatterEngine.ts<br/>parse YAML frontmatter → TaskItem[]"]
+    Parse --> Render["TaskBoardView.tsx / TaskTableView.tsx<br/>Kanban o Tabla"]
+    Render --> UserAction{"¿Acción del usuario?"}
+    UserAction -->|Crear/Editar tarea| UpdateTask["taskManagerService.ts<br/>createTask / updateTaskFrontmatter"]
+    UserAction -->|Cambiar estado| MoveState["moveTaskByState()<br/>mover a finished/ o cancelled/"]
+    UserAction -->|Pomodoro| Timer["Iniciar timer 25min"]
+    UpdateTask --> WriteTask["writeFileContent()<br/>serializa frontmatter + body"]
+    MoveState --> SyncIndex["syncTaskIndexesAndMetadata()<br/>reconstruye TaskIndex.md"]
+    Timer -->|Completado| AddSession["pomodoroLogEngine.ts<br/>appendPomodoroLogEntry()"]
+    AddSession --> WriteLog["writeFileContent()<br/>PomodoroLog.md"]
+    WriteTask --> Render
+    SyncIndex --> Render
+    WriteLog --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph TaskView["Vista: Task Manager"]
+        TaskBoardUI["TaskBoardView.tsx<br/>(Kanban)"]
+        TaskTableUI["TaskTableView.tsx<br/>(Tabla)"]
+        TaskCard["TaskCard.tsx"]
+        PomodoroPanel["PomodoroPanel.tsx"]
+    end
+
+    subgraph TaskModule["Módulo Task Manager"]
+        TaskComponents["components/"]
+        TaskEngines["engines/<br/>{frontmatterEngine | taskEngine | taskIndexEngine | pomodoroLogEngine | scheduleEngine | completionEngine}"]
+        TaskHooks["hooks/<br/>useTaskManager.ts"]
+        TaskServices["services/<br/>{vaultRuntime | taskManagerService | taskManagerStorage}"]
+        TaskTypes["types/<br/>taskManagerTypes.ts"]
+    end
+
+    TaskBoardUI --> TaskCard
+    TaskTableUI --> TaskCard
+    TaskBoardUI --> PomodoroPanel
+    TaskTableUI --> PomodoroPanel
+    TaskBoardUI --> TaskComponents
+    TaskTableUI --> TaskComponents
+    TaskComponents --> TaskEngines
+    TaskEngines --> TaskServices
+    TaskServices -->|invoke| FSEngine["filesystemEngine.ts"]
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant TaskUI as TaskBoardView.tsx
+    participant Vault as vaultRuntime.ts
+    participant TaskSvc as taskManagerService.ts
+    participant Frontmatter as frontmatterEngine.ts
+    participant FSEngine as filesystemEngine.ts
+    participant Tauri as Tauri API
+    participant RustCmd as filesystem::commands
+    participant RustFS as desktop.rs / android_saf.rs
+
+    User->>TaskUI: Abrir Task Manager
+    TaskUI->>Vault: readMarkdownFiles(runtimeRoot.rootPath)
+    Vault->>FSEngine: readMarkdownDocuments(path)
+    FSEngine->>Tauri: invoke('read_markdown_files')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: Escaneo recursivo .md
+    RustFS-->>RustCmd: Vec<MarkdownFileDocument>
+    RustCmd-->>Tauri: JSON serializado
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>Vault: documents[]
+    Vault-->>TaskSvc: getTasks(documents)
+    TaskSvc-->>Frontmatter: parseMarkdownFrontmatter()
+    Frontmatter-->>TaskUI: TaskItem[]
+
+    User->>TaskUI: Crear nueva tarea
+    TaskUI->>TaskSvc: createTask(vaultPath, formData, tasks)
+    TaskSvc->>TaskSvc: buildTaskContent() con YAML frontmatter
+    TaskSvc->>Vault: createMarkdownFile(parentDir, fileName)
+    Vault->>FSEngine: createLibraryEntry(path, name, 'note')
+    FSEngine->>Tauri: invoke('create_library_entry')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: fs::write
+    RustFS-->>RustCmd: ok
+    RustCmd-->>Tauri: {ok}
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>Vault: Confirmación
+    TaskSvc->>Vault: writeFileContent(path, content)
+    Vault->>FSEngine: writeTextFile(path, content)
+    FSEngine->>Tauri: invoke('write_library_file')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: fs::write
+    RustFS-->>RustCmd: ok
+    RustCmd-->>Tauri: {ok}
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>Vault: Confirmación
+    Vault-->>TaskUI: Re-render Kanban/Tabla
+
+    User->>TaskUI: Cambiar estado a "Finalizada"
+    TaskUI->>TaskSvc: moveTaskByState(vaultPath, task, 'Finalizada')
+    TaskSvc->>Vault: moveEntry(source, target/finished/)
+    Vault->>FSEngine: library_entry_operation(move)
+    FSEngine->>Tauri: invoke('library_entry_operation')
+    Tauri->>RustCmd: Deserializar
+    RustCmd->>RustFS: fs::rename
+    RustFS-->>RustCmd: ok
+    RustCmd-->>Tauri: {ok}
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>Vault: Confirmación
+    TaskSvc->>TaskSvc: syncTaskIndexesAndMetadata()
+    TaskSvc->>Vault: writeFileContent(TaskIndex.md, updatedIndex)
+    Vault-->>TaskUI: Re-render
+```
+
+---
+
+#### 3.3.7 InkDoc
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario abre InkDoc]) --> Bridge["InkdocView.tsx crea InkdocHostBridge"]
+    Bridge --> Read["read_library_file → JSON .inkdoc"]
+    Read --> Parse["documentParser.ts → InkDocData"]
+    Parse --> Mount["InkDocView.ts monta DOM <br/> toolbar + pages + canvas + text layer + images + sticky notes"]
+    Mount --> Edit["Usuario dibuja / escribe / pega imágenes"]
+    Edit --> Sync["documentSyncEngine.ts <br/> debounce 1000ms"]
+    Sync --> Serialize["Serialize docData → JSON string"]
+    Serialize --> Write["write_library_file"]
+    Write --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph InkDocReact["React Wrapper"]
+        InkdocView["InkdocView.tsx"]
+    end
+
+    subgraph InkDocCore["InkDoc Core (Vanilla JS / DOM)"]
+        InkDocView["InkDocView.ts"]
+        Toolbar["toolbar DOM"]
+        Pages["pages container"]
+        Canvas["<canvas> strokes"]
+        TextLayer["div textEditors"]
+        ImageLayer["div images"]
+        StickyNotes["div stickyNotes"]
+        SyncEngine["documentSyncEngine.ts"]
+    end
+
+    subgraph InkDocServices["Servicios InkDoc"]
+        HostBridge["inkdocFilesystemRuntime.ts"]
+        FSEngine["filesystemEngine.ts"]
+    end
+
+    InkdocView --> InkDocView
+    InkDocView --> Toolbar
+    InkDocView --> Pages
+    Pages --> Canvas
+    Pages --> TextLayer
+    Pages --> ImageLayer
+    Pages --> StickyNotes
+    SyncEngine --> HostBridge
+    HostBridge --> FSEngine
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant React as InkdocView.tsx
+    participant Bridge as inkdocFilesystemRuntime.ts
+    participant FSEngine as filesystemEngine.ts
+    participant Core as InkDocView.ts
+    participant Sync as documentSyncEngine.ts
+    participant Tauri as Tauri API
+    participant RustFS as desktop.rs / android_saf.rs
+
+    User->>React: Clic en archivo .inkdoc
+    React->>Bridge: readFile(path)
+    Bridge->>FSEngine: readTextFile(path)
+    FSEngine->>Tauri: invoke('read_library_file')
+    Tauri->>RustFS: fs::read_to_string
+    RustFS-->>Tauri: JSON string
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>Bridge: JSON string
+    Bridge-->>React: InkDocData
+    React->>Core: new InkDocView(data, bridge)
+    Core-->>React: append containerEl
+
+    User->>Core: Dibujar stroke / editar texto
+    Core->>Sync: requestSaveAfterActivity()
+    Sync->>Sync: debounce 1000ms + idle check
+    Sync->>Core: serialize → JSON
+    Core->>Bridge: writeFile(path, json)
+    Bridge->>FSEngine: writeTextFile(path, json)
+    FSEngine->>Tauri: invoke('write_library_file')
+    Tauri->>RustFS: fs::write
+    RustFS-->>Tauri: ok
+    Tauri-->>FSEngine: {ok}
+    FSEngine-->>Bridge: confirmación
+    Bridge-->>Core: save acknowledge
+```
+
+---
+
+#### 3.3.8 Mermaid Editor
+
+**Diagrama de flujo específico:**
+
+```mermaid
+flowchart TD
+    Start([Usuario abre .mmd]) --> Read["read_library_file → source Mermaid"]
+    Read --> Parse["mermaidEngine.ts parseMermaidSource(source)"]
+    Parse --> State["useMermaidEditor.ts → MermaidDiagram"]
+    State --> Render["MermaidCanvas.tsx → mermaid.render() → SVG"]
+    Render --> Interact{"¿Interacción del usuario?"}
+    Interact -->|Seleccionar nodo| Select["selectedNodeId = id"]
+    Interact -->|Conectar| Connect["createEdge(from, to)"]
+    Interact -->|Colocar forma| Place["createNode(shape, x, y, label)"]
+    Interact -->|Editar texto| UpdateText["Actualizar label nodo/arista"]
+    Select --> Persist
+    Connect --> Persist
+    Place --> Persist
+    UpdateText --> Persist["serializeMermaidDiagram() → source"]
+    Persist --> AutoSave["useTextDocumentAutosave 800ms"]
+    AutoSave --> Write["write_library_file(path, source)"]
+    Write --> End([Fin])
+```
+
+**Diagrama de arquitectura de componentes:**
+
+```mermaid
+graph LR
+    subgraph MermaidReact["React Wrapper"]
+        MermaidView["MermaidView.tsx"]
+    end
+
+    subgraph MermaidEditor["Mermaid Editor"]
+        Canvas["MermaidCanvas.tsx"]
+        Toolbar["MermaidToolbar.tsx"]
+        Palette["MermaidShapePalette.tsx"]
+        Hook["useMermaidEditor.ts"]
+    end
+
+    subgraph MermaidPure["Pure Engines"]
+        Engine["mermaidEngine.ts"]
+        MermaidLib["mermaid npm lib"]
+    end
+
+    MermaidView --> Canvas
+    MermaidView --> Toolbar
+    MermaidView --> Palette
+    Canvas --> Hook
+    Hook --> Engine
+    Engine --> MermaidLib
+    Canvas --> MermaidLib
+```
+
+**Diagrama de secuencia específico:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant View as MermaidView.tsx
+    participant Hook as useMermaidEditor.ts
+    participant Engine as mermaidEngine.ts
+    participant Canvas as MermaidCanvas.tsx
+    participant FSEngine as filesystemEngine.ts
+    participant Tauri as Tauri API
+    participant RustFS as desktop.rs / android_saf.rs
+
+    User->>View: Clic en archivo .mmd
+    View->>FSEngine: readTextFile(path)
+    FSEngine->>Tauri: invoke('read_library_file')
+    Tauri->>RustFS: fs::read_to_string
+    RustFS-->>Tauri: source string
+    Tauri-->>FSEngine: Promise
+    FSEngine-->>View: source
+
+    View->>Hook: parseMermaidSource(source)
+    Hook->>Engine: parseMermaidSource(source)
+    Engine-->>Hook: MermaidDiagram
+
+    Hook->>Canvas: set diagram + onNodeClick
+    Canvas->>Canvas: mermaid.render(id, source)
+    Canvas-->>Canvas: Inject SVG into DOM
+
+    User->>Canvas: Clic en nodo
+    Canvas->>Hook: handleNodeClick(id)
+    Hook-->>Canvas: selectedNodeId = id (re-render CSS)
+
+    User->>Canvas: Dibujar nueva arista / nodo
+    Hook->>Engine: createNode / createEdge
+    Engine-->>Hook: updated diagram
+    Hook->>Canvas: schedulePersist()
+
+    Canvas->>Engine: serializeMermaidDiagram(diagram)
+    Engine-->>Canvas: source
+    Canvas->>FSEngine: writeTextFile(path, source)
+    FSEngine->>Tauri: invoke('write_library_file')
+    Tauri->>RustFS: fs::write
+    RustFS-->>Tauri: ok
+    Tauri-->>FSEngine: {ok}
+```
+
+---
+
+### 3.4 Diagrama General — Acoplamiento y Cohesión (UML de Paquetes)
+
+```mermaid
+graph TB
+    subgraph FrontendPackage["Frontend (src/)"]
+        direction TB
+        Components["components/<br/>{common | notia/views | notia/hooks}"]
+        HooksGlobal["hooks/"]
+        Services["services/<br/>{ai | chat | coldpass | files | libraries | preferences | runtime | views | window}"]
+        Engines["engines/<br/>{graph | markdown | tree}"]
+        Workers["workers/<br/>{graphModelWorker | graphViewWorker}"]
+        Modules["modules/<br/>{inkdoc | mermaid | task-manager}"]
+        Context["context/<br/>ConfirmationEngine"]
+        Utils["utils/ | types/ | constants/"]
+
+        subgraph ReduxPackage["Redux State"]
+            UISlice["uiSlice<br/>(sidebar, panels, modals)"]
+            PrefSlice["preferencesSlice<br/>(theme, AI, inkdoc, explorer)"]
+            LibSlice["librarySlice<br/>(library list, active library)"]
+            DocSlice["documentsSlice<br/>(tabs, active tab, tree nodes)"]
+            ExpSlice["explorerSlice<br/>(expanded folders, selection)"]
+        end
+    end
+
+    subgraph BackendPackage["Backend (src-tauri/src/)"]
+        direction TB
+        RustCmds["commands/<br/>{ai.rs | bluetooth.rs}"]
+        FSCmds["filesystem/commands.rs"]
+        RustSvc["services/<br/>{ai_service | bluetooth_service}"]
+        RustFS["filesystem/<br/>{desktop | android_saf | helpers | types | validation | watch}"]
+        RustDTOs["dto/<br/>{bluetooth}"]
+        RustState["state/<br/>{bluetooth_state}"]
+        MobileBridges["mobile_ai_bridge.rs<br/>mobile_directory_picker.rs"]
+        LibRS["lib.rs (bootstrap)"]
+    end
+
+    Components --> HooksGlobal
+    Components --> Services
+    Components --> ReduxPackage
+    Components --> Modules
+    Components --> Context
+    HooksGlobal --> Services
+    HooksGlobal --> ReduxPackage
+    Services --> Engines
+    Services --> Workers
+    Services --> Utils
+    Modules --> Services
+    Modules --> ReduxPackage
+    ReduxPackage --> Utils
+
+    LibRS --> RustCmds
+    LibRS --> FSCmds
+    LibRS --> MobileBridges
+    RustCmds --> RustSvc
+    RustCmds --> RustFS
+    RustCmds --> RustState
+    FSCmds --> RustFS
+    RustSvc --> RustDTOs
+    RustSvc --> RustState
+    MobileBridges --> RustFS
+    RustFS --> RustDTOs
+
+    style Components fill:#e1f5fe
+    style Services fill:#fff3e0
+    style Engines fill:#f3e5f5
+    style ReduxPackage fill:#e8f5e9
+    style RustCmds fill:#fce4ec
+    style RustFS fill:#fff8e1
+    style RustSvc fill:#f3e5f5
+```
+
+**Reglas de dependencia (acoplamiento controlado):**
+
+| Regla | Descripción |
+|---|---|
+| `services/` → `components/` | ❌ Prohibido. Services nunca importan de la capa de UI. |
+| `engines/` → side-effects | ❌ Prohibido. Engines son funciones puras, sin `invoke`, `localStorage`, ni APIs del navegador. |
+| `components/` → `services/` | ✅ Permitido. UI consume servicios. |
+| `hooks/` → `services/` | ✅ Permitido. Hooks orquestan servicios. |
+| `commands/` → lógica de negocio | ❌ Prohibido. Commands delegan a `services/` inmediatamente. |
+| `services/` → Tauri directo | ⚠️ Evitar. Los services de frontend usan `invoke` pero no dependen de APIs de ventana. |
+| `filesystem/` | ✅ Auto-contenido. Tiene sus propios commands, desktop, android_saf, validation, helpers. |
+
+---
+
+## 4. Mapa de Commands Tauri
+
+| Command | Módulo Rust | Servicio Frontend | Descripción |
+|---|---|---|---|
+| `read_library_tree` | `filesystem::commands` | `filesystemEngine.readLibraryTree` | Lee árbol recursivo desktop |
+| `read_library_tree_signature` | `filesystem::commands` | `filesystemEngine.readLibraryTreeSignature` | Hash FNV-1a del árbol |
+| `read_library_file` | `filesystem::commands` | `filesystemEngine.readTextFile` | Lee archivo de texto |
+| `write_library_file` | `filesystem::commands` | `filesystemEngine.writeTextFile` | Escribe archivo de texto |
+| `create_library_file` | `filesystem::commands` | `filesystemEngine.createFile` | Crea archivo con contenido |
+| `create_library_directory` | `filesystem::commands` | `filesystemEngine.createDirectory` | Crea carpeta |
+| `create_library_entry` | `filesystem::commands` | `filesystemEngine.createLibraryEntry` | Crea entrada tipada (note/inkdoc/mermaid/folder) |
+| `library_entry_operation` | `filesystem::commands` | `filesystemEngine.performLibraryEntryOperation` | Delete/rename/paste |
+| `path_exists` | `filesystem::commands` | `filesystemEngine.pathExists` | Verifica existencia |
+| `is_directory_path` | `filesystem::commands` | `filesystemEngine.isDirectoryPath` | Verifica si es directorio |
+| `search_library_files` | `filesystem::commands` | `filesystemEngine.searchLibraryFiles` | Búsqueda por nombre |
+| `read_markdown_files` | `filesystem::commands` | `filesystemEngine.readMarkdownDocuments` | Lee todos los `.md` |
+| `write_binary_file` | `filesystem::commands` | `filesystemEngine.writeBinaryFile` | Escribe archivo binario |
+| `start_library_tree_watch` | `filesystem::watch` | `libraryTreeWatchRuntime.startDesktopLibraryTreeWatch` | Inicia watcher nativo |
+| `stop_library_tree_watch` | `filesystem::watch` | `libraryTreeWatchRuntime.stopDesktopLibraryTreeWatch` | Detiene watcher |
+| `check_desktop_ai_health` | `commands::ai` | `aiRuntime.checkAiHealth` | Health check Ollama desktop |
+| `run_desktop_ai_chat` | `commands::ai` | `aiRuntime.streamAiChatReply` | Chat Ollama desktop |
+| `list_desktop_ai_models` | `commands::ai` | `aiRuntime.listAiMultimodalModels` | Listado modelos desktop |
+| `check_android_ai_health` | `mobile_ai_bridge` | `aiRuntime.checkAiHealth` | Health check Ollama Android |
+| `run_android_ai_chat` | `mobile_ai_bridge` | `aiRuntime.streamAiChatReply` | Chat Ollama Android |
+| `list_android_ai_models` | `mobile_ai_bridge` | `aiRuntime.listAiMultimodalModels` | Listado modelos Android |
+| `pick_android_directory_tree` | `mobile_directory_picker` | `filesystemEngine.pickDirectory` | Selector SAF Android |
+| `read_android_library_tree` | `mobile_directory_picker` | `filesystemEngine.readLibraryTree` | Lee árbol SAF Android |
+| `read_android_directory` | `mobile_directory_picker` | `filesystemEngine.readLibraryDirectory` | Lee directorio superficial Android |
+| `read_android_flat_file_list` | `mobile_directory_picker` | `filesystemEngine.readLibraryFlatFileList` | Lista plana SAF |
+| `coldpass_bluetooth_status` | `commands::bluetooth` | `coldpassBluetooth.getColdPassBluetoothStatus` | Estado BLE |
+| `coldpass_bluetooth_connect` | `commands::bluetooth` | `coldpassBluetooth.connectColdPassBluetooth` | Conectar BLE |
+| `coldpass_bluetooth_submit_pin` | `commands::bluetooth` | `coldpassBluetooth.submitColdPassBluetoothPin` | Enviar PIN |
+| `coldpass_bluetooth_authenticate` | `commands::bluetooth` | `coldpassBluetooth.authenticateColdPassBluetooth` | Autenticar app |
+| `coldpass_bluetooth_send_message` | `commands::bluetooth` | `coldpassBluetooth.sendColdPassBluetoothMessage` | Enviar mensaje cifrado |
+| `coldpass_bluetooth_disconnect` | `commands::bluetooth` | `coldpassBluetooth.disconnectColdPassBluetooth` | Desconectar BLE |
+| `window_control` | `lib.rs` | `windowRuntime.controlWindow` | Min/max/fullscreen/close |
+| `start_window_dragging` | `lib.rs` | `windowRuntime.startWindowDragging` | Inicia drag ventana |
+| `start_window_dragging_with_restore` | `lib.rs` | `windowRuntime.startWindowDraggingWithRestore` | Drag con unmaximize |
+| `notia_log` | `lib.rs` | `notiaLogger.notiaLog` | Bridge de logs JS → Rust/logcat |
+
+---
+
+## 5. Eventos y Storage Keys
+
+### 5.1 Eventos Tauri (Backend → Frontend)
+
+| Evento | Payload | Dirección | Uso |
+|---|---|---|---|
+| `notia-library-tree-changed` | `{ watchedPath?, changedPathHint? }` | Rust → JS | File watcher notifica cambio en árbol |
+
+### 5.2 Custom Events Frontend (Frontend → Frontend)
+
+| Evento | Payload | Uso |
+|---|---|---|
+| `notia:library-tree-changed` | `{ pathHint? }` | Coordinar re-sincronización entre services |
+
+### 5.3 Storage Keys (localStorage)
+
+| Key | Servicio | Tipo | Descripción |
+|---|---|---|---|
+| `notia:libraries` | `libraryStorage` | JSON | Lista de librerías configuradas |
+| `notia:active-library-id` | `libraryStorage` | string | ID de la librería activa |
+| `notia:ai-settings:v1` | `aiSettingsStorage` | JSON | Configuración de IA (URL, modelo, API key) |
+| `notia:theme` | `themeStorage` | string | `light` \| `dark` |
+| `notia:inkdoc-settings:v1` | `inkdocSettingsStorage` | JSON | Preferencias del editor InkDoc |
+| `notia:explorer-refresh-interval-ms` | `explorerPanelStorage` | string | Intervalo de polling en Android |
+| `notia:explorer-folder-state` | `explorerPanelStorage` | JSON | Estado de carpetas expandidas/colapsadas |
+| `notia.perfBaseline.enabled` | `performanceBaseline` | string | Habilitar mediciones de performance |
+| `notia.perfBaseline.console` | `performanceBaseline` | string | Mostrar performance en consola |
+| `notia.perfBaseline.logcat` | `performanceBaseline` | string | Enviar performance a logcat (default `true` en Android) |
+| `notia.logcat.enabled` | `notiaLogger` | string | Habilitar bridge de logs a logcat (default `true` en Android) |
+
+---
+
+## 6. Notas de Performance
+
+- **Web Workers**: `graphModelWorker` y `graphViewWorker` procesan el modelo de grafo y su layout fuera del hilo principal.
+- **Virtualización**: `useVirtualList` se usa en `FileTree` para renderizar solo los nodos visibles en viewport, permitiendo árboles de miles de items sin degradación.
+- **Debounce**: operaciones costosas como autosave de Markdown, búsqueda en grafo y refresco de árbol usan debounce configurable.
+- **Tree Signature Polling**: en desktop se usa el watcher nativo (event-driven). En Android se usa signature comparison para evitar re-leer el árbol completo innecesariamente.
+- **Minimize invoke calls**: resultados de `readLibraryTree` se cachean por signature; solo se re-invoca si el signature cambia.
+- **Batch events**: `libraryTreeEvents` agrupa múltiples filesystem events en un solo `CustomEvent` para reducir re-renders.
+
+---
+
+## 7. Notas de Seguridad
+
+- **ColdPass cifrado en frontend**: la passkey nunca se envía al backend. La derivación de clave (PBKDF2) y el cifrado/descifrado (AES-256-GCM) ocurren en el WebView vía **Web Crypto API**. El archivo cifrado viaja como texto opaco a Rust, que solo lo escribe/lee del filesystem.
+- **ColdPass Bluetooth**: los paquetes Bluetooth se cifran con **AES-256-CBC + PBKDF2 (120k iteraciones)** antes de salir del frontend. El backend transmite bytes opacos por GATT.
+- **Validación de inputs**: `validation.rs` rechaza paths con `..`, nombres vacíos, caracteres separadores. Los errores al usuario están en español; errores técnicos no exponen paths internos.
+- **CSP**: actualmente `null` en `tauri.conf.json` — debe configurarse una CSP restrictiva para producción.
+- **Secrets**: nunca loggear credenciales, passkeys ni contenido descifrado. La API de logging (`notiaLog`) filtra estos datos por diseño.
+
+---
+
+## 8. Informe de Cohesión vs Acoplamiento
+
+### 8.1 Resumen Ejecutivo
+
+| Métrica | Valoración |
+|---|---|
+| **Cohesión general** | **Alta**. Cada capa y módulo tiene una responsabilidad clara y única. Los slices de Redux, los services, los engines y los commands Rust están bien delimitados. |
+| **Acoplamiento general** | **Bajo a medio**. La separación frontend/backend por `invoke`/`listen` actúa como una interfaz bien definida. Dentro del frontend, el acoplamiento es controlado gracias a la regla "services no importan de components". En el backend, el módulo `filesystem/` es auto-contenido. El principal punto de acoplamiento medio es el uso directo de `localStorage` en múltiples services (falta `StorageAdapter`). |
+
+### 8.2 Análisis por Módulo / Capa
+
+#### 8.2.1 Frontend — Componentes (`components/`)
+
+- **Cohesión**: **Funcional alta**. Cada componente tiene un propósito UI único (ej. `FileTree.tsx` solo renderiza árboles, `MarkdownView.tsx` solo el editor).
+- **Acoplamiento**: **De datos bajo**. Los componentes consumen datos vía Redux (`useAppSelector`) y disparan acciones vía `useAppDispatch`. No mantienen estado de negocio propio salvo efímero (`useState` para modales).
+- **Observaciones**: La separación `common/` vs `notia/` es correcta. Los componentes `views/` están envueltos en `memo()`, lo que reduce re-renders innecesarios.
+- **Riesgo**: Ninguno crítico. Posible mejora: extraer más hooks de UI reutilizables para evitar lógica repetida en componentes de vista.
+
+#### 8.2.2 Frontend — Services (`services/`)
+
+- **Cohesión**: **Secuencial / comunicacional alta**. Cada dominio (ai, chat, coldpass, files, libraries, preferences, runtime, views, window) tiene su propio service con responsabilidades bien definidas.
+- **Acoplamiento**: **De datos bajo**. Los services no importan de `components/` (regla estricta de `AGENTS.md`). Algunos services sí importan de `engines/` y `utils/`, lo cual es correcto.
+- **Observaciones**: `filesystemEngine.ts` es el service más grande (795 líneas, 17 funciones exportadas). Podría dividirse en sub-módulos (read, write, tree, search) sin romper la API pública.
+- **Riesgo**: **Acoplamiento medio con `localStorage`**. Múltiples services (`libraryStorage.ts`, `aiSettingsStorage.ts`, `themeStorage.ts`, etc.) acceden directamente a `localStorage`. Según `AGENTS.md` (Suggested Improvement #4), esto dificulta testing y migración futura. Recomendación: introducir un `StorageAdapter`.
+
+#### 8.2.3 Frontend — Engines (`engines/`)
+
+- **Cohesión**: **Funcional muy alta**. Cada engine es una función pura con una única responsabilidad (`frontmatterEngine.ts`, `wikiLinkEngine.ts`, `libraryGraphEngine.ts`, etc.).
+- **Acoplamiento**: **Nulo**. Los engines no tienen side-effects, no importan `invoke`, `localStorage`, ni APIs del navegador. Son las unidades más desacopladas del sistema.
+- **Observaciones**: Ideales para tests unitarios. No se encontraron tests en el repo — esta es una oportunidad de mejora inmediata.
+- **Riesgo**: Ninguno. Son la capa más saludable del sistema.
+
+#### 8.2.4 Frontend — Redux Slices (`features/`)
+
+- **Cohesión**: **Funcional alta**. 5 slices por dominio: `ui`, `preferences`, `library`, `documents`, `explorer`. Cada uno modela un subconjunto de estado global coherente.
+- **Acoplamiento**: **De datos bajo**. Los slices solo se comunican indirectamente a través del store. No hay dependencias circulares entre slices.
+- **Observaciones**: La persistencia en `localStorage` ocurre dentro de los reducers, lo cual es consistente con `AGENTS.md` pero introduce acoplamiento implícito con el storage del navegador.
+- **Riesgo**: Ninguno crítico. `documentsSlice` maneja muchas responsabilidades (tabs, active tab, tree nodes, search, clipboard, dialog state). Considerar si amerita subdivisión en el futuro.
+
+#### 8.2.5 Frontend — Web Workers (`workers/`)
+
+- **Cohesión**: **Funcional alta**. `graphModelWorker` solo construye modelos de grafo; `graphViewWorker` solo computa layout y búsquedas.
+- **Acoplamiento**: **De mensajes bajo**. Se comunican con el main thread únicamente por `postMessage`/`onmessage`.
+- **Observaciones**: El umbral de >600 nodos para activación podría ser más conservador (ej. 200) en dispositivos lentos. El layout siempre se delega al worker, lo cual es correcto.
+- **Riesgo**: Ninguno crítico.
+
+#### 8.2.6 Backend — Commands (`commands/`)
+
+- **Cohesión**: **Secuencial alta**. Cada command deserializa, valida y delega. No contienen lógica de negocio.
+- **Acoplamiento**: **De control bajo**. Dependen de `services/` y `state/` pero no de la implementación interna de estos.
+- **Observaciones**: `commands/bluetooth.rs` es más extenso (466 líneas) debido a la lógica condicional por plataforma (`#[cfg(...)]`). En Linux maneja GATT directamente; en otras plataformas delega a stubs.
+- **Riesgo**: Ninguno crítico. El command `notia_log` (`lib.rs`) actúa como bridge de logging — es una dependencia transversal pero justificada.
+
+#### 8.2.7 Backend — Services (`services/`)
+
+- **Cohesión**: **Funcional alta**. `ai_service.rs` solo hace HTTP a Ollama; `bluetooth_service.rs` solo maneja BLE.
+- **Acoplamiento**: **De datos bajo**. No dependen de Tauri directamente. Reciben argumentos planos.
+- **Observaciones**: `ai_service.rs` usa `reqwest` con timeout explícito (15s health, 180s chat). Correcto según `AGENTS.md`.
+- **Riesgo**: Ninguno crítico.
+
+#### 8.2.8 Backend — Filesystem Module (`filesystem/`)
+
+- **Cohesión**: **Comunicacional muy alta**. Es un módulo auto-contenido con sus propios commands, desktop impl, Android SAF impl, helpers, types y validation.
+- **Acoplamiento**: **De datos bajo**. `filesystem/commands.rs` delega a `desktop.rs` o `android_saf.rs` según plataforma. No hay fuga de abstracciones SAF hacia desktop ni viceversa.
+- **Observaciones**: Según `AGENTS.md` (Suggested Improvement #5), este módulo podría migrarse a un plugin de Tauri para mayor separación.
+- **Riesgo**: Ninguno crítico. El módulo es una de las partes más bien diseñadas del backend.
+
+### 8.3 Diagrama de Dependencias
+
+```mermaid
+graph TB
+    subgraph Frontend["Frontend"]
+        Comp["components/"]
+        Svcs["services/"]
+        Eng["engines/"]
+        Redux["features/ (slices)"]
+        Workers["workers/"]
+        UtilsFE["utils/ | types/"]
+    end
+
+    subgraph Backend["Backend"]
+        Cmds["commands/"]
+        SvcRust["services/"]
+        FSMod["filesystem/"]
+        StateRust["state/"]
+        DTOs["dto/"]
+        UtilsBE["helpers.rs"]
+    end
+
+    subgraph External["Externo"]
+        FS["Local FS / SAF"]
+        Ollama["Ollama API"]
+        BLE["Dispositivo BLE"]
+    end
+
+    Comp -->|depende| Svcs
+    Comp -->|depende| Redux
+    Svcs -->|depende| Eng
+    Svcs -->|depende| Workers
+    Svcs -->|depende| UtilsFE
+    Redux -->|depende| UtilsFE
+    Workers -->|depende| Eng
+
+    Cmds -->|delega| SvcRust
+    Cmds -->|delega| FSMod
+    Cmds -->|usa| StateRust
+    SvcRust -->|usa| DTOs
+    FSMod -->|usa| DTOs
+    FSMod -->|usa| UtilsBE
+    SvcRust -->|HTTP| Ollama
+    FSMod -->|I/O| FS
+    StateRust -->|GATT| BLE
+
+    style Comp fill:#e1f5fe
+    style Svcs fill:#fff3e0
+    style Eng fill:#f3e5f5
+    style FSMod fill:#fff8e1
+    style SvcRust fill:#fce4ec
+    style External fill:#e8f5e9
+```
+
+### 8.4 Métricas Cualitativas
+
+| Pregunta | Respuesta |
+|---|---|
+| ¿Cada módulo tiene una única responsabilidad clara? | ✅ Sí, en general. Los slices, services, engines, commands y el módulo filesystem tienen responsabilidades bien delimitadas. El service `filesystemEngine.ts` es el más grande y podría subdividirse. |
+| ¿Existen dependencias circulares? | ❌ No se detectaron dependencias circulares entre capas. `services/` no importa de `components/`, `engines/` no tiene side-effects. |
+| ¿Hay módulos que conozcan la implementación interna de otros? | ⚠️ Parcialmente. Los components conocen la estructura de estado de Redux (selectors), pero esto es inevitable y gestionado vía hooks tipados. En el backend, los commands conocen la firma de los services, no su implementación interna. |
+| ¿Los cambios en un módulo impactan a otros módulos? | ✅ Impacto controlado. Cambiar un engine afecta solo los services que lo consumen. Cambiar un command afecta solo el service que delega. El módulo filesystem es auto-contenido: cambios en `desktop.rs` no afectan `android_saf.rs`. |
+
+### 8.5 Recomendaciones
+
+| # | Acción | Prioridad | Justificación |
+|---|---|---|---|
+| 1 | Crear `StorageAdapter` para abstraer `localStorage` | Media | Mejora testeabilidad del frontend y facilita migraciones futuras (ej. a IndexedDB). |
+| 2 | Subdividir `filesystemEngine.ts` en sub-módulos | Baja | El archivo tiene 795 líneas. Separar en `filesystemRead.ts`, `filesystemWrite.ts`, `filesystemTree.ts`, `filesystemSearch.ts` mejoraría mantenibilidad. |
+| 3 | Migrar módulo `filesystem/` a plugin de Tauri | Baja | Mejoraría la separación y permitiría versionado independiente del módulo filesystem. |
+| 4 | Agregar tests unitarios para `engines/` y `validation.rs` | Alta | Son funciones puras, fáciles de testear. Aumentaría confianza en cambios futuros. |
+| 5 | Considerar subdivisión de `documentsSlice` si crece | Baja | Actualmente maneja tabs, active tab, tree nodes, search y clipboard. Si se agregan más features, dividir en `tabsSlice` + `treeSlice`. |
+| 6 | Evaluar umbral de workers de >600 a ~200 nodos | Baja | En dispositivos lentos, incluso 200 nodos pueden causar jank. Hacer configurable. |
+
+---
+
+## 10. Informe de Arquitectura
+
+### 10.1 Complejidad Ciclomática
+
+La complejidad ciclomática del sistema está controlada en la mayoría de las capas, con algunos puntos de atención identificados:
+
+| Función / Módulo | Complejidad | Observación |
+|---|---|---|
+| `filesystemEngine.ts` (general) | **Media-Alta** (~17 funciones exportadas, 795 líneas). La API pública es clara, pero el archivo concentra lectura, escritura, árbol, búsqueda y binarios. | **Refactorizable**: dividir en `filesystemRead.ts`, `filesystemWrite.ts`, `filesystemTree.ts`, `filesystemSearch.ts` sin romper la API. |
+| `vaultRuntime.ts::readMarkdownFilesFromPaths` | **Media** (concurrencia con workers). 6 workers en paralelo leyendo `.md`. | Correctamente encapsulada; la complejidad está justificada por la necesidad de I/O concurrente en Android SAF. |
+| `commands/bluetooth.rs` | **Alta** (466 líneas, múltiples ramas `#[cfg(...)]`). Linux maneja GATT completo; Windows/macOS/Android/iOS tienen stubs. | **Refactorizable**: extraer el flujo GATT Linux a un sub-módulo `bluetooth_gatt_linux.rs` para reducir condicionales en el command. |
+| `taskManagerService.ts::syncTaskIndexesAndMetadata` | **Alta** (~90 líneas, múltiples pasos: índices, metadata, fechas, child links, tags). | **Refactorizable**: dividir en `syncBoardIndexes()`, `syncFinishedCancelledIndexes()`, `rebalanceEndDates()`, `syncChildLinksAndTags()`. |
+| `window_control` (`lib.rs`) | **Baja** (switch de 4 casos). | Saludable. |
+| `notia_log` (`lib.rs`) | **Baja** (match de niveles + log macro). | Saludable. |
+
+> **Regla interna**: si una función supera 40 líneas, se evalúa su extracción. `syncTaskIndexesAndMetadata` supera este umbral y debería ser prioridad de refactorización.
+
+### 10.2 Modularidad
+
+#### Separación de responsabilidades entre capas
+
+| Capa | Responsabilidad | Cumplimiento |
+|---|---|---|
+| `components/` | Renderizado UI, consumo de estado, disparo de acciones. | ✅ Cumple. Los `views/` están envueltos en `memo()`. |
+| `services/` | Lógica de negocio, invocación a Tauri, persistencia. | ✅ Cumple. No importan de `components/`. |
+| `engines/` | Cómputo puro, sin side-effects. | ✅ Cumple. No usan `invoke`, `localStorage`, ni APIs del navegador. |
+| `workers/` | Procesamiento pesado fuera del hilo principal. | ✅ Cumple. Solo `postMessage`/`onmessage`. |
+| `commands/` (Rust) | Deserialización, validación, delegación inmediata. | ✅ Cumple. Sin lógica de negocio directa. |
+| `services/` (Rust) | Lógica de negocio pura (HTTP, BLE, I/O). | ✅ Cumple. No dependen de Tauri directamente. |
+| `filesystem/` (Rust) | Auto-contenido: commands → desktop/android_saf → helpers/validation/types. | ✅ Cumple. Una de las partes mejor diseñadas. |
+
+#### Reutilización de módulos
+
+- **Duplicaciones detectadas**: Ninguna crítica. `frontmatterEngine.ts` se usa tanto en Markdown general como en Task Manager. `normalizeFilesystemPath.ts` se usa en todo el frontend.
+- **Abstracciones compartidas**: `filesystemEngine.ts` es la única abstracción de I/O de archivos; todos los módulos (`inkdoc`, `mermaid`, `task-manager`, `coldpass`) la consumen.
+
+#### Acoplamiento aferente/eferente (qualitativo)
+
+| Módulo | Aferente (quién lo usa) | Eferente (a qué depende) | Evaluación |
+|---|---|---|---|
+| `engines/` | `services/`, `workers/` | `utils/`, `types/` | Ideal: bajo acoplamiento eferente, alto reuso aferente. |
+| `services/files/` | Todo el frontend | `engines/`, `utils/`, Tauri API | Hub centralizado; correcto para un sistema local-first. |
+| `features/documentsSlice` | `components/`, `hooks/` | `utils/` | Cohesión alta, aunque con múltiples responsabilidades (tabs, tree, search, clipboard). |
+| `filesystem/` (Rust) | `commands/`, `mobile_bridges` | `dto/`, `helpers.rs`, `validation.rs` | Auto-contenido; correcto. |
+
+#### "Módulos Dios" identificados
+
+1. **`filesystemEngine.ts`** (frontend): 795 líneas, 17 funciones exportadas. Es el hub de I/O pero no viola SRP porque todas las funciones son operaciones filesystem.
+2. **`documentsSlice`** (Redux): maneja tabs, active tab, tree nodes, search, clipboard, dialog state. Es el candidato más claro para subdivisión futura (`tabsSlice` + `treeSlice`).
+3. **`taskManagerService.ts`**: 815 líneas con lógica de workspace, CRUD, movimiento, índices, Pomodoro. Podría dividirse en `taskCrudService.ts`, `taskIndexService.ts`, `pomodoroService.ts`.
+
+### 10.3 Escalabilidad Arquitectónica
+
+#### Cuellos de botella actuales
+
+| Cuello | Ubicación | Severidad | Mitigación actual |
+|---|---|---|---|
+| Main thread en bibliotecas grandes | `GraphView.tsx` | Medio | Web Workers para >600 nodos. |
+| Polling en Android | `useLibraryTreeSync.ts` | Medio | Signature comparison para evitar re-lecturas completas. |
+| Escaneo recursivo SAF en Android | `android_saf.rs` | Alto en bibliotecas grandes | Concurrencia limitada (6 workers en `vaultRuntime.ts`). |
+| `localStorage` como storage único | Múltiples services | Medio | Funciona para datos pequeños; no escala a bibliotecas con miles de entradas de preferencias. |
+
+#### Capacidad de agregar nuevas features
+
+| Tipo de feature | Facilidad | Justificación |
+|---|---|---|
+| Nuevo command Tauri | ✅ Fácil | Registrar en `generate_handler![]`, seguir patrón command → service → domain. |
+| Nuevo tipo de documento | ✅ Fácil | Extender `create_library_entry` con nuevo `kind`, agregar módulo en `src/modules/`. |
+| Nueva vista | ✅ Fácil | Crear componente en `components/notia/views/`, agregar ícono en `IconRail`, conectar a Redux si necesita estado global. |
+| Nuevo backend de IA | ⚠️ Media | Requiere nuevo bridge (plugin mobile) o nuevo service Rust. El patrón `ai_service.rs` es replicable. |
+| Nuevo módulo de cifrado | ⚠️ Media | ColdPass ya establece el patrón (cifrado frontend + bytes opacos al backend). Replicable. |
+
+#### Recomendaciones para escalabilidad
+
+1. **Horizontal**: el módulo `task-manager/` demuestra que nuevos dominios pueden vivir como módulos auto-contenidos con sus propios engines, services y types. Replicar este patrón para futuras features.
+2. **Vertical (renderizado)**: el umbral de 600 nodos para workers podría ser dinámico basado en `navigator.hardwareConcurrency` o tiempo de frame.
+3. **Storage**: migrar de `localStorage` a un `StorageAdapter` que pueda evolucionar a `IndexedDB` para datos de mayor volumen (ej. índice de búsqueda, historial de Pomodoro).
+
+---
+
+## 11. Informe de Calidad de Código
+
+### 11.1 Legibilidad del Código
+
+| Aspecto | Evaluación | Ejemplo / Observación |
+|---|---|---|
+| Naming conventions | ✅ Consistente | `camelCase` en TS, `snake_case` en Rust, `PascalCase` para tipos. Sufijos descriptivos (`Engine`, `Runtime`, `Service`). |
+| Intención vs implementación | ✅ Clara | `resolveTaskWorkspaceRuntimeRoot()` expresa claramente su propósito. `buildClusteredGraphLayout()` describe el algoritmo. |
+| Comentarios | ✅ Apropiados | Comentarios explican el "por qué" (ej. `// Storage failures are non-fatal.`). Evitan explicar el "qué". |
+| Formato y estilo | ✅ Consistente | ESLint en frontend. `cargo fmt` implícito en Rust. Sin advertencias de lint visibles. |
+
+### 11.2 Mantenibilidad
+
+| Aspecto | Evaluación | Observación |
+|---|---|---|
+| Facilidad para localizar funcionalidades | ✅ Alta | Estructura de carpetas por dominio (`services/ai/`, `modules/task-manager/`) permite encontrar código rápidamente. |
+| Código muerto / dependencias no usadas | ⚠️ Revisar | `drawio` aparece en `AGENTS.md` como módulo pero no existe en `src/modules/`. Revisar si hay imports huérfanos. |
+| Deuda técnica conocida | Documentada | `AGENTS.md` Sección 10 lista 15 mejoras sugeridas. Prioridad: CSP deshabilitado (`"csp": null`), falta de tests, `StorageAdapter`. |
+| Onboarding para nuevos desarrolladores | ✅ Bueno | `AGENTS.md` + `README-TECH.md` + `tasks.md` proporcionan contexto suficiente. La arquitectura por capas es predecible. |
+
+### 11.3 Testabilidad
+
+| Métrica | Valoración | Detalle |
+|---|---|---|
+| Código puro sin side-effects (`engines/`, `utils/`) | ~25% del frontend | `frontmatterEngine.ts`, `wikiLinkEngine.ts`, `graphSearchEngine.ts`, `pomodoroLogEngine.ts`, etc. Son ideales para tests unitarios sin mocking. |
+| Código acoplado a Tauri (`services/` con `invoke`) | ~40% del frontend | Requiere mock de `invoke()` o extracción de la capa de Tauri. |
+| Código acoplado a Redux (`components/` + `hooks/`) | ~30% del frontend | Requiere `Provider` de test o mocks de `useAppSelector`/`useAppDispatch`. |
+| Código con side-effects del navegador (`localStorage`, `canvas`) | ~5% del frontend | `taskManagerStorage.ts`, `InkDocView.ts`. Requiere mocks de `Storage` o `CanvasRenderingContext2D`. |
+
+> **Plan para aumentar cobertura**:
+> 1. **Fase 1 (bajo esfuerzo, alto impacto)**: tests unitarios para `engines/` (puro, sin mocking). `frontmatterEngine.ts`, `wikiLinkEngine.ts`, `pomodoroLogEngine.ts`, `taskEngine.ts`.
+> 2. **Fase 2**: tests para `validation.rs` (funciones puras de validación de paths y nombres).
+> 3. **Fase 3 (medio esfuerzo)**: tests de integración para commands Tauri usando `tauri::test` (solo desktop).
+> 4. **Fase 4**: mock de `invoke` en frontend para tests de `services/`.
+
+### 11.4 Observabilidad
+
+| Instrumento | Ubicación | Nivel |
+|---|---|---|
+| `performanceBaseline.ts` | Frontend | Habilitable vía `localStorage`. Mide operaciones críticas (tree sync, document open, search index). |
+| `notiaTimer.rs` | Backend (Rust) | RAII timer que emite `[notia:perf] operation duration_ms=X` al finalizar el scope. Usado en 6 archivos Rust. |
+| `notiaLogger.ts` | Frontend | Bridge JS → Rust/logcat. Emite logs estructurados con nivel, módulo y datos. |
+| `console.error` con prefijo `[moduleName]` | Frontend + Backend | Convención establecida en `AGENTS.md`. |
+
+**Facilidad de diagnóstico**:
+- **Desktop**: logs en consola del navegador + terminal de Rust (`env_logger`).
+- **Android**: `adb logcat -s notia:V` muestra logs de Rust y del bridge JS.
+- **Performance**: `adb logcat | grep "notia:perf"` revela duraciones de operaciones.
+
+**Métricas clave expuestas**:
+- Duración de `read_library_tree`, `read_markdown_files`, `syncTaskIndexesAndMetadata`.
+- Tasa de errores: implícita en logs, no hay dashboard centralizado.
+- Tamaño de estado Redux: no instrumentado.
+
+> **Mejora sugerida**: agregar un panel de diagnóstico interno (debug overlay) que muestre métricas de performance en tiempo real durante desarrollo.
+
+### 11.5 Clean Code y Principios SOLID
+
+| Principio | Cumplimiento | Observación |
+|---|---|---|
+| **S — Single Responsibility** | ✅ Generalmente cumplido | `engines/` y `utils/` tienen SRP alto. `documentsSlice` y `taskManagerService.ts` son excepciones notables con múltiples responsabilidades. |
+| **O — Open/Closed** | ✅ Cumplido | Agregar un nuevo `kind` de entrada (`create_library_entry`) no modifica código existente. Agregar una nueva vista no toca otras vistas. |
+| **L — Liskov Substitution** | N/A | No hay jerarquías de herencia significativas en TypeScript ni Rust. El diseño es composicional. |
+| **I — Interface Segregation** | ✅ Cumplido | Los DTOs de Tauri son específicos por command. No hay DTOs "todo en uno". |
+| **D — Dependency Inversion** | ⚠️ Parcial | En frontend, `services/` dependen directamente de `invoke()` de Tauri. Podrían abstraerse tras una interfaz (`TauriBridge`) para facilitar tests y mocks. En backend, commands dependen de `services/` por firma, no por interface trait — aceptable para el tamaño actual. |
+
+#### Evaluación de DRY, KISS y separación de responsabilidades
+
+- **DRY**: ✅ Cumplido. `normalizeFilesystemPath.ts` es la única fuente de normalización de paths. `frontmatterEngine.ts` centraliza parseo/stringify de YAML.
+- **KISS**: ✅ Cumplido. Las funciones de `engines/` son cortas y directas. El sistema evita abstracciones innecesarias.
+- **Separación de responsabilidades**: ✅ Cumplido entre capas. La principal violación es `documentsSlice` que combina tabs + tree + search + clipboard.
+
+#### Violaciones conocidas y plan de corrección
+
+| # | Violación | Ubicación | Plan de corrección | Prioridad |
+|---|---|---|---|---|
+| 1 | `documentsSlice` con múltiples responsabilidades | `features/documents/` | Dividir en `tabsSlice` + `treeSlice` + `searchSlice` si se agregan más features. | Baja (actualmente estable) |
+| 2 | `filesystemEngine.ts` demasiado grande | `services/files/filesystemEngine.ts` | Subdividir en sub-módulos sin romper API pública. | Baja |
+| 3 | `localStorage` usado directamente en múltiples services | `libraryStorage.ts`, `aiSettingsStorage.ts`, `themeStorage.ts`, etc. | Introducir `StorageAdapter` con interfaz `getItem/setItem/removeItem`. | Media |
+| 4 | `taskManagerService.ts` concentra CRUD + índices + Pomodoro | `modules/task-manager/services/` | Dividir en `taskCrudService.ts`, `taskIndexService.ts`, `pomodoroService.ts`. | Baja |
+| 5 | `commands/bluetooth.rs` con lógica condicional extensa | `src-tauri/src/commands/bluetooth.rs` | Extraer flujo GATT Linux a `bluetooth_gatt_linux.rs`. | Baja |
+| 6 | Sin tests unitarios ni de integración | Todo el repo | Priorizar `engines/` y `validation.rs` (puro, sin side-effects). | Alta |
+
+---
+
+## 12. Convenciones y Referencias
+
+Para convenciones de código, arquitectura, naming, reglas de estado, manejo de errores, logging, performance y seguridad, consultar **`AGENTS.md`** en la raíz del repositorio. Es el contrato técnico oficial del proyecto.
+
+---
+
+*Notia v1.0.12 — Documentación técnica sincronizada con el código fuente.*

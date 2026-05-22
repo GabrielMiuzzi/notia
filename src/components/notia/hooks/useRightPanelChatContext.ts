@@ -63,10 +63,6 @@ function buildRightPanelChatContextLabel(
     return `Contexto activo: archivo Inkdoc ${activeDocument.name}`
   }
 
-  if (activeDocument.viewKind === 'drawio') {
-    return `Contexto activo: archivo Draw.io ${activeDocument.name}`
-  }
-
   if (activeDocument.viewKind === 'image') {
     return `Contexto activo: imagen ${activeDocument.name}`
   }
@@ -92,7 +88,7 @@ export function useRightPanelChatContext({
       return `task-manager:${taskManagerChatContext?.scopeKey ?? taskManagerActivePanelId}`
     }
 
-    if (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio') {
+    if (activeDocument?.viewKind === 'markdown') {
       return `${activeWorkspaceView}:${activeDocument.viewKind}:${activeDocument.path}`
     }
 
@@ -104,7 +100,7 @@ export function useRightPanelChatContext({
       return taskManagerChatContext?.filePaths ?? EMPTY_CONTEXT_PATHS
     }
 
-    if (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio') {
+    if (activeDocument?.viewKind === 'markdown') {
       return [activeDocument.path]
     }
 
@@ -114,7 +110,7 @@ export function useRightPanelChatContext({
   const preferredContextName = useMemo(() => {
     if (
       activeWorkspaceView !== 'task-manager'
-      && (activeDocument?.viewKind === 'markdown' || activeDocument?.viewKind === 'drawio')
+      && activeDocument?.viewKind === 'markdown'
     ) {
       return activeDocument.name
     }
@@ -129,10 +125,6 @@ export function useRightPanelChatContext({
 
     if (activeDocument?.viewKind === 'markdown') {
       return 'index' as const
-    }
-
-    if (activeDocument?.viewKind === 'drawio') {
-      return 'direct' as const
     }
 
     return null

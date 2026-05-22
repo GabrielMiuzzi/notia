@@ -1,6 +1,5 @@
 import { createContext, useContext } from 'react'
 import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
-import type { DrawioDocumentController } from '../../modules/drawio/types'
 
 export interface NotiaActions {
   openFile: (filePath: string) => Promise<void>
@@ -31,8 +30,6 @@ export interface NotiaActions {
   libraryRemoved: (library: NotiaLibrary) => Promise<void>
   textDocumentChange: (nextSource: string) => void
   inkdocDocumentPersist: (nextSource: string) => Promise<void>
-  drawioDocumentPersist: (filePath: string, nextSource: string) => Promise<void>
-  drawioControllerReady: (filePath: string, controller: DrawioDocumentController | null) => void
   chatWorkspaceTreeChanged: (pathHint?: string) => void
   windowAction: (action: NotiaWindowAction) => void
   coldPassOpenCredentialModal: () => void

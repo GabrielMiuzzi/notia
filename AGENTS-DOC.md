@@ -1,0 +1,133 @@
+# Documentación
+
+La documentación es un entregable obligatorio de cada cambio de código. No se considera una tarea completa hasta que la documentación refleje fielmente el estado actual del sistema.
+
+### Reglas generales
+
+1. **Documentación sincronizada**: todo PR o conjunto de cambios debe ir acompañado de la actualización correspondiente en los archivos de documentación. Nunca dejar `README.md` ni `README-TECH.md` desactualizados respecto al código.
+
+2. **Dos audiencias, dos documentos**:
+   - **`README.md`**: orientado a usuarios finales y analistas funcionales. Debe explicar qué hace la app, cómo usarla y qué valor aporta cada feature.
+   - **`README-TECH.md`**: orientado a ingenieros de software. Debe explicar arquitectura, integración, decisiones técnicas y cómo extender el sistema.
+
+### Contenido obligatorio de README.md
+
+- Descripción funcional de la aplicación y sus módulos.
+- Guía de uso paso a paso para cada feature.
+- **Si hay controllers/endpoints**: incluir por cada feature los endpoints, headers, body necesario y detalle de consumo en lenguaje funcional (qué hace, cuándo usarlo, ejemplos simples).
+- Requisitos de sistema e instalación.
+- Configuración de entorno (variables, settings, preferencias).
+- FAQ o troubleshooting desde la perspectiva del usuario.
+
+### Contenido obligatorio de README-TECH.md
+
+- **Documentación general**: descripción técnica del servicio, stack de tecnologías, cómo levantar el proyecto en local, variables de entorno relevantes y decisiones arquitectónicas.
+- **Documentación específica de flujos**: para cada flujo modificado o agregado, detallar:
+  - Endpoints, headers y body necesarios, con detalle de consumo técnico (método, path, query, request/response).
+  - **Ejemplos JSON obligatorios (backend)**: para cada endpoint que reciba o devuelva JSON, incluir el ejemplo completo del request body y del response body en bloques de código JSON. No omitir campos; mostrar la estructura real con valores representativos.
+  - Entradas y salidas (tipos, formatos, contratos).
+  - Validaciones aplicadas.
+  - Pasos del proceso (secuencia lógica).
+  - Comportamiento ante errores y casos límite.
+  - Dependencias con otros módulos.
+- **Diagramas en Mermaid**: agregar diagramas obligatoriamente. La granularidad depende del tipo de sistema:
+  - **Backend (servicios con controllers/endpoints)**: generar los diagramas **por cada controller/funcionalidad**.
+  - **Frontend (aplicaciones con vistas/páginas)**: generar los diagramas **por cada vista/funcionalidad**.
+  - En ambos casos, cada unidad (controller o vista) debe tener su propio conjunto de diagramas separados, nunca mezclados en uno solo.
+  - Diagramas requeridos por unidad:
+    - Un diagrama de flujo específico.
+    - Un diagrama de arquitectura (componentes/relaciones) específico.
+    - Un diagrama de secuencia específico.
+  - Diagramas generales del sistema:
+    - Flujos de proceso (diagramas de flujo).
+    - Secuencias entre componentes (diagramas de secuencia).
+    - Arquitectura del sistema y relaciones entre módulos (diagramas de componentes/despliegue).
+    - Modelos de datos relevantes (diagramas de clases/ER).
+    - Acoplamiento y cohesión entre módulos (diagramas UML de paquetes/componentes).
+
+### Reglas de formato
+
+- Usar bloques de código ` ```mermaid ` para todos los diagramas.
+- Asegurar que los diagramas sean legibles y estén actualizados con el código.
+- Emplear nomenclatura consistente con el resto del proyecto (nombres de módulos, servicios, tipos).
+
+### Reglas de existencia
+
+> **Regla:** Si `README.md` o `README-TECH.md` no existen en el repositorio, deben crearse inmediatamente con la información mínima requerida antes de considerar finalizada cualquier tarea de desarrollo.
+
+### Informe de cohesión vs acoplamiento
+
+`README-TECH.md` debe incluir una sección titulada **"Informe de cohesión vs acoplamiento"** con un análisis detallado del estado actual del sistema. El informe debe contener:
+
+1. **Resumen ejecutivo**: valoración general del nivel de cohesión y acoplamiento del sistema (alto/medio/bajo para cada uno).
+2. **Análisis por módulo/capa**: para cada capa o módulo relevante (controllers, services, common, models, etc.):
+   - Nivel de cohesión (funcional, secuencial, comunicacional, etc.).
+   - Nivel de acoplamiento con otros módulos (de datos, de control, de contenido, etc.).
+   - Observaciones y riesgos identificados.
+3. **Diagrama de dependencias**: un diagrama Mermaid que visualice las dependencias reales entre módulos, destacando acoplamientos fuertes.
+4. **Métricas cualitativas**:
+   - ¿Cada módulo tiene una única responsabilidad clara?
+   - ¿Existen dependencias circulares?
+   - ¿Hay módulos que conozcan la implementación interna de otros?
+   - ¿Los cambios en un módulo impactan a otros módulos?
+5. **Recomendaciones**: acciones concretas para mejorar la cohesión o reducir el acoplamiento, si aplica.
+
+> **Regla:** este informe debe actualizarse con cada cambio estructural significativo (nueva capa, nuevo módulo, refactorización de dependencias).
+
+### Informe de arquitectura
+
+`README-TECH.md` debe incluir una sección titulada **"Informe de arquitectura"** que analice globalmente la salud estructural del sistema. El informe debe contener:
+
+1. **Complejidad ciclomática**:
+   - Evaluar funciones críticas (comandos de Tauri, servicios, lógica de negocios en Rust y TypeScript).
+   - Identificar funciones con complejidad alta (>10) y proponer extracción o refactorización.
+   - Incluir ejemplos de funciones refactorizables y su posible división.
+
+2. **Modularidad**:
+   - Análisis de la separación de responsabilidades entre capas (`components/`, `services/`, `engines/`, `commands/`, `filesystem/`).
+   - Evaluación de la reutilización de módulos (si existen duplicaciones o abstracciones compartidas).
+   - Medición del acoplamiento aferente/eferente (qualitativo) por módulo.
+   - Identificación de "módulos Dios" o archivos que concentran demasiada lógica.
+
+3. **Escalabilidad arquitectónica**:
+   - Evaluación de cuellos de botella actuales (ej: main thread, polling, watchers).
+   - Capacidad de agregar nuevas features sin modificar código existente (Open/Closed Principle).
+   - Facilidad para agregar nuevos commands de Tauri, nuevos tipos de documento, nuevas vistas o nuevos backends de IA.
+   - Recomendaciones concretas para mejorar la escalabilidad horizontal (nuevos módulos) y vertical (renderizado, performance).
+
+> **Regla:** este informe debe actualizarse cada vez que se agregue un módulo de negocio nuevo, se refactorice una capa o se identifique un cuello de botella de performance.
+
+### Informe de calidad de código
+
+`README-TECH.md` debe incluir una sección final titulada **"Informe de calidad de código"** que evalúe de forma continua el estado del código del proyecto. El informe debe contener:
+
+1. **Legibilidad del código**:
+   - Uso consistente de naming conventions (sección 6 de AGENTS.md).
+   - Clarity sobre intención vs implementación (nombres descriptivos, funciones cortas).
+   - Uso apropiado de comentarios (solo "por qué", no "qué").
+   - Formato y estilo consistente (linting, formatting).
+
+2. **Mantenibilidad**:
+   - Facilidad para localizar y modificar funcionalidades.
+   - Ausencia de código muerto o dependencias no utilizadas.
+   - Evolución de la deuda técnica (lista de items conocidos y plan de mitigación).
+   - Facilidad de onboarding para nuevos desarrolladores/agentes.
+
+3. **Testabilidad**:
+   - Porcentaje de código en `engines/` y `utils/` (puro/sin side-effects) vs código acoplado a UI o Tauri.
+   - Identificación de bloques de código que requieren mocking excesivo.
+   - Plan para aumentar la cobertura de pruebas unitarias y de integración.
+
+4. **Observabilidad**:
+   - Instrumentación existente (performance baselines, logging, eventos).
+   - Facilidad de diagnóstico de errores en producción y Android (logcat).
+   - Métricas clave expuestas (duraciones, tasa de errores, tamaño de estado).
+
+5. **Clean code y principios SOLID**:
+   - Análisis del cumplimiento de los 5 principios SOLID en las capas críticas (services, commands, components).
+   - Evaluación de DRY, KISS y separación de responsabilidades.
+   - Identificación de violaciones conocidas (ej: commands con lógica de negocio, componentes con state duplicado) y plan de corrección.
+
+> **Regla:** este informe debe actualizarse con cada refactorización significativa, eliminación de deuda técnica o introducción de nuevos patrones de código.
+
+> **Regla general de sincronización:** los tres informes (cohesión vs acoplamiento, arquitectura y calidad de código) son entregables obligatorios de `README-TECH.md` y deben mantenerse actualizados con cada cambio estructural significativo (nueva capa, nuevo módulo, refactorización de dependencias o resolución de deuda técnica).

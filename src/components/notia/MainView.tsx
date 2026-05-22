@@ -5,15 +5,12 @@ import type { AiPreferences } from '../../services/preferences/aiSettingsStorage
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
 import { NotiaButton } from '../common/NotiaButton'
-import type { DrawioDocumentController } from '../../modules/drawio/types'
 
 interface MainViewProps {
   activeDocument: OpenFileDocument | null
   saveStatus: NotiaDocumentSaveStatus
   onTextDocumentChange: (nextSource: string) => void
   onInkdocDocumentPersist: (nextSource: string) => Promise<void>
-  onDrawioDocumentPersist: (filePath: string, nextSource: string) => Promise<void>
-  onDrawioControllerReady: (filePath: string, controller: DrawioDocumentController | null) => void
   rootPath: string | null
   libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
@@ -40,8 +37,6 @@ function MainViewComponent({
   saveStatus,
   onTextDocumentChange,
   onInkdocDocumentPersist,
-  onDrawioDocumentPersist,
-  onDrawioControllerReady,
   rootPath,
   libraryAndroidTreeUri,
   libraryFilePaths,
@@ -64,7 +59,6 @@ function MainViewComponent({
 
   const extensionLabel = activeDocument.extension ? `.${activeDocument.extension}` : 'sin extension'
   const isTextDocument = isTextFileDocument(activeDocument)
-  const shouldShowSaveStatus = isTextDocument || activeDocument.viewKind === 'drawio'
 
   return (
     <main className="notia-main" data-notia-prevent-menu-close>
@@ -73,7 +67,7 @@ function MainViewComponent({
           <h2>{activeDocument.name}</h2>
           <span>{extensionLabel}</span>
         </div>
-        {shouldShowSaveStatus ? (
+        {isTextDocument ? (
           <span className={`notia-main-save-status notia-main-save-status--${saveStatus}`}>
             {getSaveStatusLabel(saveStatus)}
           </span>
@@ -84,8 +78,6 @@ function MainViewComponent({
           document={activeDocument}
           onTextSourceChange={onTextDocumentChange}
           onInkdocSourcePersist={onInkdocDocumentPersist}
-          onDrawioSourcePersist={onDrawioDocumentPersist}
-          onDrawioControllerReady={onDrawioControllerReady}
           rootPath={rootPath}
           libraryAndroidTreeUri={libraryAndroidTreeUri}
           libraryFilePaths={libraryFilePaths}

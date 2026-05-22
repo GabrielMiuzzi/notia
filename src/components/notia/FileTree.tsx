@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GitGraph } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
 import { useVirtualList } from '../../hooks/useVirtualList'
 
 interface PendingCreation {
   id: string
-  kind: 'folder' | 'note' | 'inkdoc'
+  kind: 'folder' | 'note' | 'inkdoc' | 'mermaid'
   initialName: string
   parentPath: string
 }
@@ -115,7 +115,7 @@ const TreeRow = memo(function TreeRow({
   const isDragging = Boolean(nodePath && draggingPath === nodePath)
   const isDropTarget = Boolean(isFolder && nodePath && dropTargetFolderPath === nodePath)
   const [renameValue, setRenameValue] = useState(
-    node.type === 'file' ? node.name.replace(/\.(md|inkdoc)$/i, '') : node.name,
+    node.type === 'file' ? node.name.replace(/\.(md|inkdoc|mmd)$/i, '') : node.name,
   )
 
   useEffect(() => {
@@ -127,7 +127,7 @@ const TreeRow = memo(function TreeRow({
   }, [isRenaming])
 
   useEffect(() => {
-    setRenameValue(node.type === 'file' ? node.name.replace(/\.(md|inkdoc)$/i, '') : node.name)
+    setRenameValue(node.type === 'file' ? node.name.replace(/\.(md|inkdoc|mmd)$/i, '') : node.name)
   }, [node.name, node.type])
 
   const handleRowClick = () => {
@@ -225,6 +225,8 @@ const TreeRow = memo(function TreeRow({
             <Folder size={12} className="notia-tree-folder" />
           )}
         </>
+      ) : node.name.endsWith('.mmd') ? (
+        <GitGraph size={12} className="notia-tree-file" />
       ) : (
         <FileText size={12} className="notia-tree-file" />
       )}
@@ -283,6 +285,8 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
     <div data-tree-row="true" className="notia-tree-row" style={{ paddingLeft: `${18 + level * 16}px` }}>
       {pendingCreation.kind === 'folder' ? (
         <Folder size={12} className="notia-tree-file" />
+      ) : pendingCreation.kind === 'mermaid' ? (
+        <GitGraph size={12} className="notia-tree-file" />
       ) : (
         <FileText size={12} className="notia-tree-file" />
       )}

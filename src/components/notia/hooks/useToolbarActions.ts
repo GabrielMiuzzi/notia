@@ -71,6 +71,15 @@ export function useToolbarActions({
       }))
       return
     }
+    if (toolId === 'new-mermaid') {
+      dispatch(setPendingCreation({
+        id: `pending-mermaid-${Date.now()}`,
+        kind: 'mermaid',
+        initialName: 'Nuevo diagrama',
+        parentPath: activeLibrary.path,
+      }))
+      return
+    }
     if (toolId === 'new-folder') {
       dispatch(setPendingCreation({
         id: `pending-folder-${Date.now()}`,

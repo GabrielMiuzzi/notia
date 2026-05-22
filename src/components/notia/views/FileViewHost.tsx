@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react'
+import { memo } from 'react'
 import { isTextFileDocument, type OpenFileDocument } from '../../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import type { InkdocPreferences } from '../../../services/preferences/inkdocSettingsStorage'
@@ -6,16 +6,13 @@ import type { AiPreferences } from '../../../services/preferences/aiSettingsStor
 import { ImageView } from './ImageView'
 import { InkdocView } from './inkdoc/InkdocView'
 import { MarkdownView } from './MarkdownView'
+import { MermaidView } from './mermaid/MermaidView'
 import { TextView } from './TextView'
-import { DrawioView } from './drawio/DrawioView'
-import type { DrawioDocumentController } from '../../../modules/drawio/types'
 
 interface FileViewHostProps {
   document: OpenFileDocument
   onTextSourceChange: (nextSource: string) => void
   onInkdocSourcePersist: (nextSource: string) => Promise<void>
-  onDrawioSourcePersist: (filePath: string, nextSource: string) => Promise<void>
-  onDrawioControllerReady: (filePath: string, controller: DrawioDocumentController | null) => void
   rootPath: string | null
   libraryAndroidTreeUri?: string
   libraryFilePaths: string[]
@@ -29,8 +26,6 @@ function FileViewHostComponent({
   document,
   onTextSourceChange,
   onInkdocSourcePersist,
-  onDrawioSourcePersist,
-  onDrawioControllerReady,
   rootPath,
   libraryAndroidTreeUri,
   libraryFilePaths,
@@ -39,15 +34,18 @@ function FileViewHostComponent({
   wikiLinkTargets,
   onOpenLinkedFile,
 }: FileViewHostProps) {
-  const handleDrawioControllerReady = useCallback(
-    (controller: DrawioDocumentController | null) => {
-      onDrawioControllerReady(document.path, controller)
-    },
-    [document.path, onDrawioControllerReady],
-  )
-
   if (document.viewKind === 'image') {
     return <ImageView imageUrl={document.imageUrl} alt={document.name} />
+  }
+
+  if (document.viewKind === 'mermaid') {
+    return (
+      <MermaidView
+        filePath={document.path}
+        source={document.source}
+        onSourcePersist={async (nextSource) => onTextSourceChange(nextSource)}
+      />
+    )
   }
 
   if (!isTextFileDocument(document)) {
@@ -63,18 +61,6 @@ function FileViewHostComponent({
           aiPreferences={aiPreferences}
           onSourcePersist={onInkdocSourcePersist}
           onOpenLinkedFile={onOpenLinkedFile}
-        />
-      )
-    }
-
-    if (document.viewKind === 'drawio') {
-      return (
-        <DrawioView
-          key={document.path}
-          filePath={document.path}
-          source={document.source}
-          onSourcePersist={onDrawioSourcePersist}
-          onControllerReady={handleDrawioControllerReady}
         />
       )
     }

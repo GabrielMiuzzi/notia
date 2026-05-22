@@ -24,6 +24,8 @@ pub(crate) fn normalize_library_entry_name(kind: &str, name: &str) -> String {
         format!("{}.md", trimmed_name)
     } else if kind == "inkdoc" && !trimmed_name.to_lowercase().ends_with(".inkdoc") {
         format!("{}.inkdoc", trimmed_name)
+    } else if kind == "mermaid" && !trimmed_name.to_lowercase().ends_with(".mmd") {
+        format!("{}.mmd", trimmed_name)
     } else {
         trimmed_name.to_string()
     }
@@ -36,7 +38,7 @@ pub(crate) fn validate_create_library_entry_payload(
         return Err(operation_error("Invalid entry data."));
     }
 
-    if payload.kind != "folder" && payload.kind != "note" && payload.kind != "inkdoc" {
+    if payload.kind != "folder" && payload.kind != "note" && payload.kind != "inkdoc" && payload.kind != "mermaid" {
         return Err(operation_error("Invalid entry type."));
     }
 

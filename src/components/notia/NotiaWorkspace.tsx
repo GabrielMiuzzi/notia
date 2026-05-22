@@ -162,8 +162,6 @@ function NotiaWorkspaceComponent({
       saveStatus={saveStatus}
       onTextDocumentChange={actions.textDocumentChange}
       onInkdocDocumentPersist={actions.inkdocDocumentPersist}
-      onDrawioDocumentPersist={actions.drawioDocumentPersist}
-      onDrawioControllerReady={actions.drawioControllerReady}
       rootPath={activeLibrary?.path ?? null}
       libraryAndroidTreeUri={activeLibrary?.androidTreeUri}
       libraryFilePaths={libraryFilePaths}

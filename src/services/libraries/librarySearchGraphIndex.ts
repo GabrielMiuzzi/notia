@@ -2,7 +2,7 @@ import { normalizeGraphSearchText, extractSearchableContent } from '../../engine
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import { getFileExtension } from '../../utils/files/getFileExtension'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
-import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
+import { notiaTimer } from '../runtime/notiaLogger'
 import { readLibraryFileContent } from './libraryDocumentRuntime'
 import { resolveFileViewKind } from '../views/fileViewResolver'
 
@@ -138,7 +138,7 @@ function collectSearchGraphDescriptors(
       label: logicalPath,
       normalizedLabel: normalizeGraphSearchText(`${logicalPath} ${node.name}`),
       graphSource: viewKind === 'markdown' || viewKind === 'inkdoc',
-      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'drawio' || viewKind === 'text',
+      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'text',
     })
   }
 }
@@ -164,7 +164,7 @@ function collectSearchGraphDescriptorsFromFlatList(
       label: logicalPath,
       normalizedLabel: normalizeGraphSearchText(`${logicalPath} ${file.name}`),
       graphSource: viewKind === 'markdown' || viewKind === 'inkdoc',
-      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'drawio' || viewKind === 'text',
+      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'text',
     })
   }
 }

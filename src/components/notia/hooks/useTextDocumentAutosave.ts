@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectOpenTabs } from '../../../features/documents/documentsSelectors'
-import { isTextFileDocument, type OpenTextFileDocument } from '../../../types/views/fileDocument'
+import { isTextFileDocument, type OpenTextFileDocument, type OpenMermaidFileDocument } from '../../../types/views/fileDocument'
 import type { OpenDocumentTab } from '../../../features/documents/documentsTypes'
 
 const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
@@ -12,16 +12,20 @@ interface PendingTextSaveJob {
   timeoutId: number
 }
 
-type OpenTextDocumentTab = OpenDocumentTab & { document: OpenTextFileDocument }
+type OpenTextDocumentTab = OpenDocumentTab & { document: OpenTextFileDocument | OpenMermaidFileDocument }
 
 function isOpenTextDocumentTab(tab: OpenDocumentTab): tab is OpenTextDocumentTab {
   return isTextFileDocument(tab.document)
 }
 
-function resolveTextAutosaveDebounceMs(document: OpenTextFileDocument): number {
-  return document.viewKind === 'markdown'
-    ? MARKDOWN_AUTOSAVE_DEBOUNCE_MS
-    : TEXT_AUTOSAVE_DEBOUNCE_MS
+function resolveTextAutosaveDebounceMs(document: OpenTextFileDocument | OpenMermaidFileDocument): number {
+  if (document.viewKind === 'markdown') {
+    return MARKDOWN_AUTOSAVE_DEBOUNCE_MS
+  }
+  if (document.viewKind === 'mermaid') {
+    return 800
+  }
+  return TEXT_AUTOSAVE_DEBOUNCE_MS
 }
 
 export interface UseTextDocumentAutosaveActions {

@@ -1,0 +1,160 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+export interface MermaidRenderResult {
+  svg: string
+  bindFunctions?: (element: Element) => void
+  diagramType?: string
+}
+
+interface UseMermaidRenderParams {
+  code: string
+  config?: string
+  theme: string
+}
+
+// Singleton flag to track if icon packs have been registered
+let iconPacksRegistered = false
+
+async function registerMermaidIconPacks() {
+  if (iconPacksRegistered) return
+  iconPacksRegistered = true
+
+  try {
+    const mermaidModule = await import('mermaid')
+    const mermaid = (mermaidModule.default || mermaidModule) as typeof import('mermaid').default
+
+    // Import all icon packs
+    const [
+      faModule,
+      faSolidModule,
+      faBrandsModule,
+      gcpModule,
+      simpleIconsModule,
+    ] = await Promise.all([
+      import('@iconify-json/fa').then((m) => m.icons).catch(() => null),
+      import('@iconify-json/fa-solid').then((m) => m.icons).catch(() => null),
+      import('@iconify-json/fa-brands').then((m) => m.icons).catch(() => null),
+      import('@iconify-json/gcp').then((m) => m.icons).catch(() => null),
+      import('@iconify-json/simple-icons').then((m) => m.icons).catch(() => null),
+    ])
+
+    const packs: { name: string; icons: unknown }[] = []
+
+    if (faModule) packs.push({ name: 'fa', icons: faModule })
+    if (faSolidModule) packs.push({ name: 'fa-solid', icons: faSolidModule })
+    if (faBrandsModule) packs.push({ name: 'fa-brands', icons: faBrandsModule })
+    if (gcpModule) packs.push({ name: 'gcp', icons: gcpModule })
+    if (simpleIconsModule) packs.push({ name: 'simple-icons', icons: simpleIconsModule })
+
+    if (packs.length > 0) {
+      await mermaid.registerIconPacks(packs)
+    }
+  } catch (e) {
+    console.warn('[useMermaidRender] Failed to register icon packs:', e)
+  }
+}
+
+export function useMermaidRender({ code, config, theme }: UseMermaidRenderParams) {
+  const [result, setResult] = useState<MermaidRenderResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [diagramType, setDiagramType] = useState<string | undefined>(undefined)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRenderTimeRef = useRef(0)
+
+  const render = useCallback(async () => {
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const mermaidModule = await import('mermaid')
+      const mermaid = (mermaidModule.default || mermaidModule) as typeof import('mermaid').default
+
+      let parsedConfig: Record<string, unknown> = { theme }
+      if (config) {
+        try {
+          parsedConfig = { ...JSON.parse(config), theme }
+        } catch {
+          // ignore invalid config
+        }
+      }
+
+      // Register icon packs on first render
+      await registerMermaidIconPacks()
+
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'loose',
+        ...parsedConfig,
+      })
+
+      // Validate syntax first
+      try {
+        await mermaid.parse(code)
+      } catch (parseErr) {
+        const msg = parseErr instanceof Error ? parseErr.message : String(parseErr)
+        setError(msg)
+        setResult(null)
+        setIsLoading(false)
+        return
+      }
+
+      const id = `mermaid-render-${Date.now()}`
+      const { svg, bindFunctions } = await mermaid.render(id, code)
+
+      // Detect diagram type from class or comments if possible
+      let detectedType = 'unknown'
+      if (code.toLowerCase().includes('flowchart') || code.toLowerCase().includes('graph')) {
+        detectedType = 'flowchart'
+      } else if (code.toLowerCase().includes('sequencediagram')) {
+        detectedType = 'sequenceDiagram'
+      } else if (code.toLowerCase().includes('classdiagram')) {
+        detectedType = 'classDiagram'
+      } else if (code.toLowerCase().includes('statediagram')) {
+        detectedType = 'stateDiagram'
+      } else if (code.toLowerCase().includes('erdiagram')) {
+        detectedType = 'erDiagram'
+      } else if (code.toLowerCase().includes('gantt')) {
+        detectedType = 'gantt'
+      } else if (code.toLowerCase().includes('pie')) {
+        detectedType = 'pie'
+      } else if (code.toLowerCase().includes('gitgraph')) {
+        detectedType = 'gitGraph'
+      } else if (code.toLowerCase().includes('mindmap')) {
+        detectedType = 'mindmap'
+      }
+
+      setDiagramType(detectedType)
+      setResult({ svg, bindFunctions, diagramType: detectedType })
+      lastRenderTimeRef.current = performance.now()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[useMermaidRender] render failed:', message)
+      setError(message)
+      setResult(null)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [code, config, theme])
+
+  useEffect(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+    }
+
+    const elapsed = performance.now() - lastRenderTimeRef.current
+    const delay = elapsed > 150 ? 1000 : 300
+
+    debounceRef.current = setTimeout(() => {
+      void render()
+    }, delay)
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+      }
+    }
+  }, [render])
+
+  return { result, error, isLoading, diagramType }
+}
