@@ -20,6 +20,7 @@ interface FileViewHostProps {
   aiPreferences: AiPreferences
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  theme: string
 }
 
 function FileViewHostComponent({
@@ -33,6 +34,7 @@ function FileViewHostComponent({
   aiPreferences,
   wikiLinkTargets,
   onOpenLinkedFile,
+  theme,
 }: FileViewHostProps) {
   if (document.viewKind === 'image') {
     return <ImageView imageUrl={document.imageUrl} alt={document.name} />
@@ -73,9 +75,11 @@ function FileViewHostComponent({
       <MarkdownView
         key={document.path}
         source={document.source}
+        documentPath={document.path}
         onSourceChange={onTextSourceChange}
         wikiLinkTargets={wikiLinkTargets}
         onOpenLinkedFile={onOpenLinkedFile}
+        theme={theme}
       />
     )
   }

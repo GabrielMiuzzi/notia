@@ -8,15 +8,27 @@ import {
 } from '../../../engines/markdown/wikiLinkEngine'
 import {
   parsePropertyInputValue,
+  formatFrontmatterValue,
   type FrontmatterEntry,
   type FrontmatterScalarValue,
   type FrontmatterValue,
 } from '../../../engines/markdown/frontmatterEngine'
+import { WikiLinkPropertyInput } from './markdown/WikiLinkPropertyInput'
+import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
+
+const PROTECTED_PROPERTY_KEYS = new Set([
+  'createdat',
+  'nextpage',
+  'previouspage',
+])
 
 interface MarkdownPropertiesPanelProps {
   entries: FrontmatterEntry[]
   wikiLinkLookup: MarkdownWikiLinkLookup
+  wikiLinkTargets: MarkdownWikiLinkTarget[]
   onAddProperty: (entry: FrontmatterEntry) => void
+  onEditProperty: (key: string, value: FrontmatterValue) => void
+  onDeleteProperty: (key: string) => void
   onOpenLinkedFile: (filePath: string) => void
 }
 
@@ -154,12 +166,17 @@ function renderPropertyValue(
 export function MarkdownPropertiesPanel({
   entries,
   wikiLinkLookup,
+  wikiLinkTargets,
   onAddProperty,
+  onEditProperty,
+  onDeleteProperty,
   onOpenLinkedFile,
 }: MarkdownPropertiesPanelProps) {
   const [isAddingProperty, setIsAddingProperty] = useState(false)
   const [keyInput, setKeyInput] = useState('')
   const [valueInput, setValueInput] = useState('')
+  const [editingKey, setEditingKey] = useState<string | null>(null)
+  const [editValueInput, setEditValueInput] = useState('')
 
   const existingKeys = useMemo(() => new Set(entries.map((entry) => entry.key.toLowerCase())), [entries])
 
@@ -187,6 +204,26 @@ export function MarkdownPropertiesPanel({
     setValueInput('')
   }
 
+  const startEditProperty = (entry: FrontmatterEntry) => {
+    setEditingKey(entry.key)
+    setEditValueInput(formatFrontmatterValue(entry.value))
+  }
+
+  const submitEditProperty = () => {
+    if (!editingKey) return
+    const rawValue = editValueInput.trim()
+    const isPageLinkKey = editingKey.toLowerCase() === 'nextpage' || editingKey.toLowerCase() === 'previouspage'
+    const value = isPageLinkKey ? rawValue : parsePropertyInputValue(editValueInput)
+    onEditProperty(editingKey, value)
+    setEditingKey(null)
+    setEditValueInput('')
+  }
+
+  const cancelEditProperty = () => {
+    setEditingKey(null)
+    setEditValueInput('')
+  }
+
   return (
     <section className="notia-properties-panel" aria-label="File properties">
       <h3>Properties</h3>
@@ -201,8 +238,55 @@ export function MarkdownPropertiesPanel({
                 <span>{entry.key}</span>
               </div>
               <div className="notia-properties-value">
-                {renderPropertyValue(entry, wikiLinkLookup, onOpenLinkedFile)}
+                {editingKey === entry.key ? (
+                  <div className="notia-properties-edit-form">
+                    {entry.key.toLowerCase() === 'nextpage' || entry.key.toLowerCase() === 'previouspage' ? (
+                      <WikiLinkPropertyInput
+                        value={editValueInput}
+                        targets={wikiLinkTargets}
+                        onChange={setEditValueInput}
+                        onConfirm={submitEditProperty}
+                        onCancel={cancelEditProperty}
+                        autoFocus
+                      />
+                    ) : (
+                      <input
+                        className="notia-properties-input"
+                        value={editValueInput}
+                        onChange={(event) => setEditValueInput(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') submitEditProperty()
+                          if (event.key === 'Escape') cancelEditProperty()
+                        }}
+                        autoFocus
+                      />
+                    )}
+                    <NotiaButton onClick={submitEditProperty}>Save</NotiaButton>
+                    <NotiaButton variant="secondary" onClick={cancelEditProperty}>Cancel</NotiaButton>
+                  </div>
+                ) : (
+                  <div
+                    className="notia-properties-value-display"
+                    onClick={() => startEditProperty(entry)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') startEditProperty(entry)
+                    }}
+                  >
+                    {renderPropertyValue(entry, wikiLinkLookup, onOpenLinkedFile)}
+                  </div>
+                )}
               </div>
+              {!PROTECTED_PROPERTY_KEYS.has(entry.key.toLowerCase()) ? (
+                <NotiaButton
+                  variant="ghost"
+                  className="notia-properties-delete-button"
+                  onClick={() => onDeleteProperty(entry.key)}
+                >
+                  ×
+                </NotiaButton>
+              ) : null}
             </div>
           )
         })}

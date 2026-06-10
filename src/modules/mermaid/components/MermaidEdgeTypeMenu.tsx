@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from 'react'
+import { memo } from 'react'
 import { NotiaSubmenuPanel } from '../../../components/notia/NotiaSubmenuPanel'
 import type { MermaidEdgeType } from '../types/mermaidTypes'
 

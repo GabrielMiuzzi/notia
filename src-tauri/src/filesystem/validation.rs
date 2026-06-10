@@ -3,6 +3,7 @@ use super::types::{
     CreateLibraryEntryPayload, LibraryEntryOperationPayload, OperationResult,
 };
 
+#[derive(Debug)]
 pub(crate) enum ValidatedLibraryEntryOperation<'a> {
     Delete {
         target_path: &'a str,

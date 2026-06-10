@@ -53,6 +53,7 @@ interface MarkdownViewProps {
   onSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  theme?: string
 }
 
 function clampWikiLinkMenuLeft(left: number): number {
@@ -150,30 +151,29 @@ function insertWikiLinkSuggestion(
   view.dispatch(transaction.scrollIntoView())
 }
 
-function renderMermaidPreview(content: string, applyPreview: (html: string) => void): void {
-  import('mermaid').then((mermaidMod) => {
-    const mermaid = mermaidMod.default ?? mermaidMod
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' })
-    mermaid
-      .parse(content, { suppressErrors: true })
-      .then((canParse) => {
-        if (!canParse) {
-          applyPreview('')
-          return
-        }
-        const id = `mermaid-preview-${Math.random().toString(36).slice(2)}`
-        mermaid
-          .render(id, content)
-          .then(({ svg }) => {
-            applyPreview(svg)
-          })
-          .catch(() => {
-            applyPreview('')
-          })
-      })
-      .catch(() => {
-        applyPreview('')
-      })
+import {
+  mountInlineMermaidPreview,
+  unmountInlineMermaidPreview,
+} from '../../../modules/mermaid/services/mermaidPreviewRuntime'
+
+function renderMermaidPreview(
+  content: string,
+  applyPreview: (html: string) => void,
+): void {
+  const id = `notia-mmd-${Math.random().toString(36).slice(2)}`
+  const containerId = `notia-mmd-host-${id}`
+  const div = document.createElement('div')
+  div.id = containerId
+  div.className = 'notia-mermaid-inline-host'
+  div.dataset.code = content
+  applyPreview(div.outerHTML)
+
+  // Mount the React component after the DOM node exists in Milkdown's output
+  requestAnimationFrame(() => {
+    const host = document.getElementById(containerId)
+    if (host) {
+      mountInlineMermaidPreview(host, content)
+    }
   })
 }
 
@@ -233,6 +233,32 @@ function MarkdownViewInner({
     wikiLinkMenuStateRef.current = wikiLinkMenuState
     isWikiLinkMenuOpenRef.current = Boolean(wikiLinkMenuState)
   }, [wikiLinkMenuState])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of Array.from(mutation.removedNodes)) {
+          if (node instanceof HTMLElement) {
+            node.querySelectorAll('.notia-mermaid-inline-host').forEach((el) => {
+              unmountInlineMermaidPreview(el as HTMLElement)
+            })
+          }
+        }
+      }
+    })
+
+    observer.observe(root, { childList: true, subtree: true })
+
+    return () => {
+      observer.disconnect()
+      root.querySelectorAll('.notia-mermaid-inline-host').forEach((el) => {
+        unmountInlineMermaidPreview(el as HTMLElement)
+      })
+    }
+  }, [])
 
   useEffect(() => {
     if (!rootRef.current) {

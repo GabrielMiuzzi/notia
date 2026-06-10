@@ -22,7 +22,6 @@ import { MermaidToolbar, type MermaidToolKind } from '../../../../modules/mermai
 import { buildMermaidNodeLine } from '../../../../modules/mermaid/utils/shapeSyntaxMap'
 import { useMermaidDragGhost } from '../../../../modules/mermaid/hooks/useMermaidDragGhost'
 import {
-  warmupMermaid,
   extractMermaidNodeId,
   edgeExistsInCode,
   sanitizeMermaidCode,
@@ -30,7 +29,6 @@ import {
   updateEdgeTypeInCode,
   updateEdgeColorInCode,
   updateEdgeLabelInCode,
-  parseEdgeLines,
 } from '../../../../modules/mermaid/engines/mermaidEngine'
 import type { MermaidEdgeType } from '../../../../modules/mermaid/types/mermaidTypes'
 import '../../../../modules/mermaid/styles/mermaid.css'
@@ -97,10 +95,13 @@ export const MermaidView = memo(function MermaidView({
     return () => window.removeEventListener('resize', check)
   }, [])
 
-  // Precalentar mermaid en background al montar la vista
+  // Sync mermaid viewer theme with global app theme
   useEffect(() => {
-    warmupMermaid(viewerState.theme, configJson)
-  }, [viewerState.theme, configJson])
+    const expectedMermaidTheme = appTheme === 'dark' ? 'dark' : 'default'
+    if (viewerState.theme !== expectedMermaidTheme) {
+      dispatch(setMermaidTheme(expectedMermaidTheme))
+    }
+  }, [appTheme, viewerState.theme, dispatch])
 
   // Sync external source changes (sanitize corrupt edges on load)
   useEffect(() => {

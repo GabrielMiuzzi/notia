@@ -3390,6 +3390,61 @@
   z-index: 12;
 }
 
+/* ── Mermaid SVG inside Milkdown code-block previews ──────────── */
+.notia-markdown-editor-root .milkdown svg text,
+.notia-markdown-editor-root .milkdown svg tspan {
+  fill: var(--color-app-text) !important;
+}
+
+.notia-markdown-editor-root .milkdown svg .node .label,
+.notia-markdown-editor-root .milkdown svg .nodeLabel,
+.notia-markdown-editor-root .milkdown svg .label,
+.notia-markdown-editor-root .milkdown svg .cluster-label,
+.notia-markdown-editor-root .milkdown svg .edgeLabel,
+.notia-markdown-editor-root .milkdown svg .edge-label,
+.notia-markdown-editor-root .milkdown svg .nodeLabel div,
+.notia-markdown-editor-root .milkdown svg .nodeLabel span {
+  fill: var(--color-app-text) !important;
+  color: var(--color-app-text) !important;
+}
+
+.notia-markdown-editor-root .milkdown svg foreignObject,
+.notia-markdown-editor-root .milkdown svg foreignObject div,
+.notia-markdown-editor-root .milkdown svg foreignObject span,
+.notia-markdown-editor-root .milkdown svg foreignObject p {
+  color: var(--color-app-text) !important;
+  background: transparent !important;
+}
+
+.notia-markdown-editor-root .milkdown svg .node > rect,
+.notia-markdown-editor-root .milkdown svg .node > circle,
+.notia-markdown-editor-root .milkdown svg .node > ellipse,
+.notia-markdown-editor-root .milkdown svg .node > polygon,
+.notia-markdown-editor-root .milkdown svg .node > path,
+.notia-markdown-editor-root .milkdown svg [class*="node"] > rect,
+.notia-markdown-editor-root .milkdown svg [class*="node"] > circle,
+.notia-markdown-editor-root .milkdown svg [class*="node"] > ellipse,
+.notia-markdown-editor-root .milkdown svg [class*="node"] > polygon,
+.notia-markdown-editor-root .milkdown svg [class*="node"] > path,
+.notia-markdown-editor-root .milkdown svg .cluster > rect,
+.notia-markdown-editor-root .milkdown svg .icon-shape {
+  fill: var(--color-card-bg) !important;
+  stroke: var(--color-border-soft) !important;
+}
+
+.notia-markdown-editor-root .milkdown svg .edgePath path,
+.notia-markdown-editor-root .milkdown svg path[class*="flowchart-link"],
+.notia-markdown-editor-root .milkdown svg path[class*="edge-pattern"],
+.notia-markdown-editor-root .milkdown svg path[class*="edge-thickness"] {
+  stroke: var(--color-border-soft) !important;
+}
+
+.notia-markdown-editor-root .milkdown svg .labelBox,
+.notia-markdown-editor-root .milkdown svg .label-container {
+  fill: var(--color-card-bg) !important;
+  stroke: var(--color-border-soft) !important;
+}
+
 .notia-wikilink-token {
   white-space: pre-wrap;
 }
@@ -4614,4 +4669,35 @@
   .notia-tree-inline-input {
     height: 28px;
   }
+}
+
+/* ── Mermaid preview error in MarkdownView ─────────────── */
+.notia-markdown-editor-root .mermaid-preview-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px;
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px dashed rgba(255, 107, 107, 0.4);
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+  margin: 8px 0;
+}
+
+.notia-markdown-editor-root .mermaid-preview-error-icon {
+  font-size: 20px;
+}
+
+.notia-markdown-editor-root .mermaid-preview-error-text {
+  font-weight: 600;
+}
+
+.notia-markdown-editor-root .mermaid-preview-error-detail {
+  font-size: 11px;
+  opacity: 0.8;
+  max-width: 100%;
+  word-break: break-word;
 }

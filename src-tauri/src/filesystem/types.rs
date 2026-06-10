@@ -12,6 +12,14 @@ pub struct FileNode {
     pub(crate) expanded: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) children: Option<Vec<FileNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) created_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) modified_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_page: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) previous_page: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

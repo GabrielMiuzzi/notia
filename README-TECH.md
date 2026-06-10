@@ -781,6 +781,42 @@ No hay commands exclusivos. Reutiliza filesystem genérico:
 - **Frontend**: `MermaidView.tsx`, `useMermaidEditor.ts`, `MermaidCanvas.tsx`, `MermaidToolbar.tsx`, `MermaidShapePalette.tsx`, `mermaidEngine.ts`.
 - **Backend**: `read_library_file`, `write_library_file`.
 
+### 2.9b Mermaid Inline Preview (MarkdownView)
+
+#### Descripción
+Renderizado de bloques de código `mermaid` embebidos dentro del editor Markdown (Milkdown Crepe). Reutiliza el **mismo pipeline** que `MermaidView` (archivos `.mmd`) para garantizar consistencia visual: mismos colores de tema, manejo de errores, zoom/pan interactivo y estilos CSS compartidos. Los diagramas embebidos son **solo lectura** (sin edición de nodos ni flechas).
+
+#### Endpoints (Commands Tauri)
+Ninguno. Todo el renderizado ocurre en el frontend.
+
+#### Entradas
+- `language: 'mermaid'` — detectado por Milkdown en bloques de código.
+- `content: string` — código fuente Mermaid (ej. `flowchart TD\n  A --> B`).
+
+#### Salidas
+- HTML inyectado por Milkdown: un `<div class="notia-mermaid-inline-host">` que sirve como root para un portal React.
+- Portal React montado vía `ReactDOM.createRoot`: renderiza `<InlineMermaidPreview code={content} />` dentro de un `<Provider store={store}>` para acceso al tema global.
+
+#### Pasos del proceso
+1. **Detección**: en `MarkdownView.tsx`, el `renderPreview` de Milkdown detecta `language === 'mermaid'`.
+2. **Generación de host**: se crea un `<div>` vacío con `class="notia-mermaid-inline-host"` y `id` único. Se pasa `outerHTML` a `applyPreview`.
+3. **Montaje**: tras `requestAnimationFrame`, se busca el nodo en el DOM y se invoca `mountInlineMermaidPreview(host, content)`. El helper usa `WeakMap<HTMLElement, ReactDOM.Root>` para evitar doble montaje.
+4. **Renderizado del portal**:
+   - `InlineMermaidPreview.tsx` lee el tema global (`preferences.theme`) desde Redux.
+   - Invoca `useMermaidRender({ code, theme })`, que delega a `renderMermaid()` en `mermaidEngine.ts` (misma función que usa `MermaidView`).
+   - Renderiza `MermaidCanvas` con `readOnly={true}`, `panZoomEnabled={true}`, `gridEnabled={false}`. El zoom/pan usa refs internas (`useMermaidPanZoom`), sin persistir en Redux.
+5. **Desmontaje seguro**: un `MutationObserver` en `rootRef.current` detecta nodos `.notia-mermaid-inline-host` removidos (por ejemplo, al borrar el bloque en el editor) y llama `unmountInlineMermaidPreview()` para liberar el `ReactDOM.Root` y evitar fugas de memoria.
+6. **Cleanup del editor**: en el `return` del efecto de inicialización de Milkdown, se desconecta el observer y se desmontan todos los roots inline pendientes.
+
+#### Dependencias
+- **Frontend**: `MarkdownView.tsx`, `mermaidPreviewRuntime.tsx` (portal), `InlineMermaidPreview.tsx`, `useMermaidRender.ts`, `MermaidCanvas.tsx` (modo `readOnly`), `mermaidEngine.ts`, `mermaid.css`.
+- **Backend**: ninguno.
+
+#### Decisiones de arquitectura
+- **Portal React en lugar de iframe**: evita overhead de iframe y mantiene el contexto de eventos y estilos CSS globales. El `<Provider>` asegura que el componente portal lea el tema de Redux sin necesidad de re-montar manualmente.
+- `readOnly` en `MermaidCanvas`: desactiva `useMermaidNodeInteraction` y `useMermaidEdgeInteraction` pasando `enabled = false`, oculta `MermaidEdgeToolbar` y deshabilita doble-clicks de edición de labels. El zoom/pan permanece activo.
+- `WeakMap` en `mermaidPreviewRuntime`: evita doble montaje cuando Milkdown re-renderiza el preview del bloque. Como no es iterable, no permite desmontar "todos" eficientemente; el `MutationObserver` cubre ese caso detectando nodos removidos.
+
 ---
 
 ### 2.10 Window Controls / App Runtime
@@ -2702,7 +2738,7 @@ graph TB
 
 - **Cohesión**: **Funcional alta**. Cada componente tiene un propósito UI único (ej. `FileTree.tsx` solo renderiza árboles, `MarkdownView.tsx` solo el editor).
 - **Acoplamiento**: **De datos bajo**. Los componentes consumen datos vía Redux (`useAppSelector`) y disparan acciones vía `useAppDispatch`. No mantienen estado de negocio propio salvo efímero (`useState` para modales).
-- **Observaciones**: La separación `common/` vs `notia/` es correcta. Los componentes `views/` están envueltos en `memo()`, lo que reduce re-renders innecesarios.
+- **Observaciones**: La separación `common/` vs `notia/` es correcta. Los componentes `views/` están envueltos en `memo()`, lo que reduce re-renders innecesarios. La unificación del renderizado Mermaid inline en `MarkdownView.tsx` (usando `InlineMermaidPreview.tsx` vía portal React) demuestra que los componentes de vista pueden reutilizar módulos aislados (`modules/mermaid/`) sin duplicar lógica de renderizado.
 - **Riesgo**: Ninguno crítico. Posible mejora: extraer más hooks de UI reutilizables para evitar lógica repetida en componentes de vista.
 
 #### 8.2.2 Frontend — Services (`services/`)
@@ -2816,6 +2852,7 @@ graph TB
 | ¿Existen dependencias circulares? | ❌ No se detectaron dependencias circulares entre capas. `services/` no importa de `components/`, `engines/` no tiene side-effects. |
 | ¿Hay módulos que conozcan la implementación interna de otros? | ⚠️ Parcialmente. Los components conocen la estructura de estado de Redux (selectors), pero esto es inevitable y gestionado vía hooks tipados. En el backend, los commands conocen la firma de los services, no su implementación interna. |
 | ¿Los cambios en un módulo impactan a otros módulos? | ✅ Impacto controlado. Cambiar un engine afecta solo los services que lo consumen. Cambiar un command afecta solo el service que delega. El módulo filesystem es auto-contenido: cambios en `desktop.rs` no afectan `android_saf.rs`. |
+| ¿El módulo `modules/mermaid/` está correctamente aislado del editor Markdown? | ✅ Sí. `MarkdownView.tsx` solo consume la API pública del módulo (`mountInlineMermaidPreview`, `InlineMermaidPreview`). No accede a la implementación interna de `MermaidCanvas` ni a `mermaidEngine.ts`. El acoplamiento es de interfaz, no de implementación. |
 
 ### 8.5 Recomendaciones
 
@@ -2826,6 +2863,7 @@ graph TB
 | 3 | Migrar módulo `filesystem/` a plugin de Tauri | Baja | Mejoraría la separación y permitiría versionado independiente del módulo filesystem. |
 | 4 | Agregar tests unitarios para `engines/` y `validation.rs` | Alta | Son funciones puras, fáciles de testear. Aumentaría confianza en cambios futuros. |
 | 5 | Considerar subdivisión de `documentsSlice` si crece | Baja | Actualmente maneja tabs, active tab, tree nodes, search y clipboard. Si se agregan más features, dividir en `tabsSlice` + `treeSlice`. |
+| 6 | Extraer `mermaidPreviewRuntime.tsx` a un hook reutilizable si se usan más previews inline | Baja | Actualmente el portal React está encapsulado en `services/mermaidPreviewRuntime.tsx`. Si otros módulos (ej. Graph View mini-previews) requieren portales inline, considerar un hook genérico `useDomPortal`. |
 | 6 | Evaluar umbral de workers de >600 a ~200 nodos | Baja | En dispositivos lentos, incluso 200 nodos pueden causar jank. Hacer configurable. |
 
 ---
@@ -2865,6 +2903,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 
 - **Duplicaciones detectadas**: Ninguna crítica. `frontmatterEngine.ts` se usa tanto en Markdown general como en Task Manager. `normalizeFilesystemPath.ts` se usa en todo el frontend.
 - **Abstracciones compartidas**: `filesystemEngine.ts` es la única abstracción de I/O de archivos; todos los módulos (`inkdoc`, `mermaid`, `task-manager`, `coldpass`) la consumen.
+- **Nueva abstracción compartida — Mermaid inline preview**: `InlineMermaidPreview.tsx` demuestra que los módulos aislados pueden exponer componentes autocontenidos que se integran en vistas externas sin acoplamiento directo. El `Provider` de Redux dentro del portal asegura que el componente lea estado global sin depender de props drill.
 
 #### Acoplamiento aferente/eferente (qualitativo)
 
@@ -2891,6 +2930,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 | Polling en Android | `useLibraryTreeSync.ts` | Medio | Signature comparison para evitar re-lecturas completas. |
 | Escaneo recursivo SAF en Android | `android_saf.rs` | Alto en bibliotecas grandes | Concurrencia limitada (6 workers en `vaultRuntime.ts`). |
 | `localStorage` como storage único | Múltiples services | Medio | Funciona para datos pequeños; no escala a bibliotecas con miles de entradas de preferencias. |
+| Previews inline Mermaid en bibliotecas grandes | `MarkdownView.tsx` + `mermaidPreviewRuntime.tsx` | Bajo | Cada preview monta un `ReactDOM.Root` independiente. El overhead es comparable a renderizar una imagen SVG. El `WeakMap` evita duplicados. |
 
 #### Capacidad de agregar nuevas features
 
@@ -2901,10 +2941,11 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 | Nueva vista | ✅ Fácil | Crear componente en `components/notia/views/`, agregar ícono en `IconRail`, conectar a Redux si necesita estado global. |
 | Nuevo backend de IA | ⚠️ Media | Requiere nuevo bridge (plugin mobile) o nuevo service Rust. El patrón `ai_service.rs` es replicable. |
 | Nuevo módulo de cifrado | ⚠️ Media | ColdPass ya establece el patrón (cifrado frontend + bytes opacos al backend). Replicable. |
+| Nuevo módulo con previews inline en Markdown | ✅ Fácil | El patrón `mermaidPreviewRuntime.tsx` es replicable: crear un componente autocontenido + helper de montaje/desmontaje + integrar en `renderPreview` de Milkdown. |
 
 #### Recomendaciones para escalabilidad
 
-1. **Horizontal**: el módulo `task-manager/` demuestra que nuevos dominios pueden vivir como módulos auto-contenidos con sus propios engines, services y types. Replicar este patrón para futuras features.
+1. **Horizontal**: el módulo `task-manager/` demuestra que nuevos dominios pueden vivir como módulos auto-contenidos con sus propios engines, services y types. Replicar este patrón para futuras features. El módulo `mermaid/` ahora también demuestra que puede exponer componentes para consumo externo (`InlineMermaidPreview`).
 2. **Vertical (renderizado)**: el umbral de 600 nodos para workers podría ser dinámico basado en `navigator.hardwareConcurrency` o tiempo de frame.
 3. **Storage**: migrar de `localStorage` a un `StorageAdapter` que pueda evolucionar a `IndexedDB` para datos de mayor volumen (ej. índice de búsqueda, historial de Pomodoro).
 
@@ -2918,14 +2959,14 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 |---|---|---|
 | Naming conventions | ✅ Consistente | `camelCase` en TS, `snake_case` en Rust, `PascalCase` para tipos. Sufijos descriptivos (`Engine`, `Runtime`, `Service`). |
 | Intención vs implementación | ✅ Clara | `resolveTaskWorkspaceRuntimeRoot()` expresa claramente su propósito. `buildClusteredGraphLayout()` describe el algoritmo. |
-| Comentarios | ✅ Apropiados | Comentarios explican el "por qué" (ej. `// Storage failures are non-fatal.`). Evitan explicar el "qué". |
+| Comentarios | ✅ Apropiados | Comentarios explican el "por qué" (ej. `// Storage failures are non-fatal.`). Evitan explicar el "qué". El módulo `mermaidPreviewRuntime.tsx` incluye comentario de decisión de arquitectura (por qué portal React en lugar de iframe). |
 | Formato y estilo | ✅ Consistente | ESLint en frontend. `cargo fmt` implícito en Rust. Sin advertencias de lint visibles. |
 
 ### 11.2 Mantenibilidad
 
 | Aspecto | Evaluación | Observación |
 |---|---|---|
-| Facilidad para localizar funcionalidades | ✅ Alta | Estructura de carpetas por dominio (`services/ai/`, `modules/task-manager/`) permite encontrar código rápidamente. |
+| Facilidad para localizar funcionalidades | ✅ Alta | Estructura de carpetas por dominio (`services/ai/`, `modules/task-manager/`) permite encontrar código rápidamente. La nueva funcionalidad de preview inline Mermaid está claramente agrupada en `modules/mermaid/` (`InlineMermaidPreview.tsx`, `mermaidPreviewRuntime.tsx`). |
 | Código muerto / dependencias no usadas | ⚠️ Revisar | `drawio` aparece en `AGENTS.md` como módulo pero no existe en `src/modules/`. Revisar si hay imports huérfanos. |
 | Deuda técnica conocida | Documentada | `AGENTS.md` Sección 10 lista 15 mejoras sugeridas. Prioridad: CSP deshabilitado (`"csp": null`), falta de tests, `StorageAdapter`. |
 | Onboarding para nuevos desarrolladores | ✅ Bueno | `AGENTS.md` + `README-TECH.md` + `tasks.md` proporcionan contexto suficiente. La arquitectura por capas es predecible. |
@@ -2937,13 +2978,14 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 | Código puro sin side-effects (`engines/`, `utils/`) | ~25% del frontend | `frontmatterEngine.ts`, `wikiLinkEngine.ts`, `graphSearchEngine.ts`, `pomodoroLogEngine.ts`, etc. Son ideales para tests unitarios sin mocking. |
 | Código acoplado a Tauri (`services/` con `invoke`) | ~40% del frontend | Requiere mock de `invoke()` o extracción de la capa de Tauri. |
 | Código acoplado a Redux (`components/` + `hooks/`) | ~30% del frontend | Requiere `Provider` de test o mocks de `useAppSelector`/`useAppDispatch`. |
-| Código con side-effects del navegador (`localStorage`, `canvas`) | ~5% del frontend | `taskManagerStorage.ts`, `InkDocView.ts`. Requiere mocks de `Storage` o `CanvasRenderingContext2D`. |
+| Código con side-effects del navegador (`localStorage`, `canvas`) | ~5% del frontend | `taskManagerStorage.ts`, `InkDocView.ts`. Requiere mocks de `Storage` o `CanvasRenderingContext2D`. El nuevo `mermaidPreviewRuntime.tsx` requiere mock de `ReactDOM.createRoot` y `WeakMap`. |
 
 > **Plan para aumentar cobertura**:
 > 1. **Fase 1 (bajo esfuerzo, alto impacto)**: tests unitarios para `engines/` (puro, sin mocking). `frontmatterEngine.ts`, `wikiLinkEngine.ts`, `pomodoroLogEngine.ts`, `taskEngine.ts`.
 > 2. **Fase 2**: tests para `validation.rs` (funciones puras de validación de paths y nombres).
 > 3. **Fase 3 (medio esfuerzo)**: tests de integración para commands Tauri usando `tauri::test` (solo desktop).
 > 4. **Fase 4**: mock de `invoke` en frontend para tests de `services/`.
+> 5. **Fase 5 (bajo esfuerzo)**: tests unitarios para `mermaidPreviewRuntime.tsx` (verificar que `WeakMap` evita doble montaje y que `unmountInlineMermaidPreview` libera el root).
 
 ### 11.4 Observabilidad
 
@@ -3001,4 +3043,4 @@ Para convenciones de código, arquitectura, naming, reglas de estado, manejo de 
 
 ---
 
-*Notia v1.0.12 — Documentación técnica sincronizada con el código fuente.*
+*Notia v1.0.12 — Documentación técnica sincronizada con el código fuente. Última actualización: 2026-06-10.*

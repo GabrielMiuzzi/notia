@@ -3,7 +3,90 @@ import type { MermaidRenderResult, MermaidDiagram, MermaidEdgeType, ParsedEdgeLi
 // ── Estado global singleton ─────────────────────────────────
 let mermaidInstance: typeof import('mermaid').default | null = null
 let initPromise: Promise<void> | null = null
+let lastInitTheme: string | null = null
 let iconPacksRegistered = false
+
+// ── Theme variables that harmonise with Notia dark/light ────
+export interface MermaidThemeVariables {
+  background: string
+  primaryColor: string
+  primaryTextColor: string
+  primaryBorderColor: string
+  secondaryColor: string
+  secondaryTextColor: string
+  secondaryBorderColor: string
+  tertiaryColor: string
+  tertiaryTextColor: string
+  tertiaryBorderColor: string
+  lineColor: string
+  textColor: string
+  nodeBorder: string
+  clusterBkg: string
+  clusterBorder: string
+  defaultLinkColor: string
+  titleColor: string
+  edgeLabelBackground: string
+  nodeTextColor: string
+  darkMode: boolean
+}
+
+export function buildMermaidInitConfig(appTheme: string): Record<string, unknown> {
+  return {
+    startOnLoad: false,
+    securityLevel: 'loose',
+    theme: 'base',
+    themeVariables: buildMermaidThemeVariables(appTheme),
+  }
+}
+
+export function buildMermaidThemeVariables(appTheme: string): MermaidThemeVariables {
+  if (appTheme === 'light') {
+    return {
+      background: '#f5f4ff',
+      primaryColor: '#ffffff',
+      primaryTextColor: '#3b3d57',
+      primaryBorderColor: '#d1cce8',
+      secondaryColor: '#e4e0f6',
+      secondaryTextColor: '#3b3d57',
+      secondaryBorderColor: '#d1cce8',
+      tertiaryColor: '#bd93f9',
+      tertiaryTextColor: '#3b3d57',
+      tertiaryBorderColor: '#7a7ea8',
+      lineColor: '#7a7ea8',
+      textColor: '#3b3d57',
+      nodeBorder: '#d1cce8',
+      clusterBkg: '#e4e0f6',
+      clusterBorder: '#d1cce8',
+      defaultLinkColor: '#7a7ea8',
+      titleColor: '#3b3d57',
+      edgeLabelBackground: '#e4e0f6',
+      nodeTextColor: '#3b3d57',
+      darkMode: false,
+    }
+  }
+  return {
+    background: '#282a36',
+    primaryColor: '#3a3d4f',
+    primaryTextColor: '#f8f8f2',
+    primaryBorderColor: '#6272a4',
+    secondaryColor: '#44475a',
+    secondaryTextColor: '#f8f8f2',
+    secondaryBorderColor: '#6272a4',
+    tertiaryColor: '#6272a4',
+    tertiaryTextColor: '#f8f8f2',
+    tertiaryBorderColor: '#bd93f9',
+    lineColor: '#8b9bbd',
+    textColor: '#f8f8f2',
+    nodeBorder: '#6272a4',
+    clusterBkg: '#3a3d4f',
+    clusterBorder: '#6272a4',
+    defaultLinkColor: '#8b9bbd',
+    titleColor: '#f8f8f2',
+    edgeLabelBackground: '#44475a',
+    nodeTextColor: '#f8f8f2',
+    darkMode: true,
+  }
+}
 
 // Caché por sesión: hash del código → resultado renderizado
 const renderCache = new Map<string, MermaidRenderResult>()
@@ -67,17 +150,21 @@ async function registerIconPacks() {
 
 // ── Inicialización lazy ────────────────────────────────────
 async function initMermaid(theme: string, config?: string) {
-  if (initPromise) return initPromise
+  if (initPromise && lastInitTheme === theme) return initPromise
 
   initPromise = (async () => {
     try {
       const mermaidModule = await import('mermaid')
       mermaidInstance = (mermaidModule.default || mermaidModule) as typeof import('mermaid').default
 
-      let parsedConfig: Record<string, unknown> = { theme }
+      const appTheme = theme === 'dark' ? 'dark' : 'light'
+      const themeVariables = buildMermaidThemeVariables(appTheme)
+
+      let parsedConfig: Record<string, unknown> = { theme: 'base', themeVariables }
       if (config) {
         try {
-          parsedConfig = { ...JSON.parse(config), theme }
+          const userConfig = JSON.parse(config) as Record<string, unknown>
+          parsedConfig = { ...userConfig, theme: 'base', themeVariables }
         } catch {
           // ignore invalid config
         }
@@ -88,6 +175,8 @@ async function initMermaid(theme: string, config?: string) {
         securityLevel: 'loose',
         ...parsedConfig,
       })
+
+      lastInitTheme = theme
 
       // Icon packs en paralelo, sin bloquear el primer render
       void registerIconPacks()

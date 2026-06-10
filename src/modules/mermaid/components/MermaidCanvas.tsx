@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { MermaidRenderResult, MermaidEdgeType } from '../types/mermaidTypes'
 import { useMermaidPanZoom } from '../hooks/useMermaidPanZoom'
 import { useMermaidNodeInteraction } from '../hooks/useMermaidNodeInteraction'
@@ -33,6 +33,7 @@ interface MermaidCanvasExtendedProps extends MermaidCanvasProps {
   onEdgeColorChange?: (fromNodeId: string, toNodeId: string, color: string) => void
   onEdgeLabelChange?: (fromNodeId: string, toNodeId: string, label: string) => void
   canvasRef?: React.RefObject<HTMLDivElement | null>
+  readOnly?: boolean
 }
 
 export const MermaidCanvas = memo(function MermaidCanvas({
@@ -55,6 +56,7 @@ export const MermaidCanvas = memo(function MermaidCanvas({
   onEdgeColorChange,
   onEdgeLabelChange,
   canvasRef,
+  readOnly,
 }: MermaidCanvasExtendedProps) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const transformLayerRef = useRef<HTMLDivElement>(null)
@@ -70,8 +72,10 @@ export const MermaidCanvas = memo(function MermaidCanvas({
     [canvasRef],
   )
 
-  useMermaidNodeInteraction(svgContainerRef, onConnect, onNodeLabelEdit)
-  const { selectedEdge } = useMermaidEdgeInteraction(svgContainerRef, onEdgeSelect)
+  const interactionEnabled = readOnly !== true
+
+  useMermaidNodeInteraction(svgContainerRef, onConnect, onNodeLabelEdit, interactionEnabled)
+  const { selectedEdge } = useMermaidEdgeInteraction(svgContainerRef, onEdgeSelect, interactionEnabled)
 
   const {
     handlePointerDown,
@@ -256,7 +260,7 @@ export const MermaidCanvas = memo(function MermaidCanvas({
         style={{ transformOrigin: '0 0', width: '100%', height: '100%', willChange: 'transform', position: 'relative' }}
       >
         <div ref={svgContainerRef} style={{ width: '100%', height: '100%' }} />
-        {!error && selectedEdge && (
+        {!error && interactionEnabled && selectedEdge && (
           <MermaidEdgeToolbar
             visible={!!selectedEdge}
             x={selectedEdge.layerX ?? 0}

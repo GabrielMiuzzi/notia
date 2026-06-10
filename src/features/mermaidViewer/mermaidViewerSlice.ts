@@ -1,4 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
+import { loadThemePreference } from '../../services/preferences/themeStorage'
 
 interface MermaidViewerState {
   theme: string
@@ -13,12 +14,13 @@ interface MermaidViewerState {
 const STORAGE_KEY = 'notia:mermaid-viewer-preferences:v1'
 
 function loadState(): MermaidViewerState {
+  const appTheme = loadThemePreference()
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<MermaidViewerState>
       return {
-        theme: parsed.theme ?? 'dark',
+        theme: parsed.theme ?? appTheme,
         gridEnabled: parsed.gridEnabled ?? true,
         roughEnabled: parsed.roughEnabled ?? false,
         panZoomEnabled: parsed.panZoomEnabled ?? true,
@@ -31,7 +33,7 @@ function loadState(): MermaidViewerState {
     // ignore
   }
   return {
-    theme: 'dark',
+    theme: appTheme,
     gridEnabled: true,
     roughEnabled: false,
     panZoomEnabled: true,

@@ -171,6 +171,7 @@ export interface EdgeInfo {
 export function useMermaidEdgeInteraction(
   svgContainerRef: React.RefObject<HTMLDivElement | null>,
   onEdgeSelect?: (edge: EdgeInfo | null) => void,
+  enabled = true,
 ) {
   const [selectedEdge, setSelectedEdge] = useState<EdgeInfo | null>(null)
   const selectedEdgeRef = useRef<EdgeInfo | null>(null)
@@ -219,6 +220,7 @@ export function useMermaidEdgeInteraction(
 
   // ── Pointer interaction ────────────────────────────────────
   useEffect(() => {
+    if (!enabled) return
     const container = svgContainerRef.current
     if (!container) return
     const wrapper = container.closest('.mermaid-canvas-wrapper') as HTMLDivElement | null
@@ -234,7 +236,7 @@ export function useMermaidEdgeInteraction(
       isDraggingRef.current = false
     }
 
-    const onPointerMove = (e: PointerEvent) => {
+    const onPointerMove = (_e: PointerEvent) => {
       isDraggingRef.current = true
     }
 

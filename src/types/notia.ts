@@ -16,6 +16,8 @@ export interface NotiaFileNode {
   selected?: boolean
   hasChildren?: boolean
   children?: NotiaFileNode[]
+  createdAt?: number
+  modifiedAt?: number
 }
 
 export interface NotiaLibrary {

@@ -37,8 +37,9 @@
 
 - **Librerías de Notas**: organiza carpetas locales del filesystem como bibliotecas de documentos.
 - **Editor de Markdown enriquecido**: edición WYSIWYG con soporte para wikilinks (`[[nota]]`), frontmatter y propiedades.
+- **Enlaces secuenciales (Page Links)**: definí relaciones de orden entre notas con `nextPage` y `previousPage` en el frontmatter. Notia actualiza automáticamente el vínculo inverso y ordena las notas conectadas en bloques secuenciales en el explorador.
 - **InkDoc**: editor especializado para documentos de tinta manuscrita, con reconocimiento de texto y fórmulas matemáticas vía IA.
-- **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas.
+- **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas. Los diagramas embebidos en Markdown y los archivos `.mmd` comparten el **mismo motor visual**, temas y estilos.
 - **Graph View**: visualización interactiva de relaciones entre notas mediante nodos y conexiones.
 - **AI Chat local**: conversación con modelos de lenguaje ejecutados localmente via Ollama, con memoria a largo plazo y contexto de archivos de la librería.
 - **ColdPass**: gestor de credenciales cifradas con generador de contraseñas y sincronización segura entre dispositivos vía Bluetooth.
@@ -73,6 +74,7 @@ Características:
 - **Wikilinks**: escribí `[[Nombre de Nota]]` para crear enlaces bidireccionales entre documentos. Al hacer clic en un wikilink, la nota destino se abre en una nueva pestaña.
 - **Frontmatter y propiedades**: cada nota puede tener metadatos (título, etiquetas, fecha, etc.) editables desde el panel de propiedades lateral.
 - **Indicadores de estado**: visualización de "Guardando...", "Guardado ✓" o "Error ✗" en la pestaña activa.
+- **Diagramas Mermaid embebidos**: insertá bloques de código con lenguaje `mermaid` dentro de cualquier nota Markdown. El editor renderiza el diagrama con el **mismo motor visual** que los archivos `.mmd` (temas Notia, zoom/pan interactivo, manejo de errores uniforme). Los diagramas embebidos son de **solo lectura**: se pueden explorar (zoom, paneo, exportar a PNG/SVG) pero no se pueden editar nodos ni flechas desde el editor Markdown.
 
 ### InkDoc
 
@@ -171,6 +173,17 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Entradas esperadas** | Texto con patrón `[[nombre de nota]]`. El nombre debe coincidir (case-insensitive) con un archivo `.md` existente en la librería. |
 | **Salidas / Resultado** | Enlace bidireccional activo. Al hacer clic se abre la nota destino. El Graph View utiliza estos enlaces para construir el mapa de relaciones. |
 | **Errores comunes** | **Wikilink rojo/quebrado**: la nota destino no existe. Solución: crear la nota destino o corregir el nombre. |
+
+### Enlaces Secuenciales — Page Links (`nextPage` / `previousPage`)
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | Vincula notas Markdown en una secuencia ordenada mediante las propiedades de frontmatter `nextPage` y `previousPage`. Útil para navegar entre capítulos, pasos de un proceso o entradas de un diario. |
+| **Cuándo usarlo** | Cuando necesitás que varias notas estén conectadas en un orden específico y que el explorador las agrupe como un bloque secuencial. |
+| **Pasos para consumir** | 1. Abrí una nota Markdown y abrí el panel de **Propiedades** (a la izquierda del editor). 2. Encontrá la propiedad `nextPage` (se crea automáticamente al abrir una nota si no existe). 3. Hacé **doble clic** en el valor de `nextPage` para editarlo. 4. Escribí `[[Nombre de la siguiente nota]]` y presioná **Enter**. 5. Notia actualizará automáticamente la nota destino para que tenga `previousPage: [[Nombre de la nota actual]]`. 6. Repetí el proceso para `previousPage` si es necesario. |
+| **Entradas esperadas** | Un wikilink válido: `[[nombre-de-archivo.md]]`. Se aceptan referencias sin extensión (ej. `[[6-10]]`) que se resuelven automáticamente a `.md`. |
+| **Salidas / Resultado** | Las dos notas quedan vinculadas bidireccionalmente. El **Explorador** renderiza las notas conectadas con una línea vertical que las agrupa como un bloque. Los bloques se ordenan por la fecha de creación (`createdAt`) de la primera nota. |
+| **Errores comunes** | **Ciclo detectado**: si A → B → C, intentar que C apunte a A es rechazado. Solución: mantener una cadena lineal sin ciclos. **Link roto**: si `nextPage` apunta a un archivo inexistente, se ordena como nota suelta por fecha. Solución: verificar que el archivo exista. |
 
 ### Graph View
 
@@ -278,6 +291,21 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 2. Notia resaltará el wikilink y mostrará sugerencias mientras escribís.
 3. Hacé clic en el wikilink para abrir la nota destino en una nueva pestaña.
 4. Si la nota destino no existe, Notia te ofrecerá crearla.
+
+### Usar Enlaces Secuenciales (Page Links)
+
+1. Abrí una nota Markdown desde el Explorador.
+2. En el panel **Propiedades** (a la izquierda del editor), buscá la propiedad `nextPage`. Si no existe, se crea automáticamente al abrir la nota por primera vez.
+3. Hacé **doble clic** en el valor de `nextPage` para editarlo.
+4. Escribí `[[nombre-del-siguiente-archivo]]` (puede ser sin `.md`, se resuelve automáticamente). Aparecerá un menú de autocompletado con las notas de la librería.
+5. Presioná **Enter** para confirmar.
+6. Notia guardará automáticamente:
+   - La nota actual con `nextPage: [[nombre-del-siguiente-archivo]]`
+   - La nota destino con `previousPage: [[nombre-de-la-nota-actual]]`
+7. En el **Explorador**, ambas notas aparecerán conectadas visualmente como un bloque secuencial.
+8. Para **romper un link**, editá `nextPage` (o `previousPage`) y dejalo en `N/A`. Notia limpiará el vínculo opuesto automáticamente.
+9. Para **cambiar el destino**, editá `nextPage` a un nuevo archivo. Notia limpiará el vínculo en el destino anterior y lo creará en el nuevo.
+10. **Nota**: No se permiten ciclos (A → B → C → A). Si intentás crear un ciclo, Notia mostrará un error.
 
 ### Configurar el Chat con IA
 

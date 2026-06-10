@@ -1,5 +1,6 @@
 use crate::notia_timer::NotiaTimer;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 #[cfg(target_os = "android")]
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "android")]
@@ -340,6 +341,30 @@ pub struct AndroidTreeNode {
     has_children: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     children: Option<Vec<AndroidTreeNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified_at: Option<i64>,
+}
+
+#[cfg(target_os = "android")]
+fn sort_android_tree_nodes(nodes: &mut [AndroidTreeNode]) {
+    nodes.sort_by(|a, b| {
+        if a.node_type != b.node_type {
+            return if a.node_type == "folder" {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        let a_date = a.created_at.or(a.modified_at).unwrap_or(i64::MAX);
+        let b_date = b.created_at.or(b.modified_at).unwrap_or(i64::MAX);
+        let date_cmp = a_date.cmp(&b_date);
+        if date_cmp != Ordering::Equal {
+            return date_cmp;
+        }
+        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+    });
 }
 
 /// A flat file entry returned by the `readFlatFileList` Kotlin command.
@@ -556,10 +581,12 @@ pub async fn read_android_library_tree(
         // the redundant second readTree that refresh_android_tree_path_cache would do.
         update_cache_from_nodes(state.inner(), &uri, &response.nodes);
 
-        let node_count = response.nodes.len();
+        let mut nodes = response.nodes;
+        sort_android_tree_nodes(&mut nodes);
+        let node_count = nodes.len();
         timer.finish_with_meta(&format!("uri={} node_count={}", uri, node_count));
 
-        Ok(response.nodes)
+        Ok(nodes)
     }
 
     #[cfg(not(target_os = "android"))]
@@ -726,10 +753,12 @@ pub async fn read_android_directory(
             }
         }
 
-        let node_count = response.nodes.len();
+        let mut nodes = response.nodes;
+        sort_android_tree_nodes(&mut nodes);
+        let node_count = nodes.len();
         timer.finish_with_meta(&format!("uri={} node_count={}", uri, node_count));
 
-        Ok(response.nodes)
+        Ok(nodes)
     }
 
     #[cfg(not(target_os = "android"))]

@@ -18,6 +18,7 @@ interface MainViewProps {
   aiPreferences: AiPreferences
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  theme: string
 }
 
 function getSaveStatusLabel(status: NotiaDocumentSaveStatus): string {
@@ -44,6 +45,7 @@ function MainViewComponent({
   aiPreferences,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
+  theme,
 }: MainViewProps) {
   if (!activeDocument) {
     return (
@@ -85,6 +87,7 @@ function MainViewComponent({
           aiPreferences={aiPreferences}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
+          theme={theme}
         />
       </section>
     </main>

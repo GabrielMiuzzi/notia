@@ -341,6 +341,7 @@ export function useMermaidNodeInteraction(
   svgContainerRef: React.RefObject<HTMLDivElement | null>,
   onConnect?: (fromNodeId: string, toNodeId: string) => void,
   onNodeLabelEdit?: (nodeId: string, newLabel: string) => void,
+  enabled = true,
 ): UseMermaidNodeInteractionReturn {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const isConnectingRef = useRef(false)
@@ -358,6 +359,7 @@ export function useMermaidNodeInteraction(
 
   // Inyectar/quitar anchors cuando cambia el nodo hovereado
   useEffect(() => {
+    if (!enabled) return
     const container = svgContainerRef.current
     if (!container) return
     const svgEl = container.querySelector('svg') as SVGSVGElement | null
@@ -376,10 +378,11 @@ export function useMermaidNodeInteraction(
     } else {
       applyNodeHoverClass(svgEl, null)
     }
-  }, [svgContainerRef, hoveredNodeId])
+  }, [svgContainerRef, hoveredNodeId, enabled])
 
   // Re-inyectar anchors cuando el SVG cambia (nuevo render)
   useEffect(() => {
+    if (!enabled) return
     const container = svgContainerRef.current
     if (!container) return
 
@@ -398,10 +401,11 @@ export function useMermaidNodeInteraction(
     })
     observer.observe(container, { childList: true, subtree: true })
     return () => observer.disconnect()
-  }, [svgContainerRef])
+  }, [svgContainerRef, enabled])
 
   // Línea temporal sigue al cursor
   useEffect(() => {
+    if (!enabled) return
     const onMove = (e: PointerEvent) => {
       if (!isConnectingRef.current || !connectionRef.current) return
       const svg = svgRef.current
@@ -412,10 +416,11 @@ export function useMermaidNodeInteraction(
     }
     document.addEventListener('pointermove', onMove)
     return () => document.removeEventListener('pointermove', onMove)
-  }, [])
+  }, [enabled])
 
   // Cancelar conexión con Escape
   useEffect(() => {
+    if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !isConnectingRef.current) return
       isConnectingRef.current = false
@@ -428,10 +433,11 @@ export function useMermaidNodeInteraction(
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [])
+  }, [enabled])
 
   // Delegación pointermove en el wrapper: detectar hover
   useEffect(() => {
+    if (!enabled) return
     const container = svgContainerRef.current
     if (!container) return
 
@@ -459,10 +465,11 @@ export function useMermaidNodeInteraction(
 
     container.addEventListener('pointermove', onPointerMove, true)
     return () => container.removeEventListener('pointermove', onPointerMove, true)
-  }, [svgContainerRef])
+  }, [svgContainerRef, enabled])
 
-  // Delegación pointerdown / pointerup: drag-to-connect
+  // Delegación pointerdown / pointerup: drag-to-connect + doble-click label edit
   useEffect(() => {
+    if (!enabled) return
     const container = svgContainerRef.current
     if (!container) return
 
@@ -632,7 +639,7 @@ export function useMermaidNodeInteraction(
       container.removeEventListener('pointercancel', onPointerCancel, true)
       container.removeEventListener('dblclick', onDblClick, true)
     }
-  }, [svgContainerRef, onConnect, onNodeLabelEdit])
+  }, [svgContainerRef, onConnect, onNodeLabelEdit, enabled])
 
   return {
     hoveredNodeId,

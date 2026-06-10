@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::notia_timer::NotiaTimer;
@@ -46,6 +47,57 @@ pub(crate) fn is_hidden_entry_name(name: &str) -> bool {
     name.trim_start().starts_with('.')
 }
 
+/// Strips matching surrounding YAML quotes (single or double) and unescapes simple sequences.
+fn strip_yaml_quotes(value: &str) -> String {
+    let s = value.trim();
+    if s.len() >= 2 {
+        let first = s.chars().next().unwrap();
+        let last = s.chars().last().unwrap();
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            let inner = &s[1..s.len() - 1];
+            return if first == '"' {
+                inner.replace("\\\"", "\"").replace("\\\\", "\\")
+            } else {
+                inner.replace("\\'", "'")
+            };
+        }
+    }
+    s.to_string()
+}
+
+pub(crate) fn read_partial_frontmatter(file_path: &Path) -> Option<HashMap<String, String>> {
+    let file = fs::File::open(file_path).ok()?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let first_line = lines.next()?.ok()?;
+    if first_line.trim() != "---" {
+        return None;
+    }
+
+    let mut map = HashMap::new();
+    for line_result in lines {
+        let line = line_result.ok()?;
+        if line.trim() == "---" {
+            break;
+        }
+
+        if let Some((key, value)) = line.split_once(':') {
+            let trimmed_key = key.trim().to_string();
+            let trimmed_value = strip_yaml_quotes(value.trim());
+            if trimmed_key == "nextPage" || trimmed_key == "previousPage" || trimmed_key == "createdAt" {
+                map.insert(trimmed_key, trimmed_value);
+            }
+        }
+    }
+
+    if map.is_empty() {
+        return None;
+    }
+
+    Some(map)
+}
+
 pub(crate) fn is_same_or_nested_path(parent_path: &Path, child_path: &Path) -> bool {
     let normalized_parent = canonical_or_original(parent_path);
     let normalized_child = canonical_or_original(child_path);
@@ -79,11 +131,50 @@ pub(crate) fn read_directory_tree(
 
             let entry_path = entry.path();
             let entry_path_string = to_path_string(&entry_path);
+            let meta = fs::metadata(&entry_path).ok();
             let is_directory = entry
                 .file_type()
                 .map(|entry_file_type| entry_file_type.is_dir())
                 .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
                 .unwrap_or(false);
+
+            let created_ms = meta.as_ref()
+                .and_then(|m| m.created().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64);
+            let modified_ms = meta.as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64);
+
+            let mut effective_created = created_ms.or(modified_ms);
+
+            let mut next_page: Option<String> = None;
+            let mut previous_page: Option<String> = None;
+
+            if !is_directory {
+                if let Some(ext) = entry_path.extension() {
+                    if ext.to_string_lossy().to_lowercase() == "md" {
+                        if let Some(frontmatter) = read_partial_frontmatter(&entry_path) {
+                            if let Some(created_at_str) = frontmatter.get("createdAt") {
+                                if let Ok(created_at_parsed) = created_at_str.parse::<i64>() {
+                                    effective_created = Some(created_at_parsed);
+                                }
+                            }
+                            if let Some(np) = frontmatter.get("nextPage") {
+                                if np.trim() != "N/A" && !np.trim().is_empty() {
+                                    next_page = Some(np.trim().to_string());
+                                }
+                            }
+                            if let Some(pp) = frontmatter.get("previousPage") {
+                                if pp.trim() != "N/A" && !pp.trim().is_empty() {
+                                    previous_page = Some(pp.trim().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             if is_directory {
                 return Some(FileNode {
@@ -93,6 +184,10 @@ pub(crate) fn read_directory_tree(
                     node_type: "folder".to_string(),
                     expanded: Some(true),
                     children: Some(read_directory_tree(&entry_path, visited_directories)),
+                    created_at: effective_created,
+                    modified_at: modified_ms,
+                    next_page: None,
+                    previous_page: None,
                 });
             }
 
@@ -103,6 +198,10 @@ pub(crate) fn read_directory_tree(
                 node_type: "file".to_string(),
                 expanded: None,
                 children: None,
+                created_at: effective_created,
+                modified_at: modified_ms,
+                next_page,
+                previous_page,
             })
         })
         .collect();
@@ -114,6 +213,13 @@ pub(crate) fn read_directory_tree(
             } else {
                 Ordering::Greater
             };
+        }
+
+        let a_date = a.created_at.or(a.modified_at).unwrap_or(i64::MAX);
+        let b_date = b.created_at.or(b.modified_at).unwrap_or(i64::MAX);
+        let date_cmp = a_date.cmp(&b_date);
+        if date_cmp != Ordering::Equal {
+            return date_cmp;
         }
 
         a.name.to_lowercase().cmp(&b.name.to_lowercase())
@@ -149,7 +255,7 @@ pub(crate) fn collect_directory_signature(
         return;
     };
 
-    let mut entries_to_hash: Vec<(String, PathBuf, bool)> = entries
+    let mut entries_to_hash: Vec<(String, PathBuf, bool, Option<i64>)> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let entry_name = entry.file_name().to_string_lossy().into_owned();
@@ -158,13 +264,25 @@ pub(crate) fn collect_directory_signature(
             }
 
             let entry_path = entry.path();
+            let meta = fs::metadata(&entry_path).ok();
             let is_directory = entry
                 .file_type()
                 .map(|entry_file_type| entry_file_type.is_dir())
                 .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
                 .unwrap_or(false);
 
-            Some((entry_name, entry_path, is_directory))
+            let created_ms = meta.as_ref()
+                .and_then(|m| m.created().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64);
+            let modified_ms = meta.as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64);
+
+            let effective_created = created_ms.or(modified_ms);
+
+            Some((entry_name, entry_path, is_directory, effective_created))
         })
         .collect();
 
@@ -177,10 +295,17 @@ pub(crate) fn collect_directory_signature(
             };
         }
 
+        let left_date = left.3.unwrap_or(i64::MAX);
+        let right_date = right.3.unwrap_or(i64::MAX);
+        let date_cmp = left_date.cmp(&right_date);
+        if date_cmp != Ordering::Equal {
+            return date_cmp;
+        }
+
         left.0.to_lowercase().cmp(&right.0.to_lowercase())
     });
 
-    for (entry_name, entry_path, is_directory) in entries_to_hash {
+    for (entry_name, entry_path, is_directory, _created_at) in entries_to_hash {
         let token = format!(
             "{}|{}|{}",
             if is_directory { "folder" } else { "file" },
@@ -337,5 +462,98 @@ pub(crate) fn read_markdown_files_in_directory(
             path: to_path_string(&entry_path),
             content,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn read_partial_frontmatter_reads_page_links() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_frontmatter_page_links.md");
+        let mut file = fs::File::create(&file_path).unwrap();
+        write!(
+            file,
+            "---\ncreatedAt: 1699999999\nnextPage: [[B.md]]\npreviousPage: N/A\n---\n\n# Hello\n"
+        )
+        .unwrap();
+        drop(file);
+
+        let result = read_partial_frontmatter(&file_path).unwrap();
+        assert_eq!(result.get("createdAt"), Some(&"1699999999".to_string()));
+        assert_eq!(result.get("nextPage"), Some(&"[[B.md]]".to_string()));
+        assert_eq!(result.get("previousPage"), Some(&"N/A".to_string()));
+
+        fs::remove_file(&file_path).unwrap();
+    }
+
+    #[test]
+    fn read_partial_frontmatter_strips_yaml_quotes() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_quotes.md");
+        let mut file = fs::File::create(&file_path).unwrap();
+        write!(
+            file,
+            "---\nnextPage: \"[[B.md]]\"\npreviousPage: '[[A.md]]'\ncreatedAt: 1699999999\n---\n\n# Hello\n"
+        )
+        .unwrap();
+        drop(file);
+
+        let result = read_partial_frontmatter(&file_path).unwrap();
+        assert_eq!(result.get("nextPage"), Some(&"[[B.md]]".to_string()));
+        assert_eq!(result.get("previousPage"), Some(&"[[A.md]]".to_string()));
+        assert_eq!(result.get("createdAt"), Some(&"1699999999".to_string()));
+
+        fs::remove_file(&file_path).unwrap();
+    }
+
+    #[test]
+    fn read_partial_frontmatter_returns_none_for_no_frontmatter() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_no_frontmatter.md");
+        let mut file = fs::File::create(&file_path).unwrap();
+        write!(file, "# Hello\n\nWorld\n").unwrap();
+        drop(file);
+
+        let result = read_partial_frontmatter(&file_path);
+        assert!(result.is_none());
+
+        fs::remove_file(&file_path).unwrap();
+    }
+
+    #[test]
+    fn read_partial_frontmatter_returns_none_for_empty_file() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_empty.md");
+        let file = fs::File::create(&file_path).unwrap();
+        drop(file);
+
+        let result = read_partial_frontmatter(&file_path);
+        assert!(result.is_none());
+
+        fs::remove_file(&file_path).unwrap();
+    }
+
+    #[test]
+    fn read_partial_frontmatter_skips_unrelated_keys() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_skip_keys.md");
+        let mut file = fs::File::create(&file_path).unwrap();
+        write!(
+            file,
+            "---\ntitle: Hello\nnextPage: [[C.md]]\nauthor: Me\n---\n\nBody\n"
+        )
+        .unwrap();
+        drop(file);
+
+        let result = read_partial_frontmatter(&file_path).unwrap();
+        assert_eq!(result.get("nextPage"), Some(&"[[C.md]]".to_string()));
+        assert!(!result.contains_key("title"));
+        assert!(!result.contains_key("author"));
+
+        fs::remove_file(&file_path).unwrap();
     }
 }

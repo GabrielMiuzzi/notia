@@ -4,7 +4,7 @@ import { useAppSelector } from '../../store/hooks'
 import { selectIsHeavyWorkspaceView } from '../../features/ui/uiSelectors'
 import { selectActiveWorkspaceView, selectActiveDocument, selectSaveStatus, selectTreeNodes } from '../../features/documents/documentsSelectors'
 import { selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
-import { selectAiSettings, selectInkdocPreferences } from '../../features/preferences/preferencesSelectors'
+import { selectAiSettings, selectInkdocPreferences, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
 import { MainView } from './MainView'
 import { GraphView } from './views/GraphView'
@@ -59,6 +59,7 @@ function NotiaWorkspaceComponent({
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const inkdocPreferences = useAppSelector(selectInkdocPreferences, shallowEqual)
+  const appTheme = useAppSelector(selectTheme)
   const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
 
   const libraryFilePaths = useMemo(() => {
@@ -169,6 +170,7 @@ function NotiaWorkspaceComponent({
       aiPreferences={aiPreferences}
       markdownWikiLinkTargets={markdownWikiLinkTargets}
       onOpenLinkedFile={actions.openFileFromView}
+      theme={appTheme}
     />
   )
 }

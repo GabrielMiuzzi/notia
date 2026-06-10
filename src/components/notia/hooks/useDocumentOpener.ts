@@ -10,6 +10,7 @@ import {
 } from '../../../features/documents/documentsSlice'
 import {
   readLibraryFileContent,
+  readMarkdownWithDefaults,
 } from '../../../services/libraries/libraryDocumentRuntime'
 import { resolveFileViewKind, isTextualViewKind } from '../../../services/views/fileViewResolver'
 import { getFileExtension } from '../../../utils/files/getFileExtension'
@@ -45,7 +46,9 @@ export function useDocumentOpener({
     if (isTextualViewKind(viewKind) || viewKind === 'inkdoc') {
       openingDocumentPathsRef.current.add(filePath)
       try {
-        const result = await readLibraryFileContent(filePath, {
+        const isMarkdown = extension === 'md'
+        const readFn = isMarkdown ? readMarkdownWithDefaults : readLibraryFileContent
+        const result = await readFn(filePath, {
           androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
         })
         if (!result.ok) {

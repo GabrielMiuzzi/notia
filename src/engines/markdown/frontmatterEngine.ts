@@ -79,7 +79,13 @@ function parseInlineArray(rawValue: string): FrontmatterScalarValue[] {
 function parseValue(rawValue: string): FrontmatterValue {
   const trimmedValue = rawValue.trim()
 
-  if (trimmedValue.startsWith('[') && trimmedValue.endsWith(']')) {
+  // Wikilinks like [[page.md]] start with '[' and end with ']', but they are
+  // scalar strings, not arrays. Only parse as array when it's NOT a wikilink.
+  if (
+    trimmedValue.startsWith('[')
+    && trimmedValue.endsWith(']')
+    && !trimmedValue.startsWith('[[')
+  ) {
     return parseInlineArray(trimmedValue)
   }
 
@@ -256,6 +262,75 @@ export function formatFrontmatterValue(value: FrontmatterValue): string {
   }
 
   return String(value)
+}
+
+export function getFrontmatterValue(entries: FrontmatterEntry[], key: string): FrontmatterValue | undefined {
+  return entries.find((entry) => entry.key === key)?.value
+}
+
+export function hasFrontmatterKey(entries: FrontmatterEntry[], key: string): boolean {
+  return entries.some((entry) => entry.key === key)
+}
+
+export function setFrontmatterValue(entries: FrontmatterEntry[], key: string, value: FrontmatterValue): FrontmatterEntry[] {
+  const index = entries.findIndex((entry) => entry.key === key)
+  if (index >= 0) {
+    const nextEntries = [...entries]
+    nextEntries[index] = { key, value }
+    return nextEntries
+  }
+  return [...entries, { key, value }]
+}
+
+export function removeFrontmatterValue(entries: FrontmatterEntry[], key: string): FrontmatterEntry[] {
+  return entries.filter((entry) => entry.key !== key)
+}
+
+export function ensureMarkdownDefaults(
+  source: string,
+  fileStats: { createdAt?: number },
+): { source: string; mutated: boolean } {
+  const document = parseFrontmatterDocument(source)
+  let nextEntries = document.frontmatter
+  let mutated = false
+
+  if (!hasFrontmatterKey(nextEntries, 'createdAt')) {
+    const createdAtValue = fileStats.createdAt ?? Date.now()
+    nextEntries = setFrontmatterValue(nextEntries, 'createdAt', createdAtValue)
+    mutated = true
+  }
+
+  if (!hasFrontmatterKey(nextEntries, 'nextPage')) {
+    nextEntries = setFrontmatterValue(nextEntries, 'nextPage', 'N/A')
+    mutated = true
+  }
+
+  if (!hasFrontmatterKey(nextEntries, 'previousPage')) {
+    nextEntries = setFrontmatterValue(nextEntries, 'previousPage', 'N/A')
+    mutated = true
+  }
+
+  if (!mutated) {
+    return { source, mutated: false }
+  }
+
+  const nextSource = serializeFrontmatterDocument({
+    hasFrontmatter: true,
+    frontmatter: nextEntries,
+    body: document.body,
+  })
+
+  return { source: nextSource, mutated: true }
+}
+
+export function validatePageLinkValue(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false
+  }
+  if (value.trim() === '') {
+    return false
+  }
+  return true
 }
 
 export function parsePropertyInputValue(input: string): FrontmatterValue {

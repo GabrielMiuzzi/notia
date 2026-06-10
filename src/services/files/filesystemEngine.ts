@@ -3,6 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
+import { sortFilesystemTreeNodesWithPageLinks } from '../../engines/tree/pageLinkSortEngine'
 
 export interface FilesystemOperationResult {
   ok: boolean
@@ -26,6 +27,10 @@ export interface FilesystemTreeNode {
   expanded?: boolean
   hasChildren?: boolean
   children?: FilesystemTreeNode[]
+  createdAt?: number
+  modifiedAt?: number
+  nextPage?: string
+  previousPage?: string
 }
 
 export interface FilesystemPickDirectoryResult {
@@ -151,13 +156,7 @@ function normalizeDirectorySelection(value: unknown): FilesystemPickDirectoryRes
 }
 
 function sortFilesystemTreeNodes(nodes: FilesystemTreeNode[]): FilesystemTreeNode[] {
-  return [...nodes].sort((left, right) => {
-    if (left.type === right.type) {
-      return 0
-    }
-
-    return left.type === 'folder' ? -1 : 1
-  })
+  return sortFilesystemTreeNodesWithPageLinks(nodes)
 }
 
 export function normalizeFilesystemTreeNodes(value: unknown): FilesystemTreeNode[] {
@@ -198,6 +197,10 @@ export function normalizeFilesystemTreeNodes(value: unknown): FilesystemTreeNode
       children: candidate.type === 'folder'
         ? normalizeFilesystemTreeNodes(candidate.children ?? [])
         : undefined,
+      createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : undefined,
+      modifiedAt: typeof candidate.modifiedAt === 'number' ? candidate.modifiedAt : undefined,
+      nextPage: typeof candidate.nextPage === 'string' ? candidate.nextPage : undefined,
+      previousPage: typeof candidate.previousPage === 'string' ? candidate.previousPage : undefined,
     })
   }
 
