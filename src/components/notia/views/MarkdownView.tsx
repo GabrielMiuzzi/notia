@@ -4,6 +4,19 @@ import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { replaceAll } from '@milkdown/kit/utils'
+import { gfm } from '@milkdown/preset-gfm'
+import { emoji } from '@milkdown/plugin-emoji'
+import { cursor } from '@milkdown/plugin-cursor'
+import { indent } from '@milkdown/plugin-indent'
+import { trailing } from '@milkdown/plugin-trailing'
+import { clipboard } from '@milkdown/plugin-clipboard'
+import { codeBlockConfig } from '@milkdown/kit/component/code-block'
+import { commandsCtx } from '@milkdown/kit/core'
+import {
+  codeBlockSchema,
+  clearTextInCurrentBlockCommand,
+  setBlockTypeCommand,
+} from '@milkdown/kit/preset/commonmark'
 import {
   parseFrontmatterDocument,
   serializeFrontmatterDocument,
@@ -14,6 +27,13 @@ import {
   searchWikiLinkTargets,
   type MarkdownWikiLinkLookup,
 } from '../../../engines/markdown/wikiLinkEngine'
+import {
+  syncPageLink,
+} from '../../../engines/markdown/pageLinkSyncEngine'
+import {
+  readLibraryFileContent,
+  writeLibraryFileContent,
+} from '../../../services/libraries/libraryDocumentRuntime'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import { MarkdownPropertiesPanel } from './MarkdownPropertiesPanel'
 import {
@@ -29,6 +49,7 @@ const WIKI_LINK_MENU_MARGIN = 12
 
 interface MarkdownViewProps {
   source: string
+  documentPath: string
   onSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
@@ -129,8 +150,36 @@ function insertWikiLinkSuggestion(
   view.dispatch(transaction.scrollIntoView())
 }
 
+function renderMermaidPreview(content: string, applyPreview: (html: string) => void): void {
+  import('mermaid').then((mermaidMod) => {
+    const mermaid = mermaidMod.default ?? mermaidMod
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' })
+    mermaid
+      .parse(content, { suppressErrors: true })
+      .then((canParse) => {
+        if (!canParse) {
+          applyPreview('')
+          return
+        }
+        const id = `mermaid-preview-${Math.random().toString(36).slice(2)}`
+        mermaid
+          .render(id, content)
+          .then(({ svg }) => {
+            applyPreview(svg)
+          })
+          .catch(() => {
+            applyPreview('')
+          })
+      })
+      .catch(() => {
+        applyPreview('')
+      })
+  })
+}
+
 function MarkdownViewInner({
   source,
+  documentPath,
   onSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
@@ -198,6 +247,39 @@ function MarkdownViewInner({
         [Crepe.Feature.Toolbar]: false,
         [Crepe.Feature.BlockEdit]: true,
       },
+      featureConfigs: {
+        [Crepe.Feature.BlockEdit]: {
+          buildMenu: (builder) => {
+            const advancedGroup = builder.getGroup('advanced')
+            advancedGroup.addItem('mermaid', {
+              label: 'Mermaid',
+              icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
+              onRun: (ctx) => {
+                const commands = ctx.get(commandsCtx)
+                const codeBlock = codeBlockSchema.type(ctx)
+                commands.call(clearTextInCurrentBlockCommand.key)
+                commands.call(setBlockTypeCommand.key, {
+                  nodeType: codeBlock,
+                  attrs: { language: 'mermaid' },
+                })
+              },
+            })
+          },
+        },
+      },
+    })
+
+    crepe.editor.config((ctx) => {
+      ctx.update(codeBlockConfig.key, (prev) => ({
+        ...prev,
+        renderPreview: (language, content, applyPreview) => {
+          if (language.toLowerCase() === 'mermaid') {
+            void renderMermaidPreview(content, applyPreview)
+            return undefined
+          }
+          return prev.renderPreview(language, content, applyPreview)
+        },
+      }))
     })
 
     crepe.editor.use(
@@ -255,6 +337,13 @@ function MarkdownViewInner({
         },
       }),
     )
+
+    crepe.editor.use(gfm)
+    crepe.editor.use(emoji)
+    crepe.editor.use(cursor)
+    crepe.editor.use(indent)
+    crepe.editor.use(trailing)
+    crepe.editor.use(clipboard)
 
     crepeRef.current = crepe
 
@@ -358,6 +447,97 @@ function MarkdownViewInner({
     onSourceChangeRef.current(nextSource)
   }
 
+  const handleEditProperty = async (key: string, value: unknown) => {
+    const index = frontmatterRef.current.findIndex((entry) => entry.key === key)
+    if (index < 0) return
+
+    // Capture the old value BEFORE mutating.
+    const oldValue = frontmatterRef.current[index]?.value
+
+    const nextEntries = [...frontmatterRef.current]
+    nextEntries[index] = { key, value: value as FrontmatterEntry['value'] }
+    frontmatterRef.current = nextEntries
+
+    const nextSource = serializeFrontmatterDocument({
+      hasFrontmatter: true,
+      frontmatter: nextEntries,
+      body: latestBodyRef.current,
+    })
+
+    latestComposedSourceRef.current = nextSource
+    onSourceChangeRef.current(nextSource)
+
+    // Bidirectional sync for page links using the pageLinkSyncEngine
+    const lowerKey = key.toLowerCase()
+    if (lowerKey === 'nextpage' || lowerKey === 'previouspage') {
+      const linkKey = lowerKey === 'nextpage' ? 'nextPage' : 'previousPage'
+
+      const readSource = async (path: string): Promise<string | null> => {
+        try {
+          const result = await readLibraryFileContent(path)
+          return result.ok ? result.content : null
+        } catch {
+          return null
+        }
+      }
+
+      const writeSource = async (path: string, source: string): Promise<void> => {
+        try {
+          const result = await writeLibraryFileContent(path, source)
+          if (!result.ok) {
+            import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
+              notiaLog('markdown', 'writeSource failed', { path, error: result.error }, 'error')
+            })
+          }
+        } catch (error) {
+          import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
+            notiaLog('markdown', 'writeSource error', { path, error: String(error) }, 'error')
+          })
+        }
+      }
+
+      const result = await syncPageLink(
+        documentPath,
+        nextSource,
+        linkKey,
+        oldValue,
+        value,
+        readSource,
+        writeSource,
+      )
+
+      if (result.mutated) {
+        // If the engine further mutated the source (e.g. to canonicalize the value),
+        // update our local state.
+        const finalDocument = parseFrontmatterDocument(result.currentSource)
+        frontmatterRef.current = finalDocument.frontmatter
+        latestComposedSourceRef.current = result.currentSource
+        onSourceChangeRef.current(result.currentSource)
+      }
+
+      if (result.error) {
+        console.error('[MarkdownView] Page link sync error:', result.error)
+      }
+    }
+  }
+
+  const handleDeleteProperty = (key: string) => {
+    const nextEntries = frontmatterRef.current.filter((entry) => entry.key !== key)
+    frontmatterRef.current = nextEntries
+    if (nextEntries.length === 0) {
+      hasFrontmatterRef.current = false
+    }
+
+    const nextSource = serializeFrontmatterDocument({
+      hasFrontmatter: hasFrontmatterRef.current,
+      frontmatter: nextEntries,
+      body: latestBodyRef.current,
+    })
+
+    latestComposedSourceRef.current = nextSource
+    onSourceChangeRef.current(nextSource)
+  }
+
   const handleWikiLinkSelect = (index: number) => {
     const menuState = wikiLinkMenuStateRef.current
     const crepe = crepeRef.current
@@ -381,7 +561,10 @@ function MarkdownViewInner({
         <MarkdownPropertiesPanel
           entries={parsedDocument.frontmatter}
           wikiLinkLookup={wikiLinkLookup}
+          wikiLinkTargets={wikiLinkTargets}
           onAddProperty={handleAddProperty}
+          onEditProperty={handleEditProperty}
+          onDeleteProperty={handleDeleteProperty}
           onOpenLinkedFile={onOpenLinkedFile}
         />
       </div>
