@@ -598,18 +598,44 @@
 /* ── Inline Mermaid preview host (used inside MarkdownView) ───── */
 .notia-mermaid-inline-host {
   width: 100%;
-  height: 320px;
-  min-height: 240px;
-  max-height: 480px;
+  min-height: 200px;
   border: 1px solid var(--color-border-soft);
   border-radius: 8px;
   background: var(--color-card-bg);
   overflow: hidden;
   margin: 12px 0;
+  position: relative;
 }
 
-.notia-mermaid-inline-host .mermaid-canvas-wrapper {
+.notia-mermaid-inline-host > svg {
+  display: block;
   width: 100%;
-  height: 100%;
-  border-radius: inherit;
+  height: auto;
+}
+
+.mermaid-inline-resize-handle {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  background: transparent;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid-inline-resize-handle::after {
+  content: '';
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-border-soft);
+  transition: background 0.15s ease;
+}
+
+.mermaid-inline-resize-handle:hover::after {
+  background: var(--color-accent-text);
 }

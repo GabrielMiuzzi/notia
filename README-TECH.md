@@ -95,7 +95,7 @@ npm run dev:android
 
 1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, InkDoc, ColdPass, Task Manager) se almacenan como archivos en el filesystem. No hay base de datos ni servidor. El estado en Redux modela solo UI, selección y datos derivados.
 2. **Cifrado de ColdPass en frontend**: la passkey nunca viaja al backend. El cifrado/descifrado AES-256-GCM con PBKDF2 (250k iteraciones) se ejecuta en el navegador vía **Web Crypto API**. El backend Rust solo lee/escribe bytes opacos.
-3. **Delegación de cómputo pesado a Web Workers**: el layout del grafo y la construcción del modelo de nodos/enlaces se delegan a `graphModelWorker.ts` y `graphViewWorker.ts` para evitar bloquear el hilo principal.
+3. **Renderizado de Graph View mediante motor Mermaid compartido**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y se convierte a código Mermaid vía `linkCacheMermaidEngine.ts`. La vista utiliza el mismo `MermaidCanvas` que el editor de diagramas, garantizando coherencia visual y un único motor de renderizado. Web Workers pueden emplearse para cómputo pesado puntual, pero actualmente no hay workers activos en el frontend.
 4. **Redux Toolkit para estado global**: 5 slices (`ui`, `preferences`, `library`, `documents`, `explorer`) con persistencia de preferencias en `localStorage` dentro de los propios reducers.
 5. **Separación commands/services/dto en Rust**: los Tauri commands (`commands/`, `filesystem/commands.rs`) son una capa delgada que deserializa, valida y delega a `services/`. La lógica de negocio nunca vive en los commands.
 6. **Filesystem module auto-contenido**: el módulo `src-tauri/src/filesystem/` tiene su propia capa de commands → desktop/android_saf → helpers/validation/types, facilitando el mantenimiento multiplataforma.
@@ -403,7 +403,7 @@ Flujo completo de lectura, renderizado, edición, autosave y persistencia de un 
 ### 2.4 Graph View
 
 #### Descripción
-Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos.
+Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos. A partir de la versión 1.0.13, el Graph View utiliza el **mismo motor Mermaid** que el editor de diagramas: el modelo de nodos y aristas se convierte a código Mermaid (`linkCacheMermaidEngine.ts`) y se renderiza mediante `MermaidCanvas.tsx`, aprovechando zoom/pan, temas y caché LRU compartidos.
 
 #### Endpoints (Commands Tauri)
 
@@ -419,32 +419,34 @@ Construcción y visualización de un grafo de conocimiento donde los nodos son a
 
 #### Salidas
 - `LibraryGraphModel` — `{ nodes: GraphNode[], edges: GraphEdge[] }`.
-- `GraphLayout` — posiciones de nodos en canvas.
-- `SearchResults` — nodos/edges resaltados por query de búsqueda.
+- `Mermaid source` — código Mermaid generado por `buildLinkCacheMermaidCode()`.
+- Renderizado SVG/DOM posicionado por Mermaid, interactivo vía `MermaidCanvas`.
+- Archivo `.notia/linkCache.md` — cache del diagrama regenerado en background.
 
 #### Validaciones
-- Los workers ignoran entradas no válidas (type-check en runtime).
+- `useLibraryGraphData.ts` ignora entradas no válidas y normaliza paths antes de construir el modelo.
 - Si no hay archivos Markdown, el modelo retorna nodos vacíos.
 
 #### Pasos del proceso
 
-1. **Obtención de datos**: `useLibraryGraphData.ts` lee todos los archivos Markdown de la librería vía `filesystemEngine.readMarkdownDocuments(path)` → `invoke('read_markdown_files')` → Rust escanea y lee solo `.md`.
-2. **Construcción del modelo**: el hook postea mensaje a `graphModelWorker.ts` con los datos. El worker ejecuta `buildLibraryGraphModel()` (en `engines/graph/libraryGraphEngine.ts`), que:
+1. **Obtención de datos**: `useLibraryGraphData.ts` lee todos los archivos Markdown de la librería vía `getIndexedLibraryGraphSourcesByPath()` (que internamente usa `read_markdown_files` o caché indexada).
+2. **Construcción del modelo**: en el hilo principal ejecuta `buildLibraryGraphModel()` (en `engines/graph/libraryGraphEngine.ts`), que:
    - Crea un nodo por cada archivo Markdown.
    - Parsea wikilinks del contenido vía `wikiLinkEngine.ts`.
    - Crea aristas entre nodos cuando un wikilink apunta a otro archivo existente.
-3. **Hidratación del layout**: `graphViewWorker.ts` recibe el modelo y los sources. Al recibir una petición `computeGraphDerivedData`:
-   - Ejecuta `buildClusteredGraphLayout()` (fuerzas, clustering, bounding box).
-   - Ejecuta `buildGraphSearchResults()` si hay query de búsqueda.
-4. **Renderizado**: `GraphView.tsx` recibe `graphLayout` y `searchResults` por mensaje del worker, renderiza nodos como elementos DOM/SVG posicionados absolutamente con líneas SVG para aristas.
-5. **Navegación**: clic en nodo → dispatch `documentsSlice.actions.openDocument()` → abre la nota en pestaña.
+3. **Generación de Mermaid**: `GraphView.tsx` invoca `buildLinkCacheMermaidCode(graphModel, rootPath)`, que agrupa los nodos en subgrafos por carpeta y genera un `flowchart TD`.
+4. **Renderizado**: `GraphView.tsx` pasa el código Mermaid a `useMermaidRender()` y luego a `MermaidCanvas.tsx` (modo `readOnly`), obteniendo SVG, zoom/pan y temas consistentes con el resto de la app.
+5. **Post-render**: `onSvgInjected` inyecta `data-notia-path` en cada nodo SVG y aplica resaltado de búsqueda/selección.
+6. **Navegación**: clic en nodo → dispatch `documentsSlice.actions.openDocument()` → abre la nota en pestaña.
+7. **Cache en disco**: tras construir el modelo, `useLibraryGraphData.ts` programa (vía `libraryLinkCacheSchedule.ts`) la regeneración de `.notia/linkCache.md` en segundo plano, con debounce de 1.5 s.
 
 #### Comportamiento ante errores
-- Worker falla en build: se captura en `onmessage` del worker, se posta `graphModelBuildError` al main thread; `GraphView.tsx` muestra estado vacío o mensaje de error.
+- Error construyendo el modelo: se captura en el hook, se loguea y `GraphView.tsx` muestra estado vacío o mensaje de error.
 - Biblioteca sin archivos Markdown: grafo vacío, mensaje informativo.
+- Fallo al escribir `linkCache.md`: se loguea como warning; no bloquea la vista.
 
 #### Dependencias
-- **Frontend**: `GraphView.tsx`, `useLibraryGraphData.ts`, `useGraphDerivedData.ts`, `graphModelWorker.ts`, `graphViewWorker.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `clusteredGraphLayoutEngine.ts`, `graphSearchEngine.ts`.
+- **Frontend**: `GraphView.tsx`, `useLibraryGraphData.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `linkCacheMermaidEngine.ts`, `MermaidCanvas.tsx`, `useMermaidRender.ts`, `mermaidEngine.ts`, `libraryLinkCacheRuntime.ts`, `libraryLinkCacheSchedule.ts`, `useLibraryLinkCacheAutoRebuild.ts`.
 - **Backend**: `read_markdown_files`.
 
 ---
@@ -786,6 +788,15 @@ No hay commands exclusivos. Reutiliza filesystem genérico:
 #### Descripción
 Renderizado de bloques de código `mermaid` embebidos dentro del editor Markdown (Milkdown Crepe). Reutiliza el **mismo pipeline** que `MermaidView` (archivos `.mmd`) para garantizar consistencia visual: mismos colores de tema, manejo de errores, zoom/pan interactivo y estilos CSS compartidos. Los diagramas embebidos son **solo lectura** (sin edición de nodos ni flechas).
 
+Desde la versión 1.0.13, el motor incorpora optimizaciones de rendimiento:
+- **Lazy render**: los diagramas fuera del viewport no se renderizan hasta que `IntersectionObserver` detecta que el contenedor es visible.
+- **Cancelación**: todos los renders aceptan un `AbortSignal`; `useMermaidRender` y `useMermaidLazyRender` abortan renders pendientes al desmontar o al recibir nuevos datos.
+- **Recuperación de inicialización**: si la carga del chunk `mermaid` falla, `initMermaid` reintenta hasta 2 veces y resetea el singleton `initPromise` para permitir recuperación sin reiniciar la app.
+- **Caché LRU con peso**: `renderCache` limita a 20 entradas y 5 MB de SVG strings, expulsando la menos recientemente usada.
+- **IDs únicos por bloque**: `renderMermaidPreview` genera IDs de host únicos por bloque para evitar colisiones cuando dos diagramas tienen el mismo contenido.
+- **Cleanup de listeners**: `MermaidCanvas` limpia el SVG anterior entre renders y vacía el contenedor al desmontar; `useMermaidNodeInteraction` observa solo el `<svg>` directo.
+- **Altura ajustable**: los previews inline permiten redimensionar verticalmente con un handle; la altura se persiste en `localStorage` por `storageKey`.
+
 #### Endpoints (Commands Tauri)
 Ninguno. Todo el renderizado ocurre en el frontend.
 
@@ -799,23 +810,33 @@ Ninguno. Todo el renderizado ocurre en el frontend.
 
 #### Pasos del proceso
 1. **Detección**: en `MarkdownView.tsx`, el `renderPreview` de Milkdown detecta `language === 'mermaid'`.
-2. **Generación de host**: se crea un `<div>` vacío con `class="notia-mermaid-inline-host"` y `id` único. Se pasa `outerHTML` a `applyPreview`.
-3. **Montaje**: tras `requestAnimationFrame`, se busca el nodo en el DOM y se invoca `mountInlineMermaidPreview(host, content)`. El helper usa `WeakMap<HTMLElement, ReactDOM.Root>` para evitar doble montaje.
-4. **Renderizado del portal**:
+2. **Generación de host**: se crea un `<div>` con `class="notia-mermaid-inline-host"` y `id` único determinado por `quickHash(content)`, un índice de bloque y un nonce aleatorio. Se pasa `outerHTML` a `applyPreview`.
+3. **Montaje**: tras `requestAnimationFrame`, se busca el nodo en el DOM y se invoca `mountInlineMermaidPreview(host, content, storageKey)`. El helper usa `WeakMap<HTMLElement, ReactDOM.Root>` para evitar doble montaje.
+4. **Renderizado lazy del portal**:
    - `InlineMermaidPreview.tsx` lee el tema global (`preferences.theme`) desde Redux.
-   - Invoca `useMermaidRender({ code, theme })`, que delega a `renderMermaid()` en `mermaidEngine.ts` (misma función que usa `MermaidView`).
+   - Usa `useMermaidLazyRender({ code, theme, containerRef })`, que crea un `IntersectionObserver` sobre el contenedor.
+   - Solo cuando el host es visible, delega a `renderMermaid()` en `mermaidEngine.ts` (misma función que usa `MermaidView`) con un `AbortController`.
    - Renderiza `MermaidCanvas` con `readOnly={true}`, `panZoomEnabled={true}`, `gridEnabled={false}`. El zoom/pan usa refs internas (`useMermaidPanZoom`), sin persistir en Redux.
-5. **Desmontaje seguro**: un `MutationObserver` en `rootRef.current` detecta nodos `.notia-mermaid-inline-host` removidos (por ejemplo, al borrar el bloque en el editor) y llama `unmountInlineMermaidPreview()` para liberar el `ReactDOM.Root` y evitar fugas de memoria.
-6. **Cleanup del editor**: en el `return` del efecto de inicialización de Milkdown, se desconecta el observer y se desmontan todos los roots inline pendientes.
+5. **Altura ajustable**: `InlineMermaidPreview.tsx` usa `useMermaidInlineResize(storageKey)` para calcular una altura inicial natural desde el SVG y permite redimensionar el host verticalmente arrastrando el handle inferior. La altura final se persiste en `localStorage`.
+6. **Desmontaje seguro**: al destruirse el editor Crepe o cambiar el documento, `MarkdownView` invoca `cleanupInlinePreviews()` que desmonta todos los roots inline y libera los hosts.
+6. **Cleanup del editor**: en el `return` del efecto de inicialización de Milkdown, se desconectan observers y se desmontan todos los roots inline pendientes.
+7. **Limpieza de canvas**: `MermaidCanvas` remueve el SVG anterior antes de inyectar uno nuevo y vacía el contenedor en su cleanup de unmount.
 
 #### Dependencias
-- **Frontend**: `MarkdownView.tsx`, `mermaidPreviewRuntime.tsx` (portal), `InlineMermaidPreview.tsx`, `useMermaidRender.ts`, `MermaidCanvas.tsx` (modo `readOnly`), `mermaidEngine.ts`, `mermaid.css`.
+- **Frontend**: `MarkdownView.tsx`, `mermaidPreviewRuntime.tsx` (portal), `InlineMermaidPreview.tsx`, `useMermaidRender.ts`, `useMermaidLazyRender.ts`, `useMermaidInlineResize.ts`, `MermaidCanvas.tsx` (modo `readOnly`), `mermaidEngine.ts`, `mermaid.css`.
 - **Backend**: ninguno.
 
 #### Decisiones de arquitectura
-- **Portal React en lugar de iframe**: evita overhead de iframe y mantiene el contexto de eventos y estilos CSS globales. El `<Provider>` asegura que el componente portal lea el tema de Redux sin necesidad de re-montar manualmente.
+- **Portal React en lugar de iframe**: evita overhead de iframe y mantiene el contexto de eventos y estilos CSS globales. El `Provider` asegura que el componente portal lea el tema de Redux sin necesidad de re-montar manualmente.
+- **Lazy rendering con IntersectionObserver**: reduce drásticamente la carga inicial al abrir notas con muchos diagramas; solo los bloques visibles o cercanos al viewport inician el renderizado.
+- **Cancelación con AbortController**: `renderMermaid` acepta `AbortSignal`; los hooks de render abortan la promesa activa al desmontar, evitando actualizaciones de estado en componentes desmontados.
+- **Recuperación de inicialización**: `initMermaid` resetea `initPromise` y reintenta la importación hasta 2 veces ante fallos, evitando que un error puntual bloquee todos los renders futuros.
+- **Caché LRU con límite de peso**: `WeightedLruCache` limita tanto la cantidad de entradas (20) como el tamaño estimado total (5 MB), expulsando la menos recientemente usada.
+- **IDs únicos por bloque**: el `containerId` incluye un índice de bloque y un nonce, evitando que dos diagramas con el mismo contenido compartan host.
+- **Altura ajustable con persistencia**: `useMermaidInlineResize` permite redimensionar el preview verticalmente y guarda la altura en `localStorage` por `storageKey`.
+- **Limpieza de listeners y observadores**: `MermaidCanvas` limpia nodos SVG entre renders; `useMermaidNodeInteraction` observa solo el `<svg>` directo (`subtree: false`), reduciendo trabajo innecesario cuando Milkdown destruye/recreate el DOM.
 - `readOnly` en `MermaidCanvas`: desactiva `useMermaidNodeInteraction` y `useMermaidEdgeInteraction` pasando `enabled = false`, oculta `MermaidEdgeToolbar` y deshabilita doble-clicks de edición de labels. El zoom/pan permanece activo.
-- `WeakMap` en `mermaidPreviewRuntime`: evita doble montaje cuando Milkdown re-renderiza el preview del bloque. Como no es iterable, no permite desmontar "todos" eficientemente; el `MutationObserver` cubre ese caso detectando nodos removidos.
+- `WeakMap` en `mermaidPreviewRuntime`: evita doble montaje cuando Milkdown re-renderiza el preview del bloque. Como no es iterable, `MarkdownView` mantiene un `Set` de hosts para desmontar todos eficientemente al cerrar el documento.
 
 ---
 
@@ -1247,13 +1268,11 @@ graph TB
         Redux["Redux Toolkit Store<br/>(ui | preferences | library | documents | explorer)"]
         Services["src/services/<br/>{ai | chat | coldpass | files | libraries | preferences | runtime | views | window}"]
         Engines["src/engines/<br/>{graph | markdown | tree}"]
-        Workers["Web Workers<br/>graphModelWorker | graphViewWorker"]
         Modules["src/modules/<br/>{inkdoc | mermaid | task-manager}"]
 
         React --> Redux
         React --> Services
         Services --> Engines
-        Services --> Workers
         React --> Modules
     end
 
@@ -1293,9 +1312,8 @@ flowchart LR
     UI["React Components<br/>(views / modals / panels)"]
     Hooks["React Hooks<br/>(useLibraryTreeSync / useDocumentPersist)"]
     ServicesTS["TypeScript Services<br/>(filesystemEngine / aiRuntime / coldpassStorage)"]
-    EnginesTS["Engines<br/>(frontmatterEngine / wikiLinkEngine)"]
+    EnginesTS["Engines<br/>(frontmatterEngine / wikiLinkEngine / linkCacheMermaidEngine)"]
     Redux["Redux Store<br/>(5 slices)"]
-    Workers["Web Workers<br/>(graphModel / graphView)"]
     TauriAPI["Tauri API<br/>(invoke / listen)"]
     CommandsRust["Rust Commands<br/>(#[tauri::command])"]
     ServicesRust["Rust Services<br/>(ai_service / bluetooth_service)"]
@@ -1306,9 +1324,7 @@ flowchart LR
     Hooks --> Redux
     UI --> Redux
     ServicesTS --> EnginesTS
-    ServicesTS --> Workers
     ServicesTS --> TauriAPI
-    Workers --> EnginesTS
     TauriAPI --> CommandsRust
     CommandsRust --> ServicesRust
     CommandsRust --> FS
@@ -1934,17 +1950,16 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start([Usuario abre Graph View]) --> ReadMD["filesystemEngine.readMarkdownDocuments()"]
-    ReadMD --> PostModel["Post mensaje a<br/>graphModelWorker.ts"]
-    PostModel --> BuildModel["buildLibraryGraphModel()<br/>nodos + wikilinks → aristas"]
-    BuildModel --> PostLayout["Post mensaje a<br/>graphViewWorker.ts"]
-    PostLayout --> BuildLayout["buildClusteredGraphLayout()<br/>fuerzas + clustering"]
-    BuildLayout --> Receive["GraphView.tsx recibe<br/>graphLayout + searchResults"]
-    Receive --> Render["Render SVG/DOM<br/>nodos posicionados + líneas"]
-    Render --> UserClick{"¿Clic en nodo?"}
+    Start([Usuario abre Graph View]) --> ReadMD["getIndexedLibraryGraphSourcesByPath()<br/>lee .md de la librería"]
+    ReadMD --> BuildModel["useLibraryGraphData.ts<br/>buildLibraryGraphModel()<br/>nodos + wikilinks → aristas"]
+    BuildModel --> GenerateMermaid["linkCacheMermaidEngine.ts<br/>genera flowchart TD por carpeta"]
+    GenerateMermaid --> Render["MermaidCanvas.tsx<br/>mermaid.render() → SVG"]
+    Render --> PostInject["onSvgInjected:<br/>data-notia-path + highlight"]
+    PostInject --> UserClick{"¿Clic en nodo?"}
     UserClick -->|Sí| OpenDoc["dispatch openDocument<br/>abrir nota en pestaña"]
     UserClick -->|No| End([Fin])
     OpenDoc --> End
+    BuildModel -.->|background| WriteCache["libraryLinkCacheRuntime.ts<br/>escribe .notia/linkCache.md"]
 ```
 
 **Diagrama de arquitectura de componentes:**
@@ -1953,33 +1968,39 @@ flowchart TD
 graph LR
     subgraph GraphView["Vista: Graph"]
         GraphViewComp["GraphView.tsx"]
-        Canvas["Canvas / SVG Renderer"]
+        Canvas["MermaidCanvas.tsx<br/>readOnly"]
     end
 
     subgraph GraphHooks["Hooks Graph"]
         GraphData["useLibraryGraphData.ts"]
-        GraphDerived["useGraphDerivedData.ts"]
-    end
-
-    subgraph GraphWorkers["Workers Graph"]
-        ModelWorker["graphModelWorker.ts"]
-        ViewWorker["graphViewWorker.ts"]
     end
 
     subgraph GraphEngines["Engines Graph"]
         LibGraph["libraryGraphEngine.ts"]
-        Layout["clusteredGraphLayoutEngine.ts"]
-        Search["graphSearchEngine.ts"]
         WikiLink["wikiLinkEngine.ts"]
+        LinkMermaid["linkCacheMermaidEngine.ts"]
+    end
+
+    subgraph MermaidModule["Módulo Mermaid"]
+        MermaidEngine["mermaidEngine.ts"]
+        MermaidRender["useMermaidRender.ts"]
+    end
+
+    subgraph GraphCache["Link Cache"]
+        CacheRuntime["libraryLinkCacheRuntime.ts"]
+        CacheSchedule["libraryLinkCacheSchedule.ts"]
+        CacheHook["useLibraryLinkCacheAutoRebuild.ts"]
     end
 
     GraphViewComp --> Canvas
-    GraphData --> ModelWorker
-    ModelWorker --> LibGraph
+    GraphViewComp --> LinkMermaid
+    GraphData --> LibGraph
     LibGraph --> WikiLink
-    GraphDerived --> ViewWorker
-    ViewWorker --> Layout
-    ViewWorker --> Search
+    GraphViewComp --> MermaidRender
+    MermaidRender --> MermaidEngine
+    GraphData -.-> CacheSchedule
+    CacheSchedule --> CacheRuntime
+    CacheHook --> CacheSchedule
 ```
 
 **Diagrama de secuencia específico:**
@@ -1989,36 +2010,44 @@ sequenceDiagram
     actor User
     participant Graph as GraphView.tsx
     participant GraphData as useLibraryGraphData.ts
-    participant GraphDerived as useGraphDerivedData.ts
+    participant Index as librarySearchGraphIndex.ts
     participant FSEngine as filesystemEngine.ts
-    participant ModelWorker as graphModelWorker.ts
-    participant ViewWorker as graphViewWorker.ts
     participant Tauri as Tauri API
     participant RustCmd as filesystem::commands
+    participant LibGraph as libraryGraphEngine.ts
+    participant LinkEngine as linkCacheMermaidEngine.ts
+    participant Canvas as MermaidCanvas.tsx
+    participant Cache as libraryLinkCacheSchedule.ts
 
     User->>Graph: Abrir Graph View
     Graph->>GraphData: Solicitar datos
-    GraphData->>FSEngine: readMarkdownDocuments(path)
+    GraphData->>Index: getIndexedLibraryGraphSourcesByPath
+    Index->>FSEngine: readMarkdownDocuments(path)
     FSEngine->>Tauri: invoke('read_markdown_files')
     Tauri->>RustCmd: Deserializar
     RustCmd->>RustCmd: Escaneo .md
     RustCmd-->>Tauri: Vec<MarkdownFileDocument>
     Tauri-->>FSEngine: Promise
-    FSEngine-->>GraphData: documents[]
+    FSEngine-->>Index: documents[]
+    Index-->>GraphData: graphSourcesByPath
 
-    GraphData->>ModelWorker: postMessage({type:'build', documents})
-    ModelWorker->>ModelWorker: buildLibraryGraphModel()
-    ModelWorker->>ModelWorker: wikiLinkEngine.ts parsea wikilinks
-    ModelWorker-->>GraphData: {type:'model', nodes, edges}
+    GraphData->>LibGraph: buildLibraryGraphModel(tree, sources)
+    LibGraph->>LibGraph: wikiLinkEngine.ts parsea wikilinks
+    LibGraph-->>GraphData: {nodes, edges}
 
-    GraphData->>GraphDerived: postModel + query?
-    GraphDerived->>ViewWorker: postMessage({type:'compute', model, sources, query})
-    ViewWorker->>ViewWorker: buildClusteredGraphLayout()
-    ViewWorker->>ViewWorker: buildGraphSearchResults() (si hay query)
-    ViewWorker-->>GraphDerived: {type:'layout', graphLayout, searchResults}
+    GraphData->>Cache: scheduleLibraryLinkCacheRebuild(params)
+    Cache-->>Cache: debounce 1.5s
+    Cache->>Cache: rebuildLibraryLinkCache()
+    Cache->>FSEngine: writeTextFile(.notia/linkCache.md)
 
-    GraphDerived-->>Graph: Actualizar estado
-    Graph->>Graph: Render SVG/DOM nodos + líneas
+    Graph->>LinkEngine: buildLinkCacheMermaidCode(model, rootPath)
+    LinkEngine-->>Graph: mermaid source
+
+    Graph->>Canvas: render(code, theme)
+    Canvas->>Canvas: mermaid.render(id, source)
+    Canvas-->>Canvas: inject SVG + onSvgInjected
+
+    Graph->>Graph: apply search/selection highlights
 
     User->>Graph: Clic en nodo
     Graph->>Graph: dispatch openDocument(path)
@@ -2704,7 +2733,11 @@ graph TB
 
 ## 6. Notas de Performance
 
-- **Web Workers**: `graphModelWorker` y `graphViewWorker` procesan el modelo de grafo y su layout fuera del hilo principal.
+- **Graph View en hilo principal + motor Mermaid**: el modelo de grafo se construye sincrónicamente en `useLibraryGraphData.ts` y se convierte a código Mermaid para renderizado por `MermaidCanvas`. El layout aprovecha el motor Mermaid optimizado; no hay Web Workers activos en el frontend actualmente.
+- **Lazy render de Mermaid inline**: `useMermaidLazyRender` usa `IntersectionObserver` para no renderizar diagramas embebidos fuera del viewport hasta que sean visibles.
+- **Cancelación de renders**: `renderMermaid` acepta `AbortSignal`; los hooks `useMermaidRender` y `useMermaidLazyRender` abortan renders pendientes al desmontar, reduciendo trabajo en segundo plano.
+- **Caché LRU con límite de peso**: `mermaidEngine.ts` usa `WeightedLruCache` (20 entradas / 5 MB) para evitar que SVGs grandes consuman memoria indefinidamente.
+- **Regeneración background de `linkCache.md`**: `libraryLinkCacheSchedule.ts` debouncea rebuilds a 1.5 s, evitando escrituras repetidas ante cambios rápidos.
 - **Virtualización**: `useVirtualList` se usa en `FileTree` para renderizar solo los nodos visibles en viewport, permitiendo árboles de miles de items sin degradación.
 - **Debounce**: operaciones costosas como autosave de Markdown, búsqueda en grafo y refresco de árbol usan debounce configurable.
 - **Tree Signature Polling**: en desktop se usa el watcher nativo (event-driven). En Android se usa signature comparison para evitar re-leer el árbol completo innecesariamente.
@@ -2764,10 +2797,10 @@ graph TB
 
 #### 8.2.5 Frontend — Web Workers (`workers/`)
 
-- **Cohesión**: **Funcional alta**. `graphModelWorker` solo construye modelos de grafo; `graphViewWorker` solo computa layout y búsquedas.
-- **Acoplamiento**: **De mensajes bajo**. Se comunican con el main thread únicamente por `postMessage`/`onmessage`.
-- **Observaciones**: El umbral de >600 nodos para activación podría ser más conservador (ej. 200) en dispositivos lentos. El layout siempre se delega al worker, lo cual es correcto.
-- **Riesgo**: Ninguno crítico.
+- **Cohesión**: **N/A actualmente**. El directorio `src/workers/` está vacío tras la migración del Graph View al motor Mermaid compartido.
+- **Acoplamiento**: **N/A**.
+- **Observaciones**: Web Workers siguen siendo la herramienta recomendada por `AGENTS.md` para cómputo pesado fuera del hilo principal, pero en este momento no hay workers activos. Si el perfilado del renderizado Mermaid o del modelado del grafo vuelve a superar 100 ms consistentemente, se reevaluará su reintroducción.
+- **Riesgo**: Bajo. El modelo de grafo actual se construye en el hilo principal; bibliotecas muy grandes pueden causar jank momentáneo.
 
 #### 8.2.6 Backend — Commands (`commands/`)
 
@@ -2864,7 +2897,7 @@ graph TB
 | 4 | Agregar tests unitarios para `engines/` y `validation.rs` | Alta | Son funciones puras, fáciles de testear. Aumentaría confianza en cambios futuros. |
 | 5 | Considerar subdivisión de `documentsSlice` si crece | Baja | Actualmente maneja tabs, active tab, tree nodes, search y clipboard. Si se agregan más features, dividir en `tabsSlice` + `treeSlice`. |
 | 6 | Extraer `mermaidPreviewRuntime.tsx` a un hook reutilizable si se usan más previews inline | Baja | Actualmente el portal React está encapsulado en `services/mermaidPreviewRuntime.tsx`. Si otros módulos (ej. Graph View mini-previews) requieren portales inline, considerar un hook genérico `useDomPortal`. |
-| 6 | Evaluar umbral de workers de >600 a ~200 nodos | Baja | En dispositivos lentos, incluso 200 nodos pueden causar jank. Hacer configurable. |
+| 7 | Reintroducir Web Workers si el modelado de grafo vuelve a ser un cuello de botella | Baja | El Graph View ahora no usa workers. Monitorear tiempos de `buildLibraryGraphModel` en bibliotecas grandes. |
 
 ---
 
@@ -2926,7 +2959,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 
 | Cuello | Ubicación | Severidad | Mitigación actual |
 |---|---|---|---|
-| Main thread en bibliotecas grandes | `GraphView.tsx` | Medio | Web Workers para >600 nodos. |
+| Main thread en bibliotecas grandes | `useLibraryGraphData.ts` | Medio | Modelo construido en main thread; se monitorea para evaluar reintroducción de Web Workers si es necesario. |
 | Polling en Android | `useLibraryTreeSync.ts` | Medio | Signature comparison para evitar re-lecturas completas. |
 | Escaneo recursivo SAF en Android | `android_saf.rs` | Alto en bibliotecas grandes | Concurrencia limitada (6 workers en `vaultRuntime.ts`). |
 | `localStorage` como storage único | Múltiples services | Medio | Funciona para datos pequeños; no escala a bibliotecas con miles de entradas de preferencias. |
@@ -2946,7 +2979,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 #### Recomendaciones para escalabilidad
 
 1. **Horizontal**: el módulo `task-manager/` demuestra que nuevos dominios pueden vivir como módulos auto-contenidos con sus propios engines, services y types. Replicar este patrón para futuras features. El módulo `mermaid/` ahora también demuestra que puede exponer componentes para consumo externo (`InlineMermaidPreview`).
-2. **Vertical (renderizado)**: el umbral de 600 nodos para workers podría ser dinámico basado en `navigator.hardwareConcurrency` o tiempo de frame.
+2. **Vertical (renderizado)**: el Graph View ahora renderiza mediante Mermaid en el hilo principal. Si el modelado del grafo supera 100 ms consistentemente, reintroducir Web Workers o delegar `buildLibraryGraphModel` a un worker.
 3. **Storage**: migrar de `localStorage` a un `StorageAdapter` que pueda evolucionar a `IndexedDB` para datos de mayor volumen (ej. índice de búsqueda, historial de Pomodoro).
 
 ---
@@ -3043,4 +3076,4 @@ Para convenciones de código, arquitectura, naming, reglas de estado, manejo de 
 
 ---
 
-*Notia v1.0.12 — Documentación técnica sincronizada con el código fuente. Última actualización: 2026-06-10.*
+*Notia v1.0.13 — Documentación técnica sincronizada con el código fuente. Última actualización: 2026-06-18.*

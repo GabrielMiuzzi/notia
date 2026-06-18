@@ -1,168 +1,74 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type TouchEvent, type WheelEvent } from 'react'
-import { Eye, Search, SlidersHorizontal, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Search, SlidersHorizontal, X } from 'lucide-react'
+import { useAppSelector } from '../../../store/hooks'
+import { selectActiveLibrary } from '../../../features/library/librarySelectors'
+import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { NotiaButton } from '../../common/NotiaButton'
-import {
-  type PositionedGraphEdge,
-  type PositionedGraphNode,
-  type ClusteredGraphLayoutOptions,
-} from '../../../engines/graph/clusteredGraphLayoutEngine'
+import { MermaidCanvas } from '../../../modules/mermaid/components/MermaidCanvas'
+import { useMermaidRender } from '../../../modules/mermaid/hooks/useMermaidRender'
+import { buildLinkCacheMermaidCode } from '../../../engines/graph/linkCacheMermaidEngine'
+import { extractMermaidNodeId } from '../../../modules/mermaid/engines/mermaidEngine'
 import type { LibraryGraphModel } from '../../../types/graph/libraryGraph'
-import { useGraphDerivedData } from '../hooks/useGraphDerivedData'
 
-const MIN_ZOOM_EPSILON = 1e-9
-const MAX_ZOOM = 2.5
-const LABEL_VISIBILITY_ZOOM = 1.35
-const SLIDER_MIN_NODE_SIZE_MULTIPLIER = 0.4
-const SLIDER_MAX_NODE_SIZE_MULTIPLIER = 3.6
-const INPUT_MIN_NODE_SIZE_MULTIPLIER = 0.1
-const INPUT_MAX_NODE_SIZE_MULTIPLIER = 12
-const DEFAULT_SPACING_MULTIPLIER = 68
-const DEFAULT_LINKED_SPACING_MULTIPLIER = 10
-const DEFAULT_COMPONENT_SPACING_MULTIPLIER = -16
-const DEFAULT_COMPONENT_SPACING_SCALE_MULTIPLIER = 100
-const DEFAULT_FREE_NODE_SPACING = 8
-const DEFAULT_FREE_NODE_SPACING_MULTIPLIER = 1
-const DEFAULT_NODE_SIZE_MULTIPLIER = 1
-const GRAPH_VIEW_SETTINGS_STORAGE_KEY = 'notia.graphView.settings.v1'
-const GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY = 'notia.graphView.positions.v1'
-const GRAPH_PHYSICS_COLLISION_PADDING = 5
-const GRAPH_PHYSICS_DAMPING = 0.86
-const GRAPH_PHYSICS_MAX_DELTA = 1.6
-const GRAPH_PHYSICS_MIN_DELTA = 0.45
-const GRAPH_PHYSICS_CONSTRAINT_ITERATIONS = 3
-const GRAPH_PHYSICS_EDGE_CONSTRAINT_SLOP = 0.025
-const GRAPH_PHYSICS_EDGE_COMPRESSION_STRENGTH = 0.18
-const GRAPH_PHYSICS_EDGE_STRETCH_STRENGTH = 0.06
-const GRAPH_PHYSICS_COLLISION_SLOP = 0.025
-const GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL = 0.012
-const GRAPH_PHYSICS_ANCHORED_NODE_PULL = 0.004
-const GRAPH_PHYSICS_DRAG_NEIGHBOR_PULL = 0.016
-const GRAPH_PHYSICS_SECOND_RING_PULL = 0.008
-const GRAPH_PHYSICS_DRAG_LEAF_RING_PULL = 0.017
-const GRAPH_PHYSICS_DRAG_LEAF_RING_SETTLE = 0.1
-const GRAPH_PHYSICS_DRAG_LEAF_RING_PADDING = 18
-const GRAPH_PHYSICS_DRAG_LEAF_RING_MIN_RADIUS = 44
-const GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON = 0.004
-const GRAPH_PHYSICS_MOVEMENT_SLEEP_EPSILON = 0.006
-const GRAPH_PHYSICS_MAX_NODE_SPEED = 14
-const GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER = 0.38
-const GRAPH_PHYSICS_DRAG_OUTER_RING_DAMPING = 0.72
-const GRAPH_PHYSICS_DRAG_NEIGHBOR_DAMPING = 0.82
-const GRAPH_PHYSICS_SETTLE_POSITION_EPSILON = 0.18
-const GRAPH_PHYSICS_SETTLE_VELOCITY_EPSILON = 0.035
-const GRAPH_PHYSICS_SETTLE_REST_LENGTH_EPSILON = 0.22
-const GRAPH_VIEW_FOCUS_ANIMATION_DURATION_MS = 320
-const GRAPH_MODEL_SIGNATURE_CACHE_LIMIT = 24
-const graphModelBySignatureCache = new Map<string, LibraryGraphModel>()
-const FALLBACK_GRAPH_CANVAS_WIDTH = 960
-const FALLBACK_GRAPH_CANVAS_HEIGHT = 640
+const VIEWPORT_STORAGE_KEY = 'notia.linkGraphView.viewport.v1'
+const SETTINGS_STORAGE_KEY = 'notia.linkGraphView.settings.v1'
 
-interface GraphViewSettings {
-  nodeSizeMultiplier: number
+interface ViewportState {
+  zoom: number
+  panX: number
+  panY: number
 }
 
-interface PersistedGraphNodePosition {
-  x: number
-  y: number
-}
-interface GraphEdgeLike {
-  sourcePath: string
-  targetPath: string
+interface GraphSettings {
+  gridEnabled: boolean
 }
 
-interface GraphNodeLike {
-  x: number
-  y: number
-  radius: number
-}
-
-interface GraphSimulationEdge {
-  sourceIndex: number
-  targetIndex: number
-  restLength: number
-}
-
-interface GraphSimulationTopology {
-  edges: GraphSimulationEdge[]
-  pathToIndex: Map<string, number>
-  linkedIndexesByIndex: number[][]
-  restLengthByPairKey: Map<string, number>
-}
-
-interface GraphDragNeighborhood {
-  draggedIndex: number
-  directLinkedIndexes: Set<number>
-  directLeafIndexes: Set<number>
-  secondRingIndexes: Set<number>
-}
-
-interface GraphRenderNode extends PositionedGraphNode {
-  x: number
-  y: number
-  radius: number
-}
-
-class GraphSimulationNode implements PositionedGraphNode {
-  id: string
-  path: string
-  label: string
-  degree: number
-  clusterIndex: number
-  color: string
-  x: number
-  y: number
-  radius: number
-  baseX: number
-  baseY: number
-  vx: number
-  vy: number
-  linkedNodes: GraphSimulationNode[]
-  dragTargetX: number | null
-  dragTargetY: number | null
-  constructor(node: PositionedGraphNode, persistedPosition?: PersistedGraphNodePosition) {
-    this.id = node.id
-    this.path = node.path
-    this.label = node.label
-    this.degree = node.degree
-    this.clusterIndex = node.clusterIndex
-    this.color = node.color
-    this.radius = node.radius
-    const initialX = persistedPosition?.x ?? node.x
-    const initialY = persistedPosition?.y ?? node.y
-    this.x = initialX
-    this.y = initialY
-    this.baseX = initialX
-    this.baseY = initialY
-    this.vx = 0
-    this.vy = 0
-    this.linkedNodes = []
-    this.dragTargetX = null
-    this.dragTargetY = null
-  }
-
-  toRenderNode(): GraphRenderNode {
+function readStoredViewport(): Partial<ViewportState> {
+  try {
+    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const obj = parsed as Record<string, unknown>
     return {
-      id: this.id,
-      path: this.path,
-      label: this.label,
-      degree: this.degree,
-      clusterIndex: this.clusterIndex,
-      color: this.color,
-      x: this.x,
-      y: this.y,
-      radius: this.radius,
+      zoom: typeof obj.zoom === 'number' ? obj.zoom : undefined,
+      panX: typeof obj.panX === 'number' ? obj.panX : undefined,
+      panY: typeof obj.panY === 'number' ? obj.panY : undefined,
     }
+  } catch {
+    return {}
   }
 }
 
-interface NodeDragSession {
-  path: string
-  targetX: number
-  targetY: number
-  velocityX: number
-  velocityY: number
-  pointerOffsetX: number
-  pointerOffsetY: number
+function writeStoredViewport(vp: ViewportState): void {
+  try {
+    window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(vp))
+  } catch {
+    // ignore
+  }
+}
+
+function readStoredSettings(): Partial<GraphSettings> {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const obj = parsed as Record<string, unknown>
+    return {
+      gridEnabled: typeof obj.gridEnabled === 'boolean' ? obj.gridEnabled : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredSettings(settings: GraphSettings): void {
+  try {
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // ignore
+  }
 }
 
 interface GraphViewProps {
@@ -175,2005 +81,371 @@ interface GraphViewProps {
   onChatSelectedPathsChange?: (paths: string[]) => void
 }
 
-interface GraphSearchScrollSession {
-  startClientY: number
-  startScrollTop: number
-  moved: boolean
-}
-
-interface TouchPinchSession {
-  startDistance: number
-  graphX: number
-  graphY: number
-}
-
-function resolveNodeGlowClass(degree: number): string {
-  if (degree === 0) {
-    return 'notia-graph-node--isolated'
-  }
-  if (degree >= 3) {
-    return 'notia-graph-node--hub'
-  }
-  return 'notia-graph-node--connected'
-}
-
-function clampSignedMagnitude(value: number, limit: number): number {
-  if (value > limit) {
-    return limit
-  }
-  if (value < -limit) {
-    return -limit
-  }
-  return value
-}
-
-function easeInOutCubic(value: number): number {
-  if (value < 0.5) {
-    return 4 * value * value * value
-  }
-
-  return 1 - Math.pow(-2 * value + 2, 3) / 2
-}
-
-function isNodeNearRestState(
-  nodeIndex: number,
-  nodes: readonly GraphSimulationNode[],
-  topology: GraphSimulationTopology,
-): boolean {
-  const node = nodes[nodeIndex]
-  if (!node) {
-    return false
-  }
-
-  if (
-    Math.abs(node.baseX - node.x) > GRAPH_PHYSICS_SETTLE_POSITION_EPSILON ||
-    Math.abs(node.baseY - node.y) > GRAPH_PHYSICS_SETTLE_POSITION_EPSILON
-  ) {
-    return false
-  }
-
-  const linkedIndexes = topology.linkedIndexesByIndex[nodeIndex] ?? []
-  for (const linkedIndex of linkedIndexes) {
-    const linkedNode = nodes[linkedIndex]
-    if (!linkedNode) {
-      continue
-    }
-
-    const pairKey = buildEdgePairKey(node.path, linkedNode.path)
-    const restLength = topology.restLengthByPairKey.get(pairKey)
-    if (!restLength) {
-      continue
-    }
-
-    const distance = Math.hypot(linkedNode.x - node.x, linkedNode.y - node.y)
-    if (Math.abs(distance - restLength) > GRAPH_PHYSICS_SETTLE_REST_LENGTH_EPSILON) {
-      return false
-    }
-  }
-
-  return true
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max)
-}
-
-function createEmptySimulationTopology(): GraphSimulationTopology {
-  return {
-    edges: [],
-    pathToIndex: new Map(),
-    linkedIndexesByIndex: [],
-    restLengthByPairKey: new Map(),
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function resolveLibraryStorageKey(libraryName: string): string {
-  const normalizedName = libraryName.trim()
-  return normalizedName.length > 0 ? normalizedName : '__default__'
-}
-
-function buildGraphModelSignature(graphModel: LibraryGraphModel): string {
-  const nodeTokens = graphModel.nodes
-    .map((node) => `${node.path}\u0001${node.label}\u0001${node.degree}`)
-    .sort((left, right) => left.localeCompare(right))
-  const edgeTokens = graphModel.edges
-    .map((edge) => buildEdgePairKey(edge.sourcePath, edge.targetPath))
-    .sort((left, right) => left.localeCompare(right))
-
-  return `${nodeTokens.join('\u0002')}||${edgeTokens.join('\u0002')}`
-}
-
-function getStableGraphModelBySignature(signature: string, graphModel: LibraryGraphModel): LibraryGraphModel {
-  const cachedGraphModel = graphModelBySignatureCache.get(signature)
-  if (cachedGraphModel) {
-    return cachedGraphModel
-  }
-
-  graphModelBySignatureCache.set(signature, graphModel)
-  if (graphModelBySignatureCache.size > GRAPH_MODEL_SIGNATURE_CACHE_LIMIT) {
-    const oldestSignature = graphModelBySignatureCache.keys().next().value
-    if (oldestSignature) {
-      graphModelBySignatureCache.delete(oldestSignature)
-    }
-  }
-
-  return graphModel
-}
-
-function readGraphViewSettings(): Partial<GraphViewSettings> {
-  if (typeof window === 'undefined') {
-    return {}
-  }
-
-  try {
-    const rawValue = window.localStorage.getItem(GRAPH_VIEW_SETTINGS_STORAGE_KEY)
-    if (!rawValue) {
-      return {}
-    }
-    const parsedValue = JSON.parse(rawValue)
-    if (!parsedValue || typeof parsedValue !== 'object') {
-      return {}
-    }
-    return parsedValue as Partial<GraphViewSettings>
-  } catch {
-    return {}
-  }
-}
-
-function readGraphViewNodePositionsStore(): Record<string, Record<string, PersistedGraphNodePosition>> {
-  if (typeof window === 'undefined') {
-    return {}
-  }
-
-  try {
-    const rawValue = window.localStorage.getItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY)
-    if (!rawValue) {
-      return {}
-    }
-
-    const parsedValue: unknown = JSON.parse(rawValue)
-    if (!isRecord(parsedValue)) {
-      return {}
-    }
-
-    const store: Record<string, Record<string, PersistedGraphNodePosition>> = {}
-    for (const [libraryKey, libraryValue] of Object.entries(parsedValue)) {
-      if (!isRecord(libraryValue)) {
-        continue
-      }
-
-      const positionsByPath: Record<string, PersistedGraphNodePosition> = {}
-      for (const [path, pathValue] of Object.entries(libraryValue)) {
-        if (!isRecord(pathValue)) {
-          continue
-        }
-
-        const x = pathValue.x
-        const y = pathValue.y
-        if (typeof x !== 'number' || Number.isNaN(x) || typeof y !== 'number' || Number.isNaN(y)) {
-          continue
-        }
-
-        positionsByPath[path] = { x, y }
-      }
-
-      store[libraryKey] = positionsByPath
-    }
-
-    return store
-  } catch {
-    return {}
-  }
-}
-
-function readGraphViewNodePositionsForLibrary(libraryName: string): Map<string, PersistedGraphNodePosition> {
-  const libraryStorageKey = resolveLibraryStorageKey(libraryName)
-  const store = readGraphViewNodePositionsStore()
-  const libraryPositions = store[libraryStorageKey]
-  if (!libraryPositions) {
-    return new Map()
-  }
-
-  return new Map(Object.entries(libraryPositions))
-}
-
-function resolveInitialNumber(
-  storedSettings: Partial<GraphViewSettings>,
-  key: keyof GraphViewSettings,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  const candidateValue = storedSettings[key]
-  if (typeof candidateValue !== 'number' || Number.isNaN(candidateValue)) {
-    return fallback
-  }
-  return clamp(candidateValue, min, max)
-}
-
-function formatZoomValue(scale: number): string {
-  if (scale >= 1) {
-    return `${scale.toFixed(2)}x`
-  }
-
-  if (scale >= 0.1) {
-    return `${scale.toFixed(3)}x`
-  }
-
-  return `${scale.toExponential(2)}x`
-}
-
-function buildLinkedPathSet(focusPath: string | null, edges: readonly GraphEdgeLike[]): Set<string> | null {
-  if (!focusPath) {
-    return null
-  }
-
-  const connectedPaths = new Set<string>([focusPath])
-  for (const edge of edges) {
-    if (edge.sourcePath === focusPath || edge.targetPath === focusPath) {
-      connectedPaths.add(edge.sourcePath)
-      connectedPaths.add(edge.targetPath)
-    }
-  }
-
-  return connectedPaths
-}
-
-function buildEdgeBorderEndpoints(sourceNode: GraphNodeLike, targetNode: GraphNodeLike) {
-  const deltaX = targetNode.x - sourceNode.x
-  const deltaY = targetNode.y - sourceNode.y
-  const distance = Math.hypot(deltaX, deltaY)
-  if (distance <= 0.001) {
-    return null
-  }
-
-  const minDistanceWithoutOverlap = sourceNode.radius + targetNode.radius
-  if (distance <= minDistanceWithoutOverlap) {
-    return null
-  }
-
-  const directionX = deltaX / distance
-  const directionY = deltaY / distance
-
-  return {
-    x1: sourceNode.x + directionX * sourceNode.radius,
-    y1: sourceNode.y + directionY * sourceNode.radius,
-    x2: targetNode.x - directionX * targetNode.radius,
-    y2: targetNode.y - directionY * targetNode.radius,
-  }
-}
-
-function toSimulationNodes(
-  nodes: readonly PositionedGraphNode[],
-  persistedPositions: Map<string, PersistedGraphNodePosition>,
-): GraphSimulationNode[] {
-  return nodes.map((node) => new GraphSimulationNode(node, persistedPositions.get(node.path)))
-}
-
-function buildEdgePairKey(leftPath: string, rightPath: string): string {
-  return leftPath < rightPath ? `${leftPath}::${rightPath}` : `${rightPath}::${leftPath}`
-}
-
-function computeStableAngleOffset(path: string): number {
-  let hash = 2166136261
-  for (let index = 0; index < path.length; index += 1) {
-    hash ^= path.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-
-  return ((hash % 360) * Math.PI) / 180
-}
-
-function buildGraphSimulationTopology(
-  nodes: readonly GraphSimulationNode[],
-  edges: readonly PositionedGraphEdge[],
-  preferredRestLengthByPairKey?: ReadonlyMap<string, number>,
-): GraphSimulationTopology {
-  for (const node of nodes) {
-    node.linkedNodes = []
-  }
-
-  const pathToIndex = new Map<string, number>()
-  nodes.forEach((node, index) => {
-    pathToIndex.set(node.path, index)
-  })
-
-  const linkedIndexesByIndex = Array.from({ length: nodes.length }, () => [] as number[])
-  const restLengthByPairKey = new Map<string, number>()
-  const simulationEdges: GraphSimulationEdge[] = []
-
-  for (const edge of edges) {
-    const sourceIndex = pathToIndex.get(edge.sourcePath)
-    const targetIndex = pathToIndex.get(edge.targetPath)
-    if (sourceIndex === undefined || targetIndex === undefined || sourceIndex === targetIndex) {
-      continue
-    }
-
-    const sourceNode = nodes[sourceIndex]
-    const targetNode = nodes[targetIndex]
-    const pairKey = buildEdgePairKey(sourceNode.path, targetNode.path)
-    const fallbackDistance = Math.max(1, Math.hypot(targetNode.x - sourceNode.x, targetNode.y - sourceNode.y))
-    const distance = Math.max(1, preferredRestLengthByPairKey?.get(pairKey) ?? fallbackDistance)
-    simulationEdges.push({
-      sourceIndex,
-      targetIndex,
-      restLength: distance,
-    })
-    linkedIndexesByIndex[sourceIndex].push(targetIndex)
-    linkedIndexesByIndex[targetIndex].push(sourceIndex)
-    restLengthByPairKey.set(pairKey, distance)
-    sourceNode.linkedNodes.push(targetNode)
-    targetNode.linkedNodes.push(sourceNode)
-  }
-
-  return {
-    edges: simulationEdges,
-    pathToIndex,
-    linkedIndexesByIndex,
-    restLengthByPairKey,
-  }
-}
-
-function resolveEdgeCorrectionStrength(
-  baseStrength: number,
-  sourceIndex: number,
-  targetIndex: number,
-  dragNeighborhood: GraphDragNeighborhood | null,
-): number {
-  if (!dragNeighborhood) {
-    return baseStrength
-  }
-
-  const { draggedIndex, directLinkedIndexes, secondRingIndexes } = dragNeighborhood
-  const sourceIsDragged = sourceIndex === draggedIndex
-  const targetIsDragged = targetIndex === draggedIndex
-  if (sourceIsDragged || targetIsDragged) {
-    const neighborIndex = sourceIsDragged ? targetIndex : sourceIndex
-    if (directLinkedIndexes.has(neighborIndex)) {
-      return baseStrength * 0.52
-    }
-    return baseStrength * 0.75
-  }
-
-  const sourceIsDirect = directLinkedIndexes.has(sourceIndex)
-  const targetIsDirect = directLinkedIndexes.has(targetIndex)
-  if (sourceIsDirect && targetIsDirect) {
-    return baseStrength * 0.22
-  }
-
-  const sourceIsSecondRing = secondRingIndexes.has(sourceIndex)
-  const targetIsSecondRing = secondRingIndexes.has(targetIndex)
-  if ((sourceIsDirect && targetIsSecondRing) || (targetIsDirect && sourceIsSecondRing)) {
-    return baseStrength * 0.35
-  }
-  if (sourceIsSecondRing && targetIsSecondRing) {
-    return baseStrength * 0.28
-  }
-
-  return baseStrength
-}
-
-function applyElasticEdgeConstraints(
-  nodes: GraphSimulationNode[],
-  topology: GraphSimulationTopology,
-  draggedNodeIndex: number,
-  dragNeighborhood: GraphDragNeighborhood | null,
-  activeClusterIndex: number | null,
-) {
-  for (const edge of topology.edges) {
-    const sourceNode = nodes[edge.sourceIndex]
-    const targetNode = nodes[edge.targetIndex]
-    if (
-      activeClusterIndex !== null &&
-      sourceNode.clusterIndex !== activeClusterIndex &&
-      targetNode.clusterIndex !== activeClusterIndex
-    ) {
-      continue
-    }
-    let dx = targetNode.x - sourceNode.x
-    let dy = targetNode.y - sourceNode.y
-    let distance = Math.hypot(dx, dy)
-    if (distance < 0.001) {
-      dx = 0.001
-      dy = 0.001
-      distance = 0.001
-    }
-
-    const edgeError = distance - edge.restLength
-    const isCompressed = edgeError < 0
-    if (Math.abs(edgeError) <= GRAPH_PHYSICS_EDGE_CONSTRAINT_SLOP) {
-      continue
-    }
-
-    const errorMagnitude = Math.abs(edgeError)
-    const normalizedError = errorMagnitude / distance
-    const baseCorrectionStrength = isCompressed
-      ? GRAPH_PHYSICS_EDGE_COMPRESSION_STRENGTH
-      : GRAPH_PHYSICS_EDGE_STRETCH_STRENGTH
-    const correctionStrength = resolveEdgeCorrectionStrength(
-      baseCorrectionStrength,
-      edge.sourceIndex,
-      edge.targetIndex,
-      dragNeighborhood,
-    )
-    const correctionX = dx * normalizedError * correctionStrength
-    const correctionY = dy * normalizedError * correctionStrength
-    const sourceIsDragged = edge.sourceIndex === draggedNodeIndex
-    const targetIsDragged = edge.targetIndex === draggedNodeIndex
-
-    if (sourceIsDragged && !targetIsDragged) {
-      targetNode.x += isCompressed ? correctionX : -correctionX
-      targetNode.y += isCompressed ? correctionY : -correctionY
-      continue
-    }
-    if (targetIsDragged && !sourceIsDragged) {
-      sourceNode.x += isCompressed ? -correctionX : correctionX
-      sourceNode.y += isCompressed ? -correctionY : correctionY
-      continue
-    }
-
-    sourceNode.x += isCompressed ? -correctionX * 0.5 : correctionX * 0.5
-    sourceNode.y += isCompressed ? -correctionY * 0.5 : correctionY * 0.5
-    targetNode.x += isCompressed ? correctionX * 0.5 : -correctionX * 0.5
-    targetNode.y += isCompressed ? correctionY * 0.5 : -correctionY * 0.5
-  }
-}
-
-function applyCollisionConstraints(
-  nodes: GraphSimulationNode[],
-  draggedNodeIndex: number,
-  activeClusterIndex: number | null,
-) {
-  for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
-    const leftNode = nodes[leftIndex]
-    if (activeClusterIndex !== null && leftNode.clusterIndex !== activeClusterIndex) {
-      continue
-    }
-    for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
-      const rightNode = nodes[rightIndex]
-      if (leftNode.clusterIndex !== rightNode.clusterIndex) {
-        continue
-      }
-      if (activeClusterIndex !== null && rightNode.clusterIndex !== activeClusterIndex) {
-        continue
-      }
-      let dx = rightNode.x - leftNode.x
-      let dy = rightNode.y - leftNode.y
-      let distance = Math.hypot(dx, dy)
-      if (distance < 0.001) {
-        const jitter = ((leftIndex + rightIndex) % 2 === 0 ? 1 : -1) * 0.001
-        dx = jitter
-        dy = jitter
-        distance = 0.001
-      }
-
-      const minDistance = leftNode.radius + rightNode.radius + GRAPH_PHYSICS_COLLISION_PADDING
-      if (distance >= minDistance) {
-        continue
-      }
-
-      const overlap = minDistance - distance
-      if (overlap <= GRAPH_PHYSICS_COLLISION_SLOP) {
-        continue
-      }
-
-      const effectiveOverlap = overlap - GRAPH_PHYSICS_COLLISION_SLOP
-      const correctionX = (dx / distance) * effectiveOverlap
-      const correctionY = (dy / distance) * effectiveOverlap
-      const leftIsDragged = leftIndex === draggedNodeIndex
-      const rightIsDragged = rightIndex === draggedNodeIndex
-
-      if (leftIsDragged && !rightIsDragged) {
-        rightNode.x += correctionX
-        rightNode.y += correctionY
-        continue
-      }
-      if (rightIsDragged && !leftIsDragged) {
-        leftNode.x -= correctionX
-        leftNode.y -= correctionY
-        continue
-      }
-
-      leftNode.x -= correctionX * 0.5
-      leftNode.y -= correctionY * 0.5
-      rightNode.x += correctionX * 0.5
-      rightNode.y += correctionY * 0.5
-    }
-  }
-}
-
-function stepGraphSimulation(
-  nodes: GraphSimulationNode[],
-  topology: GraphSimulationTopology,
-  dragSession: NodeDragSession | null,
-  deltaScale: number,
-): boolean {
-  if (nodes.length === 0) {
-    return false
-  }
-
-  const draggedNodeIndex = dragSession === null ? -1 : (topology.pathToIndex.get(dragSession.path) ?? -1)
-  const activeClusterIndex = draggedNodeIndex >= 0 ? nodes[draggedNodeIndex]?.clusterIndex ?? null : null
-  const dragNeighborhood =
-    draggedNodeIndex >= 0
-      ? (() => {
-          const directIndexes = new Set(topology.linkedIndexesByIndex[draggedNodeIndex] ?? [])
-          const directLeafIndexes = new Set<number>()
-          const secondRingIndexes = new Set<number>()
-
-          for (const directIndex of directIndexes) {
-            const linkedIndexes = topology.linkedIndexesByIndex[directIndex] ?? []
-            const linksExcludingDragged = linkedIndexes.filter((index) => index !== draggedNodeIndex)
-            if (linksExcludingDragged.length === 0) {
-              directLeafIndexes.add(directIndex)
-            }
-          }
-
-          for (const directIndex of directIndexes) {
-            const secondRingCandidates = topology.linkedIndexesByIndex[directIndex] ?? []
-            for (const candidateIndex of secondRingCandidates) {
-              if (candidateIndex === draggedNodeIndex || directIndexes.has(candidateIndex)) {
-                continue
-              }
-              secondRingIndexes.add(candidateIndex)
-            }
-          }
-
-          return {
-            draggedIndex: draggedNodeIndex,
-            directLinkedIndexes: directIndexes,
-            directLeafIndexes,
-            secondRingIndexes,
-          } satisfies GraphDragNeighborhood
-        })()
-      : null
-  const isNodeDragActive = dragSession !== null && draggedNodeIndex >= 0
-  if (isNodeDragActive) {
-    const draggedNode = nodes[draggedNodeIndex]
-    draggedNode.x = dragSession.targetX
-    draggedNode.y = dragSession.targetY
-  }
-  const previousPositions = nodes.map((node) => ({ x: node.x, y: node.y }))
-  for (const node of nodes) {
-    node.dragTargetX = null
-    node.dragTargetY = null
-  }
-
-  for (let index = 0; index < nodes.length; index += 1) {
-    if (index === draggedNodeIndex) {
-      continue
-    }
-
-    const node = nodes[index]
-    if (activeClusterIndex !== null && node.clusterIndex !== activeClusterIndex) {
-      node.vx = 0
-      node.vy = 0
-      continue
-    }
-    const isFreeNode = (topology.linkedIndexesByIndex[index]?.length ?? 0) === 0
-    if (isFreeNode) {
-      node.vx += (node.baseX - node.x) * GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL * deltaScale
-      node.vy += (node.baseY - node.y) * GRAPH_PHYSICS_FREE_NODE_ANCHOR_PULL * deltaScale
-    } else {
-      node.vx += (node.baseX - node.x) * GRAPH_PHYSICS_ANCHORED_NODE_PULL * deltaScale
-      node.vy += (node.baseY - node.y) * GRAPH_PHYSICS_ANCHORED_NODE_PULL * deltaScale
-    }
-
-    node.vx *= GRAPH_PHYSICS_DAMPING
-    node.vy *= GRAPH_PHYSICS_DAMPING
-    node.x += node.vx * deltaScale
-    node.y += node.vy * deltaScale
-  }
-
-  if (dragSession && draggedNodeIndex >= 0) {
-    const draggedNode = nodes[draggedNodeIndex]
-    draggedNode.x = dragSession.targetX
-    draggedNode.y = dragSession.targetY
-
-    const draggedNodePath = draggedNode.path
-    const directLeafIndexes = Array.from(dragNeighborhood?.directLeafIndexes ?? [])
-      .sort((leftIndex, rightIndex) => nodes[leftIndex].path.localeCompare(nodes[rightIndex].path))
-    if (directLeafIndexes.length > 0) {
-      const maxLeafRadius = directLeafIndexes.reduce(
-        (currentMax, nodeIndex) => Math.max(currentMax, nodes[nodeIndex]?.radius ?? 0),
-        0,
-      )
-      const requiredCircumference =
-        directLeafIndexes.length * Math.max(maxLeafRadius * 2 + GRAPH_PHYSICS_COLLISION_PADDING * 2, 18)
-      const leafRingRadius = Math.max(
-        GRAPH_PHYSICS_DRAG_LEAF_RING_MIN_RADIUS,
-        draggedNode.radius + maxLeafRadius + GRAPH_PHYSICS_DRAG_LEAF_RING_PADDING,
-        requiredCircumference / (Math.PI * 2),
-      )
-      const angleStep = (Math.PI * 2) / directLeafIndexes.length
-      const angleOffset = computeStableAngleOffset(draggedNode.path)
-
-      for (let orderIndex = 0; orderIndex < directLeafIndexes.length; orderIndex += 1) {
-        const linkedIndex = directLeafIndexes[orderIndex]
-        const linkedNode = nodes[linkedIndex]
-        const targetAngle = angleOffset + orderIndex * angleStep
-        const targetX = draggedNode.x + Math.cos(targetAngle) * leafRingRadius
-        const targetY = draggedNode.y + Math.sin(targetAngle) * leafRingRadius
-        linkedNode.dragTargetX = targetX
-        linkedNode.dragTargetY = targetY
-        linkedNode.vx += (targetX - linkedNode.x) * GRAPH_PHYSICS_DRAG_LEAF_RING_PULL * deltaScale
-        linkedNode.vy += (targetY - linkedNode.y) * GRAPH_PHYSICS_DRAG_LEAF_RING_PULL * deltaScale
-      }
-    }
-
-    for (const linkedIndex of dragNeighborhood?.directLinkedIndexes ?? []) {
-      if (dragNeighborhood?.directLeafIndexes.has(linkedIndex)) {
-        continue
-      }
-
-      const linkedNode = nodes[linkedIndex]
-      const pairKey = buildEdgePairKey(draggedNodePath, linkedNode.path)
-      const preferredDistance = topology.restLengthByPairKey.get(pairKey) ?? Math.max(24, draggedNode.radius + linkedNode.radius + 14)
-      const dx = draggedNode.x - linkedNode.x
-      const dy = draggedNode.y - linkedNode.y
-      const distance = Math.max(0.001, Math.hypot(dx, dy))
-      const distanceError = distance - preferredDistance
-      if (distanceError > 0) {
-        linkedNode.vx += (dx / distance) * distanceError * GRAPH_PHYSICS_DRAG_NEIGHBOR_PULL * deltaScale
-        linkedNode.vy += (dy / distance) * distanceError * GRAPH_PHYSICS_DRAG_NEIGHBOR_PULL * deltaScale
-      }
-    }
-
-    for (const linkedIndex of dragNeighborhood?.secondRingIndexes ?? []) {
-      const linkedNode = nodes[linkedIndex]
-      linkedNode.vx += (linkedNode.baseX - linkedNode.x) * GRAPH_PHYSICS_SECOND_RING_PULL * deltaScale
-      linkedNode.vy += (linkedNode.baseY - linkedNode.y) * GRAPH_PHYSICS_SECOND_RING_PULL * deltaScale
-    }
-  }
-
-  for (let iteration = 0; iteration < GRAPH_PHYSICS_CONSTRAINT_ITERATIONS; iteration += 1) {
-    for (let index = 0; index < nodes.length; index += 1) {
-      if (index === draggedNodeIndex) {
-        continue
-      }
-
-      const node = nodes[index]
-      if (node.dragTargetX !== null && node.dragTargetY !== null) {
-        node.x += (node.dragTargetX - node.x) * GRAPH_PHYSICS_DRAG_LEAF_RING_SETTLE
-        node.y += (node.dragTargetY - node.y) * GRAPH_PHYSICS_DRAG_LEAF_RING_SETTLE
-      }
-    }
-
-    applyElasticEdgeConstraints(nodes, topology, draggedNodeIndex, dragNeighborhood, activeClusterIndex)
-    applyCollisionConstraints(nodes, draggedNodeIndex, activeClusterIndex)
-    if (dragSession && draggedNodeIndex >= 0) {
-      const draggedNode = nodes[draggedNodeIndex]
-      draggedNode.x = dragSession.targetX
-      draggedNode.y = dragSession.targetY
-    }
-  }
-
-  let maxMovement = 0
-  for (let index = 0; index < nodes.length; index += 1) {
-    if (index === draggedNodeIndex) {
-      nodes[index].vx = dragSession?.velocityX ?? 0
-      nodes[index].vy = dragSession?.velocityY ?? 0
-      continue
-    }
-
-    const node = nodes[index]
-    if (activeClusterIndex !== null && node.clusterIndex !== activeClusterIndex) {
-      node.vx = 0
-      node.vy = 0
-      continue
-    }
-    const previous = previousPositions[index]
-    const positionalDeltaX = node.x - previous.x
-    const positionalDeltaY = node.y - previous.y
-    let nextVx = node.vx * (1 - GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER) + positionalDeltaX * GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER
-    let nextVy = node.vy * (1 - GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER) + positionalDeltaY * GRAPH_PHYSICS_CONSTRAINT_VELOCITY_TRANSFER
-    if (
-      dragNeighborhood &&
-      index !== draggedNodeIndex &&
-      !dragNeighborhood.directLinkedIndexes.has(index)
-    ) {
-      const isSecondRingNode = dragNeighborhood.secondRingIndexes.has(index)
-      const damping = isSecondRingNode ? GRAPH_PHYSICS_DRAG_NEIGHBOR_DAMPING : GRAPH_PHYSICS_DRAG_OUTER_RING_DAMPING
-      nextVx *= damping
-      nextVy *= damping
-    }
-
-    nextVx = clampSignedMagnitude(nextVx, GRAPH_PHYSICS_MAX_NODE_SPEED)
-    nextVy = clampSignedMagnitude(nextVy, GRAPH_PHYSICS_MAX_NODE_SPEED)
-    if (
-      Math.abs(nextVx) <= GRAPH_PHYSICS_SETTLE_VELOCITY_EPSILON &&
-      Math.abs(nextVy) <= GRAPH_PHYSICS_SETTLE_VELOCITY_EPSILON &&
-      isNodeNearRestState(index, nodes, topology)
-    ) {
-      node.x = node.baseX
-      node.y = node.baseY
-      node.vx = 0
-      node.vy = 0
-      continue
-    }
-
-    node.vx = Math.abs(nextVx) <= GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON ? 0 : nextVx
-    node.vy = Math.abs(nextVy) <= GRAPH_PHYSICS_VELOCITY_SLEEP_EPSILON ? 0 : nextVy
-    maxMovement = Math.max(maxMovement, Math.hypot(node.vx, node.vy))
-  }
-
-  return maxMovement > GRAPH_PHYSICS_MOVEMENT_SLEEP_EPSILON || dragSession !== null
-}
-
-function persistGraphNodePositionsForLibrary(libraryName: string, nodes: readonly GraphSimulationNode[]): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  const libraryStorageKey = resolveLibraryStorageKey(libraryName)
-  const nextStore = readGraphViewNodePositionsStore()
-  const positionsByPath: Record<string, PersistedGraphNodePosition> = {}
-
-  for (const node of nodes) {
-    if (!Number.isFinite(node.baseX) || !Number.isFinite(node.baseY)) {
-      continue
-    }
-
-    positionsByPath[node.path] = {
-      x: node.baseX,
-      y: node.baseY,
-    }
-  }
-
-  nextStore[libraryStorageKey] = positionsByPath
-  window.localStorage.setItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY, JSON.stringify(nextStore))
-}
-
-function clearGraphNodePositionsForLibrary(libraryName: string): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  const libraryStorageKey = resolveLibraryStorageKey(libraryName)
-  const nextStore = readGraphViewNodePositionsStore()
-  if (!(libraryStorageKey in nextStore)) {
-    return
-  }
-
-  delete nextStore[libraryStorageKey]
-  if (Object.keys(nextStore).length === 0) {
-    window.localStorage.removeItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY)
-    return
-  }
-
-  window.localStorage.setItem(GRAPH_VIEW_NODE_POSITIONS_STORAGE_KEY, JSON.stringify(nextStore))
-}
-
-function GraphViewComponent({
+export const GraphView = memo(function GraphView({
   graphModel,
-  graphSourcesByPath,
-  libraryName,
-  isLoading,
   onOpenFile,
   chatSelectedPaths = [],
   onChatSelectedPathsChange,
 }: GraphViewProps) {
-  const initialSettings = useMemo(() => readGraphViewSettings(), [])
-  const graphModelSignature = useMemo(() => buildGraphModelSignature(graphModel), [graphModel])
-  const stableGraphModel = useMemo(
-    () => getStableGraphModelBySignature(graphModelSignature, graphModel),
-    [graphModel, graphModelSignature],
-  )
-  const canvasRef = useRef<HTMLDivElement>(null)
-  const searchResultsRef = useRef<HTMLDivElement>(null)
-  const controlsButtonRef = useRef<HTMLButtonElement>(null)
-  const controlsPanelRef = useRef<HTMLDivElement>(null)
-  const searchScrollSessionRef = useRef<GraphSearchScrollSession | null>(null)
-  const dragStartRef = useRef<{
-    originX: number
-    originY: number
-    pointerX: number
-    pointerY: number
-  } | null>(null)
-  const nodeDragRef = useRef<NodeDragSession | null>(null)
-  const simulationNodesRef = useRef<GraphSimulationNode[]>([])
-  const simulationTopologyRef = useRef<GraphSimulationTopology>(createEmptySimulationTopology())
-  const simulationFrameRef = useRef<number | null>(null)
-  const viewportAnimationFrameRef = useRef<number | null>(null)
-  const viewportRef = useRef({ x: 0, y: 0, scale: 1 })
-  const simulationLastTimestampRef = useRef<number | null>(null)
-  const simulationNeedsSyncRef = useRef(true)
-  const dragMovedRef = useRef(false)
-  const touchPinchSessionRef = useRef<TouchPinchSession | null>(null)
-  const [isDragging, setIsDragging] = useState(false)
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
-  const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 })
-  const [displayedNodes, setDisplayedNodes] = useState<GraphRenderNode[]>([])
-  const [draggedPath, setDraggedPath] = useState<string | null>(null)
-  const [hoveredPath, setHoveredPath] = useState<string | null>(null)
-  const [hoveredSearchResultPath, setHoveredSearchResultPath] = useState<string | null>(null)
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const [isControlsOpen, setIsControlsOpen] = useState(false)
+  const activeLibrary = useAppSelector(selectActiveLibrary)
+  const appTheme = useAppSelector(selectTheme)
+  const rootPath = activeLibrary?.path ?? null
+
   const [searchQuery, setSearchQuery] = useState('')
-  const [nodeSizeMultiplier, setNodeSizeMultiplier] = useState(() =>
-    resolveInitialNumber(
-      initialSettings,
-      'nodeSizeMultiplier',
-      DEFAULT_NODE_SIZE_MULTIPLIER,
-      INPUT_MIN_NODE_SIZE_MULTIPLIER,
-      INPUT_MAX_NODE_SIZE_MULTIPLIER,
-    ),
-  )
-  const selectedChatPathSet = useMemo(() => new Set(chatSelectedPaths), [chatSelectedPaths])
+  const [isControlsOpen, setIsControlsOpen] = useState(false)
+  const [settings, setSettings] = useState<GraphSettings>(() => ({
+    gridEnabled: readStoredSettings().gridEnabled ?? true,
+  }))
+  const [viewport, setViewport] = useState<Partial<ViewportState>>(() => readStoredViewport())
 
-  const toggleChatContextPath = useCallback((path: string) => {
-    if (!onChatSelectedPathsChange) {
-      return
+  const svgWrapperRef = useRef<HTMLDivElement | null>(null)
+
+  // Generate mermaid code from graph model
+  const mermaidCode = useMemo(() => {
+    if (graphModel.nodes.length === 0) {
+      return ''
     }
+    const result = buildLinkCacheMermaidCode(graphModel, rootPath)
+    return result.code
+  }, [graphModel, rootPath])
 
-    onChatSelectedPathsChange(
-      selectedChatPathSet.has(path)
-        ? chatSelectedPaths.filter((currentPath) => currentPath !== path)
-        : [...chatSelectedPaths, path],
-    )
-  }, [chatSelectedPaths, onChatSelectedPathsChange, selectedChatPathSet])
-
-  useEffect(() => {
-    viewportRef.current = viewport
-  }, [viewport])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    const settingsToPersist: GraphViewSettings = {
-      nodeSizeMultiplier,
-    }
-
-    window.localStorage.setItem(GRAPH_VIEW_SETTINGS_STORAGE_KEY, JSON.stringify(settingsToPersist))
-  }, [nodeSizeMultiplier])
-
-  useEffect(() => {
-    const canvasElement = canvasRef.current
-    if (!canvasElement) {
-      return
-    }
-
-    let frameId: number | null = null
-    const updateCanvasSize = (nextWidth: number, nextHeight: number) => {
-      setCanvasSize((current) => {
-        if (current.width === nextWidth && current.height === nextHeight) {
-          return current
-        }
-
-        return {
-          width: nextWidth,
-          height: nextHeight,
-        }
-      })
-    }
-
-    const measureCanvasElement = () => {
-      const rect = canvasElement.getBoundingClientRect()
-      const parentRect = canvasElement.parentElement?.getBoundingClientRect()
-      const nextWidth = Math.floor(
-        rect.width
-        || parentRect?.width
-        || canvasElement.clientWidth
-        || canvasElement.parentElement?.clientWidth
-        || 0,
-      )
-      const nextHeight = Math.floor(
-        rect.height
-        || parentRect?.height
-        || canvasElement.clientHeight
-        || canvasElement.parentElement?.clientHeight
-        || 0,
-      )
-      updateCanvasSize(nextWidth, nextHeight)
-    }
-
-    measureCanvasElement()
-    frameId = window.requestAnimationFrame(() => {
-      frameId = null
-      measureCanvasElement()
-    })
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      const firstEntry = entries[0]
-      if (!firstEntry) {
-        return
-      }
-
-      const nextWidth = Math.floor(firstEntry.contentRect.width)
-      const nextHeight = Math.floor(firstEntry.contentRect.height)
-      updateCanvasSize(nextWidth, nextHeight)
-    })
-
-    resizeObserver.observe(canvasElement)
-    return () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId)
-      }
-      resizeObserver.disconnect()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!isControlsOpen) {
-      return
-    }
-
-    const handlePointerDown = (event: globalThis.MouseEvent) => {
-      const target = event.target
-      if (!(target instanceof Node)) {
-        return
-      }
-
-      const clickedButton = Boolean(controlsButtonRef.current?.contains(target))
-      const clickedPanel = Boolean(controlsPanelRef.current?.contains(target))
-      if (clickedButton || clickedPanel) {
-        return
-      }
-
-      setIsControlsOpen(false)
-    }
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsControlsOpen(false)
-      }
-    }
-
-    window.addEventListener('mousedown', handlePointerDown)
-    window.addEventListener('keydown', handleEscape)
-    return () => {
-      window.removeEventListener('mousedown', handlePointerDown)
-      window.removeEventListener('keydown', handleEscape)
-    }
-  }, [isControlsOpen])
-
-  const graphLayoutOptions = useMemo<ClusteredGraphLayoutOptions>(
-    () => ({
-      spacingMultiplier: DEFAULT_SPACING_MULTIPLIER,
-      linkedSpacingMultiplier: DEFAULT_LINKED_SPACING_MULTIPLIER,
-      componentSpacingMultiplier: DEFAULT_COMPONENT_SPACING_MULTIPLIER,
-      componentSpacingScaleMultiplier: DEFAULT_COMPONENT_SPACING_SCALE_MULTIPLIER,
-      freeNodeSpacing: DEFAULT_FREE_NODE_SPACING,
-      freeNodeSpacingMultiplier: DEFAULT_FREE_NODE_SPACING_MULTIPLIER,
-      nodeSizeMultiplier,
-    }),
-    [nodeSizeMultiplier],
-  )
-  const effectiveCanvasSize = useMemo(() => {
-    if (canvasSize.width > 0 && canvasSize.height > 0) {
-      return canvasSize
-    }
-
-    if (typeof window !== 'undefined') {
-      return {
-        width: Math.max(FALLBACK_GRAPH_CANVAS_WIDTH, Math.floor(window.innerWidth * 0.72)),
-        height: Math.max(FALLBACK_GRAPH_CANVAS_HEIGHT, Math.floor(window.innerHeight * 0.7)),
-      }
-    }
-
-    return {
-      width: FALLBACK_GRAPH_CANVAS_WIDTH,
-      height: FALLBACK_GRAPH_CANVAS_HEIGHT,
-    }
-  }, [canvasSize])
-  const { graphLayout, searchResults, isGraphDerivedDataLoading } = useGraphDerivedData({
-    graphModel: stableGraphModel,
-    graphSourcesByPath,
-    canvasSize: effectiveCanvasSize,
-    layoutOptions: graphLayoutOptions,
-    searchQuery,
+  const { result, error, isLoading } = useMermaidRender({
+    code: mermaidCode,
+    theme: appTheme === 'dark' ? 'dark' : 'default',
   })
 
-  const buildInitialSimulationNodes = useCallback(
-    (): GraphSimulationNode[] =>
-      toSimulationNodes(graphLayout.nodes, readGraphViewNodePositionsForLibrary(libraryName)),
-    [graphLayout.nodes, libraryName],
-  )
-
-  useEffect(() => {
-    const nextSimulationNodes = buildInitialSimulationNodes()
-    simulationNodesRef.current = nextSimulationNodes
-    simulationTopologyRef.current = buildGraphSimulationTopology(nextSimulationNodes, graphLayout.edges)
-    nodeDragRef.current = null
-    dragStartRef.current = null
-    simulationNeedsSyncRef.current = true
-    simulationLastTimestampRef.current = null
-  }, [buildInitialSimulationNodes, graphLayout.edges])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
+  // Build reverse lookup map whenever the graph model changes
+  const safeIdToPath = useMemo(() => {
+    if (graphModel.nodes.length === 0) {
+      return new Map<string, string>()
     }
-
-    if (simulationFrameRef.current !== null) {
-      window.cancelAnimationFrame(simulationFrameRef.current)
-      simulationFrameRef.current = null
-    }
-
-    const tick = (timestamp: number) => {
-      if (simulationLastTimestampRef.current === null) {
-        simulationLastTimestampRef.current = timestamp
-      }
-      const elapsedMs = timestamp - simulationLastTimestampRef.current
-      simulationLastTimestampRef.current = timestamp
-      const deltaScale = clamp(elapsedMs / 16.667, GRAPH_PHYSICS_MIN_DELTA, GRAPH_PHYSICS_MAX_DELTA)
-      const simulationNodes = simulationNodesRef.current
-      const hadMovement = stepGraphSimulation(
-        simulationNodes,
-        simulationTopologyRef.current,
-        nodeDragRef.current,
-        deltaScale,
-      )
-      if (hadMovement || simulationNeedsSyncRef.current) {
-        simulationNeedsSyncRef.current = false
-        setDisplayedNodes(simulationNodes.map((node) => node.toRenderNode()))
-      }
-      simulationFrameRef.current = window.requestAnimationFrame(tick)
-    }
-
-    simulationFrameRef.current = window.requestAnimationFrame(tick)
-    return () => {
-      if (simulationFrameRef.current !== null) {
-        window.cancelAnimationFrame(simulationFrameRef.current)
-      }
-      simulationFrameRef.current = null
-      simulationLastTimestampRef.current = null
-    }
-  }, [graphLayout.edges])
-
-  const renderedNodes = useMemo(() => {
-    if (displayedNodes.length > 0) {
-      return displayedNodes
-    }
-    return buildInitialSimulationNodes().map((node) => node.toRenderNode())
-  }, [buildInitialSimulationNodes, displayedNodes])
-
-  const positionedNodesByPath = useMemo(() => {
-    const map = new Map<string, GraphRenderNode>()
-    for (const node of renderedNodes) {
-      map.set(node.path, node)
-    }
-    return map
-  }, [renderedNodes])
-  const searchMatchedPaths = useMemo(() => new Set(searchResults.map((result) => result.path)), [searchResults])
-
-  const visibleEdges = useMemo(() => {
-    return graphLayout.edges.filter(
-      (edge) => positionedNodesByPath.has(edge.sourcePath) && positionedNodesByPath.has(edge.targetPath),
+    const { pathToSafeId } = buildLinkCacheMermaidCode(graphModel, rootPath)
+    return new Map(
+      Array.from(pathToSafeId.entries()).map(([path, safeId]) => [safeId, path]),
     )
-  }, [graphLayout.edges, positionedNodesByPath])
+  }, [graphModel, rootPath])
 
-  const selectedPathInLayout = selectedPath && positionedNodesByPath.has(selectedPath) ? selectedPath : null
+  // Post-render: inject data attributes into SVG nodes for click handling
+  const handleSvgInjected = useCallback((container: HTMLDivElement) => {
+    const svg = container.querySelector('svg')
+    if (!svg) return
 
-  const linkedToHoveredPath = useMemo(() => {
-    return buildLinkedPathSet(hoveredPath, visibleEdges)
-  }, [hoveredPath, visibleEdges])
+    if (safeIdToPath.size === 0) return
 
-  const linkedToSelectedPath = useMemo(() => {
-    return buildLinkedPathSet(selectedPathInLayout, visibleEdges)
-  }, [selectedPathInLayout, visibleEdges])
-
-  const highlightedPaths = linkedToSelectedPath ?? linkedToHoveredPath
-
-  const resolveGraphCoordinatesFromClientPoint = useCallback(
-    (clientX: number, clientY: number) => {
-      const canvasElement = canvasRef.current
-      if (!canvasElement || effectiveCanvasSize.width <= 0 || effectiveCanvasSize.height <= 0) {
-        return null
-      }
-
-      const rect = canvasElement.getBoundingClientRect()
-      const localX = clientX - rect.left - effectiveCanvasSize.width / 2
-      const localY = clientY - rect.top - effectiveCanvasSize.height / 2
-
-      return {
-        x: (localX - viewport.x) / viewport.scale,
-        y: (localY - viewport.y) / viewport.scale,
-      }
-    },
-    [effectiveCanvasSize.height, effectiveCanvasSize.width, viewport.scale, viewport.x, viewport.y],
-  )
-
-  const resolveCanvasLocalCoordinatesFromClientPoint = useCallback(
-    (clientX: number, clientY: number) => {
-      const canvasElement = canvasRef.current
-      if (!canvasElement || effectiveCanvasSize.width <= 0 || effectiveCanvasSize.height <= 0) {
-        return null
-      }
-
-      const rect = canvasElement.getBoundingClientRect()
-      return {
-        x: clientX - rect.left - effectiveCanvasSize.width / 2,
-        y: clientY - rect.top - effectiveCanvasSize.height / 2,
-      }
-    },
-    [effectiveCanvasSize.height, effectiveCanvasSize.width],
-  )
-
-  const updateNodeDragTarget = useCallback(
-    (clientX: number, clientY: number) => {
-      const dragSession = nodeDragRef.current
-      if (!dragSession) {
-        return false
-      }
-
-      const graphCoordinates = resolveGraphCoordinatesFromClientPoint(clientX, clientY)
-      if (!graphCoordinates) {
-        return false
-      }
-
-      const nextTargetX = graphCoordinates.x + dragSession.pointerOffsetX
-      const nextTargetY = graphCoordinates.y + dragSession.pointerOffsetY
-      const deltaX = nextTargetX - dragSession.targetX
-      const deltaY = nextTargetY - dragSession.targetY
-
-      dragSession.velocityX = deltaX
-      dragSession.velocityY = deltaY
-      dragSession.targetX = nextTargetX
-      dragSession.targetY = nextTargetY
-      return Math.hypot(deltaX, deltaY) > 0.2
-    },
-    [resolveGraphCoordinatesFromClientPoint],
-  )
-
-  const commitDraggedNodePositions = useCallback(() => {
-    const simulationNodes = simulationNodesRef.current
-    if (simulationNodes.length === 0) {
-      return
-    }
-
-    const previousRestLengthByPairKey = simulationTopologyRef.current.restLengthByPairKey
-
-    for (const node of simulationNodes) {
-      node.baseX = node.x
-      node.baseY = node.y
-      node.vx *= 0.5
-      node.vy *= 0.5
-    }
-
-    simulationTopologyRef.current = buildGraphSimulationTopology(
-      simulationNodes,
-      graphLayout.edges,
-      previousRestLengthByPairKey,
-    )
-    simulationNeedsSyncRef.current = true
-    setDisplayedNodes(simulationNodes.map((node) => node.toRenderNode()))
-    persistGraphNodePositionsForLibrary(libraryName, simulationNodes)
-  }, [graphLayout.edges, libraryName])
-
-  const handleCanvasMouseDown = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) {
-      return
-    }
-
-    if (nodeDragRef.current) {
-      return
-    }
-
-    dragMovedRef.current = false
-    dragStartRef.current = {
-      originX: viewport.x,
-      originY: viewport.y,
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-    }
-    setIsDragging(true)
-  }
-
-  const handleCanvasMouseMove = (event: MouseEvent<HTMLDivElement>) => {
-    if (nodeDragRef.current) {
-      if (updateNodeDragTarget(event.clientX, event.clientY)) {
-        dragMovedRef.current = true
-      }
-      return
-    }
-
-    const dragStart = dragStartRef.current
-    if (!dragStart) {
-      return
-    }
-
-    const deltaX = event.clientX - dragStart.pointerX
-    const deltaY = event.clientY - dragStart.pointerY
-    if (Math.abs(deltaX) + Math.abs(deltaY) > 2) {
-      dragMovedRef.current = true
-    }
-
-    setViewport((current) => {
-      const nextX = dragStart.originX + deltaX
-      const nextY = dragStart.originY + deltaY
-
-      if (current.x === nextX && current.y === nextY) {
-        return current
-      }
-
-      return {
-        ...current,
-        x: nextX,
-        y: nextY,
-      }
+    const nodeElements = svg.querySelectorAll('.node, .icon-shape')
+    nodeElements.forEach((el) => {
+      const rawId = el.id
+      if (!rawId) return
+      const extractedId = extractMermaidNodeId(rawId)
+      if (!extractedId) return
+      const filePath = safeIdToPath.get(extractedId)
+      if (!filePath) return
+      ;(el as HTMLElement).setAttribute('data-notia-path', filePath)
     })
-  }
 
-  const handleCanvasMouseUp = () => {
-    const releasedNodePath = nodeDragRef.current?.path
-    if (releasedNodePath) {
-      commitDraggedNodePositions()
-    }
-    nodeDragRef.current = null
-    setDraggedPath(null)
-    dragStartRef.current = null
-    setIsDragging(false)
-  }
-
-  const handleCanvasMouseLeave = () => {
-    const releasedNodePath = nodeDragRef.current?.path
-    if (releasedNodePath) {
-      commitDraggedNodePositions()
-    }
-    nodeDragRef.current = null
-    setDraggedPath(null)
-    dragStartRef.current = null
-    setIsDragging(false)
-    setHoveredPath(null)
-  }
-
-  useEffect(() => {
-    if (!isDragging) {
-      return
-    }
-
-    const handleWindowMouseMove = (event: globalThis.MouseEvent) => {
-      if (nodeDragRef.current) {
-        if (updateNodeDragTarget(event.clientX, event.clientY)) {
-          dragMovedRef.current = true
+    // Apply current search highlight immediately after render
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    nodeElements.forEach((el) => {
+      const htmlEl = el as HTMLElement
+      const path = htmlEl.getAttribute('data-notia-path')
+      if (!path) return
+      const node = graphModel.nodes.find((n) => n.path === path)
+      if (!node) return
+      const matches = normalizedQuery.length > 0 && node.label.toLowerCase().includes(normalizedQuery)
+      const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
+      if (shape) {
+        if (matches || normalizedQuery.length === 0) {
+          shape.style.opacity = ''
+          shape.style.filter = ''
+        } else {
+          shape.style.opacity = '0.3'
+          shape.style.filter = 'grayscale(0.8)'
         }
-        return
-      }
-
-      const dragStart = dragStartRef.current
-      if (!dragStart) {
-        return
-      }
-
-      const deltaX = event.clientX - dragStart.pointerX
-      const deltaY = event.clientY - dragStart.pointerY
-      if (Math.abs(deltaX) + Math.abs(deltaY) > 2) {
-        dragMovedRef.current = true
-      }
-
-      setViewport((current) => ({
-        ...current,
-        x: dragStart.originX + deltaX,
-        y: dragStart.originY + deltaY,
-      }))
-    }
-
-    const handleWindowMouseUp = () => {
-      const releasedNodePath = nodeDragRef.current?.path
-      if (releasedNodePath) {
-        commitDraggedNodePositions()
-      }
-      nodeDragRef.current = null
-      setDraggedPath(null)
-      dragStartRef.current = null
-      setIsDragging(false)
-    }
-
-    window.addEventListener('mousemove', handleWindowMouseMove)
-    window.addEventListener('mouseup', handleWindowMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', handleWindowMouseMove)
-      window.removeEventListener('mouseup', handleWindowMouseUp)
-    }
-  }, [commitDraggedNodePositions, isDragging, updateNodeDragTarget])
-
-  const handleCanvasClick = () => {
-    if (dragMovedRef.current) {
-      dragMovedRef.current = false
-      return
-    }
-
-    setSelectedPath(null)
-  }
-
-  const handleCanvasWheel = (event: WheelEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    const canvasElement = canvasRef.current
-    if (!canvasElement) {
-      return
-    }
-
-    const rect = canvasElement.getBoundingClientRect()
-    const pointerX = event.clientX - rect.left - effectiveCanvasSize.width / 2
-    const pointerY = event.clientY - rect.top - effectiveCanvasSize.height / 2
-    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9
-
-    setViewport((current) => {
-      const rawNextScale = current.scale * zoomFactor
-      const nextScale =
-        zoomFactor < 1
-          ? Math.max(rawNextScale, MIN_ZOOM_EPSILON)
-          : Math.min(rawNextScale, MAX_ZOOM)
-      if (nextScale === current.scale) {
-        return current
-      }
-
-      const scaleRatio = nextScale / current.scale
-      return {
-        scale: nextScale,
-        x: current.x - pointerX * (scaleRatio - 1),
-        y: current.y - pointerY * (scaleRatio - 1),
       }
     })
-  }
+  }, [searchQuery, graphModel, safeIdToPath])
 
-  const handleCanvasTouchStart = (event: TouchEvent<HTMLDivElement>) => {
-    if (nodeDragRef.current) {
-      return
-    }
+  // Click handler: open file or toggle chat selection
+  const handleNodeClick = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement
+      const nodeEl = target.closest('[data-notia-path]') as HTMLElement | null
+      if (!nodeEl) return
+      const path = nodeEl.getAttribute('data-notia-path')
+      if (!path) return
 
-    if (event.touches.length === 1) {
-      const touch = event.touches[0]
-      dragMovedRef.current = false
-      touchPinchSessionRef.current = null
-      dragStartRef.current = {
-        originX: viewportRef.current.x,
-        originY: viewportRef.current.y,
-        pointerX: touch.clientX,
-        pointerY: touch.clientY,
-      }
-      setIsDragging(true)
-      return
-    }
-
-    if (event.touches.length === 2) {
-      const [firstTouch, secondTouch] = [event.touches[0], event.touches[1]]
-      const localPoint = resolveCanvasLocalCoordinatesFromClientPoint(
-        (firstTouch.clientX + secondTouch.clientX) / 2,
-        (firstTouch.clientY + secondTouch.clientY) / 2,
-      )
-      if (!localPoint) {
-        return
-      }
-
-      const currentViewport = viewportRef.current
-      touchPinchSessionRef.current = {
-        startDistance: Math.hypot(secondTouch.clientX - firstTouch.clientX, secondTouch.clientY - firstTouch.clientY),
-        graphX: (localPoint.x - currentViewport.x) / currentViewport.scale,
-        graphY: (localPoint.y - currentViewport.y) / currentViewport.scale,
-      }
-      dragStartRef.current = null
-      dragMovedRef.current = true
-      setIsDragging(true)
-      event.preventDefault()
-    }
-  }
-
-  const handleCanvasTouchMove = (event: TouchEvent<HTMLDivElement>) => {
-    if (event.touches.length === 2) {
-      const pinchSession = touchPinchSessionRef.current
-      if (!pinchSession) {
-        return
-      }
-
-      const [firstTouch, secondTouch] = [event.touches[0], event.touches[1]]
-      const nextDistance = Math.hypot(secondTouch.clientX - firstTouch.clientX, secondTouch.clientY - firstTouch.clientY)
-      if (pinchSession.startDistance <= 0 || nextDistance <= 0) {
-        return
-      }
-
-      const localPoint = resolveCanvasLocalCoordinatesFromClientPoint(
-        (firstTouch.clientX + secondTouch.clientX) / 2,
-        (firstTouch.clientY + secondTouch.clientY) / 2,
-      )
-      if (!localPoint) {
-        return
-      }
-
-      const nextScale = Math.min(
-        MAX_ZOOM,
-        Math.max(MIN_ZOOM_EPSILON, viewportRef.current.scale * (nextDistance / pinchSession.startDistance)),
-      )
-
-      setViewport({
-        scale: nextScale,
-        x: localPoint.x - pinchSession.graphX * nextScale,
-        y: localPoint.y - pinchSession.graphY * nextScale,
-      })
-      touchPinchSessionRef.current = {
-        ...pinchSession,
-        startDistance: nextDistance,
-      }
-      dragMovedRef.current = true
-      event.preventDefault()
-      return
-    }
-
-    if (event.touches.length !== 1) {
-      return
-    }
-
-    const dragStart = dragStartRef.current
-    if (!dragStart) {
-      return
-    }
-
-    const touch = event.touches[0]
-    const deltaX = touch.clientX - dragStart.pointerX
-    const deltaY = touch.clientY - dragStart.pointerY
-    if (Math.abs(deltaX) + Math.abs(deltaY) > 2) {
-      dragMovedRef.current = true
-    }
-
-    setViewport((current) => ({
-      ...current,
-      x: dragStart.originX + deltaX,
-      y: dragStart.originY + deltaY,
-    }))
-    event.preventDefault()
-  }
-
-  const handleCanvasTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
-    if (event.touches.length === 1 && touchPinchSessionRef.current) {
-      const touch = event.touches[0]
-      touchPinchSessionRef.current = null
-      dragStartRef.current = {
-        originX: viewportRef.current.x,
-        originY: viewportRef.current.y,
-        pointerX: touch.clientX,
-        pointerY: touch.clientY,
-      }
-      setIsDragging(true)
-      return
-    }
-
-    touchPinchSessionRef.current = null
-    dragStartRef.current = null
-    setIsDragging(false)
-  }
-
-  const handleResetViewport = () => {
-    if (typeof window !== 'undefined' && viewportAnimationFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportAnimationFrameRef.current)
-      viewportAnimationFrameRef.current = null
-    }
-
-    setViewport({ x: 0, y: 0, scale: 1 })
-    clearGraphNodePositionsForLibrary(libraryName)
-
-    const naturalNodes = toSimulationNodes(graphLayout.nodes, new Map<string, PersistedGraphNodePosition>())
-    simulationNodesRef.current = naturalNodes
-    simulationTopologyRef.current = buildGraphSimulationTopology(naturalNodes, graphLayout.edges)
-    simulationNeedsSyncRef.current = true
-    simulationLastTimestampRef.current = null
-    nodeDragRef.current = null
-    dragStartRef.current = null
-    setDraggedPath(null)
-    setIsDragging(false)
-    setDisplayedNodes(naturalNodes.map((node) => node.toRenderNode()))
-  }
-
-  const focusNodeInViewport = useCallback(
-    (filePath: string) => {
-      const node = positionedNodesByPath.get(filePath)
-      if (!node) {
-        return
-      }
-
-      const nextScale = Math.min(MAX_ZOOM, Math.max(viewport.scale, 1.65))
-      const nextViewport = {
-        scale: nextScale,
-        x: -node.x * nextScale,
-        y: -node.y * nextScale,
-      }
-
-      if (typeof window === 'undefined') {
-        setViewport(nextViewport)
+      if (e.shiftKey && onChatSelectedPathsChange) {
+        onChatSelectedPathsChange(
+          chatSelectedPaths.includes(path)
+            ? chatSelectedPaths.filter((p) => p !== path)
+            : [...chatSelectedPaths, path],
+        )
       } else {
-        if (viewportAnimationFrameRef.current !== null) {
-          window.cancelAnimationFrame(viewportAnimationFrameRef.current)
-          viewportAnimationFrameRef.current = null
-        }
-
-        const startViewport = viewportRef.current
-        const animationStart = window.performance.now()
-        const tick = (timestamp: number) => {
-          const elapsed = timestamp - animationStart
-          const progress = clamp(elapsed / GRAPH_VIEW_FOCUS_ANIMATION_DURATION_MS, 0, 1)
-          const easedProgress = easeInOutCubic(progress)
-          setViewport({
-            scale: startViewport.scale + (nextViewport.scale - startViewport.scale) * easedProgress,
-            x: startViewport.x + (nextViewport.x - startViewport.x) * easedProgress,
-            y: startViewport.y + (nextViewport.y - startViewport.y) * easedProgress,
-          })
-
-          if (progress < 1) {
-            viewportAnimationFrameRef.current = window.requestAnimationFrame(tick)
-            return
-          }
-
-          viewportAnimationFrameRef.current = null
-        }
-
-        viewportAnimationFrameRef.current = window.requestAnimationFrame(tick)
+        onOpenFile(path)
       }
-
-      setSelectedPath(filePath)
-      setHoveredSearchResultPath(filePath)
     },
-    [positionedNodesByPath, viewport.scale],
+    [chatSelectedPaths, onChatSelectedPathsChange, onOpenFile],
   )
 
+  // Search highlight re-application when query changes (SVG already rendered)
   useEffect(() => {
-    return () => {
-      if (typeof window !== 'undefined' && viewportAnimationFrameRef.current !== null) {
-        window.cancelAnimationFrame(viewportAnimationFrameRef.current)
+    const wrapper = svgWrapperRef.current
+    if (!wrapper) return
+    const svg = wrapper.querySelector('svg') as SVGSVGElement | null
+    if (!svg) return
+
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    svg.querySelectorAll('.node, .icon-shape').forEach((el) => {
+      const htmlEl = el as HTMLElement
+      const path = htmlEl.getAttribute('data-notia-path')
+      if (!path) return
+      const node = graphModel.nodes.find((n) => n.path === path)
+      if (!node) return
+      const matches = normalizedQuery.length > 0 && node.label.toLowerCase().includes(normalizedQuery)
+      const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
+      if (shape) {
+        if (matches || normalizedQuery.length === 0) {
+          shape.style.opacity = ''
+          shape.style.filter = ''
+        } else {
+          shape.style.opacity = '0.3'
+          shape.style.filter = 'grayscale(0.8)'
+        }
       }
-    }
+    })
+  }, [searchQuery, graphModel])
+
+  // Selection visual feedback
+  useEffect(() => {
+    const wrapper = svgWrapperRef.current
+    if (!wrapper) return
+    const svg = wrapper.querySelector('svg') as SVGSVGElement | null
+    if (!svg) return
+
+    svg.querySelectorAll('.node, .icon-shape').forEach((el) => {
+      const htmlEl = el as HTMLElement
+      const path = htmlEl.getAttribute('data-notia-path')
+      if (!path) return
+      const isSelected = chatSelectedPaths.includes(path)
+      const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
+      if (shape) {
+        if (isSelected) {
+          shape.style.stroke = '#ff79c6'
+          shape.style.strokeWidth = '3'
+        } else {
+          shape.style.stroke = ''
+          shape.style.strokeWidth = ''
+        }
+      }
+    })
+  }, [chatSelectedPaths])
+
+  // Persist settings
+  useEffect(() => {
+    writeStoredSettings(settings)
+  }, [settings])
+
+  const handleZoomChange = useCallback((zoom: number) => {
+    setViewport((prev) => {
+      const base: ViewportState = { zoom: 1, panX: 0, panY: 0 }
+      const next: ViewportState = { ...base, ...prev, zoom }
+      writeStoredViewport(next)
+      return next
+    })
   }, [])
 
-  const handleNodeSizeSliderChange = (value: string) => {
-    const parsedValue = Number.parseFloat(value)
-    if (Number.isNaN(parsedValue)) {
-      return
-    }
-    setNodeSizeMultiplier(clamp(parsedValue, SLIDER_MIN_NODE_SIZE_MULTIPLIER, SLIDER_MAX_NODE_SIZE_MULTIPLIER))
-  }
+  const handlePanChange = useCallback((x: number, y: number) => {
+    setViewport((prev) => {
+      const base: ViewportState = { zoom: 1, panX: 0, panY: 0 }
+      const next: ViewportState = { ...base, ...prev, panX: x, panY: y }
+      writeStoredViewport(next)
+      return next
+    })
+  }, [])
 
-  const handleNodeSizeNumberChange = (value: string) => {
-    const parsedValue = Number.parseFloat(value)
-    if (Number.isNaN(parsedValue)) {
-      return
-    }
-    setNodeSizeMultiplier(clamp(parsedValue, INPUT_MIN_NODE_SIZE_MULTIPLIER, INPUT_MAX_NODE_SIZE_MULTIPLIER))
-  }
-
-  const handleNodeMouseDown = (event: MouseEvent<SVGGElement>, filePath: string) => {
-    if (event.button !== 0) {
-      return
-    }
-
-    event.stopPropagation()
-    const node = positionedNodesByPath.get(filePath)
-    if (!node) {
-      return
-    }
-
-    const graphCoordinates = resolveGraphCoordinatesFromClientPoint(event.clientX, event.clientY)
-    if (!graphCoordinates) {
-      return
-    }
-
-    dragMovedRef.current = false
-    nodeDragRef.current = {
-      path: filePath,
-      targetX: node.x,
-      targetY: node.y,
-      velocityX: 0,
-      velocityY: 0,
-      pointerOffsetX: node.x - graphCoordinates.x,
-      pointerOffsetY: node.y - graphCoordinates.y,
-    }
-    setDraggedPath(filePath)
-    setIsDragging(true)
-  }
-
-  const handleNodeClick = (filePath: string) => {
-    if (dragMovedRef.current) {
-      dragMovedRef.current = false
-      return
-    }
-
-    setSelectedPath((current) => (current === filePath ? null : filePath))
-  }
-
-  const handleNodeDoubleClick = (filePath: string) => {
-    if (dragMovedRef.current) {
-      dragMovedRef.current = false
-      return
-    }
-
-    onOpenFile(filePath)
-  }
-
-  const handleSearchResultsMouseDown = (event: MouseEvent<HTMLDivElement>) => {
-    const resultsElement = searchResultsRef.current
-    if (!resultsElement) {
-      return
-    }
-
-    searchScrollSessionRef.current = {
-      startClientY: event.clientY,
-      startScrollTop: resultsElement.scrollTop,
-      moved: false,
-    }
-    event.stopPropagation()
-  }
-
-  const handleSearchResultsMouseMove = (event: MouseEvent<HTMLDivElement>) => {
-    const resultsElement = searchResultsRef.current
-    const session = searchScrollSessionRef.current
-    if (!resultsElement || !session) {
-      return
-    }
-
-    const deltaY = event.clientY - session.startClientY
-    if (Math.abs(deltaY) > 2) {
-      session.moved = true
-    }
-
-    if (session.moved) {
-      resultsElement.scrollTop = session.startScrollTop - deltaY
-      event.preventDefault()
-    }
-    event.stopPropagation()
-  }
-
-  const handleSearchResultsMouseUp = (event: MouseEvent<HTMLDivElement>) => {
-    event.stopPropagation()
-    window.setTimeout(() => {
-      searchScrollSessionRef.current = null
-    }, 0)
-  }
-
-  const handleSearchResultsWheel = (event: WheelEvent<HTMLDivElement>) => {
-    event.stopPropagation()
-  }
-
-  const handleSearchResultsClickCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (!searchScrollSessionRef.current?.moved) {
-      return
-    }
-
-    event.preventDefault()
-    event.stopPropagation()
-    searchScrollSessionRef.current = null
-  }
-
-  const hasModelNodes = graphModel.nodes.length > 0
-  const hasLayoutNodes = graphLayout.nodes.length > 0
-  const isGraphBusy = isLoading || isGraphDerivedDataLoading
-  const shouldShowLoadingScreen = isGraphBusy && !hasLayoutNodes
+  const hasContent = mermaidCode.trim().length > 0
 
   return (
-    <main className="notia-main" data-notia-prevent-menu-close>
-      <header className="notia-main-header" data-notia-prevent-menu-close>
-        <div className="notia-main-title-group" data-notia-prevent-menu-close>
-          <h2>Graph view</h2>
-          <span>{libraryName}</span>
+    <div
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--color-app-bg)',
+      }}
+    >
+      {/* Toolbar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '8px 12px',
+          borderBottom: '1px solid var(--color-border)',
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ position: 'relative', flex: 1, maxWidth: 360 }}>
+          <Search
+            size={14}
+            style={{
+              position: 'absolute',
+              left: 8,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              color: 'var(--color-icon-muted)',
+              pointerEvents: 'none',
+            }}
+          />
+          <input
+            type="text"
+            placeholder="Buscar nodo..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              width: '100%',
+              height: 32,
+              paddingLeft: 28,
+              paddingRight: 28,
+              borderRadius: 4,
+              border: '1px solid var(--color-border-soft)',
+              background: 'var(--color-card-bg)',
+              color: 'var(--color-app-text)',
+              fontSize: 13,
+            }}
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              style={{
+                position: 'absolute',
+                right: 6,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-icon-muted)',
+                cursor: 'pointer',
+                padding: 2,
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
-        <div className="notia-graph-meta" data-notia-prevent-menu-close>
-          <span>{graphModel.nodes.length} archivos</span>
-          <span>{graphModel.edges.length} enlaces</span>
-          <NotiaButton type="button" variant="secondary" className="notia-graph-reset" onClick={handleResetViewport}>
-            Reset view
-          </NotiaButton>
-        </div>
-      </header>
-      <section className="notia-main-content notia-graph-content" data-notia-prevent-menu-close>
-        {shouldShowLoadingScreen ? (
-          <div className="notia-graph-loading-screen" role="status" aria-live="polite">
-            <div className="notia-graph-loading-card">
-              <div className="notia-graph-loading-spinner" aria-hidden="true" />
-              <strong>Cargando graph view</strong>
-              <span>Preparando nodos y enlaces de la libreria actual...</span>
-            </div>
-          </div>
-        ) : null}
-        {!isGraphBusy && !hasModelNodes ? <div className="notia-graph-empty">No hay archivos para mostrar.</div> : null}
-        {(hasLayoutNodes || isGraphBusy) ? (
-          <div
-            ref={canvasRef}
-            className={`notia-graph-canvas ${isDragging ? 'notia-graph-canvas--dragging' : ''}`}
-            onMouseDown={handleCanvasMouseDown}
-            onMouseMove={handleCanvasMouseMove}
-            onMouseUp={handleCanvasMouseUp}
-            onMouseLeave={handleCanvasMouseLeave}
-            onTouchStart={handleCanvasTouchStart}
-            onTouchMove={handleCanvasTouchMove}
-            onTouchEnd={handleCanvasTouchEnd}
-            onTouchCancel={handleCanvasTouchEnd}
-            onWheel={handleCanvasWheel}
-            onClick={handleCanvasClick}
+
+        <NotiaButton
+          variant="ghost"
+          size="icon"
+          onClick={() => setIsControlsOpen((prev) => !prev)}
+          aria-label="Ajustes del grafo"
+        >
+          <SlidersHorizontal size={16} />
+        </NotiaButton>
+      </div>
+
+      {/* Controls panel */}
+      {isControlsOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 48,
+            right: 12,
+            zIndex: 10,
+            background: 'var(--color-card-bg)',
+            border: '1px solid var(--color-border-soft)',
+            borderRadius: 8,
+            padding: 12,
+            minWidth: 200,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+          }}
+        >
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 13,
+              color: 'var(--color-app-text)',
+              cursor: 'pointer',
+            }}
           >
-            <div
-              className="notia-graph-controls"
-              onMouseDown={(event) => {
-                event.stopPropagation()
-              }}
-              onClick={(event) => {
-                event.stopPropagation()
-              }}
-            >
-              <NotiaButton
-                ref={controlsButtonRef}
-                size="icon"
-                variant="ghost"
-                className="notia-graph-controls-button"
-                title="Configurar grafo"
-                onClick={() => {
-                  setIsControlsOpen((current) => !current)
-                }}
-              >
-                <SlidersHorizontal size={14} />
-              </NotiaButton>
-              {isControlsOpen ? (
-                <div ref={controlsPanelRef} className="notia-graph-controls-panel">
-                  <div className="notia-graph-controls-header">
-                    <span>Configuracion</span>
-                    <NotiaButton
-                      size="icon"
-                      variant="ghost"
-                      className="notia-graph-controls-close"
-                      onClick={() => {
-                        setIsControlsOpen(false)
-                      }}
-                    >
-                      <X size={13} />
-                    </NotiaButton>
-                  </div>
-                  <div className="notia-graph-control-value">
-                    <span>Zoom actual</span>
-                    <strong>{formatZoomValue(viewport.scale)}</strong>
-                  </div>
-                  <div className="notia-graph-control-value">
-                    <span>Links</span>
-                    <strong>Longitud fija</strong>
-                  </div>
-                  <div className="notia-graph-control-value">
-                    <span>Fisica</span>
-                    <strong>No colision</strong>
-                  </div>
-                  <label className="notia-graph-control-label">Tamano de nodos</label>
-                  <div className="notia-graph-control-inputs">
-                    <input
-                      type="range"
-                      min={SLIDER_MIN_NODE_SIZE_MULTIPLIER}
-                      max={SLIDER_MAX_NODE_SIZE_MULTIPLIER}
-                      step={0.05}
-                      value={clamp(nodeSizeMultiplier, SLIDER_MIN_NODE_SIZE_MULTIPLIER, SLIDER_MAX_NODE_SIZE_MULTIPLIER)}
-                      onChange={(event) => handleNodeSizeSliderChange(event.target.value)}
-                    />
-                    <input
-                      type="number"
-                      min={INPUT_MIN_NODE_SIZE_MULTIPLIER}
-                      max={INPUT_MAX_NODE_SIZE_MULTIPLIER}
-                      step={0.05}
-                      value={nodeSizeMultiplier}
-                      onChange={(event) => handleNodeSizeNumberChange(event.target.value)}
-                    />
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            <svg className="notia-graph-svg" viewBox={`0 0 ${effectiveCanvasSize.width} ${effectiveCanvasSize.height}`}>
-              <g
-                transform={`translate(${effectiveCanvasSize.width / 2 + viewport.x} ${
-                  effectiveCanvasSize.height / 2 + viewport.y
-                }) scale(${viewport.scale})`}
-              >
-                {visibleEdges.map((edge) => {
-                  const sourceNode = positionedNodesByPath.get(edge.sourcePath)
-                  const targetNode = positionedNodesByPath.get(edge.targetPath)
-                  if (!sourceNode || !targetNode) {
-                    return null
-                  }
-                  const edgeEndpoints = buildEdgeBorderEndpoints(sourceNode, targetNode)
-                  if (!edgeEndpoints) {
-                    return null
-                  }
+            <input
+              type="checkbox"
+              checked={settings.gridEnabled}
+              onChange={(e) =>
+                setSettings((prev) => ({ ...prev, gridEnabled: e.target.checked }))
+              }
+            />
+            Mostrar grid
+          </label>
+        </div>
+      )}
 
-                  const isConnectedToFocus =
-                    highlightedPaths === null ||
-                    (highlightedPaths.has(sourceNode.path) && highlightedPaths.has(targetNode.path))
-                  const isConnectedToSelection =
-                    linkedToSelectedPath !== null &&
-                    linkedToSelectedPath.has(sourceNode.path) &&
-                    linkedToSelectedPath.has(targetNode.path)
-
-                  return (
-                    <g key={edge.id}>
-                      <line
-                        className={`notia-graph-edge-halo notia-graph-edge-halo--outer ${
-                          isConnectedToFocus ? '' : 'notia-graph-edge--dim'
-                        } ${isConnectedToSelection ? 'notia-graph-edge--selected' : ''}`}
-                        x1={edgeEndpoints.x1}
-                        y1={edgeEndpoints.y1}
-                        x2={edgeEndpoints.x2}
-                        y2={edgeEndpoints.y2}
-                      />
-                      <line
-                        className={`notia-graph-edge-halo notia-graph-edge-halo--inner ${
-                          isConnectedToFocus ? '' : 'notia-graph-edge--dim'
-                        } ${isConnectedToSelection ? 'notia-graph-edge--selected' : ''}`}
-                        x1={edgeEndpoints.x1}
-                        y1={edgeEndpoints.y1}
-                        x2={edgeEndpoints.x2}
-                        y2={edgeEndpoints.y2}
-                      />
-                      <line
-                        className={`notia-graph-edge ${isConnectedToFocus ? '' : 'notia-graph-edge--dim'} ${
-                          isConnectedToSelection ? 'notia-graph-edge--selected' : ''
-                        }`}
-                        stroke={edge.color}
-                        x1={edgeEndpoints.x1}
-                        y1={edgeEndpoints.y1}
-                        x2={edgeEndpoints.x2}
-                        y2={edgeEndpoints.y2}
-                      />
-                    </g>
-                  )
-                })}
-                {renderedNodes.map((node) => {
-                  const isConnectedToFocus = highlightedPaths?.has(node.path) ?? true
-                  const isSelected = selectedPathInLayout === node.path
-                  const isLinkedToHover = linkedToHoveredPath?.has(node.path) ?? false
-                  const isLinkedToSelected = linkedToSelectedPath?.has(node.path) ?? false
-                  const isDragged = draggedPath === node.path
-                  const isSearchMatch = searchMatchedPaths.has(node.path)
-                  const isSearchPreview = hoveredSearchResultPath === node.path
-                  const nodeGlowClass = resolveNodeGlowClass(node.degree)
-                  const showLabel =
-                    isSearchMatch ||
-                    isSearchPreview ||
-                    viewport.scale >= LABEL_VISIBILITY_ZOOM ||
-                    isLinkedToSelected ||
-                    isLinkedToHover
-
-                  return (
-                    <g
-                      key={node.id}
-                      className={`notia-graph-node ${isConnectedToFocus ? '' : 'notia-graph-node--dim'} ${
-                        hoveredPath === node.path ? 'notia-graph-node--hovered' : ''
-                      } ${isLinkedToSelected ? 'notia-graph-node--linked' : ''} ${
-                        isSelected ? 'notia-graph-node--selected' : ''
-                      } ${isDragged ? 'notia-graph-node--dragged' : ''} ${
-                        isSearchMatch ? 'notia-graph-node--search-match' : ''
-                      } ${isSearchPreview ? 'notia-graph-node--search-preview' : ''} ${
-                        isSearchPreview ? 'notia-graph-node--title-emphasis' : ''
-                      } ${nodeGlowClass}`}
-                      onMouseDown={(event) => {
-                        handleNodeMouseDown(event, node.path)
-                      }}
-                      transform={`translate(${node.x} ${node.y})`}
-                      onMouseEnter={() => setHoveredPath(node.path)}
-                      onMouseLeave={() => setHoveredPath((current) => (current === node.path ? null : current))}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleNodeClick(node.path)
-                      }}
-                      onDoubleClick={(event) => {
-                        event.stopPropagation()
-                        handleNodeDoubleClick(node.path)
-                      }}
-                    >
-                      <circle className="notia-graph-node-halo notia-graph-node-halo--outer" r={node.radius * 2.5} />
-                      <circle className="notia-graph-node-halo notia-graph-node-halo--inner" r={node.radius * 1.7} />
-                      <circle r={node.radius} fill={node.color} fillOpacity={0.26} stroke={node.color} strokeOpacity={0.94} />
-                      {showLabel ? (
-                        <text className={isSearchPreview ? 'notia-graph-node-title--search-preview' : ''} x={node.radius + 6} y={4}>
-                          {node.label}
-                        </text>
-                      ) : null}
-                    </g>
-                  )
-                })}
-              </g>
-            </svg>
-            <div
-              className="notia-graph-search-shell"
-              onMouseDown={(event) => {
-                event.stopPropagation()
-              }}
-              onClick={(event) => {
-                event.stopPropagation()
-              }}
-            >
-              {searchQuery.trim() ? (
-                <button
-                  type="button"
-                  className="notia-graph-search-clear"
-                  title="Limpiar busqueda"
-                  aria-label="Limpiar busqueda"
-                  onClick={() => {
-                    setSearchQuery('')
-                    setHoveredSearchResultPath(null)
-                  }}
-                >
-                  <X size={14} />
-                </button>
-              ) : null}
-              {searchResults.length > 0 ? (
-                <div
-                  ref={searchResultsRef}
-                  className="notia-graph-search-results"
-                  role="listbox"
-                  aria-label="Resultados de busqueda del grafo"
-                  onMouseDown={handleSearchResultsMouseDown}
-                  onMouseMove={handleSearchResultsMouseMove}
-                  onMouseUp={handleSearchResultsMouseUp}
-                  onMouseLeave={handleSearchResultsMouseUp}
-                  onWheel={handleSearchResultsWheel}
-                  onClickCapture={handleSearchResultsClickCapture}
-                >
-                  {searchResults.map((result) => (
-                    <div
-                      key={result.path}
-                      className="notia-graph-search-result"
-                      onMouseEnter={() => {
-                        setHoveredSearchResultPath(result.path)
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredSearchResultPath((current) => (current === result.path ? null : current))
-                      }}
-                    >
-                      <label
-                        className="notia-graph-search-result-check"
-                        title={selectedChatPathSet.has(result.path)
-                          ? 'Quitar archivo del contexto del chat'
-                          : 'Sumar archivo al contexto del chat'}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedChatPathSet.has(result.path)}
-                          onChange={() => {
-                            toggleChatContextPath(result.path)
-                          }}
-                          aria-label={`Usar ${result.label} como contexto del chat`}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="notia-graph-search-result-main"
-                        onClick={() => onOpenFile(result.path)}
-                      >
-                        <strong>{result.label}</strong>
-                        <span>{result.preview}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="notia-graph-search-result-focus"
-                        title="Centrar nodo en el grafo"
-                        aria-label={`Centrar ${result.label} en el grafo`}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          focusNodeInViewport(result.path)
-                        }}
-                      >
-                        <Eye size={15} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              <label className="notia-graph-search-bar" aria-label="Buscar en graph view">
-                <Search size={15} aria-hidden="true" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  placeholder="Buscar por titulo o contenido..."
-                  onChange={(event) => {
-                    setSearchQuery(event.target.value)
-                  }}
-                />
-              </label>
-            </div>
+      {/* Canvas */}
+      <div
+        ref={svgWrapperRef}
+        style={{ flex: 1, position: 'relative', overflow: 'hidden' }}
+        onClick={handleNodeClick}
+      >
+        {(!hasContent || isLoading) && !error && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--color-icon-muted)',
+              fontSize: 13,
+              pointerEvents: 'none',
+            }}
+          >
+            {!hasContent ? 'No hay nodos para mostrar.' : 'Renderizando diagrama...'}
           </div>
-        ) : null}
-      </section>
-    </main>
+        )}
+        {error && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#ff5555',
+              fontSize: 13,
+              padding: 16,
+              textAlign: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            {error}
+          </div>
+        )}
+        {hasContent && (
+          <MermaidCanvas
+            result={result}
+            isLoading={isLoading}
+            error={error}
+            gridEnabled={settings.gridEnabled}
+            panZoomEnabled
+            theme={appTheme === 'dark' ? 'dark' : 'default'}
+            readOnly
+            onSvgInjected={handleSvgInjected}
+            initialZoom={viewport.zoom}
+            initialPanX={viewport.panX}
+            initialPanY={viewport.panY}
+            onZoomChange={handleZoomChange}
+            onPanChange={handlePanChange}
+          />
+        )}
+      </div>
+    </div>
   )
-}
-
-export const GraphView = memo(GraphViewComponent)
+})
 GraphView.displayName = 'GraphView'

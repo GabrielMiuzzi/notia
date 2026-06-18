@@ -34,6 +34,7 @@ interface MermaidCanvasExtendedProps extends MermaidCanvasProps {
   onEdgeLabelChange?: (fromNodeId: string, toNodeId: string, label: string) => void
   canvasRef?: React.RefObject<HTMLDivElement | null>
   readOnly?: boolean
+  onSvgInjected?: (container: HTMLDivElement) => void
 }
 
 export const MermaidCanvas = memo(function MermaidCanvas({
@@ -54,10 +55,11 @@ export const MermaidCanvas = memo(function MermaidCanvas({
   onEdgeSelect,
   onEdgeTypeChange,
   onEdgeColorChange,
-  onEdgeLabelChange,
-  canvasRef,
-  readOnly,
-}: MermaidCanvasExtendedProps) {
+    onEdgeLabelChange,
+    canvasRef,
+    readOnly,
+    onSvgInjected,
+  }: MermaidCanvasExtendedProps) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const transformLayerRef = useRef<HTMLDivElement>(null)
   const svgContainerRef = useRef<HTMLDivElement>(null)
@@ -143,7 +145,19 @@ export const MermaidCanvas = memo(function MermaidCanvas({
       setIsFullscreen(Boolean(document.fullscreenElement))
     }
     document.addEventListener('fullscreenchange', handler)
-    return () => document.removeEventListener('fullscreenchange', handler)
+    return () => {
+      document.removeEventListener('fullscreenchange', handler)
+    }
+  }, [])
+
+  // Cleanup on unmount: release SVG nodes and any bound listeners
+  useEffect(() => {
+    return () => {
+      const container = svgContainerRef.current
+      if (container) {
+        container.innerHTML = ''
+      }
+    }
   }, [])
 
   // Inject SVG when result changes
@@ -154,6 +168,14 @@ export const MermaidCanvas = memo(function MermaidCanvas({
       container.innerHTML = ''
       return
     }
+
+    // Guardar referencia al SVG anterior para limpiar listeners explícitamente si es necesario
+    const previousSvg = container.querySelector('svg')
+    if (previousSvg) {
+      // innerHTML reemplaza nodos, pero forzamos limpieza de referencias a listeners de Mermaid
+      previousSvg.remove()
+    }
+    container.innerHTML = ''
 
     // Inyección directa — evita DOMParser + XMLSerializer (mucho más rápido)
     container.innerHTML = result.svg
@@ -196,7 +218,11 @@ export const MermaidCanvas = memo(function MermaidCanvas({
         // ignore
       }
     }
-  }, [result, roughEnabled])
+
+    if (onSvgInjected) {
+      onSvgInjected(container)
+    }
+  }, [result, roughEnabled, onSvgInjected])
 
   const isDark = theme === 'dark'
   const gridBackground = gridEnabled

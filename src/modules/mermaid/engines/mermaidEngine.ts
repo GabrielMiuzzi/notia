@@ -1,5 +1,23 @@
 import type { MermaidRenderResult, MermaidDiagram, MermaidEdgeType, ParsedEdgeLine } from '../types/mermaidTypes'
 
+// ── Cancelación ─────────────────────────────────────────────
+export class MermaidRenderCancelledError extends Error {
+  constructor(message = 'Mermaid render cancelled') {
+    super(message)
+    this.name = 'MermaidRenderCancelledError'
+  }
+}
+
+export function isMermaidRenderCancelledError(error: unknown): error is MermaidRenderCancelledError {
+  return error instanceof MermaidRenderCancelledError
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new MermaidRenderCancelledError()
+  }
+}
+
 // ── Estado global singleton ─────────────────────────────────
 let mermaidInstance: typeof import('mermaid').default | null = null
 let initPromise: Promise<void> | null = null
@@ -88,11 +106,105 @@ export function buildMermaidThemeVariables(appTheme: string): MermaidThemeVariab
   }
 }
 
-// Caché por sesión: hash del código → resultado renderizado
-const renderCache = new Map<string, MermaidRenderResult>()
+// Caché LRU con límite por cantidad y tamaño estimado de SVG
+interface LruCacheEntry<T> {
+  value: T
+  weight: number
+  lastAccessedAt: number
+}
 
-// Hash rápido para strings (FNV-1a 32-bit) — suficiente para caché en memoria
-function quickHash(str: string): string {
+class WeightedLruCache<T> {
+  private entries = new Map<string, LruCacheEntry<T>>()
+  private totalWeight = 0
+
+  constructor(
+    private readonly maxEntries: number,
+    private readonly maxWeight: number,
+    private readonly weigh: (value: T) => number,
+  ) {}
+
+  get(key: string): T | undefined {
+    const entry = this.entries.get(key)
+    if (!entry) return undefined
+    entry.lastAccessedAt = performance.now()
+    return entry.value
+  }
+
+  set(key: string, value: T): void {
+    const weight = this.weigh(value)
+
+    // Si una sola entrada excede el límite total, no almacenarla
+    if (weight > this.maxWeight) {
+      return
+    }
+
+    const now = performance.now()
+    if (this.entries.has(key)) {
+      const old = this.entries.get(key)!
+      this.totalWeight -= old.weight
+    }
+
+    this.entries.set(key, { value, weight, lastAccessedAt: now })
+    this.totalWeight += weight
+    this.evictIfNeeded()
+  }
+
+  clear(): void {
+    this.entries.clear()
+    this.totalWeight = 0
+  }
+
+  invalidateByPattern(pattern: RegExp): void {
+    for (const [key, entry] of this.entries) {
+      if (pattern.test(key)) {
+        this.entries.delete(key)
+        this.totalWeight -= entry.weight
+      }
+    }
+    if (this.totalWeight < 0) {
+      this.totalWeight = 0
+    }
+  }
+
+  private evictIfNeeded(): void {
+    while (
+      this.entries.size > this.maxEntries ||
+      (this.totalWeight > this.maxWeight && this.entries.size > 0)
+    ) {
+      let oldestKey: string | null = null
+      let oldestTime = Infinity
+      for (const [key, entry] of this.entries) {
+        if (entry.lastAccessedAt < oldestTime) {
+          oldestTime = entry.lastAccessedAt
+          oldestKey = key
+        }
+      }
+      if (!oldestKey) break
+      const removed = this.entries.get(oldestKey)!
+      this.entries.delete(oldestKey)
+      this.totalWeight -= removed.weight
+    }
+    if (this.totalWeight < 0) {
+      this.totalWeight = 0
+    }
+  }
+}
+
+const MAX_CACHE_ENTRIES = 20
+const MAX_CACHE_WEIGHT_BYTES = 5 * 1024 * 1024 // 5 MB
+
+function weighMermaidRenderResult(result: MermaidRenderResult): number {
+  return result.svg?.length ?? 0
+}
+
+const renderCache = new WeightedLruCache<MermaidRenderResult>(
+  MAX_CACHE_ENTRIES,
+  MAX_CACHE_WEIGHT_BYTES,
+  weighMermaidRenderResult,
+)
+
+// Hash rápido para strings (FNV-1a 32-bit) — suficiente para caché en memoria y claves de localStorage
+export function quickHash(str: string): string {
   let h = 0x811c9dc5
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i)
@@ -149,12 +261,36 @@ async function registerIconPacks() {
 }
 
 // ── Inicialización lazy ────────────────────────────────────
-async function initMermaid(theme: string, config?: string) {
-  if (initPromise && lastInitTheme === theme) return initPromise
+const MAX_INIT_RETRIES = 2
+
+async function importMermaidWithRetry(retriesLeft: number, signal?: AbortSignal): Promise<unknown> {
+  throwIfAborted(signal)
+  try {
+    return await import('mermaid')
+  } catch (error) {
+    if (retriesLeft > 0) {
+      import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
+        notiaLog('mermaid', 'initMermaid import retry', { retriesLeft }, 'warn')
+      }).catch(() => {})
+      return importMermaidWithRetry(retriesLeft - 1, signal)
+    }
+    throw error
+  }
+}
+
+async function initMermaid(theme: string, config?: string, signal?: AbortSignal) {
+  if (initPromise && lastInitTheme === theme) {
+    throwIfAborted(signal)
+    return initPromise
+  }
 
   initPromise = (async () => {
     try {
-      const mermaidModule = await import('mermaid')
+      throwIfAborted(signal)
+      const mermaidModule = (await importMermaidWithRetry(MAX_INIT_RETRIES, signal)) as {
+        default?: typeof import('mermaid').default
+      }
+      throwIfAborted(signal)
       mermaidInstance = (mermaidModule.default || mermaidModule) as typeof import('mermaid').default
 
       const appTheme = theme === 'dark' ? 'dark' : 'light'
@@ -170,6 +306,7 @@ async function initMermaid(theme: string, config?: string) {
         }
       }
 
+      throwIfAborted(signal)
       mermaidInstance.initialize({
         startOnLoad: false,
         securityLevel: 'loose',
@@ -181,7 +318,14 @@ async function initMermaid(theme: string, config?: string) {
       // Icon packs en paralelo, sin bloquear el primer render
       void registerIconPacks()
     } catch (e) {
-      console.error('[mermaidEngine] init failed:', e)
+      // Resetear el singleton para permitir recuperación en reintentos futuros
+      initPromise = null
+      lastInitTheme = null
+      import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
+        notiaLog('mermaid', 'initMermaid failed', { error: String(e) }, 'error')
+      }).catch(() => {
+        console.error('[mermaidEngine] init failed:', e)
+      })
       throw e
     }
   })()
@@ -209,17 +353,21 @@ export interface MermaidRenderOptions {
   code: string
   theme: string
   config?: string
+  abortSignal?: AbortSignal
 }
 
 export async function renderMermaid({
   code,
   theme,
   config,
+  abortSignal,
 }: MermaidRenderOptions): Promise<MermaidRenderResult> {
   const trimmed = code.trim()
   if (!trimmed) {
     return { svg: '', bindFunctions: undefined, diagramType: 'empty' }
   }
+
+  throwIfAborted(abortSignal)
 
   // 1. Caché
   const key = cacheKey(trimmed, theme, config || '')
@@ -228,40 +376,48 @@ export async function renderMermaid({
     return cached
   }
 
+  throwIfAborted(abortSignal)
+
   // 2. Inicialización lazy
-  await initMermaid(theme, config)
+  await initMermaid(theme, config, abortSignal)
   if (!mermaidInstance) throw new Error('Mermaid not initialized')
+
+  throwIfAborted(abortSignal)
 
   // 3. Validación rápida (skip si ya validamos antes)
   // Nota: mermaid.parse() es síncrono en v11+ pero retorna Promise
   // Lo mantenemos asíncrono por compatibilidad
   await mermaidInstance.parse(trimmed)
 
+  throwIfAborted(abortSignal)
+
   // 4. Render
   const id = `notia-md-${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
   const { svg, bindFunctions } = await mermaidInstance.render(id, trimmed)
 
+  throwIfAborted(abortSignal)
+
   const diagramType = detectDiagramType(trimmed)
   const result: MermaidRenderResult = { svg, bindFunctions, diagramType }
 
-  // 5. Guardar en caché (limitar tamaño a 20 entries)
-  if (renderCache.size >= 20) {
-    const firstKey = renderCache.keys().next().value
-    if (firstKey) renderCache.delete(firstKey)
-  }
+  // 5. Guardar en caché
   renderCache.set(key, result)
 
   return result
 }
 
 // ── Warmup (precalentar sin código) ───────────────────────
-export function warmupMermaid(theme: string, config?: string): void {
-  void initMermaid(theme, config)
+export function warmupMermaid(theme: string, config?: string, signal?: AbortSignal): void {
+  void initMermaid(theme, config, signal)
 }
 
 // ── Invalidar caché ─────────────────────────────────────────
 export function invalidateMermaidCache(): void {
   renderCache.clear()
+}
+
+export function invalidateMermaidCacheByPattern(pattern: RegExp): void {
+  renderCache.invalidateByPattern(pattern)
 }
 
 // ── Stubs para compatibilidad con useMermaidEditor ──────────

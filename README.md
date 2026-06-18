@@ -1,6 +1,6 @@
 # Notia
 
-![Versión](https://img.shields.io/badge/version-1.0.12-blue)
+![Versión](https://img.shields.io/badge/version-1.0.13-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-orange)
 ![React](https://img.shields.io/badge/React-19-blue)
 ![Rust](https://img.shields.io/badge/Rust-2021-orange)
@@ -74,7 +74,7 @@ Características:
 - **Wikilinks**: escribí `[[Nombre de Nota]]` para crear enlaces bidireccionales entre documentos. Al hacer clic en un wikilink, la nota destino se abre en una nueva pestaña.
 - **Frontmatter y propiedades**: cada nota puede tener metadatos (título, etiquetas, fecha, etc.) editables desde el panel de propiedades lateral.
 - **Indicadores de estado**: visualización de "Guardando...", "Guardado ✓" o "Error ✗" en la pestaña activa.
-- **Diagramas Mermaid embebidos**: insertá bloques de código con lenguaje `mermaid` dentro de cualquier nota Markdown. El editor renderiza el diagrama con el **mismo motor visual** que los archivos `.mmd` (temas Notia, zoom/pan interactivo, manejo de errores uniforme). Los diagramas embebidos son de **solo lectura**: se pueden explorar (zoom, paneo, exportar a PNG/SVG) pero no se pueden editar nodos ni flechas desde el editor Markdown.
+- **Diagramas Mermaid embebidos**: insertá bloques de código con lenguaje `mermaid` dentro de cualquier nota Markdown. El editor renderiza el diagrama con el **mismo motor visual** que los archivos `.mmd` (temas Notia, zoom/pan interactivo, manejo de errores uniforme). Los diagramas embebidos son de **solo lectura**: se pueden explorar (zoom, paneo, exportar a PNG/SVG) pero no se pueden editar nodos ni flechas desde el editor Markdown. Desde la versión 1.0.13, el renderizado embebido es **lazy** (solo renderiza cuando el diagrama entra en el viewport), cancela renders previos al cambiar de archivo y gestiona la memoria mediante una caché LRU con límite de tamaño.
 
 ### InkDoc
 
@@ -91,6 +91,7 @@ Integración nativa de diagramas tipo Mermaid dentro del ecosistema de Notia.
 - Creá diagramas de flujo, arquitectura de sistemas, mapas mentales y más.
 - Los diagramas se guardan como archivos `.mmd` dentro de tu librería.
 - Edición visual completa con arrastrar y soltar, conectores, formas y estilos.
+- El **Graph View** reutiliza el mismo motor Mermaid para visualizar el grafo de wikilinks de la librería.
 
 ### Graph View
 
@@ -98,8 +99,9 @@ Visualización gráfica de las relaciones entre todas tus notas.
 
 - Cada nota es un **nodo**; cada wikilink es una **conexión**.
 - Navegación interactiva: zoom, paneo, clic para abrir la nota desde el grafo.
-- Diseño automático en clusters para mantener la legibilidad en bibliotecas grandes.
+- El layout se genera como un diagrama Mermaid agrupado por carpetas, manteniendo la legibilidad en bibliotecas grandes.
 - Filtro de búsqueda integrado dentro de la vista de grafo.
+- Notia mantiene un archivo `linkCache.md` dentro de `.notia/` con el diagrama del grafo, que se regenera automáticamente en segundo plano cuando cambian las notas.
 
 ### AI Chat
 
@@ -194,7 +196,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Pasos para consumir** | 1. Asegurate de tener notas Markdown con wikilinks en la librería. 2. En el **Icon Rail** (barra lateral izquierda), seleccionar **"Graph view"**. 3. Esperar a que se cargue el grafo (puede tomar segundos en bibliotecas grandes). 4. Usar zoom y paneo para explorar. 5. Hacer clic en un nodo para abrir la nota. 6. Usar la barra de búsqueda para filtrar nodos. |
 | **Entradas esperadas** | Librería activa con al menos un archivo Markdown. No requiere entrada manual del usuario. |
 | **Salidas / Resultado** | Canvas interactivo con nodos (títulos de notas) y líneas de conexión (wikilinks). Al hacer clic en un nodo se abre la nota correspondiente en pestaña. |
-| **Errores comunes** | **"El grafo está vacío"**: no hay archivos Markdown en la librería. Solución: crear notas Markdown. **"Lentitud"**: bibliotecas con miles de notas pueden tardar en inicializar. Solución: esperar o dividir en librerías más pequeñas. |
+| **Errores comunes** | **"El grafo está vacío"**: no hay archivos Markdown en la librería. Solución: crear notas Markdown. **"Lentitud"**: bibliotecas con miles de notas pueden tardar en construir el modelo. El archivo `linkCache.md` dentro de `.notia/` acelera la vista previa del grafo y se regenera automáticamente en segundo plano; si aún se siente lento, considerá dividir la librería en partes más pequeñas. |
 
 ### AI Chat con Ollama
 

@@ -8,14 +8,13 @@ import { getIndexedLibraryGraphSourcesByPath } from '../services/libraries/libra
 import { startPerformanceMeasurement } from '../services/runtime/performanceBaseline'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../types/notia'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
-import type { GraphModelWorkerResponse } from '../types/graph/graphWorker'
 import { getRuntimeDevice } from '../utils/platform/getRuntimeDevice'
+import { scheduleLibraryLinkCacheRebuild } from '../services/libraries/libraryLinkCacheSchedule'
 
 const EMPTY_GRAPH_MODEL: LibraryGraphModel = {
   nodes: [],
   edges: [],
 }
-const MAIN_THREAD_GRAPH_MODEL_TREE_NODE_THRESHOLD = 600
 
 interface UseLibraryGraphDataParams {
   enabled?: boolean
@@ -57,12 +56,7 @@ export function useLibraryGraphData({
   const [graphModel, setGraphModel] = useState<LibraryGraphModel>(EMPTY_GRAPH_MODEL)
   const [isGraphSourcesPending, setIsGraphSourcesPending] = useState(false)
   const [isGraphModelPending, setIsGraphModelPending] = useState(false)
-  const [workerMode, setWorkerMode] = useState<'worker' | 'fallback'>(() => (typeof Worker === 'undefined' ? 'fallback' : 'worker'))
-  const [isWorkerReady, setIsWorkerReady] = useState(workerMode === 'fallback')
-  const workerRef = useRef<Worker | null>(null)
-  const activeModelRequestIdRef = useRef(0)
   const pendingGraphModelMeasurementRef = useRef<{
-    requestId: number
     measurement: ReturnType<typeof startPerformanceMeasurement>
   } | null>(null)
 
@@ -75,76 +69,6 @@ export function useLibraryGraphData({
     pendingMeasurement.measurement.cancel({ reason })
     pendingGraphModelMeasurementRef.current = null
   }
-
-  useEffect(() => {
-    if (workerMode !== 'worker') {
-      setIsWorkerReady(true)
-      return
-    }
-
-    setIsWorkerReady(false)
-
-    try {
-      const worker = new Worker(new URL('../workers/graphModelWorker.ts', import.meta.url), {
-        type: 'module',
-      })
-
-      workerRef.current = worker
-      worker.onmessage = (event: MessageEvent<GraphModelWorkerResponse>) => {
-        const response = event.data
-        if (response.requestId !== activeModelRequestIdRef.current) {
-          return
-        }
-
-        const pendingMeasurement = pendingGraphModelMeasurementRef.current
-
-        if (response.type === 'graphModelBuildError') {
-          if (pendingMeasurement?.requestId === response.requestId) {
-            pendingMeasurement.measurement.error(new Error(response.message))
-            pendingGraphModelMeasurementRef.current = null
-          }
-          setIsGraphModelPending(false)
-          return
-        }
-
-        if (pendingMeasurement?.requestId === response.requestId) {
-          pendingMeasurement.measurement.success({
-            edgeCount: response.graphModel.edges.length,
-            nodeCount: response.graphModel.nodes.length,
-          })
-          pendingGraphModelMeasurementRef.current = null
-        }
-
-        startTransition(() => {
-          setGraphModel(response.graphModel)
-          setIsGraphModelPending(false)
-        })
-      }
-      worker.onerror = () => {
-        cancelPendingGraphModelMeasurement('worker_error')
-        setIsGraphModelPending(false)
-        worker.terminate()
-        if (workerRef.current === worker) {
-          workerRef.current = null
-        }
-        setWorkerMode('fallback')
-      }
-
-      setIsWorkerReady(true)
-
-      return () => {
-        cancelPendingGraphModelMeasurement('worker_terminated')
-        worker.terminate()
-        if (workerRef.current === worker) {
-          workerRef.current = null
-        }
-      }
-    } catch {
-      setWorkerMode('fallback')
-      setIsWorkerReady(true)
-      return undefined
-    }
-  }, [workerMode])
 
   const graphFileStructureSignature = useMemo(() => {
     if (!enabled) {
@@ -160,10 +84,6 @@ export function useLibraryGraphData({
   }, [enabled, treeNodes, flatFileList])
 
   const graphTreeNodes = useMemo(() => treeNodes, [graphFileStructureSignature])
-  const graphTreeNodeCount = useMemo(() => countTreeNodes(graphTreeNodes), [graphTreeNodes])
-  const shouldPreferMainThreadGraphModelBuild =
-    runtimeDevice !== 'Android'
-    && graphTreeNodeCount <= MAIN_THREAD_GRAPH_MODEL_TREE_NODE_THRESHOLD
 
   const graphStructureCacheKey =
     enabled && (libraryPath || rootPath) && graphFileStructureSignature
@@ -175,7 +95,6 @@ export function useLibraryGraphData({
       return
     }
 
-    activeModelRequestIdRef.current = 0
     cancelPendingGraphModelMeasurement('disabled')
     startTransition(() => {
       setGraphSourcesByPath({})
@@ -187,7 +106,6 @@ export function useLibraryGraphData({
 
   useEffect(() => {
     if (!enabled || !graphStructureCacheKey) {
-      activeModelRequestIdRef.current += 1
       cancelPendingGraphModelMeasurement('graph_structure_reset')
       startTransition(() => {
         setGraphModel(EMPTY_GRAPH_MODEL)
@@ -196,7 +114,6 @@ export function useLibraryGraphData({
       return
     }
 
-    activeModelRequestIdRef.current += 1
     cancelPendingGraphModelMeasurement('graph_structure_changed')
     startTransition(() => {
       setGraphSourcesByPath({})
@@ -253,23 +170,18 @@ export function useLibraryGraphData({
       setIsGraphSourcesPending(false)
       graphLoadMeasurement.cancel()
     }
-  }, [enabled, graphTreeNodes, libraryAndroidTreeUri, libraryPath, revision])
+  }, [enabled, graphTreeNodes, libraryAndroidTreeUri, libraryPath, revision, flatFileList])
 
   useEffect(() => {
     if (!enabled) {
       return
     }
 
-    if (!shouldPreferMainThreadGraphModelBuild && workerMode === 'worker' && (!isWorkerReady || !workerRef.current)) {
+    if (!graphStructureCacheKey) {
       return
     }
 
-    const activeWorker = workerRef.current
-
     cancelPendingGraphModelMeasurement('superseded')
-
-    const requestId = activeModelRequestIdRef.current + 1
-    activeModelRequestIdRef.current = requestId
 
     const graphModelMeasurement = startPerformanceMeasurement('graph.build_model', {
       libraryPath: libraryPath ?? undefined,
@@ -278,30 +190,17 @@ export function useLibraryGraphData({
       sourceCount: Object.keys(graphSourcesByPath).length,
     })
     pendingGraphModelMeasurementRef.current = {
-      requestId,
       measurement: graphModelMeasurement,
     }
     setIsGraphModelPending(true)
 
-    if (!shouldPreferMainThreadGraphModelBuild && workerMode === 'worker') {
-      activeWorker?.postMessage({
-        type: 'buildGraphModel',
-        requestId,
-        treeNodes: graphTreeNodes,
+    try {
+      const nextGraphModel = buildLibraryGraphModel(
+        graphTreeNodes,
         rootPath,
         graphSourcesByPath,
-        flatFileList: flatFileList.length > 0 ? flatFileList : undefined,
-      })
-
-      return () => {
-        if (pendingGraphModelMeasurementRef.current?.requestId === requestId) {
-          cancelPendingGraphModelMeasurement('cleanup')
-        }
-      }
-    }
-
-    try {
-      const nextGraphModel = buildLibraryGraphModel(graphTreeNodes, rootPath, graphSourcesByPath, flatFileList.length > 0 ? flatFileList : undefined)
+        flatFileList.length > 0 ? flatFileList : undefined,
+      )
       graphModelMeasurement.success({
         edgeCount: nextGraphModel.edges.length,
         nodeCount: nextGraphModel.nodes.length,
@@ -311,6 +210,16 @@ export function useLibraryGraphData({
         setGraphModel(nextGraphModel)
         setIsGraphModelPending(false)
       })
+
+      // --- Trigger linkCache.md regeneration in background ---
+      if (libraryPath) {
+        scheduleLibraryLinkCacheRebuild({
+          libraryPath,
+          treeNodes: graphTreeNodes,
+          flatFileList: flatFileList.length > 0 ? flatFileList : undefined,
+          androidDirectoryUri: libraryAndroidTreeUri,
+        })
+      }
     } catch (error) {
       graphModelMeasurement.error(error, {
         libraryPath: libraryPath ?? undefined,
@@ -319,19 +228,19 @@ export function useLibraryGraphData({
       setIsGraphModelPending(false)
     }
 
-    return undefined
+    return () => {
+      cancelPendingGraphModelMeasurement('cleanup')
+    }
   }, [
     enabled,
     graphSourcesByPath,
     graphTreeNodes,
-    graphTreeNodeCount,
-    isWorkerReady,
+    graphStructureCacheKey,
     libraryPath,
     revision,
     rootPath,
-    runtimeDevice,
-    shouldPreferMainThreadGraphModelBuild,
-    workerMode,
+    libraryAndroidTreeUri,
+    flatFileList,
   ])
 
   return {

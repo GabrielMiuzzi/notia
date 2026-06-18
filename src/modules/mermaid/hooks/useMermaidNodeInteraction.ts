@@ -386,20 +386,24 @@ export function useMermaidNodeInteraction(
     const container = svgContainerRef.current
     if (!container) return
 
+    const svgEl = container.querySelector('svg') as SVGSVGElement | null
+    if (!svgEl) return
+
     const observer = new MutationObserver(() => {
       requestAnimationFrame(() => {
-        const svgEl = container.querySelector('svg') as SVGSVGElement | null
-        svgRef.current = svgEl
+        const currentSvg = container.querySelector('svg') as SVGSVGElement | null
+        svgRef.current = currentSvg
         wrapperRef.current = container.closest('.mermaid-canvas-wrapper') as HTMLDivElement | null
-        if (!svgEl || !hoveredNodeIdRef.current) return
-        const nodeEl = svgEl.querySelector(`#${CSS.escape(hoveredNodeIdRef.current)}`)
+        if (!currentSvg || !hoveredNodeIdRef.current) return
+        const nodeEl = currentSvg.querySelector(`#${CSS.escape(hoveredNodeIdRef.current)}`)
         if (nodeEl) {
           injectAnchors(nodeEl)
-          applyNodeHoverClass(svgEl, hoveredNodeIdRef.current)
+          applyNodeHoverClass(currentSvg, hoveredNodeIdRef.current)
         }
       })
     })
-    observer.observe(container, { childList: true, subtree: true })
+    // Observar solo el SVG directo, no todo el subtree del host
+    observer.observe(svgEl, { childList: true, subtree: false })
     return () => observer.disconnect()
   }, [svgContainerRef, enabled])
 

@@ -32,6 +32,7 @@ import { useLibraryManagerActions } from './hooks/useLibraryManagerActions'
 import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
+import { useLibraryLinkCacheAutoRebuild } from './hooks/useLibraryLinkCacheAutoRebuild'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
@@ -260,6 +261,8 @@ export function NotiaMenu() {
     treeNodesLibraryId: activeLibraryId,
     flatFileList,
   })
+
+  useLibraryLinkCacheAutoRebuild()
 
   const handleWindowAction = useCallback((action: NotiaWindowAction) => { void controlWindow(action) }, [])
   const handleOpenLibraryManager = useCallback(() => { dispatch(setLibraryManagerOpen(true)) }, [dispatch])

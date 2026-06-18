@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MermaidRenderResult } from '../types/mermaidTypes'
-import { renderMermaid } from '../engines/mermaidEngine'
+import { isMermaidRenderCancelledError, renderMermaid } from '../engines/mermaidEngine'
 
 interface UseMermaidRenderParams {
   code: string
@@ -14,9 +14,18 @@ export function useMermaidRender({ code, config, theme }: UseMermaidRenderParams
   const [isLoading, setIsLoading] = useState(false)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const lastRenderRef = useRef(0)
   const pendingRef = useRef(false)
   const activeRenderRef = useRef(false)
+  const isMountedRef = useRef(true)
+
+  const cancelActiveRender = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+  }, [])
 
   const render = useCallback(async () => {
     if (activeRenderRef.current) return // evitar renders concurrentes
@@ -25,24 +34,47 @@ export function useMermaidRender({ code, config, theme }: UseMermaidRenderParams
     setIsLoading(true)
     setError(null)
 
+    cancelActiveRender()
+    const controller = new AbortController()
+    abortRef.current = controller
+
     try {
-      const res = await renderMermaid({ code, theme, config })
+      const res = await renderMermaid({ code, theme, config, abortSignal: controller.signal })
+      if (!isMountedRef.current || controller.signal.aborted) return
       setResult(res)
       lastRenderRef.current = performance.now()
     } catch (err) {
+      if (!isMountedRef.current || controller.signal.aborted) return
+      if (isMermaidRenderCancelledError(err)) {
+        // No mostrar error por cancelación voluntaria
+        return
+      }
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
       setResult(null)
     } finally {
-      setIsLoading(false)
-      activeRenderRef.current = false
-      // Si llegó un cambio mientras renderizábamos, reprogramar
-      if (pendingRef.current) {
-        pendingRef.current = false
-        debounceRef.current = setTimeout(() => render(), 50)
+      if (abortRef.current === controller) {
+        abortRef.current = null
+      }
+      if (isMountedRef.current) {
+        setIsLoading(false)
+        activeRenderRef.current = false
+        // Si llegó un cambio mientras renderizábamos, reprogramar
+        if (pendingRef.current) {
+          pendingRef.current = false
+          debounceRef.current = setTimeout(() => render(), 50)
+        }
       }
     }
-  }, [code, config, theme])
+  }, [code, config, theme, cancelActiveRender])
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+      cancelActiveRender()
+    }
+  }, [cancelActiveRender])
 
   useEffect(() => {
     if (debounceRef.current) {

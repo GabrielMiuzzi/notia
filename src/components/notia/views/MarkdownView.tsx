@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { useAppSelector } from '../../../store/hooks'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
@@ -41,6 +42,8 @@ import {
   type WikiLinkSuggestionMenuState,
 } from './markdown/WikiLinkSuggestionMenu'
 import { createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
+import { quickHash } from '../../../modules/mermaid/engines/mermaidEngine'
+import { mountInlineMermaidPreview, unmountInlineMermaidPreview } from '../../../modules/mermaid/services/mermaidPreviewRuntime'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/nord.css'
 
@@ -151,29 +154,49 @@ function insertWikiLinkSuggestion(
   view.dispatch(transaction.scrollIntoView())
 }
 
-import {
-  mountInlineMermaidPreview,
-  unmountInlineMermaidPreview,
-} from '../../../modules/mermaid/services/mermaidPreviewRuntime'
+const MERMAID_KEYWORDS = [
+  'erDiagram', 'flowchart', 'graph ', 'graph\t', 'graph\n',
+  'sequenceDiagram', 'classDiagram', 'stateDiagram', 'stateDiagram-v2',
+  'gantt', 'pie', 'gitGraph', 'mindmap', 'journey', 'requirementDiagram',
+  'c4Context', 'c4Container', 'c4Component', 'c4Dynamic', 'c4Deployment',
+  'timeline', 'sankey-beta', 'xychart-beta', 'block-beta', 'packet-beta',
+  'kanban', 'architecture-beta',
+]
+
+function looksLikeMermaid(content: string): boolean {
+  const trimmed = content.trim()
+  if (!trimmed) return false
+  const firstLine = trimmed.split('\n')[0]?.trim().toLowerCase() || ''
+  const result = MERMAID_KEYWORDS.some((kw) => firstLine.startsWith(kw.toLowerCase()))
+  if (result) {
+    console.log('[looksLikeMermaid] detected Mermaid keyword in first line:', firstLine)
+  }
+  return result
+}
 
 function renderMermaidPreview(
+  _language: string,
   content: string,
+  blockIndex: number,
   applyPreview: (html: string) => void,
 ): void {
-  const id = `notia-mmd-${Math.random().toString(36).slice(2)}`
-  const containerId = `notia-mmd-host-${id}`
-  const div = document.createElement('div')
-  div.id = containerId
-  div.className = 'notia-mermaid-inline-host'
-  div.dataset.code = content
-  applyPreview(div.outerHTML)
+  console.log('[renderMermaidPreview] called with content:', content.substring(0, 50), '...')
+  // Render Mermaid asynchronously and inject the resulting SVG string.
+  // We pass a placeholder with visible text so DOMPurify (used by Milkdown)
+  // does NOT purge the container. Once the SVG is ready we replace the HTML.
+  const uniqueId = `${quickHash(content)}_${blockIndex}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+  const containerId = `notia-mmd-host-${uniqueId}`
+  const storageKey = `mmd-inline-${uniqueId}`
+  const placeholder = `<div id="${containerId}" class="notia-mermaid-inline-host" data-code="${encodeURIComponent(content)}" data-storage-key="${storageKey}"><div style="padding:12px;color:var(--color-icon-muted);font-size:13px;">Renderizando diagrama...</div></div>`
+  applyPreview(placeholder)
 
-  // Mount the React component after the DOM node exists in Milkdown's output
   requestAnimationFrame(() => {
     const host = document.getElementById(containerId)
-    if (host) {
-      mountInlineMermaidPreview(host, content)
+    if (!host) {
+      console.warn('[renderMermaidPreview] host not found:', containerId)
+      return
     }
+    mountInlineMermaidPreview(host, content, storageKey)
   })
 }
 
@@ -198,12 +221,14 @@ function MarkdownViewInner({
   const latestBodyRef = useRef(parsedDocument.body)
   const frontmatterRef = useRef(parsedDocument.frontmatter)
   const hasFrontmatterRef = useRef(parsedDocument.hasFrontmatter)
+  const documentPathRef = useRef(documentPath)
   const onSourceChangeRef = useRef(onSourceChange)
   const wikiLinkTargetsRef = useRef(wikiLinkTargets)
   const wikiLinkLookupRef = useRef<MarkdownWikiLinkLookup>(wikiLinkLookup)
   const wikiLinkMenuStateRef = useRef<WikiLinkSuggestionMenuState | null>(null)
   const isWikiLinkMenuOpenRef = useRef(false)
   const onOpenLinkedFileRef = useRef(onOpenLinkedFile)
+  const mermaidPreviewBlockIndexRef = useRef(0)
 
   useEffect(() => {
     if (source === latestComposedSourceRef.current) {
@@ -216,6 +241,12 @@ function MarkdownViewInner({
     hasFrontmatterRef.current = parsedDocument.hasFrontmatter
   }, [parsedDocument, source])
 
+  const appTheme = useAppSelector((state) => state.preferences.theme)
+  const themeRef = useRef(appTheme)
+  useEffect(() => {
+    themeRef.current = appTheme
+  }, [appTheme])
+
   useEffect(() => {
     onSourceChangeRef.current = onSourceChange
   }, [onSourceChange])
@@ -224,6 +255,10 @@ function MarkdownViewInner({
     wikiLinkTargetsRef.current = wikiLinkTargets
     wikiLinkLookupRef.current = wikiLinkLookup
   }, [wikiLinkLookup, wikiLinkTargets])
+
+  useEffect(() => {
+    documentPathRef.current = documentPath
+  }, [documentPath])
 
   useEffect(() => {
     onOpenLinkedFileRef.current = onOpenLinkedFile
@@ -235,37 +270,10 @@ function MarkdownViewInner({
   }, [wikiLinkMenuState])
 
   useEffect(() => {
-    const root = rootRef.current
-    if (!root) return
-
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of Array.from(mutation.removedNodes)) {
-          if (node instanceof HTMLElement) {
-            node.querySelectorAll('.notia-mermaid-inline-host').forEach((el) => {
-              unmountInlineMermaidPreview(el as HTMLElement)
-            })
-          }
-        }
-      }
-    })
-
-    observer.observe(root, { childList: true, subtree: true })
-
-    return () => {
-      observer.disconnect()
-      root.querySelectorAll('.notia-mermaid-inline-host').forEach((el) => {
-        unmountInlineMermaidPreview(el as HTMLElement)
-      })
-    }
-  }, [])
-
-  useEffect(() => {
     if (!rootRef.current) {
       return
     }
 
-    let isMounted = true
     const crepe = new Crepe({
       root: rootRef.current,
       defaultValue: initialBodyRef.current,
@@ -295,12 +303,36 @@ function MarkdownViewInner({
       },
     })
 
+    let isMounted = true
+    const inlineHosts = new Set<HTMLElement>()
+
+    const cleanupInlinePreviews = () => {
+      rootRef.current?.querySelectorAll('.notia-mermaid-inline-host').forEach((node) => {
+        const host = node as HTMLElement
+        inlineHosts.add(host)
+      })
+      inlineHosts.forEach((host) => {
+        unmountInlineMermaidPreview(host)
+      })
+      inlineHosts.clear()
+    }
+
     crepe.editor.config((ctx) => {
       ctx.update(codeBlockConfig.key, (prev) => ({
         ...prev,
         renderPreview: (language, content, applyPreview) => {
-          if (language.toLowerCase() === 'mermaid') {
-            void renderMermaidPreview(content, applyPreview)
+          const lowerLang = language.toLowerCase().trim()
+          // Activar preview Mermaid en tres casos:
+          // 1. Lenguaje explícitamente "mermaid"
+          // 2. Lenguaje vacío (bloques sin especificar lenguaje)
+          // 3. Lenguaje "text" pero contenido parece diagrama Mermaid
+          const isMermaidLang = lowerLang === 'mermaid'
+          const isEmptyLang = lowerLang === ''
+          const isTextButMermaid = lowerLang === 'text' && looksLikeMermaid(content)
+          if (isMermaidLang || isEmptyLang || isTextButMermaid) {
+            const blockIndex = mermaidPreviewBlockIndexRef.current
+            mermaidPreviewBlockIndexRef.current += 1
+            renderMermaidPreview(lowerLang, content, blockIndex, applyPreview)
             return undefined
           }
           return prev.renderPreview(language, content, applyPreview)
@@ -413,9 +445,15 @@ function MarkdownViewInner({
       isReadyRef.current = false
       crepeRef.current = null
       setWikiLinkMenuState(null)
+      cleanupInlinePreviews()
       void crepe.destroy()
     }
   }, [])
+
+  useEffect(() => {
+    if (!source) return
+    mermaidPreviewBlockIndexRef.current = 0
+  }, [source])
 
   useEffect(() => {
     const crepe = crepeRef.current
