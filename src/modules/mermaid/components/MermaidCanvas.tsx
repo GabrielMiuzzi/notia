@@ -6,6 +6,7 @@ import { useMermaidEdgeInteraction, type EdgeInfo } from '../hooks/useMermaidEdg
 import { MermaidPanZoomToolbar } from './MermaidPanZoomToolbar'
 import { MermaidExportMenu } from './MermaidExportMenu'
 import { MermaidEdgeToolbar } from './MermaidEdgeToolbar'
+import { notiaTimer } from '../../../services/runtime/notiaLogger'
 
 interface MermaidCanvasProps {
   result: MermaidRenderResult | null
@@ -37,7 +38,7 @@ interface MermaidCanvasExtendedProps extends MermaidCanvasProps {
   onSvgInjected?: (container: HTMLDivElement) => void
 }
 
-export const MermaidCanvas = memo(function MermaidCanvas({
+function MermaidCanvasComponent({
   result,
   isLoading,
   error,
@@ -55,20 +56,38 @@ export const MermaidCanvas = memo(function MermaidCanvas({
   onEdgeSelect,
   onEdgeTypeChange,
   onEdgeColorChange,
-    onEdgeLabelChange,
-    canvasRef,
-    readOnly,
-    onSvgInjected,
-  }: MermaidCanvasExtendedProps) {
+  onEdgeLabelChange,
+  canvasRef,
+  readOnly,
+  onSvgInjected,
+}: MermaidCanvasExtendedProps) {
+  const mountTimerRef = useRef(
+    notiaTimer('mermaid', 'MermaidCanvas mount', {
+      hasResult: Boolean(result?.svg),
+      gridEnabled,
+      panZoomEnabled,
+      theme,
+      roughEnabled: roughEnabled ?? false,
+      readOnly: readOnly ?? false,
+    }),
+  )
+  useEffect(() => {
+    return () => {
+      mountTimerRef.current.success()
+    }
+  }, [])
+
   const wrapperRef = useRef<HTMLDivElement>(null)
   const transformLayerRef = useRef<HTMLDivElement>(null)
   const svgContainerRef = useRef<HTMLDivElement>(null)
 
   const setWrapperRef = useCallback(
     (node: HTMLDivElement | null) => {
-      ;(wrapperRef as React.MutableRefObject<HTMLDivElement | null>).current = node
-      if (canvasRef) {
-        ;(canvasRef as React.MutableRefObject<HTMLDivElement | null>).current = node
+      const mutableWrapperRef = wrapperRef as React.MutableRefObject<HTMLDivElement | null>
+      mutableWrapperRef.current = node
+      if (canvasRef && 'current' in canvasRef) {
+        const mutableCanvasRef = canvasRef as React.MutableRefObject<HTMLDivElement | null>
+        mutableCanvasRef.current = node
       }
     },
     [canvasRef],
@@ -157,6 +176,9 @@ export const MermaidCanvas = memo(function MermaidCanvas({
       if (container) {
         container.innerHTML = ''
       }
+      if (transformLayerRef.current) {
+        transformLayerRef.current.innerHTML = ''
+      }
     }
   }, [])
 
@@ -169,12 +191,7 @@ export const MermaidCanvas = memo(function MermaidCanvas({
       return
     }
 
-    // Guardar referencia al SVG anterior para limpiar listeners explícitamente si es necesario
-    const previousSvg = container.querySelector('svg')
-    if (previousSvg) {
-      // innerHTML reemplaza nodos, pero forzamos limpieza de referencias a listeners de Mermaid
-      previousSvg.remove()
-    }
+    // Limpiar SVG anterior para evitar nodos huérfanos y listeners acumulados
     container.innerHTML = ''
 
     // Inyección directa — evita DOMParser + XMLSerializer (mucho más rápido)
@@ -230,6 +247,25 @@ export const MermaidCanvas = memo(function MermaidCanvas({
       ? 'radial-gradient(circle, #46464646 1px, transparent 1px) 0 0 / 20px 20px'
       : 'radial-gradient(circle, #e4e4e48c 1px, transparent 1px) 0 0 / 20px 20px'
     : 'none'
+
+  const handleSelectedEdgeTypeChange = useCallback(
+    (type: MermaidEdgeType) => {
+      onEdgeTypeChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, type)
+    },
+    [onEdgeTypeChange, selectedEdge],
+  )
+  const handleSelectedEdgeColorChange = useCallback(
+    (color: string) => {
+      onEdgeColorChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, color)
+    },
+    [onEdgeColorChange, selectedEdge],
+  )
+  const handleSelectedEdgeLabelChange = useCallback(
+    (label: string) => {
+      onEdgeLabelChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, label)
+    },
+    [onEdgeLabelChange, selectedEdge],
+  )
 
   return (
     <div
@@ -291,9 +327,9 @@ export const MermaidCanvas = memo(function MermaidCanvas({
             visible={!!selectedEdge}
             x={selectedEdge.layerX ?? 0}
             y={selectedEdge.layerY ?? 0}
-            onTypeChange={(type) => onEdgeTypeChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, type)}
-            onColorChange={(color) => onEdgeColorChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, color)}
-            onLabelChange={(label) => onEdgeLabelChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, label)}
+            onTypeChange={handleSelectedEdgeTypeChange}
+            onColorChange={handleSelectedEdgeColorChange}
+            onLabelChange={handleSelectedEdgeLabelChange}
           />
         )}
       </div>
@@ -313,5 +349,98 @@ export const MermaidCanvas = memo(function MermaidCanvas({
       )}
     </div>
   )
-})
+}
+
+function areMermaidCanvasPropsEqual(
+  previous: MermaidCanvasExtendedProps,
+  next: MermaidCanvasExtendedProps,
+): boolean {
+  if (previous.result !== next.result) {
+    return false
+  }
+
+  if (previous.isLoading !== next.isLoading) {
+    return false
+  }
+
+  if (previous.error !== next.error) {
+    return false
+  }
+
+  if (previous.gridEnabled !== next.gridEnabled) {
+    return false
+  }
+
+  if (previous.panZoomEnabled !== next.panZoomEnabled) {
+    return false
+  }
+
+  if (previous.theme !== next.theme) {
+    return false
+  }
+
+  if (previous.roughEnabled !== next.roughEnabled) {
+    return false
+  }
+
+  if (previous.initialZoom !== next.initialZoom) {
+    return false
+  }
+
+  if (previous.initialPanX !== next.initialPanX) {
+    return false
+  }
+
+  if (previous.initialPanY !== next.initialPanY) {
+    return false
+  }
+
+  if (previous.readOnly !== next.readOnly) {
+    return false
+  }
+
+  if (previous.onZoomChange !== next.onZoomChange) {
+    return false
+  }
+
+  if (previous.onPanChange !== next.onPanChange) {
+    return false
+  }
+
+  if (previous.onConnect !== next.onConnect) {
+    return false
+  }
+
+  if (previous.onNodeLabelEdit !== next.onNodeLabelEdit) {
+    return false
+  }
+
+  if (previous.onEdgeSelect !== next.onEdgeSelect) {
+    return false
+  }
+
+  if (previous.onEdgeTypeChange !== next.onEdgeTypeChange) {
+    return false
+  }
+
+  if (previous.onEdgeColorChange !== next.onEdgeColorChange) {
+    return false
+  }
+
+  if (previous.onEdgeLabelChange !== next.onEdgeLabelChange) {
+    return false
+  }
+
+  if (previous.onSvgInjected !== next.onSvgInjected) {
+    return false
+  }
+
+  if (previous.canvasRef !== next.canvasRef) {
+    return false
+  }
+
+  return true
+}
+
+export const MermaidCanvas = memo(MermaidCanvasComponent, areMermaidCanvasPropsEqual)
 MermaidCanvas.displayName = 'MermaidCanvas'

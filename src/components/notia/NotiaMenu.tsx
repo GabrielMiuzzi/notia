@@ -14,7 +14,7 @@ import { NotiaWorkspace } from './NotiaWorkspace'
 import { NotiaRightPanel } from './NotiaRightPanel'
 import { NotiaModals } from './NotiaModals'
 import { WindowTitleBar } from './WindowTitleBar'
-import { type TaskManagerChatContext } from '../../modules/task-manager/components/TaskManagerApp'
+import { type TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
 import { useGraphWorkspace } from './hooks/useGraphWorkspace'
 import { useLibraryConfigSync } from './hooks/useLibraryConfigSync'
 import { useRightPanelChatContext } from './hooks/useRightPanelChatContext'
@@ -42,6 +42,7 @@ import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
+import { notiaTimer } from '../../services/runtime/notiaLogger'
 
 // --- Pure helper function ---
 
@@ -49,7 +50,7 @@ function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
 }
 
-export function NotiaMenu() {
+function NotiaMenuComponent() {
   const dispatch = useAppDispatch()
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const theme = useAppSelector(selectTheme)
@@ -62,6 +63,13 @@ export function NotiaMenu() {
   const flatFileList = useAppSelector(selectFlatFileList)
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
+
+  useEffect(() => {
+    const mountTimer = notiaTimer('ui', 'NotiaMenu.mount')
+    return () => {
+      mountTimer.success()
+    }
+  }, [])
 
   const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
@@ -101,16 +109,19 @@ export function NotiaMenu() {
     [isAndroidRuntime],
   )
 
+  const activeLibraryPath = activeLibrary?.path
+  const activeLibraryAndroidTreeUri = activeLibrary?.androidTreeUri
+
   const resolveActiveLibraryAndroidDirectoryUri = useCallback((pathValue?: string | null): string | undefined => {
-    if (!activeLibrary?.androidTreeUri) { return undefined }
-    if (!pathValue) { return activeLibrary.androidTreeUri }
-    const normalizedLibraryPath = normalizePath(activeLibrary.path)
+    if (!activeLibraryAndroidTreeUri) { return undefined }
+    if (!pathValue) { return activeLibraryAndroidTreeUri }
+    const normalizedLibraryPath = normalizePath(activeLibraryPath ?? '')
     const normalizedPath = normalizePath(pathValue)
     if (normalizedPath === normalizedLibraryPath || normalizedPath.startsWith(`${normalizedLibraryPath}/`)) {
-      return activeLibrary.androidTreeUri
+      return activeLibraryAndroidTreeUri
     }
     return undefined
-  }, [activeLibrary])
+  }, [activeLibraryAndroidTreeUri, activeLibraryPath])
 
   // --- Stable callback refs for circular dependencies between hooks ---
   const persistTextDocumentSourceRef = useRef<((targetPath: string, targetSource: string) => Promise<boolean>) | null>(null)
@@ -144,22 +155,28 @@ export function NotiaMenu() {
   })
 
   // Wire up the bumpLibraryIndexRevision ref so useTabManager can use it
-  bumpLibraryIndexRevisionRef.current = bumpLibraryIndexRevision
+  useEffect(() => {
+    bumpLibraryIndexRevisionRef.current = bumpLibraryIndexRevision
+  }, [bumpLibraryIndexRevision])
+
+  const bumpLibraryIndexRevisionCallback = useCallback(() => { bumpLibraryIndexRevisionRef.current() }, [])
 
   const tabManager = useTabManager({
     resolveActiveLibraryAndroidDirectoryUri,
     clearPendingTextSaveByPath,
-    bumpLibraryIndexRevision: useCallback(() => { bumpLibraryIndexRevisionRef.current() }, []),
+    bumpLibraryIndexRevision: bumpLibraryIndexRevisionCallback,
     resetColdPassSession,
-    activeLibraryPath: activeLibrary?.path,
+    activeLibraryPath: activeLibraryPath,
   })
 
   // Wire up the persistTextDocumentSource ref so autosave uses the tab manager version
-  persistTextDocumentSourceRef.current = tabManager.persistTextDocumentSource
+  useEffect(() => {
+    persistTextDocumentSourceRef.current = tabManager.persistTextDocumentSource
+  }, [tabManager.persistTextDocumentSource])
 
   useEffect(() => {
     closeColdPassTabRef.current = () => { void tabManager.closeTabByPath(COLDPASS_WORKSPACE_TAB_PATH) }
-  }, [tabManager.closeTabByPath])
+  }, [tabManager])
 
   const {
     handleOpenFile,
@@ -174,15 +191,17 @@ export function NotiaMenu() {
   } = useDocumentPersist({
     resolveActiveLibraryAndroidDirectoryUri,
     bumpLibraryIndexRevision,
-    activeLibraryPath: activeLibrary?.path,
+    activeLibraryPath,
   })
+
+  const activeLibraryForToolbar = activeLibrary ?? null
 
   const {
     handleHeaderActionClick,
     handleRailActionClick,
     handleExplorerToolClick,
   } = useToolbarActions({
-    activeLibrary,
+    activeLibrary: activeLibraryForToolbar,
     handleCollapseAllFolders,
     handleExpandAllFolders,
   })
@@ -196,7 +215,7 @@ export function NotiaMenu() {
     handleCancelRename,
     handleMoveNode,
   } = useFileTreeActions({
-    activeLibrary,
+    activeLibrary: activeLibraryForToolbar,
     resolveActiveLibraryAndroidDirectoryUri,
     notifyLibraryTreeChanged,
     closeTabsByPath: tabManager.closeTabsByPath,
@@ -247,7 +266,7 @@ export function NotiaMenu() {
   )
 
   useLibraryConfigSync({
-    activeLibrary,
+    activeLibrary: activeLibraryForToolbar,
     aiPreferences,
     explorerRefreshIntervalMs,
     inkdocPreferences,
@@ -268,8 +287,17 @@ export function NotiaMenu() {
   const handleOpenLibraryManager = useCallback(() => { dispatch(setLibraryManagerOpen(true)) }, [dispatch])
   const handleOpenSettings = useCallback(() => { dispatch(setSettingsOpen(true)) }, [dispatch])
   const handleChatWorkspaceTreeChanged = useCallback((pathHint?: string) => {
-    notifyLibraryTreeChanged(pathHint ?? activeLibrary?.path)
-  }, [activeLibrary?.path, notifyLibraryTreeChanged])
+    notifyLibraryTreeChanged(pathHint ?? activeLibraryPath ?? undefined)
+  }, [activeLibraryPath, notifyLibraryTreeChanged])
+
+  // Stable tabManager action selectors — avoid rebuilding the whole object on every render
+  const {
+    handleCloseTab,
+    handleCloseActiveTab,
+    handleCycleToNextTab,
+    handleActivateTab,
+    handleTextDocumentChange,
+  } = tabManager
 
   // --- Derived values ---
 
@@ -284,7 +312,7 @@ export function NotiaMenu() {
     () => (activeLibrary
       ? { path: activeLibrary.path, androidTreeUri: activeLibrary.androidTreeUri }
       : null),
-    [activeLibrary?.androidTreeUri, activeLibrary?.path],
+    [activeLibrary],
   )
 
   const {
@@ -320,15 +348,15 @@ export function NotiaMenu() {
   const actionsValue = useMemo(() => ({
     openFile: handleOpenFile,
     openFileFromView: handleOpenFileFromView,
-    closeTab: tabManager.handleCloseTab,
-    closeActiveTab: tabManager.handleCloseActiveTab,
-    cycleToNextTab: tabManager.handleCycleToNextTab,
+    closeTab: handleCloseTab,
+    closeActiveTab: handleCloseActiveTab,
+    cycleToNextTab: handleCycleToNextTab,
     toggleFolder: handleToggleFolder,
     toggleSidebar: handleSidebarToggle,
     toggleRightChatPanel: handleRightChatPanelToggle,
     toggleTheme: handleThemeToggle,
     selectLibrary: handleSelectLibrary,
-    activateTab: tabManager.handleActivateTab,
+    activateTab: handleActivateTab,
     openSettings: handleOpenSettings,
     openLibraryManager: handleOpenLibraryManager,
     railActionClick: handleRailActionClick,
@@ -344,7 +372,7 @@ export function NotiaMenu() {
     moveNode: handleMoveNode,
     libraryAdded: handleLibraryAdded,
     libraryRemoved: handleLibraryRemoved,
-    textDocumentChange: tabManager.handleTextDocumentChange,
+    textDocumentChange: handleTextDocumentChange,
     inkdocDocumentPersist: handleInkdocDocumentPersist,
     chatWorkspaceTreeChanged: handleChatWorkspaceTreeChanged,
     windowAction: handleWindowAction,
@@ -355,12 +383,15 @@ export function NotiaMenu() {
   }), [
     handleOpenFile,
     handleOpenFileFromView,
-    tabManager,
+    handleCloseTab,
+    handleCloseActiveTab,
+    handleCycleToNextTab,
     handleToggleFolder,
     handleSidebarToggle,
     handleRightChatPanelToggle,
     handleThemeToggle,
     handleSelectLibrary,
+    handleActivateTab,
     handleOpenSettings,
     handleOpenLibraryManager,
     handleRailActionClick,
@@ -376,6 +407,7 @@ export function NotiaMenu() {
     handleMoveNode,
     handleLibraryAdded,
     handleLibraryRemoved,
+    handleTextDocumentChange,
     handleInkdocDocumentPersist,
     handleChatWorkspaceTreeChanged,
     handleWindowAction,
@@ -452,4 +484,8 @@ export function NotiaMenu() {
       </div>
     </NotiaActionsContext.Provider>
   )
+}
+
+export function NotiaMenu() {
+  return <NotiaMenuComponent />
 }

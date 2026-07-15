@@ -454,18 +454,24 @@ Construcción y visualización de un grafo de conocimiento donde los nodos son a
 ### 2.5 AI Chat
 
 #### Descripción
-Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check, streaming de respuestas, listado de modelos, generación de títulos y memoria a largo plazo.
+Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check con caché, streaming de respuestas en desktop y Android, listado de todos los modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
 #### Endpoints (Commands Tauri)
 
-| Command | Tipo | Payload | Response |
+| Command | Tipo | Payload | Response | Notas |
+|---|---|---|---|---|
+| `check_desktop_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Usa `listAiModels` para resolver el modelo por defecto. |
+| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, messages[] }` | `{ answer?, error? }` | Reserva para respuesta completa; el chat principal usa fetch NDJSON directo. |
+| `list_desktop_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
+| `run_desktop_ai_chat_streaming` | Async | `{ ollamaUrl, apiKey?, model, messages[] }` | eventos `notia-ai-chat-stream` | Backend alternativo de streaming por NDJSON (no usado por frontend actualmente). |
+| `check_android_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Resuelve modelo por defecto con todos los modelos. |
+| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` | Respuesta completa via bridge (legacy). |
+| `run_android_ai_chat_streaming` | Async | `{ ollamaUrl, apiKey?, model, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | eventos `notia-ai-chat-stream` | Streaming NDJSON real desde el bridge Kotlin. |
+| `list_android_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
+
+| Evento Tauri | Dirección | Payload | Descripción |
 |---|---|---|---|
-| `check_desktop_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` |
-| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, messages[] }` | `{ answer?, error? }` |
-| `list_desktop_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` |
-| `check_android_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` |
-| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` |
-| `list_android_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` |
+| `notia-ai-chat-stream` | Backend → Frontend | `{ requestId, type: "delta" | "done" | "error", payload }` | Deltas de streaming Android; `done` incluye `answer` completo; `error` incluye `message`. |
 
 #### Ejemplo JSON — Request `check_desktop_ai_health`
 
@@ -534,40 +540,67 @@ Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check, 
 
 #### Validaciones
 - URL vacía rechazada en `normalizeAiSettingsInput()`.
+- Health check cacheado: 10s por combinación `ollamaUrl + selectedModel + apiKey`; `invalidateAiHealthCache()` lo invalida manualmente (Settings al verificar).
 - Timeout de health check: 15s (`AI_REQUEST_TIMEOUT_MS`).
 - Timeout de chat: 180s (`AI_CHAT_TIMEOUT_MS`).
 - Límite de contexto: 30k caracteres (`MAX_CONTEXT_CHARS`).
-- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`).
+- Límite de archivos en modo **Referencia**: 50 archivos / 6.000 caracteres.
+- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`) en el prompt; 200 memorias persistidas en `LongTermMemory.md`.
+- Cancelación: `AbortController` en desktop (fetch directo), `abortSignal` en bridge Android.
+
+#### Arquitectura del Chat
+
+```mermaid
+flowchart LR
+    A[ChatWorkspaceView] --> B[useChatState]
+    A --> C[useChatSubmitMessage]
+    C --> D[aiRuntime]
+    D --> E[Ollama /api/chat]
+    C --> F[chatDocumentStorage]
+    F --> G[.md append o rewrite]
+    A --> H[ChatHistoryPanel]
+    A --> I[ChatThread]
+    A --> J[ChatComposer]
+```
 
 #### Pasos del proceso (Desktop)
 
-1. **Health check**: `aiRuntime.checkAiHealth(prefs)` → intenta `invoke('check_desktop_ai_health')` → Rust `commands::ai::check_desktop_ai_health` → `services::ai_service::check_ollama_health()` → HTTP GET `/api/tags` con reqwest (timeout 15s) → retorna estado y modelo default.
-2. **Listado de modelos**: `aiRuntime.listAiMultimodalModels(prefs)` → fallback chain:
-   - Intenta `invoke('list_desktop_ai_models')` → bridge Rust.
-   - Si falla, hace fetch directo a `/api/tags` desde el frontend.
-   - Filtra por nombres probables de modelos multimodales (`vision`, `llava`, etc.).
-   - Verifica capacidad `vision` vía `/api/show` para cada candidato.
-3. **Chat streaming**:
+1. **Health check**: `aiRuntime.checkAiHealth(prefs)` → intenta `invoke('check_desktop_ai_health')` → Rust `commands::ai::check_desktop_ai_health` → `services::ai_service::check_ollama_health()` → HTTP GET `/api/tags` con reqwest (timeout 15s) → retorna estado y modelo por defecto usando `listAiModels`.
+   - El resultado se cachea por 10s; `invalidateAiHealthCache()` limpia la caché antes de verificar manualmente en Settings.
+2. **Resolución de modelo activo**: `useChatState` llama `resolveActiveModel(prefs)` → `listAiModels(prefs)` con caché de 30s → devuelve el modelo seleccionado si está disponible, o el primer modelo disponible.
+3. **Listado de modelos**: `aiRuntime.listAiModels(prefs)` devuelve todos los modelos de `/api/tags` (bridge o fetch directo). `listAiMultimodalModels` sigue existiendo para flujos que requieren visión.
+4. **Chat streaming (desktop)**:
    - Construye mensajes: system (con memoria LTM) + historial + user (con contexto de archivos si aplica).
-   - Intenta `invoke('run_desktop_ai_chat')` → bridge Rust que hace HTTP a Ollama.
-   - Si el bridge falla, hace **fetch directo** desde el frontend a `/api/chat` con `stream: true`, parseando NDJSON línea por línea y llamando `onMessageDelta` por cada chunk.
-4. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
-5. **Memoria LTM**: tras cada intercambio, `generateAiLongTermMemories()` envía el contexto reciente al modelo con instrucciones estrictas de devolver solo un JSON array de strings. Parsea con fallback a líneas si el JSON es inválido. Almacena en el documento de chat (`chatDocumentStorage`).
+   - Hace **fetch directo** a `/api/chat` con `stream: true` y `AbortController`, parseando NDJSON línea por línea y llamando `onMessageDelta` por cada chunk.
+   - Si se cancela, se aborta la petición y el contenido parcial permanece visible.
+5. **Persistencia incremental**:
+   - Tras cada respuesta, `ChatWorkspaceView` intenta `appendChatMessages(document, messages)`.
+   - Si el título no cambió y el cuerpo del `.md` termina con un marker válido (`user` o `assistant`), se escriben solo los mensajes nuevos al final.
+   - Si el título cambió o el formato no es seguro, fallback a `saveChatDocument` (re-escritura completa).
+6. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
+7. **Memoria LTM**: tras cada intercambio, `generateAiLongTermMemories()` envía el contexto reciente al modelo con instrucciones estrictas de devolver solo un JSON array de strings. Parsea con fallback a líneas si el JSON es inválido. Almacena en el documento de chat (`chatDocumentStorage`) y en `.notia/chat/LongTermMemory.md`.
 
 #### Pasos del proceso (Android)
 
-1. Los comandos `check_android_ai_health`, `run_android_ai_chat`, `list_android_ai_models` son manejados por `mobile_ai_bridge.rs` (plugin Kotlin/Rust).
-2. El bridge recibe los payloads, realiza la solicitud HTTP a Ollama desde la capa nativa de Android y retorna la respuesta serializada al frontend.
-3. Si un comando del bridge no existe (backend desactualizado), el frontend cae en fallback a fetch directo (para health y modelos) o muestra error (para chat).
+1. Los comandos `check_android_ai_health`, `run_android_ai_chat`, `list_android_ai_models` y `run_android_ai_chat_streaming` son manejados por `mobile_ai_bridge.rs` y el plugin Kotlin `AiBridgePlugin.kt`.
+2. **Health y modelos**: se invoca el command Tauri correspondiente. Si el bridge no existe o está desactualizado, el frontend cae en fallback a fetch directo para health y modelos.
+3. **Streaming de chat**:
+   - El frontend invoca `run_android_ai_chat_streaming` con un `requestId` único.
+   - Se suscribe al evento Tauri `notia-ai-chat-stream`.
+   - El plugin Kotlin conecta a `/api/chat` con `stream: true`, lee NDJSON línea a línea con OkHttp y emite eventos Tauri (`delta`, `done`, `error`).
+   - El frontend acumula deltas y actualiza la UI en tiempo real.
+   - La cancelación se señaliza con un `abortSignal` compartido; al cancelar, el frontend también deja de escuchar eventos para ese `requestId`.
 
 #### Comportamiento ante errores
 - Ollama no responde: mensaje amigable en español ("No se pudo conectar con Ollama.").
-- Modelo no disponible: error indicando que no hay modelos multimodales.
+- Modelo no disponible: error indicando que no hay modelos disponibles. En el chat se muestra un mensaje con botón **"Configurar IA"** que abre Settings → IA.
+- Modelo no admite imágenes: error claro pidiendo seleccionar un modelo con visión en Settings → IA.
 - Bridge no disponible: fallback silencioso a fetch directo en desktop; en Android, error pidiendo recompilar si falta el plugin.
-- Stream interrumpido: `AbortController` cancela la petición; el contenido parcial permanece visible.
+- Stream interrumpido: `AbortController` cancela la petición; el contenido parcial permanece visible. En Android el bridge aborta el request nativo.
+- Append fallido: fallback silencioso a re-escritura completa del `.md`.
 
 #### Dependencias
-- **Frontend**: `aiRuntime.ts`, `chatAttachmentRuntime.ts`, `chatDocumentStorage.ts`, `aiSettingsStorage.ts`, `ChatWorkspaceView.tsx`, `ChatMarkdownMessage.tsx`.
+- **Frontend**: `aiRuntime.ts`, `chatAttachmentRuntime.ts`, `chatDocumentStorage.ts`, `aiSettingsStorage.ts`, `useChatState.ts`, `useChatSubmitMessage.ts`, `useChatAttachmentMenu.ts`, `ChatWorkspaceView.tsx`, `ChatHistoryPanel.tsx`, `ChatThread.tsx`, `ChatComposer.tsx`, `ChatMarkdownMessage.tsx`.
 - **Backend**: `commands::ai.rs`, `services::ai_service.rs`, `mobile_ai_bridge.rs`.
 
 ---
@@ -2743,6 +2776,32 @@ graph TB
 - **Tree Signature Polling**: en desktop se usa el watcher nativo (event-driven). En Android se usa signature comparison para evitar re-leer el árbol completo innecesariamente.
 - **Minimize invoke calls**: resultados de `readLibraryTree` se cachean por signature; solo se re-invoca si el signature cambia.
 - **Batch events**: `libraryTreeEvents` agrupa múltiples filesystem events en un solo `CustomEvent` para reducir re-renders.
+- **Context Selectors (`useNotiaAction`)**: desde la versión 1.0.13, `NotiaSidebar`, `NotiaRightPanel` y `NotiaWorkspace` consumen acciones individuales del contexto en lugar del objeto `actions` completo. Esto evita re-renders en cadena cuando un handler no relacionado cambia de referencia.
+- **Descomposición de `tabManager` en `NotiaMenu`**: en lugar de pasar el objeto `tabManager` entero a `actionsValue`, se descompuso en callbacks estables (`handleCloseTab`, `handleCloseActiveTab`, `handleCycleToNextTab`, `handleActivateTab`, `handleTextDocumentChange`). El objeto `actionsValue` ahora solo se recrea cuando realmente cambia una acción consumida.
+- **Timers de performance base**: `NotiaMenu` y `useDocumentOpener` registran duraciones vía `notiaTimer`/`performanceBaseline` para facilitar benchmarking continuo en Android.
+- **Memoización de vistas pesadas (1.2b)**: `ChatWorkspaceView`, `TaskManagerApp`, `MermaidCanvas` y `GraphView` usan `React.memo` con comparadores personalizados (`areChatWorkspaceViewPropsEqual`, `areTaskManagerAppPropsEqual`, `areMermaidCanvasPropsEqual`, `areGraphViewPropsEqual`). Esto evita re-renderizados cuando el padre actualiza estado no consumido por la vista (por ejemplo, `NotiaWorkspace` cambiando un setter sin que cambien las props de la vista).
+- **Renderizado directo del hilo de mensajes**: `ChatWorkspaceView` renderiza todos los mensajes del hilo activo sin virtualización. Esto evita que mensajes largos del asistente (con Markdown, listas o bloques de código) se corten al forzar una altura fija por item. La virtualización de altura fija fue descartada porque los mensajes de chat tienen altura variable e impredecible; una futura optimización podría usar medición dinámica por item (`ResizeObserver`) si fuera necesario para conversaciones muy largas.
+- **Callbacks estables en `MermaidCanvas`**: los handlers del toolbar de flechas (`onEdgeTypeChange`, `onEdgeColorChange`, `onEdgeLabelChange`) se envuelven en `useCallback` para no invalidar el memo del canvas durante interacciones de pointer.
+- **Selectores Redux memoizados (2.3/2.4)**: vistas pesadas (`MermaidView`, `GraphView`, `MarkdownView`, `InlineMermaidPreview`) dejaron de usar selectores inline anónimos. Ahora consumen selectores reutilizables con `createSelector` (`selectMermaidViewerState`, `selectMermaidTheme`, `selectActiveLibraryPath`, `selectTheme`), reduciendo la creación de nuevas referencias de objetos en cada render y facilitando la estabilidad de `React.memo`.
+- **Code splitting con `React.lazy` (4.1)**: `MarkdownView`, `MermaidView`, `InkdocView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp` se cargan bajo demanda. `FileViewHost` y `NotiaWorkspace` envuelven estas vistas en `Suspense` con fallback mínimo (spinner Notia), reduciendo el tiempo de parseo/ejecución del bundle inicial en Android y desktop.
+- **Preload inteligente para escritorio (4.2)**: `useLazyPreloadOnIdle.ts` (usado en `App.tsx`) precarga los chunks de los editores más comunes durante los momentos de inactividad (`requestIdleCallback` / `setTimeout` fallback). En Android la precarga se omite por defecto para conservar memoria y datos móviles. Los delays escalonados son: MarkdownView (1500 ms), MermaidView (1900 ms), InkdocView (2300 ms), GraphView (3500 ms), TaskManagerApp (4500 ms).
+- **Dynamic imports existentes verificados (4.3/4.4/4.5)**: `mermaidEngine.ts` ya importa `mermaid` de forma dinámica; `@milkdown/crepe` y sus plugins viven exclusivamente dentro del chunk `MarkdownView`; `@monaco-editor/react` y `monaco-editor` solo se cargan dentro del chunk `MermaidView`. Esto evita que el bundle inicial incluya ~1.4 MB de Milkdown, ~80 KB de Mermaid + Monaco y ~1 MB de Inkdoc/KaTeX hasta que sean necesarios.
+- **Bundle splitting con `manualChunks` (5.1/5.6)**: `vite.config.ts` define `manualChunks` para `vendor-mui`, `vendor-milkdown`, `vendor-mermaid`, `vendor-monaco`, `vendor-katex`, `vendor-cytoscape`, `vendor-lucide` y `vendor-iconify-packs`. El bundle inicial `index-*.js` quedó en ~460 KB gzip mientras que las librerías pesadas se cargan bajo demanda en chunks separados.
+- **Dynamic imports de dependencias grandes (5.5)**: los icon packs de Mermaid (`@iconify-json/*`) se cargan de forma dinámica desde `MermaidIconsMenu`; `html2canvas` y `jspdf` se cargan dinámicamente solo al exportar PDF desde Inkdoc. Esto evita que el bundle inicial arrastre ~2.5 MB de iconos o ~170 KB de librerías PDF.
+- **Perfil de compilación release optimizado (6.1)**: `src-tauri/Cargo.toml` configura `lto = true`, `codegen-units = 1`, `strip = true` y `panic = "abort"` para reducir tamaño y mejorar rendimiento en Android. `overflow-checks` se mantiene habilitado por seguridad.
+- **Logging y SAF optimizados (6.2/6.3)**: Android release usa log level `Info`. Se agregó throttle de 200 ms a `refresh_root_tree_cache` y una cache LRU de 500 entradas en `AndroidDirectoryPickerState` para resoluciones de paths SAF sin JNI repetido.
+- **Commands de lectura async con spawn_blocking (6.5)**: `read_library_tree`, `search_library_files` y `read_markdown_files` son ahora commands `async` que delegan el escaneo recursivo a `tokio::task::spawn_blocking`, evitando bloquear el hilo principal de Tauri en bibliotecas grandes.
+- **Cleanup de vistas pesadas (7.1)**: `MarkdownView`, `MermaidView`, `MermaidCanvas`, `InkdocView` y `GraphView` limpian explícitamente DOM, refs, timeouts, listeners y canvas al desmontar. `InkDocView.disposeCanvases()` ahora remueve elementos canvas, capas de texto/imagen y llama `viewportController.dispose()`.
+- **Cachés LRU acotadas (7.2)**: `mermaidEngine.ts` usa límites reducidos en Android (10 entradas / 2 MB) frente a desktop (20 / 5 MB).
+- **Invalidación agresiva de caches (7.3)**: al cambiar de biblioteca (`librarySlice.setSelectedLibraryId`) o cerrar tabs (`documentsSlice.resetTabs` / `closeAllTextDocuments`) se invalida la caché de renders Mermaid, evitando retención de SVGs de librerías anteriores.
+- **Listeners globales verificados (7.4)**: `useLibraryTreeSync` corrige la desuscripción del watcher desktop; `useGlobalEventListeners` y `useRightPanelMount` remueven listeners/RAF en cleanup; `uiSlice` desmonta el panel de chat al cerrarlo.
+- **Batching de eventos de árbol (8.3)**: `libraryTreeEvents.ts` agrupa eventos `notia-library-tree-changed` tanto en desktop como Android con una ventana de 160 ms y un límite de 50 eventos pendientes; esto evita refrescos en cascada durante guardados rápidos o pegados múltiples. Se usa `performance.now()` para evitar timers duplicados.
+- **Configuración Tauri/Android (8.1/8.2)**: `tauri.conf.json` se revisó para mantener compatibilidad con Tauri v2; se documentó aplicar flags WebView manualmente en `MainActivity.kt` tras `tauri android init` (debugging habilitado solo en debug, cache del WebView predeterminada en release). No se introdujeron campos no soportados por la versión actual de Tauri.
+- **Resultados de build tras Iteración 9**:
+  - Bundle inicial `index-*.js` ~460 KB gzip / ~16 MB sin comprimir (`dist/assets`).
+  - Build Vite ~9.5 s; build Rust release ~2 m 02 s.
+  - `cargo test` 13 tests pasan; `npx tsc --noEmit` sin errores.
+  - `cargo clippy` genera 38 warnings preexistentes (ninguno bloqueante); 27 warnings en `cargo check`.
 
 ---
 
@@ -2771,7 +2830,7 @@ graph TB
 
 - **Cohesión**: **Funcional alta**. Cada componente tiene un propósito UI único (ej. `FileTree.tsx` solo renderiza árboles, `MarkdownView.tsx` solo el editor).
 - **Acoplamiento**: **De datos bajo**. Los componentes consumen datos vía Redux (`useAppSelector`) y disparan acciones vía `useAppDispatch`. No mantienen estado de negocio propio salvo efímero (`useState` para modales).
-- **Observaciones**: La separación `common/` vs `notia/` es correcta. Los componentes `views/` están envueltos en `memo()`, lo que reduce re-renders innecesarios. La unificación del renderizado Mermaid inline en `MarkdownView.tsx` (usando `InlineMermaidPreview.tsx` vía portal React) demuestra que los componentes de vista pueden reutilizar módulos aislados (`modules/mermaid/`) sin duplicar lógica de renderizado.
+- **Observaciones**: La separación `common/` vs `notia/` es correcta. Los componentes `views/` están envueltos en `memo()`, lo que reduce re-renders innecesarios. Además, los componentes principales (`NotiaMenu`, `NotiaWorkspace`, `NotiaSidebar`, `NotiaRightPanel`) aplican `useMemo`/`useCallback` y selectores de contexto (`useNotiaAction`) para minimizar re-renders en acciones del workspace. La unificación del renderizado Mermaid inline en `MarkdownView.tsx` (usando `InlineMermaidPreview.tsx` vía portal React) demuestra que los componentes de vista pueden reutilizar módulos aislados (`modules/mermaid/`) sin duplicar lógica de renderizado.
 - **Riesgo**: Ninguno crítico. Posible mejora: extraer más hooks de UI reutilizables para evitar lógica repetida en componentes de vista.
 
 #### 8.2.2 Frontend — Services (`services/`)

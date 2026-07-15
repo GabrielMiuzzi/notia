@@ -21,6 +21,7 @@ log = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14"
+lru = "0.12"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 btleplug = "0.11.7"
@@ -28,4 +29,11 @@ env_logger = "0.11"
 futures = "0.3"
 notify = "6.1.1"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "rt"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

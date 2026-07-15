@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useMemo } from 'react'
+import { memo, useCallback, useDeferredValue, useMemo } from 'react'
 import { Bot } from 'lucide-react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
@@ -6,15 +6,13 @@ import { selectIsSidebarOpen, selectActiveRailActionId } from '../../features/ui
 import { selectLibraries, selectSelectedLibraryId, selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes, selectLoadingFolderIds } from '../../features/documents/documentsSelectors'
 import { LEFT_RAIL_ACTIONS } from '../../constants/notiaMenu'
-import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
+import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { FileTree } from './FileTree'
 import { IconRail } from './IconRail'
 import { WorkspaceFooter } from './WorkspaceFooter'
 import { applySearchMatchesToTree } from '../../engines/tree/applySearchMatchesToTree'
 
 function NotiaSidebarComponent() {
-  const actions = useNotiaActions()
-
   const isSidebarOpen = useAppSelector(selectIsSidebarOpen)
   const activeRailActionId = useAppSelector(selectActiveRailActionId)
   const libraries = useAppSelector(selectLibraries)
@@ -29,6 +27,28 @@ function NotiaSidebarComponent() {
   const loadingFolderIdsList = useAppSelector(selectLoadingFolderIds)
 
   const rootPath = activeLibrary?.path ?? null
+
+  const handleToggleFolder = useNotiaAction('toggleFolder')
+  const handleOpenFileFromView = useNotiaAction('openFileFromView')
+  const handleSubmitPendingCreation = useNotiaAction('submitPendingCreation')
+  const handleCancelPendingCreation = useNotiaAction('cancelPendingCreation')
+  const handleRenameSubmit = useNotiaAction('renameSubmit')
+  const handleCancelRename = useNotiaAction('cancelRename')
+  const handleNodeContextMenu = useNotiaAction('nodeContextMenu')
+  const handleEmptyContextMenu = useNotiaAction('emptyContextMenu')
+  const handleMoveNode = useNotiaAction('moveNode')
+  const handleRailActionClick = useNotiaAction('railActionClick')
+  const handleSelectLibrary = useNotiaAction('selectLibrary')
+  const handleOpenLibraryManager = useNotiaAction('openLibraryManager')
+  const handleOpenSettings = useNotiaAction('openSettings')
+
+  const submitPendingCreation = useCallback((name: string) => {
+    void handleSubmitPendingCreation(name)
+  }, [handleSubmitPendingCreation])
+
+  const submitRename = useCallback((path: string, name: string) => {
+    void handleRenameSubmit(path, name)
+  }, [handleRenameSubmit])
 
   const deferredSearchMatchedPaths = useDeferredValue(searchMatchedPaths)
   const deferredSearchMatchedPathSet = useMemo(
@@ -50,7 +70,7 @@ function NotiaSidebarComponent() {
         <IconRail
           actions={LEFT_RAIL_ACTIONS}
           activeActionId={activeRailActionId}
-          onActionClick={actions.railActionClick}
+          onActionClick={handleRailActionClick}
         />
       </div>
       {isSidebarOpen ? (
@@ -61,17 +81,17 @@ function NotiaSidebarComponent() {
               rootPath={rootPath}
               isSearchActive={isSearchActive}
               searchMatchedFilePaths={deferredSearchMatchedPathSet}
-              onToggleFolder={actions.toggleFolder}
-              onOpenFile={actions.openFileFromView}
+              onToggleFolder={handleToggleFolder}
+              onOpenFile={handleOpenFileFromView}
               pendingCreation={pendingCreation}
-              onSubmitPendingCreation={(name) => { void actions.submitPendingCreation(name) }}
-              onCancelPendingCreation={actions.cancelPendingCreation}
+              onSubmitPendingCreation={submitPendingCreation}
+              onCancelPendingCreation={handleCancelPendingCreation}
               renamingPath={renamingPath}
-              onSubmitRename={(path, name) => { void actions.renameSubmit(path, name) }}
-              onCancelRename={actions.cancelRename}
-              onNodeContextMenu={actions.nodeContextMenu}
-              onEmptyContextMenu={actions.emptyContextMenu}
-              onMoveNode={actions.moveNode}
+              onSubmitRename={submitRename}
+              onCancelRename={handleCancelRename}
+              onNodeContextMenu={handleNodeContextMenu}
+              onEmptyContextMenu={handleEmptyContextMenu}
+              onMoveNode={handleMoveNode}
               loadingFolderIds={loadingFolderIdSet}
             />
             <div data-notia-prevent-menu-close>
@@ -80,9 +100,9 @@ function NotiaSidebarComponent() {
                 icon={Bot}
                 libraries={libraries}
                 activeLibraryId={activeLibraryId}
-                onSelectLibrary={actions.selectLibrary}
-                onOpenLibraryManager={actions.openLibraryManager}
-                onOpenSettings={actions.openSettings}
+                onSelectLibrary={handleSelectLibrary}
+                onOpenLibraryManager={handleOpenLibraryManager}
+                onOpenSettings={handleOpenSettings}
               />
             </div>
           </div>

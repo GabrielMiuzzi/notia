@@ -8,6 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "analyze:bundle": "vite-bundle-visualizer",
     "tauri": "tauri",
     "dev:tauri:windows": ".\\scripts\\tauri-dev-windows.cmd",
     "build:tauri:windows": ".\\scripts\\tauri-build-windows.cmd",
@@ -72,12 +75,15 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/ui": "^4.1.9",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vite-bundle-visualizer": "^1.2.1",
+    "vitest": "^4.1.9"
   }
 }

@@ -4,6 +4,12 @@ interface UseVirtualListOptions {
   itemCount: number
   itemSize: number
   overscan?: number
+  /**
+   * Minimum number of items to keep mounted above/below the viewport.
+   * Takes precedence over `overscan` when the total item count is small.
+   * Useful to avoid empty space in short lists while keeping long lists virtualized.
+   */
+  minVisibleItems?: number
 }
 
 interface VirtualItem {
@@ -18,6 +24,7 @@ export function useVirtualList({
   itemCount,
   itemSize,
   overscan = 6,
+  minVisibleItems,
 }: UseVirtualListOptions) {
   const containerElementRef = useRef<HTMLDivElement | null>(null)
   const [viewportHeight, setViewportHeight] = useState(0)
@@ -32,14 +39,14 @@ export function useVirtualList({
   useEffect(() => {
     const container = containerElement
     if (!container) {
-      setViewportHeight(0)
-      setScrollTop(0)
       return
     }
 
     const syncViewport = () => {
-      setViewportHeight(container.clientHeight)
-      setScrollTop(container.scrollTop)
+      requestAnimationFrame(() => {
+        setViewportHeight(container.clientHeight)
+        setScrollTop(container.scrollTop)
+      })
     }
 
     const handleScroll = () => {
@@ -70,11 +77,18 @@ export function useVirtualList({
     }
 
     const effectiveViewportHeight = Math.max(viewportHeight, itemSize)
-    const startIndex = Math.max(0, Math.floor(scrollTop / itemSize) - overscan)
-    const endIndex = Math.min(
+    const halfOverscan = Math.max(0, Math.floor(overscan / 2))
+    const desiredStartIndex = Math.max(0, Math.floor(scrollTop / itemSize) - halfOverscan)
+    const desiredEndIndex = Math.min(
       itemCount,
-      Math.ceil((scrollTop + effectiveViewportHeight) / itemSize) + overscan,
+      Math.ceil((scrollTop + effectiveViewportHeight) / itemSize) + halfOverscan,
     )
+    const visibleCount = desiredEndIndex - desiredStartIndex
+    const targetCount = minVisibleItems
+      ? Math.max(minVisibleItems, visibleCount)
+      : visibleCount
+    const startIndex = desiredStartIndex
+    const endIndex = Math.min(itemCount, startIndex + targetCount)
 
     const items: VirtualItem[] = []
     for (let index = startIndex; index < endIndex; index += 1) {
@@ -86,7 +100,7 @@ export function useVirtualList({
     }
 
     return items
-  }, [itemCount, itemSize, overscan, scrollTop, viewportHeight])
+  }, [itemCount, itemSize, overscan, scrollTop, viewportHeight, minVisibleItems])
 
   const scrollToIndex = useCallback((index: number, alignment: ScrollAlignment = 'nearest') => {
     const container = containerElementRef.current

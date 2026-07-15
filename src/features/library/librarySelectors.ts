@@ -21,3 +21,13 @@ export const selectActiveLibraryName = createSelector(
     return libraries.find((lib) => lib.id === selectedLibraryId)?.name ?? 'Sin librerias'
   },
 )
+
+export const selectActiveLibraryPath = createSelector(
+  [selectActiveLibrary],
+  (activeLibrary): string | null => activeLibrary?.path ?? null,
+)
+
+export const selectActiveLibraryAndroidTreeUri = createSelector(
+  [selectActiveLibrary],
+  (activeLibrary): string | null => activeLibrary?.androidTreeUri ?? null,
+)

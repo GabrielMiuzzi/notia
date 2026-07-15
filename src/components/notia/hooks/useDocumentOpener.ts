@@ -16,6 +16,7 @@ import { resolveFileViewKind, isTextualViewKind } from '../../../services/views/
 import { getFileExtension } from '../../../utils/files/getFileExtension'
 import { toFileUrl } from '../../../utils/files/toFileUrl'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
+import { notiaTimer } from '../../../services/runtime/notiaLogger'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
 
 interface UseDocumentOpenerParams {
@@ -31,9 +32,10 @@ export function useDocumentOpener({
   const openingDocumentPathsRef = useRef<Set<string>>(new Set())
 
   const handleOpenFile = useCallback(async (filePath: string) => {
+    const openTimer = notiaTimer('document', 'useDocumentOpener.handleOpenFile', { filePath })
     const existingTab = store.getState().documents.openTabs.find((tab) => tab.document.path === filePath)
-    if (existingTab) { dispatch(setActiveTabPath(filePath)); return }
-    if (openingDocumentPathsRef.current.has(filePath)) { dispatch(setActiveTabPath(filePath)); return }
+    if (existingTab) { dispatch(setActiveTabPath(filePath)); openTimer.success({ stage: 'existing_tab' }); return }
+    if (openingDocumentPathsRef.current.has(filePath)) { dispatch(setActiveTabPath(filePath)); openTimer.success({ stage: 'already_opening' }); return }
 
     const extension = getFileExtension(filePath)
     const viewKind = resolveFileViewKind(extension)
@@ -60,19 +62,21 @@ export function useDocumentOpener({
           }))
           return
         }
-        const name = filePath.split(/[\\/]/).pop() ?? filePath
+        const name = filePath.split('/').pop() ?? filePath
         const nextDocument: OpenFileDocument = { path: filePath, name, extension, viewKind, source: result.content }
         openDocumentInTab(nextDocument, result.content)
         openFileMeasurement.success({ sourceLength: result.content.length })
+        openTimer.success({ stage: 'textual_loaded', sourceLength: result.content.length })
         return
       } finally {
         openingDocumentPathsRef.current.delete(filePath)
       }
     }
 
-    const name = filePath.split(/[\\/]/).pop() ?? filePath
+    const name = filePath.split('/').pop() ?? filePath
     openDocumentInTab({ path: filePath, name, extension, viewKind, imageUrl: toFileUrl(filePath) }, '')
     openFileMeasurement.success()
+    openTimer.success({ stage: 'binary_loaded' })
   }, [dispatch, openDocumentInTab, resolveActiveLibraryAndroidDirectoryUri])
 
   const handleOpenFileFromView = useCallback((filePath: string) => { void handleOpenFile(filePath) }, [handleOpenFile])

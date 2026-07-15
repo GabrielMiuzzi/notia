@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, SlidersHorizontal, X } from 'lucide-react'
 import { useAppSelector } from '../../../store/hooks'
-import { selectActiveLibrary } from '../../../features/library/librarySelectors'
+import { selectActiveLibraryPath } from '../../../features/library/librarySelectors'
 import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { NotiaButton } from '../../common/NotiaButton'
 import { MermaidCanvas } from '../../../modules/mermaid/components/MermaidCanvas'
@@ -9,6 +9,7 @@ import { useMermaidRender } from '../../../modules/mermaid/hooks/useMermaidRende
 import { buildLinkCacheMermaidCode } from '../../../engines/graph/linkCacheMermaidEngine'
 import { extractMermaidNodeId } from '../../../modules/mermaid/engines/mermaidEngine'
 import type { LibraryGraphModel } from '../../../types/graph/libraryGraph'
+import { notiaTimer } from '../../../services/runtime/notiaLogger'
 
 const VIEWPORT_STORAGE_KEY = 'notia.linkGraphView.viewport.v1'
 const SETTINGS_STORAGE_KEY = 'notia.linkGraphView.settings.v1'
@@ -81,15 +82,62 @@ interface GraphViewProps {
   onChatSelectedPathsChange?: (paths: string[]) => void
 }
 
-export const GraphView = memo(function GraphView({
+function areGraphViewPropsEqual(
+  previous: GraphViewProps,
+  next: GraphViewProps,
+): boolean {
+  if (previous.graphModel !== next.graphModel) {
+    return false
+  }
+
+  if (previous.graphSourcesByPath !== next.graphSourcesByPath) {
+    return false
+  }
+
+  if (previous.libraryName !== next.libraryName) {
+    return false
+  }
+
+  if (previous.isLoading !== next.isLoading) {
+    return false
+  }
+
+  if (previous.onOpenFile !== next.onOpenFile) {
+    return false
+  }
+
+  if (previous.chatSelectedPaths !== next.chatSelectedPaths) {
+    return false
+  }
+
+  if (previous.onChatSelectedPathsChange !== next.onChatSelectedPathsChange) {
+    return false
+  }
+
+  return true
+}
+
+function GraphViewComponent({
   graphModel,
   onOpenFile,
   chatSelectedPaths = [],
   onChatSelectedPathsChange,
 }: GraphViewProps) {
-  const activeLibrary = useAppSelector(selectActiveLibrary)
+  const mountTimerRef = useRef(
+    notiaTimer('graph', 'GraphView mount', {
+      nodeCount: graphModel.nodes.length,
+      edgeCount: graphModel.edges.length,
+    }),
+  )
+  useEffect(() => {
+    return () => {
+      mountTimerRef.current.success()
+    }
+  }, [])
+
+  const activeLibraryPath = useAppSelector(selectActiveLibraryPath)
   const appTheme = useAppSelector(selectTheme)
-  const rootPath = activeLibrary?.path ?? null
+  const rootPath = activeLibraryPath
 
   const [searchQuery, setSearchQuery] = useState('')
   const [isControlsOpen, setIsControlsOpen] = useState(false)
@@ -99,6 +147,14 @@ export const GraphView = memo(function GraphView({
   const [viewport, setViewport] = useState<Partial<ViewportState>>(() => readStoredViewport())
 
   const svgWrapperRef = useRef<HTMLDivElement | null>(null)
+
+  // Cleanup on unmount: clear result so MermaidCanvas unmount clears SVG
+  useEffect(() => {
+    return () => {
+      setSearchQuery('')
+      setIsControlsOpen(false)
+    }
+  }, [])
 
   // Generate mermaid code from graph model
   const mermaidCode = useMemo(() => {
@@ -447,5 +503,7 @@ export const GraphView = memo(function GraphView({
       </div>
     </div>
   )
-})
+}
+
+export const GraphView = memo(GraphViewComponent, areGraphViewPropsEqual)
 GraphView.displayName = 'GraphView'

@@ -3,7 +3,8 @@ use std::time::Instant;
 /// RAII timer that logs the duration of a scope when dropped.
 ///
 /// Usage:
-/// ```rust
+/// ```rust,ignore
+/// use notia_lib::notia_timer::NotiaTimer;
 /// let _timer = NotiaTimer::new("read_android_library_tree");
 /// // ... do work ...
 /// // drop(_timer) logs: [notia:perf] read_android_library_tree duration_ms=42

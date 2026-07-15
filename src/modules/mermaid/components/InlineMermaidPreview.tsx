@@ -2,7 +2,7 @@ import { memo, useRef } from 'react'
 import { Provider } from 'react-redux'
 import { store } from '../../../store'
 import { useAppSelector } from '../../../store/hooks'
-import type { RootState } from '../../../store/hooks'
+import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { useMermaidLazyRender } from '../hooks/useMermaidLazyRender'
 import { MermaidCanvas } from './MermaidCanvas'
 import '../styles/mermaid.css'
@@ -14,7 +14,7 @@ interface InlineMermaidPreviewProps {
 
 function InlineMermaidPreviewInner({ code }: Omit<InlineMermaidPreviewProps, 'storageKey'>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const appTheme = useAppSelector((state: RootState) => state.preferences.theme)
+  const appTheme = useAppSelector(selectTheme)
   const theme = appTheme === 'dark' ? 'dark' : 'default'
 
   const { result, error, isLoading } = useMermaidLazyRender({

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { TaskManagerChatContext } from '../../../modules/task-manager/components/TaskManagerApp'
+import type { TaskManagerChatContext } from '../../../modules/task-manager/types/taskManagerTypes'
 import type { ChatFileContextMode } from '../../../services/chat/chatAttachmentRuntime'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
 

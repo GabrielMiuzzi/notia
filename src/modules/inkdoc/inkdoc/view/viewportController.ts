@@ -304,4 +304,8 @@ export class InkDocViewportController {
 		pagesEl.scrollLeft = this.pinchAnchorContent.x * this.zoomLevel - midpointX;
 		pagesEl.scrollTop = this.pinchAnchorContent.y * this.zoomLevel - midpointY;
 	}
+
+	public dispose(): void {
+		this.resetHandInteraction(null);
+	}
 }

@@ -22,6 +22,12 @@ use tauri::{
 #[cfg(target_os = "android")]
 const SAF_CACHE_TTL_SECS: u64 = 30;
 
+/// Maximum entries kept in the in-memory LRU cache for SAF path→URI lookups.
+/// This is a lightweight Rust-side cache that avoids repeated JNI calls and
+/// guards against short-term bursts of `resolve_entry_uri` requests.
+#[cfg(target_os = "android")]
+const SAF_PATH_LRU_CAPACITY: usize = 500;
+
 pub struct AndroidDirectoryPickerState {
     #[cfg(target_os = "android")]
     handle: Mutex<Option<PluginHandle<Wry>>>,
@@ -35,6 +41,19 @@ pub struct AndroidDirectoryPickerState {
     /// repetitive refreshes within the TTL window can be skipped.
     #[cfg(target_os = "android")]
     last_cache_refresh_at: Mutex<HashMap<String, Instant>>,
+    /// Lightweight LRU cache for resolved path→URI lookups to avoid repeated
+    /// JNI calls during bursts (e.g. reading many files from the same subtree).
+    #[cfg(target_os = "android")]
+    saf_path_lru: Mutex<lru::LruCache<String, String>>,
+}
+
+// Manual implementation avoids deriving Clone on the inner LruCache, which is
+// not needed for shared state and would add an unnecessary bound.
+#[cfg(not(target_os = "android"))]
+impl Clone for AndroidDirectoryPickerState {
+    fn clone(&self) -> Self {
+        Self {}
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -55,6 +74,9 @@ impl AndroidDirectoryPickerState {
             paths: Mutex::new(HashMap::new()),
             root_entries: Mutex::new(HashMap::new()),
             last_cache_refresh_at: Mutex::new(HashMap::new()),
+            saf_path_lru: Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(SAF_PATH_LRU_CAPACITY).unwrap(),
+            )),
         }
     }
 
@@ -66,6 +88,9 @@ impl AndroidDirectoryPickerState {
             paths: Mutex::new(HashMap::new()),
             root_entries: Mutex::new(HashMap::new()),
             last_cache_refresh_at: Mutex::new(HashMap::new()),
+            saf_path_lru: Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(SAF_PATH_LRU_CAPACITY).unwrap(),
+            )),
         }
     }
 
@@ -215,9 +240,39 @@ pub fn invalidate_paths_by_prefix(state: &AndroidDirectoryPickerState, path_pref
         Ok(p) => p,
         Err(_) => return,
     };
-    paths.retain(|key, _| {
-        !key.starts_with(&normalized_prefix) && !key.starts_with(path_prefix)
-    });
+    paths.retain(|key, _| !key.starts_with(&normalized_prefix) && !key.starts_with(path_prefix));
+    drop(paths);
+    invalidate_android_path_lru(state, path_prefix);
+    invalidate_android_path_lru(state, &normalized_prefix);
+}
+
+/// Lightweight, Rust-only LRU cache for resolved SAF paths. Does not require
+/// JNI so it is suitable for hot lookups during bulk reads.
+#[cfg(target_os = "android")]
+pub fn resolve_android_path_lru(state: &AndroidDirectoryPickerState, path: &str) -> Option<String> {
+    let mut lru = state.saf_path_lru.lock().ok()?;
+    lru.get(path).cloned()
+}
+
+#[cfg(target_os = "android")]
+pub fn put_android_path_lru(state: &AndroidDirectoryPickerState, path: String, uri: String) {
+    if let Ok(mut lru) = state.saf_path_lru.lock() {
+        lru.put(path, uri);
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn invalidate_android_path_lru(state: &AndroidDirectoryPickerState, path_prefix: &str) {
+    if let Ok(mut lru) = state.saf_path_lru.lock() {
+        let keys_to_remove: Vec<String> = lru
+            .iter()
+            .filter(|(key, _)| key.starts_with(path_prefix))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys_to_remove {
+            lru.pop(&key);
+        }
+    }
 }
 
 /// Update cached path→URI mappings from tree nodes that have already been
@@ -501,7 +556,10 @@ pub async fn read_android_library_tree(
                 })?;
                 roots.insert(payload.directory_path.clone(), uri.clone());
                 roots.insert(normalized_key, uri.clone());
-                log::info!("[notia:directory_picker] uri resolved from payload uri={}", uri);
+                log::info!(
+                    "[notia:directory_picker] uri resolved from payload uri={}",
+                    uri
+                );
                 Some(uri)
             } else {
                 let exact_path_uri = {
@@ -637,9 +695,10 @@ pub async fn read_android_directory(
                 let paths = state.paths.lock().map_err(|_| {
                     "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
                 })?;
-                paths.get(&payload.directory_path).cloned().or_else(|| {
-                    paths.get(&normalized_key).cloned()
-                })
+                paths
+                    .get(&payload.directory_path)
+                    .cloned()
+                    .or_else(|| paths.get(&normalized_key).cloned())
             };
 
             if exact_path_uri.is_some() {
@@ -666,7 +725,8 @@ pub async fn read_android_directory(
                     let roots = state.roots.lock().map_err(|_| {
                         "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
                     })?;
-                    roots.contains_key(&payload.directory_path) || roots.contains_key(&normalized_key)
+                    roots.contains_key(&payload.directory_path)
+                        || roots.contains_key(&normalized_key)
                 };
                 if is_known_root {
                     let mut roots = state.roots.lock().map_err(|_| {
@@ -737,9 +797,10 @@ pub async fn read_android_directory(
         // Shallow nodes have id (content URI), name, and path which are
         // enough to populate the path cache for direct children.
         {
-            let mut paths = state.paths.lock().map_err(|_| {
-                "No se pudo actualizar la cache Android.".to_string()
-            })?;
+            let mut paths = state
+                .paths
+                .lock()
+                .map_err(|_| "No se pudo actualizar la cache Android.".to_string())?;
             for node in &response.nodes {
                 if let Some(path) = node.path.as_deref() {
                     if node.id.starts_with("content://") {
@@ -807,7 +868,10 @@ pub async fn read_android_flat_file_list(
                 })?;
                 roots.insert(payload.directory_path.clone(), uri.clone());
                 roots.insert(normalized_key, uri.clone());
-                log::info!("[notia:directory_picker] uri resolved from payload uri={}", uri);
+                log::info!(
+                    "[notia:directory_picker] uri resolved from payload uri={}",
+                    uri
+                );
                 Some(uri)
             } else {
                 let exact_path_uri = {

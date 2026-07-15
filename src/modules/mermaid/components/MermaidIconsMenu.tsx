@@ -2,41 +2,54 @@ import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import { Icon, addCollection } from '@iconify/react'
 import { NotiaSubmenuPanel } from '../../../components/notia/NotiaSubmenuPanel'
 
-// Cargar packs de iconos OFICIALES de Mermaid
-import { icons as faIcons } from '@iconify-json/fa'
-import { icons as faSolidIcons } from '@iconify-json/fa-solid'
-import { icons as faBrandsIcons } from '@iconify-json/fa-brands'
-import { icons as gcpIcons } from '@iconify-json/gcp'
-import { icons as simpleIcons } from '@iconify-json/simple-icons'
-
-addCollection(faIcons)
-addCollection(faSolidIcons)
-addCollection(faBrandsIcons)
-addCollection(gcpIcons)
-addCollection(simpleIcons)
+interface IconPackModule {
+  icons?: { prefix?: string; [key: string]: unknown }
+}
 
 interface PackDef {
+  prefix: string
+  label: string
+  loader: () => Promise<IconPackModule | null>
+}
+
+const PACKS: PackDef[] = [
+  {
+    prefix: 'fa',
+    label: 'Font Awesome',
+    loader: () => import('@iconify-json/fa').then((m) => (m as IconPackModule)).catch(() => null),
+  },
+  {
+    prefix: 'fa-solid',
+    label: 'FA Solid',
+    loader: () => import('@iconify-json/fa-solid').then((m) => (m as IconPackModule)).catch(() => null),
+  },
+  {
+    prefix: 'fa-brands',
+    label: 'FA Brands',
+    loader: () => import('@iconify-json/fa-brands').then((m) => (m as IconPackModule)).catch(() => null),
+  },
+  {
+    prefix: 'gcp',
+    label: 'Google Cloud',
+    loader: () => import('@iconify-json/gcp').then((m) => (m as IconPackModule)).catch(() => null),
+  },
+  {
+    prefix: 'simple-icons',
+    label: 'Marcas (Simple Icons)',
+    loader: () => import('@iconify-json/simple-icons').then((m) => (m as IconPackModule)).catch(() => null),
+  },
+]
+
+interface LoadedPack {
   prefix: string
   label: string
   icons: Record<string, unknown>
 }
 
-const PACKS: PackDef[] = [
-  { prefix: 'fa', label: 'Font Awesome', icons: faIcons.icons as Record<string, unknown> },
-  { prefix: 'fa-solid', label: 'FA Solid', icons: faSolidIcons.icons as Record<string, unknown> },
-  { prefix: 'fa-brands', label: 'FA Brands', icons: faBrandsIcons.icons as Record<string, unknown> },
-  { prefix: 'gcp', label: 'Google Cloud', icons: gcpIcons.icons as Record<string, unknown> },
-  { prefix: 'simple-icons', label: 'Marcas (Simple Icons)', icons: simpleIcons.icons as Record<string, unknown> },
-]
-
-// Pre-calcular lista completa de iconos para scroll inmediato y búsqueda global
-const ALL_ICONS: { ref: string; prefix: string; label: string }[] = []
-for (const pack of PACKS) {
-  const prefix = pack.prefix
-  const names = Object.keys(pack.icons || {})
-  for (const name of names) {
-    ALL_ICONS.push({ ref: `${prefix}:${name}`, prefix, label: `${prefix}:${name}` })
-  }
+interface LoadedIcon {
+  ref: string
+  prefix: string
+  label: string
 }
 
 const PAGE_SIZE = 120
@@ -60,6 +73,8 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
   const [position, setPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [activePack, setActivePack] = useState<string | null>(null)
+  const [loadedPacks, setLoadedPacks] = useState<LoadedPack[]>([])
+  const [isLoadingPacks, setIsLoadingPacks] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
 
@@ -96,7 +111,51 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
     return () => clearTimeout(id)
   }, [])
 
-  // Global drag detection: pointermove crosses threshold → real drag
+  // Load icon packs asynchronously so they are not bundled into the main chunk.
+  useEffect(() => {
+    let cancelled = false
+    setIsLoadingPacks(true)
+    Promise.all(
+      PACKS.map(async (pack) => {
+        const module = await pack.loader()
+        if (!module) return null
+        const icons = module.icons as Record<string, unknown> | undefined
+        if (!icons) return null
+        return { prefix: pack.prefix, label: pack.label, icons }
+      }),
+    )
+      .then((results) => {
+        if (cancelled) return
+        const packs = results.filter((p): p is LoadedPack => p !== null)
+        for (const pack of packs) {
+          addCollection(pack.icons)
+        }
+        setLoadedPacks(packs)
+        setIsLoadingPacks(false)
+      })
+      .catch((error) => {
+        console.warn('[MermaidIconsMenu] Failed to load icon packs:', error)
+        if (!cancelled) {
+          setIsLoadingPacks(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const allIcons = useMemo<LoadedIcon[]>(() => {
+    const result: LoadedIcon[] = []
+    for (const pack of loadedPacks) {
+      const names = Object.keys(pack.icons || {})
+      for (const name of names) {
+        result.push({ ref: `${pack.prefix}:${name}`, prefix: pack.prefix, label: `${pack.prefix}:${name}` })
+      }
+    }
+    return result
+  }, [loadedPacks])
+
+  // Global drag detection: pointermove crosses threshold -> real drag
   useEffect(() => {
     const onPointerMove = (e: PointerEvent) => {
       const state = dragRef.current
@@ -135,8 +194,8 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
 
   const filteredIcons = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q && !activePack) return ALL_ICONS
-    let icons = ALL_ICONS
+    if (!q && !activePack) return allIcons
+    let icons = allIcons
     if (activePack) {
       icons = icons.filter((i) => i.prefix === activePack)
     }
@@ -144,7 +203,7 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
       icons = icons.filter((icon) => icon.label.toLowerCase().includes(q))
     }
     return icons
-  }, [search, activePack])
+  }, [search, activePack, allIcons])
 
   // Reset visible count when search or pack changes
   useEffect(() => {
@@ -262,14 +321,19 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
           minWidth: 0,
         }}
       >
-        {visibleIcons.map((icon) => (
+        {isLoadingPacks && (
+          <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 16, color: 'var(--color-icon-muted)', fontSize: 12 }}>
+            Cargando packs de iconos...
+          </div>
+        )}
+        {!isLoadingPacks && visibleIcons.map((icon) => (
           <button
             key={icon.ref}
             className="mermaid-icons-menu-item"
             title={icon.label}
             onPointerDown={(e) => {
               e.preventDefault()
-              const iconHtml = buildInlineIconSvg(icon.ref)
+              const iconHtml = buildInlineIconSvg(icon.ref, loadedPacks)
               dragRef.current = {
                 iconRef: icon.ref,
                 previewHtml: iconHtml,
@@ -308,11 +372,11 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
 })
 MermaidIconsMenu.displayName = 'MermaidIconsMenu'
 
-function buildInlineIconSvg(iconRef: string): string {
+function buildInlineIconSvg(iconRef: string, loadedPacks: LoadedPack[]): string {
   const [prefix, name] = iconRef.split(':')
   if (!prefix || !name) return ''
 
-  const pack = PACKS.find((p) => p.prefix === prefix)
+  const pack = loadedPacks.find((p) => p.prefix === prefix)
   const iconData = (pack?.icons?.[name] ?? {}) as {
     body?: string
     width?: number

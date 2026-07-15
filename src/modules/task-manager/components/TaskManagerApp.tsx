@@ -1,5 +1,5 @@
 import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
-import { memo, useCallback, useDeferredValue, useEffect, useMemo } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
@@ -8,6 +8,7 @@ import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
 import { TASKS_ROOT_FOLDER } from '../constants/taskManagerConstants'
 import { useTaskManager } from '../hooks/useTaskManager'
 import { toAbsoluteVaultPath } from '../utils/path'
+import { notiaTimer } from '../../../services/runtime/notiaLogger'
 import { TaskBoardView } from './boards/TaskBoardView'
 import { TaskTableView } from './boards/TaskTableView'
 import { BoardDialog } from './dialogs/BoardDialog'
@@ -20,10 +21,7 @@ const FINISHED_TAB_ID = '__finished__'
 const CANCELLED_TAB_ID = '__cancelled__'
 const POMODORO_TAB_ID = '__pomodoro__'
 
-export interface TaskManagerChatContext {
-  scopeKey: string
-  filePaths: string[]
-}
+export type { TaskManagerChatContext } from '../types/taskManagerTypes'
 
 const theme = createTheme({
   palette: {
@@ -55,6 +53,18 @@ function TaskManagerAppComponent({
   onActivePanelChange,
   onActiveChatContextChange,
 }: TaskManagerAppProps) {
+  const mountTimerRef = useRef(
+    notiaTimer('task-manager', 'TaskManagerApp mount', {
+      embedded: Boolean(embedded),
+      vaultPath: vault?.path ?? null,
+    }),
+  )
+  useEffect(() => {
+    return () => {
+      mountTimerRef.current.success()
+    }
+  }, [])
+
   const manager = useTaskManager(vault)
   const { confirm } = useConfirmationEngine()
 
@@ -193,6 +203,26 @@ function TaskManagerAppComponent({
     await manager.removeGroup(group.name, group.board ?? 'default')
   }, [confirm, manager])
 
+  const handleOpenBoardEditDialog = useCallback(() => {
+    if (!activeBoardConfig) {
+      return
+    }
+    manager.openBoardEditDialog(activeBoardConfig)
+  }, [activeBoardConfig, manager])
+
+  const handleOpenTaskFileWrapped = useCallback((taskPath: string) => {
+    if (!onOpenTaskFile || !manager.settings.activeVaultPath) {
+      return
+    }
+
+    onOpenTaskFile(toAbsoluteVaultPath(manager.settings.activeVaultPath, taskPath))
+  }, [onOpenTaskFile, manager.settings.activeVaultPath])
+
+  const handleOpenPomodoroTaskWrapped = useCallback((taskPath: string) => {
+    manager.selectPomodoroTask(taskPath)
+    manager.setActiveTab(POMODORO_TAB_ID)
+  }, [manager])
+
   return (
     <ThemeProvider theme={theme}>
       <div className={`tareas-root${embedded ? ' is-embedded' : ''}`}>
@@ -223,12 +253,7 @@ function TaskManagerAppComponent({
 
             <NotiaButton
               className="tareas-btn-edit-board"
-              onClick={() => {
-                if (!activeBoardConfig) {
-                  return
-                }
-                manager.openBoardEditDialog(activeBoardConfig)
-              }}
+              onClick={handleOpenBoardEditDialog}
               disabled={!activeTabIsBoard}
             >
               Editar tablero
@@ -294,19 +319,10 @@ function TaskManagerAppComponent({
               onAddTaskComment={manager.addTaskComment}
               onLoadTaskSource={manager.loadTaskSource}
               onSaveTaskSource={manager.saveTaskSource}
-              onOpenTaskFile={(taskPath) => {
-                if (!onOpenTaskFile || !manager.settings.activeVaultPath) {
-                  return
-                }
-
-                onOpenTaskFile(toAbsoluteVaultPath(manager.settings.activeVaultPath, taskPath))
-              }}
+              onOpenTaskFile={handleOpenTaskFileWrapped}
               onCreateGroup={manager.openGroupCreateDialog}
               onEditGroup={manager.openGroupEditDialog}
-              onOpenPomodoroTask={(taskPath) => {
-                manager.selectPomodoroTask(taskPath)
-                manager.setActiveTab(POMODORO_TAB_ID)
-              }}
+              onOpenPomodoroTask={handleOpenPomodoroTaskWrapped}
               onReorderGroups={manager.reorderGroupsInBoard}
               onApplyTaskArrangement={manager.applyTaskArrangement}
             />
@@ -398,5 +414,36 @@ function TaskManagerAppComponent({
   )
 }
 
-export const TaskManagerApp = memo(TaskManagerAppComponent)
+export const TaskManagerApp = memo(TaskManagerAppComponent, areTaskManagerAppPropsEqual)
 TaskManagerApp.displayName = 'TaskManagerApp'
+
+function areTaskManagerAppPropsEqual(
+  previous: TaskManagerAppProps,
+  next: TaskManagerAppProps,
+): boolean {
+  if (previous.embedded !== next.embedded) {
+    return false
+  }
+
+  if ((previous.vault?.path ?? '') !== (next.vault?.path ?? '')) {
+    return false
+  }
+
+  if ((previous.vault?.androidTreeUri ?? '') !== (next.vault?.androidTreeUri ?? '')) {
+    return false
+  }
+
+  if (previous.onOpenTaskFile !== next.onOpenTaskFile) {
+    return false
+  }
+
+  if (previous.onActivePanelChange !== next.onActivePanelChange) {
+    return false
+  }
+
+  if (previous.onActiveChatContextChange !== next.onActiveChatContextChange) {
+    return false
+  }
+
+  return true
+}

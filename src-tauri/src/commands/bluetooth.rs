@@ -80,16 +80,18 @@ pub async fn coldpass_bluetooth_status(
                 current_status
             })
             .unwrap_or(ColdPassBluetoothStatusDto {
-            supported: true,
-            connected: false,
-            phase: "idle".to_string(),
-            application_authenticated,
-            device_id: None,
-            device_name: None,
-            service_uuid: Some(bluetooth_service::COLDPASS_BLUETOOTH_SERVICE_UUID.to_string()),
-            prompt_message: Some("Buscá el dispositivo ColdPass para iniciar el pairing seguro.".to_string()),
-            error_message: None,
-        }));
+                supported: true,
+                connected: false,
+                phase: "idle".to_string(),
+                application_authenticated,
+                device_id: None,
+                device_name: None,
+                service_uuid: Some(bluetooth_service::COLDPASS_BLUETOOTH_SERVICE_UUID.to_string()),
+                prompt_message: Some(
+                    "Buscá el dispositivo ColdPass para iniciar el pairing seguro.".to_string(),
+                ),
+                error_message: None,
+            }));
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -123,7 +125,9 @@ pub async fn coldpass_bluetooth_status(
             device_id: None,
             device_name: None,
             service_uuid: Some(bluetooth_service::COLDPASS_BLUETOOTH_SERVICE_UUID.to_string()),
-            prompt_message: Some("Buscá el dispositivo ColdPass para iniciar el pairing seguro.".to_string()),
+            prompt_message: Some(
+                "Buscá el dispositivo ColdPass para iniciar el pairing seguro.".to_string(),
+            ),
             error_message: None,
         });
     }
@@ -150,7 +154,11 @@ pub async fn coldpass_bluetooth_connect(
 
             if let Some(session) = session_lock.as_mut() {
                 let status = bluetooth_service::linux_bluetooth_status(session)?;
-                if status.connected || status.phase == "searching" || status.phase == "awaiting-pin" || status.phase == "pairing" {
+                if status.connected
+                    || status.phase == "searching"
+                    || status.phase == "awaiting-pin"
+                    || status.phase == "pairing"
+                {
                     return Ok(status);
                 }
 
@@ -348,14 +356,15 @@ pub async fn coldpass_bluetooth_authenticate(
             if !status.connected {
                 return Err("ColdPass todavia no termino de conectarse por Bluetooth.".to_string());
             }
-            status
-                .device_id
-                .ok_or_else(|| "No se pudo resolver el identificador BLE de ColdPass.".to_string())?
+            status.device_id.ok_or_else(|| {
+                "No se pudo resolver el identificador BLE de ColdPass.".to_string()
+            })?
         };
 
         let connection = ensure_linux_gatt_connection(&state, &device_id).await?;
         let baseline_response = bluetooth_service::linux_read_gatt_value(&connection).await?;
-        let mut notifications = bluetooth_service::linux_subscribe_gatt_notifications(&connection).await?;
+        let mut notifications =
+            bluetooth_service::linux_subscribe_gatt_notifications(&connection).await?;
         bluetooth_service::linux_write_gatt_payload(&connection, &payload.packet).await?;
         let response = bluetooth_service::linux_wait_for_gatt_notification(
             &mut notifications,
@@ -394,7 +403,10 @@ pub async fn coldpass_bluetooth_authenticate(
     {
         let _ = payload;
         let _ = state;
-        Err("La autenticacion de aplicacion sobre ColdPass solo esta soportada en Linux por ahora.".to_string())
+        Err(
+            "La autenticacion de aplicacion sobre ColdPass solo esta soportada en Linux por ahora."
+                .to_string(),
+        )
     }
 }
 
@@ -428,7 +440,8 @@ pub async fn coldpass_bluetooth_send_message(
         }
 
         let baseline_response = bluetooth_service::linux_read_gatt_value(&connection).await?;
-        let mut notifications = bluetooth_service::linux_subscribe_gatt_notifications(&connection).await?;
+        let mut notifications =
+            bluetooth_service::linux_subscribe_gatt_notifications(&connection).await?;
         bluetooth_service::linux_write_gatt_payload(&connection, &payload.packet).await?;
         let response = bluetooth_service::linux_wait_for_gatt_notification(
             &mut notifications,
@@ -447,7 +460,8 @@ pub async fn coldpass_bluetooth_send_message(
         }
 
         let mut status = coldpass_bluetooth_status(state).await?;
-        status.prompt_message = Some("Mensaje cifrado enviado y confirmado por ColdPass.".to_string());
+        status.prompt_message =
+            Some("Mensaje cifrado enviado y confirmado por ColdPass.".to_string());
         return Ok(status);
     }
 
@@ -455,7 +469,10 @@ pub async fn coldpass_bluetooth_send_message(
     {
         let _ = payload;
         let _ = state;
-        Err("El envio cifrado de mensajes a ColdPass solo esta soportado en Linux por ahora.".to_string())
+        Err(
+            "El envio cifrado de mensajes a ColdPass solo esta soportado en Linux por ahora."
+                .to_string(),
+        )
     }
 }
 

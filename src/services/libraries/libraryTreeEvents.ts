@@ -17,8 +17,12 @@ function normalizeOptionalPath(pathValue: string | undefined): string | undefine
   return normalizeFilesystemPath(pathValue)
 }
 
+const TREE_EVENT_BATCH_MS = 160
+const MAX_PENDING_TREE_EVENTS = 50
+
 let pendingDispatchTimerId: number | null = null
 const pendingTreeChangeDetails: Array<{ vaultPath?: string; pathHint?: string }> = []
+let lastFlushTimestamp = 0
 
 function resolveSharedPath(paths: string[]): string | undefined {
   if (paths.length === 0) {
@@ -75,6 +79,7 @@ function flushPendingLibraryTreeChangedEvents(): void {
   }
 
   const queuedDetails = pendingTreeChangeDetails.splice(0, pendingTreeChangeDetails.length)
+  lastFlushTimestamp = performance.now()
   notiaLog('treeEvents', 'flushing events', {
     eventCount: queuedDetails.length,
   })
@@ -108,21 +113,22 @@ export function dispatchLibraryTreeChanged(detail: LibraryTreeChangedDetail): vo
     return
   }
 
-  if (getRuntimeDevice() !== 'Android') {
-    emitLibraryTreeChanged(detail)
-    return
-  }
-
+  const isDesktop = getRuntimeDevice() !== 'Android'
   pendingTreeChangeDetails.push(detail)
-  notiaLog('treeEvents', 'event enqueued', {
+  notiaLog('treeEvents', isDesktop ? 'event enqueued (desktop)' : 'event enqueued', {
     queueSize: pendingTreeChangeDetails.length,
     pathHint: detail.pathHint,
   })
-  if (pendingDispatchTimerId !== null) {
+  if (pendingTreeChangeDetails.length > MAX_PENDING_TREE_EVENTS) {
+    flushPendingLibraryTreeChangedEvents()
+    return
+  }
+  const timeSinceLastFlush = performance.now() - lastFlushTimestamp
+  if (pendingDispatchTimerId !== null && timeSinceLastFlush < TREE_EVENT_BATCH_MS) {
     return
   }
 
   pendingDispatchTimerId = window.setTimeout(() => {
     flushPendingLibraryTreeChangedEvents()
-  }, 160)
+  }, TREE_EVENT_BATCH_MS)
 }

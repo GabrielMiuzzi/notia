@@ -108,12 +108,16 @@ function extractChatMessages(body: string): StoredChatMessage[] {
   return messages
 }
 
-function buildChatBody(title: string, messages: StoredChatMessage[]): string {
-  const blocks = messages.flatMap((message) => [
+function buildMessageBlock(message: StoredChatMessage): string {
+  return [
     `${CHAT_MESSAGE_MARKER_PREFIX}${message.role}${CHAT_MESSAGE_MARKER_SUFFIX}`,
     message.content.trim(),
     '',
-  ])
+  ].join('\n')
+}
+
+function buildChatBody(title: string, messages: StoredChatMessage[]): string {
+  const blocks = messages.map((message) => buildMessageBlock(message))
 
   return [
     `# ${title}`,
@@ -208,6 +212,94 @@ export async function saveChatDocument(
   if (!result.ok) {
     throw new Error(result.error ?? 'No se pudo guardar el archivo del chat.')
   }
+}
+
+interface AppendChatMessagesResult {
+  appended: boolean
+}
+
+function findBodyStartOffset(source: string): number {
+  const normalizedSource = source.replace(/\r\n/g, '\n')
+  if (!normalizedSource.startsWith('---\n')) {
+    return 0
+  }
+
+  const closingIndex = normalizedSource.indexOf('\n---\n')
+  if (closingIndex < 0) {
+    return 0
+  }
+
+  return closingIndex + '\n---\n'.length
+}
+
+function buildAppendContent(title: string, messages: StoredChatMessage[]): string {
+  if (messages.length === 0) {
+    return ''
+  }
+
+  const blocks = messages.map((message) => buildMessageBlock(message))
+  return blocks.join('').trimEnd() + '\n'
+}
+
+export async function appendChatMessages(
+  filePath: string,
+  document: StoredChatDocument,
+  library: NotiaLibrary,
+): Promise<AppendChatMessagesResult> {
+  const persistedDocument = toPersistedChatDocument(document, library)
+  const readResult = await readLibraryFileContent(filePath, {
+    androidDirectoryUri: library.androidTreeUri,
+  })
+
+  if (!readResult.ok) {
+    await saveChatDocument(filePath, document, library)
+    return { appended: false }
+  }
+
+  const source = readResult.content
+  const bodyStart = findBodyStartOffset(source)
+  const header = source.slice(0, bodyStart)
+  const body = source.slice(bodyStart)
+  const trimmedBody = body.trimEnd()
+
+  const expectedHeader = `# ${persistedDocument.title}`
+  const trimmedBodyLines = trimmedBody
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  const hasValidHeader = trimmedBodyLines.length > 0 && trimmedBodyLines[0] === expectedHeader
+  const nonHeaderLines = trimmedBodyLines.slice(1)
+  const lastMarkerLine = nonHeaderLines
+    .filter((line) => line.startsWith(CHAT_MESSAGE_MARKER_PREFIX))
+    .pop() ?? ''
+  const endsWithUserMarker = lastMarkerLine === `${CHAT_MESSAGE_MARKER_PREFIX}user${CHAT_MESSAGE_MARKER_SUFFIX}`
+  const endsWithAssistantMarker = lastMarkerLine === `${CHAT_MESSAGE_MARKER_PREFIX}assistant${CHAT_MESSAGE_MARKER_SUFFIX}`
+
+  if (!hasValidHeader || (!endsWithUserMarker && !endsWithAssistantMarker)) {
+    await saveChatDocument(filePath, document, library)
+    return { appended: false }
+  }
+
+  const appendContent = buildAppendContent(
+    persistedDocument.title,
+    persistedDocument.messages.slice(persistedDocument.messages.length > 2 ? -2 : -1),
+  )
+  if (!appendContent) {
+    return { appended: false }
+  }
+
+  const separator = trimmedBody.length === 0 || trimmedBody.endsWith('\n') ? '' : '\n'
+  const nextContent = `${header}${trimmedBody}${separator}${appendContent}`
+
+  const writeResult = await writeLibraryFileContent(filePath, nextContent, {
+    androidDirectoryUri: library.androidTreeUri,
+  })
+  if (!writeResult.ok) {
+    await saveChatDocument(filePath, document, library)
+    return { appended: false }
+  }
+
+  return { appended: true }
 }
 
 export async function loadLongTermMemories(library: NotiaLibrary): Promise<string[]> {

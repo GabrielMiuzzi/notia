@@ -1,5 +1,8 @@
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification, WriteType};
+use btleplug::api::{
+    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
+    WriteType,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use btleplug::platform::{Adapter, Manager, Peripheral};
 #[cfg(target_os = "linux")]
@@ -76,7 +79,8 @@ impl LinuxBluetoothCtlSession {
 
         if let Ok(mut shared) = self.shared.lock() {
             shared.phase = "pairing".to_string();
-            shared.prompt_message = Some("PIN enviado. Esperando validacion del enlace seguro...".to_string());
+            shared.prompt_message =
+                Some("PIN enviado. Esperando validacion del enlace seguro...".to_string());
             shared.error_message = None;
             shared.pin_submitted = true;
         }
@@ -134,7 +138,7 @@ fn strip_ansi_sequences(input: &str) -> String {
         }
 
         if character == '\u{8}' {
-          continue;
+            continue;
         }
 
         result.push(character);
@@ -144,7 +148,9 @@ fn strip_ansi_sequences(input: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn build_status_from_linux_shared(shared: LinuxBluetoothCtlSharedStatus) -> ColdPassBluetoothStatusDto {
+fn build_status_from_linux_shared(
+    shared: LinuxBluetoothCtlSharedStatus,
+) -> ColdPassBluetoothStatusDto {
     ColdPassBluetoothStatusDto {
         supported: true,
         connected: shared.connected,
@@ -174,7 +180,9 @@ fn update_linux_status_from_output(
 
     if let Ok(mut state) = shared.lock() {
         for normalized_line in normalized_output.lines() {
-            if normalized_line.contains("Device ") && normalized_line.contains(COLDPASS_BLUETOOTH_DEVICE_NAME) {
+            if normalized_line.contains("Device ")
+                && normalized_line.contains(COLDPASS_BLUETOOTH_DEVICE_NAME)
+            {
                 let parts: Vec<&str> = normalized_line.split_whitespace().collect();
                 if parts.len() >= 3 {
                     let maybe_mac = parts[1];
@@ -183,7 +191,9 @@ fn update_linux_status_from_output(
                         state.device_name = Some(COLDPASS_BLUETOOTH_DEVICE_NAME.to_string());
                         if state.phase == "searching" {
                             state.phase = "pairing".to_string();
-                            state.prompt_message = Some("Dispositivo encontrado. Iniciando pairing seguro...".to_string());
+                            state.prompt_message = Some(
+                                "Dispositivo encontrado. Iniciando pairing seguro...".to_string(),
+                            );
                             state.error_message = None;
                             maybe_pair_command = Some(format!("scan off\npair {}\n", maybe_mac));
                         }
@@ -202,7 +212,9 @@ fn update_linux_status_from_output(
         if is_pin_prompt {
             if !state.pin_submitted {
                 state.phase = "awaiting-pin".to_string();
-                state.prompt_message = Some("Ingresá el PIN que aparece en la pantalla de la placa ColdPass.".to_string());
+                state.prompt_message = Some(
+                    "Ingresá el PIN que aparece en la pantalla de la placa ColdPass.".to_string(),
+                );
                 state.error_message = None;
             }
         } else if lower_output.contains("pairing successful") {
@@ -213,7 +225,9 @@ fn update_linux_status_from_output(
             if let Some(device_id) = state.device_id.clone() {
                 maybe_pair_command = Some(format!("trust {0}\nconnect {0}\n", device_id));
             }
-        } else if lower_output.contains("connection successful") || lower_output.contains("servicesresolved: yes") {
+        } else if lower_output.contains("connection successful")
+            || lower_output.contains("servicesresolved: yes")
+        {
             state.phase = "connected".to_string();
             state.connected = true;
             state.prompt_message = Some("ColdPass conectado correctamente.".to_string());
@@ -251,7 +265,8 @@ fn update_linux_status_from_output(
             state.phase = "error".to_string();
             state.connected = false;
             state.error_message = Some(normalized_output.clone());
-            state.prompt_message = Some("Fallo el pairing Bluetooth. Revisá el PIN y volvé a intentar.".to_string());
+            state.prompt_message =
+                Some("Fallo el pairing Bluetooth. Revisá el PIN y volvé a intentar.".to_string());
             state.pin_submitted = false;
         }
     }
@@ -353,7 +368,11 @@ fn create_linux_bluetoothctl_session(device_id: &str) -> Result<LinuxBluetoothCt
     spawn_linux_bluetoothctl_reader(stdout, Arc::clone(&shared), Arc::clone(&stdin));
     spawn_linux_bluetoothctl_reader(stderr, Arc::clone(&shared), Arc::clone(&stdin));
 
-    let session = LinuxBluetoothCtlSession { child, stdin, shared };
+    let session = LinuxBluetoothCtlSession {
+        child,
+        stdin,
+        shared,
+    };
     write_linux_command(
         &session.stdin,
         &format!(
@@ -367,7 +386,9 @@ fn create_linux_bluetoothctl_session(device_id: &str) -> Result<LinuxBluetoothCt
 }
 
 #[cfg(target_os = "linux")]
-pub fn linux_bluetooth_status(session: &LinuxBluetoothCtlSession) -> Result<ColdPassBluetoothStatusDto, String> {
+pub fn linux_bluetooth_status(
+    session: &LinuxBluetoothCtlSession,
+) -> Result<ColdPassBluetoothStatusDto, String> {
     session.status()
 }
 
@@ -452,10 +473,9 @@ async fn find_coldpass_peripheral(adapter: &Adapter) -> Result<Peripheral, Strin
         .map_err(|error| format!("No se pudieron listar los dispositivos Bluetooth: {error}"))?;
 
     for peripheral in peripherals {
-        let Some(properties) = peripheral
-            .properties()
-            .await
-            .map_err(|error| format!("No se pudieron leer las propiedades del dispositivo: {error}"))?
+        let Some(properties) = peripheral.properties().await.map_err(|error| {
+            format!("No se pudieron leer las propiedades del dispositivo: {error}")
+        })?
         else {
             continue;
         };
@@ -465,10 +485,10 @@ async fn find_coldpass_peripheral(adapter: &Adapter) -> Result<Peripheral, Strin
             .as_deref()
             .map(|name| name == COLDPASS_BLUETOOTH_DEVICE_NAME)
             .unwrap_or(false);
-        let matches_service = properties
-            .services
-            .iter()
-            .any(|uuid| uuid.to_string().eq_ignore_ascii_case(COLDPASS_BLUETOOTH_SERVICE_UUID));
+        let matches_service = properties.services.iter().any(|uuid| {
+            uuid.to_string()
+                .eq_ignore_ascii_case(COLDPASS_BLUETOOTH_SERVICE_UUID)
+        });
 
         if matches_name || matches_service {
             return Ok(peripheral);
@@ -510,7 +530,10 @@ async fn find_linux_peripheral_by_device_id(
         }
     }
 
-    Err("No se pudo encontrar el dispositivo ColdPass ya vinculado para abrir el canal GATT.".to_string())
+    Err(
+        "No se pudo encontrar el dispositivo ColdPass ya vinculado para abrir el canal GATT."
+            .to_string(),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -546,18 +569,21 @@ pub async fn linux_connect_gatt(device_id: &str) -> Result<LinuxColdPassGattConn
         .await
         .map_err(|error| format!("No se pudieron descubrir los servicios de ColdPass: {error}"))?;
 
-    let properties = peripheral
-        .properties()
-        .await
-        .map_err(|error| format!("No se pudieron leer las propiedades GATT de ColdPass: {error}"))?;
+    let properties = peripheral.properties().await.map_err(|error| {
+        format!("No se pudieron leer las propiedades GATT de ColdPass: {error}")
+    })?;
     let device_name = properties
         .and_then(|current| current.local_name)
         .unwrap_or_else(|| COLDPASS_BLUETOOTH_DEVICE_NAME.to_string());
     let characteristics = peripheral.characteristics();
-    let rx_characteristic =
-        find_characteristic(characteristics.iter(), COLDPASS_BLUETOOTH_RX_CHARACTERISTIC_UUID)?;
-    let tx_characteristic =
-        find_characteristic(characteristics.iter(), COLDPASS_BLUETOOTH_TX_CHARACTERISTIC_UUID)?;
+    let rx_characteristic = find_characteristic(
+        characteristics.iter(),
+        COLDPASS_BLUETOOTH_RX_CHARACTERISTIC_UUID,
+    )?;
+    let tx_characteristic = find_characteristic(
+        characteristics.iter(),
+        COLDPASS_BLUETOOTH_TX_CHARACTERISTIC_UUID,
+    )?;
 
     Ok(LinuxColdPassGattConnection {
         peripheral,
@@ -586,7 +612,9 @@ pub async fn linux_write_gatt_payload(
 }
 
 #[cfg(target_os = "linux")]
-pub async fn linux_read_gatt_value(connection: &LinuxColdPassGattConnection) -> Result<String, String> {
+pub async fn linux_read_gatt_value(
+    connection: &LinuxColdPassGattConnection,
+) -> Result<String, String> {
     let value = connection
         .peripheral
         .read(&connection.tx_characteristic)
@@ -675,8 +703,8 @@ where
     let mut last_terminal_value = String::new();
 
     while started_at.elapsed() < std::time::Duration::from_millis(timeout_ms) {
-        let remaining = std::time::Duration::from_millis(timeout_ms)
-            .saturating_sub(started_at.elapsed());
+        let remaining =
+            std::time::Duration::from_millis(timeout_ms).saturating_sub(started_at.elapsed());
         let next_notification = tokio::time::timeout(remaining, notifications.next()).await;
         let Ok(Some(notification)) = next_notification else {
             break;
@@ -686,7 +714,9 @@ where
             continue;
         }
 
-        let value = String::from_utf8_lossy(&notification.value).trim().to_string();
+        let value = String::from_utf8_lossy(&notification.value)
+            .trim()
+            .to_string();
         if value.is_empty() || value == baseline_value {
             continue;
         }
@@ -767,7 +797,9 @@ pub async fn connect_to_coldpass() -> Result<DesktopColdPassBluetoothConnection,
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[cfg(not(target_os = "linux"))]
-pub async fn disconnect_coldpass(connection: &DesktopColdPassBluetoothConnection) -> Result<(), String> {
+pub async fn disconnect_coldpass(
+    connection: &DesktopColdPassBluetoothConnection,
+) -> Result<(), String> {
     if connection
         .peripheral
         .is_connected()
@@ -794,7 +826,9 @@ pub fn unsupported_bluetooth_status() -> ColdPassBluetoothStatusDto {
         device_id: None,
         device_name: None,
         service_uuid: Some(COLDPASS_BLUETOOTH_SERVICE_UUID.to_string()),
-        prompt_message: Some("Este runtime no expone backend Bluetooth compatible para ColdPass.".to_string()),
+        prompt_message: Some(
+            "Este runtime no expone backend Bluetooth compatible para ColdPass.".to_string(),
+        ),
         error_message: None,
     }
 }

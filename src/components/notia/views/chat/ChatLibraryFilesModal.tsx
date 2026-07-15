@@ -11,6 +11,10 @@ import {
   type ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
 
+const CHAT_FILES_INDEX_MODE_DESCRIPTION =
+  'La IA conoce los nombres y rutas de los archivos, pero no su contenido completo.'
+const CHAT_FILES_DIRECT_MODE_DESCRIPTION = 'Se envía el contenido completo de cada archivo al modelo.'
+
 interface ChatLibraryFilesModalProps {
   open: boolean
   library: NotiaLibrary | null
@@ -40,19 +44,32 @@ export function ChatLibraryFilesModal({
   const [draftContextMode, setDraftContextMode] = useState<ChatFileContextMode>(contextMode)
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [needsDraftReset, setNeedsDraftReset] = useState(false)
+  const [needsOptionsReset, setNeedsOptionsReset] = useState(false)
 
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      setNeedsDraftReset(true)
+      setNeedsOptionsReset(true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!needsDraftReset) {
       return
     }
-
+    setNeedsDraftReset(false)
     setDraftSelectedPaths(selectedPaths)
     setDraftContextMode(contextMode)
     setQuery('')
-  }, [contextMode, open, selectedPaths])
+  }, [contextMode, needsDraftReset, selectedPaths])
 
   useEffect(() => {
-    if (!open || !library) {
+    if (!needsOptionsReset) {
+      return
+    }
+    setNeedsOptionsReset(false)
+    if (!library) {
       setOptions([])
       setIsLoading(false)
       return
@@ -86,7 +103,7 @@ export function ChatLibraryFilesModal({
     return () => {
       cancelled = true
     }
-  }, [library, open])
+  }, [library, needsOptionsReset])
 
   const visibleOptions = useMemo(
     () => filterLibraryFileOptions(options, query),
@@ -143,6 +160,8 @@ export function ChatLibraryFilesModal({
               onClick={() => {
                 setDraftContextMode('direct')
               }}
+              title={CHAT_FILES_DIRECT_MODE_DESCRIPTION}
+              aria-label={`Directo: ${CHAT_FILES_DIRECT_MODE_DESCRIPTION}`}
             >
               Directo
             </button>
@@ -152,15 +171,21 @@ export function ChatLibraryFilesModal({
               onClick={() => {
                 setDraftContextMode('index')
               }}
+              title={CHAT_FILES_INDEX_MODE_DESCRIPTION}
+              aria-label={`Index: ${CHAT_FILES_INDEX_MODE_DESCRIPTION}`}
             >
-              Index
+              Referencia
             </button>
           </div>
         </div>
 
         <div className="notia-chat-files-modal-copy">
           <span>{draftSelectedPaths.length} archivo(s) seleccionado(s)</span>
-          <span>{draftContextMode === 'index' ? 'Index usa LlamaIndex' : 'Directo envía el contenido completo'}</span>
+          <span title={draftContextMode === 'index' ? CHAT_FILES_INDEX_MODE_DESCRIPTION : CHAT_FILES_DIRECT_MODE_DESCRIPTION}>
+            {draftContextMode === 'index'
+              ? 'Referencia: la IA conoce nombres y rutas, no el contenido completo'
+              : 'Directo: se envía el contenido completo'}
+          </span>
         </div>
 
         <div ref={containerRef} className="notia-chat-files-modal-list" role="list">

@@ -217,10 +217,15 @@ async fn read_error_detail(response: reqwest::Response) -> String {
 pub async fn check_ollama_health(settings: &AiHttpSettings) -> Result<AiHealthResult, String> {
     let client = build_client(HEALTH_TIMEOUT_SECS)?;
     let endpoint = build_endpoint(&settings.ollama_url, "/api/tags")?;
-    let response = with_auth(client.get(endpoint).header(reqwest::header::ACCEPT, "application/json"), settings)
-        .send()
-        .await
-        .map_err(|error| describe_request_error(error, "No se pudo conectar con la IA."))?;
+    let response = with_auth(
+        client
+            .get(endpoint)
+            .header(reqwest::header::ACCEPT, "application/json"),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| describe_request_error(error, "No se pudo conectar con la IA."))?;
 
     if !response.status().is_success() {
         return Err(read_error_detail(response).await);
@@ -229,7 +234,9 @@ pub async fn check_ollama_health(settings: &AiHttpSettings) -> Result<AiHealthRe
     let payload = response
         .json::<OllamaTagsResponse>()
         .await
-        .map_err(|error| describe_request_error(error, "La respuesta de IA no se pudo interpretar."))?;
+        .map_err(|error| {
+            describe_request_error(error, "La respuesta de IA no se pudo interpretar.")
+        })?;
     let default_model = pick_default_model(&payload);
 
     Ok(if let Some(model) = default_model {
@@ -270,7 +277,9 @@ pub async fn list_ollama_multimodal_models(
     let payload = response
         .json::<OllamaTagsResponse>()
         .await
-        .map_err(|error| describe_request_error(error, "La respuesta de IA no se pudo interpretar."))?;
+        .map_err(|error| {
+            describe_request_error(error, "La respuesta de IA no se pudo interpretar.")
+        })?;
 
     let available_models: Vec<String> = payload
         .models
@@ -285,7 +294,11 @@ pub async fn list_ollama_multimodal_models(
         .collect();
 
     let models_to_verify = if likely_models.is_empty() {
-        available_models.iter().take(12).cloned().collect::<Vec<_>>()
+        available_models
+            .iter()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>()
     } else {
         likely_models.clone()
     };
@@ -368,7 +381,9 @@ pub async fn run_ollama_chat(
     )
     .send()
     .await
-    .map_err(|error| describe_request_error(error, "No se pudo completar la consulta con la IA."))?;
+    .map_err(|error| {
+        describe_request_error(error, "No se pudo completar la consulta con la IA.")
+    })?;
 
     if !response.status().is_success() {
         return Err(read_error_detail(response).await);
@@ -377,7 +392,9 @@ pub async fn run_ollama_chat(
     let payload = response
         .json::<OllamaChatResponse>()
         .await
-        .map_err(|error| describe_request_error(error, "La respuesta de IA no se pudo interpretar."))?;
+        .map_err(|error| {
+            describe_request_error(error, "La respuesta de IA no se pudo interpretar.")
+        })?;
 
     if let Some(error_message) = payload
         .error

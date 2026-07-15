@@ -137,6 +137,8 @@ function InkdocViewInner({
       cancelled = true
       void view.onClose()
       mountNode.empty()
+      sourceRef.current = ''
+      pathsRef.current = []
     }
   }, [aiPreferences, bridge, filePath, inkdocPreferences.inkmathDebounceMs, inkdocPreferences.inkmathServiceUrl])
 

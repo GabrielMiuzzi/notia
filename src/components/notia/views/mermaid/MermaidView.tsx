@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import type { RootState } from '../../../../store/hooks'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../../../../store/hooks'
 import { useMermaidRender } from '../../../../modules/mermaid/hooks/useMermaidRender'
 import {
@@ -10,6 +10,8 @@ import {
   setMermaidZoom,
   setMermaidPan,
 } from '../../../../features/mermaidViewer/mermaidViewerSlice'
+import { selectMermaidViewerState } from '../../../../features/mermaidViewer/mermaidViewerSelectors'
+import { selectTheme } from '../../../../features/preferences/preferencesSelectors'
 import { MermaidCodeEditor } from '../../../../modules/mermaid/components/MermaidCodeEditor'
 import { MermaidErrorPanel } from '../../../../modules/mermaid/components/MermaidErrorPanel'
 import { MermaidCanvas } from '../../../../modules/mermaid/components/MermaidCanvas'
@@ -46,10 +48,14 @@ export const MermaidView = memo(function MermaidView({
 }: MermaidViewProps) {
   void filePath // parameter required by parent but unused in this view
   const dispatch = useAppDispatch()
-  const viewerState = useAppSelector((state: RootState) => state.mermaidViewer)
-  const appTheme = useAppSelector((state: RootState) => state.preferences.theme)
+  const viewerState = useAppSelector(selectMermaidViewerState, shallowEqual)
+  const appTheme = useAppSelector(selectTheme)
 
-  const [code, setCode] = useState(source)
+  const [code, setCodeState] = useState(() => {
+    const sanitized = sanitizeMermaidCode(source)
+    return sanitized === source ? source : sanitized
+  })
+
   const [mobileMode, setMobileMode] = useState<'code' | 'diagram'>('diagram')
   const [isMobile, setIsMobile] = useState(false)
   const [configJson] = useState('{"securityLevel": "loose"}')
@@ -96,18 +102,30 @@ export const MermaidView = memo(function MermaidView({
   }, [])
 
   // Sync mermaid viewer theme with global app theme
+  const expectedMermaidTheme = appTheme === 'dark' ? 'dark' : 'default'
   useEffect(() => {
-    const expectedMermaidTheme = appTheme === 'dark' ? 'dark' : 'default'
     if (viewerState.theme !== expectedMermaidTheme) {
       dispatch(setMermaidTheme(expectedMermaidTheme))
     }
-  }, [appTheme, viewerState.theme, dispatch])
+  }, [expectedMermaidTheme, viewerState.theme, dispatch])
 
   // Sync external source changes (sanitize corrupt edges on load)
-  useEffect(() => {
-    const clean = sanitizeMermaidCode(source)
-    setCode(clean === source ? source : clean)
+  const derivedCode = useMemo(() => {
+    const sanitized = sanitizeMermaidCode(source)
+    return sanitized === source ? source : sanitized
   }, [source])
+  const setCode = useCallback(
+    (nextCode: string | ((prev: string) => string)) => {
+      setCodeState(nextCode)
+    },
+    [],
+  )
+  useEffect(() => {
+    const timerId = requestAnimationFrame(() => {
+      setCode((currentCode) => (currentCode === derivedCode ? currentCode : derivedCode))
+    })
+    return () => cancelAnimationFrame(timerId)
+  }, [derivedCode, setCode])
 
   const { result, error, isLoading } = useMermaidRender({
     code,
@@ -119,7 +137,7 @@ export const MermaidView = memo(function MermaidView({
     (nextCode: string) => {
       setCode(nextCode)
     },
-    [],
+    [setCode],
   )
 
   const handleToolChange = useCallback(
@@ -165,7 +183,7 @@ export const MermaidView = memo(function MermaidView({
       setIsIconsMenuOpen(false)
       setActiveTool(null)
     },
-    [code],
+    [code, setCode],
   )
 
   const handleShapeSelect = useCallback(
@@ -185,7 +203,7 @@ export const MermaidView = memo(function MermaidView({
       setIsShapesMenuOpen(false)
       setActiveTool(null)
     },
-    [code],
+    [code, setCode],
   )
 
   const handleConnect = useCallback(
@@ -208,7 +226,7 @@ export const MermaidView = memo(function MermaidView({
       const newCode = trimmed ? `${trimmed}\n${edgeLine}` : `flowchart TD\n${edgeLine}`
       setCode(newCode)
     },
-    [code],
+    [code, setCode],
   )
 
   const handleNodeLabelEdit = useCallback(
@@ -224,7 +242,7 @@ export const MermaidView = memo(function MermaidView({
       const nextCode = updateNodeLabelInCode(code, nodeId, newLabel)
       if (nextCode !== code) setCode(nextCode)
     },
-    [code],
+    [code, setCode],
   )
 
   const handleEdgeTypeChange = useCallback(
@@ -240,7 +258,7 @@ export const MermaidView = memo(function MermaidView({
       const nextCode = updateEdgeTypeInCode(code, fromId, toId, type)
       if (nextCode !== code) setCode(nextCode)
     },
-    [code],
+    [code, setCode],
   )
 
   const handleEdgeColorChange = useCallback(
@@ -256,7 +274,7 @@ export const MermaidView = memo(function MermaidView({
       const nextCode = updateEdgeColorInCode(code, fromId, toId, color)
       if (nextCode !== code) setCode(nextCode)
     },
-    [code],
+    [code, setCode],
   )
 
   const handleEdgeLabelChange = useCallback(
@@ -272,7 +290,7 @@ export const MermaidView = memo(function MermaidView({
       const nextCode = updateEdgeLabelInCode(code, fromId, toId, label)
       if (nextCode !== code) setCode(nextCode)
     },
-    [code],
+    [code, setCode],
   )
 
   // ── Drag-to-drop (pointer-based, no HTML5 DnD) ────────────────────
@@ -355,6 +373,7 @@ export const MermaidView = memo(function MermaidView({
   useEffect(() => {
     if (persistTimeoutRef.current) {
       clearTimeout(persistTimeoutRef.current)
+      persistTimeoutRef.current = null
     }
     const id = setTimeout(() => {
       if (code !== source) {
@@ -365,9 +384,24 @@ export const MermaidView = memo(function MermaidView({
     return () => {
       if (persistTimeoutRef.current) {
         clearTimeout(persistTimeoutRef.current)
+        persistTimeoutRef.current = null
       }
     }
   }, [code, source, onSourcePersist])
+
+  // Cleanup on unmount: cancel pending persist, clear drag state and close menus
+  useEffect(() => {
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current)
+        persistTimeoutRef.current = null
+      }
+      isDraggingRef.current = false
+      pendingDragAliasRef.current = null
+      pendingDragIsIconRef.current = false
+      removeGhost()
+    }
+  }, [removeGhost])
 
   const handleZoomChange = useCallback(
     (zoom: number) => {

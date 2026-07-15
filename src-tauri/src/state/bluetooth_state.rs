@@ -10,7 +10,9 @@ pub struct ColdPassBluetoothState {
     #[cfg(not(target_os = "linux"))]
     pub connection: Mutex<Option<DesktopColdPassBluetoothConnection>>,
     #[cfg(target_os = "linux")]
-    pub pairing_session: Mutex<Option<crate::services::bluetooth_service::LinuxBluetoothCtlSession>>,
+    pub pairing_session:
+        Mutex<Option<crate::services::bluetooth_service::LinuxBluetoothCtlSession>>,
     #[cfg(target_os = "linux")]
-    pub gatt_connection: Mutex<Option<crate::services::bluetooth_service::LinuxColdPassGattConnection>>,
+    pub gatt_connection:
+        Mutex<Option<crate::services::bluetooth_service::LinuxColdPassGattConnection>>,
 }

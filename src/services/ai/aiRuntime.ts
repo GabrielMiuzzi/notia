@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { ChatFileContextMode, ChatInlineFileAttachment } from '../chat/chatAttachmentRuntime'
 import type { StoredChatMessage } from '../chat/chatDocumentStorage'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
@@ -7,8 +8,19 @@ import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 const AI_REQUEST_TIMEOUT_MS = 15_000
 const AI_CHAT_TIMEOUT_MS = 180_000
+const AI_HEALTH_CACHE_TTL_MS = 10_000
 const MAX_MEMORY_ITEMS = 50
 const MAX_CONTEXT_CHARS = 30_000
+const MAX_INDEX_CONTEXT_FILES = 50
+const MAX_INDEX_CONTEXT_CHARS = 6_000
+
+interface AiHealthCacheEntry {
+  result: AiHealthCheckResult
+  timestamp: number
+}
+
+let aiHealthCache: AiHealthCacheEntry | null = null
+let aiHealthCacheKey = ''
 const DESKTOP_AI_HEALTH_COMMANDS = ['check_desktop_ai_health'] as const
 const DESKTOP_AI_CHAT_COMMANDS = ['run_desktop_ai_chat'] as const
 const DESKTOP_AI_MODEL_LIST_COMMANDS = ['list_desktop_ai_models'] as const
@@ -19,6 +31,10 @@ const ANDROID_AI_HEALTH_COMMANDS = [
 const ANDROID_AI_CHAT_COMMANDS = [
   'run_android_ai_chat',
   'mobile_ai_bridge::run_android_ai_chat',
+] as const
+const ANDROID_AI_CHAT_STREAMING_COMMANDS = [
+  'run_android_ai_chat_streaming',
+  'mobile_ai_bridge::run_android_ai_chat_streaming',
 ] as const
 const ANDROID_AI_MODEL_LIST_COMMANDS = [
   'list_android_ai_models',
@@ -63,6 +79,7 @@ interface StreamAiChatReplyInput {
 
 interface StreamAiChatReplyOptions {
   onMessageDelta?: (delta: string) => void
+  abortSignal?: AbortSignal
 }
 
 interface GenerateAiChatTitleInput {
@@ -108,6 +125,16 @@ interface BridgeAiChatResponse {
 
 interface BridgeAiModelListResponse {
   models?: unknown
+}
+
+interface AiChatStreamEvent {
+  requestId: string
+  type: 'delta' | 'done' | 'error'
+  payload?: {
+    delta?: string
+    answer?: string
+    message?: string
+  }
 }
 
 function describeAiError(error: unknown, fallback: string): Error {
@@ -239,13 +266,14 @@ async function invokeDesktopAiModelList(preferences: AiPreferences): Promise<str
   throw describeAiError(lastError, 'No se pudo listar los modelos de IA.')
 }
 
-async function checkModelSupportsVision(preferences: AiPreferences, model: string): Promise<boolean> {
+export async function checkModelSupportsVision(preferences: AiPreferences, model: string): Promise<boolean> {
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
   const payload = await fetchJsonWithTimeout<OllamaShowResponse>(
-    buildOllamaUrl(preferences, '/api/show'),
+    buildOllamaUrl(normalizedPreferences, '/api/show'),
     {
       method: 'POST',
       headers: {
-        ...buildOllamaHeaders(preferences, 'application/json'),
+        ...buildOllamaHeaders(normalizedPreferences, 'application/json'),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -259,27 +287,85 @@ async function checkModelSupportsVision(preferences: AiPreferences, model: strin
     && payload.capabilities.some((capability) => capability === 'vision')
 }
 
-export async function listAiMultimodalModels(preferences: AiPreferences): Promise<AiModelOption[]> {
+export async function isAiModelMultimodal(preferences: AiPreferences, model: string): Promise<boolean> {
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
-  if (getRuntimeDevice() === 'Android') {
-    try {
-      const models = await invokeAndroidAiModelList(normalizedPreferences)
-      return models.map((model) => ({ name: model }))
-    } catch {
-      // Fallback a fetch si el bridge de Android no esta disponible.
-    }
-  } else {
-    try {
-      const models = await invokeDesktopAiModelList(normalizedPreferences)
-      return models.map((model) => ({ name: model }))
-    } catch {
-      // Fallback a fetch solo si el bridge de desktop no esta disponible.
-    }
+  if (isLikelyMultimodalModelName(model)) {
+    return true
   }
 
-  const availableModels = await fetchAvailableOllamaModels(normalizedPreferences)
-  const likelyMultimodalModels = availableModels.filter((model) => isLikelyMultimodalModelName(model))
-  const modelsToVerify = likelyMultimodalModels.length > 0 ? likelyMultimodalModels : availableModels.slice(0, 12)
+  return checkModelSupportsVision(normalizedPreferences, model).catch(() => false)
+}
+
+const modelListCache = new Map<string, { models: AiModelOption[]; timestamp: number }>()
+const MODEL_LIST_CACHE_TTL_MS = 30_000
+
+function buildModelListCacheKey(preferences: AiPreferences): string {
+  const normalized = normalizeAiSettingsInput(preferences)
+  return `${normalized.ollamaUrl}::${normalized.apiKey}`
+}
+
+function readCachedModelList(preferences: AiPreferences): AiModelOption[] | null {
+  const key = buildModelListCacheKey(preferences)
+  const entry = modelListCache.get(key)
+  if (!entry) {
+    return null
+  }
+
+  if (Date.now() - entry.timestamp > MODEL_LIST_CACHE_TTL_MS) {
+    modelListCache.delete(key)
+    return null
+  }
+
+  return entry.models
+}
+
+function writeCachedModelList(preferences: AiPreferences, models: AiModelOption[]): void {
+  const key = buildModelListCacheKey(preferences)
+  modelListCache.set(key, { models, timestamp: Date.now() })
+}
+
+async function listAiModelsFromBridge(preferences: AiPreferences): Promise<string[]> {
+  if (getRuntimeDevice() === 'Android') {
+    return invokeAndroidAiModelList(preferences)
+  }
+
+  return invokeDesktopAiModelList(preferences)
+}
+
+export async function listAiModels(preferences: AiPreferences): Promise<AiModelOption[]> {
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
+  const cached = readCachedModelList(normalizedPreferences)
+  if (cached) {
+    return cached
+  }
+
+  let names: string[] = []
+  try {
+    names = await listAiModelsFromBridge(normalizedPreferences)
+  } catch {
+    // Fallback a fetch si el bridge no esta disponible.
+  }
+
+  if (names.length === 0) {
+    names = await fetchAvailableOllamaModels(normalizedPreferences)
+  }
+
+  const models = names.map((name) => ({ name }))
+  writeCachedModelList(normalizedPreferences, models)
+  return models
+}
+
+export async function listAiMultimodalModels(preferences: AiPreferences): Promise<AiModelOption[]> {
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
+  const allModels = await listAiModels(normalizedPreferences)
+  const likelyMultimodalModels = allModels
+    .filter((model) => isLikelyMultimodalModelName(model.name))
+    .map((model) => model.name)
+
+  const modelsToVerify = likelyMultimodalModels.length > 0
+    ? likelyMultimodalModels
+    : allModels.slice(0, 12).map((model) => model.name)
+
   const verifiedModels: AiModelOption[] = []
 
   for (const model of modelsToVerify) {
@@ -409,10 +495,24 @@ function buildFileContextSection(
     return ''
   }
 
-  const header = selectedContextMode === 'index'
-    ? 'Archivos de referencia prioritaria:'
-    : 'Archivos de contexto:'
+  if (selectedContextMode === 'index') {
+    const header = 'Archivos de referencia:'
+    const prioritizedFiles = prioritizeFilesForPrompt(files, prompt)
+    const cappedFiles = prioritizedFiles.slice(0, MAX_INDEX_CONTEXT_FILES)
+    const lines = cappedFiles.map((file) => `- ${file.name} (${file.path})`)
+    if (lines.length === 0) {
+      return ''
+    }
 
+    let fileList = lines.join('\n')
+    if (fileList.length > MAX_INDEX_CONTEXT_CHARS) {
+      fileList = `${fileList.slice(0, MAX_INDEX_CONTEXT_CHARS)}\n...`
+    }
+
+    return [header, fileList, ''].join('\n')
+  }
+
+  const header = 'Archivos de contexto:'
   const sections: string[] = [header]
   const prioritizedFiles = prioritizeFilesForPrompt(files, prompt)
   let consumedChars = 0
@@ -689,11 +789,11 @@ function buildInkdocOcrMessages(image: AiImageAttachment): AiMessagePayload[] {
 
 async function checkDesktopAiHealthViaFetch(preferences: AiPreferences): Promise<AiHealthCheckResult> {
   try {
-    const multimodalModels = await listAiMultimodalModels(preferences)
+    const allModels = await listAiModels(preferences)
     const selectedModel = normalizeAiSettingsInput(preferences).selectedModel
-    const resolvedModel = selectedModel && multimodalModels.some((model) => model.name === selectedModel)
+    const resolvedModel = selectedModel && allModels.some((model) => model.name === selectedModel)
       ? selectedModel
-      : multimodalModels[0]?.name ?? ''
+      : allModels[0]?.name ?? ''
 
     return resolvedModel
       ? {
@@ -703,7 +803,7 @@ async function checkDesktopAiHealthViaFetch(preferences: AiPreferences): Promise
       }
       : {
         ok: false,
-        message: 'Ollama respondio, pero no devolvio modelos multimodales disponibles.',
+        message: 'Ollama respondio, pero no devolvio modelos disponibles.',
       }
   } catch (error) {
     return {
@@ -722,11 +822,12 @@ async function invokeDesktopAiHealth(preferences: AiPreferences): Promise<AiHeal
         payload: normalizeAiSettingsInput(preferences),
       })
 
+      const isOk = Boolean(response.ok)
       return {
-        ok: Boolean(response.ok),
+        ok: isOk,
         message: typeof response.message === 'string' && response.message.trim()
           ? response.message.trim()
-          : Boolean(response.ok)
+          : isOk
             ? 'Conexion correcta con Ollama.'
             : 'No se pudo conectar con la IA.',
         defaultModel: typeof response.defaultModel === 'string' && response.defaultModel.trim()
@@ -750,11 +851,12 @@ async function invokeAndroidAiHealth(preferences: AiPreferences): Promise<AiHeal
         payload: normalizeAiSettingsInput(preferences),
       })
 
+      const isOk = Boolean(response.ok)
       return {
-        ok: Boolean(response.ok),
+        ok: isOk,
         message: typeof response.message === 'string' && response.message.trim()
           ? response.message.trim()
-          : Boolean(response.ok)
+          : isOk
             ? 'Conexion correcta con Ollama.'
             : 'No se pudo conectar con la IA.',
         defaultModel: typeof response.defaultModel === 'string' && response.defaultModel.trim()
@@ -771,17 +873,21 @@ async function invokeAndroidAiHealth(preferences: AiPreferences): Promise<AiHeal
 
 async function resolveDefaultModel(preferences: AiPreferences): Promise<string> {
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
-  const multimodalModels = await listAiMultimodalModels(normalizedPreferences)
-  if (multimodalModels.length === 0) {
-    throw new Error('No hay modelos multimodales disponibles en Ollama.')
+  const allModels = await listAiModels(normalizedPreferences)
+  if (allModels.length === 0) {
+    throw new Error('No hay modelos disponibles en Ollama.')
   }
 
   const selectedModel = normalizedPreferences.selectedModel
-  if (selectedModel && multimodalModels.some((model) => model.name === selectedModel)) {
+  if (selectedModel && allModels.some((model) => model.name === selectedModel)) {
     return selectedModel
   }
 
-  return multimodalModels[0].name
+  return allModels[0].name
+}
+
+export async function resolveActiveModel(preferences: AiPreferences): Promise<string> {
+  return resolveDefaultModel(preferences)
 }
 
 async function invokeAndroidAiChat(
@@ -824,6 +930,109 @@ async function invokeAndroidAiChat(
   }
 
   throw describeAiError(lastError, 'No se pudo completar la consulta en Android.')
+}
+
+async function invokeAndroidAiChatStreaming(
+  preferences: AiPreferences,
+  model: string,
+  input: StreamAiChatReplyInput,
+  options: StreamAiChatReplyOptions,
+): Promise<string> {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  let lastError: unknown = null
+  const listeners: UnlistenFn[] = []
+
+  return new Promise((resolve, reject) => {
+    let answer = ''
+    let settled = false
+
+    const cleanup = () => {
+      settled = true
+      listeners.forEach((unlisten) => unlisten())
+    }
+
+    const handleSettle = (value: string | Error) => {
+      if (settled) {
+        return
+      }
+
+      cleanup()
+      if (value instanceof Error) {
+        reject(value)
+        return
+      }
+
+      resolve(value)
+    }
+
+    const onAbort = () => {
+      handleSettle(new Error('Se cancelo la respuesta de la IA.'))
+    }
+    options.abortSignal?.addEventListener('abort', onAbort, { once: true })
+
+    listen<AiChatStreamEvent>('notia-ai-chat-stream', (event) => {
+      if (event.payload.requestId !== requestId) {
+        return
+      }
+
+      const { type, payload } = event.payload
+      if (type === 'delta' && typeof payload?.delta === 'string') {
+        answer += payload.delta
+        options.onMessageDelta?.(payload.delta)
+        return
+      }
+
+      if (type === 'done') {
+        const finalAnswer = typeof payload?.answer === 'string'
+          ? payload.answer.trim()
+          : answer.trim()
+        handleSettle(finalAnswer || new Error('La IA no devolvio contenido.'))
+        return
+      }
+
+      if (type === 'error') {
+        const message = typeof payload?.message === 'string' && payload.message.trim()
+          ? payload.message.trim()
+          : 'No se pudo completar la consulta en Android.'
+        handleSettle(new Error(message))
+      }
+    })
+      .then((unlisten) => listeners.push(unlisten))
+      .catch((error) => handleSettle(describeAiError(error, 'No se pudo escuchar el streaming.')))
+
+    const invokeWithCommand = async (command: string) => {
+      try {
+        await invoke(command, {
+          payload: {
+            requestId,
+            ...normalizeAiSettingsInput(preferences),
+            model,
+            prompt: input.prompt,
+            previousMessages: input.previousMessages,
+            longTermMemories: input.longTermMemories,
+            files: input.files ?? [],
+            image: input.image ?? null,
+            selectedContextMode: input.selectedContextMode,
+          },
+        })
+      } catch (error) {
+        lastError = error
+      }
+    }
+
+    (async () => {
+      for (const command of ANDROID_AI_CHAT_STREAMING_COMMANDS) {
+        await invokeWithCommand(command)
+        if (settled) {
+          return
+        }
+      }
+
+      if (!settled) {
+        handleSettle(describeAiError(lastError, 'No se pudo iniciar el streaming en Android.'))
+      }
+    })()
+  })
 }
 
 async function invokeDesktopAiChat(
@@ -870,6 +1079,7 @@ async function streamDesktopAiChatViaFetch(
   options: StreamAiChatReplyOptions,
 ): Promise<string> {
   const controller = new AbortController()
+  options.abortSignal?.addEventListener('abort', () => controller.abort(), { once: true })
   const timeoutId = window.setTimeout(() => controller.abort(), AI_CHAT_TIMEOUT_MS)
 
   try {
@@ -957,23 +1167,44 @@ async function streamDesktopAiChatViaFetch(
   }
 }
 
+function buildAiHealthCacheKey(preferences: AiPreferences): string {
+  const normalized = normalizeAiSettingsInput(preferences)
+  return `${normalized.ollamaUrl}::${normalized.selectedModel}::${normalized.apiKey}`
+}
+
 export async function checkAiHealth(preferences: AiPreferences): Promise<AiHealthCheckResult> {
+  const cacheKey = buildAiHealthCacheKey(preferences)
+  const now = Date.now()
+  if (aiHealthCache && aiHealthCacheKey === cacheKey && now - aiHealthCache.timestamp < AI_HEALTH_CACHE_TTL_MS) {
+    return aiHealthCache.result
+  }
+
+  let result: AiHealthCheckResult
   if (getRuntimeDevice() === 'Android') {
     try {
-      return await invokeAndroidAiHealth(preferences)
+      result = await invokeAndroidAiHealth(preferences)
     } catch (error) {
-      return {
+      result = {
         ok: false,
         message: describeAiError(error, 'No se pudo conectar con la IA en Android.').message,
       }
     }
+  } else {
+    try {
+      result = await invokeDesktopAiHealth(preferences)
+    } catch {
+      result = await checkDesktopAiHealthViaFetch(preferences)
+    }
   }
 
-  try {
-    return await invokeDesktopAiHealth(preferences)
-  } catch {
-    return checkDesktopAiHealthViaFetch(preferences)
-  }
+  aiHealthCache = { result, timestamp: now }
+  aiHealthCacheKey = cacheKey
+  return result
+}
+
+export function invalidateAiHealthCache(): void {
+  aiHealthCache = null
+  aiHealthCacheKey = ''
 }
 
 export async function streamAiChatReply(
@@ -983,16 +1214,46 @@ export async function streamAiChatReply(
 ): Promise<string> {
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
   const model = await resolveDefaultModel(normalizedPreferences)
+
+  if (input.image?.base64.trim()) {
+    const isMultimodal = await isAiModelMultimodal(normalizedPreferences, model)
+    if (!isMultimodal) {
+      throw new Error('El modelo seleccionado no admite imagenes. Elegi otro modelo en Settings → IA.')
+    }
+  }
+
   const messages = buildConversationMessages(input)
 
   if (getRuntimeDevice() === 'Android') {
-    return invokeAndroidAiChat(normalizedPreferences, model, input, options)
+    return invokeAndroidAiChatStreaming(normalizedPreferences, model, input, options)
   }
 
   try {
     return await invokeDesktopAiChat(normalizedPreferences, model, messages, options)
   } catch {
     return streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, options)
+  }
+}
+
+export interface CancelableAiReplyHandle {
+  abort: () => void
+  promise: Promise<string>
+}
+
+export function startCancelableAiChatReply(
+  preferences: AiPreferences,
+  input: StreamAiChatReplyInput,
+  options: StreamAiChatReplyOptions = {},
+): CancelableAiReplyHandle {
+  const controller = new AbortController()
+  const promise = streamAiChatReply(preferences, input, {
+    ...options,
+    abortSignal: controller.signal,
+  })
+
+  return {
+    abort: () => controller.abort(),
+    promise,
   }
 }
 

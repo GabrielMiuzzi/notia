@@ -30,7 +30,6 @@ import { PageSizeModal } from "./inkdoc/view/PageSizeModal";
 import { DocumentDecorationsModal } from "./inkdoc/view/DocumentDecorationsModal";
 import { applyWikiLinksToElement } from "./inkdoc/view/wikiLinks";
 import { syncInkDocWikiLinksToMetadata } from "./inkdoc/view/wikiLinkIndex";
-import { PdfExportModal } from "./inkdoc/view/PdfExportModal";
 import { InkMathModal } from "./inkdoc/view/InkMathModal";
 import { closeInkDocToolsMenu, openInkDocToolsMenu } from "./inkdoc/view/toolsMenu";
 import { closeManagedMenu, openManagedMenu } from "./inkdoc/view/contextMenus";
@@ -518,7 +517,10 @@ export class InkDocView extends ItemView {
 					new Notice("No hay documento para exportar.");
 					return;
 				}
-				new PdfExportModal(this.app, this.docData, this.file).open();
+				void (async () => {
+					const { PdfExportModal } = await import("./inkdoc/view/PdfExportModal");
+					new PdfExportModal(this.app, this.docData, this.file).open();
+				})();
 			});
 		});
 
@@ -5987,6 +5989,9 @@ export class InkDocView extends ItemView {
 			cleanup();
 			this.canvasCleanups.delete(id);
 		}
+		for (const state of this.canvasStates.values()) {
+			state.canvas?.remove();
+		}
 		this.canvasStates.clear();
 		for (const layer of this.textLayerByPage.values()) {
 			layer.remove();
@@ -5999,6 +6004,8 @@ export class InkDocView extends ItemView {
 		this.imageLayerByPage.clear();
 		this.imageLayerDirty.clear();
 		disposeStickyNotesRuntime(this.stickyNotesRuntime);
+		this.stickyNotesRuntime = null as unknown as StickyNotesRuntime;
+		this.viewportController?.dispose?.();
 	}
 
 	private async addNewPage(): Promise<void> {

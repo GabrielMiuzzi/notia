@@ -36,10 +36,10 @@
 ## ✨ Características Principales
 
 - **Librerías de Notas**: organiza carpetas locales del filesystem como bibliotecas de documentos.
-- **Editor de Markdown enriquecido**: edición WYSIWYG con soporte para wikilinks (`[[nota]]`), frontmatter y propiedades.
+- **Editor de Markdown enriquecido**: edición WYSIWYG con soporte para wikilinks (`[[nota]]`), frontmatter y propiedades. Optimizado para baja memoria con memoización selectiva y selectores de acciones.
 - **Enlaces secuenciales (Page Links)**: definí relaciones de orden entre notas con `nextPage` y `previousPage` en el frontmatter. Notia actualiza automáticamente el vínculo inverso y ordena las notas conectadas en bloques secuenciales en el explorador.
 - **InkDoc**: editor especializado para documentos de tinta manuscrita, con reconocimiento de texto y fórmulas matemáticas vía IA.
-- **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas. Los diagramas embebidos en Markdown y los archivos `.mmd` comparten el **mismo motor visual**, temas y estilos.
+- **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas. Los diagramas embebidos en Markdown y los archivos `.mmd` comparten el **mismo motor visual**, temas y estilos. Renderizado lazy con `IntersectionObserver`, cancelación vía `AbortSignal` y caché LRU.
 - **Graph View**: visualización interactiva de relaciones entre notas mediante nodos y conexiones.
 - **AI Chat local**: conversación con modelos de lenguaje ejecutados localmente via Ollama, con memoria a largo plazo y contexto de archivos de la librería.
 - **ColdPass**: gestor de credenciales cifradas con generador de contraseñas y sincronización segura entre dispositivos vía Bluetooth.
@@ -108,10 +108,13 @@ Visualización gráfica de las relaciones entre todas tus notas.
 Chat con inteligencia artificial local via **Ollama**.
 
 - Configurá la URL de tu instancia de Ollama desde **Settings → IA**.
-- Podés adjuntar archivos de la librería como contexto para la conversación (modos: directo, indexado o sin archivos).
+- Funciona con **cualquier modelo de Ollama**, no solo modelos de visión.
+- Podés adjuntar archivos de la librería como contexto para la conversación (modos: directo, referencia o sin archivos).
 - La IA mantiene **memoria a largo plazo**: extrae hechos, preferencias y datos personales de la conversación para personalizar respuestas futuras.
 - Soporte para modelos multimodales: enviá imágenes (capturas, fotos) para que la IA las analice (requiere modelo con soporte de visión).
 - Generación automática de títulos para las sesiones de chat.
+- Streaming progresivo de respuestas en escritorio y Android.
+- Cancelación de respuestas en curso.
 - Soporte tanto en escritorio como en Android (a través de un bridge interno).
 
 ### ColdPass
@@ -204,10 +207,10 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Permite conversar con modelos de lenguaje locales (Ollama) con soporte de memoria a largo plazo, contexto de archivos de la librería y análisis de imágenes. |
 | **Cuándo usarlo** | Cuando necesitás asistencia de IA para redactar, resumir, analizar imágenes o consultar sobre el contenido de tus notas. |
-| **Pasos para consumir** | 1. Instalar y ejecutar Ollama localmente (`ollama serve`). 2. En Notia, abrir **Settings → IA**. 3. Ingresar la URL de Ollama (default: `http://localhost:11434`). 4. Opcional: ingresar API Key. 5. Hacer clic en **"Verificar conexión"**. 6. Seleccionar un modelo de la lista. 7. En el Icon Rail, abrir **"AI Chat"**. 8. Escribir un mensaje y presionar Enter. 9. Opcional: adjuntar archivos de la librería como contexto. |
-| **Entradas esperadas** | Texto del mensaje (string, máximo ~30k caracteres de contexto acumulado). Opcional: imagen en base64 (para modelos multimodales). Opcional: archivos de la librería como contexto. |
+| **Pasos para consumir** | 1. Instalar y ejecutar Ollama localmente (`ollama serve`). 2. En Notia, abrir **Settings → IA** (desde el mensaje de IA no disponible en el chat, si preferís). 3. Ingresar la URL de Ollama (default: `http://localhost:11434`). 4. Opcional: ingresar API Key. 5. Hacer clic en **"Verificar conexión"**. 6. Seleccionar un modelo de la lista. 7. En el Icon Rail, abrir **"AI Chat"**. 8. Escribir un mensaje y presionar Enter. 9. Opcional: adjuntar archivos de la librería como contexto (modo **Directo** para contenido completo, **Referencia** para lista de nombres/rutas). 10. Opcional: cancelar una respuesta en curso con el botón **Cancelar** del composer. |
+| **Entradas esperadas** | Texto del mensaje (string, límite flexible ~30k caracteres de contexto acumulado). Opcional: imagen en base64 (para modelos multimodales). Opcional: archivos de la librería como contexto. |
 | **Salidas / Resultado** | Respuesta de texto del modelo de IA. La sesión se guarda automáticamente con un título generado por IA. Las memorias de largo plazo se extraen y persisten para futuras conversaciones. |
-| **Errores comunes** | **"No se pudo conectar con Ollama"**: Ollama no está corriendo o la URL es incorrecta. Solución: verificar `ollama serve` en terminal y la URL en Settings. **"La IA no devolvió contenido"**: el modelo no respondió. Solución: reintentar o cambiar de modelo. |
+| **Errores comunes** | **"No se pudo conectar con Ollama"**: Ollama no está corriendo o la URL es incorrecta. Solución: verificar `ollama serve` en terminal y la URL en Settings; clic en **"Configurar IA"** en el mensaje de error del chat abre Settings directamente en la sección IA. **"La IA no devolvió contenido"**: el modelo no respondió. Solución: reintentar o cambiar de modelo. **"El modelo seleccionado no admite imágenes"**: se adjuntó una imagen a un modelo de solo texto. Solución: elegir un modelo con capacidad de visión en Settings → IA. |
 
 ### ColdPass (Credenciales Cifradas)
 
@@ -316,7 +319,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 3. Ingresá la URL de Ollama (por defecto: `http://localhost:11434`).
 4. Opcional: ingresá una API Key si usás Ollama Cloud o un servicio con autenticación.
 5. Hacé clic en **"Verificar conexión"** para confirmar que Notia puede comunicarse con Ollama.
-6. Seleccioná un modelo de la lista de modelos multimodales disponibles.
+6. Seleccioná un modelo de la lista de modelos disponibles. Para enviar imágenes, elegí uno con capacidad de visión.
 
 ### Usar ColdPass
 
@@ -493,6 +496,11 @@ Notia almacena las preferencias del usuario localmente en el navegador (localSto
 - Asegurate de que la URI de la carpeta (Android Tree URI) esté correctamente asociada a la librería.
 - Si la carpeta fue modificada externamente, usá el botón de refresco manual o configurá un intervalo de refresco automático en Settings.
 
+### Al abrir el chat IA la pantalla se queda en blanco o se dejan de ver los mensajes
+- Si la app se volvía blanca, ese problema fue corregido. Si persistiera, reiniciá la app y verificá que no haya quedado cacheado el bundle anterior (`npm run dev:tauri` o volvé a instalar la app en Android).
+- Si los mensajes del asistente aparecen cortados, asegurate de usar la última versión del código: el hilo de chat ahora renderiza cada mensaje con su altura real, sin forzar un tamaño fijo que recorte contenido largo.
+- Reportá cualquier traza adicional que aparezca en la consola de desarrollo.
+
 ### La IA no responde o da error de conexión
 - Verificá que **Ollama** esté corriendo localmente (`ollama serve` en terminal).
 - Confirmá que la URL en **Settings → IA** coincida con la dirección de Ollama (generalmente `http://localhost:11434`).
@@ -513,8 +521,23 @@ Notia almacena las preferencias del usuario localmente en el navegador (localSto
 - Mantené los dispositivos a menos de 1 metro de distancia durante la sincronización.
 
 ### La aplicación se siente lenta con bibliotecas muy grandes
-- El Graph View delega el procesamiento a workers internos, pero en bibliotecas con miles de notas puede haber latencia inicial.
-- Considerá dividir tu conocimiento en múltiples librerías más pequeñas.
+- El Explorador usa virtualización (`useVirtualList`) para renderizar solo los nodos visibles; árboles de miles de archivos deberían mantenerse fluidos.
+- Los diagramas Mermaid embebidos renderizan de forma **lazy** (solo cuando entran al viewport) y cancelan renders previos al cambiar de archivo.
+- Notia aplica memoización selectiva (`React.memo`, `useMemo`, `useCallback`) y selectores de acciones (`useNotiaAction`) para reducir re-renders del panel izquierdo, el workspace y el panel derecho.
+- En Android, Notia aplaza la carga de vistas pesadas (Graph, Chat, Task Manager) un par de frames para mantener la UI responsiva.
+- En Android, Notia ajusta automáticamente la caché de renders Mermaid a 10 entradas / 2 MB para reducir consumo de memoria, mientras que en desktop conserva 20 / 5 MB.
+- Al cambiar de biblioteca o cerrar todos los documentos, Notia invalida la caché de renders Mermaid para liberar SVGs de la librería anterior.
+- Los componentes pesados (`MarkdownView`, `MermaidView`, `InkdocView`, `GraphView`) limpian sus recursos al desmontar: destruyen editores, remueven canvas, cancelan timeouts y limpian listeners globales.
+- Las vistas pesadas usan selectores Redux memoizados (`selectTheme`, `selectMermaidViewerState`, `selectActiveLibraryPath`) en lugar de funciones inline, reduciendo re-renders en cadena.
+- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `InkdocView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, Cytoscape, MUI ni dependencias de exportación PDF.
+- En escritorio, Notia precarga esas vistas de forma inteligente durante los momentos de inactividad (`requestIdleCallback`) para que la primera apertura de archivo sea instantánea; en Android la precarga se omite por defecto para ahorrar memoria y datos.
+- `vite.config.ts` agrupa dependencias grandes en chunks separados (`vendor-milkdown`, `vendor-mermaid`, `vendor-iconify-packs`, `vendor-mui`, `vendor-cytoscape`, `vendor-lucide`, etc.), manteniendo el bundle inicial en ~460 KB gzip.
+- Los icon packs de Mermaid (`@iconify-json/*`) y las librerías de exportación PDF (`jspdf`, `html2canvas`) se cargan dinámicamente solo cuando se abre el menú de iconos o se exporta un PDF, respectivamente.
+- El backend Rust se compila con perfil de release optimizado (`lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`) para reducir tamaño de binario y mejorar rendimiento en Android.
+- Los commands de lectura de árbol (`read_library_tree`, `search_library_files`, `read_markdown_files`) se ejecutan de forma asíncrona en un thread pool (`tokio::task::spawn_blocking`) para no bloquear el hilo principal de Tauri en bibliotecas grandes.
+- En Android, Notia cachea resoluciones SAF en una LRU Rust-side de 500 entradas y throttlea refrescos de cache a 200 ms, reduciendo llamadas JNI.
+- Los eventos de cambio en el árbol de archivos (`notia-library-tree-changed`) se agrupan (batch) 160 ms para evitar refrescos en cascada durante guardados o pegados múltiples.
+- Considerá dividir tu conocimiento en múltiples librerías más pequeñas si un solo árbol supera varios miles de archivos.
 
 ---
 

@@ -713,7 +713,10 @@ export function useLibraryTreeSync({
 
     return () => {
       isDisposed = true
-      if (unsubscribe) { unsubscribe }
+      if (unsubscribe) {
+        unsubscribe()
+        unsubscribe = null
+      }
       void stopDesktopLibraryTreeWatch()
     }
   }, [activeLibrary?.path, isAndroidRuntime])

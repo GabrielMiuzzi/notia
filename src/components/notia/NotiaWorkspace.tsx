@@ -1,19 +1,27 @@
-import { memo, useMemo } from 'react'
+import { memo, Suspense, useCallback, useMemo, lazy } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsHeavyWorkspaceView } from '../../features/ui/uiSelectors'
 import { selectActiveWorkspaceView, selectActiveDocument, selectSaveStatus, selectTreeNodes } from '../../features/documents/documentsSelectors'
 import { selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { selectAiSettings, selectInkdocPreferences, selectTheme } from '../../features/preferences/preferencesSelectors'
-import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
+import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { MainView } from './MainView'
-import { GraphView } from './views/GraphView'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
-import { TaskManagerApp, type TaskManagerChatContext } from '../../modules/task-manager/components/TaskManagerApp'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import { collectFilesFromTree } from '../../utils/tree/collectFilesFromTree'
 import type { ColdPassEntry } from '../../types/coldpass'
+import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
+
+const GraphView = lazy(async () => {
+  const module = await import('./views/GraphView')
+  return { default: module.GraphView }
+})
+const TaskManagerApp = lazy(async () => {
+  const module = await import('../../modules/task-manager/components/TaskManagerApp')
+  return { default: module.TaskManagerApp }
+})
 
 interface NotiaWorkspaceProps {
   mountedHeavyWorkspaceView: string
@@ -32,6 +40,19 @@ interface NotiaWorkspaceProps {
   isImportingVault: boolean
 }
 
+function WorkspaceFallback({ label }: { label: string }) {
+  return (
+    <main className="notia-main" role="status" aria-live="polite">
+      <div className="notia-workspace-deferred-view">
+        <div className="notia-workspace-deferred-card">
+          <strong>{label}</strong>
+          <span>Cargando módulo pesado...</span>
+        </div>
+      </div>
+    </main>
+  )
+}
+
 function NotiaWorkspaceComponent({
   mountedHeavyWorkspaceView,
   isAndroidRuntime,
@@ -48,7 +69,28 @@ function NotiaWorkspaceComponent({
   setTaskManagerChatContext,
   isImportingVault,
 }: NotiaWorkspaceProps) {
-  const actions = useNotiaActions()
+  const handleOpenFileFromView = useNotiaAction('openFileFromView')
+  const handleChatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
+  const handleOpenFile = useNotiaAction('openFile')
+  const handleOpenColdPassCredentialModal = useNotiaAction('coldPassOpenCredentialModal')
+  const handleColdPassImportVault = useNotiaAction('coldPassImportVault')
+  const handleColdPassEditCredential = useNotiaAction('coldPassEditCredential')
+  const handleColdPassDeleteCredential = useNotiaAction('coldPassDeleteCredential')
+  const handleTextDocumentChange = useNotiaAction('textDocumentChange')
+  const handleInkdocDocumentPersist = useNotiaAction('inkdocDocumentPersist')
+
+  const chatCallbacks = useMemo(() => ({
+    onChatCreated: handleChatWorkspaceTreeChanged,
+    onChatDeleted: handleChatWorkspaceTreeChanged,
+  }), [handleChatWorkspaceTreeChanged])
+
+  const handleTaskManagerPanelChange = useCallback((id: string) => {
+    setTaskManagerActivePanelId(id)
+  }, [setTaskManagerActivePanelId])
+
+  const handleTaskManagerChatContextChange = useCallback((ctx: TaskManagerChatContext | null) => {
+    setTaskManagerChatContext(ctx)
+  }, [setTaskManagerChatContext])
 
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
   const activeDocument = useAppSelector(selectActiveDocument)
@@ -106,15 +148,17 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'graph') {
     return (
-      <GraphView
-        graphModel={graphModel as any}
-        graphSourcesByPath={graphSourcesByPath}
-        libraryName={libraryName}
-        isLoading={isGraphLoading}
-        onOpenFile={actions.openFileFromView}
-        chatSelectedPaths={graphChatSelectedPaths}
-        onChatSelectedPathsChange={setGraphChatSelectedPaths}
-      />
+      <Suspense fallback={<WorkspaceFallback label="Preparando graph view" />}>
+        <GraphView
+          graphModel={graphModel as object}
+          graphSourcesByPath={graphSourcesByPath}
+          libraryName={libraryName}
+          isLoading={isGraphLoading}
+          onOpenFile={handleOpenFileFromView}
+          chatSelectedPaths={graphChatSelectedPaths}
+          onChatSelectedPathsChange={setGraphChatSelectedPaths}
+        />
+      </Suspense>
     )
   }
 
@@ -125,21 +169,23 @@ function NotiaWorkspaceComponent({
         aiPreferences={aiPreferences}
         previousChats={previousChatFiles}
         historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
-        onChatCreated={actions.chatWorkspaceTreeChanged}
-        onChatDeleted={actions.chatWorkspaceTreeChanged}
+        onChatCreated={chatCallbacks.onChatCreated}
+        onChatDeleted={chatCallbacks.onChatDeleted}
       />
     )
   }
 
   if (activeWorkspaceView === 'task-manager') {
     return (
-      <TaskManagerApp
-        embedded
-        vault={activeTaskManagerVault}
-        onOpenTaskFile={actions.openFile}
-        onActivePanelChange={setTaskManagerActivePanelId}
-        onActiveChatContextChange={setTaskManagerChatContext}
-      />
+      <Suspense fallback={<WorkspaceFallback label="Preparando Task Manager" />}>
+        <TaskManagerApp
+          embedded
+          vault={activeTaskManagerVault}
+          onOpenTaskFile={handleOpenFile}
+          onActivePanelChange={handleTaskManagerPanelChange}
+          onActiveChatContextChange={handleTaskManagerChatContextChange}
+        />
+      </Suspense>
     )
   }
 
@@ -149,10 +195,10 @@ function NotiaWorkspaceComponent({
         entries={coldPassEntries}
         isUnlocked={Boolean(coldPassSession)}
         isImportingVault={isImportingVault}
-        onCreateCredential={actions.coldPassOpenCredentialModal}
-        onImportVault={actions.coldPassImportVault}
-        onEditCredential={actions.coldPassEditCredential}
-        onDeleteCredential={actions.coldPassDeleteCredential}
+        onCreateCredential={handleOpenColdPassCredentialModal}
+        onImportVault={handleColdPassImportVault}
+        onEditCredential={handleColdPassEditCredential}
+        onDeleteCredential={handleColdPassDeleteCredential}
       />
     )
   }
@@ -161,15 +207,15 @@ function NotiaWorkspaceComponent({
     <MainView
       activeDocument={activeDocument}
       saveStatus={saveStatus}
-      onTextDocumentChange={actions.textDocumentChange}
-      onInkdocDocumentPersist={actions.inkdocDocumentPersist}
+      onTextDocumentChange={handleTextDocumentChange}
+      onInkdocDocumentPersist={handleInkdocDocumentPersist}
       rootPath={activeLibrary?.path ?? null}
       libraryAndroidTreeUri={activeLibrary?.androidTreeUri}
       libraryFilePaths={libraryFilePaths}
       inkdocPreferences={inkdocPreferences}
       aiPreferences={aiPreferences}
       markdownWikiLinkTargets={markdownWikiLinkTargets}
-      onOpenLinkedFile={actions.openFileFromView}
+      onOpenLinkedFile={handleOpenFileFromView}
       theme={appTheme}
     />
   )

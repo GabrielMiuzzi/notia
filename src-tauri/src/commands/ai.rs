@@ -1,8 +1,8 @@
 use serde::Deserialize;
 
-use crate::services::ai_service::{AiChatMessage, AiChatResult, AiHealthResult, AiModelListResult};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::services::ai_service::AiHttpSettings;
+use crate::services::ai_service::{AiChatMessage, AiChatResult, AiHealthResult, AiModelListResult};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,8 +65,12 @@ pub async fn run_desktop_ai_chat(payload: RunDesktopAiChatPayload) -> Result<AiC
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let settings = build_ai_settings(payload.ollama_url, payload.api_key);
-        return crate::services::ai_service::run_ollama_chat(&settings, &payload.model, &payload.messages)
-            .await;
+        return crate::services::ai_service::run_ollama_chat(
+            &settings,
+            &payload.model,
+            &payload.messages,
+        )
+        .await;
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]

@@ -1,5 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import { loadLibraries, saveLibraries, loadActiveLibraryId, saveActiveLibraryId } from '../../services/libraries/libraryStorage'
+import { invalidateMermaidCache } from '../../modules/mermaid/engines/mermaidEngine'
 import type { NotiaLibrary } from '../../types/notia'
 import type { LibraryState } from './libraryTypes'
 
@@ -51,8 +52,12 @@ const librarySlice = createSlice({
       saveLibraries(state.libraries)
     },
     setSelectedLibraryId(state, action: PayloadAction<string | null>) {
+      const changed = state.selectedLibraryId !== action.payload
       state.selectedLibraryId = action.payload
       saveActiveLibraryId(action.payload)
+      if (changed) {
+        invalidateMermaidCache()
+      }
     },
     setLibraryStatus(state, action: PayloadAction<LibraryState['status']>) {
       state.status = action.payload

@@ -146,6 +146,7 @@ pub fn run() {
             commands::ai::list_desktop_ai_models,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
+            mobile_ai_bridge::run_android_ai_chat_streaming,
             mobile_ai_bridge::list_android_ai_models,
             mobile_directory_picker::pick_android_directory_tree,
             mobile_directory_picker::read_android_library_tree,

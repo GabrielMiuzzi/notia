@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useCallback } from 'react'
 import { FileViewHost } from './views/FileViewHost' // memoized export
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
@@ -47,13 +47,25 @@ function MainViewComponent({
   onOpenLinkedFile,
   theme,
 }: MainViewProps) {
+  const handleNewNote = useCallback(() => {
+    // Placeholder shortcut handler; currently rendered as static UI hint.
+  }, [])
+
+  const handleGoToFile = useCallback(() => {
+    // Placeholder shortcut handler; currently rendered as static UI hint.
+  }, [])
+
+  const handleClose = useCallback(() => {
+    // Placeholder shortcut handler; currently rendered as static UI hint.
+  }, [])
+
   if (!activeDocument) {
     return (
       <main className="notia-main" data-notia-prevent-menu-close>
         <div className="notia-main-empty">
-          <NotiaButton>Create new note (Ctrl + N)</NotiaButton>
-          <NotiaButton>Go to file (Ctrl + O)</NotiaButton>
-          <NotiaButton>Close</NotiaButton>
+          <NotiaButton onClick={handleNewNote}>Create new note (Ctrl + N)</NotiaButton>
+          <NotiaButton onClick={handleGoToFile}>Go to file (Ctrl + O)</NotiaButton>
+          <NotiaButton onClick={handleClose}>Close</NotiaButton>
         </div>
       </main>
     )

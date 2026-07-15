@@ -9,6 +9,7 @@ const initialState: UiState = {
   isSearchMenuOpen: false,
   activeHeaderAction: '',
   isSettingsOpen: false,
+  settingsActiveSection: null,
   isLibraryManagerOpen: false,
   activeModal: null,
 }
@@ -32,9 +33,15 @@ const uiSlice = createSlice({
     },
     setRightChatPanelOpen(state, action: PayloadAction<boolean>) {
       state.isRightChatPanelOpen = action.payload
+      if (!action.payload) {
+        state.isRightPanelChatMounted = false
+      }
     },
     toggleRightChatPanel(state) {
       state.isRightChatPanelOpen = !state.isRightChatPanelOpen
+      if (!state.isRightChatPanelOpen) {
+        state.isRightPanelChatMounted = false
+      }
     },
     setRightPanelChatMounted(state, action: PayloadAction<boolean>) {
       state.isRightPanelChatMounted = action.payload
@@ -48,6 +55,13 @@ const uiSlice = createSlice({
     },
     setSettingsOpen(state, action: PayloadAction<boolean>) {
       state.isSettingsOpen = action.payload
+      if (!action.payload) {
+        state.settingsActiveSection = null
+      }
+    },
+    setSettingsActiveSection(state, action: PayloadAction<UiState['settingsActiveSection']>) {
+      state.settingsActiveSection = action.payload
+      state.isSettingsOpen = true
     },
     setLibraryManagerOpen(state, action: PayloadAction<boolean>) {
       state.isLibraryManagerOpen = action.payload
@@ -75,9 +89,14 @@ export const {
   setSearchMenuOpen,
   setActiveHeaderAction,
   setSettingsOpen,
+  setSettingsActiveSection,
   setLibraryManagerOpen,
   closeSearchMenu,
   resetUiForLibrarySwitch,
 } = uiSlice.actions
+
+export const openSettingsToSection = (
+  section: UiState['settingsActiveSection'],
+) => setSettingsActiveSection(section)
 
 export default uiSlice.reducer

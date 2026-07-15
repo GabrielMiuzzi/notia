@@ -1,10 +1,10 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsRightChatPanelOpen, selectIsRightPanelChatMounted } from '../../features/ui/uiSelectors'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import { selectAiSettings } from '../../features/preferences/preferencesSelectors'
-import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
+import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import type { ChatFileContextMode } from '../../services/chat/chatAttachmentRuntime'
 
@@ -35,11 +35,16 @@ function NotiaRightPanelComponent({
   rightPanelTransientContextSummary,
   isAndroidRuntime,
 }: NotiaRightPanelProps) {
-  const actions = useNotiaActions()
+  const handleChatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const isRightPanelChatMounted = useAppSelector(selectIsRightPanelChatMounted)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
+
+  const chatCallbacks = useMemo(() => ({
+    onChatCreated: handleChatWorkspaceTreeChanged,
+    onChatDeleted: handleChatWorkspaceTreeChanged,
+  }), [handleChatWorkspaceTreeChanged])
 
   return (
     <aside className={`notia-right-panel ${isRightChatPanelOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`}>
@@ -64,8 +69,8 @@ function NotiaRightPanelComponent({
             persistTransientContext={false}
             selectMatchingChatOnly
             historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
-            onChatCreated={actions.chatWorkspaceTreeChanged}
-            onChatDeleted={actions.chatWorkspaceTreeChanged}
+            onChatCreated={chatCallbacks.onChatCreated}
+            onChatDeleted={chatCallbacks.onChatDeleted}
           />
         ) : (
           <main className="notia-main">

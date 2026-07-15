@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../../store/hooks'
+import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
@@ -167,11 +168,7 @@ function looksLikeMermaid(content: string): boolean {
   const trimmed = content.trim()
   if (!trimmed) return false
   const firstLine = trimmed.split('\n')[0]?.trim().toLowerCase() || ''
-  const result = MERMAID_KEYWORDS.some((kw) => firstLine.startsWith(kw.toLowerCase()))
-  if (result) {
-    console.log('[looksLikeMermaid] detected Mermaid keyword in first line:', firstLine)
-  }
-  return result
+  return MERMAID_KEYWORDS.some((kw) => firstLine.startsWith(kw.toLowerCase()))
 }
 
 function renderMermaidPreview(
@@ -180,20 +177,29 @@ function renderMermaidPreview(
   blockIndex: number,
   applyPreview: (html: string) => void,
 ): void {
-  console.log('[renderMermaidPreview] called with content:', content.substring(0, 50), '...')
-  // Render Mermaid asynchronously and inject the resulting SVG string.
-  // We pass a placeholder with visible text so DOMPurify (used by Milkdown)
-  // does NOT purge the container. Once the SVG is ready we replace the HTML.
-  const uniqueId = `${quickHash(content)}_${blockIndex}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+  // Use deterministic ids so repeated renderPreview calls for the same block
+  // reuse the existing host instead of creating orphan placeholders.
+  const uniqueId = `${quickHash(content)}_${blockIndex}`
   const containerId = `notia-mmd-host-${uniqueId}`
   const storageKey = `mmd-inline-${uniqueId}`
-  const placeholder = `<div id="${containerId}" class="notia-mermaid-inline-host" data-code="${encodeURIComponent(content)}" data-storage-key="${storageKey}"><div style="padding:12px;color:var(--color-icon-muted);font-size:13px;">Renderizando diagrama...</div></div>`
+
+  // If the host is already in the DOM, Milkdown already rendered this block.
+  // Skip re-injection to avoid flashing and orphan React roots.
+  if (document.getElementById(containerId)) {
+    return
+  }
+
+  // Render a placeholder with visible text and a minimum size so DOMPurify
+  // (used by Milkdown) does not purge the container and the block never
+  // collapses to 0 height while the diagram loads.
+  const placeholder = `<div id="${containerId}" class="notia-mermaid-inline-host" data-code="${encodeURIComponent(content)}" data-storage-key="${storageKey}" style="min-height:160px;width:100%;" data-render-id="${uniqueId}"><div style="padding:12px;color:var(--color-icon-muted);font-size:13px;">Renderizando diagrama...</div></div>`
   applyPreview(placeholder)
 
   requestAnimationFrame(() => {
     const host = document.getElementById(containerId)
-    if (!host) {
-      console.warn('[renderMermaidPreview] host not found:', containerId)
+    if (!host || !host.isConnected) {
+      // Milkdown may have replaced the placeholder before the frame ran.
+      // This is expected during fast re-renders; do not spam warnings.
       return
     }
     mountInlineMermaidPreview(host, content, storageKey)
@@ -239,9 +245,13 @@ function MarkdownViewInner({
     latestBodyRef.current = parsedDocument.body
     frontmatterRef.current = parsedDocument.frontmatter
     hasFrontmatterRef.current = parsedDocument.hasFrontmatter
+    // If Crepe has not been created yet, make sure it will use the latest body
+    // as its initial content. This handles the case where the first render has
+    // an empty/stale source and the real content arrives before create().
+    initialBodyRef.current = parsedDocument.body
   }, [parsedDocument, source])
 
-  const appTheme = useAppSelector((state) => state.preferences.theme)
+  const appTheme = useAppSelector(selectTheme)
   const themeRef = useRef(appTheme)
   useEffect(() => {
     themeRef.current = appTheme
@@ -315,6 +325,14 @@ function MarkdownViewInner({
         unmountInlineMermaidPreview(host)
       })
       inlineHosts.clear()
+    }
+
+    const clearDocumentRefs = () => {
+      latestComposedSourceRef.current = ''
+      latestBodyRef.current = ''
+      frontmatterRef.current = []
+      hasFrontmatterRef.current = false
+      initialBodyRef.current = ''
     }
 
     crepe.editor.config((ctx) => {
@@ -446,6 +464,7 @@ function MarkdownViewInner({
       crepeRef.current = null
       setWikiLinkMenuState(null)
       cleanupInlinePreviews()
+      clearDocumentRefs()
       void crepe.destroy()
     }
   }, [])
@@ -454,6 +473,7 @@ function MarkdownViewInner({
     if (!source) return
     mermaidPreviewBlockIndexRef.current = 0
   }, [source])
+
 
   useEffect(() => {
     const crepe = crepeRef.current

@@ -33,21 +33,54 @@ fn map_already_exists_error(error_message: String, fallback: &str) -> OperationR
 
 #[cfg(target_os = "android")]
 fn refresh_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: Option<&str>) {
-    if let Some(tree_uri) = root_tree_uri {
-        let is_fresh = mobile_directory_picker::is_cache_fresh(state, tree_uri);
-        if is_fresh {
-            log::debug!("[notia:saf] cache hit uri={}", tree_uri);
-        } else {
-            // Instead of eagerly doing a full readTree, just invalidate the
-            // cache. The next operation that truly needs to resolve a path
-            // will trigger a lazy refresh. This avoids the expensive full
-            // tree traversal that refresh_android_tree_path_cache would do.
-            log::info!(
-                "[notia:saf] cache stale, invalidating (lazy refresh) uri={}",
-                tree_uri
-            );
-            mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    thread_local! {
+        static LAST_REFRESH_MS: RefCell<u64> = const { RefCell::new(0) };
+    }
+
+    let Some(tree_uri) = root_tree_uri else {
+        return;
+    };
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let should_refresh = LAST_REFRESH_MS.with(|last| {
+        let last_value = *last.borrow();
+        let elapsed = now_ms.saturating_sub(last_value);
+        if elapsed < 200 {
+            return false;
         }
+        *last.borrow_mut() = now_ms;
+        true
+    });
+
+    if !should_refresh {
+        log::debug!(
+            "[notia:saf] refresh_root_tree_cache throttled uri={}",
+            tree_uri
+        );
+        return;
+    }
+
+    let is_fresh = mobile_directory_picker::is_cache_fresh(state, tree_uri);
+    if is_fresh {
+        log::debug!("[notia:saf] cache hit uri={}", tree_uri);
+    } else {
+        // Instead of eagerly doing a full readTree, just invalidate the
+        // cache. The next operation that truly needs to resolve a path
+        // will trigger a lazy refresh. This avoids the expensive full
+        // tree traversal that refresh_android_tree_path_cache would do.
+        log::info!(
+            "[notia:saf] cache stale, invalidating (lazy refresh) uri={}",
+            tree_uri
+        );
+        mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
     }
 }
 
@@ -102,82 +135,94 @@ fn resolve_entry_uri(
             "[notia:saf] resolve_entry_uri direct content:// path={}",
             path
         );
-        Some(path.to_string())
-    } else {
-        // Try the cached path map first (most common case).
-        let resolved = mobile_directory_picker::resolve_android_tree_uri(state, path, None)
-            .ok()
-            .flatten();
-        if resolved.is_some() {
-            log::debug!("[notia:saf] resolve_entry_uri cache_hit path={}", path);
-            return resolved;
-        }
+        return Some(path.to_string());
+    }
 
-        // If the path is not in the cache but we have a root_tree_uri, use it
-        // as context for resolution. This is critical for multi-library setups
-        // where the paths HashMap may not have been populated yet for the new
-        // library.
-        if let Some(tree_uri) = root_tree_uri.map(str::trim).filter(|v| !v.is_empty()) {
-            // Lazy cache refresh: if the cache is stale and we can't resolve
-            // the path, try refreshing the cache once via a full readTree,
-            // then retry the resolution.
-            if !mobile_directory_picker::is_cache_fresh(state, tree_uri) {
-                log::info!(
-                    "[notia:saf] resolve_entry_uri cache stale, lazy refresh path={} tree_uri={}",
-                    path,
-                    tree_uri
-                );
-                let refresh_result = mobile_directory_picker::refresh_android_tree_path_cache(
-                    state, tree_uri, false,
-                );
-                if let Err(ref e) = refresh_result {
-                    log::warn!(
-                        "[notia:saf] lazy cache refresh failed uri={} error={}",
-                        tree_uri,
-                        e
-                    );
-                } else {
-                    // Retry resolution after cache refresh
-                    let retry =
-                        mobile_directory_picker::resolve_android_tree_uri(state, path, None)
-                            .ok()
-                            .flatten();
-                    if retry.is_some() {
-                        log::info!(
-                            "[notia:saf] resolve_entry_uri resolved after refresh path={}",
-                            path
-                        );
-                        return retry;
-                    }
-                }
-            }
+    // 1. Fast Rust-only LRU lookup (no JNI).
+    if let Some(lru_hit) = mobile_directory_picker::resolve_android_path_lru(state, path) {
+        log::debug!("[notia:saf] resolve_entry_uri lru_hit path={}", path);
+        return Some(lru_hit);
+    }
 
-            let fallback =
-                mobile_directory_picker::resolve_android_tree_uri(state, path, Some(tree_uri))
-                    .ok()
-                    .flatten();
-            if fallback.is_some() {
-                log::info!(
-                    "[notia:saf] resolve_entry_uri root_fallback path={} tree_uri={}",
-                    path,
-                    tree_uri
+    // 2. Persistent path map cache.
+    let resolved = mobile_directory_picker::resolve_android_tree_uri(state, path, None)
+        .ok()
+        .flatten();
+    if let Some(uri) = resolved {
+        log::debug!("[notia:saf] resolve_entry_uri cache_hit path={}", path);
+        mobile_directory_picker::put_android_path_lru(state, path.to_string(), uri.clone());
+        return Some(uri);
+    }
+
+    // 3. If the path is not in the cache but we have a root_tree_uri, use it
+    // as context for resolution. This is critical for multi-library setups
+    // where the paths HashMap may not have been populated yet for the new
+    // library.
+    if let Some(tree_uri) = root_tree_uri.map(str::trim).filter(|v| !v.is_empty()) {
+        // Lazy cache refresh: if the cache is stale and we can't resolve
+        // the path, try refreshing the cache once via a full readTree,
+        // then retry the resolution.
+        if !mobile_directory_picker::is_cache_fresh(state, tree_uri) {
+            log::info!(
+                "[notia:saf] resolve_entry_uri cache stale, lazy refresh path={} tree_uri={}",
+                path,
+                tree_uri
+            );
+            let refresh_result =
+                mobile_directory_picker::refresh_android_tree_path_cache(state, tree_uri, false);
+            if let Err(ref e) = refresh_result {
+                log::warn!(
+                    "[notia:saf] lazy cache refresh failed uri={} error={}",
+                    tree_uri,
+                    e
                 );
             } else {
-                log::warn!(
-                    "[notia:saf] resolve_entry_uri failed path={} tree_uri={}",
-                    path,
-                    tree_uri
-                );
+                // Retry resolution after cache refresh
+                let retry = mobile_directory_picker::resolve_android_tree_uri(state, path, None)
+                    .ok()
+                    .flatten();
+                if let Some(uri) = retry {
+                    log::info!(
+                        "[notia:saf] resolve_entry_uri resolved after refresh path={}",
+                        path
+                    );
+                    mobile_directory_picker::put_android_path_lru(
+                        state,
+                        path.to_string(),
+                        uri.clone(),
+                    );
+                    return Some(uri);
+                }
             }
-            fallback
-        } else {
-            log::warn!(
-                "[notia:saf] resolve_entry_uri failed no_context path={}",
-                path
-            );
-            None
         }
+
+        let fallback =
+            mobile_directory_picker::resolve_android_tree_uri(state, path, Some(tree_uri))
+                .ok()
+                .flatten();
+        if let Some(uri) = fallback {
+            log::info!(
+                "[notia:saf] resolve_entry_uri root_fallback path={} tree_uri={}",
+                path,
+                tree_uri
+            );
+            mobile_directory_picker::put_android_path_lru(state, path.to_string(), uri.clone());
+            return Some(uri);
+        }
+
+        log::warn!(
+            "[notia:saf] resolve_entry_uri failed path={} tree_uri={}",
+            path,
+            tree_uri
+        );
+        return None;
     }
+
+    log::warn!(
+        "[notia:saf] resolve_entry_uri failed no_context path={}",
+        path
+    );
+    None
 }
 
 #[cfg(target_os = "android")]

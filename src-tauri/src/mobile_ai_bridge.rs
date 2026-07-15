@@ -6,12 +6,50 @@ use std::sync::Mutex;
 use tauri::plugin::PluginHandle;
 use tauri::{
     plugin::{Builder as PluginBuilder, TauriPlugin},
-    Manager, State, Wry,
+    Emitter, Manager, State, Wry,
 };
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AiStreamEventPayload {
+    pub request_id: String,
+    #[serde(flatten)]
+    pub event: AiStreamEvent,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+#[serde(tag = "type", content = "payload")]
+pub enum AiStreamEvent {
+    Delta { delta: String },
+    Done { answer: String },
+    Error { message: String },
+}
 
 pub struct AndroidAiBridgeState {
     #[cfg(target_os = "android")]
     handle: Mutex<Option<PluginHandle<Wry>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAndroidAiChatStreamingPayload {
+    pub request_id: String,
+    pub ollama_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    pub model: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub previous_messages: Vec<AiMessagePayload>,
+    #[serde(default)]
+    pub long_term_memories: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<AiInlineFilePayload>,
+    #[serde(default)]
+    pub image: Option<AiImagePayload>,
+    #[serde(default)]
+    pub selected_context_mode: String,
 }
 
 impl AndroidAiBridgeState {
@@ -268,6 +306,147 @@ pub fn run_android_ai_chat(
             selected_context_mode,
         );
         Err("El chat AI Android solo esta disponible en Android.".to_string())
+    }
+}
+
+fn emit_ai_stream_event(window: &tauri::Window, request_id: &str, event: AiStreamEvent) {
+    let payload = AiStreamEventPayload {
+        request_id: request_id.to_string(),
+        event,
+    };
+    let _ = window.emit("notia-ai-chat-stream", payload);
+}
+
+#[tauri::command]
+pub async fn run_android_ai_chat_streaming(
+    window: tauri::Window,
+    state: State<'_, AndroidAiBridgeState>,
+    payload: RunAndroidAiChatStreamingPayload,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let _timer = NotiaTimer::new("run_android_ai_chat_streaming")
+            .with_meta(format!("model={}", payload.model));
+        let request_id = payload.request_id.clone();
+
+        if payload.ollama_url.trim().is_empty() {
+            emit_ai_stream_event(
+                &window,
+                &request_id,
+                AiStreamEvent::Error {
+                    message: "La URL de Ollama es obligatoria.".to_string(),
+                },
+            );
+            return Err("La URL de Ollama es obligatoria.".to_string());
+        }
+        if payload.model.trim().is_empty() {
+            emit_ai_stream_event(
+                &window,
+                &request_id,
+                AiStreamEvent::Error {
+                    message: "El modelo de Ollama es obligatorio.".to_string(),
+                },
+            );
+            return Err("El modelo de Ollama es obligatorio.".to_string());
+        }
+        if payload.prompt.trim().is_empty() {
+            emit_ai_stream_event(
+                &window,
+                &request_id,
+                AiStreamEvent::Error {
+                    message: "No hay prompt para enviar a la IA.".to_string(),
+                },
+            );
+            return Err("No hay prompt para enviar a la IA.".to_string());
+        }
+
+        let guard = state
+            .handle
+            .lock()
+            .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
+        let Some(handle) = guard.as_ref() else {
+            emit_ai_stream_event(
+                &window,
+                &request_id,
+                AiStreamEvent::Error {
+                    message: "El bridge AI de Android no esta disponible.".to_string(),
+                },
+            );
+            return Err("El bridge AI de Android no esta disponible.".to_string());
+        };
+
+        let response = handle
+            .run_mobile_plugin::<AndroidAiChatResponse>(
+                "chatStreaming",
+                serde_json::json!({
+                    "requestId": payload.request_id,
+                    "ollamaUrl": payload.ollama_url,
+                    "apiKey": payload.api_key,
+                    "model": payload.model,
+                    "prompt": payload.prompt,
+                    "previousMessages": payload.previous_messages,
+                    "longTermMemories": payload.long_term_memories,
+                    "files": payload.files,
+                    "image": payload.image,
+                    "selectedContextMode": payload.selected_context_mode,
+                }),
+            )
+            .map_err(|error| {
+                emit_ai_stream_event(
+                    &window,
+                    &request_id,
+                    AiStreamEvent::Error {
+                        message: format!("No se pudo iniciar el streaming: {error}"),
+                    },
+                );
+                format!("No se pudo iniciar el streaming en Android: {error}")
+            })?;
+
+        if let Some(error_message) = response.error.filter(|value| !value.trim().is_empty()) {
+            emit_ai_stream_event(
+                &window,
+                &request_id,
+                AiStreamEvent::Error {
+                    message: error_message.clone(),
+                },
+            );
+            return Err(error_message);
+        }
+
+        let answer = response.answer.unwrap_or_default().trim().to_string();
+        emit_ai_stream_event(&window, &request_id, AiStreamEvent::Done { answer });
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window;
+        let _ = state;
+        let RunAndroidAiChatStreamingPayload {
+            request_id,
+            ollama_url,
+            api_key,
+            model,
+            prompt,
+            previous_messages,
+            long_term_memories,
+            files,
+            image,
+            selected_context_mode,
+        } = payload;
+        let _ = (
+            request_id,
+            ollama_url,
+            api_key,
+            model,
+            prompt,
+            previous_messages,
+            long_term_memories,
+            files,
+            image,
+            selected_context_mode,
+        );
+        Err("El streaming AI Android solo esta disponible en Android.".to_string())
     }
 }
 

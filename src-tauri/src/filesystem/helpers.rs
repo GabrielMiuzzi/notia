@@ -17,6 +17,15 @@ pub(crate) fn canonical_or_original(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn has_invalid_entry_name(name: &str) -> bool {
+    if name.is_empty() {
+        return true;
+    }
+
+    // Fast path: avoid allocation for names without whitespace or separators.
+    if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return true;
+    }
+
     let trimmed = name.trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return true;
@@ -65,6 +74,8 @@ fn strip_yaml_quotes(value: &str) -> String {
     s.to_string()
 }
 
+const FRONTMATTER_MAX_LINES: usize = 100;
+
 pub(crate) fn read_partial_frontmatter(file_path: &Path) -> Option<HashMap<String, String>> {
     let file = fs::File::open(file_path).ok()?;
     let reader = BufReader::new(file);
@@ -75,8 +86,13 @@ pub(crate) fn read_partial_frontmatter(file_path: &Path) -> Option<HashMap<Strin
         return None;
     }
 
-    let mut map = HashMap::new();
+    let mut map = HashMap::with_capacity(4);
+    let mut line_count = 0;
     for line_result in lines {
+        line_count += 1;
+        if line_count > FRONTMATTER_MAX_LINES {
+            break;
+        }
         let line = line_result.ok()?;
         if line.trim() == "---" {
             break;
@@ -85,7 +101,10 @@ pub(crate) fn read_partial_frontmatter(file_path: &Path) -> Option<HashMap<Strin
         if let Some((key, value)) = line.split_once(':') {
             let trimmed_key = key.trim().to_string();
             let trimmed_value = strip_yaml_quotes(value.trim());
-            if trimmed_key == "nextPage" || trimmed_key == "previousPage" || trimmed_key == "createdAt" {
+            if trimmed_key == "nextPage"
+                || trimmed_key == "previousPage"
+                || trimmed_key == "createdAt"
+            {
                 map.insert(trimmed_key, trimmed_value);
             }
         }
@@ -124,7 +143,8 @@ pub(crate) fn read_directory_tree(
     let mut children: Vec<FileNode> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
-            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let entry_name_lossy = entry.file_name();
+            let entry_name = entry_name_lossy.to_string_lossy();
             if has_invalid_entry_name(&entry_name) || is_hidden_entry_name(&entry_name) {
                 return None;
             }
@@ -138,11 +158,13 @@ pub(crate) fn read_directory_tree(
                 .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
                 .unwrap_or(false);
 
-            let created_ms = meta.as_ref()
+            let created_ms = meta
+                .as_ref()
                 .and_then(|m| m.created().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64);
-            let modified_ms = meta.as_ref()
+            let modified_ms = meta
+                .as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64);
@@ -179,7 +201,7 @@ pub(crate) fn read_directory_tree(
             if is_directory {
                 return Some(FileNode {
                     id: entry_path_string.clone(),
-                    name: entry_name,
+                    name: entry_name.into_owned(),
                     path: Some(entry_path_string),
                     node_type: "folder".to_string(),
                     expanded: Some(true),
@@ -193,7 +215,7 @@ pub(crate) fn read_directory_tree(
 
             Some(FileNode {
                 id: entry_path_string.clone(),
-                name: entry_name,
+                name: entry_name.into_owned(),
                 path: Some(entry_path_string),
                 node_type: "file".to_string(),
                 expanded: None,
@@ -258,7 +280,8 @@ pub(crate) fn collect_directory_signature(
     let mut entries_to_hash: Vec<(String, PathBuf, bool, Option<i64>)> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
-            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let entry_name_lossy = entry.file_name();
+            let entry_name = entry_name_lossy.to_string_lossy();
             if has_invalid_entry_name(&entry_name) || is_hidden_entry_name(&entry_name) {
                 return None;
             }
@@ -271,18 +294,25 @@ pub(crate) fn collect_directory_signature(
                 .or_else(|_| fs::symlink_metadata(&entry_path).map(|metadata| metadata.is_dir()))
                 .unwrap_or(false);
 
-            let created_ms = meta.as_ref()
+            let created_ms = meta
+                .as_ref()
                 .and_then(|m| m.created().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64);
-            let modified_ms = meta.as_ref()
+            let modified_ms = meta
+                .as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64);
 
             let effective_created = created_ms.or(modified_ms);
 
-            Some((entry_name, entry_path, is_directory, effective_created))
+            Some((
+                entry_name.into_owned(),
+                entry_path,
+                is_directory,
+                effective_created,
+            ))
         })
         .collect();
 

@@ -1,4 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
+import { invalidateMermaidCache } from '../../modules/mermaid/engines/mermaidEngine'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import type { NotiaDocumentSaveStatus } from '../../types/views/fileDocument'
 import type { DocumentsState, OpenDocumentTab, OpenWorkspaceSpecialTabs } from './documentsTypes'
@@ -143,6 +144,11 @@ const documentsSlice = createSlice({
       state.searchQuery = ''
       state.searchMatchedPaths = []
       state.isSearchLoading = false
+      invalidateMermaidCache()
+    },
+    closeAllTextDocuments(state) {
+      state.openTabs = state.openTabs.filter((tab) => tab.document.viewKind !== 'text')
+      invalidateMermaidCache()
     },
     resetForLibrarySwitch(state) {
       state.treeNodes = []
@@ -192,6 +198,7 @@ export const {
   setContextMenu,
   setDialogState,
   resetTabs,
+  closeAllTextDocuments,
   resetForLibrarySwitch,
   addLoadingFolderId,
   removeLoadingFolderId,

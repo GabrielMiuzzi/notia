@@ -7,6 +7,7 @@ export const selectIsRightPanelChatMounted = (state: RootState) => state.ui.isRi
 export const selectIsSearchMenuOpen = (state: RootState) => state.ui.isSearchMenuOpen
 export const selectActiveHeaderAction = (state: RootState) => state.ui.activeHeaderAction
 export const selectIsSettingsOpen = (state: RootState) => state.ui.isSettingsOpen
+export const selectSettingsActiveSection = (state: RootState) => state.ui.settingsActiveSection
 export const selectIsLibraryManagerOpen = (state: RootState) => state.ui.isLibraryManagerOpen
 export const selectActiveModal = (state: RootState) => state.ui.activeModal
 

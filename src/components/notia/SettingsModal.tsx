@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { useAppSelector } from '../../store/hooks'
+import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
 import { X } from 'lucide-react'
 import {
   clampOcrDebounceMs,
@@ -15,7 +17,7 @@ import {
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
-import { checkAiHealth, listAiMultimodalModels } from '../../services/ai/aiRuntime'
+import { checkAiHealth, invalidateAiHealthCache, listAiModels } from '../../services/ai/aiRuntime'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -33,6 +35,7 @@ interface SettingsModalProps {
 }
 
 const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs', 'IA']
+const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
   open,
@@ -45,12 +48,24 @@ export function SettingsModal({
   onAiPreferencesChange,
 }: SettingsModalProps) {
   const normalizedIncomingAiPreferences = normalizeAiSettingsInput(aiPreferences)
-  const [activeSection, setActiveSection] = useState<SettingsSection>('General')
+  const requestedSection = useAppSelector(selectSettingsActiveSection)
+  const [activeSection, setActiveSection] = useState<SettingsSection>(() => {
+    if (requestedSection && VALID_SETTINGS_SECTIONS.has(requestedSection)) {
+      return requestedSection
+    }
+    return 'General'
+  })
+
+  useEffect(() => {
+    if (open && requestedSection && VALID_SETTINGS_SECTIONS.has(requestedSection)) {
+      setActiveSection(requestedSection)
+    }
+  }, [open, requestedSection])
   const [inkmathServiceUrlDraft, setInkmathServiceUrlDraft] = useState(inkdocPreferences.inkmathServiceUrl)
   const [ollamaUrlDraft, setOllamaUrlDraft] = useState(normalizedIncomingAiPreferences.ollamaUrl)
   const [apiKeyDraft, setApiKeyDraft] = useState(normalizedIncomingAiPreferences.apiKey)
   const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
-  const [availableMultimodalModels, setAvailableMultimodalModels] = useState<string[]>([])
+  const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [modelsErrorMessage, setModelsErrorMessage] = useState<string | null>(null)
   const [aiHealthStatus, setAiHealthStatus] = useState<{
@@ -115,14 +130,14 @@ export function SettingsModal({
     setIsLoadingModels(true)
     setModelsErrorMessage(null)
 
-    void listAiMultimodalModels(currentPreferences)
+    void listAiModels(currentPreferences)
       .then((models) => {
         if (cancelled) {
           return
         }
 
         const names = models.map((model) => model.name)
-        setAvailableMultimodalModels(names)
+        setAvailableModels(names)
 
         const nextSelectedModel = currentPreferences.selectedModel && names.includes(currentPreferences.selectedModel)
           ? currentPreferences.selectedModel
@@ -142,11 +157,11 @@ export function SettingsModal({
           return
         }
 
-        setAvailableMultimodalModels([])
+        setAvailableModels([])
         setModelsErrorMessage(
           error instanceof Error && error.message.trim()
             ? error.message
-            : 'No se pudieron cargar los modelos multimodales.',
+            : 'No se pudieron cargar los modelos.',
         )
       })
       .finally(() => {
@@ -204,6 +219,7 @@ export function SettingsModal({
     setApiKeyDraft(normalized.apiKey)
     setSelectedModelDraft(normalized.selectedModel)
     onAiPreferencesChange(normalized)
+    invalidateAiHealthCache()
     setIsCheckingAiHealth(true)
 
     const result = await checkAiHealth(normalized)
@@ -349,12 +365,12 @@ export function SettingsModal({
                 </div>
               </div>
               <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Modelo multimodal</div>
+                <div className="notia-settings-card-label">Modelo de Ollama</div>
                 <div className="notia-settings-card-value">
                   {normalizedAiPreferences.selectedModel || 'Sin seleccionar'}
                 </div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  El chat solo lista modelos con capacidad de vision para permitir envio de imagenes.
+                  Selecciona cualquier modelo disponible. Para enviar imagenes, elegi uno con capacidad de vision.
                 </div>
                 <div className="notia-settings-input-wrap">
                   <select
@@ -372,14 +388,14 @@ export function SettingsModal({
                         selectedModel: nextValue,
                       })
                     }}
-                    disabled={isLoadingModels || availableMultimodalModels.length === 0}
+                    disabled={isLoadingModels || availableModels.length === 0}
                   >
-                    {availableMultimodalModels.length === 0 ? (
+                    {availableModels.length === 0 ? (
                       <option value="">
-                        {isLoadingModels ? 'Cargando modelos...' : 'No hay modelos multimodales'}
+                        {isLoadingModels ? 'Cargando modelos...' : 'No hay modelos disponibles'}
                       </option>
                     ) : null}
-                    {availableMultimodalModels.map((model) => (
+                    {availableModels.map((model) => (
                       <option key={model} value={model}>
                         {model}
                       </option>

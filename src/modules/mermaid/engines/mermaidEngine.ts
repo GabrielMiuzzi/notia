@@ -18,12 +18,6 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-// ── Estado global singleton ─────────────────────────────────
-let mermaidInstance: typeof import('mermaid').default | null = null
-let initPromise: Promise<void> | null = null
-let lastInitTheme: string | null = null
-let iconPacksRegistered = false
-
 // ── Theme variables that harmonise with Notia dark/light ────
 export interface MermaidThemeVariables {
   background: string
@@ -190,18 +184,27 @@ class WeightedLruCache<T> {
   }
 }
 
-const MAX_CACHE_ENTRIES = 20
-const MAX_CACHE_WEIGHT_BYTES = 5 * 1024 * 1024 // 5 MB
+const DEFAULT_MAX_CACHE_ENTRIES = 20
+const DEFAULT_MAX_CACHE_WEIGHT_BYTES = 5 * 1024 * 1024 // 5 MB
+const ANDROID_MAX_CACHE_ENTRIES = 10
+const ANDROID_MAX_CACHE_WEIGHT_BYTES = 2 * 1024 * 1024 // 2 MB
+
+function resolveMermaidCacheLimits(): { maxEntries: number; maxWeight: number } {
+  const isAndroid = /Android/i.test(navigator.userAgent)
+  if (isAndroid) {
+    return { maxEntries: ANDROID_MAX_CACHE_ENTRIES, maxWeight: ANDROID_MAX_CACHE_WEIGHT_BYTES }
+  }
+  return { maxEntries: DEFAULT_MAX_CACHE_ENTRIES, maxWeight: DEFAULT_MAX_CACHE_WEIGHT_BYTES }
+}
 
 function weighMermaidRenderResult(result: MermaidRenderResult): number {
   return result.svg?.length ?? 0
 }
 
-const renderCache = new WeightedLruCache<MermaidRenderResult>(
-  MAX_CACHE_ENTRIES,
-  MAX_CACHE_WEIGHT_BYTES,
-  weighMermaidRenderResult,
-)
+const renderCache = (() => {
+  const { maxEntries, maxWeight } = resolveMermaidCacheLimits()
+  return new WeightedLruCache<MermaidRenderResult>(maxEntries, maxWeight, weighMermaidRenderResult)
+})()
 
 // Hash rápido para strings (FNV-1a 32-bit) — suficiente para caché en memoria y claves de localStorage
 export function quickHash(str: string): string {
@@ -212,6 +215,12 @@ export function quickHash(str: string): string {
   }
   return (h >>> 0).toString(36)
 }
+
+// ── Estado global singleton ─────────────────────────────────
+let mermaidInstance: typeof import('mermaid').default | null = null
+let initPromise: Promise<void> | null = null
+let lastInitTheme: string | null = null
+let iconPacksRegistered = false
 
 function cacheKey(code: string, theme: string, configHash: string): string {
   return `${quickHash(code)}_${quickHash(theme)}_${configHash}`

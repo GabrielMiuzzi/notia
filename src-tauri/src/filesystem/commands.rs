@@ -19,22 +19,32 @@ use super::validation::{
 };
 
 #[tauri::command]
-pub fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
-    let _timer = NotiaTimer::new("cmd.read_library_tree")
-        .with_meta(format!("path={}", payload.directory_path));
-    let result = desktop::read_library_tree(payload);
-    log::info!(
-        "[notia:perf] cmd.read_library_tree node_count={}",
-        result.len()
-    );
-    result
+pub async fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
+    let directory_path = payload.directory_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let _timer =
+            NotiaTimer::new("cmd.read_library_tree").with_meta(format!("path={}", directory_path));
+        let result = desktop::read_library_tree(payload);
+        log::info!(
+            "[notia:perf] cmd.read_library_tree node_count={}",
+            result.len()
+        );
+        result
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn read_library_tree_signature(payload: ReadLibraryTreePayload) -> String {
-    let _timer = NotiaTimer::new("cmd.read_library_tree_signature")
-        .with_meta(format!("path={}", payload.directory_path));
-    desktop::read_library_tree_signature(payload)
+pub async fn read_library_tree_signature(payload: ReadLibraryTreePayload) -> String {
+    let directory_path = payload.directory_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let _timer = NotiaTimer::new("cmd.read_library_tree_signature")
+            .with_meta(format!("path={}", directory_path));
+        desktop::read_library_tree_signature(payload)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -68,27 +78,38 @@ pub fn read_library_file(
 }
 
 #[tauri::command]
-pub fn search_library_files(payload: SearchLibraryFilesPayload) -> SearchLibraryFilesResult {
-    let _timer = NotiaTimer::new("cmd.search_library_files")
-        .with_meta(format!("path={}", payload.directory_path));
-    let result = desktop::search_library_files(payload);
-    log::info!(
-        "[notia:perf] cmd.search_library_files result_count={}",
-        result.paths.len()
-    );
-    result
+pub async fn search_library_files(payload: SearchLibraryFilesPayload) -> SearchLibraryFilesResult {
+    let directory_path = payload.directory_path.clone();
+    let query = payload.query.clone();
+    tokio::task::spawn_blocking(move || {
+        let _timer = NotiaTimer::new("cmd.search_library_files")
+            .with_meta(format!("path={} query={}", directory_path, query));
+        let result = desktop::search_library_files(payload);
+        log::info!(
+            "[notia:perf] cmd.search_library_files result_count={}",
+            result.paths.len()
+        );
+        result
+    })
+    .await
+    .unwrap_or(SearchLibraryFilesResult { paths: Vec::new() })
 }
 
 #[tauri::command]
-pub fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<MarkdownFileDocument> {
-    let _timer = NotiaTimer::new("cmd.read_markdown_files")
-        .with_meta(format!("path={}", payload.directory_path));
-    let result = desktop::read_markdown_files(payload);
-    log::info!(
-        "[notia:perf] cmd.read_markdown_files doc_count={}",
-        result.len()
-    );
-    result
+pub async fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<MarkdownFileDocument> {
+    let directory_path = payload.directory_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let _timer = NotiaTimer::new("cmd.read_markdown_files")
+            .with_meta(format!("path={}", directory_path));
+        let result = desktop::read_markdown_files(payload);
+        log::info!(
+            "[notia:perf] cmd.read_markdown_files doc_count={}",
+            result.len()
+        );
+        result
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]

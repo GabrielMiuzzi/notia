@@ -1,7 +1,5 @@
 use super::helpers::has_invalid_entry_name;
-use super::types::{
-    CreateLibraryEntryPayload, LibraryEntryOperationPayload, OperationResult,
-};
+use super::types::{CreateLibraryEntryPayload, LibraryEntryOperationPayload, OperationResult};
 
 #[derive(Debug)]
 pub(crate) enum ValidatedLibraryEntryOperation<'a> {
@@ -39,7 +37,11 @@ pub(crate) fn validate_create_library_entry_payload(
         return Err(operation_error("Invalid entry data."));
     }
 
-    if payload.kind != "folder" && payload.kind != "note" && payload.kind != "inkdoc" && payload.kind != "mermaid" {
+    if payload.kind != "folder"
+        && payload.kind != "note"
+        && payload.kind != "inkdoc"
+        && payload.kind != "mermaid"
+    {
         return Err(operation_error("Invalid entry type."));
     }
 
@@ -121,7 +123,10 @@ mod tests {
     #[test]
     fn normalize_library_entry_name_adds_expected_extensions() {
         assert_eq!(normalize_library_entry_name("note", "hola"), "hola.md");
-        assert_eq!(normalize_library_entry_name("inkdoc", "dibujo"), "dibujo.inkdoc");
+        assert_eq!(
+            normalize_library_entry_name("inkdoc", "dibujo"),
+            "dibujo.inkdoc"
+        );
         assert_eq!(normalize_library_entry_name("folder", "carpeta"), "carpeta");
         assert_eq!(normalize_library_entry_name("note", "ya.md"), "ya.md");
     }
