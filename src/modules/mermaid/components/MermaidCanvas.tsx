@@ -250,18 +250,21 @@ function MermaidCanvasComponent({
 
   const handleSelectedEdgeTypeChange = useCallback(
     (type: MermaidEdgeType) => {
+      if (!selectedEdge) return
       onEdgeTypeChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, type)
     },
     [onEdgeTypeChange, selectedEdge],
   )
   const handleSelectedEdgeColorChange = useCallback(
     (color: string) => {
+      if (!selectedEdge) return
       onEdgeColorChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, color)
     },
     [onEdgeColorChange, selectedEdge],
   )
   const handleSelectedEdgeLabelChange = useCallback(
     (label: string) => {
+      if (!selectedEdge) return
       onEdgeLabelChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, label)
     },
     [onEdgeLabelChange, selectedEdge],

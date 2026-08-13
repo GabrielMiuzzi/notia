@@ -13,7 +13,11 @@ export interface AiPreferences {
   ollamaUrl: string
   apiKey: string
   selectedModel: string
+  thinkingEnabled: boolean
+  thinkingLevel: AiThinkingLevel
 }
+
+export type AiThinkingLevel = 'low' | 'medium' | 'high'
 
 function normalizeApiKey(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -21,6 +25,10 @@ function normalizeApiKey(value: unknown): string {
 
 function normalizeSelectedModel(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeThinkingLevel(value: unknown): AiThinkingLevel {
+  return value === 'low' || value === 'high' ? value : 'medium'
 }
 
 function normalizeOllamaApiUrl(value: unknown): string {
@@ -58,6 +66,8 @@ function normalizeAiPreferences(value: unknown): AiPreferences {
       ollamaUrl: DEFAULT_OLLAMA_API_URL,
       apiKey: '',
       selectedModel: '',
+      thinkingEnabled: true,
+      thinkingLevel: 'medium',
     }
   }
 
@@ -66,11 +76,15 @@ function normalizeAiPreferences(value: unknown): AiPreferences {
     apiKey?: unknown
     model?: unknown
     selectedModel?: unknown
+    thinkingEnabled?: unknown
+    thinkingLevel?: unknown
   }
   return {
     ollamaUrl: normalizeOllamaApiUrl(candidate.ollamaUrl ?? candidate.baseUrl),
     apiKey: normalizeApiKey(candidate.apiKey),
     selectedModel: normalizeSelectedModel(candidate.selectedModel ?? candidate.model),
+    thinkingEnabled: candidate.thinkingEnabled !== false,
+    thinkingLevel: normalizeThinkingLevel(candidate.thinkingLevel),
   }
 }
 
@@ -101,7 +115,7 @@ export function saveAiPreferences(value: AiPreferences): void {
   window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(normalized))
 }
 
-export function normalizeAiSettingsInput(input: AiPreferences): AiPreferences {
+export function normalizeAiSettingsInput(input: Partial<AiPreferences>): AiPreferences {
   return normalizeAiPreferences(input)
 }
 

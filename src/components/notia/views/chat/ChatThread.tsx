@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useLayoutEffect, useRef } from 'react'
 import { Bot, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
@@ -31,6 +31,15 @@ function ChatThreadComponent({
   onOpenAiSettings,
 }: ChatThreadProps) {
   const hasMessages = messages.length > 0
+  const thinkingContentRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    const container = thinkingContentRef.current
+    if (!container || !streamingThinking) {
+      return
+    }
+    container.scrollTop = container.scrollHeight
+  }, [streamingThinking])
 
   return (
     <section
@@ -85,7 +94,13 @@ function ChatThreadComponent({
                 <div className="notia-chat-message-bubble notia-chat-message-bubble--thinking">
                   <span className="notia-chat-message-role">Thinking</span>
                   {streamingThinking.trim() ? (
-                    <ChatMarkdownMessage source={streamingThinking} />
+                    <div
+                      ref={thinkingContentRef}
+                      className="notia-chat-thinking-content"
+                      aria-live="polite"
+                    >
+                      <ChatMarkdownMessage source={streamingThinking} />
+                    </div>
                   ) : (
                     <div className="notia-chat-thinking" role="status" aria-label="Pensando">
                       <span />

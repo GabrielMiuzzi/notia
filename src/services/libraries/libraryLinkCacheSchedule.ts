@@ -3,7 +3,7 @@ import { notiaLog } from '../runtime/notiaLogger'
 
 const REBUILD_DEBOUNCE_MS = 1500
 
-let scheduledTimeout: ReturnType<typeof setTimeout> | null = null
+let scheduledTimeout: number | null = null
 let latestParams: RebuildLibraryLinkCacheParams | null = null
 
 /**

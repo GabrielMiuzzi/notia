@@ -1,13 +1,13 @@
-import type { NotiaLibrary } from '../../types/notia'
-import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
+import type { NotiaLibrary } from '../../../../types/notia'
+import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type {
   StoredChatDocument,
   StoredChatMessage,
-} from '../../services/chat/chatDocumentStorage'
+} from '../../../../services/chat/chatDocumentStorage'
 import type {
   ChatFileContextMode,
   ChatLibraryFileOption,
-} from '../../services/chat/chatAttachmentRuntime'
+} from '../../../../services/chat/chatAttachmentRuntime'
 
 export interface ChatWorkspaceViewProps {
   library: NotiaLibrary | null
@@ -110,11 +110,12 @@ export interface ChatModalState {
 
 export interface ChatHistoryState {
   isHistoryPanelOpen: boolean
+  setIsHistoryPanelOpen: React.Dispatch<React.SetStateAction<boolean>>
   resolvedPreviousChats: Array<{ id: string; title: string; filePath: string }>
   availablePreviousChats: Array<{ id: string; title: string; filePath: string }>
   virtualChatHistoryItems: Array<{ index: number; start: number; size: number }>
   chatHistoryTotalSize: number
-  chatHistoryListRef: React.RefObject<HTMLDivElement | null>
+  chatHistoryListRef: React.RefCallback<HTMLDivElement>
   compactRecentChats: Array<{ id: string; title: string; filePath: string }>
 }
 
@@ -144,12 +145,10 @@ export interface UseChatSubmitMessageState {
   draft: string
   setDraft: (value: string) => void
   isSubmitting: boolean
-  optimisticThreadMessages: StoredChatMessage[] | null
-  streamingThinking: string
-  streamingAssistantMessage: string
-  setStreamingThinking: (value: string) => void
-  setStreamingAssistantMessage: (value: string) => void
-  setOptimisticThreadMessages: (value: StoredChatMessage[] | null) => void
+  setStreamingThinking: React.Dispatch<React.SetStateAction<string>>
+  setStreamingAssistantMessage: React.Dispatch<React.SetStateAction<string>>
+  setOptimisticThreadMessages: React.Dispatch<React.SetStateAction<StoredChatMessage[] | null>>
+  setSelectedChatFilePath: React.Dispatch<React.SetStateAction<string | null>>
   setActiveChatDocument: React.Dispatch<React.SetStateAction<StoredChatDocument | null>>
   setChatTitleOverrides: React.Dispatch<React.SetStateAction<Record<string, string>>>
   setSelectedImageAttachment: (value: SelectedImageAttachment | null) => void
@@ -165,7 +164,10 @@ export interface UseChatSubmitMessageState {
 export type UseChatSubmitMessage = (
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
-) => (rawMessage: string) => Promise<void>
+) => {
+  submitMessage: (rawMessage: string) => Promise<void>
+  cancelActiveReply: () => void
+}
 
 export interface UseChatStateResult {
   // Chat selection
@@ -248,7 +250,6 @@ export interface UseChatStateResult {
   isCheckingAiHealth: boolean
   aiAvailabilityMessage: string | null
   setIsCheckingAiHealth: React.Dispatch<React.SetStateAction<boolean>>
-  setAiAvailabilityMessage: React.Dispatch<React.SetStateAction<string | null>>
 
   // Derived
   displayedMessages: StoredChatMessage[]
@@ -275,7 +276,7 @@ export interface UseChatStateResult {
   isResolvingActiveModel: boolean
 
   // History virtual list refs
-  chatHistoryListRef: React.RefObject<HTMLDivElement | null>
+  chatHistoryListRef: React.RefCallback<HTMLDivElement>
   scrollChatHistoryToIndex: (index: number, align?: 'start' | 'center' | 'end' | 'nearest') => void
   virtualChatHistoryItems: Array<{ index: number; start: number; size: number }>
   chatHistoryTotalSize: number

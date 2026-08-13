@@ -2,7 +2,6 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import {
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
-  DEFAULT_GROUPS,
   TASKS_ROOT_FOLDER,
   TASK_PRIORITIES,
   TASK_STATES,
@@ -258,12 +257,12 @@ function resolvePomodoroDurationChoice(durations: PomodoroDurations): string {
 function resolveSettingsForEmptySnapshot(previousSettings: TaskManagerSettings): TaskManagerSettings {
   const nextActiveTab = NON_BOARD_TABS.has(previousSettings.activeTab)
     ? previousSettings.activeTab
-    : DEFAULT_BOARD_NAME
+    : previousSettings.boards.some((board) => board.name === previousSettings.activeTab)
+      ? previousSettings.activeTab
+      : previousSettings.boards[0]?.name ?? DEFAULT_BOARD_NAME
 
   return {
     ...previousSettings,
-    boards: [...DEFAULT_BOARDS],
-    groups: [...DEFAULT_GROUPS],
     activeTab: nextActiveTab,
   }
 }
@@ -395,7 +394,9 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         }
       }
 
-      const groupsByKey = new Map<string, Group>()
+      // Groups are user-managed settings. Tasks can reveal legacy groups that are
+      // missing from settings, but an empty group must remain present after sync.
+      const groupsByKey = new Map(previousGroupsByKey)
       for (const task of nextSnapshot.tasks) {
         if (task.state === 'Finalizada' || task.state === 'Cancelada') {
           continue

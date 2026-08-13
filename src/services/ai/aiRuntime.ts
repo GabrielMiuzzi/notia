@@ -23,6 +23,7 @@ let aiHealthCache: AiHealthCacheEntry | null = null
 let aiHealthCacheKey = ''
 const DESKTOP_AI_HEALTH_COMMANDS = ['check_desktop_ai_health'] as const
 const DESKTOP_AI_CHAT_COMMANDS = ['run_desktop_ai_chat'] as const
+const DESKTOP_AI_CHAT_STREAMING_COMMAND = 'run_desktop_ai_chat_streaming'
 const DESKTOP_AI_MODEL_LIST_COMMANDS = ['list_desktop_ai_models'] as const
 const ANDROID_AI_HEALTH_COMMANDS = [
   'check_android_ai_health',
@@ -49,6 +50,9 @@ export interface AiHealthCheckResult {
 
 export interface AiModelOption {
   name: string
+  supportsThinking: boolean
+  supportsThinkingLevels: boolean
+  supportsVision: boolean
 }
 
 export interface AiImageAttachment {
@@ -79,6 +83,8 @@ interface StreamAiChatReplyInput {
 
 interface StreamAiChatReplyOptions {
   onMessageDelta?: (delta: string) => void
+  onThinkingDelta?: (delta: string) => void
+  thinking?: boolean | 'low' | 'medium' | 'high'
   abortSignal?: AbortSignal
 }
 
@@ -107,6 +113,7 @@ interface OllamaShowResponse {
 interface OllamaStreamChunk {
   message?: {
     content?: unknown
+    thinking?: unknown
   }
   error?: unknown
   done?: unknown
@@ -129,7 +136,7 @@ interface BridgeAiModelListResponse {
 
 interface AiChatStreamEvent {
   requestId: string
-  type: 'delta' | 'done' | 'error'
+  type: 'thinking' | 'delta' | 'done' | 'error'
   payload?: {
     delta?: string
     answer?: string
@@ -228,6 +235,78 @@ function isLikelyMultimodalModelName(model: string): boolean {
   ].some((token) => normalized.includes(token))
 }
 
+async function streamDesktopAiChatViaBridge(
+  preferences: AiPreferences,
+  model: string,
+  messages: AiMessagePayload[],
+  options: StreamAiChatReplyOptions,
+): Promise<string> {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  let answer = ''
+  let settled = false
+  let unlisten: UnlistenFn | null = null
+
+  return new Promise((resolve, reject) => {
+    const settle = (result: string | Error) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      options.abortSignal?.removeEventListener('abort', onAbort)
+      unlisten?.()
+      if (result instanceof Error) {
+        reject(result)
+      } else {
+        resolve(result)
+      }
+    }
+    const onAbort = () => settle(new Error('Se cancelo la respuesta de la IA.'))
+    options.abortSignal?.addEventListener('abort', onAbort, { once: true })
+
+    void listen<AiChatStreamEvent>('notia-ai-chat-stream', (event) => {
+      if (event.payload.requestId !== requestId || settled) {
+        return
+      }
+      const { type, payload } = event.payload
+      if (type === 'thinking' && typeof payload?.delta === 'string') {
+        options.onThinkingDelta?.(payload.delta)
+      } else if (type === 'delta' && typeof payload?.delta === 'string') {
+        answer += payload.delta
+        options.onMessageDelta?.(payload.delta)
+      } else if (type === 'done') {
+        const finalAnswer = typeof payload?.answer === 'string' ? payload.answer.trim() : answer.trim()
+        settle(finalAnswer || new Error('La IA no devolvio contenido.'))
+      } else if (type === 'error') {
+        settle(new Error(payload?.message?.trim() || 'Se interrumpio el stream de IA.'))
+      }
+    }).then((stopListening) => {
+      if (settled) {
+        stopListening()
+        return
+      }
+      unlisten = stopListening
+      return invoke(DESKTOP_AI_CHAT_STREAMING_COMMAND, {
+        payload: {
+          requestId,
+          ...normalizeAiSettingsInput(preferences),
+          model,
+          think: options.thinking ?? false,
+          messages,
+        },
+      }).catch((error) => settle(describeAiError(error, 'No se pudo iniciar el streaming nativo.')))
+    }).catch((error) => settle(describeAiError(error, 'No se pudo escuchar el streaming nativo.')))
+  })
+}
+
+function isLikelyThinkingModelName(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  return ['deepseek-r1', 'gpt-oss', 'qwen3', 'qwq', 'reasoning'].some((token) => normalized.includes(token))
+}
+
+function supportsThinkingLevels(model: string): boolean {
+  return model.trim().toLowerCase().includes('gpt-oss')
+}
+
 async function fetchAvailableOllamaModels(preferences: AiPreferences): Promise<string[]> {
   const payload = await fetchJsonWithTimeout<OllamaTagsResponse>(
     buildOllamaUrl(preferences, '/api/tags'),
@@ -287,6 +366,59 @@ export async function checkModelSupportsVision(preferences: AiPreferences, model
     && payload.capabilities.some((capability) => capability === 'vision')
 }
 
+async function loadAiModelOption(preferences: AiPreferences, name: string): Promise<AiModelOption> {
+  const fallback: AiModelOption = {
+    name,
+    supportsThinking: isLikelyThinkingModelName(name),
+    supportsThinkingLevels: supportsThinkingLevels(name),
+    supportsVision: isLikelyMultimodalModelName(name),
+  }
+
+  try {
+    const payload = await fetchJsonWithTimeout<OllamaShowResponse>(
+      buildOllamaUrl(preferences, '/api/show'),
+      {
+        method: 'POST',
+        headers: {
+          ...buildOllamaHeaders(preferences, 'application/json'),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: name }),
+      },
+      AI_REQUEST_TIMEOUT_MS,
+    )
+    const capabilities = Array.isArray(payload.capabilities)
+      ? payload.capabilities.filter((capability): capability is string => typeof capability === 'string')
+      : []
+    return {
+      name,
+      supportsThinking: capabilities.includes('thinking') || fallback.supportsThinking,
+      supportsThinkingLevels: fallback.supportsThinkingLevels,
+      supportsVision: capabilities.includes('vision') || fallback.supportsVision,
+    }
+  } catch {
+    return fallback
+  }
+}
+
+async function mapWithConcurrency<TInput, TOutput>(
+  values: TInput[],
+  concurrency: number,
+  mapper: (value: TInput) => Promise<TOutput>,
+): Promise<TOutput[]> {
+  const results = new Array<TOutput>(values.length)
+  let nextIndex = 0
+  const worker = async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(values[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker))
+  return results
+}
+
 export async function isAiModelMultimodal(preferences: AiPreferences, model: string): Promise<boolean> {
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
   if (isLikelyMultimodalModelName(model)) {
@@ -341,16 +473,17 @@ export async function listAiModels(preferences: AiPreferences): Promise<AiModelO
 
   let names: string[] = []
   try {
-    names = await listAiModelsFromBridge(normalizedPreferences)
+    names = await fetchAvailableOllamaModels(normalizedPreferences)
   } catch {
-    // Fallback a fetch si el bridge no esta disponible.
+    // The native bridge remains a fallback for runtimes where direct fetch is unavailable.
   }
 
   if (names.length === 0) {
-    names = await fetchAvailableOllamaModels(normalizedPreferences)
+    names = await listAiModelsFromBridge(normalizedPreferences)
   }
 
-  const models = names.map((name) => ({ name }))
+  const uniqueNames = Array.from(new Set(names)).sort((left, right) => left.localeCompare(right, 'en'))
+  const models = await mapWithConcurrency(uniqueNames, 4, (name) => loadAiModelOption(normalizedPreferences, name))
   writeCachedModelList(normalizedPreferences, models)
   return models
 }
@@ -371,7 +504,12 @@ export async function listAiMultimodalModels(preferences: AiPreferences): Promis
   for (const model of modelsToVerify) {
     const supportsVision = await checkModelSupportsVision(normalizedPreferences, model).catch(() => false)
     if (supportsVision) {
-      verifiedModels.push({ name: model })
+      verifiedModels.push({
+        name: model,
+        supportsThinking: isLikelyThinkingModelName(model),
+        supportsThinkingLevels: supportsThinkingLevels(model),
+        supportsVision: true,
+      })
     }
   }
 
@@ -380,7 +518,12 @@ export async function listAiMultimodalModels(preferences: AiPreferences): Promis
   }
 
   // Fallback for Ollama Cloud when capability introspection is incomplete or rate-limited.
-  return likelyMultimodalModels.map((model) => ({ name: model }))
+  return likelyMultimodalModels.map((model) => ({
+    name: model,
+    supportsThinking: isLikelyThinkingModelName(model),
+    supportsThinkingLevels: supportsThinkingLevels(model),
+    supportsVision: true,
+  }))
 }
 
 function buildLongTermMemorySection(longTermMemories: string[]): string {
@@ -904,6 +1047,7 @@ async function invokeAndroidAiChat(
         payload: {
           ...normalizeAiSettingsInput(preferences),
           model,
+          think: options.thinking ?? false,
           prompt: input.prompt,
           previousMessages: input.previousMessages,
           longTermMemories: input.longTermMemories,
@@ -1007,6 +1151,7 @@ async function invokeAndroidAiChatStreaming(
             requestId,
             ...normalizeAiSettingsInput(preferences),
             model,
+            think: options.thinking ?? false,
             prompt: input.prompt,
             previousMessages: input.previousMessages,
             longTermMemories: input.longTermMemories,
@@ -1049,6 +1194,7 @@ async function invokeDesktopAiChat(
         payload: {
           ...normalizeAiSettingsInput(preferences),
           model,
+          think: options.thinking ?? false,
           messages,
         },
       })
@@ -1092,6 +1238,7 @@ async function streamDesktopAiChatViaFetch(
       body: JSON.stringify({
         model,
         stream: true,
+        think: options.thinking ?? false,
         messages,
       }),
       signal: controller.signal,
@@ -1126,6 +1273,13 @@ async function streamDesktopAiChatViaFetch(
             throw new Error(payload.error.trim())
           }
 
+          const thinkingDelta = typeof payload.message?.thinking === 'string'
+            ? payload.message.thinking
+            : ''
+          if (thinkingDelta) {
+            options.onThinkingDelta?.(thinkingDelta)
+          }
+
           const delta = typeof payload.message?.content === 'string'
             ? payload.message.content
             : ''
@@ -1145,6 +1299,12 @@ async function streamDesktopAiChatViaFetch(
 
     if (buffer.trim()) {
       const payload = JSON.parse(buffer.trim()) as OllamaStreamChunk
+      const thinkingDelta = typeof payload.message?.thinking === 'string'
+        ? payload.message.thinking
+        : ''
+      if (thinkingDelta) {
+        options.onThinkingDelta?.(thinkingDelta)
+      }
       const delta = typeof payload.message?.content === 'string'
         ? payload.message.content
         : ''
@@ -1223,15 +1383,32 @@ export async function streamAiChatReply(
   }
 
   const messages = buildConversationMessages(input)
+  const chatOptions: StreamAiChatReplyOptions = {
+    ...options,
+    thinking: normalizedPreferences.thinkingEnabled
+      ? supportsThinkingLevels(model) ? normalizedPreferences.thinkingLevel : true
+      : false,
+  }
 
   if (getRuntimeDevice() === 'Android') {
-    return invokeAndroidAiChatStreaming(normalizedPreferences, model, input, options)
+    return invokeAndroidAiChatStreaming(normalizedPreferences, model, input, chatOptions)
   }
 
   try {
-    return await invokeDesktopAiChat(normalizedPreferences, model, messages, options)
-  } catch {
-    return streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, options)
+    return await streamDesktopAiChatViaBridge(normalizedPreferences, model, messages, chatOptions)
+  } catch (nativeStreamError) {
+    if (chatOptions.abortSignal?.aborted) {
+      throw nativeStreamError
+    }
+  }
+
+  try {
+    return await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, chatOptions)
+  } catch (streamError) {
+    if (chatOptions.abortSignal?.aborted) {
+      throw streamError
+    }
+    return invokeDesktopAiChat(normalizedPreferences, model, messages, chatOptions)
   }
 }
 

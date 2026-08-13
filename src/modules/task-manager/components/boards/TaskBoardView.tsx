@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useMemo, useState, type CSSProperties } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { TextField } from '@mui/material'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
@@ -77,6 +77,7 @@ export function TaskBoardView({
   onApplyTaskArrangement,
 }: TaskBoardViewProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(groups.map((group) => getGroupKey(group))))
+  const previousGroupKeysRef = useRef<Set<string>>(new Set(groups.map((group) => getGroupKey(group))))
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(() => new Set())
   const [commentDialog, setCommentDialog] = useState<TaskCommentDialogState | null>(null)
   const [sourceDialog, setSourceDialog] = useState<TaskSourceDialogState | null>(null)
@@ -88,6 +89,24 @@ export function TaskBoardView({
   const [taskDropTarget, setTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
   const [pinnedTaskDropTarget, setPinnedTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
   const [subtaskDropTarget, setSubtaskDropTarget] = useState<{ parentTaskPath: string; index: number } | null>(null)
+
+  useEffect(() => {
+    const currentGroupKeys = new Set(groups.map((group) => getGroupKey(group)))
+    const addedGroupKeys = Array.from(currentGroupKeys).filter((groupKey) => !previousGroupKeysRef.current.has(groupKey))
+    previousGroupKeysRef.current = currentGroupKeys
+
+    if (addedGroupKeys.length === 0) {
+      return
+    }
+
+    setExpandedGroups((previous) => {
+      const next = new Set(previous)
+      for (const groupKey of addedGroupKeys) {
+        next.add(groupKey)
+      }
+      return next
+    })
+  }, [groups])
 
   const { boardTasks, groupedTopLevelTasks, parentTaskBySubtaskPath, subtasksByParentPath, topLevelTasks } = useMemo<BoardTaskDerivations>(() => {
     const nextBoardTasks = tasks
@@ -451,6 +470,22 @@ export function TaskBoardView({
                   }}
                   onDragOver={(event) => {
                     event.preventDefault()
+                    if (event.dataTransfer) {
+                      event.dataTransfer.dropEffect = 'move'
+                    }
+                    if (draggedTaskPath && !draggedSubtaskPath) {
+                      const groupKey = getGroupKey(group)
+                      setExpandedGroups((previous) => {
+                        if (previous.has(groupKey)) {
+                          return previous
+                        }
+                        const next = new Set(previous)
+                        next.add(groupKey)
+                        return next
+                      })
+                      setTaskDropTarget({ groupName: group.name, index: groupTasks.length })
+                      return
+                    }
                     if (draggedGroupName) {
                       setGroupDropTargetName(group.name)
                     }
@@ -462,6 +497,11 @@ export function TaskBoardView({
                   }}
                   onDrop={(event) => {
                     event.preventDefault()
+                    event.stopPropagation()
+                    if (draggedTaskPath && !draggedSubtaskPath) {
+                      void handleTopLevelTaskDrop(group.name, groupTasks.length)
+                      return
+                    }
                     void handleGroupDrop(group.name)
                   }}
                 >
@@ -684,6 +724,33 @@ export function TaskBoardView({
                 className="tareas-group-header"
                 style={{ '--tareas-group-color': '#607d8b' } as CSSProperties}
                 onClick={() => toggleGroup({ name: 'Sin grupo', color: '#607d8b', board: boardName })}
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  if (event.dataTransfer) {
+                    event.dataTransfer.dropEffect = 'move'
+                  }
+                  if (!draggedTaskPath || draggedSubtaskPath) {
+                    return
+                  }
+                  const ungroupedGroup = { name: 'Sin grupo', color: '#607d8b', board: boardName }
+                  const groupKey = getGroupKey(ungroupedGroup)
+                  setExpandedGroups((previous) => {
+                    if (previous.has(groupKey)) {
+                      return previous
+                    }
+                    const next = new Set(previous)
+                    next.add(groupKey)
+                    return next
+                  })
+                  setTaskDropTarget({ groupName: 'Sin grupo', index: groupedTopLevelTasks['Sin grupo'].length })
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (draggedTaskPath && !draggedSubtaskPath) {
+                    void handleTopLevelTaskDrop('Sin grupo', groupedTopLevelTasks['Sin grupo'].length)
+                  }
+                }}
               >
                 <span className="tareas-toggle">
                   {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName }))

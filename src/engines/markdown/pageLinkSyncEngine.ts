@@ -4,7 +4,6 @@ import {
   getFrontmatterValue,
   setFrontmatterValue,
 } from './frontmatterEngine'
-import type { FrontmatterEntry } from './frontmatterEngine'
 import { notiaLog } from '../../services/runtime/notiaLogger'
 
 export interface PageLinkSyncResult {

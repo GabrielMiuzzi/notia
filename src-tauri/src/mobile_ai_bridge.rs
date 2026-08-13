@@ -39,6 +39,8 @@ pub struct RunAndroidAiChatStreamingPayload {
     #[serde(default)]
     pub api_key: String,
     pub model: String,
+    #[serde(default)]
+    pub think: serde_json::Value,
     pub prompt: String,
     #[serde(default)]
     pub previous_messages: Vec<AiMessagePayload>,
@@ -113,6 +115,8 @@ pub struct RunAndroidAiChatPayload {
     #[serde(default)]
     api_key: String,
     model: String,
+    #[serde(default)]
+    think: serde_json::Value,
     prompt: String,
     #[serde(default)]
     previous_messages: Vec<AiMessagePayload>,
@@ -257,6 +261,7 @@ pub fn run_android_ai_chat(
                     "ollamaUrl": payload.ollama_url,
                     "apiKey": payload.api_key,
                     "model": payload.model,
+                    "think": payload.think,
                     "prompt": payload.prompt,
                     "previousMessages": payload.previous_messages,
                     "longTermMemories": payload.long_term_memories,
@@ -287,6 +292,7 @@ pub fn run_android_ai_chat(
             ollama_url,
             api_key,
             model,
+            think,
             prompt,
             previous_messages,
             long_term_memories,
@@ -298,6 +304,7 @@ pub fn run_android_ai_chat(
             ollama_url,
             api_key,
             model,
+            think,
             prompt,
             previous_messages,
             long_term_memories,
@@ -383,6 +390,7 @@ pub async fn run_android_ai_chat_streaming(
                     "ollamaUrl": payload.ollama_url,
                     "apiKey": payload.api_key,
                     "model": payload.model,
+                    "think": payload.think,
                     "prompt": payload.prompt,
                     "previousMessages": payload.previous_messages,
                     "longTermMemories": payload.long_term_memories,
@@ -427,6 +435,7 @@ pub async fn run_android_ai_chat_streaming(
             ollama_url,
             api_key,
             model,
+            think,
             prompt,
             previous_messages,
             long_term_memories,
@@ -439,6 +448,7 @@ pub async fn run_android_ai_chat_streaming(
             ollama_url,
             api_key,
             model,
+            think,
             prompt,
             previous_messages,
             long_term_memories,

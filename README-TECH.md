@@ -456,17 +456,21 @@ Construcción y visualización de un grafo de conocimiento donde los nodos son a
 #### Descripción
 Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check con caché, streaming de respuestas en desktop y Android, listado de todos los modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
+En el primer envío sin chat activo, `useChatSubmitMessage` crea el documento y establece inmediatamente su `filePath` como selección activa antes de refrescar el historial. Así, el mensaje optimista y el streaming se renderizan en la misma sesión recién creada, incluso si el callback de actualización del árbol todavía está pendiente.
+
+Durante el streaming, `ChatThread` mantiene el razonamiento en un viewport interno de altura fija y desplaza ese viewport al último fragmento recibido. `ChatWorkspaceView` sincroniza el scroll del hilo con los deltas de pensamiento y contenido mediante un layout effect, manteniendo visible el final de la conversación.
+
 #### Endpoints (Commands Tauri)
 
 | Command | Tipo | Payload | Response | Notas |
 |---|---|---|---|---|
 | `check_desktop_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Usa `listAiModels` para resolver el modelo por defecto. |
-| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, messages[] }` | `{ answer?, error? }` | Reserva para respuesta completa; el chat principal usa fetch NDJSON directo. |
+| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, messages[] }` | `{ answer?, error? }` | `think` admite `false`, `true` o `low/medium/high` según el modelo. Reserva para respuesta completa; el chat principal usa fetch NDJSON directo. |
 | `list_desktop_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
-| `run_desktop_ai_chat_streaming` | Async | `{ ollamaUrl, apiKey?, model, messages[] }` | eventos `notia-ai-chat-stream` | Backend alternativo de streaming por NDJSON (no usado por frontend actualmente). |
+| `run_desktop_ai_chat_streaming` | Async | `{ requestId, ollamaUrl, apiKey?, model, think, messages[] }` | eventos `notia-ai-chat-stream` | Transporte principal desktop. Rust consume NDJSON incrementalmente y emite eventos `thinking`, `delta` y `done`; evita el buffering del WebView. |
 | `check_android_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Resuelve modelo por defecto con todos los modelos. |
-| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` | Respuesta completa via bridge (legacy). |
-| `run_android_ai_chat_streaming` | Async | `{ ollamaUrl, apiKey?, model, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | eventos `notia-ai-chat-stream` | Streaming NDJSON real desde el bridge Kotlin. |
+| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` | Respuesta completa via bridge (legacy). |
+| `run_android_ai_chat_streaming` | Async | `{ ollamaUrl, apiKey?, model, think, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | eventos `notia-ai-chat-stream` | Streaming NDJSON real desde el bridge Kotlin. |
 | `list_android_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
 
 | Evento Tauri | Dirección | Payload | Descripción |

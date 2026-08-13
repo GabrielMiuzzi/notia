@@ -232,7 +232,7 @@ function findBodyStartOffset(source: string): number {
   return closingIndex + '\n---\n'.length
 }
 
-function buildAppendContent(title: string, messages: StoredChatMessage[]): string {
+function buildAppendContent(messages: StoredChatMessage[]): string {
   if (messages.length === 0) {
     return ''
   }
@@ -281,7 +281,6 @@ export async function appendChatMessages(
   }
 
   const appendContent = buildAppendContent(
-    persistedDocument.title,
     persistedDocument.messages.slice(persistedDocument.messages.length > 2 ? -2 : -1),
   )
   if (!appendContent) {

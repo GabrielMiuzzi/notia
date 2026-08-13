@@ -13,6 +13,7 @@ import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import { collectFilesFromTree } from '../../utils/tree/collectFilesFromTree'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
+import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 
 const GraphView = lazy(async () => {
   const module = await import('./views/GraphView')
@@ -29,7 +30,7 @@ interface NotiaWorkspaceProps {
   coldPassEntries: ColdPassEntry[]
   coldPassSession: object | null
   activeTaskManagerVault: { path: string; androidTreeUri?: string } | null
-  graphModel: object
+  graphModel: LibraryGraphModel
   graphSourcesByPath: Record<string, string>
   isGraphLoading: boolean
   graphChatSelectedPaths: string[]
@@ -150,7 +151,7 @@ function NotiaWorkspaceComponent({
     return (
       <Suspense fallback={<WorkspaceFallback label="Preparando graph view" />}>
         <GraphView
-          graphModel={graphModel as object}
+          graphModel={graphModel}
           graphSourcesByPath={graphSourcesByPath}
           libraryName={libraryName}
           isLoading={isGraphLoading}

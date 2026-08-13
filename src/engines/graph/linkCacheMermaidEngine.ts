@@ -21,7 +21,7 @@ function getBaseName(pathValue: string): string {
   return segments[segments.length - 1] ?? pathValue
 }
 
-function buildSafeNodeId(path: string, counter: number): string {
+function buildSafeNodeId(counter: number): string {
   // Sanitize for Mermaid: alphanumeric + underscore only; avoid leading digit issues by prefixing
   return `node_${counter}`
 }
@@ -60,7 +60,7 @@ export function buildLinkCacheMermaidCode(
   let counter = 0
   for (const node of nodes) {
     counter += 1
-    const safeId = buildSafeNodeId(node.path, counter)
+    const safeId = buildSafeNodeId(counter)
     pathToSafeId.set(node.path, safeId)
     nodeIdMap.set(safeId, node.path)
 

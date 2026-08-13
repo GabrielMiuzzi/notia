@@ -1,9 +1,10 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import { Icon, addCollection } from '@iconify/react'
+import type { IconifyJSON } from '@iconify/types'
 import { NotiaSubmenuPanel } from '../../../components/notia/NotiaSubmenuPanel'
 
 interface IconPackModule {
-  icons?: { prefix?: string; [key: string]: unknown }
+  icons?: IconifyJSON
 }
 
 interface PackDef {
@@ -16,34 +17,34 @@ const PACKS: PackDef[] = [
   {
     prefix: 'fa',
     label: 'Font Awesome',
-    loader: () => import('@iconify-json/fa').then((m) => (m as IconPackModule)).catch(() => null),
+    loader: () => import('@iconify-json/fa').then((module) => ({ icons: module.icons })).catch(() => null),
   },
   {
     prefix: 'fa-solid',
     label: 'FA Solid',
-    loader: () => import('@iconify-json/fa-solid').then((m) => (m as IconPackModule)).catch(() => null),
+    loader: () => import('@iconify-json/fa-solid').then((module) => ({ icons: module.icons })).catch(() => null),
   },
   {
     prefix: 'fa-brands',
     label: 'FA Brands',
-    loader: () => import('@iconify-json/fa-brands').then((m) => (m as IconPackModule)).catch(() => null),
+    loader: () => import('@iconify-json/fa-brands').then((module) => ({ icons: module.icons })).catch(() => null),
   },
   {
     prefix: 'gcp',
     label: 'Google Cloud',
-    loader: () => import('@iconify-json/gcp').then((m) => (m as IconPackModule)).catch(() => null),
+    loader: () => import('@iconify-json/gcp').then((module) => ({ icons: module.icons })).catch(() => null),
   },
   {
     prefix: 'simple-icons',
     label: 'Marcas (Simple Icons)',
-    loader: () => import('@iconify-json/simple-icons').then((m) => (m as IconPackModule)).catch(() => null),
+    loader: () => import('@iconify-json/simple-icons').then((module) => ({ icons: module.icons })).catch(() => null),
   },
 ]
 
 interface LoadedPack {
   prefix: string
   label: string
-  icons: Record<string, unknown>
+  icons: IconifyJSON
 }
 
 interface LoadedIcon {
@@ -79,9 +80,12 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
   const gridRef = useRef<HTMLDivElement>(null)
 
   const onIconSelectRef = useRef(onIconSelect)
-  onIconSelectRef.current = onIconSelect
   const onIconDragStartRef = useRef(onIconDragStart)
-  onIconDragStartRef.current = onIconDragStart
+
+  useEffect(() => {
+    onIconSelectRef.current = onIconSelect
+    onIconDragStartRef.current = onIconDragStart
+  }, [onIconDragStart, onIconSelect])
 
   const dragRef = useRef<{
     iconRef: string
@@ -119,7 +123,7 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
       PACKS.map(async (pack) => {
         const module = await pack.loader()
         if (!module) return null
-        const icons = module.icons as Record<string, unknown> | undefined
+        const icons = module.icons
         if (!icons) return null
         return { prefix: pack.prefix, label: pack.label, icons }
       }),
@@ -147,7 +151,7 @@ export const MermaidIconsMenu = memo(function MermaidIconsMenu({
   const allIcons = useMemo<LoadedIcon[]>(() => {
     const result: LoadedIcon[] = []
     for (const pack of loadedPacks) {
-      const names = Object.keys(pack.icons || {})
+      const names = Object.keys(pack.icons.icons)
       for (const name of names) {
         result.push({ ref: `${pack.prefix}:${name}`, prefix: pack.prefix, label: `${pack.prefix}:${name}` })
       }
@@ -377,14 +381,16 @@ function buildInlineIconSvg(iconRef: string, loadedPacks: LoadedPack[]): string 
   if (!prefix || !name) return ''
 
   const pack = loadedPacks.find((p) => p.prefix === prefix)
-  const iconData = (pack?.icons?.[name] ?? {}) as {
+  const iconData = pack?.icons.icons[name]
+  if (!iconData) return ''
+  const dimensions = iconData as {
     body?: string
     width?: number
     height?: number
   }
-  const body = iconData.body ?? ''
-  const w = iconData.width ?? 24
-  const h = iconData.height ?? 24
+  const body = dimensions.body ?? ''
+  const w = dimensions.width ?? pack?.icons.width ?? 24
+  const h = dimensions.height ?? pack?.icons.height ?? 24
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 ${w} ${h}" style="display:block;color:var(--color-accent-text,#4dabf7)">${body}</svg>`
 }

@@ -1,4 +1,5 @@
-import { appendChatMessages, saveChatDocument, type StoredChatDocument } from '../../../../services/chat/chatDocumentStorage'
+import { useRef } from 'react'
+import { appendChatMessages, loadChatDocument, saveChatDocument, type StoredChatDocument } from '../../../../services/chat/chatDocumentStorage'
 import { buildChatMemoryWindow, resolvePersistedChatTitle } from '../../../../services/chat/chatConversationRuntime'
 import { createChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatLongTermMemorySync'
@@ -50,6 +51,7 @@ export function useChatSubmitMessage(
     setOptimisticThreadMessages,
     setStreamingThinking,
     setStreamingAssistantMessage,
+    setSelectedChatFilePath,
     setActiveChatDocument,
     setChatTitleOverrides,
     setSelectedImageAttachment,
@@ -61,17 +63,14 @@ export function useChatSubmitMessage(
     setDialogMessage,
   } = state
 
-  const activeReplyRef = { current: null as CancelableAiReplyHandle | null }
+  const activeReplyRef = useRef<CancelableAiReplyHandle | null>(null)
 
   function cancelActiveReply(): void {
     activeReplyRef.current?.abort()
     activeReplyRef.current = null
   }
 
-  const selectedImageAttachmentRef = { current: selectedImageAttachment }
-  selectedImageAttachmentRef.current = selectedImageAttachment
-
-  return async (rawMessage: string) => {
+  const submitMessage = async (rawMessage: string) => {
     const trimmedMessage = rawMessage.trim()
     if (!trimmedMessage || isSubmitting || !library) {
       return
@@ -80,7 +79,7 @@ export function useChatSubmitMessage(
     const submitMeasurement = startPerformanceMeasurement('chat.submit_message', {
       chatFilePath: selectedChatFilePath ?? undefined,
       contextFileCount: effectiveSelectedContextPaths.length,
-      hasImage: Boolean(selectedImageAttachmentRef.current),
+      hasImage: Boolean(selectedImageAttachment),
       libraryId: library.id,
       messageLength: trimmedMessage.length,
     })
@@ -101,6 +100,7 @@ export function useChatSubmitMessage(
       try {
         const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
         setPendingAutoCreatedChatFilePath(filePath)
+        setSelectedChatFilePath(filePath)
         await onChatCreated?.(filePath)
         const createdDocument = await loadChatDocument(filePath, 'Chat', library)
         const shouldDisableLongTermMemoryForAutoCreatedIndexChat =
@@ -153,7 +153,7 @@ export function useChatSubmitMessage(
 
     let inlineFileAttachments: Awaited<ReturnType<typeof loadInlineFileAttachments>> = []
     let longTermMemories: string[] = []
-    const previousImageAttachment = selectedImageAttachmentRef.current
+    const previousImageAttachment = selectedImageAttachment
     const previousLibraryFilePaths = selectedLibraryFilePaths
     const previousLibraryFileOptions = selectedLibraryFileOptions
     const previousFileContextMode = selectedFileContextMode
@@ -219,7 +219,7 @@ export function useChatSubmitMessage(
 
     const aiReplyMeasurement = startPerformanceMeasurement('chat.ai_reply', {
       contextFileCount: effectiveSelectedContextPaths.length,
-      hasImage: Boolean(selectedImageAttachmentRef.current),
+      hasImage: Boolean(selectedImageAttachment),
       libraryId: library.id,
       messageLength: trimmedMessage.length,
     })
@@ -232,10 +232,13 @@ export function useChatSubmitMessage(
           previousMessages: chatMemory,
           longTermMemories,
           files: inlineFileAttachments,
-          image: selectedImageAttachmentRef.current ?? undefined,
+          image: selectedImageAttachment ?? undefined,
           selectedContextMode: effectiveSelectedContextMode,
         },
         {
+          onThinkingDelta: (delta) => {
+            setStreamingThinking((current) => current + delta)
+          },
           onMessageDelta: (delta) => {
             setStreamingAssistantMessage((current) => current + delta)
           },

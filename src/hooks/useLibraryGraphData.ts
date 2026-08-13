@@ -8,7 +8,6 @@ import { getIndexedLibraryGraphSourcesByPath } from '../services/libraries/libra
 import { startPerformanceMeasurement } from '../services/runtime/performanceBaseline'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../types/notia'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
-import { getRuntimeDevice } from '../utils/platform/getRuntimeDevice'
 import { scheduleLibraryLinkCacheRebuild } from '../services/libraries/libraryLinkCacheSchedule'
 
 const EMPTY_GRAPH_MODEL: LibraryGraphModel = {
@@ -26,22 +25,6 @@ interface UseLibraryGraphDataParams {
   revision: number
 }
 
-function countTreeNodes(nodes: NotiaFileNode[]): number {
-  let count = 0
-
-  const visit = (currentNodes: NotiaFileNode[]) => {
-    for (const node of currentNodes) {
-      count += 1
-      if (node.children && node.children.length > 0) {
-        visit(node.children)
-      }
-    }
-  }
-
-  visit(nodes)
-  return count
-}
-
 export function useLibraryGraphData({
   enabled = true,
   libraryPath,
@@ -51,7 +34,6 @@ export function useLibraryGraphData({
   flatFileList,
   revision,
 }: UseLibraryGraphDataParams) {
-  const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
   const [graphSourcesByPath, setGraphSourcesByPath] = useState<Record<string, string>>({})
   const [graphModel, setGraphModel] = useState<LibraryGraphModel>(EMPTY_GRAPH_MODEL)
   const [isGraphSourcesPending, setIsGraphSourcesPending] = useState(false)

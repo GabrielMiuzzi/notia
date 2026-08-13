@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppSelector } from '../../store/hooks'
 import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
-import { X } from 'lucide-react'
+import { Brain, ChevronDown, Eye, X } from 'lucide-react'
 import {
   clampOcrDebounceMs,
   INKDOC_OCR_DEBOUNCE_MAX_MS,
@@ -17,7 +17,7 @@ import {
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
-import { checkAiHealth, invalidateAiHealthCache, listAiModels } from '../../services/ai/aiRuntime'
+import { checkAiHealth, invalidateAiHealthCache, listAiModels, type AiModelOption } from '../../services/ai/aiRuntime'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -65,7 +65,11 @@ export function SettingsModal({
   const [ollamaUrlDraft, setOllamaUrlDraft] = useState(normalizedIncomingAiPreferences.ollamaUrl)
   const [apiKeyDraft, setApiKeyDraft] = useState(normalizedIncomingAiPreferences.apiKey)
   const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
-  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [thinkingEnabledDraft, setThinkingEnabledDraft] = useState(normalizedIncomingAiPreferences.thinkingEnabled)
+  const [thinkingLevelDraft, setThinkingLevelDraft] = useState(normalizedIncomingAiPreferences.thinkingLevel)
+  const [availableModels, setAvailableModels] = useState<AiModelOption[]>([])
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false)
+  const modelSelectRef = useRef<HTMLDivElement | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [modelsErrorMessage, setModelsErrorMessage] = useState<string | null>(null)
   const [aiHealthStatus, setAiHealthStatus] = useState<{
@@ -94,7 +98,10 @@ export function SettingsModal({
     ollamaUrl: ollamaUrlDraft,
     apiKey: apiKeyDraft,
     selectedModel: selectedModelDraft,
+    thinkingEnabled: thinkingEnabledDraft,
+    thinkingLevel: thinkingLevelDraft,
   })
+  const selectedModelOption = availableModels.find((model) => model.name === selectedModelDraft) ?? null
 
   useEffect(() => {
     if (!open) {
@@ -112,10 +119,14 @@ export function SettingsModal({
     setOllamaUrlDraft(normalizedIncomingAiPreferences.ollamaUrl)
     setApiKeyDraft(normalizedIncomingAiPreferences.apiKey)
     setSelectedModelDraft(normalizedIncomingAiPreferences.selectedModel)
+    setThinkingEnabledDraft(normalizedIncomingAiPreferences.thinkingEnabled)
+    setThinkingLevelDraft(normalizedIncomingAiPreferences.thinkingLevel)
   }, [
     normalizedIncomingAiPreferences.apiKey,
     normalizedIncomingAiPreferences.ollamaUrl,
     normalizedIncomingAiPreferences.selectedModel,
+    normalizedIncomingAiPreferences.thinkingEnabled,
+    normalizedIncomingAiPreferences.thinkingLevel,
     open,
   ])
 
@@ -137,7 +148,7 @@ export function SettingsModal({
         }
 
         const names = models.map((model) => model.name)
-        setAvailableModels(names)
+        setAvailableModels(models)
 
         const nextSelectedModel = currentPreferences.selectedModel && names.includes(currentPreferences.selectedModel)
           ? currentPreferences.selectedModel
@@ -175,6 +186,19 @@ export function SettingsModal({
     }
   }, [aiPreferences, onAiPreferencesChange, open])
 
+  useEffect(() => {
+    if (!isModelMenuOpen) {
+      return
+    }
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !modelSelectRef.current?.contains(event.target)) {
+        setIsModelMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+  }, [isModelMenuOpen])
+
   const commitInkMathServiceUrl = () => {
     const normalized = normalizeServiceUrl(inkmathServiceUrlDraft)
     setInkmathServiceUrlDraft(normalized)
@@ -189,11 +213,15 @@ export function SettingsModal({
       ollamaUrl: ollamaUrlDraft,
       apiKey: apiKeyDraft,
       selectedModel: selectedModelDraft,
+      thinkingEnabled: thinkingEnabledDraft,
+      thinkingLevel: thinkingLevelDraft,
     })
 
     setOllamaUrlDraft(normalized.ollamaUrl)
     setApiKeyDraft(normalized.apiKey)
     setSelectedModelDraft(normalized.selectedModel)
+    setThinkingEnabledDraft(normalized.thinkingEnabled)
+    setThinkingLevelDraft(normalized.thinkingLevel)
     onAiPreferencesChange(normalized)
   }
 
@@ -372,36 +400,101 @@ export function SettingsModal({
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Selecciona cualquier modelo disponible. Para enviar imagenes, elegi uno con capacidad de vision.
                 </div>
-                <div className="notia-settings-input-wrap">
-                  <select
-                    className="notia-settings-input"
-                    value={selectedModelDraft}
-                    onChange={(event) => {
-                      const nextValue = event.target.value
-                      setSelectedModelDraft(nextValue)
-                      onAiPreferencesChange({
-                        ...normalizeAiSettingsInput({
-                          ollamaUrl: ollamaUrlDraft,
-                          apiKey: apiKeyDraft,
-                          selectedModel: nextValue,
-                        }),
-                        selectedModel: nextValue,
-                      })
-                    }}
+                <div className="notia-ai-model-select" ref={modelSelectRef}>
+                  <button
+                    type="button"
+                    className="notia-ai-model-select-trigger"
+                    aria-haspopup="listbox"
+                    aria-expanded={isModelMenuOpen}
+                    onClick={() => setIsModelMenuOpen((current) => !current)}
                     disabled={isLoadingModels || availableModels.length === 0}
                   >
-                    {availableModels.length === 0 ? (
-                      <option value="">
-                        {isLoadingModels ? 'Cargando modelos...' : 'No hay modelos disponibles'}
-                      </option>
-                    ) : null}
-                    {availableModels.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
+                    <span>{selectedModelDraft || (isLoadingModels ? 'Cargando modelos...' : 'No hay modelos disponibles')}</span>
+                    <ChevronDown size={16} aria-hidden="true" />
+                  </button>
+                  {isModelMenuOpen ? (
+                    <div className="notia-ai-model-select-menu" role="listbox" aria-label="Modelos de Ollama">
+                      {availableModels.map((model) => (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={model.name === selectedModelDraft}
+                          className={`notia-ai-model-select-option${model.name === selectedModelDraft ? ' is-selected' : ''}`}
+                          key={model.name}
+                          onClick={() => {
+                            const nextValue = model.name
+                            setSelectedModelDraft(nextValue)
+                            onAiPreferencesChange(normalizeAiSettingsInput({
+                              ollamaUrl: ollamaUrlDraft,
+                              apiKey: apiKeyDraft,
+                              selectedModel: nextValue,
+                              thinkingEnabled: thinkingEnabledDraft,
+                              thinkingLevel: thinkingLevelDraft,
+                            }))
+                            setIsModelMenuOpen(false)
+                          }}
+                        >
+                          <span className="notia-ai-model-select-name">{model.name}</span>
+                          <span className="notia-ai-model-capabilities">
+                            {model.supportsThinking ? <span title="Admite thinking"><Brain size={13} /> Thinking</span> : null}
+                            {model.supportsVision ? <span title="Admite imágenes"><Eye size={13} /> Vision</span> : null}
+                            {!model.supportsThinking && !model.supportsVision ? <span>Texto</span> : null}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
+                {selectedModelOption?.supportsThinking ? (
+                  <div className="notia-ai-thinking-settings">
+                    <div className="notia-ai-thinking-toggle-row">
+                      <div>
+                        <strong>Thinking</strong>
+                        <span>Incluye el razonamiento separado de la respuesta.</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label="Activar Thinking"
+                        aria-checked={thinkingEnabledDraft}
+                        className={`notia-settings-switch${thinkingEnabledDraft ? ' is-on' : ''}`}
+                        onClick={() => {
+                          const nextEnabled = !thinkingEnabledDraft
+                          setThinkingEnabledDraft(nextEnabled)
+                          onAiPreferencesChange({
+                            ...normalizedAiPreferences,
+                            thinkingEnabled: nextEnabled,
+                          })
+                        }}
+                      >
+                        <span />
+                      </button>
+                    </div>
+                    {selectedModelOption.supportsThinkingLevels ? (
+                      <div className="notia-ai-thinking-levels" role="group" aria-label="Nivel de thinking">
+                        {(['low', 'medium', 'high'] as const).map((level) => (
+                          <button
+                            type="button"
+                            key={level}
+                            className={thinkingLevelDraft === level ? 'is-selected' : ''}
+                            disabled={!thinkingEnabledDraft}
+                            onClick={() => {
+                              setThinkingLevelDraft(level)
+                              onAiPreferencesChange({
+                                ...normalizedAiPreferences,
+                                thinkingLevel: level,
+                              })
+                            }}
+                          >
+                            {level}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="notia-ai-thinking-note">Este modelo admite activar o desactivar Thinking, pero no niveles.</span>
+                    )}
+                  </div>
+                ) : null}
                 {modelsErrorMessage ? (
                   <div className="notia-settings-status notia-settings-status--error">
                     {modelsErrorMessage}

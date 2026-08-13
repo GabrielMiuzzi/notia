@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useCallback } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { useAppDispatch } from '../../../../store/hooks'
 import { openSettingsToSection } from '../../../../features/ui/uiSlice'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
@@ -169,6 +169,14 @@ export function ChatWorkspaceViewComponent({
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const chatThreadRef = useRef<HTMLDivElement | null>(null)
 
+  useLayoutEffect(() => {
+    const thread = chatThreadRef.current
+    if (!thread) {
+      return
+    }
+    thread.scrollTop = thread.scrollHeight
+  }, [displayedMessages.length, isSubmitting, streamingAssistantMessage, streamingThinking])
+
   const handleOpenAiSettings = useCallback(() => {
     dispatch(openSettingsToSection('IA'))
   }, [dispatch])
@@ -231,6 +239,7 @@ export function ChatWorkspaceViewComponent({
       setOptimisticThreadMessages,
       setStreamingThinking,
       setStreamingAssistantMessage,
+      setSelectedChatFilePath,
       setActiveChatDocument,
       setChatTitleOverrides,
       setSelectedImageAttachment,

@@ -40,6 +40,8 @@ pub struct AiModelListResult {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+use futures::StreamExt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use reqwest::{Client, Url};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::Duration;
@@ -76,6 +78,7 @@ struct OllamaShowResponse {
 struct OllamaChatRequest<'a> {
     model: &'a str,
     stream: bool,
+    think: &'a serde_json::Value,
     messages: &'a [AiChatMessage],
 }
 
@@ -90,6 +93,26 @@ struct OllamaChatResponse {
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponseMessage {
     content: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Deserialize)]
+struct OllamaChatStreamChunk {
+    message: Option<OllamaChatStreamMessage>,
+    error: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Deserialize)]
+struct OllamaChatStreamMessage {
+    content: Option<String>,
+    thinking: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub enum AiChatStreamDelta {
+    Thinking(String),
+    Content(String),
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -356,6 +379,7 @@ pub async fn run_ollama_chat(
     settings: &AiHttpSettings,
     model: &str,
     messages: &[AiChatMessage],
+    think: &serde_json::Value,
 ) -> Result<AiChatResult, String> {
     let normalized_model = model.trim();
     if normalized_model.is_empty() {
@@ -375,6 +399,7 @@ pub async fn run_ollama_chat(
             .json(&OllamaChatRequest {
                 model: normalized_model,
                 stream: false,
+                think,
                 messages,
             }),
         settings,
@@ -412,4 +437,128 @@ pub async fn run_ollama_chat(
         .ok_or_else(|| "La IA no devolvio contenido.".to_string())?;
 
     Ok(AiChatResult { answer })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn stream_ollama_chat<F>(
+    settings: &AiHttpSettings,
+    model: &str,
+    messages: &[AiChatMessage],
+    think: &serde_json::Value,
+    mut on_delta: F,
+) -> Result<String, String>
+where
+    F: FnMut(AiChatStreamDelta),
+{
+    let normalized_model = model.trim();
+    if normalized_model.is_empty() {
+        return Err("El modelo de Ollama es obligatorio.".to_string());
+    }
+    if messages.is_empty() {
+        return Err("No hay mensajes para enviar a la IA.".to_string());
+    }
+
+    let client = build_client(CHAT_TIMEOUT_SECS)?;
+    let endpoint = build_endpoint(&settings.ollama_url, "/api/chat")?;
+    let response = with_auth(
+        client
+            .post(endpoint)
+            .header(reqwest::header::ACCEPT, "application/x-ndjson")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&OllamaChatRequest {
+                model: normalized_model,
+                stream: true,
+                think,
+                messages,
+            }),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| describe_request_error(error, "No se pudo iniciar el stream de IA."))?;
+
+    if !response.status().is_success() {
+        return Err(read_error_detail(response).await);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::<u8>::new();
+    let mut answer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|error| describe_request_error(error, "Se interrumpio el stream de IA."))?;
+        buffer.extend_from_slice(&chunk);
+
+        while let Some(line_end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let line = buffer.drain(..=line_end).collect::<Vec<_>>();
+            process_stream_line(&line, &mut answer, &mut on_delta)?;
+        }
+    }
+
+    if !buffer.is_empty() {
+        process_stream_line(&buffer, &mut answer, &mut on_delta)?;
+    }
+
+    if answer.trim().is_empty() {
+        return Err("La IA no devolvio contenido.".to_string());
+    }
+    Ok(answer.trim().to_string())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn process_stream_line<F>(line: &[u8], answer: &mut String, on_delta: &mut F) -> Result<(), String>
+where
+    F: FnMut(AiChatStreamDelta),
+{
+    let line = std::str::from_utf8(line)
+        .map_err(|_| "Ollama devolvio texto UTF-8 invalido.".to_string())?
+        .trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+    let payload: OllamaChatStreamChunk = serde_json::from_str(line)
+        .map_err(|error| format!("No se pudo interpretar un fragmento de IA: {error}"))?;
+    if let Some(error) = payload.error.filter(|value| !value.trim().is_empty()) {
+        return Err(error);
+    }
+    if let Some(message) = payload.message {
+        if let Some(thinking) = message.thinking.filter(|value| !value.is_empty()) {
+            on_delta(AiChatStreamDelta::Thinking(thinking));
+        }
+        if let Some(content) = message.content.filter(|value| !value.is_empty()) {
+            answer.push_str(&content);
+            on_delta(AiChatStreamDelta::Content(content));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod stream_tests {
+    use super::{process_stream_line, AiChatStreamDelta};
+
+    #[test]
+    fn separates_thinking_and_answer_deltas() {
+        let mut answer = String::new();
+        let mut deltas = Vec::new();
+        process_stream_line(
+            br#"{"message":{"thinking":"Analizando...","content":"Respuesta"}}"#,
+            &mut answer,
+            &mut |delta| match delta {
+                AiChatStreamDelta::Thinking(value) => deltas.push(("thinking", value)),
+                AiChatStreamDelta::Content(value) => deltas.push(("content", value)),
+            },
+        )
+        .expect("el fragmento debe ser valido");
+
+        assert_eq!(answer, "Respuesta");
+        assert_eq!(
+            deltas,
+            vec![
+                ("thinking", "Analizando...".to_string()),
+                ("content", "Respuesta".to_string()),
+            ]
+        );
+    }
 }

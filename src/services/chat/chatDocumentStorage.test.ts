@@ -12,7 +12,6 @@ const MOCK_LIBRARY: NotiaLibrary = {
   id: 'lib-1',
   name: 'Test Library',
   path: '/test-library',
-  androidTreeUri: null,
 }
 
 function buildMockDocument(): StoredChatDocument {

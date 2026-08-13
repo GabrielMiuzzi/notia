@@ -2,8 +2,8 @@ import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
-import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
-import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
+import type { TaskManagerChatContext, TaskManagerVaultRef } from '../types/taskManagerTypes'
+import { isTaskInCancelledFolder, isTaskInFinishedFolder, isTaskMarkdownFile } from '../engines/taskEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
 import { TASKS_ROOT_FOLDER } from '../constants/taskManagerConstants'
 import { useTaskManager } from '../hooks/useTaskManager'
@@ -88,6 +88,7 @@ function TaskManagerAppComponent({
     const filePaths = deferredDocuments
       .map((document) => document.path)
       .filter((pathValue) => pathValue.startsWith(boardPrefix))
+      .filter((pathValue) => isTaskMarkdownFile(pathValue))
       .map((pathValue) => toAbsoluteVaultPath(manager.settings.activeVaultPath as string, pathValue))
       .sort((left, right) => left.localeCompare(right, 'es'))
 

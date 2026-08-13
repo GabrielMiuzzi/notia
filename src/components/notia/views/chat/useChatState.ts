@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import type { NotiaLibrary } from '../../../../types/notia'
-import type { StoredChatDocument } from '../../../../services/chat/chatDocumentStorage'
+import type { StoredChatDocument, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import { loadChatDocument, saveChatDocument } from '../../../../services/chat/chatDocumentStorage'
 import { checkAiHealth, resolveActiveModel } from '../../../../services/ai/aiRuntime'
 import { useVirtualList } from '../../../../hooks/useVirtualList'
@@ -271,7 +271,6 @@ export interface UseChatStateResult {
   isCheckingAiHealth: boolean
   aiAvailabilityMessage: string | null
   setIsCheckingAiHealth: React.Dispatch<React.SetStateAction<boolean>>
-  setAiAvailabilityMessage: React.Dispatch<React.SetStateAction<string | null>>
 
   // Derived
   displayedMessages: import('../../../../services/chat/chatDocumentStorage').StoredChatMessage[]
@@ -294,9 +293,11 @@ export interface UseChatStateResult {
   isAiAvailable: boolean
   aiHealthMessage: string | null
   setAiHealthMessage: React.Dispatch<React.SetStateAction<string | null>>
+  activeModelLabel: string | null
+  isResolvingActiveModel: boolean
 
   // History virtual list refs
-  chatHistoryListRef: React.RefObject<HTMLDivElement | null>
+  chatHistoryListRef: React.RefCallback<HTMLDivElement>
   scrollChatHistoryToIndex: (index: number, align?: 'start' | 'center' | 'end' | 'nearest') => void
   virtualChatHistoryItems: Array<{ index: number; start: number; size: number }>
   chatHistoryTotalSize: number
@@ -1017,7 +1018,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     isCheckingAiHealth,
     aiAvailabilityMessage,
     setIsCheckingAiHealth,
-    setAiAvailabilityMessage,
 
     displayedMessages,
     hasMessages,
