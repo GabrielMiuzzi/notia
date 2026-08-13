@@ -1962,7 +1962,7 @@
 .notia-graph-search-shell {
   position: absolute;
   left: 50%;
-  bottom: 18px;
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
   transform: translateX(-50%);
   z-index: 7;
   width: min(620px, calc(100% - 28px));
@@ -1970,16 +1970,11 @@
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding-top: 34px;
 }
 
 .notia-graph-search-clear {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 2;
-  width: 30px;
-  height: 30px;
+  width: 48px;
+  height: 48px;
   border: 1px solid color-mix(in srgb, var(--color-border-soft) 82%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-card-bg) 94%, transparent);
@@ -2117,10 +2112,10 @@
   width: 100%;
   min-height: 52px;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 0 16px;
+  padding: 2px 4px 2px 16px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--color-graph-search-accent) 36%, var(--color-border-soft));
   background:

@@ -333,68 +333,30 @@ function GraphViewComponent({
         background: 'var(--color-app-bg)',
       }}
     >
-      {/* Toolbar */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 12px',
-          borderBottom: '1px solid var(--color-border)',
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ position: 'relative', flex: 1, maxWidth: 360 }}>
-          <Search
-            size={14}
-            style={{
-              position: 'absolute',
-              left: 8,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              color: 'var(--color-icon-muted)',
-              pointerEvents: 'none',
-            }}
-          />
+      <div className="notia-graph-search-shell">
+        <label className="notia-graph-search-bar">
+          <Search size={18} aria-hidden="true" />
           <input
             type="text"
             placeholder="Buscar nodo..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              width: '100%',
-              height: 32,
-              paddingLeft: 28,
-              paddingRight: 28,
-              borderRadius: 4,
-              border: '1px solid var(--color-border-soft)',
-              background: 'var(--color-card-bg)',
-              color: 'var(--color-app-text)',
-              fontSize: 13,
-            }}
+            aria-label="Buscar nodo"
           />
           {searchQuery && (
             <button
+              type="button"
+              className="notia-graph-search-clear"
               onClick={() => setSearchQuery('')}
-              style={{
-                position: 'absolute',
-                right: 6,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                background: 'none',
-                border: 'none',
-                color: 'var(--color-icon-muted)',
-                cursor: 'pointer',
-                padding: 2,
-                display: 'flex',
-                alignItems: 'center',
-              }}
+              aria-label="Limpiar búsqueda"
             >
-              <X size={14} />
+              <X size={18} />
             </button>
           )}
-        </div>
+        </label>
+      </div>
 
+      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 9 }}>
         <NotiaButton
           variant="ghost"
           size="icon"

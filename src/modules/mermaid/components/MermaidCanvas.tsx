@@ -322,7 +322,7 @@ function MermaidCanvasComponent({
       )}
       <div
         ref={transformLayerRef}
-        style={{ transformOrigin: '0 0', width: '100%', height: '100%', willChange: 'transform', position: 'relative' }}
+        style={{ transformOrigin: '0 0', width: '100%', height: '100%', position: 'relative' }}
       >
         <div ref={svgContainerRef} style={{ width: '100%', height: '100%' }} />
         {!error && interactionEnabled && selectedEdge && (
