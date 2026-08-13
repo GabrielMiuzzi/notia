@@ -250,6 +250,10 @@ function NotiaModalsComponent({
     () => (id: string) => { void handleContextMenuAction(id) },
     [handleContextMenuAction],
   )
+  const handleContextMenuClose = useMemo(
+    () => () => dispatch(setContextMenu(null)),
+    [dispatch],
+  )
   const handleAppDialogConfirm = useMemo(
     () => () => dispatch(setDialogState(null)),
     [dispatch],
@@ -312,6 +316,7 @@ function NotiaModalsComponent({
         position={contextMenuPosition}
         items={contextMenuItems}
         onAction={handleContextMenuActionWrapped}
+        onClose={handleContextMenuClose}
       />
       <AppDialogModal
         open={Boolean(dialogState)}

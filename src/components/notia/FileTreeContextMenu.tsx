@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { NotiaButton } from '../common/NotiaButton'
 
 interface ContextMenuPosition {
@@ -18,11 +18,28 @@ interface FileTreeContextMenuProps {
   position: ContextMenuPosition
   items: ContextMenuItem[]
   onAction: (id: string) => void
+  onClose: () => void
 }
 
-export function FileTreeContextMenu({ open, position, items, onAction }: FileTreeContextMenuProps) {
+export function FileTreeContextMenu({ open, position, items, onAction, onClose }: FileTreeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null)
   const [resolvedPosition, setResolvedPosition] = useState<ContextMenuPosition>(position)
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && !menuRef.current?.contains(target)) {
+        onClose()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true)
+  }, [onClose, open])
 
   useLayoutEffect(() => {
     if (!open) {
