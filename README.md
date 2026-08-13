@@ -141,6 +141,8 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 - **Comentarios**: discusión y notas adjuntas a cada tarea.
 - **Pomodoro integrado**: temporizador de 25/5 minutos con registro histórico de sesiones y estadísticas de productividad.
 - **Persistencia transparente**: cada tarea se guarda como un archivo Markdown con metadatos (frontmatter) dentro de la carpeta del tablero correspondiente.
+- **Chat contextual**: el chat lateral recibe el contenido Markdown completo de las tareas del tablero activo, incluidas sus propiedades, notas y detalles.
+- **Panel adaptable**: el borde izquierdo del chat lateral permite ajustar su ancho con arrastre o teclado y conserva la medida elegida entre sesiones.
 
 ---
 

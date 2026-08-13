@@ -484,11 +484,44 @@
   overflow: hidden;
   transition: width 180ms ease, opacity 180ms ease;
   flex-shrink: 0;
+  position: relative;
 }
 
 .notia-right-panel--open {
-  width: min(420px, 36vw);
+  width: min(var(--notia-right-panel-width, 420px), calc(100vw - 240px));
   opacity: 1;
+}
+
+.notia-right-panel-resize-handle {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  width: 12px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.notia-right-panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: transparent;
+}
+
+.notia-right-panel-resize-handle:hover::after,
+.notia-right-panel-resize-handle:focus-visible::after,
+.notia-right-panel.is-resizing .notia-right-panel-resize-handle::after {
+  background: var(--color-active-border);
+}
+
+.notia-right-panel-resize-handle:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -3px;
 }
 
 .notia-right-panel--closed {
@@ -4223,6 +4256,7 @@
   align-items: flex-start;
   gap: 12px;
   max-width: min(900px, 100%);
+  min-width: 0;
 }
 
 .notia-chat-message--user {
@@ -4256,6 +4290,8 @@
   border-radius: 6px;
   border: 1px solid var(--color-border-soft);
   background: color-mix(in srgb, var(--color-card-bg) 94%, transparent);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .notia-chat-message--user .notia-chat-message-bubble {
@@ -4295,6 +4331,23 @@
 .notia-chat-markdown {
   color: var(--color-body-text);
   line-height: 1.55;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-markdown-table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.notia-chat-markdown-table th,
+.notia-chat-markdown-table td {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border-soft);
+  vertical-align: top;
 }
 
 .notia-chat-markdown > :first-child {
@@ -4878,7 +4931,7 @@
   }
 
   .notia-right-panel--open {
-    width: min(420px, 100%);
+    width: min(var(--notia-right-panel-width, 420px), 100%);
   }
 
   .notia-chat-shell {

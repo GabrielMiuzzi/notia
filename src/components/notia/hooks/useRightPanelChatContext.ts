@@ -14,6 +14,21 @@ interface UseRightPanelChatContextParams {
   taskManagerChatContext: TaskManagerChatContext | null
 }
 
+export function resolveRightPanelPreferredContextMode(
+  activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
+  activeDocument: OpenFileDocument | null,
+): ChatFileContextMode | null {
+  if (activeWorkspaceView === 'task-manager') {
+    return 'direct'
+  }
+
+  if (activeDocument?.viewKind === 'markdown') {
+    return 'index'
+  }
+
+  return null
+}
+
 function buildRightPanelChatContextLabel(
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'documents',
   activeDocument: OpenFileDocument | null,
@@ -119,15 +134,7 @@ export function useRightPanelChatContext({
   }, [activeDocument, activeWorkspaceView])
 
   const preferredContextMode = useMemo(() => {
-    if (activeWorkspaceView === 'task-manager') {
-      return 'index' as const
-    }
-
-    if (activeDocument?.viewKind === 'markdown') {
-      return 'index' as const
-    }
-
-    return null
+    return resolveRightPanelPreferredContextMode(activeWorkspaceView, activeDocument)
   }, [activeDocument, activeWorkspaceView])
 
   const preferredContextScopeKey = useMemo(() => {
