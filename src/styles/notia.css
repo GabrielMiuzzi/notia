@@ -4654,8 +4654,21 @@
 .notia-chat-attachments {
   display: flex;
   align-items: center;
+  align-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
+  max-height: 106px;
+  padding: 2px 4px 2px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+}
+
+.notia-chat-attachments:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .notia-chat-attachment-pill {

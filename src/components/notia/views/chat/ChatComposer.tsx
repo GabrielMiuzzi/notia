@@ -105,7 +105,12 @@ function ChatComposerComponent({
         </div>
       ) : null}
       {hasAnyAttachment ? (
-        <div className="notia-chat-attachments">
+        <div
+          className="notia-chat-attachments"
+          role="region"
+          aria-label="Archivos adjuntos"
+          tabIndex={0}
+        >
           {selectedImageAttachment ? (
             <div className="notia-chat-attachment-pill">
               <FileImage size={14} />

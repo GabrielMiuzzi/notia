@@ -111,6 +111,7 @@ Chat con inteligencia artificial local via **Ollama**.
 - Configurá la URL de tu instancia de Ollama desde **Settings → IA**.
 - Funciona con **cualquier modelo de Ollama**, no solo modelos de visión.
 - Podés adjuntar archivos de la librería como contexto para la conversación (modos: directo, referencia o sin archivos).
+- Cuando hay muchos adjuntos, se muestran dentro de un bloque compacto con desplazamiento propio para mantener visible el campo de mensaje.
 - La IA mantiene **memoria a largo plazo**: extrae hechos, preferencias y datos personales de la conversación para personalizar respuestas futuras.
 - Soporte para modelos multimodales: enviá imágenes (capturas, fotos) para que la IA las analice (requiere modelo con soporte de visión).
 - Generación automática de títulos para las sesiones de chat.

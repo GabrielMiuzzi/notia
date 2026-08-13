@@ -460,6 +460,8 @@ En el primer envío sin chat activo, `useChatSubmitMessage` crea el documento y 
 
 Durante el streaming, `ChatThread` mantiene el razonamiento en un viewport interno de altura fija y desplaza ese viewport al último fragmento recibido. `ChatWorkspaceView` sincroniza el scroll del hilo con los deltas de pensamiento y contenido mediante un layout effect, manteniendo visible el final de la conversación.
 
+En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habilita desplazamiento interno cuando los chips superan el espacio disponible. El contenedor es enfocable para navegación con teclado y admite desplazamiento táctil sin expandir el formulario ni ocultar el campo de mensaje.
+
 #### Endpoints (Commands Tauri)
 
 | Command | Tipo | Payload | Response | Notas |
