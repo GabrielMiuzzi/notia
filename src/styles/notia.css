@@ -1341,13 +1341,81 @@
 }
 
 .notia-main-header {
-  height: 44px;
+  min-height: 48px;
   border-bottom: 1px solid var(--color-border-strong);
   padding: 0 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
+}
+
+.notia-main-header-actions,
+.notia-markdown-zoom-control {
+  display: flex;
+  align-items: center;
+}
+
+.notia-main-header-actions {
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.notia-markdown-zoom-control {
+  gap: 6px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.notia-markdown-zoom-control label {
+  min-width: 38px;
+  text-align: right;
+}
+
+.notia-markdown-zoom-control input[type='range'] {
+  width: clamp(72px, 10vw, 128px);
+  min-height: 48px;
+  margin: 0;
+  accent-color: var(--color-accent-text);
+}
+
+.notia-markdown-zoom-control button {
+  min-height: 48px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--color-heading-text);
+  cursor: pointer;
+}
+
+.notia-markdown-zoom-control button:hover:not(:disabled),
+.notia-markdown-zoom-control button:focus-visible {
+  background: var(--color-hover-surface);
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+.notia-markdown-zoom-control button:disabled {
+  color: var(--color-icon-muted);
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  .notia-main-header {
+    padding-right: max(4px, var(--safe-area-right));
+  }
+
+  .notia-main-title-group span {
+    display: none;
+  }
+
+  .notia-markdown-zoom-control input[type='range'] {
+    width: 76px;
+  }
+
+  .notia-markdown-zoom-control button {
+    padding: 0 6px;
+  }
 }
 
 .notia-main-title-group {
@@ -3180,6 +3248,13 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+}
+
+.notia-markdown-zoom-content {
+  width: 100%;
+  min-height: 100%;
 }
 
 .notia-markdown-properties-wrap {

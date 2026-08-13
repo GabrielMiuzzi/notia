@@ -43,6 +43,7 @@ import {
   type WikiLinkSuggestionMenuState,
 } from './markdown/WikiLinkSuggestionMenu'
 import { createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
+import { useMarkdownZoom } from './markdown/useMarkdownZoom'
 import { quickHash } from '../../../modules/mermaid/engines/mermaidEngine'
 import { mountInlineMermaidPreview, unmountInlineMermaidPreview } from '../../../modules/mermaid/services/mermaidPreviewRuntime'
 import '@milkdown/crepe/theme/common/style.css'
@@ -58,6 +59,8 @@ interface MarkdownViewProps {
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
   theme?: string
+  zoom: number
+  onZoomChange: (zoom: number) => void
 }
 
 function clampWikiLinkMenuLeft(left: number): number {
@@ -212,6 +215,8 @@ function MarkdownViewInner({
   onSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
+  zoom,
+  onZoomChange,
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
@@ -219,6 +224,8 @@ function MarkdownViewInner({
   const [wikiLinkMenuState, setWikiLinkMenuState] = useState<WikiLinkSuggestionMenuState | null>(null)
 
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const zoomContentRef = useRef<HTMLDivElement | null>(null)
   const crepeRef = useRef<Crepe | null>(null)
   const isReadyRef = useRef(false)
   const isApplyingExternalUpdateRef = useRef(false)
@@ -235,6 +242,8 @@ function MarkdownViewInner({
   const isWikiLinkMenuOpenRef = useRef(false)
   const onOpenLinkedFileRef = useRef(onOpenLinkedFile)
   const mermaidPreviewBlockIndexRef = useRef(0)
+
+  useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange)
 
   useEffect(() => {
     if (source === latestComposedSourceRef.current) {
@@ -640,19 +649,21 @@ function MarkdownViewInner({
   }
 
   return (
-    <div className="notia-markdown-host" aria-label="Markdown editor">
-      <div className="notia-markdown-properties-wrap">
-        <MarkdownPropertiesPanel
-          entries={parsedDocument.frontmatter}
-          wikiLinkLookup={wikiLinkLookup}
-          wikiLinkTargets={wikiLinkTargets}
-          onAddProperty={handleAddProperty}
-          onEditProperty={handleEditProperty}
-          onDeleteProperty={handleDeleteProperty}
-          onOpenLinkedFile={onOpenLinkedFile}
-        />
+    <div ref={viewportRef} className="notia-markdown-host" aria-label="Markdown editor">
+      <div ref={zoomContentRef} className="notia-markdown-zoom-content">
+        <div className="notia-markdown-properties-wrap">
+          <MarkdownPropertiesPanel
+            entries={parsedDocument.frontmatter}
+            wikiLinkLookup={wikiLinkLookup}
+            wikiLinkTargets={wikiLinkTargets}
+            onAddProperty={handleAddProperty}
+            onEditProperty={handleEditProperty}
+            onDeleteProperty={handleDeleteProperty}
+            onOpenLinkedFile={onOpenLinkedFile}
+          />
+        </div>
+        <div ref={rootRef} className="notia-markdown-editor-root" />
       </div>
-      <div ref={rootRef} className="notia-markdown-editor-root" />
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />
     </div>
   )

@@ -39,7 +39,9 @@ export default defineConfig(() => ({
       port: 1421,
     },
     watch: {
-      ignored: ['src-tauri/**'],
+      ignored: [
+        '**/src-tauri/**',
+      ],
     },
   },
   optimizeDeps: {

@@ -43,6 +43,8 @@ interface FileViewHostProps {
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
   theme: string
+  markdownZoom: number
+  onMarkdownZoomChange: (zoom: number) => void
 }
 
 function FileViewHostComponent({
@@ -57,6 +59,8 @@ function FileViewHostComponent({
   wikiLinkTargets,
   onOpenLinkedFile,
   theme,
+  markdownZoom,
+  onMarkdownZoomChange,
 }: FileViewHostProps) {
   const handleMermaidSourcePersist = useCallback(async (nextSource: string) => {
     onTextSourceChange(nextSource)
@@ -110,6 +114,8 @@ function FileViewHostComponent({
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
           theme={theme}
+          zoom={markdownZoom}
+          onZoomChange={onMarkdownZoomChange}
         />
       </Suspense>
     )

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test'
+import { describe, it } from 'vitest'
 import assert from 'node:assert'
 import {
   extractLinkPath,
@@ -171,7 +171,7 @@ describe('syncPageLink', () => {
     ])
 
     const readSource = async (path: string): Promise<string | null> => files.get(path) ?? null
-    const writeSource = async (_path: string, _source: string): Promise<void> => {
+    const writeSource = async (): Promise<void> => {
       throw new Error('Should not be called')
     }
 
@@ -225,7 +225,7 @@ describe('syncPageLink', () => {
     ])
 
     const readSource = async (path: string): Promise<string | null> => files.get(path) ?? null
-    const writeSource = async (_path: string, _source: string): Promise<void> => {
+    const writeSource = async (): Promise<void> => {
       throw new Error('Should not be called for missing file')
     }
 
