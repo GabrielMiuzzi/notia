@@ -33,6 +33,7 @@ import { setAllFoldersExpanded } from '../../../utils/tree/setAllFoldersExpanded
 import { setSelectedFileByPath } from '../../../utils/tree/setSelectedFileByPath'
 import { toggleFolderNodeExpanded } from '../../../utils/tree/toggleFolderNodeExpanded'
 import { ensureChatLibraryStructure } from '../../../services/chat/chatLibraryStructure'
+import { ensureAgentPromptFile } from '../../../services/ai/agentPromptRuntime'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
 import type { NotiaFileNode } from '../../../types/notia'
 import type { SetStateAction } from 'react'
@@ -509,9 +510,12 @@ export function useLibraryTreeSync({
     void (async () => {
       try {
         try {
-          await ensureChatLibraryStructure(activeLibrary)
+          await Promise.all([
+            ensureChatLibraryStructure(activeLibrary),
+            ensureAgentPromptFile(activeLibrary),
+          ])
         } catch (error) {
-          console.warn('[notia] could not ensure chat library structure', {
+          console.warn('[notia] could not ensure auxiliary library structure', {
             libraryPath: activeLibrary.path,
             error,
           })

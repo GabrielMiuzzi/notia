@@ -7,6 +7,7 @@ import { selectAiSettings } from '../../features/preferences/preferencesSelector
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import type { ChatFileContextMode } from '../../services/chat/chatAttachmentRuntime'
+import type { ChatAgentScope } from '../../services/chat/chatScopedAgentRuntime'
 import {
   clampRightPanelWidth,
   loadRightPanelWidth,
@@ -14,6 +15,8 @@ import {
 } from '../../services/preferences/rightPanelStorage'
 
 interface NotiaRightPanelProps {
+  agentCorpusPaths: string[]
+  agentScope: ChatAgentScope | null
   previousChats: { id: string; filePath: string; title: string }[]
   rightPanelChatContextKey: string
   rightPanelChatContextLabel: string
@@ -24,10 +27,14 @@ interface NotiaRightPanelProps {
   rightPanelTransientContextPaths: string[]
   rightPanelTransientContextMode: ChatFileContextMode | null
   rightPanelTransientContextSummary: string | null
+  rightPanelTransientSelectedPaths: string[]
+  onRightPanelTransientSelectedPathsChange: (paths: string[]) => void
   isAndroidRuntime: boolean
 }
 
 function NotiaRightPanelComponent({
+  agentCorpusPaths,
+  agentScope,
   previousChats,
   rightPanelChatContextKey,
   rightPanelChatContextLabel,
@@ -38,6 +45,8 @@ function NotiaRightPanelComponent({
   rightPanelTransientContextPaths,
   rightPanelTransientContextMode,
   rightPanelTransientContextSummary,
+  rightPanelTransientSelectedPaths,
+  onRightPanelTransientSelectedPathsChange,
   isAndroidRuntime,
 }: NotiaRightPanelProps) {
   const handleChatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
@@ -120,6 +129,8 @@ function NotiaRightPanelComponent({
       {isRightChatPanelOpen ? (
         isRightPanelChatMounted ? (
           <ChatWorkspaceView
+            agentCorpusPaths={agentCorpusPaths}
+            agentScope={agentScope}
             key={rightPanelChatContextKey}
             library={activeLibrary}
             aiPreferences={aiPreferences}
@@ -135,8 +146,15 @@ function NotiaRightPanelComponent({
             transientContextPaths={rightPanelTransientContextPaths}
             transientContextMode={rightPanelTransientContextMode}
             transientContextSummary={rightPanelTransientContextSummary}
+            transientContextDisplayPaths={rightPanelTransientSelectedPaths}
+            onTransientContextPathRemove={(path) => {
+              onRightPanelTransientSelectedPathsChange(
+                rightPanelTransientSelectedPaths.filter((selectedPath) => selectedPath !== path),
+              )
+            }}
             persistTransientContext={false}
             selectMatchingChatOnly
+            ephemeralSession={rightPanelPreferredContextScopeKey === 'graph-view:right-panel'}
             historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
             onChatCreated={chatCallbacks.onChatCreated}
             onChatDeleted={chatCallbacks.onChatDeleted}

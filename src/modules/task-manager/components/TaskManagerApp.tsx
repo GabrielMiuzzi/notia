@@ -3,9 +3,9 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../types/taskManagerTypes'
-import { isTaskInCancelledFolder, isTaskInFinishedFolder, isTaskMarkdownFile } from '../engines/taskEngine'
+import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
+import { resolveTaskManagerPanelChatPaths } from '../engines/taskChatContextEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
-import { TASKS_ROOT_FOLDER } from '../constants/taskManagerConstants'
 import { useTaskManager } from '../hooks/useTaskManager'
 import { toAbsoluteVaultPath } from '../utils/path'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
@@ -60,8 +60,9 @@ function TaskManagerAppComponent({
     }),
   )
   useEffect(() => {
+    const mountTimer = mountTimerRef.current
     return () => {
-      mountTimerRef.current.success()
+      mountTimer.success()
     }
   }, [])
 
@@ -80,23 +81,22 @@ function TaskManagerAppComponent({
   const activeTabIsBoard = manager.settings.boards.some((board) => board.name === activeBoard)
 
   const activeBoardChatContext = useMemo(() => {
-    if (!activeTabIsBoard || !manager.settings.activeVaultPath) {
+    if (!manager.settings.activeVaultPath) {
       return null
     }
 
-    const boardPrefix = `${TASKS_ROOT_FOLDER}/${activeBoard}/`
-    const filePaths = deferredDocuments
-      .map((document) => document.path)
-      .filter((pathValue) => pathValue.startsWith(boardPrefix))
-      .filter((pathValue) => isTaskMarkdownFile(pathValue))
+    const filePaths = resolveTaskManagerPanelChatPaths(
+      activeBoard,
+      deferredDocuments.map((document) => document.path),
+    )
       .map((pathValue) => toAbsoluteVaultPath(manager.settings.activeVaultPath as string, pathValue))
       .sort((left, right) => left.localeCompare(right, 'es'))
 
     return {
-      scopeKey: `task-manager:board:${activeBoard}`,
+      scopeKey: `task-manager:panel:${activeBoard}`,
       filePaths,
     } satisfies TaskManagerChatContext
-  }, [activeBoard, activeTabIsBoard, deferredDocuments, manager.settings.activeVaultPath])
+  }, [activeBoard, deferredDocuments, manager.settings.activeVaultPath])
 
   useEffect(() => {
     onActiveChatContextChange?.(activeBoardChatContext)

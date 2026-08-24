@@ -13,6 +13,8 @@ interface ChatThreadProps {
   showHistoryPanel: boolean
   streamingThinking: string
   streamingAssistantMessage: string
+  pendingAgentQuestion?: string | null
+  pendingAgentAnswer?: string | null
   threadRef: React.RefObject<HTMLDivElement | null>
   onOpenAiSettings?: () => void
 }
@@ -27,6 +29,8 @@ function ChatThreadComponent({
   showHistoryPanel,
   streamingThinking,
   streamingAssistantMessage,
+  pendingAgentQuestion,
+  pendingAgentAnswer,
   threadRef,
   onOpenAiSettings,
 }: ChatThreadProps) {
@@ -87,6 +91,28 @@ function ChatThreadComponent({
           ))}
           {isSubmitting ? (
             <>
+              {pendingAgentQuestion ? (
+                <article className="notia-chat-message notia-chat-message--assistant">
+                  <div className="notia-chat-message-avatar" aria-hidden="true">
+                    <Bot size={16} />
+                  </div>
+                  <div className="notia-chat-message-bubble">
+                    <span className="notia-chat-message-role">Asistente · necesita una aclaración</span>
+                    <ChatMarkdownMessage source={pendingAgentQuestion} />
+                  </div>
+                </article>
+              ) : null}
+              {pendingAgentAnswer ? (
+                <article className="notia-chat-message notia-chat-message--user">
+                  <div className="notia-chat-message-avatar" aria-hidden="true">
+                    <User2 size={16} />
+                  </div>
+                  <div className="notia-chat-message-bubble">
+                    <span className="notia-chat-message-role">Vos</span>
+                    <ChatMarkdownMessage source={pendingAgentAnswer} />
+                  </div>
+                </article>
+              ) : null}
               <article className="notia-chat-message notia-chat-message--assistant">
                 <div className="notia-chat-message-avatar" aria-hidden="true">
                   <Bot size={16} />

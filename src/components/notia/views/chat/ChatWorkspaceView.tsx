@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react'
 import { useAppDispatch } from '../../../../store/hooks'
 import { openSettingsToSection } from '../../../../features/ui/uiSlice'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
@@ -24,6 +24,12 @@ import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
 import { useChatAttachmentMenu } from './useChatAttachmentMenu'
 import { notiaTimer } from '../../../../services/runtime/notiaLogger'
+import {
+  listAgentPrompts,
+  loadSelectedAgentPromptFileName,
+  saveSelectedAgentPromptFileName,
+  type AgentPromptOption,
+} from '../../../../services/ai/agentPromptRuntime'
 import type { ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
@@ -35,6 +41,8 @@ const DEFAULT_SUGGESTIONS = [
 ]
 
 export function ChatWorkspaceViewComponent({
+  agentCorpusPaths = EMPTY_CONTEXT_PATHS,
+  agentScope = null,
   library,
   aiPreferences,
   previousChats = EMPTY_PREVIOUS_CHATS,
@@ -50,8 +58,11 @@ export function ChatWorkspaceViewComponent({
   transientContextPaths = EMPTY_CONTEXT_PATHS,
   transientContextMode = null,
   transientContextSummary = null,
+  transientContextDisplayPaths = EMPTY_CONTEXT_PATHS,
+  onTransientContextPathRemove,
   persistTransientContext = false,
   selectMatchingChatOnly = false,
+  ephemeralSession = false,
   historyHydrationMode = 'full',
   onChatCreated,
   onChatDeleted,
@@ -73,19 +84,61 @@ export function ChatWorkspaceViewComponent({
   const chatState = useChatState({
     library,
     aiPreferences,
-    previousChats,
+    previousChats: ephemeralSession ? EMPTY_PREVIOUS_CHATS : previousChats,
     suggestions,
     preferredContextPaths,
     preferredContextName,
     preferredContextMode,
-    preferredContextScopeKey,
+    preferredContextScopeKey: ephemeralSession ? null : preferredContextScopeKey,
     transientContextPaths,
     transientContextMode,
     transientContextSummary,
     persistTransientContext,
-    selectMatchingChatOnly,
+    selectMatchingChatOnly: ephemeralSession ? false : selectMatchingChatOnly,
+    ephemeralSession,
     historyHydrationMode,
   })
+  const [agentPromptOptions, setAgentPromptOptions] = useState<AgentPromptOption[]>([
+    { fileName: 'default.md', name: 'default' },
+  ])
+  const [agentPromptFileName, setAgentPromptFileName] = useState('default.md')
+  const [pendingAgentQuestion, setPendingAgentQuestion] = useState<string | null>(null)
+  const [pendingAgentAnswer, setPendingAgentAnswer] = useState<string | null>(null)
+  const clarificationResolverRef = useRef<((answer: string) => void) | null>(null)
+
+  useEffect(() => {
+    if (!library || !agentScope) {
+      setAgentPromptOptions([{ fileName: 'default.md', name: 'default' }])
+      setAgentPromptFileName('default.md')
+      return
+    }
+
+    let isCurrent = true
+    const refreshAgentPrompts = async () => {
+      try {
+        const options = await listAgentPrompts(library)
+        if (!isCurrent) return
+        const storedSelection = loadSelectedAgentPromptFileName(library.id)
+        const selected = options.some((option) => option.fileName === storedSelection)
+          ? storedSelection
+          : 'default.md'
+        setAgentPromptOptions(options)
+        setAgentPromptFileName(selected)
+        saveSelectedAgentPromptFileName(library.id, selected)
+      } catch {
+        if (!isCurrent) return
+        setAgentPromptOptions([{ fileName: 'default.md', name: 'default' }])
+        setAgentPromptFileName('default.md')
+      }
+    }
+
+    void refreshAgentPrompts()
+    window.addEventListener('focus', refreshAgentPrompts)
+    return () => {
+      isCurrent = false
+      window.removeEventListener('focus', refreshAgentPrompts)
+    }
+  }, [agentScope, library])
 
   const {
     selectedChatFilePath,
@@ -164,6 +217,30 @@ export function ChatWorkspaceViewComponent({
     chatHistoryTotalSize,
   } = chatState
 
+  const hidesAttachedFileContext = agentScope === 'task-manager'
+  const resolvedSelectedLibraryFilePaths = hidesAttachedFileContext ? EMPTY_CONTEXT_PATHS : selectedLibraryFilePaths
+  const resolvedSelectedLibraryFileOptions = hidesAttachedFileContext ? [] : selectedLibraryFileOptions
+  const resolvedEffectiveContextPaths = hidesAttachedFileContext ? EMPTY_CONTEXT_PATHS : effectiveSelectedContextPaths
+  const resolvedSelectedLibraryFileSummary = hidesAttachedFileContext ? [] : selectedLibraryFileSummary
+
+  useEffect(() => {
+    if (!hidesAttachedFileContext) {
+      return
+    }
+
+    setSelectedLibraryFilePaths((current) => current.length > 0 ? [] : current)
+    setSelectedLibraryFileOptions((current) => current.length > 0 ? [] : current)
+    setSelectedFileContextMode((current) => current === 'index' ? current : 'index')
+  }, [
+    hidesAttachedFileContext,
+    selectedFileContextMode,
+    selectedLibraryFileOptions.length,
+    selectedLibraryFilePaths.length,
+    setSelectedFileContextMode,
+    setSelectedLibraryFileOptions,
+    setSelectedLibraryFilePaths,
+  ])
+
   const { confirm } = useConfirmationEngine()
   const dispatch = useAppDispatch()
   const imageInputRef = useRef<HTMLInputElement | null>(null)
@@ -215,20 +292,47 @@ export function ChatWorkspaceViewComponent({
 
   const { submitMessage, cancelActiveReply } = useChatSubmitMessage(
     {
+      agentCorpusPaths,
+      agentScope,
+      agentPromptFileName,
+      requestAgentClarification: (question, signal) => new Promise<string>((resolve, reject) => {
+        const handleAbort = () => {
+          clarificationResolverRef.current = null
+          setPendingAgentQuestion(null)
+          reject(new Error('Se canceló la aclaración solicitada por el agente.'))
+        }
+        signal.addEventListener('abort', handleAbort, { once: true })
+        clarificationResolverRef.current = (answer) => {
+          signal.removeEventListener('abort', handleAbort)
+          clarificationResolverRef.current = null
+          resolve(answer)
+        }
+        setPendingAgentAnswer(null)
+        setPendingAgentQuestion(question)
+        setStreamingThinking('')
+        setStreamingAssistantMessage('')
+      }),
+      requestAgentConfirmation: async (question) => confirm({
+        title: 'Permiso del agente de IA',
+        message: question,
+        confirmLabel: 'Permitir',
+        cancelLabel: 'No permitir',
+      }),
       library,
       aiPreferences,
       activeChatDocument,
       selectedChatFilePath,
-      effectiveSelectedContextPaths,
+      effectiveSelectedContextPaths: resolvedEffectiveContextPaths,
       effectiveSelectedContextMode,
-      selectedLibraryFilePaths,
-      selectedLibraryFileOptions,
+      selectedLibraryFilePaths: resolvedSelectedLibraryFilePaths,
+      selectedLibraryFileOptions: resolvedSelectedLibraryFileOptions,
       selectedImageAttachment,
       selectedFileContextMode,
       showHistoryPanel,
       preferredContextScopeKey,
       persistTransientContext,
       hasTransientContext,
+      ephemeralSession,
       onChatCreated,
     },
     {
@@ -407,6 +511,26 @@ export function ChatWorkspaceViewComponent({
           ) : null}
 
           <section className="notia-chat-main">
+            {!showHistoryPanel && agentScope ? (
+              <label className="notia-chat-agent-select">
+                <span>Agente</span>
+                <select
+                  value={agentPromptFileName}
+                  disabled={isSubmitting}
+                  onChange={(event) => {
+                    const nextFileName = event.target.value
+                    setAgentPromptFileName(nextFileName)
+                    if (library) {
+                      saveSelectedAgentPromptFileName(library.id, nextFileName)
+                    }
+                  }}
+                >
+                  {agentPromptOptions.map((option) => (
+                    <option key={option.fileName} value={option.fileName}>{option.name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {showHistoryPanel ? (
               <ChatHeaderComponent
                 title={title}
@@ -435,6 +559,8 @@ export function ChatWorkspaceViewComponent({
               showHistoryPanel={showHistoryPanel}
               streamingThinking={streamingThinking}
               streamingAssistantMessage={streamingAssistantMessage}
+              pendingAgentQuestion={pendingAgentQuestion}
+              pendingAgentAnswer={pendingAgentAnswer}
               threadRef={chatThreadRef}
               onOpenAiSettings={handleOpenAiSettings}
             />
@@ -444,16 +570,18 @@ export function ChatWorkspaceViewComponent({
               setDraft={setDraft}
               canSubmit={canSubmit}
               isSubmitting={isSubmitting}
+              awaitingAgentClarification={Boolean(pendingAgentQuestion && clarificationResolverRef.current)}
               isAiAvailable={isAiAvailable}
               library={library}
               composerContextLabel={composerContextLabel}
               activeModelLabel={resolvedActiveModel}
               selectedImageAttachment={selectedImageAttachment}
-              selectedLibraryFileSummary={selectedLibraryFileSummary}
-              selectedLibraryFilePaths={selectedLibraryFilePaths}
-              effectiveSelectedContextPaths={effectiveSelectedContextPaths}
+              selectedLibraryFileSummary={resolvedSelectedLibraryFileSummary}
+              selectedLibraryFilePaths={resolvedSelectedLibraryFilePaths}
+              effectiveSelectedContextPaths={resolvedEffectiveContextPaths}
               effectiveSelectedContextMode={effectiveSelectedContextMode}
               transientContextSummaryLabel={transientContextSummaryLabel}
+              transientContextDisplayPaths={transientContextDisplayPaths}
               hasTransientContext={hasTransientContext}
               isAttachmentMenuOpen={isAttachmentMenuOpen}
               attachmentMenuPosition={attachmentMenuPosition}
@@ -461,6 +589,7 @@ export function ChatWorkspaceViewComponent({
                 setSelectedImageAttachment(null)
               }}
               onRemoveFile={handleRemoveSelectedFile}
+              onTransientContextPathRemove={onTransientContextPathRemove}
               onToggleAttachmentMenu={handleOpenAttachmentMenu}
               onSelectImage={() => {
                 setIsAttachmentMenuOpen(false)
@@ -471,6 +600,15 @@ export function ChatWorkspaceViewComponent({
                 setIsLibraryFilesModalOpen(true)
               }}
               onSubmit={() => {
+                const clarificationResolver = clarificationResolverRef.current
+                if (clarificationResolver) {
+                  const answer = draft.trim()
+                  if (!answer) return
+                  setPendingAgentAnswer(answer)
+                  setDraft('')
+                  clarificationResolver(answer)
+                  return
+                }
                 void submitMessage(draft)
               }}
               onCancel={cancelActiveReply}
@@ -601,6 +739,14 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
+  if (previous.agentScope !== next.agentScope) {
+    return false
+  }
+
+  if (!areStringArraysEqual(previous.agentCorpusPaths ?? EMPTY_CONTEXT_PATHS, next.agentCorpusPaths ?? EMPTY_CONTEXT_PATHS)) {
+    return false
+  }
+
   if (!arePreviousChatArraysEqual(previous.previousChats ?? EMPTY_PREVIOUS_CHATS, next.previousChats ?? EMPTY_PREVIOUS_CHATS)) {
     return false
   }
@@ -653,11 +799,23 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
+  if (!areStringArraysEqual(previous.transientContextDisplayPaths ?? EMPTY_CONTEXT_PATHS, next.transientContextDisplayPaths ?? EMPTY_CONTEXT_PATHS)) {
+    return false
+  }
+
+  if (previous.onTransientContextPathRemove !== next.onTransientContextPathRemove) {
+    return false
+  }
+
   if (previous.persistTransientContext !== next.persistTransientContext) {
     return false
   }
 
   if (previous.selectMatchingChatOnly !== next.selectMatchingChatOnly) {
+    return false
+  }
+
+  if (previous.ephemeralSession !== next.ephemeralSession) {
     return false
   }
 

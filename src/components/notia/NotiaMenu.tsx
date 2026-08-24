@@ -326,6 +326,8 @@ function NotiaMenuComponent() {
   } = useGraphWorkspace({ activeLibrary, activeWorkspaceView, treeNodes })
 
   const {
+    agentCorpusPaths: rightPanelAgentCorpusPaths,
+    agentScope: rightPanelAgentScope,
     preferredContextMode: rightPanelPreferredContextMode,
     preferredContextName: rightPanelPreferredContextName,
     preferredContextPaths: rightPanelPreferredContextPaths,
@@ -340,6 +342,7 @@ function NotiaMenuComponent() {
     activeWorkspaceView,
     graphChatContextSummary,
     graphChatEffectivePaths,
+    graphChatHasExplicitSelection: graphChatSelectedPaths.length > 0,
     taskManagerActivePanelId,
     taskManagerChatContext,
   })
@@ -450,6 +453,8 @@ function NotiaMenuComponent() {
             isImportingVault={isImportingVault}
           />
           <NotiaRightPanel
+            agentCorpusPaths={rightPanelAgentCorpusPaths}
+            agentScope={rightPanelAgentScope}
             previousChats={previousChatFiles}
             rightPanelChatContextKey={rightPanelChatContextKey}
             rightPanelChatContextLabel={rightPanelChatContextLabel}
@@ -460,6 +465,8 @@ function NotiaMenuComponent() {
             rightPanelTransientContextPaths={rightPanelTransientContextPaths}
             rightPanelTransientContextMode={rightPanelTransientContextMode}
             rightPanelTransientContextSummary={rightPanelTransientContextSummary}
+            rightPanelTransientSelectedPaths={graphChatSelectedPaths}
+            onRightPanelTransientSelectedPathsChange={setGraphChatSelectedPaths}
             isAndroidRuntime={isAndroidRuntime}
           />
         </div>

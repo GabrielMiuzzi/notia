@@ -195,6 +195,9 @@ function parseListBlock(
       if (isSiblingListItem && !isNestedList) {
         break
       }
+      if (nextIndent <= itemIndent) {
+        break
+      }
 
       contentLines.push(nextLine)
       index += 1

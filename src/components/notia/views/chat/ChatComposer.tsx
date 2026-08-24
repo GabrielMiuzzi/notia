@@ -11,6 +11,7 @@ interface ChatComposerProps {
   setDraft: (value: string) => void
   canSubmit: boolean
   isSubmitting: boolean
+  awaitingAgentClarification?: boolean
   isAiAvailable: boolean
   library: import('../../../../types/notia').NotiaLibrary | null
   composerContextLabel?: string
@@ -21,11 +22,13 @@ interface ChatComposerProps {
   effectiveSelectedContextPaths: string[]
   effectiveSelectedContextMode: ChatFileContextMode
   transientContextSummaryLabel: string | null
+  transientContextDisplayPaths: string[]
   hasTransientContext: boolean
   isAttachmentMenuOpen: boolean
   attachmentMenuPosition: AttachmentMenuPosition | null
   onRemoveImage: () => void
   onRemoveFile: (path: string) => void
+  onTransientContextPathRemove?: (path: string) => void
   onToggleAttachmentMenu: () => void
   onSelectImage: () => void
   onOpenLibraryFilesModal: () => void
@@ -41,6 +44,7 @@ function ChatComposerComponent({
   setDraft,
   canSubmit,
   isSubmitting,
+  awaitingAgentClarification = false,
   isAiAvailable,
   library,
   composerContextLabel,
@@ -51,11 +55,13 @@ function ChatComposerComponent({
   effectiveSelectedContextPaths,
   effectiveSelectedContextMode,
   transientContextSummaryLabel,
+  transientContextDisplayPaths,
   hasTransientContext,
   isAttachmentMenuOpen,
   attachmentMenuPosition,
   onRemoveImage,
   onRemoveFile,
+  onTransientContextPathRemove,
   onToggleAttachmentMenu,
   onSelectImage,
   onOpenLibraryFilesModal,
@@ -130,6 +136,24 @@ function ChatComposerComponent({
               <span>{transientContextSummaryLabel}</span>
             </div>
           ) : null}
+          {hasTransientContext ? transientContextDisplayPaths.map((path) => {
+            const displayName = buildAttachmentDisplayName(path)
+            return (
+              <div key={path} className="notia-chat-attachment-pill">
+                <Files size={14} />
+                <span>{displayName}</span>
+                {onTransientContextPathRemove ? (
+                  <button
+                    type="button"
+                    aria-label={`Quitar ${displayName} del contexto`}
+                    onClick={() => onTransientContextPathRemove(path)}
+                  >
+                    <X size={12} />
+                  </button>
+                ) : null}
+              </div>
+            )
+          }) : null}
           {!hasTransientContext ? selectedLibraryFileSummary.map((fileOption) => (
             <div key={fileOption.path} className="notia-chat-attachment-pill">
               <Files size={14} />
@@ -186,7 +210,9 @@ function ChatComposerComponent({
         <textarea
           value={draft}
           rows={1}
-          placeholder={library ? 'Escribi tu mensaje...' : 'Primero elegí una librería activa...'}
+          placeholder={awaitingAgentClarification
+            ? 'Escribí la aclaración para que el agente continúe...'
+            : library ? 'Escribi tu mensaje...' : 'Primero elegí una librería activa...'}
           disabled={!library || !isAiAvailable}
           onChange={(event) => {
             setDraft(event.target.value)
@@ -251,7 +277,7 @@ function ChatComposerComponent({
             ) : null}
           </div>
           <NotiaButton type="submit" variant="primary" disabled={!canSubmit && !isSubmitting}>
-            {isSubmitting ? 'Enviando...' : 'Enviar'}
+            {awaitingAgentClarification ? 'Responder' : isSubmitting ? 'Enviando...' : 'Enviar'}
             <ArrowUp size={16} />
           </NotiaButton>
           {isSubmitting && onCancel ? (

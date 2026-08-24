@@ -317,6 +317,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     transientContextMode = null,
     transientContextSummary = null,
     selectMatchingChatOnly = false,
+    ephemeralSession = false,
     historyHydrationMode = 'full',
   } = props
 
@@ -793,6 +794,9 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   // Load active chat document when selection changes
   useEffect(() => {
     if (!selectedChatFilePath) {
+      if (ephemeralSession) {
+        return
+      }
       setActiveChatDocument(null)
       setOptimisticThreadMessages(null)
       setStreamingThinking('')
@@ -859,6 +863,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
       cancelled = true
     }
   }, [
+    ephemeralSession,
     isSubmitting,
     preferredContextMode,
     preferredContextOption,

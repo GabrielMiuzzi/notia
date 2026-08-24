@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MermaidRenderResult, MermaidEdgeType } from '../types/mermaidTypes'
 import { useMermaidPanZoom } from '../hooks/useMermaidPanZoom'
 import { useMermaidNodeInteraction } from '../hooks/useMermaidNodeInteraction'
@@ -36,6 +36,7 @@ interface MermaidCanvasExtendedProps extends MermaidCanvasProps {
   canvasRef?: React.RefObject<HTMLDivElement | null>
   readOnly?: boolean
   onSvgInjected?: (container: HTMLDivElement) => void
+  focusRequest?: { element: Element; requestId: number } | null
 }
 
 function MermaidCanvasComponent({
@@ -60,6 +61,7 @@ function MermaidCanvasComponent({
   canvasRef,
   readOnly,
   onSvgInjected,
+  focusRequest,
 }: MermaidCanvasExtendedProps) {
   const mountTimerRef = useRef(
     notiaTimer('mermaid', 'MermaidCanvas mount', {
@@ -72,14 +74,16 @@ function MermaidCanvasComponent({
     }),
   )
   useEffect(() => {
+    const mountTimer = mountTimerRef.current
     return () => {
-      mountTimerRef.current.success()
+      mountTimer.success()
     }
   }, [])
 
   const wrapperRef = useRef<HTMLDivElement>(null)
   const transformLayerRef = useRef<HTMLDivElement>(null)
   const svgContainerRef = useRef<HTMLDivElement>(null)
+  const handledFocusRequestIdRef = useRef<number | null>(null)
 
   const setWrapperRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -98,6 +102,11 @@ function MermaidCanvasComponent({
   useMermaidNodeInteraction(svgContainerRef, onConnect, onNodeLabelEdit, interactionEnabled)
   const { selectedEdge } = useMermaidEdgeInteraction(svgContainerRef, onEdgeSelect, interactionEnabled)
 
+  const panZoomCallbacks = useMemo(() => ({
+    onZoomChange,
+    onPanChange,
+  }), [onPanChange, onZoomChange])
+
   const {
     handlePointerDown,
     handlePointerMove,
@@ -109,10 +118,14 @@ function MermaidCanvasComponent({
     resetView,
     fitView,
     restoreView,
-  } = useMermaidPanZoom(wrapperRef, transformLayerRef, panZoomEnabled, {
-    onZoomChange,
-    onPanChange,
-  })
+    focusElement,
+  } = useMermaidPanZoom(wrapperRef, transformLayerRef, panZoomEnabled, panZoomCallbacks)
+
+  useEffect(() => {
+    if (!focusRequest || handledFocusRequestIdRef.current === focusRequest.requestId) return
+    handledFocusRequestIdRef.current = focusRequest.requestId
+    focusElement(focusRequest.element)
+  }, [focusElement, focusRequest])
 
   const handleWheelRef = useRef(handleWheel)
   useEffect(() => {
@@ -166,19 +179,6 @@ function MermaidCanvasComponent({
     document.addEventListener('fullscreenchange', handler)
     return () => {
       document.removeEventListener('fullscreenchange', handler)
-    }
-  }, [])
-
-  // Cleanup on unmount: release SVG nodes and any bound listeners
-  useEffect(() => {
-    return () => {
-      const container = svgContainerRef.current
-      if (container) {
-        container.innerHTML = ''
-      }
-      if (transformLayerRef.current) {
-        transformLayerRef.current.innerHTML = ''
-      }
     }
   }, [])
 
@@ -439,6 +439,10 @@ function areMermaidCanvasPropsEqual(
   }
 
   if (previous.canvasRef !== next.canvasRef) {
+    return false
+  }
+
+  if (previous.focusRequest !== next.focusRequest) {
     return false
   }
 

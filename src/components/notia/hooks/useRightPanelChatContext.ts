@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { TaskManagerChatContext } from '../../../modules/task-manager/types/taskManagerTypes'
 import type { ChatFileContextMode } from '../../../services/chat/chatAttachmentRuntime'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
+import type { ChatAgentScope } from '../../../services/chat/chatScopedAgentRuntime'
 
 const EMPTY_CONTEXT_PATHS: string[] = []
 
@@ -10,6 +11,7 @@ interface UseRightPanelChatContextParams {
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'documents'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
+  graphChatHasExplicitSelection: boolean
   taskManagerActivePanelId: string
   taskManagerChatContext: TaskManagerChatContext | null
 }
@@ -19,7 +21,7 @@ export function resolveRightPanelPreferredContextMode(
   activeDocument: OpenFileDocument | null,
 ): ChatFileContextMode | null {
   if (activeWorkspaceView === 'task-manager') {
-    return 'direct'
+    return 'index'
   }
 
   if (activeDocument?.viewKind === 'markdown') {
@@ -27,6 +29,28 @@ export function resolveRightPanelPreferredContextMode(
   }
 
   return null
+}
+
+export function resolveGraphChatContextMode(hasExplicitSelection: boolean): ChatFileContextMode {
+  return hasExplicitSelection ? 'direct' : 'index'
+}
+
+export function resolveGraphAttachedContextPaths(
+  effectivePaths: string[],
+  hasExplicitSelection: boolean,
+): string[] {
+  return hasExplicitSelection ? effectivePaths : EMPTY_CONTEXT_PATHS
+}
+
+export function resolveRightPanelAttachedContextPaths(
+  activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
+  activeDocument: OpenFileDocument | null,
+): string[] {
+  if (activeWorkspaceView !== 'task-manager' && activeDocument?.viewKind === 'markdown') {
+    return [activeDocument.path]
+  }
+
+  return EMPTY_CONTEXT_PATHS
 }
 
 function buildRightPanelChatContextLabel(
@@ -90,9 +114,17 @@ export function useRightPanelChatContext({
   activeWorkspaceView,
   graphChatContextSummary,
   graphChatEffectivePaths,
+  graphChatHasExplicitSelection,
   taskManagerActivePanelId,
   taskManagerChatContext,
 }: UseRightPanelChatContextParams) {
+  const agentScope: ChatAgentScope | null = activeWorkspaceView === 'task-manager'
+    ? 'task-manager'
+    : activeWorkspaceView === 'graph'
+      ? 'graph'
+      : activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
+        ? 'document'
+        : null
   const rightPanelChatContextLabel = useMemo(
     () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId),
     [activeDocument, activeWorkspaceView, taskManagerActivePanelId],
@@ -111,8 +143,16 @@ export function useRightPanelChatContext({
   }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
 
   const preferredContextPaths = useMemo(() => {
+    return resolveRightPanelAttachedContextPaths(activeWorkspaceView, activeDocument)
+  }, [activeDocument, activeWorkspaceView])
+
+  const agentCorpusPaths = useMemo(() => {
     if (activeWorkspaceView === 'task-manager') {
       return taskManagerChatContext?.filePaths ?? EMPTY_CONTEXT_PATHS
+    }
+
+    if (activeWorkspaceView === 'graph') {
+      return graphChatEffectivePaths
     }
 
     if (activeDocument?.viewKind === 'markdown') {
@@ -120,7 +160,7 @@ export function useRightPanelChatContext({
     }
 
     return EMPTY_CONTEXT_PATHS
-  }, [activeDocument, activeWorkspaceView, taskManagerChatContext?.filePaths])
+  }, [activeDocument, activeWorkspaceView, graphChatEffectivePaths, taskManagerChatContext?.filePaths])
 
   const preferredContextName = useMemo(() => {
     if (
@@ -150,13 +190,19 @@ export function useRightPanelChatContext({
   }, [activeWorkspaceView, taskManagerChatContext?.scopeKey])
 
   const transientContextPaths = useMemo(
-    () => (activeWorkspaceView === 'graph' ? graphChatEffectivePaths : EMPTY_CONTEXT_PATHS),
-    [activeWorkspaceView, graphChatEffectivePaths],
+    () => activeWorkspaceView === 'graph'
+      ? resolveGraphAttachedContextPaths(graphChatEffectivePaths, graphChatHasExplicitSelection)
+      : EMPTY_CONTEXT_PATHS,
+    [activeWorkspaceView, graphChatEffectivePaths, graphChatHasExplicitSelection],
   )
 
-  const transientContextMode: ChatFileContextMode | null = activeWorkspaceView === 'graph' ? 'index' : null
+  const transientContextMode: ChatFileContextMode | null = activeWorkspaceView === 'graph'
+    ? resolveGraphChatContextMode(graphChatHasExplicitSelection)
+    : null
 
   return {
+    agentCorpusPaths,
+    agentScope,
     preferredContextMode,
     preferredContextName,
     preferredContextPaths,
@@ -165,6 +211,6 @@ export function useRightPanelChatContext({
     rightPanelChatContextLabel,
     transientContextMode,
     transientContextPaths,
-    transientContextSummary: graphChatContextSummary,
+    transientContextSummary: graphChatHasExplicitSelection ? graphChatContextSummary : null,
   }
 }

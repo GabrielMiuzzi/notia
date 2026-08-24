@@ -8,8 +8,11 @@ import type {
   ChatFileContextMode,
   ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
+import type { ChatAgentScope } from '../../../../services/chat/chatScopedAgentRuntime'
 
 export interface ChatWorkspaceViewProps {
+  agentCorpusPaths?: string[]
+  agentScope?: ChatAgentScope | null
   library: NotiaLibrary | null
   aiPreferences: AiPreferences
   previousChats?: Array<{
@@ -29,8 +32,11 @@ export interface ChatWorkspaceViewProps {
   transientContextPaths?: string[]
   transientContextMode?: ChatFileContextMode | null
   transientContextSummary?: string | null
+  transientContextDisplayPaths?: string[]
+  onTransientContextPathRemove?: (path: string) => void
   persistTransientContext?: boolean
   selectMatchingChatOnly?: boolean
+  ephemeralSession?: boolean
   historyHydrationMode?: 'full' | 'minimal'
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
@@ -124,6 +130,11 @@ export type SubmitMessageResult =
   | { ok: false; error: string }
 
 export interface UseChatSubmitMessageDependencies {
+  agentCorpusPaths: string[]
+  agentScope: ChatAgentScope | null
+  agentPromptFileName: string
+  requestAgentClarification: (question: string, signal: AbortSignal) => Promise<string>
+  requestAgentConfirmation: (question: string) => Promise<boolean>
   library: NotiaLibrary | null
   aiPreferences: AiPreferences
   activeChatDocument: StoredChatDocument | null
@@ -138,6 +149,7 @@ export interface UseChatSubmitMessageDependencies {
   preferredContextScopeKey: string | null
   persistTransientContext: boolean
   hasTransientContext: boolean
+  ephemeralSession: boolean
   onChatCreated?: (filePath: string) => void | Promise<void>
 }
 

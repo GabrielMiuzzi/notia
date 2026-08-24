@@ -442,11 +442,13 @@ export function invalidateLibrarySearchGraphIndex(libraryPath: string, pathHint?
 export async function getIndexedLibraryGraphSourcesByPath({
   libraryPath,
   treeNodes,
+  flatFileList,
   androidDirectoryUri,
 }: GetIndexedGraphSourcesParams): Promise<Record<string, string>> {
   const state = await ensureLibrarySearchGraphIndex({
     libraryPath,
     treeNodes,
+    flatFileList,
     androidDirectoryUri,
     requireGraphSources: true,
   })

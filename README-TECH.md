@@ -70,6 +70,7 @@ npm run dev:android
 | `npm run build` | Compilación TypeScript + build Vite |
 | `npm run lint` | ESLint |
 | `npm run dev:tauri` | Dev desktop Linux (auto-detect backend) |
+| `npm run dev:tauri:windows` | Dev desktop Windows; inicia Vite de forma controlada o reutiliza el Vite de este repositorio si ya ocupa el puerto 1420. Rechaza procesos ajenos y ejecuta Tauri sin duplicar `beforeDevCommand`. |
 | `npm run dev:tauri:wayland` | Fuerza backend Wayland |
 | `npm run dev:tauri:wayland:fallback` | Wayland con fallback a X11 |
 | `npm run dev:tauri:x11` | Fuerza backend X11 |
@@ -456,9 +457,65 @@ Construcción y visualización de un grafo de conocimiento donde los nodos son a
 #### Descripción
 Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check con caché, streaming de respuestas en desktop y Android, listado de todos los modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
+Los chats laterales usan además un runtime agente acotado por scope (`task-manager`, `graph`, `document`) en `chatScopedAgentRuntime.ts`. El transporte envía schemas en `tools` a `/api/chat`, procesa `message.tool_calls`, valida y ejecuta cada llamada localmente, agrega resultados con rol `tool` y repite hasta obtener una respuesta final. La capacidad informada por `/api/show` se presenta como ayuda en el selector, pero no bloquea preventivamente la ejecución porque algunos modelos de Ollama Cloud omiten esos metadatos; `/api/chat` es la autoridad final y devuelve un error si la variante rechaza herramientas.
+
+- Task Manager no adjunta todos los tickets: el corpus del agente se deriva del panel activo (`task-manager:panel:<id>`), por lo que un tablero no puede recuperar tareas de otros tableros ni de `finished`/`cancelled`. Los paneles Completadas y Canceladas exponen únicamente su carpeta y Pomodoro no expone tickets. Dentro de ese alcance, `search_task_context` recupera fragmentos RAG agrupados por ticket con `ticketId`, ruta y título; `read_task_tickets` abre los IDs identificados y `read_all_task_tickets` recorre el corpus permitido para inventarios, conteos y resúmenes exhaustivos. Esta última informa total, cantidad devuelta y truncamiento. `selectDiverseAgentFragments` prioriza el mejor fragmento de cada ruta antes de repetir un archivo, evitando que historiales con muchas menciones desplacen otros tickets relevantes. Los resúmenes por persona deben relevar cada ticket de manera independiente, considerar atribuciones explícitas en metadatos y cuerpo, admitir múltiples responsables y separar personas, equipos, menciones incidentales y asignaciones ambiguas; el conteo se basa en rutas únicas. Para detalles, el agente debe leer todos los IDs únicos y renderizar una sección por ruta.
+- `agentPromptRuntime` inicializa `.agent/promps/default.md` al cargar cada librería y enumera los archivos `.md` hermanos como agentes disponibles. `DEFAULT_AGENT_PROMPT` contiene el prompt general completo de Notia; una migración reemplaza únicamente el prompt corto legado cuando coincide exactamente, preservando cualquier personalización. El árbol y su firma permiten explícitamente `.agent`, mientras `is_hidden_entry_name` sigue excluyendo esa carpeta de búsquedas globales y lecturas Markdown masivas; las demás entradas ocultas tampoco se muestran. Si `default.md` no existe o solo contiene espacios, escribe `DEFAULT_AGENT_PROMPT`; los demás archivos se conservan sin modificaciones. `ChatWorkspaceView` muestra el selector en el chat lateral, refresca la lista al recuperar foco y persiste el nombre elegido por ID de librería en `notia:agent-prompt-selection:v1`. `createChatScopedAgent` lee el archivo seleccionado en cada envío y cae a `default.md` si desapareció o no puede leerse. Las restricciones específicas de Task Manager, Graph View o documento se agregan después del prompt editable y no se almacenan en esos archivos.
+- `request_user_clarification` admite respuestas abiertas: `createChatScopedAgent` espera `requestClarification(question, signal)`, `ChatWorkspaceView` conserva el resolver pendiente y presenta la pregunta en `ChatThread`, y el próximo envío del compositor resuelve esa promesa para continuar la misma ronda de `runNativeToolAgent`. El `AbortSignal` rechaza la espera al cancelar, evitando que quede una ejecución suspendida.
+- Las respuestas de Task Manager con múltiples tickets pasan por `buildTicketSectionCorrection`: exige un encabezado Markdown o numerado independiente con el título de cada ruta recuperada; las viñetas de campos como `Path` no se consideran secciones. También contrasta cantidades declaradas en frases como “5 tareas” con la cantidad real de encabezados, cubriendo respuestas originadas por `read_all_task_tickets` donde no había una selección previa de IDs. Si falta alguna sección, agrega una instrucción correctiva al historial interno para regenerar la respuesta antes de emitirla al hilo.
+- Graph View usa selección explícita como contexto autorizado; sin selección emplea búsqueda por título, ruta o carpeta, o RAG. El texto puntuado por el RAG combina `relativePath`, nombre y fragmento, de modo que una consulta por carpeta recupera los documentos contenidos aunque el término no aparezca dentro del archivo.
+- `runNativeToolAgent` informa estados de progreso mediante `onThinkingDelta` antes de cada inferencia y ejecución de herramienta. El ciclo completo tiene un presupuesto de 600 segundos y cada request desktop de tool calling usa el mismo límite en `run_ollama_tool_chat`; el chat convencional conserva su límite de 180 segundos.
+- En un documento, únicamente el archivo activo está autorizado inicialmente. `request_file_read_permission` muestra una confirmación antes de habilitar otros IDs dentro de esa ejecución.
+- Los IDs entregados al modelo son opacos y se revalidan contra el catálogo y el vault activos antes de cada lectura.
+
+```mermaid
+flowchart TD
+    Q[Consulta del usuario] --> S{Scope lateral}
+    S -->|Task Manager| TR[search_task_context]
+    S -->|Graph sin selección| GR[search_library_context]
+    S -->|Documento| P{¿Archivo activo?}
+    P -->|Sí| RD[read_library_documents]
+    P -->|No| RP[request_file_read_permission]
+    RP -->|Aceptado| RD
+    TR --> O[Respuesta con fuentes]
+    GR --> O
+    RD --> O
+```
+
+```mermaid
+graph LR
+    UI[ChatWorkspaceView] --> Submit[useChatSubmitMessage]
+    Submit --> Agent[chatScopedAgentRuntime]
+    Submit --> AI[aiRuntime]
+    AI --> Ollama[Ollama /api/chat tools]
+    Agent --> Attach[chatAttachmentRuntime]
+    Attach --> FS[Filesystem / SAF]
+```
+
+```mermaid
+sequenceDiagram
+    participant U as Usuario
+    participant C as Chat
+    participant O as Ollama
+    participant T as Tool runtime
+    U->>C: Pregunta
+    C->>O: messages + tools
+    O-->>C: message.tool_calls
+    C->>T: Validar y ejecutar
+    alt Requiere otro archivo
+        T->>U: Solicitar permiso
+        U-->>T: Permitir / rechazar
+    end
+    T-->>C: resultado role=tool
+    C->>O: historial + resultado + tools
+    O-->>C: respuesta final
+```
+
 En el primer envío sin chat activo, `useChatSubmitMessage` crea el documento y establece inmediatamente su `filePath` como selección activa antes de refrescar el historial. Así, el mensaje optimista y el streaming se renderizan en la misma sesión recién creada, incluso si el callback de actualización del árbol todavía está pendiente.
 
 Durante el streaming, `ChatThread` mantiene el razonamiento en un viewport interno de altura fija y desplaza ese viewport al último fragmento recibido. `ChatWorkspaceView` sincroniza el scroll del hilo con los deltas de pensamiento y contenido mediante un layout effect, manteniendo visible el final de la conversación.
+
+`ChatMarkdownMessage` corta un bloque de lista cuando encuentra contenido no indentado que no pertenece a esa lista. Esto conserva separadores y encabezados posteriores —por ejemplo, una sección por ticket— mientras mantiene las viñetas indentadas como hijos del elemento correspondiente.
 
 En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habilita desplazamiento interno cuando los chips superan el espacio disponible. El contenedor es enfocable para navegación con teclado y admite desplazamiento táctil sin expandir el formulario ni ocultar el campo de mensaje.
 
@@ -468,6 +525,7 @@ En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habil
 |---|---|---|---|---|
 | `check_desktop_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Usa `listAiModels` para resolver el modelo por defecto. |
 | `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, messages[] }` | `{ answer?, error? }` | `think` admite `false`, `true` o `low/medium/high` según el modelo. Reserva para respuesta completa; el chat principal usa fetch NDJSON directo. |
+| `run_desktop_ai_tool_chat` | Async | `{ ollamaUrl, apiKey?, model, think, messages[], tools[] }` | Respuesta de `/api/chat` con `message.tool_calls` | Ejecuta cada ronda del agente mediante Rust/reqwest y evita restricciones CORS del WebView. |
 | `list_desktop_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
 | `run_desktop_ai_chat_streaming` | Async | `{ requestId, ollamaUrl, apiKey?, model, think, messages[] }` | eventos `notia-ai-chat-stream` | Transporte principal desktop. Rust consume NDJSON incrementalmente y emite eventos `thinking`, `delta` y `done`; evita el buffering del WebView. |
 | `check_android_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Resuelve modelo por defecto con todos los modelos. |
@@ -522,6 +580,41 @@ En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habil
 {
   "answer": "Los wikilinks son enlaces bidireccionales entre notas...",
   "error": null
+}
+```
+
+#### Ejemplo JSON — Request `run_desktop_ai_tool_chat`
+
+```json
+{
+  "payload": {
+    "ollamaUrl": "https://ollama.com",
+    "apiKey": "ollama-api-key",
+    "model": "qwen3.5:397b",
+    "think": true,
+    "messages": [{ "role": "user", "content": "Busca la tarea de remesas" }],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "search_task_files",
+        "description": "Busca tareas por título o contenido.",
+        "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }
+      }
+    }]
+  }
+}
+```
+
+#### Ejemplo JSON — Response `run_desktop_ai_tool_chat`
+
+```json
+{
+  "message": {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [{ "function": { "name": "search_task_files", "arguments": { "query": "remesas" } } }]
+  },
+  "done": true
 }
 ```
 
@@ -2717,10 +2810,10 @@ graph TB
 | `stop_library_tree_watch` | `filesystem::watch` | `libraryTreeWatchRuntime.stopDesktopLibraryTreeWatch` | Detiene watcher |
 | `check_desktop_ai_health` | `commands::ai` | `aiRuntime.checkAiHealth` | Health check Ollama desktop |
 | `run_desktop_ai_chat` | `commands::ai` | `aiRuntime.streamAiChatReply` | Chat Ollama desktop |
-| `list_desktop_ai_models` | `commands::ai` | `aiRuntime.listAiMultimodalModels` | Listado modelos desktop |
+| `list_desktop_ai_models` | `commands::ai` | `aiRuntime.listAiModels` | Todos los modelos desktop de `/api/tags` |
 | `check_android_ai_health` | `mobile_ai_bridge` | `aiRuntime.checkAiHealth` | Health check Ollama Android |
 | `run_android_ai_chat` | `mobile_ai_bridge` | `aiRuntime.streamAiChatReply` | Chat Ollama Android |
-| `list_android_ai_models` | `mobile_ai_bridge` | `aiRuntime.listAiMultimodalModels` | Listado modelos Android |
+| `list_android_ai_models` | `mobile_ai_bridge` | `aiRuntime.listAiModels` | Todos los modelos Android de `/api/tags` |
 | `pick_android_directory_tree` | `mobile_directory_picker` | `filesystemEngine.pickDirectory` | Selector SAF Android |
 | `read_android_library_tree` | `mobile_directory_picker` | `filesystemEngine.readLibraryTree` | Lee árbol SAF Android |
 | `read_android_directory` | `mobile_directory_picker` | `filesystemEngine.readLibraryDirectory` | Lee directorio superficial Android |

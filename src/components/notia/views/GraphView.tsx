@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, SlidersHorizontal, X } from 'lucide-react'
+import { Eye, FileText, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectActiveLibraryPath } from '../../../features/library/librarySelectors'
 import { selectTheme } from '../../../features/preferences/preferencesSelectors'
@@ -7,6 +7,7 @@ import { NotiaButton } from '../../common/NotiaButton'
 import { MermaidCanvas } from '../../../modules/mermaid/components/MermaidCanvas'
 import { useMermaidRender } from '../../../modules/mermaid/hooks/useMermaidRender'
 import { buildLinkCacheMermaidCode } from '../../../engines/graph/linkCacheMermaidEngine'
+import { buildGraphSearchResults } from '../../../engines/graph/graphSearchEngine'
 import { extractMermaidNodeId } from '../../../modules/mermaid/engines/mermaidEngine'
 import type { LibraryGraphModel } from '../../../types/graph/libraryGraph'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
@@ -119,6 +120,7 @@ function areGraphViewPropsEqual(
 
 function GraphViewComponent({
   graphModel,
+  graphSourcesByPath,
   onOpenFile,
   chatSelectedPaths = [],
   onChatSelectedPathsChange,
@@ -130,8 +132,9 @@ function GraphViewComponent({
     }),
   )
   useEffect(() => {
+    const mountTimer = mountTimerRef.current
     return () => {
-      mountTimerRef.current.success()
+      mountTimer.success()
     }
   }, [])
 
@@ -145,8 +148,43 @@ function GraphViewComponent({
     gridEnabled: readStoredSettings().gridEnabled ?? true,
   }))
   const [viewport, setViewport] = useState<Partial<ViewportState>>(() => readStoredViewport())
+  const [focusRequest, setFocusRequest] = useState<{ element: Element; requestId: number } | null>(null)
+
+  const searchResults = useMemo(
+    () => buildGraphSearchResults(
+      graphModel,
+      graphSourcesByPath,
+      searchQuery,
+      graphModel.nodes.length,
+    ),
+    [graphModel, graphSourcesByPath, searchQuery],
+  )
+  const matchedPaths = useMemo(
+    () => new Set(searchResults.map((searchResult) => searchResult.path)),
+    [searchResults],
+  )
 
   const svgWrapperRef = useRef<HTMLDivElement | null>(null)
+
+  const handleFocusSearchResult = useCallback((path: string) => {
+    const nodes = svgWrapperRef.current?.querySelectorAll('[data-notia-path]') ?? []
+    const targetNode = Array.from(nodes).find((node) => node.getAttribute('data-notia-path') === path)
+    if (!targetNode) return
+
+    setFocusRequest((current) => ({
+      element: targetNode,
+      requestId: (current?.requestId ?? 0) + 1,
+    }))
+  }, [])
+
+  const handleToggleSearchResultInChat = useCallback((path: string) => {
+    if (!onChatSelectedPathsChange) return
+    onChatSelectedPathsChange(
+      chatSelectedPaths.includes(path)
+        ? chatSelectedPaths.filter((selectedPath) => selectedPath !== path)
+        : [...chatSelectedPaths, path],
+    )
+  }, [chatSelectedPaths, onChatSelectedPathsChange])
 
   // Cleanup on unmount: clear result so MermaidCanvas unmount clears SVG
   useEffect(() => {
@@ -200,17 +238,17 @@ function GraphViewComponent({
     })
 
     // Apply current search highlight immediately after render
-    const normalizedQuery = searchQuery.trim().toLowerCase()
+    const hasSearchQuery = searchQuery.trim().length > 0
     nodeElements.forEach((el) => {
       const htmlEl = el as HTMLElement
       const path = htmlEl.getAttribute('data-notia-path')
       if (!path) return
-      const node = graphModel.nodes.find((n) => n.path === path)
-      if (!node) return
-      const matches = normalizedQuery.length > 0 && node.label.toLowerCase().includes(normalizedQuery)
+      const matches = matchedPaths.has(path)
+      htmlEl.classList.toggle('notia-graph-node--search-match', hasSearchQuery && matches)
+      htmlEl.classList.toggle('notia-graph-node--search-dimmed', hasSearchQuery && !matches)
       const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
       if (shape) {
-        if (matches || normalizedQuery.length === 0) {
+        if (matches || !hasSearchQuery) {
           shape.style.opacity = ''
           shape.style.filter = ''
         } else {
@@ -219,7 +257,7 @@ function GraphViewComponent({
         }
       }
     })
-  }, [searchQuery, graphModel, safeIdToPath])
+  }, [matchedPaths, safeIdToPath, searchQuery])
 
   // Click handler: open file or toggle chat selection
   const handleNodeClick = useCallback(
@@ -250,17 +288,17 @@ function GraphViewComponent({
     const svg = wrapper.querySelector('svg') as SVGSVGElement | null
     if (!svg) return
 
-    const normalizedQuery = searchQuery.trim().toLowerCase()
+    const hasSearchQuery = searchQuery.trim().length > 0
     svg.querySelectorAll('.node, .icon-shape').forEach((el) => {
       const htmlEl = el as HTMLElement
       const path = htmlEl.getAttribute('data-notia-path')
       if (!path) return
-      const node = graphModel.nodes.find((n) => n.path === path)
-      if (!node) return
-      const matches = normalizedQuery.length > 0 && node.label.toLowerCase().includes(normalizedQuery)
+      const matches = matchedPaths.has(path)
+      htmlEl.classList.toggle('notia-graph-node--search-match', hasSearchQuery && matches)
+      htmlEl.classList.toggle('notia-graph-node--search-dimmed', hasSearchQuery && !matches)
       const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
       if (shape) {
-        if (matches || normalizedQuery.length === 0) {
+        if (matches || !hasSearchQuery) {
           shape.style.opacity = ''
           shape.style.filter = ''
         } else {
@@ -269,7 +307,7 @@ function GraphViewComponent({
         }
       }
     })
-  }, [searchQuery, graphModel])
+  }, [matchedPaths, searchQuery])
 
   // Selection visual feedback
   useEffect(() => {
@@ -334,14 +372,66 @@ function GraphViewComponent({
       }}
     >
       <div className="notia-graph-search-shell">
+        {searchQuery.trim() && (
+          <div
+            className="notia-graph-search-results"
+            role="list"
+            aria-label="Archivos que coinciden con la búsqueda"
+          >
+            {searchResults.length > 0 ? searchResults.map((searchResult) => (
+              <div
+                key={searchResult.path}
+                className="notia-graph-search-result"
+              >
+                <div className="notia-graph-search-result-main">
+                  <strong>{searchResult.label}</strong>
+                  <span>{searchResult.preview}</span>
+                </div>
+                <button
+                  type="button"
+                  className="notia-graph-search-result-action"
+                  onClick={() => handleFocusSearchResult(searchResult.path)}
+                  aria-label={`Ver ${searchResult.label} en el grafo`}
+                  title="Ver en el grafo"
+                >
+                  <Eye size={18} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={`notia-graph-search-result-action${chatSelectedPaths.includes(searchResult.path) ? ' is-selected' : ''}`}
+                  onClick={() => handleToggleSearchResultInChat(searchResult.path)}
+                  disabled={!onChatSelectedPathsChange}
+                  aria-label={`${chatSelectedPaths.includes(searchResult.path) ? 'Quitar' : 'Agregar'} ${searchResult.label} ${chatSelectedPaths.includes(searchResult.path) ? 'del' : 'al'} contexto del chat`}
+                  aria-pressed={chatSelectedPaths.includes(searchResult.path)}
+                  title={chatSelectedPaths.includes(searchResult.path) ? 'Quitar del contexto del chat' : 'Agregar al contexto del chat'}
+                >
+                  <Plus size={18} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="notia-graph-search-result-action"
+                  onClick={() => onOpenFile(searchResult.path)}
+                  aria-label={`Abrir ${searchResult.label}`}
+                  title="Abrir archivo"
+                >
+                  <FileText size={18} aria-hidden="true" />
+                </button>
+              </div>
+            )) : (
+              <div className="notia-graph-search-empty" role="status">
+                No se encontraron archivos.
+              </div>
+            )}
+          </div>
+        )}
         <label className="notia-graph-search-bar">
           <Search size={18} aria-hidden="true" />
           <input
             type="text"
-            placeholder="Buscar nodo..."
+            placeholder="Buscar por título o contenido..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            aria-label="Buscar nodo"
+            aria-label="Buscar archivos por título o contenido"
           />
           {searchQuery && (
             <button
@@ -460,6 +550,7 @@ function GraphViewComponent({
             initialPanY={viewport.panY}
             onZoomChange={handleZoomChange}
             onPanChange={handlePanChange}
+            focusRequest={focusRequest}
           />
         )}
       </div>

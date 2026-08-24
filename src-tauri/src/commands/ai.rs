@@ -40,6 +40,19 @@ pub struct RunDesktopAiChatStreamingPayload {
     messages: Vec<AiChatMessage>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunDesktopAiToolChatPayload {
+    ollama_url: String,
+    #[serde(default)]
+    api_key: String,
+    model: String,
+    #[serde(default)]
+    think: serde_json::Value,
+    messages: serde_json::Value,
+    tools: serde_json::Value,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DesktopAiStreamEventPayload {
@@ -122,6 +135,33 @@ pub async fn run_desktop_ai_chat(payload: RunDesktopAiChatPayload) -> Result<AiC
 }
 
 #[tauri::command]
+pub async fn run_desktop_ai_tool_chat(
+    payload: RunDesktopAiToolChatPayload,
+) -> Result<serde_json::Value, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let settings = build_ai_settings(payload.ollama_url, payload.api_key);
+        return crate::services::ai_service::run_ollama_tool_chat(
+            &settings,
+            &payload.model,
+            &payload.messages,
+            &payload.tools,
+            &payload.think,
+        )
+        .await;
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = payload;
+        Err(
+            "El chat con herramientas de desktop no esta disponible en esta plataforma."
+                .to_string(),
+        )
+    }
+}
+
+#[tauri::command]
 pub async fn run_desktop_ai_chat_streaming(
     window: tauri::Window,
     payload: RunDesktopAiChatStreamingPayload,
@@ -180,7 +220,7 @@ pub async fn list_desktop_ai_models(
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let settings = build_ai_settings(payload.ollama_url, payload.api_key);
-        return crate::services::ai_service::list_ollama_multimodal_models(&settings).await;
+        return crate::services::ai_service::list_ollama_models(&settings).await;
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]

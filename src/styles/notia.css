@@ -1849,28 +1849,6 @@
     drop-shadow(0 0 14px color-mix(in srgb, var(--color-graph-node-glow-isolated) 60%, transparent));
 }
 
-.notia-graph-node--search-match .notia-graph-node-halo--outer {
-  fill: var(--color-graph-search-glow);
-  opacity: 0.28;
-  transform: scale(1.16);
-}
-
-.notia-graph-node--search-match .notia-graph-node-halo--inner {
-  fill: var(--color-graph-search-glow);
-  opacity: 0.4;
-  transform: scale(1.12);
-}
-
-.notia-graph-node--search-match circle {
-  fill: var(--color-graph-search-accent);
-  stroke: var(--color-graph-search-accent);
-  fill-opacity: 0.44;
-  stroke-width: 2;
-  filter:
-    drop-shadow(0 0 8px var(--color-graph-search-glow))
-    drop-shadow(0 0 20px color-mix(in srgb, var(--color-graph-search-glow) 72%, transparent));
-}
-
 .notia-graph-node--search-preview .notia-graph-node-halo--outer {
   fill: rgba(255, 225, 122, 0.54);
   opacity: 0.34;
@@ -2005,6 +1983,40 @@
   gap: 10px;
 }
 
+.notia-graph-node--search-match .nodeLabel,
+.notia-graph-node--search-match .nodeLabel span,
+.notia-graph-node--search-match .nodeLabel p {
+  color: var(--color-accent-text) !important;
+  fill: var(--color-accent-text) !important;
+  font-weight: 700;
+  transition: color 140ms ease, filter 140ms ease;
+}
+
+.notia-graph-node--search-match > rect,
+.notia-graph-node--search-match > polygon,
+.notia-graph-node--search-match > path,
+.notia-graph-node--search-match .label-container {
+  transition: stroke 140ms ease, stroke-width 140ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .notia-graph-node--search-match:hover > rect,
+  .notia-graph-node--search-match:hover > polygon,
+  .notia-graph-node--search-match:hover > path,
+  .notia-graph-node--search-match:hover .label-container {
+    stroke: var(--color-accent-text) !important;
+    stroke-width: 2px !important;
+  }
+
+  .notia-graph-node--search-match:hover .nodeLabel,
+  .notia-graph-node--search-match:hover .nodeLabel span,
+  .notia-graph-node--search-match:hover .nodeLabel p {
+    color: var(--color-heading-text) !important;
+    fill: var(--color-heading-text) !important;
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--color-accent-text) 40%, transparent));
+  }
+}
+
 .notia-graph-search-clear {
   width: 48px;
   height: 48px;
@@ -2044,12 +2056,16 @@
     0 18px 48px color-mix(in srgb, var(--color-menu-shadow) 58%, transparent),
     0 0 0 1px color-mix(in srgb, var(--color-graph-search-glow) 18%, transparent);
   backdrop-filter: blur(12px) saturate(112%);
-  cursor: grab;
   user-select: none;
 }
 
-.notia-graph-search-results:active {
-  cursor: grabbing;
+.notia-graph-search-empty {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-subtle-text);
+  font-size: 13px;
 }
 
 .notia-graph-search-result {
@@ -2059,7 +2075,7 @@
   border-radius: 14px;
   background: color-mix(in srgb, var(--color-main-bg) 44%, transparent);
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 48px);
   align-items: stretch;
   gap: 6px;
   padding: 6px;
@@ -2094,6 +2110,65 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+.notia-graph-search-result .notia-graph-search-result-main {
+  min-height: 56px;
+  padding: 10px 12px;
+}
+
+.notia-graph-search-result-action {
+  width: 48px;
+  min-height: 48px;
+  align-self: center;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-hover-surface) 64%, transparent);
+  color: var(--color-subtle-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.notia-graph-search-result-action:hover:not(:disabled),
+.notia-graph-search-result-action:focus-visible {
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+  transform: translateY(-1px);
+}
+
+.notia-graph-search-result-action:focus-visible {
+  outline: 2px solid var(--color-accent-text);
+  outline-offset: 1px;
+}
+
+.notia-graph-search-result-action:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.notia-graph-search-result-action.is-selected {
+  background: color-mix(in srgb, var(--color-danger, #e05252) 16%, transparent);
+  color: var(--color-danger, #e05252);
+}
+
+.notia-graph-search-result-action.is-selected:hover:not(:disabled),
+.notia-graph-search-result-action.is-selected:focus-visible {
+  background: color-mix(in srgb, var(--color-danger, #e05252) 24%, transparent);
+  color: var(--color-danger, #e05252);
+}
+
+@media (max-width: 560px) {
+  .notia-graph-search-result {
+    grid-template-columns: minmax(0, 1fr) repeat(3, 48px);
+    gap: 2px;
+  }
+
+  .notia-graph-search-result .notia-graph-search-result-main {
+    padding-inline: 6px;
+  }
 }
 
 .notia-graph-search-result strong {
@@ -4139,6 +4214,36 @@
   min-width: 0;
   flex-direction: column;
   gap: 18px;
+}
+
+.notia-chat-agent-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+  color: var(--color-muted-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notia-chat-agent-select select {
+  min-width: 0;
+  min-height: 48px;
+  flex: 1;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--color-input-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+}
+
+.notia-chat-agent-select select:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
 }
 
 .notia-chat-header {

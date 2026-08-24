@@ -63,7 +63,7 @@ export function useMermaidPanZoom(
 
     try {
       ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
-    } catch (_) {
+    } catch {
       // ignore
     }
 
@@ -136,7 +136,7 @@ export function useMermaidPanZoom(
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     try {
       ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
-    } catch (_) {
+    } catch {
       // ignore
     }
 
@@ -243,6 +243,25 @@ export function useMermaidPanZoom(
     callbacks?.onPanChange?.(x, y)
   }, [clamp, applyTransform, callbacks])
 
+  const focusElement = useCallback((element: Element, requestedZoom = 1.5) => {
+    const wrapper = wrapperRef.current
+    if (!wrapper) return
+
+    const wrapperRect = wrapper.getBoundingClientRect()
+    const elementRect = element.getBoundingClientRect()
+    const current = viewStateRef.current
+    const worldCenterX = (elementRect.left + elementRect.width / 2 - wrapperRect.left - current.x) / current.zoom
+    const worldCenterY = (elementRect.top + elementRect.height / 2 - wrapperRect.top - current.y) / current.zoom
+    const zoom = clamp(requestedZoom, MIN_ZOOM, MAX_ZOOM)
+    const x = wrapperRect.width / 2 - worldCenterX * zoom
+    const y = wrapperRect.height / 2 - worldCenterY * zoom
+
+    viewStateRef.current = { x, y, zoom }
+    applyTransform()
+    callbacks?.onZoomChange?.(zoom)
+    callbacks?.onPanChange?.(x, y)
+  }, [applyTransform, callbacks, clamp, wrapperRef])
+
   return {
     handlePointerDown,
     handlePointerMove,
@@ -254,5 +273,6 @@ export function useMermaidPanZoom(
     resetView,
     fitView,
     restoreView,
+    focusElement,
   }
 }

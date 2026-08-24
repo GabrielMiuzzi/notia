@@ -48,8 +48,8 @@ export function useGraphWorkspace({
 
     if (graphChatSelectedPaths.length === 0) {
       return graphChatAvailablePaths.length > 0
-        ? `Graph View: toda la libreria del grafo (${graphChatAvailablePaths.length} archivos)`
-        : 'Graph View: no hay archivos disponibles en el grafo'
+        ? `Graph View: biblioteca completa (${graphChatAvailablePaths.length} archivos, RAG)`
+        : null
     }
 
     return `Graph View: ${graphChatSelectedPaths.length} archivo${graphChatSelectedPaths.length === 1 ? '' : 's'} seleccionado${graphChatSelectedPaths.length === 1 ? '' : 's'}`

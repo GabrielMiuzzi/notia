@@ -8,6 +8,7 @@ import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 const AI_REQUEST_TIMEOUT_MS = 15_000
 const AI_CHAT_TIMEOUT_MS = 180_000
+const AI_TOOL_AGENT_TIMEOUT_MS = 600_000
 const AI_HEALTH_CACHE_TTL_MS = 10_000
 const MAX_MEMORY_ITEMS = 50
 const MAX_CONTEXT_CHARS = 30_000
@@ -53,6 +54,7 @@ export interface AiModelOption {
   supportsThinking: boolean
   supportsThinkingLevels: boolean
   supportsVision: boolean
+  supportsTools: boolean
 }
 
 export interface AiImageAttachment {
@@ -67,9 +69,37 @@ export interface InkdocOcrBlock {
 }
 
 interface AiMessagePayload {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   images?: string[]
+  tool_name?: string
+  tool_calls?: AiNativeToolCall[]
+}
+
+export interface AiNativeToolCall {
+  function: {
+    name: string
+    arguments: Record<string, unknown>
+  }
+}
+
+export interface AiNativeToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+export interface NativeToolAgentInput {
+  systemPrompt: string
+  prompt: string
+  previousMessages: StoredChatMessage[]
+  tools: AiNativeToolDefinition[]
+  executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
+  validateFinalAnswer?: (answer: string) => string | null
+  maxRounds?: number
 }
 
 interface StreamAiChatReplyInput {
@@ -117,6 +147,16 @@ interface OllamaStreamChunk {
   }
   error?: unknown
   done?: unknown
+}
+
+interface OllamaNativeToolResponse {
+  message?: {
+    role?: unknown
+    content?: unknown
+    thinking?: unknown
+    tool_calls?: unknown
+  }
+  error?: unknown
 }
 
 interface BridgeAiHealthResponse {
@@ -307,6 +347,21 @@ function supportsThinkingLevels(model: string): boolean {
   return model.trim().toLowerCase().includes('gpt-oss')
 }
 
+function isLikelyNativeToolModelName(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  return [
+    'qwen3.5',
+    'qwen3.6',
+    'gemma4',
+    'granite4',
+    'devstral',
+    'hermes3',
+    'llama3-groq-tool-use',
+    'lfm2',
+    'nemotron3',
+  ].some((token) => normalized.includes(token))
+}
+
 async function fetchAvailableOllamaModels(preferences: AiPreferences): Promise<string[]> {
   const payload = await fetchJsonWithTimeout<OllamaTagsResponse>(
     buildOllamaUrl(preferences, '/api/tags'),
@@ -372,6 +427,7 @@ async function loadAiModelOption(preferences: AiPreferences, name: string): Prom
     supportsThinking: isLikelyThinkingModelName(name),
     supportsThinkingLevels: supportsThinkingLevels(name),
     supportsVision: isLikelyMultimodalModelName(name),
+    supportsTools: isLikelyNativeToolModelName(name),
   }
 
   try {
@@ -395,6 +451,7 @@ async function loadAiModelOption(preferences: AiPreferences, name: string): Prom
       supportsThinking: capabilities.includes('thinking') || fallback.supportsThinking,
       supportsThinkingLevels: fallback.supportsThinkingLevels,
       supportsVision: capabilities.includes('vision') || fallback.supportsVision,
+      supportsTools: capabilities.includes('tools') || fallback.supportsTools,
     }
   } catch {
     return fallback
@@ -509,6 +566,7 @@ export async function listAiMultimodalModels(preferences: AiPreferences): Promis
         supportsThinking: isLikelyThinkingModelName(model),
         supportsThinkingLevels: supportsThinkingLevels(model),
         supportsVision: true,
+        supportsTools: allModels.find((candidate) => candidate.name === model)?.supportsTools ?? false,
       })
     }
   }
@@ -523,6 +581,7 @@ export async function listAiMultimodalModels(preferences: AiPreferences): Promis
     supportsThinking: isLikelyThinkingModelName(model),
     supportsThinkingLevels: supportsThinkingLevels(model),
     supportsVision: true,
+    supportsTools: allModels.find((candidate) => candidate.name === model)?.supportsTools ?? false,
   }))
 }
 
@@ -1365,6 +1424,140 @@ export async function checkAiHealth(preferences: AiPreferences): Promise<AiHealt
 export function invalidateAiHealthCache(): void {
   aiHealthCache = null
   aiHealthCacheKey = ''
+}
+
+export function parseNativeToolCalls(value: unknown): AiNativeToolCall[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object') {
+      return []
+    }
+    const fn = (candidate as { function?: unknown }).function
+    if (!fn || typeof fn !== 'object') {
+      return []
+    }
+    const name = (fn as { name?: unknown }).name
+    const rawArgs = (fn as { arguments?: unknown }).arguments
+    let args: unknown = rawArgs
+    if (typeof rawArgs === 'string') {
+      try {
+        args = JSON.parse(rawArgs) as unknown
+      } catch {
+        return []
+      }
+    }
+    if (typeof name !== 'string' || !name.trim() || !args || typeof args !== 'object' || Array.isArray(args)) {
+      return []
+    }
+    return [{ function: { name: name.trim(), arguments: args as Record<string, unknown> } }]
+  })
+}
+
+export async function runNativeToolAgent(
+  preferences: AiPreferences,
+  input: NativeToolAgentInput,
+  options: StreamAiChatReplyOptions = {},
+): Promise<string> {
+  const normalizedPreferences = normalizeAiSettingsInput(preferences)
+  const model = await resolveDefaultModel(normalizedPreferences)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  options.abortSignal?.addEventListener('abort', abort, { once: true })
+  const timeoutId = window.setTimeout(abort, AI_TOOL_AGENT_TIMEOUT_MS)
+  const messages: AiMessagePayload[] = [
+    { role: 'system', content: input.systemPrompt.trim() },
+    ...input.previousMessages.map((message) => ({ role: message.role, content: message.content })),
+    { role: 'user', content: input.prompt.trim() },
+  ]
+
+  try {
+    const maxRounds = Math.min(10, Math.max(1, input.maxRounds ?? 6))
+    for (let round = 0; round < maxRounds; round += 1) {
+      options.onThinkingDelta?.(
+        round === 0
+          ? 'Analizando la consulta y eligiendo herramientas…\n'
+          : 'Procesando los resultados recuperados…\n',
+      )
+      const requestPayload = {
+        ...normalizeAiSettingsInput(normalizedPreferences),
+        model,
+        think: normalizedPreferences.thinkingEnabled
+          ? supportsThinkingLevels(model) ? normalizedPreferences.thinkingLevel : true
+          : false,
+        messages,
+        tools: input.tools,
+      }
+      let payload: OllamaNativeToolResponse
+      if (getRuntimeDevice() === 'Android') {
+        const response = await fetch(buildOllamaUrl(normalizedPreferences, '/api/chat'), {
+          method: 'POST',
+          headers: {
+            ...buildOllamaHeaders(normalizedPreferences, 'application/json'),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ ...requestPayload, stream: false }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          const detail = await response.text()
+          throw new Error(detail || `La IA respondio con HTTP ${response.status}.`)
+        }
+        payload = await response.json() as OllamaNativeToolResponse
+      } else {
+        payload = await invoke<OllamaNativeToolResponse>('run_desktop_ai_tool_chat', {
+          payload: requestPayload,
+        })
+        if (controller.signal.aborted) {
+          throw new Error('Se cancelo la respuesta de la IA.')
+        }
+      }
+      if (typeof payload.error === 'string' && payload.error.trim()) {
+        throw new Error(payload.error.trim())
+      }
+      const content = typeof payload.message?.content === 'string' ? payload.message.content : ''
+      const thinking = typeof payload.message?.thinking === 'string' ? payload.message.thinking : ''
+      if (thinking) {
+        options.onThinkingDelta?.(thinking)
+      }
+      const toolCalls = parseNativeToolCalls(payload.message?.tool_calls)
+      messages.push({ role: 'assistant', content, tool_calls: toolCalls })
+
+      if (toolCalls.length === 0) {
+        const answer = content.trim()
+        if (!answer) {
+          throw new Error('La IA no devolvio contenido ni solicito herramientas.')
+        }
+        const correctionPrompt = input.validateFinalAnswer?.(answer) ?? null
+        if (correctionPrompt) {
+          options.onThinkingDelta?.('Verificando que la respuesta separe correctamente los resultados…\n')
+          messages.push({ role: 'user', content: correctionPrompt })
+          continue
+        }
+        options.onMessageDelta?.(answer)
+        return answer
+      }
+
+      for (const call of toolCalls) {
+        options.onThinkingDelta?.(`Ejecutando ${call.function.name}…\n`)
+        const result = await input.executeTool(call, controller.signal)
+        messages.push({
+          role: 'tool',
+          tool_name: call.function.name,
+          content: JSON.stringify(result),
+        })
+      }
+    }
+
+    throw new Error('El agente alcanzo el limite de llamadas a herramientas.')
+  } catch (error) {
+    throw describeAiError(error, 'No se pudo completar la consulta con herramientas de Ollama.')
+  } finally {
+    window.clearTimeout(timeoutId)
+    options.abortSignal?.removeEventListener('abort', abort)
+  }
 }
 
 export async function streamAiChatReply(

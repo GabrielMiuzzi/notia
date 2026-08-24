@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppSelector } from '../../store/hooks'
 import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
-import { Brain, ChevronDown, Eye, X } from 'lucide-react'
+import { Brain, ChevronDown, Eye, Wrench, X } from 'lucide-react'
 import {
   clampOcrDebounceMs,
   INKDOC_OCR_DEBOUNCE_MAX_MS,
@@ -438,7 +438,8 @@ export function SettingsModal({
                           <span className="notia-ai-model-capabilities">
                             {model.supportsThinking ? <span title="Admite thinking"><Brain size={13} /> Thinking</span> : null}
                             {model.supportsVision ? <span title="Admite imágenes"><Eye size={13} /> Vision</span> : null}
-                            {!model.supportsThinking && !model.supportsVision ? <span>Texto</span> : null}
+                            {model.supportsTools ? <span title="Admite tool calling nativo"><Wrench size={13} /> Tools</span> : null}
+                            {!model.supportsThinking && !model.supportsVision && !model.supportsTools ? <span>Texto</span> : null}
                           </span>
                         </button>
                       ))}

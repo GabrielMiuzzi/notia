@@ -50,6 +50,8 @@ use std::time::Duration;
 const HEALTH_TIMEOUT_SECS: u64 = 15;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const CHAT_TIMEOUT_SECS: u64 = 180;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const TOOL_CHAT_TIMEOUT_SECS: u64 = 600;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
@@ -63,13 +65,6 @@ struct OllamaTagsResponse {
 struct OllamaModelDescriptor {
     name: Option<String>,
     model: Option<String>,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[derive(Debug, Deserialize)]
-struct OllamaShowResponse {
-    #[serde(default)]
-    capabilities: Vec<String>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -200,30 +195,6 @@ fn extract_model_name(model: &OllamaModelDescriptor) -> Option<String> {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn is_likely_multimodal_model_name(model: &str) -> bool {
-    let normalized = model.trim().to_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    [
-        "vision",
-        "vl",
-        "llava",
-        "bakllava",
-        "moondream",
-        "minicpm-v",
-        "gemma3",
-        "gemma4",
-        "gemini",
-        "glm-ocr",
-        "qwen3.5",
-    ]
-    .iter()
-    .any(|token| normalized.contains(token))
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn read_error_detail(response: reqwest::Response) -> String {
     let status = response.status();
     let detail = response
@@ -278,9 +249,7 @@ pub async fn check_ollama_health(settings: &AiHttpSettings) -> Result<AiHealthRe
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub async fn list_ollama_multimodal_models(
-    settings: &AiHttpSettings,
-) -> Result<AiModelListResult, String> {
+pub async fn list_ollama_models(settings: &AiHttpSettings) -> Result<AiModelListResult, String> {
     let client = build_client(HEALTH_TIMEOUT_SECS)?;
     let tags_endpoint = build_endpoint(&settings.ollama_url, "/api/tags")?;
     let response = with_auth(
@@ -304,73 +273,16 @@ pub async fn list_ollama_multimodal_models(
             describe_request_error(error, "La respuesta de IA no se pudo interpretar.")
         })?;
 
-    let available_models: Vec<String> = payload
+    let mut available_models: Vec<String> = payload
         .models
         .iter()
         .filter_map(extract_model_name)
         .collect();
-
-    let likely_models: Vec<String> = available_models
-        .iter()
-        .filter(|model| is_likely_multimodal_model_name(model))
-        .cloned()
-        .collect();
-
-    let models_to_verify = if likely_models.is_empty() {
-        available_models
-            .iter()
-            .take(12)
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        likely_models.clone()
-    };
-
-    let show_endpoint = build_endpoint(&settings.ollama_url, "/api/show")?;
-    let mut verified_models: Vec<String> = Vec::new();
-
-    for model in &models_to_verify {
-        let show_response = match with_auth(
-            client
-                .post(show_endpoint.clone())
-                .header(reqwest::header::ACCEPT, "application/json")
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .json(&serde_json::json!({ "model": model })),
-            settings,
-        )
-        .send()
-        .await
-        {
-            Ok(response) => response,
-            Err(_) => continue,
-        };
-
-        if !show_response.status().is_success() {
-            continue;
-        }
-
-        let show_payload = match show_response.json::<OllamaShowResponse>().await {
-            Ok(payload) => payload,
-            Err(_) => continue,
-        };
-
-        if show_payload
-            .capabilities
-            .iter()
-            .any(|capability| capability == "vision")
-        {
-            verified_models.push(model.clone());
-        }
-    }
-
-    if !verified_models.is_empty() {
-        return Ok(AiModelListResult {
-            models: verified_models,
-        });
-    }
+    available_models.sort_unstable();
+    available_models.dedup();
 
     Ok(AiModelListResult {
-        models: likely_models,
+        models: available_models,
     })
 }
 
@@ -437,6 +349,59 @@ pub async fn run_ollama_chat(
         .ok_or_else(|| "La IA no devolvio contenido.".to_string())?;
 
     Ok(AiChatResult { answer })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn run_ollama_tool_chat(
+    settings: &AiHttpSettings,
+    model: &str,
+    messages: &serde_json::Value,
+    tools: &serde_json::Value,
+    think: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let normalized_model = model.trim();
+    if normalized_model.is_empty() {
+        return Err("El modelo de Ollama es obligatorio.".to_string());
+    }
+    if !messages.as_array().is_some_and(|items| !items.is_empty()) {
+        return Err("No hay mensajes para enviar a la IA.".to_string());
+    }
+    if !tools.as_array().is_some_and(|items| !items.is_empty()) {
+        return Err("No hay herramientas para enviar a la IA.".to_string());
+    }
+
+    let client = build_client(TOOL_CHAT_TIMEOUT_SECS)?;
+    let endpoint = build_endpoint(&settings.ollama_url, "/api/chat")?;
+    let response = with_auth(
+        client
+            .post(endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({
+                "model": normalized_model,
+                "stream": false,
+                "think": think,
+                "messages": messages,
+                "tools": tools,
+            })),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| {
+        describe_request_error(error, "No se pudo completar la consulta con herramientas.")
+    })?;
+
+    if !response.status().is_success() {
+        return Err(read_error_detail(response).await);
+    }
+
+    response.json::<serde_json::Value>().await.map_err(|error| {
+        describe_request_error(
+            error,
+            "La respuesta de herramientas no se pudo interpretar.",
+        )
+    })
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

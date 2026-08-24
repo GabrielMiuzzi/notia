@@ -6,9 +6,11 @@ import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatL
 import { scheduleAiChatTitle } from '../../../../services/chat/chatTitleSync'
 import {
   checkAiHealth,
+  runNativeToolAgent,
   startCancelableAiChatReply,
   type CancelableAiReplyHandle,
 } from '../../../../services/ai/aiRuntime'
+import { createChatScopedAgent } from '../../../../services/chat/chatScopedAgentRuntime'
 import { loadInlineFileAttachments } from '../../../../services/chat/chatAttachmentRuntime'
 import { loadLongTermMemories } from '../../../../services/chat/chatDocumentStorage'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
@@ -26,6 +28,11 @@ export function useChatSubmitMessage(
   cancelActiveReply: () => void
 } {
   const {
+    agentCorpusPaths,
+    agentScope,
+    agentPromptFileName,
+    requestAgentClarification,
+    requestAgentConfirmation,
     library,
     aiPreferences,
     activeChatDocument,
@@ -40,6 +47,7 @@ export function useChatSubmitMessage(
     preferredContextScopeKey,
     persistTransientContext,
     hasTransientContext,
+    ephemeralSession,
     onChatCreated,
   } = deps
 
@@ -96,7 +104,19 @@ export function useChatSubmitMessage(
     let targetChatDocument = activeChatDocument
     let targetChatFilePath = selectedChatFilePath
 
-    if (!targetChatDocument || !targetChatFilePath) {
+    if (ephemeralSession) {
+      targetChatFilePath = null
+      targetChatDocument ??= {
+        title: 'Graph View',
+        longTermMemoryEnabled: false,
+        contextMemoryEnabled: true,
+        contextMemoryMessageCount: 10,
+        contextScopeKey: preferredContextScopeKey,
+        selectedContextMode: effectiveSelectedContextMode,
+        selectedContextFiles: effectiveSelectedContextPaths,
+        messages: [],
+      }
+    } else if (!targetChatDocument || !targetChatFilePath) {
       try {
         const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
         setPendingAutoCreatedChatFilePath(filePath)
@@ -159,11 +179,13 @@ export function useChatSubmitMessage(
     const previousFileContextMode = selectedFileContextMode
 
     try {
-      inlineFileAttachments = await loadInlineFileAttachments(
-        library,
-        effectiveSelectedContextPaths,
-        selectedLibraryFileOptions,
-      )
+      inlineFileAttachments = agentScope
+        ? []
+        : await loadInlineFileAttachments(
+          library,
+          effectiveSelectedContextPaths,
+          selectedLibraryFileOptions,
+        )
     } catch (error) {
       submitMeasurement.error(error, {
         stage: 'load_inline_attachments',
@@ -225,25 +247,54 @@ export function useChatSubmitMessage(
     })
 
     try {
-      const replyHandle = startCancelableAiChatReply(
-        aiPreferences,
-        {
-          prompt: trimmedMessage,
-          previousMessages: chatMemory,
-          longTermMemories,
-          files: inlineFileAttachments,
-          image: selectedImageAttachment ?? undefined,
-          selectedContextMode: effectiveSelectedContextMode,
+      const streamCallbacks = {
+        onThinkingDelta: (delta: string) => {
+          setStreamingThinking((current) => current + delta)
         },
-        {
-          onThinkingDelta: (delta) => {
-            setStreamingThinking((current) => current + delta)
-          },
-          onMessageDelta: (delta) => {
-            setStreamingAssistantMessage((current) => current + delta)
-          },
+        onMessageDelta: (delta: string) => {
+          setStreamingAssistantMessage((current) => current + delta)
         },
-      )
+      }
+      let replyHandle: CancelableAiReplyHandle
+      if (agentScope) {
+        const agent = await createChatScopedAgent({
+          scope: agentScope,
+          promptFileName: agentPromptFileName,
+          requestClarification: requestAgentClarification,
+          library,
+          scopePaths: agentCorpusPaths,
+          activeDocumentPath: agentScope === 'document' ? effectiveSelectedContextPaths[0] ?? null : null,
+          explicitlySelectedPaths: agentScope === 'graph' && effectiveSelectedContextMode === 'direct'
+            ? effectiveSelectedContextPaths
+            : [],
+          requestConfirmation: requestAgentConfirmation,
+        })
+        const controller = new AbortController()
+        replyHandle = {
+          abort: () => controller.abort(),
+          promise: runNativeToolAgent(aiPreferences, {
+            systemPrompt: agent.systemPrompt,
+            prompt: trimmedMessage,
+            previousMessages: chatMemory,
+            tools: agent.tools,
+            executeTool: agent.executeTool,
+            validateFinalAnswer: agent.validateFinalAnswer,
+          }, { ...streamCallbacks, abortSignal: controller.signal }),
+        }
+      } else {
+        replyHandle = startCancelableAiChatReply(
+          aiPreferences,
+          {
+            prompt: trimmedMessage,
+            previousMessages: chatMemory,
+            longTermMemories,
+            files: inlineFileAttachments,
+            image: selectedImageAttachment ?? undefined,
+            selectedContextMode: effectiveSelectedContextMode,
+          },
+          streamCallbacks,
+        )
+      }
       activeReplyRef.current = replyHandle
       const streamedAnswer = await replyHandle.promise
       activeReplyRef.current = null
@@ -266,18 +317,19 @@ export function useChatSubmitMessage(
         }],
       }
 
-      const titleChanged = resolvedTitle !== targetChatDocument.title
-      if (titleChanged) {
-        await saveChatDocument(targetChatFilePath, persistedDocument, library)
-      } else {
-        const appendResult = await appendChatMessages(targetChatFilePath, persistedDocument, library)
-        if (!appendResult.appended) {
+      if (!ephemeralSession && targetChatFilePath) {
+        const titleChanged = resolvedTitle !== targetChatDocument.title
+        if (titleChanged) {
           await saveChatDocument(targetChatFilePath, persistedDocument, library)
+        } else {
+          const appendResult = await appendChatMessages(targetChatFilePath, persistedDocument, library)
+          if (!appendResult.appended) {
+            await saveChatDocument(targetChatFilePath, persistedDocument, library)
+          }
         }
-      }
 
-      if (previousMessages.length === 0) {
-        scheduleAiChatTitle(
+        if (previousMessages.length === 0) {
+          scheduleAiChatTitle(
           {
             library,
             aiPreferences,
@@ -302,7 +354,8 @@ export function useChatSubmitMessage(
               ))
             },
           },
-        )
+          )
+        }
       }
 
       if (persistedDocument.longTermMemoryEnabled) {
@@ -318,13 +371,15 @@ export function useChatSubmitMessage(
 
       setActiveChatDocument(persistedDocument)
       setOptimisticThreadMessages(null)
-      setPendingAutoCreatedChatFilePath((current) => (current === targetChatFilePath ? null : current))
+      setPendingAutoCreatedChatFilePath((current) => (targetChatFilePath && current === targetChatFilePath ? null : current))
       setStreamingThinking('')
       setStreamingAssistantMessage('')
-      setChatTitleOverrides((current) => ({
-        ...current,
-        [targetChatFilePath]: normalizeChatTitle(persistedDocument.title),
-      }))
+      if (targetChatFilePath) {
+        setChatTitleOverrides((current) => ({
+          ...current,
+          [targetChatFilePath]: normalizeChatTitle(persistedDocument.title),
+        }))
+      }
       submitMeasurement.success({
         autoCreatedChat: !selectedChatFilePath,
         contextFileCount: effectiveSelectedContextPaths.length,
@@ -337,7 +392,7 @@ export function useChatSubmitMessage(
       submitMeasurement.error(error, {
         stage: 'stream_or_persist',
       })
-      setPendingAutoCreatedChatFilePath((current) => (current === targetChatFilePath ? null : current))
+      setPendingAutoCreatedChatFilePath((current) => (targetChatFilePath && current === targetChatFilePath ? null : current))
       setOptimisticThreadMessages(null)
       setDraft(previousDraft)
       setActiveChatDocument(targetChatDocument)

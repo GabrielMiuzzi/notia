@@ -56,6 +56,10 @@ pub(crate) fn is_hidden_entry_name(name: &str) -> bool {
     name.trim_start().starts_with('.')
 }
 
+pub(crate) fn is_visible_library_tree_entry(name: &str) -> bool {
+    !is_hidden_entry_name(name) || name.trim().eq_ignore_ascii_case(".agent")
+}
+
 /// Strips matching surrounding YAML quotes (single or double) and unescapes simple sequences.
 fn strip_yaml_quotes(value: &str) -> String {
     let s = value.trim();
@@ -145,7 +149,7 @@ pub(crate) fn read_directory_tree(
         .filter_map(|entry| {
             let entry_name_lossy = entry.file_name();
             let entry_name = entry_name_lossy.to_string_lossy();
-            if has_invalid_entry_name(&entry_name) || is_hidden_entry_name(&entry_name) {
+            if has_invalid_entry_name(&entry_name) || !is_visible_library_tree_entry(&entry_name) {
                 return None;
             }
 
@@ -282,7 +286,7 @@ pub(crate) fn collect_directory_signature(
         .filter_map(|entry| {
             let entry_name_lossy = entry.file_name();
             let entry_name = entry_name_lossy.to_string_lossy();
-            if has_invalid_entry_name(&entry_name) || is_hidden_entry_name(&entry_name) {
+            if has_invalid_entry_name(&entry_name) || !is_visible_library_tree_entry(&entry_name) {
                 return None;
             }
 
@@ -499,6 +503,15 @@ pub(crate) fn read_markdown_files_in_directory(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn library_tree_exposes_only_the_agent_hidden_directory() {
+        assert!(is_visible_library_tree_entry(".agent"));
+        assert!(is_visible_library_tree_entry(".AGENT"));
+        assert!(!is_visible_library_tree_entry(".notia"));
+        assert!(!is_visible_library_tree_entry(".git"));
+        assert!(is_visible_library_tree_entry("documents"));
+    }
 
     #[test]
     fn read_partial_frontmatter_reads_page_links() {

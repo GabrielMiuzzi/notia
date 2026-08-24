@@ -101,7 +101,9 @@ Visualización gráfica de las relaciones entre todas tus notas.
 - Cada nota es un **nodo**; cada wikilink es una **conexión**.
 - Navegación interactiva: zoom, paneo, clic para abrir la nota desde el grafo.
 - El layout se genera como un diagrama Mermaid agrupado por carpetas, manteniendo la legibilidad en bibliotecas grandes.
-- Filtro de búsqueda integrado dentro de la vista de grafo.
+- Búsqueda integrada por título y contenido: muestra las notas coincidentes en un desplegable sobre la barra, permite enfocarlas en el grafo, agregarlas al contexto del chat o abrirlas, y resalta sus nodos.
+- El chat lateral del Graph View es efímero: no crea archivos de chat. Sin selección consulta la biblioteca mediante RAG local, incluyendo nombres y rutas de carpetas; por ejemplo, preguntar por `chats` recupera los documentos ubicados dentro de esa carpeta. Al seleccionar archivos usa su contenido completo como contexto directo. También puede buscar y leer por título mediante tool calling nativo de Ollama.
+- Durante una consulta con herramientas, el panel muestra si está analizando, ejecutando una búsqueda o procesando resultados. Los modelos grandes disponen de un tiempo ampliado para completar las distintas rondas del agente y la operación se puede cancelar desde el compositor.
 - Notia mantiene un archivo `linkCache.md` dentro de `.notia/` con el diagrama del grafo, que se regenera automáticamente en segundo plano cuando cambian las notas.
 
 ### AI Chat
@@ -110,7 +112,12 @@ Chat con inteligencia artificial local via **Ollama**.
 
 - Configurá la URL de tu instancia de Ollama desde **Settings → IA**.
 - Funciona con **cualquier modelo de Ollama**, no solo modelos de visión.
+- El selector enumera todos los modelos informados por Ollama y marca Thinking, Vision y Tools; para los chats con agente se recomienda elegir uno con **Tools**.
+- En Task Manager, las consultas temáticas usan RAG; los pedidos exhaustivos como “todos los tickets” activan una lectura completa del corpus y reportan si algún contenido debió truncarse.
 - Podés adjuntar archivos de la librería como contexto para la conversación (modos: directo, referencia o sin archivos).
+- En el chat lateral de un archivo abierto, el archivo activo está autorizado como contexto; la IA solicita permiso visible antes de leer cualquier otro archivo.
+- Cuando el agente necesita una aclaración abierta, muestra la pregunta dentro del hilo y pausa la ejecución. La respuesta escrita en el compositor reanuda la misma consulta; también puede cancelarse mientras espera.
+- Cada librería mantiene sus agentes como archivos Markdown en `.agent/promps/`. La carpeta `.agent` es visible y editable desde el explorador de Notia, aunque las demás carpetas ocultas continúan excluidas. Notia crea `default.md` automáticamente con el prompt general completo de Notia y lo repone si falta o está vacío. El chat lateral muestra un selector superior con `default` y cada archivo adicional —usando su nombre sin `.md`—, recuerda la elección por librería y usa su contenido en las siguientes consultas.
 - Cuando hay muchos adjuntos, se muestran dentro de un bloque compacto con desplazamiento propio para mantener visible el campo de mensaje.
 - La IA mantiene **memoria a largo plazo**: extrae hechos, preferencias y datos personales de la conversación para personalizar respuestas futuras.
 - Soporte para modelos multimodales: enviá imágenes (capturas, fotos) para que la IA las analice (requiere modelo con soporte de visión).
@@ -141,7 +148,9 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 - **Comentarios**: discusión y notas adjuntas a cada tarea.
 - **Pomodoro integrado**: temporizador de 25/5 minutos con registro histórico de sesiones y estadísticas de productividad.
 - **Persistencia transparente**: cada tarea se guarda como un archivo Markdown con metadatos (frontmatter) dentro de la carpeta del tablero correspondiente.
-- **Chat contextual**: el chat lateral recibe el contenido Markdown completo de las tareas del tablero activo, incluidas sus propiedades, notas y detalles.
+- **Agente contextual**: el chat lateral conoce el panel activo de Task Manager pero no adjunta todos los tickets. Las búsquedas y lecturas quedan limitadas al tablero o panel visible; para consultar otro contexto primero hay que cambiar a ese panel. Usa RAG local para consultas generales y lee archivos completos bajo demanda mediante tool calling nativo de Ollama.
+- **Resúmenes por persona**: cuando se solicita una vista completa por responsables, el agente inspecciona todos los tickets del panel, releva las atribuciones explícitas tanto de los metadatos como de los detalles y evita agrupar el trabajo de distintas personas bajo el primer nombre encontrado.
+- **Búsqueda de personas**: los resultados relevantes se diversifican entre archivos para que un historial con muchas menciones no desplace otros tickets coincidentes. La cantidad informada corresponde a rutas de tickets únicas, no a comentarios o estados dentro de un mismo archivo.
 - **Panel adaptable**: el borde izquierdo del chat lateral permite ajustar su ancho con arrastre o teclado y conserva la medida elegida entre sesiones.
 
 ---
@@ -200,7 +209,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Visualiza todas las notas Markdown de la librería como nodos y los wikilinks entre ellas como conexiones, permitiendo navegación visual interactiva. |
 | **Cuándo usarlo** | Cuando querés explorar visualmente las relaciones entre tus notas, encontrar notas aisladas o descubrir clusters de conocimiento. |
-| **Pasos para consumir** | 1. Asegurate de tener notas Markdown con wikilinks en la librería. 2. En el **Icon Rail** (barra lateral izquierda), seleccionar **"Graph view"**. 3. Esperar a que se cargue el grafo (puede tomar segundos en bibliotecas grandes). 4. Usar zoom y paneo para explorar. 5. Hacer clic en un nodo para abrir la nota. 6. Usar la barra de búsqueda para filtrar nodos. |
+| **Pasos para consumir** | 1. Asegurate de tener notas Markdown con wikilinks en la librería. 2. En el **Icon Rail** (barra lateral izquierda), seleccionar **"Graph view"**. 3. Esperar a que se cargue el grafo (puede tomar segundos en bibliotecas grandes). 4. Usar zoom y paneo para explorar. 5. Hacer clic en un nodo para abrir la nota. 6. Usar la barra de búsqueda para encontrar texto en el título o contenido. 7. En una coincidencia, usar el ojo para centrar su nodo, `+` para agregarla o quitarla del contexto visible del chat, o el icono de archivo para abrirla. |
 | **Entradas esperadas** | Librería activa con al menos un archivo Markdown. No requiere entrada manual del usuario. |
 | **Salidas / Resultado** | Canvas interactivo con nodos (títulos de notas) y líneas de conexión (wikilinks). Al hacer clic en un nodo se abre la nota correspondiente en pestaña. |
 | **Errores comunes** | **"El grafo está vacío"**: no hay archivos Markdown en la librería. Solución: crear notas Markdown. **"Lentitud"**: bibliotecas con miles de notas pueden tardar en construir el modelo. El archivo `linkCache.md` dentro de `.notia/` acelera la vista previa del grafo y se regenera automáticamente en segundo plano; si aún se siente lento, considerá dividir la librería en partes más pequeñas. |
@@ -438,6 +447,9 @@ npm run dev
 # App desktop completa (Linux, auto-detecta Wayland/X11)
 npm run dev:tauri
 
+# App desktop completa en Windows
+npm run dev:tauri:windows
+
 # Forzar backend Wayland
 NOTIA_TAURI_BACKEND=wayland npm run dev:tauri:wayland
 
@@ -447,6 +459,8 @@ NOTIA_TAURI_BACKEND=x11 npm run dev:tauri:x11
 # Wayland con fallback a X11
 NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=1 npm run dev:tauri:wayland:fallback
 ```
+
+En Windows, si el puerto 1420 ya está ocupado por una instancia de Vite iniciada desde este mismo repositorio, el comando la reutiliza. Si pertenece a otra aplicación o proyecto, informa el proceso que debe cerrarse y no inicia Tauri contra un servidor incorrecto.
 
 ### Desarrollo para Android
 

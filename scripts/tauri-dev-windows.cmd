@@ -21,5 +21,5 @@ if not defined VS_DEV_CMD (
 call "%VS_DEV_CMD%" -arch=x64 -host_arch=x64
 if errorlevel 1 exit /b %errorlevel%
 
-npx.cmd @tauri-apps/cli dev
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tauri-dev-windows.ps1"
 exit /b %errorlevel%
