@@ -52,6 +52,7 @@ import {
 } from '../services/vaultRuntime'
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import { readTaskManagerVaultCache, writeTaskManagerVaultCache } from '../services/taskManagerVaultCache'
+import { subscribeTaskManagerMutations } from '../services/taskManagerMutationEvents'
 
 interface TaskDialogState {
   open: boolean
@@ -514,6 +515,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
     applySnapshotState(nextSnapshot)
   }, [applySnapshotState, settings.activeVaultPath, settings.boards])
+
+  useEffect(() => subscribeTaskManagerMutations((vaultPath) => {
+    if (settings.activeVaultPath === vaultPath) {
+      setSettings(loadTaskManagerSettings())
+      void reload()
+    }
+  }), [reload, settings.activeVaultPath])
 
   const setActiveVaultPath = useCallback(async (vault: TaskManagerVaultRef | null) => {
     if (!vault?.path) {

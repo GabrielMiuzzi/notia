@@ -31,6 +31,7 @@ import {
   type AgentPromptOption,
 } from '../../../../services/ai/agentPromptRuntime'
 import type { ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
+import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
@@ -102,9 +103,17 @@ export function ChatWorkspaceViewComponent({
     { fileName: 'default.md', name: 'default' },
   ])
   const [agentPromptFileName, setAgentPromptFileName] = useState('default.md')
-  const [pendingAgentQuestion, setPendingAgentQuestion] = useState<string | null>(null)
+  const [pendingAgentQuestion, setPendingAgentQuestion] = useState<{
+    question: string
+    choices: string[]
+  } | null>(null)
   const [pendingAgentAnswer, setPendingAgentAnswer] = useState<string | null>(null)
+  const [pendingAgentConfirmation, setPendingAgentConfirmation] = useState<string | null>(null)
+  const [agentExecutionPlan, setAgentExecutionPlan] = useState<TaskExecutionStep[]>([])
+  const [awaitingAgentExecutionPlanApproval, setAwaitingAgentExecutionPlanApproval] = useState(false)
   const clarificationResolverRef = useRef<((answer: string) => void) | null>(null)
+  const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null)
+  const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string }) => void) | null>(null)
 
   useEffect(() => {
     if (!library || !agentScope) {
@@ -241,6 +250,12 @@ export function ChatWorkspaceViewComponent({
     setSelectedLibraryFilePaths,
   ])
 
+  useEffect(() => {
+    if (!isSubmitting) {
+      setPendingAgentAnswer(null)
+    }
+  }, [isSubmitting])
+
   const { confirm } = useConfirmationEngine()
   const dispatch = useAppDispatch()
   const imageInputRef = useRef<HTMLInputElement | null>(null)
@@ -252,7 +267,15 @@ export function ChatWorkspaceViewComponent({
       return
     }
     thread.scrollTop = thread.scrollHeight
-  }, [displayedMessages.length, isSubmitting, streamingAssistantMessage, streamingThinking])
+  }, [
+    displayedMessages.length,
+    agentExecutionPlan,
+    isSubmitting,
+    pendingAgentConfirmation,
+    pendingAgentQuestion,
+    streamingAssistantMessage,
+    streamingThinking,
+  ])
 
   const handleOpenAiSettings = useCallback(() => {
     dispatch(openSettingsToSection('IA'))
@@ -295,7 +318,7 @@ export function ChatWorkspaceViewComponent({
       agentCorpusPaths,
       agentScope,
       agentPromptFileName,
-      requestAgentClarification: (question, signal) => new Promise<string>((resolve, reject) => {
+      requestAgentClarification: (question, signal, choices = []) => new Promise<string>((resolve, reject) => {
         const handleAbort = () => {
           clarificationResolverRef.current = null
           setPendingAgentQuestion(null)
@@ -305,18 +328,50 @@ export function ChatWorkspaceViewComponent({
         clarificationResolverRef.current = (answer) => {
           signal.removeEventListener('abort', handleAbort)
           clarificationResolverRef.current = null
+          setPendingAgentQuestion(null)
           resolve(answer)
         }
         setPendingAgentAnswer(null)
-        setPendingAgentQuestion(question)
+        setPendingAgentQuestion({ question, choices })
         setStreamingThinking('')
         setStreamingAssistantMessage('')
       }),
-      requestAgentConfirmation: async (question) => confirm({
-        title: 'Permiso del agente de IA',
-        message: question,
-        confirmLabel: 'Permitir',
-        cancelLabel: 'No permitir',
+      requestAgentConfirmation: (question, signal) => new Promise<boolean>((resolve, reject) => {
+        const handleAbort = () => {
+          confirmationResolverRef.current = null
+          setPendingAgentConfirmation(null)
+          reject(new Error('Se canceló la confirmación solicitada por el agente.'))
+        }
+        signal.addEventListener('abort', handleAbort, { once: true })
+        confirmationResolverRef.current = (accepted) => {
+          signal.removeEventListener('abort', handleAbort)
+          confirmationResolverRef.current = null
+          setPendingAgentConfirmation(null)
+          resolve(accepted)
+        }
+        setPendingAgentConfirmation(question)
+        setStreamingThinking('')
+        setStreamingAssistantMessage('')
+      }),
+      onAgentExecutionPlanChange: setAgentExecutionPlan,
+      requestAgentExecutionPlanApproval: (_steps, signal) => new Promise((resolve, reject) => {
+        const handleAbort = () => {
+          planApprovalResolverRef.current = null
+          clarificationResolverRef.current = null
+          setAwaitingAgentExecutionPlanApproval(false)
+          setPendingAgentQuestion(null)
+          reject(new Error('Se canceló la aprobación del plan del agente.'))
+        }
+        signal.addEventListener('abort', handleAbort, { once: true })
+        planApprovalResolverRef.current = (decision) => {
+          signal.removeEventListener('abort', handleAbort)
+          planApprovalResolverRef.current = null
+          setAwaitingAgentExecutionPlanApproval(false)
+          resolve(decision)
+        }
+        setAwaitingAgentExecutionPlanApproval(true)
+        setStreamingThinking('')
+        setStreamingAssistantMessage('')
       }),
       library,
       aiPreferences,
@@ -561,6 +616,30 @@ export function ChatWorkspaceViewComponent({
               streamingAssistantMessage={streamingAssistantMessage}
               pendingAgentQuestion={pendingAgentQuestion}
               pendingAgentAnswer={pendingAgentAnswer}
+              pendingAgentConfirmation={pendingAgentConfirmation}
+              agentExecutionPlan={agentExecutionPlan}
+              awaitingAgentExecutionPlanApproval={awaitingAgentExecutionPlanApproval}
+              onApproveAgentExecutionPlan={() => planApprovalResolverRef.current?.({ approved: true })}
+              onSuggestAgentExecutionPlanChanges={() => {
+                const planResolver = planApprovalResolverRef.current
+                if (!planResolver) return
+                setAwaitingAgentExecutionPlanApproval(false)
+                setPendingAgentQuestion({ question: '¿Qué cambios querés hacerle al TO-DO?', choices: [] })
+                clarificationResolverRef.current = (suggestion) => {
+                  clarificationResolverRef.current = null
+                  setPendingAgentQuestion(null)
+                  planResolver({ approved: false, suggestion })
+                }
+              }}
+              onConfirmAgentAction={() => confirmationResolverRef.current?.(true)}
+              onDeclineAgentAction={() => confirmationResolverRef.current?.(false)}
+              onSelectAgentClarificationOption={(choice) => {
+                const resolver = clarificationResolverRef.current
+                if (!resolver) return
+                setPendingAgentAnswer(choice)
+                setPendingAgentQuestion(null)
+                resolver(choice)
+              }}
               threadRef={chatThreadRef}
               onOpenAiSettings={handleOpenAiSettings}
             />
@@ -609,6 +688,7 @@ export function ChatWorkspaceViewComponent({
                   clarificationResolver(answer)
                   return
                 }
+                setPendingAgentAnswer(null)
                 void submitMessage(draft)
               }}
               onCancel={cancelActiveReply}

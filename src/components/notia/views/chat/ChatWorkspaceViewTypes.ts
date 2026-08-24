@@ -8,7 +8,7 @@ import type {
   ChatFileContextMode,
   ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
-import type { ChatAgentScope } from '../../../../services/chat/chatScopedAgentRuntime'
+import type { ChatAgentScope, TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
 
 export interface ChatWorkspaceViewProps {
   agentCorpusPaths?: string[]
@@ -133,8 +133,13 @@ export interface UseChatSubmitMessageDependencies {
   agentCorpusPaths: string[]
   agentScope: ChatAgentScope | null
   agentPromptFileName: string
-  requestAgentClarification: (question: string, signal: AbortSignal) => Promise<string>
-  requestAgentConfirmation: (question: string) => Promise<boolean>
+  requestAgentClarification: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
+  requestAgentConfirmation: (question: string, signal: AbortSignal) => Promise<boolean>
+  onAgentExecutionPlanChange: (steps: TaskExecutionStep[]) => void
+  requestAgentExecutionPlanApproval: (
+    steps: TaskExecutionStep[],
+    signal: AbortSignal,
+  ) => Promise<{ approved: boolean; suggestion?: string }>
   library: NotiaLibrary | null
   aiPreferences: AiPreferences
   activeChatDocument: StoredChatDocument | null

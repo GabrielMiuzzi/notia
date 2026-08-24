@@ -33,6 +33,8 @@ export function useChatSubmitMessage(
     agentPromptFileName,
     requestAgentClarification,
     requestAgentConfirmation,
+    onAgentExecutionPlanChange,
+    requestAgentExecutionPlanApproval,
     library,
     aiPreferences,
     activeChatDocument,
@@ -257,17 +259,21 @@ export function useChatSubmitMessage(
       }
       let replyHandle: CancelableAiReplyHandle
       if (agentScope) {
+        onAgentExecutionPlanChange([])
         const agent = await createChatScopedAgent({
           scope: agentScope,
           promptFileName: agentPromptFileName,
           requestClarification: requestAgentClarification,
           library,
           scopePaths: agentCorpusPaths,
+          taskManagerScopeKey: agentScope === 'task-manager' ? preferredContextScopeKey : null,
           activeDocumentPath: agentScope === 'document' ? effectiveSelectedContextPaths[0] ?? null : null,
           explicitlySelectedPaths: agentScope === 'graph' && effectiveSelectedContextMode === 'direct'
             ? effectiveSelectedContextPaths
             : [],
           requestConfirmation: requestAgentConfirmation,
+          onExecutionPlanChange: onAgentExecutionPlanChange,
+          requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
         })
         const controller = new AbortController()
         replyHandle = {
@@ -279,6 +285,19 @@ export function useChatSubmitMessage(
             tools: agent.tools,
             executeTool: agent.executeTool,
             validateFinalAnswer: agent.validateFinalAnswer,
+            maxRounds: agentScope === 'task-manager' ? 64 : undefined,
+            singleCallToolNames: agentScope === 'task-manager' ? [
+              'set_task_execution_plan',
+              'create_task_ticket',
+              'replace_task_content',
+              'add_task_comment',
+              'add_task_subtask',
+              'move_task_group',
+              'change_task_state',
+              'change_task_priority',
+              'create_task_group',
+              'delete_task_group',
+            ] : undefined,
           }, { ...streamCallbacks, abortSignal: controller.signal }),
         }
       } else {

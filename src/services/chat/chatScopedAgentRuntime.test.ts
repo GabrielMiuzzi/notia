@@ -4,10 +4,12 @@ import {
   buildChatAgentTools,
   buildTicketSectionCorrection,
   buildAgentSearchText,
+  extractTaskChildTitles,
   groupTaskContextMatches,
   normalizeAgentSearchText,
   scoreAgentText,
   selectDiverseAgentFragments,
+  resolveTaskChildDocuments,
 } from './chatScopedAgentRuntime'
 
 describe('chatScopedAgentRuntime', () => {
@@ -63,6 +65,44 @@ describe('chatScopedAgentRuntime', () => {
         fragments: ['Leandro'],
       },
     ])
+  })
+
+  it('resolves linked subtasks only inside the parent ticket board', () => {
+    const parent = {
+      id: 'doc-1',
+      option: {
+        path: 'C:/vault/task-mannager/default/Parent.md',
+        name: 'Parent.md',
+        relativePath: 'task-mannager/default/Parent.md',
+      },
+    }
+    const expectedChild = {
+      id: 'doc-2',
+      option: {
+        path: 'C:/vault/task-mannager/default/subTasks/Seguimiento.md',
+        name: 'Seguimiento.md',
+        relativePath: 'task-mannager/default/subTasks/Seguimiento.md',
+      },
+    }
+    const otherBoardChild = {
+      id: 'doc-3',
+      option: {
+        path: 'C:/vault/task-mannager/otro/subTasks/Seguimiento.md',
+        name: 'Seguimiento.md',
+        relativePath: 'task-mannager/otro/subTasks/Seguimiento.md',
+      },
+    }
+    const content = [
+      '---',
+      'childs: ["[[Seguimiento]]"]',
+      '---',
+      '',
+      'Detalle del ticket padre.',
+    ].join('\n')
+
+    expect(extractTaskChildTitles(content)).toEqual(['Seguimiento'])
+    expect(resolveTaskChildDocuments(parent, content, [parent, expectedChild, otherBoardChild]))
+      .toEqual([expectedChild])
   })
 
   it('rejects a multi-ticket answer that merges fields under one heading', () => {
@@ -140,8 +180,25 @@ describe('chatScopedAgentRuntime', () => {
     expect(names).toContain('search_task_context')
     expect(names).toContain('read_task_tickets')
     expect(names).toContain('read_all_task_tickets')
+    expect(names).toContain('get_task_manager_options')
+    expect(names).toContain('set_task_execution_plan')
     expect(names).not.toContain('search_library_context')
     expect(names).not.toContain('request_file_read_permission')
+    expect(names).toEqual(expect.arrayContaining([
+      'create_task_ticket',
+      'replace_task_content',
+      'add_task_comment',
+      'add_task_subtask',
+      'move_task_group',
+      'change_task_state',
+      'change_task_priority',
+      'create_task_group',
+      'delete_task_group',
+    ]))
+    const mutationTools = buildChatAgentTools('task-manager')
+      .filter((tool) => names.slice(-9).includes(tool.function.name))
+    expect(mutationTools).toHaveLength(9)
+    expect(mutationTools.every((tool) => tool.function.description.includes('confirmacion'))).toBe(true)
   })
 
   it('requires file permission only in the document scope', () => {
@@ -156,6 +213,26 @@ describe('chatScopedAgentRuntime', () => {
     expect(prompt).toContain('debes llamar read_all_task_tickets')
     expect(prompt).toContain('nunca sirve para afirmar que encontraste todos')
     expect(prompt).toContain('read_task_tickets solo si')
+    expect(prompt).toContain('incluyen automaticamente cada subtarea enlazada y su contenido')
+    expect(prompt).toContain('Antes de cada mutacion')
+    expect(prompt).toContain('una confirmacion previa no autoriza operaciones posteriores')
+    expect(prompt).toContain('Politica de no invencion')
+    expect(prompt).toContain('No confundas aclaracion con autorizacion')
+    expect(prompt).toContain('No agrupes varias escrituras bajo una confirmacion')
+    expect(prompt).toContain('No uses el primer resultado por conveniencia')
+    expect(prompt).toContain('incluyendo cada alternativa concreta en choices')
+    expect(prompt).toContain('crear uno con create_task_group')
+    expect(prompt).toContain('no tiene ningun ticket asignado')
+    expect(prompt).toContain('antes de la primera mutacion llama set_task_execution_plan')
+    expect(prompt).toContain('planStepId')
+    expect(prompt).toContain('requiere aprobacion explicita')
+    expect(prompt).toContain('presenta un nuevo plan para aprobar')
+    expect(prompt).toContain('cada mutacion debe solicitarse sola')
+    expect(prompt).toContain('Un check del TO-DO equivale a una unica mutacion')
+    expect(prompt).toContain('incluyendo todos sus titulos en titles')
+    expect(prompt).toContain('botones clickeables dentro del chat')
+    expect(prompt).toContain('No hagas una pregunta generica')
+    expect(prompt).toContain('Si el usuario rechaza una confirmacion, no reintentes')
   })
 
   it('requires exhaustive per-person summaries to inspect every ticket independently', () => {

@@ -4433,6 +4433,142 @@
   color: var(--color-subtle-text);
 }
 
+.notia-chat-agent-confirmation {
+  border-color: var(--color-border-strong);
+  border-left: 2px solid var(--color-active-border);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-card-bg) 96%, var(--color-accent-bg));
+  padding: 12px 14px;
+  gap: 8px;
+}
+
+.notia-chat-agent-confirmation .notia-chat-message-role {
+  color: var(--color-muted-text);
+  letter-spacing: 0.04em;
+}
+
+.notia-chat-agent-plan {
+  border: 1px solid var(--color-border-strong);
+  border-left: 2px solid var(--color-active-border);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-card-bg) 97%, var(--color-accent-bg));
+  padding: 12px 14px;
+  gap: 9px;
+}
+
+.notia-chat-agent-plan-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notia-chat-agent-plan-list li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.notia-chat-agent-plan-status {
+  display: inline-flex;
+  min-height: 18px;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-agent-plan-list li.is-in-progress {
+  color: var(--color-heading-text);
+}
+
+.notia-chat-agent-plan-list li.is-in-progress .notia-chat-agent-plan-status {
+  color: var(--color-active-border);
+  animation: notia-chat-agent-plan-spin 900ms linear infinite;
+}
+
+.notia-chat-agent-plan-list li.is-completed {
+  color: var(--color-subtle-text);
+  text-decoration: line-through;
+}
+
+.notia-chat-agent-plan-list li.is-completed .notia-chat-agent-plan-status {
+  color: var(--color-active-border);
+}
+
+.notia-chat-agent-plan-list li.is-blocked .notia-chat-agent-plan-status {
+  color: var(--color-error-text);
+}
+
+@keyframes notia-chat-agent-plan-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notia-chat-agent-plan-list li.is-in-progress .notia-chat-agent-plan-status {
+    animation: none;
+  }
+}
+
+.notia-chat-agent-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.notia-chat-agent-interaction-hint {
+  margin-top: 4px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.notia-chat-agent-confirmation-button {
+  min-width: 96px;
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.notia-chat-agent-confirmation-button:hover {
+  border-color: var(--color-active-border);
+  background: var(--color-hover-surface);
+}
+
+.notia-chat-agent-confirmation-button:focus-visible {
+  border-color: var(--color-focus-ring);
+  outline: 2px solid color-mix(in srgb, var(--color-focus-ring) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.notia-chat-agent-confirmation-button.is-primary {
+  border-color: var(--color-active-border);
+  background: var(--color-accent-bg);
+  color: var(--color-heading-text);
+}
+
+.notia-chat-agent-confirmation-button.is-primary:hover {
+  background: var(--color-active-item-bg);
+}
+
+@media (pointer: coarse) {
+  .notia-chat-agent-confirmation-button {
+    min-height: 48px;
+  }
+}
+
 .notia-chat-markdown {
   color: var(--color-body-text);
   line-height: 1.55;

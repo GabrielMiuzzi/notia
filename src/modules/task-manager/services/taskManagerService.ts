@@ -236,7 +236,7 @@ export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskMa
   }
 }
 
-export async function createTask(vaultPath: string, formData: TaskFormData, tasks: TaskItem[]): Promise<void> {
+export async function createTask(vaultPath: string, formData: TaskFormData, tasks: TaskItem[]): Promise<string> {
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const order = resolveNewTaskOrder(tasks, formData)
@@ -278,6 +278,7 @@ export async function createTask(vaultPath: string, formData: TaskFormData, task
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo escribir la tarea.')
   }
+  return uniqueRelativePath
 }
 
 export async function updateTaskFrontmatter(vaultPath: string, taskPath: string, updates: Record<string, unknown>): Promise<void> {

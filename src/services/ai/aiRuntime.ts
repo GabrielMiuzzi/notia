@@ -100,6 +100,7 @@ export interface NativeToolAgentInput {
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
   validateFinalAnswer?: (answer: string) => string | null
   maxRounds?: number
+  singleCallToolNames?: string[]
 }
 
 interface StreamAiChatReplyInput {
@@ -1474,7 +1475,7 @@ export async function runNativeToolAgent(
   ]
 
   try {
-    const maxRounds = Math.min(10, Math.max(1, input.maxRounds ?? 6))
+    const maxRounds = Math.min(80, Math.max(1, input.maxRounds ?? 6))
     for (let round = 0; round < maxRounds; round += 1) {
       options.onThinkingDelta?.(
         round === 0
@@ -1540,13 +1541,38 @@ export async function runNativeToolAgent(
         return answer
       }
 
-      for (const call of toolCalls) {
+      const singleCallToolNames = new Set(input.singleCallToolNames ?? [])
+      let acceptedSingleCall = false
+      const acceptedToolCalls = toolCalls.filter((call) => {
+        if (!singleCallToolNames.has(call.function.name)) {
+          return true
+        }
+        if (acceptedSingleCall) {
+          return false
+        }
+        acceptedSingleCall = true
+        return true
+      })
+      const acceptedCallSet = new Set(acceptedToolCalls)
+      const deferredToolCalls = toolCalls.filter((call) => !acceptedCallSet.has(call))
+      for (const call of acceptedToolCalls) {
         options.onThinkingDelta?.(`Ejecutando ${call.function.name}…\n`)
         const result = await input.executeTool(call, controller.signal)
         messages.push({
           role: 'tool',
           tool_name: call.function.name,
           content: JSON.stringify(result),
+        })
+      }
+      for (const call of deferredToolCalls) {
+        messages.push({
+          role: 'tool',
+          tool_name: call.function.name,
+          content: JSON.stringify({
+            ok: false,
+            error: 'mutation-must-run-independently',
+            instruction: 'Vuelve a solicitar esta mutacion sola en una ronda posterior. Las busquedas y lecturas si pueden agruparse.',
+          }),
         })
       }
     }

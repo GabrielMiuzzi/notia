@@ -1,7 +1,8 @@
 import { memo, useLayoutEffect, useRef } from 'react'
-import { Bot, User2 } from 'lucide-react'
+import { Bot, Check, Circle, LoaderCircle, OctagonX, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
+import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
 
 interface ChatThreadProps {
   messages: StoredChatMessage[]
@@ -13,8 +14,16 @@ interface ChatThreadProps {
   showHistoryPanel: boolean
   streamingThinking: string
   streamingAssistantMessage: string
-  pendingAgentQuestion?: string | null
+  pendingAgentQuestion?: { question: string; choices: string[] } | null
   pendingAgentAnswer?: string | null
+  pendingAgentConfirmation?: string | null
+  agentExecutionPlan?: TaskExecutionStep[]
+  awaitingAgentExecutionPlanApproval?: boolean
+  onApproveAgentExecutionPlan?: () => void
+  onSuggestAgentExecutionPlanChanges?: () => void
+  onConfirmAgentAction?: () => void
+  onDeclineAgentAction?: () => void
+  onSelectAgentClarificationOption?: (choice: string) => void
   threadRef: React.RefObject<HTMLDivElement | null>
   onOpenAiSettings?: () => void
 }
@@ -31,6 +40,14 @@ function ChatThreadComponent({
   streamingAssistantMessage,
   pendingAgentQuestion,
   pendingAgentAnswer,
+  pendingAgentConfirmation,
+  agentExecutionPlan = [],
+  awaitingAgentExecutionPlanApproval = false,
+  onApproveAgentExecutionPlan,
+  onSuggestAgentExecutionPlanChanges,
+  onConfirmAgentAction,
+  onDeclineAgentAction,
+  onSelectAgentClarificationOption,
   threadRef,
   onOpenAiSettings,
 }: ChatThreadProps) {
@@ -89,6 +106,34 @@ function ChatThreadComponent({
               </div>
             </article>
           ))}
+          {agentExecutionPlan.length > 0 ? (
+            <article className="notia-chat-message notia-chat-message--assistant">
+              <div className="notia-chat-message-avatar" aria-hidden="true"><Bot size={16} /></div>
+              <div className="notia-chat-message-bubble notia-chat-agent-plan">
+                <span className="notia-chat-message-role">Plan de ejecución</span>
+                <ol className="notia-chat-agent-plan-list">
+                  {agentExecutionPlan.map((step) => (
+                    <li key={step.id} className={`is-${step.status}`}>
+                      <span className="notia-chat-agent-plan-status" aria-hidden="true">
+                        {step.status === 'completed' ? <Check size={14} /> : step.status === 'in-progress' ? <LoaderCircle size={14} /> : step.status === 'blocked' ? <OctagonX size={14} /> : <Circle size={12} />}
+                      </span>
+                      <span>{step.label}</span>
+                    </li>
+                  ))}
+                </ol>
+                {awaitingAgentExecutionPlanApproval ? (
+                  <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Revisar plan de ejecución">
+                    <button type="button" className="notia-chat-agent-confirmation-button is-primary" onClick={onApproveAgentExecutionPlan}>
+                      Aprobar TO-DO
+                    </button>
+                    <button type="button" className="notia-chat-agent-confirmation-button" onClick={onSuggestAgentExecutionPlanChanges}>
+                      Sugerir cambios
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </article>
+          ) : null}
           {isSubmitting ? (
             <>
               {pendingAgentQuestion ? (
@@ -96,9 +141,25 @@ function ChatThreadComponent({
                   <div className="notia-chat-message-avatar" aria-hidden="true">
                     <Bot size={16} />
                   </div>
-                  <div className="notia-chat-message-bubble">
+                  <div className="notia-chat-message-bubble notia-chat-agent-confirmation">
                     <span className="notia-chat-message-role">Asistente · necesita una aclaración</span>
-                    <ChatMarkdownMessage source={pendingAgentQuestion} />
+                    <ChatMarkdownMessage source={pendingAgentQuestion.question} />
+                    {pendingAgentQuestion.choices.length > 0 ? (
+                      <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Opciones de aclaraciÃ³n">
+                        {pendingAgentQuestion.choices.map((choice) => (
+                          <button
+                            key={choice}
+                            type="button"
+                            className="notia-chat-agent-confirmation-button"
+                            onClick={() => onSelectAgentClarificationOption?.(choice)}
+                          >
+                            {choice}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="notia-chat-agent-interaction-hint">RespondÃ© usando el campo de mensaje.</span>
+                    )}
                   </div>
                 </article>
               ) : null}
@@ -113,6 +174,26 @@ function ChatThreadComponent({
                   </div>
                 </article>
               ) : null}
+              {pendingAgentConfirmation ? (
+                <article className="notia-chat-message notia-chat-message--assistant">
+                  <div className="notia-chat-message-avatar" aria-hidden="true">
+                    <Bot size={16} />
+                  </div>
+                  <div className="notia-chat-message-bubble notia-chat-agent-confirmation">
+                    <span className="notia-chat-message-role">Asistente · requiere confirmación</span>
+                    <ChatMarkdownMessage source={pendingAgentConfirmation} />
+                    <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Confirmar acción del agente">
+                      <button type="button" className="notia-chat-agent-confirmation-button is-primary" onClick={onConfirmAgentAction}>
+                        Confirmar
+                      </button>
+                      <button type="button" className="notia-chat-agent-confirmation-button" onClick={onDeclineAgentAction}>
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              ) : null}
+              {!pendingAgentQuestion && !pendingAgentConfirmation ? (
               <article className="notia-chat-message notia-chat-message--assistant">
                 <div className="notia-chat-message-avatar" aria-hidden="true">
                   <Bot size={16} />
@@ -136,6 +217,7 @@ function ChatThreadComponent({
                   )}
                 </div>
               </article>
+              ) : null}
               {streamingAssistantMessage.trim() ? (
                 <article className="notia-chat-message notia-chat-message--assistant">
                   <div className="notia-chat-message-avatar" aria-hidden="true">
