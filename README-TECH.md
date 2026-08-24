@@ -3241,3 +3241,108 @@ Para convenciones de código, arquitectura, naming, reglas de estado, manejo de 
 ---
 
 *Notia v1.0.13 — Documentación técnica sincronizada con el código fuente. Última actualización: 2026-06-18.*
+
+## Integración con la bandeja del sistema de Windows
+
+En Windows, `src-tauri/src/windows_tray.rs` configura un icono de bandeja y convierte el cierre de la ventana principal en una operación de ocultamiento. El módulo se compila exclusivamente bajo `cfg(target_os = "windows")`; Android, macOS y Linux conservan el cierre normal. El menú nativo permite **Abrir Notia** o **Salir**, y un doble clic izquierdo también restaura la ventana. La salida explícita usa `AppHandle::exit(0)`, por lo que no vuelve a atravesar la interceptación de cierre.
+
+```mermaid
+flowchart TD
+    Close[Usuario cierra la ventana] --> Event[WindowEvent CloseRequested]
+    Event --> Prevent[Impedir cierre]
+    Prevent --> Hide[Ocultar ventana principal]
+    Tray[Icono de bandeja] --> Open[Abrir Notia o doble clic]
+    Open --> Show[Mostrar, restaurar y enfocar]
+    Tray --> Exit[Salir]
+    Exit --> Stop[Finalizar el proceso]
+```
+
+```mermaid
+flowchart LR
+    Frontend[Controles de ventana React] --> Command[window_control]
+    Command --> Tauri[Tauri Window]
+    WindowsTray[windows_tray.rs solo Windows] --> Tauri
+    WindowsTray --> NativeTray[Bandeja nativa de Windows]
+```
+
+```mermaid
+sequenceDiagram
+    actor User as Usuario
+    participant Window as Ventana principal
+    participant Tray as windows_tray.rs
+    participant App as Tauri AppHandle
+    User->>Window: Cerrar
+    Window->>Tray: CloseRequested
+    Tray->>Window: prevent_close + hide
+    User->>Tray: Abrir Notia
+    Tray->>Window: show + unminimize + set_focus
+    User->>Tray: Salir
+    Tray->>App: exit(0)
+```
+
+No se exponen comandos, DTOs ni datos persistidos nuevos. Si el icono configurado no está disponible, el arranque devuelve un error visible; los fallos al mostrar, enfocar u ocultar la ventana se registran sin contenido privado.
+
+## Agente de Notia por Telegram
+
+La integración usa long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
+
+El emparejamiento exige `/start` y aprobación local. Cada update posterior debe coincidir tanto en `chatId` como en `userId`. El scope `library` del agente ofrece búsqueda y lectura sobre el corpus completo, además de `create_library_note`, `replace_library_document` y `delete_library_document`. Estas mutaciones son serializadas, se ejecutan individualmente y llaman `requestConfirmation`; Telegram muestra callbacks efímeros asociados a una operación concreta.
+
+Comandos Tauri:
+
+| Comando | Entrada | Salida |
+|---|---|---|
+| `check_telegram_bot` | `{ token }` | Identidad del bot |
+| `poll_telegram_updates` | `{ token, offset }` | Updates normalizados |
+| `send_telegram_message` | `{ token, chatId, text, buttons[] }` | `void` |
+| `answer_telegram_callback` | `{ token, callbackQueryId }` | `void` |
+
+```mermaid
+flowchart TD
+    Token[Guardar token y activar] --> Poll[getUpdates long polling]
+    Poll --> Start{Mensaje /start}
+    Start --> Pending[Identidad pendiente]
+    Pending --> Approve{Aprobación local}
+    Approve -->|Sí| Paired[Chat y usuario autorizados]
+    Approve -->|No| Denied[Sin acceso]
+    Paired --> Agent[Agente scope library]
+    Agent --> Read[Búsqueda y lectura]
+    Agent --> Mutation[Mutación propuesta]
+    Mutation --> Confirm{Callback Confirmar/Cancelar}
+    Confirm -->|Confirmar| Write[Escritura filesystem]
+```
+
+```mermaid
+flowchart LR
+    Settings[SettingsModal] --> Preferences[Redux preferences]
+    Preferences --> Config[.notia/notiaConfig.json]
+    Bridge[useTelegramAgentBridge] --> TelegramRuntime[telegramRuntime.ts]
+    TelegramRuntime --> Commands[commands/telegram.rs]
+    Commands --> Service[telegram_service.rs]
+    Service --> API[Telegram Bot API]
+    Bridge --> Agent[chatScopedAgentRuntime]
+    Agent --> Filesystem[Filesystem adapters]
+    Agent --> Ollama[Ollama]
+```
+
+```mermaid
+sequenceDiagram
+    actor User as Usuario Telegram
+    participant TG as Telegram API
+    participant Bridge as Notia bridge
+    participant Agent as Agente IA
+    participant FS as Biblioteca
+    User->>TG: Solicitud de modificación
+    TG-->>Bridge: getUpdates
+    Bridge->>Agent: Ejecutar consulta y herramientas
+    Agent-->>Bridge: requestConfirmation detalle exacto
+    Bridge->>TG: sendMessage con Confirmar/Cancelar
+    User->>TG: Confirmar
+    TG-->>Bridge: callback_query
+    Bridge->>Agent: accepted=true
+    Agent->>FS: Escritura validada
+    Agent-->>Bridge: Resultado final
+    Bridge->>TG: Respuesta
+```
+
+La recepción usa `offset = update_id + 1` para evitar duplicados y limita los updates a mensajes y callbacks. Solo se procesa una consulta a la vez; el historial remoto es efímero, acotado a veinte mensajes y se limpia al cambiar de biblioteca. Telegram conserva updates por hasta 24 horas y `getUpdates` no funciona si el bot tiene un webhook activo, según la Bot API oficial.

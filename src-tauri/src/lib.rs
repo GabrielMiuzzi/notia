@@ -11,6 +11,7 @@ use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, Libra
 mod commands {
     pub mod ai;
     pub mod bluetooth;
+    pub mod telegram;
 }
 mod dto {
     pub mod bluetooth;
@@ -22,10 +23,13 @@ mod notia_timer;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
+    pub mod telegram_service;
 }
 mod state {
     pub mod bluetooth_state;
 }
+#[cfg(target_os = "windows")]
+mod windows_tray;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,10 +125,15 @@ fn start_window_dragging_with_restore(_window: tauri::Window) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(state::bluetooth_state::ColdPassBluetoothState::default())
         .manage(LibraryTreeWatchState::default())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    #[cfg(target_os = "windows")]
+    let builder = windows_tray::configure(builder);
+
+    builder
         .invoke_handler(tauri::generate_handler![
             read_library_tree,
             read_library_tree_signature,
@@ -146,6 +155,10 @@ pub fn run() {
             commands::ai::run_desktop_ai_tool_chat,
             commands::ai::run_desktop_ai_chat_streaming,
             commands::ai::list_desktop_ai_models,
+            commands::telegram::check_telegram_bot,
+            commands::telegram::poll_telegram_updates,
+            commands::telegram::send_telegram_message,
+            commands::telegram::answer_telegram_callback,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
             mobile_ai_bridge::run_android_ai_chat_streaming,

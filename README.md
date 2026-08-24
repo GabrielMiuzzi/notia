@@ -47,6 +47,14 @@
 - **Búsqueda integrada**: búsqueda de archivos por nombre dentro de la librería activa.
 - **Temas**: soporte para tema claro y oscuro.
 - **Multiplataforma**: Windows, macOS, Linux y Android.
+- **Bandeja del sistema en Windows**: al cerrar la ventana principal, Notia continúa ejecutándose en segundo plano y puede restaurarse desde el icono junto al reloj.
+- **Agente por Telegram**: vinculá de forma explícita un chat privado para buscar, leer y modificar la biblioteca activa desde el bot, conservando confirmaciones individuales para cada escritura.
+
+En Windows, pulsar la **X** oculta Notia en la bandeja del sistema en vez de finalizarla. Para volver, hacé doble clic izquierdo en el icono de Notia o abrí su menú y elegí **Abrir Notia**. Para terminar completamente la aplicación, elegí **Salir** desde ese mismo menú. Este comportamiento no se aplica en Android, macOS ni Linux.
+
+Para conectar Telegram, creá un bot con BotFather, copiá su token y abrí **Configuraciones → Telegram**. Pegá el token, pulsá **Probar y emparejar**, activá la integración y enviá `/start` al bot. Notia mostrará la identidad solicitante: revisala y pulsá **Autorizar**. Solo coincidir simultáneamente con el `chat_id` y el identificador de usuario autorizados permite consultar esa biblioteca. Las acciones de creación, reemplazo y eliminación muestran botones **Confirmar** y **Cancelar** en Telegram antes de ejecutarse. Revocá el acceso desde la misma pantalla cuando ya no lo necesites.
+
+El token se almacena sin cifrar en `.notia/notiaConfig.json`. No compartas ese archivo ni lo subas a un repositorio; si el token se expone, revocalo inmediatamente desde BotFather. El bot funciona únicamente mientras Notia está ejecutándose y requiere conectividad tanto con Telegram como con el backend de IA configurado.
 
 ---
 

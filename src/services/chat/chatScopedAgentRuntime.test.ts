@@ -13,6 +13,11 @@ import {
 } from './chatScopedAgentRuntime'
 
 describe('chatScopedAgentRuntime', () => {
+  it('instructs the Telegram library agent to reuse search results', () => {
+    const prompt = buildChatAgentSystemPrompt('library', 'Base')
+    expect(prompt).toContain('no repitas una busqueda ni una lectura')
+    expect(prompt).toContain('personas, tareas o tickets')
+  })
   it('normalizes accents, punctuation and case for title matching', () => {
     expect(normalizeAgentSearchText('  Migración: AUTENTICACIÓN.md ')).toBe('migracion autenticacion md')
   })

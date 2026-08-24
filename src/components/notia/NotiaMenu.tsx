@@ -33,11 +33,12 @@ import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
 import { useLibraryLinkCacheAutoRebuild } from './hooks/useLibraryLinkCacheAutoRebuild'
+import { useTelegramAgentBridge } from './hooks/useTelegramAgentBridge'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
-import { toggleTheme, setAiSettings, setInkdocPreferences, setExplorerRefreshIntervalMs } from '../../features/preferences/preferencesSlice'
-import { selectTheme, selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs } from '../../features/preferences/preferencesSelectors'
+import { toggleTheme, setAiSettings, setInkdocPreferences, setExplorerRefreshIntervalMs, setTelegramSettings } from '../../features/preferences/preferencesSlice'
+import { selectTheme, selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
@@ -57,6 +58,7 @@ function NotiaMenuComponent() {
   const explorerRefreshIntervalMs = useAppSelector(selectExplorerRefreshIntervalMs)
   const inkdocPreferences = useAppSelector(selectInkdocPreferences, shallowEqual)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
+  const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const treeNodes = useAppSelector(selectTreeNodes)
@@ -264,6 +266,9 @@ function NotiaMenuComponent() {
     (next) => dispatch(setInkdocPreferences(next)),
     [dispatch],
   )
+  const handleTelegramPreferencesChange = useCallback<(value: Parameters<typeof setTelegramSettings>[0]) => void>(
+    (next) => dispatch(setTelegramSettings(next)), [dispatch],
+  )
 
   useLibraryConfigSync({
     activeLibrary: activeLibraryForToolbar,
@@ -273,6 +278,16 @@ function NotiaMenuComponent() {
     setAiPreferences: handleAiPreferencesChange,
     setExplorerRefreshIntervalMs: handleExplorerRefreshIntervalMsChange,
     setInkdocPreferences: handleInkdocPreferencesChange,
+    telegramPreferences,
+    setTelegramPreferences: handleTelegramPreferencesChange,
+  })
+
+  useTelegramAgentBridge({
+    library: activeLibraryForToolbar,
+    aiPreferences,
+    telegram: telegramPreferences,
+    onTelegramChange: handleTelegramPreferencesChange,
+    onLibraryChanged: () => notifyLibraryTreeChanged(activeLibraryPath ?? undefined),
   })
 
   useLibrarySearch({
@@ -474,6 +489,7 @@ function NotiaMenuComponent() {
           onAiPreferencesChange={handleAiPreferencesChange}
           onExplorerRefreshIntervalMsChange={handleExplorerRefreshIntervalMsChange}
           onInkdocPreferencesChange={handleInkdocPreferencesChange}
+          onTelegramPreferencesChange={handleTelegramPreferencesChange}
           coldPassPromptState={coldPassPromptState}
           coldPassDeletePromptState={coldPassDeletePromptState}
           coldPassImportPromptState={coldPassImportPromptState}

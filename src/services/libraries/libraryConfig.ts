@@ -2,6 +2,7 @@ import { join } from '../../utils/files/pathUtils'
 import { readTextFile, writeTextFile, createDirectory, pathExists } from '../files/filesystemEngine'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { InkdocPreferences } from '../preferences/inkdocSettingsStorage'
+import { normalizeTelegramPreferences, type TelegramPreferences } from '../preferences/telegramSettingsStorage'
 
 const NOTIA_CONFIG_DIR = '.notia'
 const NOTIA_CONFIG_FILE = 'notiaConfig.json'
@@ -13,6 +14,7 @@ export interface NotiaLibraryConfig {
   }
   inkdocs?: InkdocPreferences
   ia?: AiPreferences
+  telegram?: TelegramPreferences
 }
 
 interface LibraryConfigOptions {
@@ -37,6 +39,7 @@ function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
     panelDesplegable: candidate.panelDesplegable ?? DEFAULT_LIBRARY_CONFIG.panelDesplegable,
     inkdocs: candidate.inkdocs,
     ia: candidate.ia,
+    telegram: candidate.telegram ? normalizeTelegramPreferences(candidate.telegram) : undefined,
   }
 }
 

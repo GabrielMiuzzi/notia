@@ -3,7 +3,7 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store/hooks'
 import { selectIsSettingsOpen, selectIsLibraryManagerOpen } from '../../features/ui/uiSelectors'
 import { setSettingsOpen, setLibraryManagerOpen } from '../../features/ui/uiSlice'
-import { selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs } from '../../features/preferences/preferencesSelectors'
+import { selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
 import { selectLibraries, selectSelectedLibraryId } from '../../features/library/librarySelectors'
 import { selectContextMenu, selectDialogState, selectClipboardEntry } from '../../features/documents/documentsSelectors'
 import { setDialogState, setPendingCreation, setRenamingPath, setClipboardEntry, setContextMenu, setTreeNodes } from '../../features/documents/documentsSlice'
@@ -21,6 +21,7 @@ import { store } from '../../store/index'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
 import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { ColdPassEntry } from '../../types/coldpass'
 
 function getParentDirectory(filePath: string): string {
@@ -37,6 +38,7 @@ interface NotiaModalsProps {
   onAiPreferencesChange: (value: AiPreferences) => void
   onExplorerRefreshIntervalMsChange: (value: number) => void
   onInkdocPreferencesChange: (value: InkdocPreferences) => void
+  onTelegramPreferencesChange: (value: TelegramPreferences) => void
   coldPassPromptState: {
     open: boolean
     requiresConfirmation: boolean
@@ -78,6 +80,7 @@ function NotiaModalsComponent({
   onAiPreferencesChange,
   onExplorerRefreshIntervalMsChange,
   onInkdocPreferencesChange,
+  onTelegramPreferencesChange,
   coldPassPromptState,
   coldPassDeletePromptState,
   coldPassImportPromptState,
@@ -101,6 +104,7 @@ function NotiaModalsComponent({
   const explorerRefreshIntervalMs = useAppSelector(selectExplorerRefreshIntervalMs)
   const inkdocPreferences = useAppSelector(selectInkdocPreferences, shallowEqual)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
+  const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
   const libraries = useAppSelector(selectLibraries)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const contextMenu = useAppSelector(selectContextMenu, shallowEqual)
@@ -302,6 +306,8 @@ function NotiaModalsComponent({
         onInkdocPreferencesChange={onInkdocPreferencesChange}
         aiPreferences={aiPreferences}
         onAiPreferencesChange={onAiPreferencesChange}
+        telegramPreferences={telegramPreferences}
+        onTelegramPreferencesChange={onTelegramPreferencesChange}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

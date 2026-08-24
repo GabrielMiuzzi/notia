@@ -9,7 +9,7 @@ import {
 import type { TaskManagerAgentMutation } from '../../modules/task-manager/services/taskManagerAgentMutationService'
 import type { TaskPriority, TaskState } from '../../modules/task-manager/types/taskManagerTypes'
 
-export type ChatAgentScope = 'task-manager' | 'graph' | 'document'
+export type ChatAgentScope = 'task-manager' | 'graph' | 'document' | 'library'
 export type TaskExecutionStepStatus = 'pending' | 'in-progress' | 'completed' | 'blocked'
 export interface TaskExecutionStep { id: string; label: string; status: TaskExecutionStepStatus }
 
@@ -402,6 +402,19 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
       }),
     )
   }
+  if (scope === 'library') {
+    tools.push(
+      taskMutationTool('create_library_note', 'Crea una nota Markdown dentro de la biblioteca solo tras confirmacion individual.', ['relativePath', 'content'], {
+        relativePath: { type: 'string', description: 'Ruta relativa terminada en .md.' }, content: { type: 'string' },
+      }),
+      taskMutationTool('replace_library_document', 'Reemplaza por completo un documento identificado solo tras confirmacion individual.', ['documentId', 'content'], {
+        documentId: { type: 'string' }, content: { type: 'string' },
+      }),
+      taskMutationTool('delete_library_document', 'Elimina un documento identificado solo tras confirmacion individual.', ['documentId'], {
+        documentId: { type: 'string' },
+      }),
+    )
+  }
   if (scope === 'document') {
     tools.push({
       type: 'function',
@@ -470,6 +483,14 @@ export function buildChatAgentSystemPrompt(
       'Estas en Graph View. Los archivos seleccionados ya estan autorizados como contexto directo.',
       'Sin seleccion, busca titulos, rutas o carpetas nombradas; si no se nombra ninguno usa search_library_context.',
       'Una carpeta nombrada representa los documentos cuya ruta esta dentro de esa carpeta. Usa sus coincidencias para responder y lee los documentos cuando sus fragmentos no alcancen.',
+    )
+  } else if (scope === 'library') {
+    base.push(
+      'Estas conectado a la biblioteca activa desde Telegram. Puedes buscar y leer cualquier documento de esta biblioteca.',
+      'Puedes crear, reemplazar o eliminar documentos, pero cada escritura requiere una confirmacion individual y concreta.',
+      'Nunca agrupes escrituras ni interpretes una aclaracion como autorizacion. Identifica un documento de forma univoca antes de modificarlo o eliminarlo.',
+      'Para consultas sobre personas, tareas o tickets, usa search_library_context con los terminos relevantes y lee solamente los documentos encontrados cuando los fragmentos no alcancen.',
+      'Reutiliza los resultados ya obtenidos: no repitas una busqueda ni una lectura con los mismos argumentos. Cuando tengas evidencia suficiente, responde inmediatamente.',
     )
   } else {
     base.push(
@@ -614,6 +635,38 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         selected.forEach((document) => authorized.add(document.id))
       }
       return { ok: true, accepted, grantedDocumentIds: accepted ? selected.map((item) => item.id) : [] }
+    }
+
+    if (options.scope === 'library' && ['create_library_note', 'replace_library_document', 'delete_library_document'].includes(name)) {
+      const { createFile, writeTextFile } = await import('../files/filesystemEngine')
+      const { performLibraryEntryOperation } = await import('../libraries/libraryRuntime')
+      const content = typeof args.content === 'string' ? args.content : ''
+      let confirmation = ''
+      let execute: () => Promise<{ ok: boolean; error?: string }>
+      if (name === 'create_library_note') {
+        const relativePath = typeof args.relativePath === 'string' ? args.relativePath.trim().replace(/\\/g, '/') : ''
+        if (!relativePath || relativePath.startsWith('/') || relativePath.includes('..') || !relativePath.toLowerCase().endsWith('.md')) {
+          return { ok: false, error: 'invalid-relative-markdown-path' }
+        }
+        const separator = options.library.path.includes('\\') ? '\\' : '/'
+        const targetPath = `${options.library.path.replace(/[\\/]+$/, '')}${separator}${relativePath.replace(/\//g, separator)}`
+        confirmation = `Crear la nota "${relativePath}" con este contenido: ${mutationTextPreview(content)}`
+        execute = () => createFile(targetPath, content, { androidDirectoryUri: options.library.androidTreeUri })
+      } else {
+        const documentId = typeof args.documentId === 'string' ? args.documentId.trim() : ''
+        const document = byId.get(documentId)
+        if (!document) return { ok: false, error: 'unknown-document' }
+        if (name === 'replace_library_document') {
+          confirmation = `Reemplazar por completo "${document.option.relativePath}" por: ${mutationTextPreview(content)}`
+          execute = () => writeTextFile(document.option.path, content, { androidDirectoryUri: options.library.androidTreeUri })
+        } else {
+          confirmation = `Eliminar definitivamente "${document.option.relativePath}".`
+          execute = () => performLibraryEntryOperation({ action: 'delete', targetPath: document.option.path }, { androidDirectoryUri: options.library.androidTreeUri })
+        }
+      }
+      if (!await options.requestConfirmation(confirmation, signal)) return { ok: true, changed: false, declined: true }
+      const result = await execute()
+      return result.ok ? { ok: true, changed: true } : { ok: false, error: result.error ?? 'mutation-failed' }
     }
 
     if (name === 'get_task_manager_options' && options.scope === 'task-manager') {

@@ -6,7 +6,7 @@ export interface UiState {
   isSearchMenuOpen: boolean
   activeHeaderAction: string
   isSettingsOpen: boolean
-  settingsActiveSection: 'General' | 'Panel desplegable' | 'InkDocs' | 'IA' | null
+  settingsActiveSection: 'General' | 'Panel desplegable' | 'InkDocs' | 'IA' | 'Telegram' | null
   isLibraryManagerOpen: boolean
   activeModal: string | null
 }

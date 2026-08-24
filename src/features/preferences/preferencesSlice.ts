@@ -4,12 +4,14 @@ import { loadAiPreferences, saveAiPreferences, type AiPreferences } from '../../
 import { loadInkdocPreferences, saveInkdocPreferences, type InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
 import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
 import type { PreferencesState } from './preferencesTypes'
+import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
   aiSettings: loadAiPreferences(),
   inkdocPreferences: loadInkdocPreferences(),
   explorerRefreshIntervalMs: loadExplorerRefreshIntervalMs(),
+  telegramSettings: DEFAULT_TELEGRAM_PREFERENCES,
 }
 
 const preferencesSlice = createSlice({
@@ -37,6 +39,9 @@ const preferencesSlice = createSlice({
       state.explorerRefreshIntervalMs = action.payload
       saveExplorerRefreshIntervalMs(action.payload)
     },
+    setTelegramSettings(state, action: PayloadAction<TelegramPreferences>) {
+      state.telegramSettings = action.payload
+    },
   },
 })
 
@@ -46,6 +51,7 @@ export const {
   setAiSettings,
   setInkdocPreferences,
   setExplorerRefreshIntervalMs,
+  setTelegramSettings,
 } = preferencesSlice.actions
 
 export default preferencesSlice.reducer

@@ -19,6 +19,7 @@ import {
 import { useAppSelector } from '../../../store/hooks'
 import { selectLibraryStatus } from '../../../features/library/librarySelectors'
 import type { NotiaLibrary } from '../../../types/notia'
+import { normalizeTelegramPreferences, type TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
 
 interface UseLibraryConfigSyncParams {
   activeLibrary: NotiaLibrary | null
@@ -28,6 +29,8 @@ interface UseLibraryConfigSyncParams {
   setAiPreferences: (value: AiPreferences) => void
   setExplorerRefreshIntervalMs: (value: number) => void
   setInkdocPreferences: (value: InkdocPreferences) => void
+  telegramPreferences: TelegramPreferences
+  setTelegramPreferences: (value: TelegramPreferences) => void
 }
 
 export function useLibraryConfigSync({
@@ -38,6 +41,8 @@ export function useLibraryConfigSync({
   setAiPreferences,
   setExplorerRefreshIntervalMs,
   setInkdocPreferences,
+  telegramPreferences,
+  setTelegramPreferences,
 }: UseLibraryConfigSyncParams): void {
   const libraryConfigLoadedRef = useRef(false)
   const initialConfigRef = useRef<NotiaLibraryConfig | null>(null)
@@ -47,6 +52,7 @@ export function useLibraryConfigSync({
     aiPreferences,
     explorerRefreshIntervalMs,
     inkdocPreferences,
+    telegramPreferences,
   })
 
   // Wait until the tree is fully loaded before reading/writing config.
@@ -59,8 +65,9 @@ export function useLibraryConfigSync({
       aiPreferences,
       explorerRefreshIntervalMs,
       inkdocPreferences,
+      telegramPreferences,
     }
-  }, [aiPreferences, explorerRefreshIntervalMs, inkdocPreferences])
+  }, [aiPreferences, explorerRefreshIntervalMs, inkdocPreferences, telegramPreferences])
 
   useEffect(() => {
     if (!activeLibrary) {
@@ -96,7 +103,7 @@ export function useLibraryConfigSync({
       }
 
       if (config) {
-        console.warn('[NotiaMenu] Found existing config:', config)
+      console.warn('[NotiaMenu] Found existing library config')
         if (config.panelDesplegable?.refreshIntervalMs !== undefined) {
           setExplorerRefreshIntervalMs(config.panelDesplegable.refreshIntervalMs)
         }
@@ -106,6 +113,7 @@ export function useLibraryConfigSync({
         if (config.ia) {
           setAiPreferences(config.ia)
         }
+        setTelegramPreferences(normalizeTelegramPreferences(config.telegram))
         initialConfigRef.current = config
       } else {
         console.warn('[NotiaMenu] No existing config found')
@@ -116,6 +124,7 @@ export function useLibraryConfigSync({
           },
           inkdocs: fallbackPreferencesRef.current.inkdocPreferences,
           ia: fallbackPreferencesRef.current.aiPreferences,
+          telegram: fallbackPreferencesRef.current.telegramPreferences,
         }
       }
 
@@ -147,6 +156,7 @@ export function useLibraryConfigSync({
       },
       inkdocs: inkdocPreferences,
       ia: aiPreferences,
+      telegram: telegramPreferences,
     }
 
     if (initialConfigRef.current) {
@@ -165,7 +175,7 @@ export function useLibraryConfigSync({
     }
 
     libraryConfigTimeoutRef.current = window.setTimeout(() => {
-      console.warn('[NotiaMenu] Saving library config:', config)
+      console.warn('[NotiaMenu] Saving library config')
 
       void writeLibraryConfig(activeLibraryPathRef.current!, config, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
@@ -183,7 +193,7 @@ export function useLibraryConfigSync({
         libraryConfigTimeoutRef.current = null
       }
     }
-  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, aiPreferences, explorerRefreshIntervalMs, inkdocPreferences])
+  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, aiPreferences, explorerRefreshIntervalMs, inkdocPreferences, telegramPreferences])
 
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)

@@ -20,8 +20,10 @@ import { getAppVersion } from '../../services/runtime/appVersion'
 import { checkAiHealth, invalidateAiHealthCache, listAiModels, type AiModelOption } from '../../services/ai/aiRuntime'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
+import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
+import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkDocs' | 'IA'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkDocs' | 'IA' | 'Telegram'
 
 interface SettingsModalProps {
   open: boolean
@@ -32,9 +34,11 @@ interface SettingsModalProps {
   onInkdocPreferencesChange: (value: InkdocPreferences) => void
   aiPreferences: AiPreferences
   onAiPreferencesChange: (value: AiPreferences) => void
+  telegramPreferences: TelegramPreferences
+  onTelegramPreferencesChange: (value: TelegramPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs', 'IA']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs', 'IA', 'Telegram']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
@@ -46,6 +50,8 @@ export function SettingsModal({
   onInkdocPreferencesChange,
   aiPreferences,
   onAiPreferencesChange,
+  telegramPreferences,
+  onTelegramPreferencesChange,
 }: SettingsModalProps) {
   const normalizedIncomingAiPreferences = normalizeAiSettingsInput(aiPreferences)
   const requestedSection = useAppSelector(selectSettingsActiveSection)
@@ -67,6 +73,9 @@ export function SettingsModal({
   const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
   const [thinkingEnabledDraft, setThinkingEnabledDraft] = useState(normalizedIncomingAiPreferences.thinkingEnabled)
   const [thinkingLevelDraft, setThinkingLevelDraft] = useState(normalizedIncomingAiPreferences.thinkingLevel)
+  const [telegramTokenDraft, setTelegramTokenDraft] = useState(telegramPreferences.botToken)
+  const [telegramStatus, setTelegramStatus] = useState('Todavia no se probo la conexion.')
+  const [isCheckingTelegram, setIsCheckingTelegram] = useState(false)
   const [availableModels, setAvailableModels] = useState<AiModelOption[]>([])
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false)
   const modelSelectRef = useRef<HTMLDivElement | null>(null)
@@ -129,6 +138,10 @@ export function SettingsModal({
     normalizedIncomingAiPreferences.thinkingLevel,
     open,
   ])
+
+  useEffect(() => {
+    if (open) setTelegramTokenDraft(telegramPreferences.botToken)
+  }, [open, telegramPreferences.botToken])
 
   useEffect(() => {
     if (!open) {
@@ -256,6 +269,22 @@ export function SettingsModal({
       message: result.message,
     })
     setIsCheckingAiHealth(false)
+  }
+
+  const commitTelegramToken = () => {
+    onTelegramPreferencesChange(normalizeTelegramPreferences({ ...telegramPreferences, botToken: telegramTokenDraft }))
+  }
+
+  const handleCheckTelegram = async () => {
+    const token = telegramTokenDraft.trim()
+    commitTelegramToken()
+    setIsCheckingTelegram(true)
+    try {
+      const bot = await checkTelegramBot(token)
+      setTelegramStatus(`Conexion correcta con @${bot.username ?? bot.displayName}. Envia /start al bot para emparejar.`)
+    } catch (error) {
+      setTelegramStatus(error instanceof Error ? error.message : 'No se pudo verificar el bot.')
+    } finally { setIsCheckingTelegram(false) }
   }
 
   if (!open) {
@@ -546,6 +575,54 @@ export function SettingsModal({
                     {isCheckingAiHealth ? 'Probando...' : 'Probar conexion'}
                   </NotiaButton>
                 </div>
+              </div>
+            </>
+          ) : activeSection === 'Telegram' ? (
+            <>
+              <div className="notia-settings-card">
+                <div className="notia-settings-card-label">Bot de Telegram</div>
+                <div className="notia-settings-card-value">{telegramPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
+                <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                  El token se guarda sin cifrar dentro de .notia/notiaConfig.json de esta biblioteca. No compartas ese archivo.
+                </div>
+                <div className="notia-settings-input-wrap">
+                  <input className="notia-settings-input" type="password" value={telegramTokenDraft}
+                    aria-label="Token del bot de Telegram" autoComplete="off" placeholder="123456:ABC..."
+                    onChange={(event) => setTelegramTokenDraft(event.target.value)} onBlur={commitTelegramToken}
+                    onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitTelegramToken() } }} />
+                </div>
+                <div className="notia-settings-actions">
+                  <NotiaButton variant="secondary" disabled={!telegramTokenDraft.trim() || isCheckingTelegram}
+                    onClick={() => { void handleCheckTelegram() }}>
+                    {isCheckingTelegram ? 'Probando...' : 'Probar y emparejar'}
+                  </NotiaButton>
+                  <NotiaButton variant={telegramPreferences.enabled ? 'primary' : 'secondary'}
+                    disabled={!telegramTokenDraft.trim()}
+                    onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, botToken: telegramTokenDraft.trim(), enabled: !telegramPreferences.enabled })}>
+                    {telegramPreferences.enabled ? 'Desactivar' : 'Activar'}
+                  </NotiaButton>
+                </div>
+                <div className="notia-settings-status">{telegramStatus}</div>
+              </div>
+              <div className="notia-settings-card">
+                <div className="notia-settings-card-label">Chat autorizado</div>
+                <div className="notia-settings-card-value">
+                  {telegramPreferences.authorizedPeer?.displayName ?? 'Ninguno'}
+                </div>
+                {telegramPreferences.pendingPeer ? (
+                  <>
+                    <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                      Solicitud de {telegramPreferences.pendingPeer.displayName} {telegramPreferences.pendingPeer.username ? `(@${telegramPreferences.pendingPeer.username})` : ''}.
+                    </div>
+                    <div className="notia-settings-actions">
+                      <NotiaButton onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, authorizedPeer: telegramPreferences.pendingPeer, pendingPeer: null })}>Autorizar</NotiaButton>
+                      <NotiaButton variant="secondary" onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, pendingPeer: null })}>Rechazar</NotiaButton>
+                    </div>
+                  </>
+                ) : <div className="notia-settings-card-label notia-settings-card-label--spaced">Envia /start al bot y espera la solicitud.</div>}
+                {telegramPreferences.authorizedPeer ? (
+                  <div className="notia-settings-actions"><NotiaButton variant="secondary" onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, authorizedPeer: null })}>Revocar acceso</NotiaButton></div>
+                ) : null}
               </div>
             </>
           ) : (
