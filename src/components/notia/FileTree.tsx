@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GitGraph } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
 import { useVirtualList } from '../../hooks/useVirtualList'
+import { joinFileName, splitFileName } from '../../utils/files/splitFileName'
 
 interface PendingCreation {
   id: string
@@ -65,6 +66,12 @@ type VisibleTreeRow =
 
 const TREE_ROW_HEIGHT = 27
 
+const CREATION_EXTENSION_BY_KIND: Readonly<Record<Exclude<PendingCreation['kind'], 'folder'>, string>> = {
+  note: '.md',
+  inkdoc: '.inkdoc',
+  mermaid: '.mmd',
+}
+
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
 }
@@ -114,9 +121,10 @@ const TreeRow = memo(function TreeRow({
   const nodePath = typeof node.path === 'string' ? node.path : null
   const isDragging = Boolean(nodePath && draggingPath === nodePath)
   const isDropTarget = Boolean(isFolder && nodePath && dropTargetFolderPath === nodePath)
-  const [renameValue, setRenameValue] = useState(
-    node.type === 'file' ? node.name.replace(/\.(md|inkdoc|mmd)$/i, '') : node.name,
-  )
+  const { baseName, extension } = node.type === 'file'
+    ? splitFileName(node.name)
+    : { baseName: node.name, extension: '' }
+  const [renameValue, setRenameValue] = useState(baseName)
 
   useEffect(() => {
     if (!isRenaming) {
@@ -127,8 +135,8 @@ const TreeRow = memo(function TreeRow({
   }, [isRenaming])
 
   useEffect(() => {
-    setRenameValue(node.type === 'file' ? node.name.replace(/\.(md|inkdoc|mmd)$/i, '') : node.name)
-  }, [node.name, node.type])
+    setRenameValue(baseName)
+  }, [baseName])
 
   const handleRowClick = () => {
     if (isRenaming) {
@@ -153,7 +161,7 @@ const TreeRow = memo(function TreeRow({
       onCancelRename()
       return
     }
-    onSubmitRename(node.path, normalized)
+    onSubmitRename(node.path, joinFileName(normalized, extension))
   }
 
   return (
@@ -231,26 +239,41 @@ const TreeRow = memo(function TreeRow({
         <FileText size={12} className="notia-tree-file" />
       )}
       {isRenaming ? (
-        <input
-          ref={inputRef}
-          className="notia-tree-inline-input"
-          value={renameValue}
-          onChange={(event) => setRenameValue(event.target.value)}
-          onBlur={submitRename}
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              submitRename()
-            }
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              onCancelRename()
-            }
-          }}
-        />
+        <>
+          <input
+            ref={inputRef}
+            className="notia-tree-inline-input"
+            aria-label={isFolder ? 'Nombre de la carpeta' : 'Nombre del archivo'}
+            value={renameValue}
+            onChange={(event) => setRenameValue(event.target.value)}
+            onBlur={submitRename}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                submitRename()
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                onCancelRename()
+              }
+            }}
+          />
+          {extension ? (
+            <span className="notia-tree-extension" title={`Formato ${extension}`}>
+              {extension}
+            </span>
+          ) : null}
+        </>
       ) : (
-        <span className="notia-tree-label">{node.name}</span>
+        <>
+          <span className="notia-tree-label">{baseName}</span>
+          {extension ? (
+            <span className="notia-tree-extension" title={`Formato ${extension}`}>
+              {extension}
+            </span>
+          ) : null}
+        </>
       )}
     </div>
   )
@@ -266,6 +289,9 @@ interface PendingCreationRowProps {
 function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: PendingCreationRowProps) {
   const [value, setValue] = useState(pendingCreation.initialName)
   const inputRef = useRef<HTMLInputElement>(null)
+  const extension = pendingCreation.kind === 'folder'
+    ? ''
+    : CREATION_EXTENSION_BY_KIND[pendingCreation.kind]
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -293,6 +319,7 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
       <input
         ref={inputRef}
         className="notia-tree-inline-input"
+        aria-label={pendingCreation.kind === 'folder' ? 'Nombre de la carpeta' : 'Nombre del archivo'}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onBlur={submitValue}
@@ -307,6 +334,11 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
           }
         }}
       />
+      {extension ? (
+        <span className="notia-tree-extension" title={`Formato ${extension}`}>
+          {extension}
+        </span>
+      ) : null}
     </div>
   )
 }

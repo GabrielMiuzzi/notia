@@ -856,6 +856,8 @@
 }
 
 .notia-tree-label {
+  min-width: 0;
+  flex: 1;
   font-size: 13px;
   color: var(--color-icon-muted);
   white-space: nowrap;
@@ -863,9 +865,24 @@
   text-overflow: ellipsis;
 }
 
+.notia-tree-extension {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 5px;
+  background: var(--color-card-bg);
+  box-shadow: 0 1px 2px var(--color-menu-shadow);
+  color: var(--color-subtle-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
 .notia-tree-inline-input {
+  min-width: 0;
+  flex: 1;
   height: 21px;
-  width: 100%;
   border: 1px solid var(--color-border-soft);
   border-radius: 4px;
   background: var(--color-card-bg);

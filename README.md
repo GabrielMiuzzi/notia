@@ -82,7 +82,7 @@ El token se almacena sin cifrar en `.notia/notiaConfig.json`. No compartas ese a
 El corazón de Notia son las **librerías**: carpetas locales del filesystem que la app indexa y presenta como un árbol jerárquico interactivo.
 
 Desde el panel izquierdo (Explorador) podés:
-- Navegar carpetas y archivos en forma de árbol expandible.
+- Navegar carpetas y archivos en forma de árbol expandible. El nombre se muestra separado del formato, que se conserva al renombrar.
 - Crear carpetas, notas Markdown, documentos InkDoc o diagramas Mermaid.
 - Copiar, mover, renombrar y eliminar archivos mediante el **menú contextual** (clic derecho).
 - Buscar archivos por nombre con la barra de búsqueda integrada.
