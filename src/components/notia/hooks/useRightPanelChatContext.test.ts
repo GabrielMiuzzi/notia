@@ -4,6 +4,7 @@ import {
   resolveGraphChatContextMode,
   resolveGraphAttachedContextPaths,
   resolveRightPanelAttachedContextPaths,
+  resolveRightPanelContextScopeKey,
   resolveRightPanelPreferredContextMode,
 } from './useRightPanelChatContext'
 
@@ -12,12 +13,30 @@ describe('resolveRightPanelPreferredContextMode', () => {
     expect(resolveRightPanelPreferredContextMode('task-manager', null)).toBe('index')
   })
 
-  it('keeps a regular Markdown document as reference-only context', () => {
+  it('does not turn the active Markdown document into an attachment mode', () => {
     const document = {
       viewKind: 'markdown',
     } as OpenFileDocument
 
-    expect(resolveRightPanelPreferredContextMode('documents', document)).toBe('index')
+    expect(resolveRightPanelPreferredContextMode('documents', document)).toBeNull()
+  })
+})
+
+describe('resolveRightPanelContextScopeKey', () => {
+  it('tracks the active Markdown chat without attaching the file', () => {
+    const document = {
+      path: 'C:\\vault\\note.md',
+      viewKind: 'markdown',
+    } as OpenFileDocument
+
+    expect(resolveRightPanelContextScopeKey('documents', document, null)).toBe('document:C:/vault/note.md')
+    expect(resolveRightPanelAttachedContextPaths('documents', document)).toEqual([])
+  })
+
+  it('assigns stable and distinct scopes to Task Manager and Graph View', () => {
+    expect(resolveRightPanelContextScopeKey('task-manager', null, null, '__finished__'))
+      .toBe('task-manager:__finished__')
+    expect(resolveRightPanelContextScopeKey('graph', null, null)).toBe('graph-view:right-panel')
   })
 })
 
@@ -26,7 +45,7 @@ describe('resolveRightPanelAttachedContextPaths', () => {
     expect(resolveRightPanelAttachedContextPaths('task-manager', null)).toEqual([])
   })
 
-  it('keeps the active Markdown document as explicit context outside Task Manager', () => {
+  it('does not attach the active Markdown document to the composer', () => {
     const document = {
       path: 'C:/vault/note.md',
       name: 'note.md',
@@ -35,7 +54,7 @@ describe('resolveRightPanelAttachedContextPaths', () => {
       viewKind: 'markdown',
     } as OpenFileDocument
 
-    expect(resolveRightPanelAttachedContextPaths('documents', document)).toEqual(['C:/vault/note.md'])
+    expect(resolveRightPanelAttachedContextPaths('documents', document)).toEqual([])
   })
 })
 

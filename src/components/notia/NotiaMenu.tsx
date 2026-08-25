@@ -25,7 +25,6 @@ import { useColdPassSession } from './hooks/useColdPassSession'
 import { useLibraryTreeSync } from './hooks/useLibraryTreeSync'
 import { useTabManager } from './hooks/useTabManager'
 import { useDocumentOpener } from './hooks/useDocumentOpener'
-import { useDocumentPersist } from './hooks/useDocumentPersist'
 import { useToolbarActions } from './hooks/useToolbarActions'
 import { useFileTreeActions } from './hooks/useFileTreeActions'
 import { useLibraryManagerActions } from './hooks/useLibraryManagerActions'
@@ -37,8 +36,8 @@ import { useTelegramAgentBridge } from './hooks/useTelegramAgentBridge'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
-import { toggleTheme, setAiSettings, setInkdocPreferences, setExplorerRefreshIntervalMs, setTelegramSettings } from '../../features/preferences/preferencesSlice'
-import { selectTheme, selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
+import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings } from '../../features/preferences/preferencesSlice'
+import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
@@ -56,7 +55,7 @@ function NotiaMenuComponent() {
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const theme = useAppSelector(selectTheme)
   const explorerRefreshIntervalMs = useAppSelector(selectExplorerRefreshIntervalMs)
-  const inkdocPreferences = useAppSelector(selectInkdocPreferences, shallowEqual)
+  const inkMathPreferences = useAppSelector(selectInkMathPreferences, shallowEqual)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
@@ -188,14 +187,6 @@ function NotiaMenuComponent() {
     resolveActiveLibraryAndroidDirectoryUri,
   })
 
-  const {
-    handleInkdocDocumentPersist,
-  } = useDocumentPersist({
-    resolveActiveLibraryAndroidDirectoryUri,
-    bumpLibraryIndexRevision,
-    activeLibraryPath,
-  })
-
   const activeLibraryForToolbar = activeLibrary ?? null
 
   const {
@@ -262,8 +253,8 @@ function NotiaMenuComponent() {
     (next) => dispatch(setExplorerRefreshIntervalMs(next)),
     [dispatch],
   )
-  const handleInkdocPreferencesChange = useCallback<(value: Parameters<typeof setInkdocPreferences>[0]) => void>(
-    (next) => dispatch(setInkdocPreferences(next)),
+  const handleInkMathPreferencesChange = useCallback<(value: Parameters<typeof setInkMathPreferences>[0]) => void>(
+    (next) => dispatch(setInkMathPreferences(next)),
     [dispatch],
   )
   const handleTelegramPreferencesChange = useCallback<(value: Parameters<typeof setTelegramSettings>[0]) => void>(
@@ -274,10 +265,10 @@ function NotiaMenuComponent() {
     activeLibrary: activeLibraryForToolbar,
     aiPreferences,
     explorerRefreshIntervalMs,
-    inkdocPreferences,
+    inkMathPreferences,
     setAiPreferences: handleAiPreferencesChange,
     setExplorerRefreshIntervalMs: handleExplorerRefreshIntervalMsChange,
-    setInkdocPreferences: handleInkdocPreferencesChange,
+    setInkMathPreferences: handleInkMathPreferencesChange,
     telegramPreferences,
     setTelegramPreferences: handleTelegramPreferencesChange,
   })
@@ -391,7 +382,6 @@ function NotiaMenuComponent() {
     libraryAdded: handleLibraryAdded,
     libraryRemoved: handleLibraryRemoved,
     textDocumentChange: handleTextDocumentChange,
-    inkdocDocumentPersist: handleInkdocDocumentPersist,
     chatWorkspaceTreeChanged: handleChatWorkspaceTreeChanged,
     windowAction: handleWindowAction,
     coldPassOpenCredentialModal: handleOpenColdPassCredentialModal,
@@ -426,7 +416,6 @@ function NotiaMenuComponent() {
     handleLibraryAdded,
     handleLibraryRemoved,
     handleTextDocumentChange,
-    handleInkdocDocumentPersist,
     handleChatWorkspaceTreeChanged,
     handleWindowAction,
     handleOpenColdPassCredentialModal,
@@ -488,7 +477,7 @@ function NotiaMenuComponent() {
         <NotiaModals
           onAiPreferencesChange={handleAiPreferencesChange}
           onExplorerRefreshIntervalMsChange={handleExplorerRefreshIntervalMsChange}
-          onInkdocPreferencesChange={handleInkdocPreferencesChange}
+          onInkMathPreferencesChange={handleInkMathPreferencesChange}
           onTelegramPreferencesChange={handleTelegramPreferencesChange}
           coldPassPromptState={coldPassPromptState}
           coldPassDeletePromptState={coldPassDeletePromptState}

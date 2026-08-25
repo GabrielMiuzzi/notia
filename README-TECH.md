@@ -9,7 +9,7 @@
 
 ### 1.1 Descripción Técnica del Servicio
 
-Notia es una aplicación de gestión de conocimiento **local-first** construida con **Tauri v2**, que combina un frontend React 19 compilado con Vite 7 y un backend en Rust (edición 2021). La aplicación opera sin servidor cloud: todos los datos (notas Markdown, documentos InkDoc, diagramas Mermaid, credenciales ColdPass, tareas y sesiones de chat) persisten en el filesystem local del usuario. La comunicación entre frontend y backend se realiza exclusivamente mediante **Tauri Commands** (`invoke`/`listen`) y **Custom Events** internos del frontend.
+Notia es una aplicación de gestión de conocimiento **local-first** construida con **Tauri v2**, que combina un frontend React 19 compilado con Vite 7 y un backend en Rust (edición 2021). La aplicación opera sin servidor cloud: todos los datos (notas Markdown, diagramas Mermaid, credenciales ColdPass, tareas y sesiones de chat) persisten en el filesystem local del usuario. La comunicación entre frontend y backend se realiza exclusivamente mediante **Tauri Commands** (`invoke`/`listen`) y **Custom Events** internos del frontend.
 
 ### 1.2 Stack de Tecnologías
 
@@ -94,7 +94,7 @@ npm run dev:android
 
 ### 1.5 Decisiones Arquitectónicas Clave
 
-1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, InkDoc, ColdPass, Task Manager) se almacenan como archivos en el filesystem. No hay base de datos ni servidor. El estado en Redux modela solo UI, selección y datos derivados.
+1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, Mermaid, ColdPass, Task Manager) se almacenan como archivos en el filesystem. No hay base de datos ni servidor. El estado en Redux modela solo UI, selección y datos derivados.
 2. **Cifrado de ColdPass en frontend**: la passkey nunca viaja al backend. El cifrado/descifrado AES-256-GCM con PBKDF2 (250k iteraciones) se ejecuta en el navegador vía **Web Crypto API**. El backend Rust solo lee/escribe bytes opacos.
 3. **Renderizado de Graph View mediante motor Mermaid compartido**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y se convierte a código Mermaid vía `linkCacheMermaidEngine.ts`. La vista utiliza el mismo `MermaidCanvas` que el editor de diagramas, garantizando coherencia visual y un único motor de renderizado. Web Workers pueden emplearse para cómputo pesado puntual, pero actualmente no hay workers activos en el frontend.
 4. **Redux Toolkit para estado global**: 5 slices (`ui`, `preferences`, `library`, `documents`, `explorer`) con persistencia de preferencias en `localStorage` dentro de los propios reducers.
@@ -312,7 +312,7 @@ Creación, lectura, actualización y eliminación de archivos y carpetas dentro 
 
 #### Pasos del proceso
 
-1. **Crear entrada**: frontend `filesystemEngine.createLibraryEntry()` → `invoke('create_library_entry')` → Rust valida nombre → determina extensión según `kind` (`.md`, `.inkdoc`, `.mmd`, sin extensión para carpetas) → crea en desktop con `fs::create_dir`/`fs::write` o en Android SAF.
+1. **Crear entrada**: frontend `filesystemEngine.createLibraryEntry()` → `invoke('create_library_entry')` → Rust valida nombre → determina extensión según `kind` (`.md`, `.mmd`, sin extensión para carpetas) → crea en desktop con `fs::create_dir`/`fs::write` o en Android SAF.
 2. **Eliminar**: `invoke('library_entry_operation')` con `action: 'delete'` → Rust valida → `desktop::delete_entry` (o SAF) → `fs::remove_file`/`remove_dir_all`.
 3. **Renombrar**: `action: 'rename'` → `desktop::rename_entry` → `fs::rename`.
 4. **Copiar/Mover**: `action: 'paste'` con `mode: 'copy'` o `'move'` → lectura del source → escritura en target → si es move, eliminación del source.
@@ -458,6 +458,8 @@ Construcción y visualización de un grafo de conocimiento donde los nodos son a
 Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check con caché, streaming de respuestas en desktop y Android, listado de todos los modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
 Los chats laterales usan además un runtime agente acotado por scope (`task-manager`, `graph`, `document`) en `chatScopedAgentRuntime.ts`. El transporte envía schemas en `tools` a `/api/chat`, procesa `message.tool_calls`, valida y ejecuta cada llamada localmente, agrega resultados con rol `tool` y repite hasta obtener una respuesta final. La capacidad informada por `/api/show` se presenta como ayuda en el selector, pero no bloquea preventivamente la ejecución porque algunos modelos de Ollama Cloud omiten esos metadatos; `/api/chat` es la autoridad final y devuelve un error si la variante rechaza herramientas.
+
+`ChatWorkspaceView` también es la única implementación del chat lateral para archivos Markdown, Task Manager y Graph View. Los tres contextos comparten el mismo ciclo persistente de creación, selección, hidratación, envío y renderizado; solo cambian el scope del agente y el contexto autorizado. La asociación con el archivo de chat se guarda mediante claves estables (`document:<ruta>`, `task-manager:<scope>` y `graph-view:right-panel`), por lo que cambiar de vista recupera el chat correspondiente en vez de crear una sesión efímera especial.
 
 - Task Manager no adjunta todos los tickets: el corpus del agente se deriva del panel activo (`task-manager:panel:<id>`), por lo que un tablero no puede recuperar tareas de otros tableros ni de `finished`/`cancelled`. Los paneles Completadas y Canceladas exponen únicamente su carpeta y Pomodoro no expone tickets. Dentro de ese alcance, `search_task_context` recupera fragmentos RAG agrupados por ticket con `ticketId`, ruta y título; `read_task_tickets` abre los IDs identificados y `read_all_task_tickets` recorre el corpus permitido para inventarios, conteos y resúmenes exhaustivos. Esta última informa total, cantidad devuelta y truncamiento. Para cada padre recuperado o leído, `extractTaskChildTitles` interpreta exclusivamente el campo `childs` del frontmatter y `resolveTaskChildDocuments` resuelve los wikilinks contra archivos de `subTasks/` del mismo tablero. El runtime expande esa relación recursivamente y agrega fragmentos de las hijas en RAG o su contenido completo en la lectura directa; nunca cruza a otro tablero aunque exista una subtarea con el mismo nombre. Los límites globales de caracteres y el alcance del panel continúan aplicándose. `selectDiverseAgentFragments` prioriza el mejor fragmento de cada ruta antes de repetir un archivo, evitando que historiales con muchas menciones desplacen otros tickets relevantes. Los resúmenes por persona deben relevar cada ticket de manera independiente, considerar atribuciones explícitas en metadatos y cuerpo, admitir múltiples responsables y separar personas, equipos, menciones incidentales y asignaciones ambiguas; el conteo se basa en rutas únicas. Para detalles, el agente debe leer todos los IDs únicos y renderizar una sección por ruta, incluidas las subtareas expandidas.
 - Las mutaciones del agente se exponen mediante `create_task_ticket`, `replace_task_content`, `add_task_comment`, `add_task_subtask`, `move_task_group`, `change_task_state` y `change_task_priority`. `get_task_manager_options` devuelve el tablero y sus grupos, estados y prioridades válidos para evitar valores inventados. El prompt exige buscar primero el ticket y usar `request_user_clarification` ante cualquier dato faltante, definición imprecisa o coincidencia múltiple; la aclaración solo completa la intención y nunca cuenta como autorización. Cuando `search_task_tickets` devuelve varias coincidencias, el runtime conserva sus IDs, exige que `request_user_clarification.choices` represente cada alternativa por título o ruta y bloquea cualquier herramienta de escritura sobre esos IDs hasta que el usuario seleccione una; una búsqueda posterior invalida esa resolución. `ChatWorkspaceView` conserva pregunta y choices en `pendingAgentQuestion`, y `ChatThread` reutiliza la tarjeta inline para renderizar cada opción como botón táctil; las preguntas abiertas sin choices continúan usando el compositor. Cada herramienta de escritura construye después una descripción concreta —incluida una vista previa del contenido— y llama a `requestConfirmation`. Esa espera también se implementa como una promesa ligada al `AbortSignal` y usa la misma tarjeta con botones **Confirmar** y **Cancelar**, sin abrir el motor global de modales; cancelar la respuesta rechaza cualquier espera pendiente. Solo una aceptación ejecuta `taskManagerAgentMutationService`, el permiso no se reutiliza ni agrupa llamadas y cualquier parámetro modificado exige confirmación nueva. El adaptador valida estados, prioridades, longitud, existencia del ticket y pertenencia del grupo al tablero; conserva el frontmatter al reemplazar el cuerpo, usa los servicios CRUD existentes, sincroniza índices y relaciones `parent`/`childs`, y emite `dispatchTaskManagerMutation` para refrescar la vista montada. La creación solo está habilitada en un tablero activo, no en Pomodoro, Completadas o Canceladas.
@@ -850,39 +852,6 @@ No hay commands Tauri específicos para Task Manager. Utiliza los commands gené
 - **Frontend**: módulo `src/modules/task-manager/` (componentes, engines, hooks, services, types).
 - **Services**: `vaultRuntime.ts`, `taskManagerService.ts`, `taskManagerStorage.ts`, `taskManagerVaultCache.ts`, `filesystemEngine.ts`.
 - **Engines**: `frontmatterEngine.ts`, `taskEngine.ts`, `taskIndexEngine.ts`, `pomodoroLogEngine.ts`, `scheduleEngine.ts`, `completionEngine.ts`.
-
----
-
-### 2.8 InkDoc
-
-#### Descripción
-Editor de documentos de tinta (InkDoc) que permite dibujar manuscritos con stylus/dedo, insertar bloques de texto, imágenes y notas adhesivas. El formato nativo es un archivo de texto JSON con extensión `.inkdoc`. No hay commands Tauri dedicados; reutiliza los genéricos de filesystem.
-
-#### Endpoints (Commands Tauri)
-No hay commands exclusivos. Se usan los genéricos de filesystem:
-- `create_library_entry` con `kind: "inkdoc"` — backend inyecta contenido JSON por defecto.
-- `read_library_file`
-- `write_library_file`
-- `write_binary_file` (para exportación de imágenes).
-
-#### Entradas
-- `filePath: string` — path absoluto del archivo `.inkdoc`.
-- `content`: objeto JSON conforme al esquema InkDoc (version, pages, strokes, textBlocks, etc.).
-
-#### Salidas
-- Archivo `.inkdoc` como JSON string en el filesystem.
-- Renderizado visual en `<canvas>` + capas DOM (textos, imágenes, sticky notes) via `InkDocView.ts`.
-
-#### Pasos del proceso
-1. **Creación**: elige **"New InkDoc"** → `create_library_entry` con `kind: "inkdoc"` → backend inyecta un JSON inicial con una página A4 en blanco.
-2. **Apertura**: `InkdocView.tsx` monta el motor, instancia `InkDocView`, lee el JSON vía `read_library_file` y lo parsea con `documentParser.ts`.
-3. **Edición**: el usuario dibuja strokes (presión/velocidad) en canvas, escribe textos (`contenteditable`), pega imágenes o agrega sticky notes.
-4. **Autosave**: `DocumentSyncEngine` debounce (1000 ms) detecta actividad. Cuando no hay interacción activa, serializa `docData` a JSON y escribe vía `inkdocFilesystemRuntime.ts` → `write_library_file`.
-5. **Conflictos**: el watcher no recarga el archivo si la modificación fue generada internamente (`internalModifyEvents`).
-
-#### Dependencias
-- **Frontend**: `InkdocView.tsx`, `InkDocView.ts`, `documentParser.ts`, `documentSyncEngine.ts`, `inkdocFilesystemRuntime.ts`, `strokeRenderers.ts`, `viewportController.ts`.
-- **Backend**: `filesystem::commands::{create_library_entry, read_library_file, write_library_file}`, `filesystem/helpers.rs` (default JSON).
 
 ---
 
@@ -1406,7 +1375,7 @@ graph TB
         Redux["Redux Toolkit Store<br/>(ui | preferences | library | documents | explorer)"]
         Services["src/services/<br/>{ai | chat | coldpass | files | libraries | preferences | runtime | views | window}"]
         Engines["src/engines/<br/>{graph | markdown | tree}"]
-        Modules["src/modules/<br/>{inkdoc | mermaid | task-manager}"]
+        Modules["src/modules/<br/>{inkmath | mermaid | task-manager}"]
 
         React --> Redux
         React --> Services
@@ -2515,99 +2484,6 @@ sequenceDiagram
 
 ---
 
-#### 3.3.7 InkDoc
-
-**Diagrama de flujo específico:**
-
-```mermaid
-flowchart TD
-    Start([Usuario abre InkDoc]) --> Bridge["InkdocView.tsx crea InkdocHostBridge"]
-    Bridge --> Read["read_library_file → JSON .inkdoc"]
-    Read --> Parse["documentParser.ts → InkDocData"]
-    Parse --> Mount["InkDocView.ts monta DOM <br/> toolbar + pages + canvas + text layer + images + sticky notes"]
-    Mount --> Edit["Usuario dibuja / escribe / pega imágenes"]
-    Edit --> Sync["documentSyncEngine.ts <br/> debounce 1000ms"]
-    Sync --> Serialize["Serialize docData → JSON string"]
-    Serialize --> Write["write_library_file"]
-    Write --> End([Fin])
-```
-
-**Diagrama de arquitectura de componentes:**
-
-```mermaid
-graph LR
-    subgraph InkDocReact["React Wrapper"]
-        InkdocView["InkdocView.tsx"]
-    end
-
-    subgraph InkDocCore["InkDoc Core (Vanilla JS / DOM)"]
-        InkDocView["InkDocView.ts"]
-        Toolbar["toolbar DOM"]
-        Pages["pages container"]
-        Canvas["<canvas> strokes"]
-        TextLayer["div textEditors"]
-        ImageLayer["div images"]
-        StickyNotes["div stickyNotes"]
-        SyncEngine["documentSyncEngine.ts"]
-    end
-
-    subgraph InkDocServices["Servicios InkDoc"]
-        HostBridge["inkdocFilesystemRuntime.ts"]
-        FSEngine["filesystemEngine.ts"]
-    end
-
-    InkdocView --> InkDocView
-    InkDocView --> Toolbar
-    InkDocView --> Pages
-    Pages --> Canvas
-    Pages --> TextLayer
-    Pages --> ImageLayer
-    Pages --> StickyNotes
-    SyncEngine --> HostBridge
-    HostBridge --> FSEngine
-```
-
-**Diagrama de secuencia específico:**
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant React as InkdocView.tsx
-    participant Bridge as inkdocFilesystemRuntime.ts
-    participant FSEngine as filesystemEngine.ts
-    participant Core as InkDocView.ts
-    participant Sync as documentSyncEngine.ts
-    participant Tauri as Tauri API
-    participant RustFS as desktop.rs / android_saf.rs
-
-    User->>React: Clic en archivo .inkdoc
-    React->>Bridge: readFile(path)
-    Bridge->>FSEngine: readTextFile(path)
-    FSEngine->>Tauri: invoke('read_library_file')
-    Tauri->>RustFS: fs::read_to_string
-    RustFS-->>Tauri: JSON string
-    Tauri-->>FSEngine: Promise
-    FSEngine-->>Bridge: JSON string
-    Bridge-->>React: InkDocData
-    React->>Core: new InkDocView(data, bridge)
-    Core-->>React: append containerEl
-
-    User->>Core: Dibujar stroke / editar texto
-    Core->>Sync: requestSaveAfterActivity()
-    Sync->>Sync: debounce 1000ms + idle check
-    Sync->>Core: serialize → JSON
-    Core->>Bridge: writeFile(path, json)
-    Bridge->>FSEngine: writeTextFile(path, json)
-    FSEngine->>Tauri: invoke('write_library_file')
-    Tauri->>RustFS: fs::write
-    RustFS-->>Tauri: ok
-    Tauri-->>FSEngine: {ok}
-    FSEngine-->>Bridge: confirmación
-    Bridge-->>Core: save acknowledge
-```
-
----
-
 #### 3.3.8 Mermaid Editor
 
 **Diagrama de flujo específico:**
@@ -2721,13 +2597,13 @@ graph TB
         Services["services/<br/>{ai | chat | coldpass | files | libraries | preferences | runtime | views | window}"]
         Engines["engines/<br/>{graph | markdown | tree}"]
         Workers["workers/<br/>{graphModelWorker | graphViewWorker}"]
-        Modules["modules/<br/>{inkdoc | mermaid | task-manager}"]
+        Modules["modules/<br/>{inkmath | mermaid | task-manager}"]
         Context["context/<br/>ConfirmationEngine"]
         Utils["utils/ | types/ | constants/"]
 
         subgraph ReduxPackage["Redux State"]
             UISlice["uiSlice<br/>(sidebar, panels, modals)"]
-            PrefSlice["preferencesSlice<br/>(theme, AI, inkdoc, explorer)"]
+            PrefSlice["preferencesSlice<br/>(theme, AI, InkMath, explorer)"]
             LibSlice["librarySlice<br/>(library list, active library)"]
             DocSlice["documentsSlice<br/>(tabs, active tab, tree nodes)"]
             ExpSlice["explorerSlice<br/>(expanded folders, selection)"]
@@ -2805,7 +2681,7 @@ graph TB
 | `write_library_file` | `filesystem::commands` | `filesystemEngine.writeTextFile` | Escribe archivo de texto |
 | `create_library_file` | `filesystem::commands` | `filesystemEngine.createFile` | Crea archivo con contenido |
 | `create_library_directory` | `filesystem::commands` | `filesystemEngine.createDirectory` | Crea carpeta |
-| `create_library_entry` | `filesystem::commands` | `filesystemEngine.createLibraryEntry` | Crea entrada tipada (note/inkdoc/mermaid/folder) |
+| `create_library_entry` | `filesystem::commands` | `filesystemEngine.createLibraryEntry` | Crea entrada tipada (note/mermaid/folder) |
 | `library_entry_operation` | `filesystem::commands` | `filesystemEngine.performLibraryEntryOperation` | Delete/rename/paste |
 | `path_exists` | `filesystem::commands` | `filesystemEngine.pathExists` | Verifica existencia |
 | `is_directory_path` | `filesystem::commands` | `filesystemEngine.isDirectoryPath` | Verifica si es directorio |
@@ -2859,7 +2735,7 @@ graph TB
 | `notia:active-library-id` | `libraryStorage` | string | ID de la librería activa |
 | `notia:ai-settings:v1` | `aiSettingsStorage` | JSON | Configuración de IA (URL, modelo, API key) |
 | `notia:theme` | `themeStorage` | string | `light` \| `dark` |
-| `notia:inkdoc-settings:v1` | `inkdocSettingsStorage` | JSON | Preferencias del editor InkDoc |
+| `notia:inkmath-settings:v1` | `inkMathSettingsStorage` | JSON | Preferencias del reconocimiento InkMath |
 | `notia:explorer-refresh-interval-ms` | `explorerPanelStorage` | string | Intervalo de polling en Android |
 | `notia:explorer-folder-state` | `explorerPanelStorage` | JSON | Estado de carpetas expandidas/colapsadas |
 | `notia.perfBaseline.enabled` | `performanceBaseline` | string | Habilitar mediciones de performance |
@@ -2888,15 +2764,16 @@ graph TB
 - **Renderizado directo del hilo de mensajes**: `ChatWorkspaceView` renderiza todos los mensajes del hilo activo sin virtualización. Esto evita que mensajes largos del asistente (con Markdown, listas o bloques de código) se corten al forzar una altura fija por item. La virtualización de altura fija fue descartada porque los mensajes de chat tienen altura variable e impredecible; una futura optimización podría usar medición dinámica por item (`ResizeObserver`) si fuera necesario para conversaciones muy largas.
 - **Callbacks estables en `MermaidCanvas`**: los handlers del toolbar de flechas (`onEdgeTypeChange`, `onEdgeColorChange`, `onEdgeLabelChange`) se envuelven en `useCallback` para no invalidar el memo del canvas durante interacciones de pointer.
 - **Selectores Redux memoizados (2.3/2.4)**: vistas pesadas (`MermaidView`, `GraphView`, `MarkdownView`, `InlineMermaidPreview`) dejaron de usar selectores inline anónimos. Ahora consumen selectores reutilizables con `createSelector` (`selectMermaidViewerState`, `selectMermaidTheme`, `selectActiveLibraryPath`, `selectTheme`), reduciendo la creación de nuevas referencias de objetos en cada render y facilitando la estabilidad de `React.memo`.
-- **Code splitting con `React.lazy` (4.1)**: `MarkdownView`, `MermaidView`, `InkdocView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp` se cargan bajo demanda. `FileViewHost` y `NotiaWorkspace` envuelven estas vistas en `Suspense` con fallback mínimo (spinner Notia), reduciendo el tiempo de parseo/ejecución del bundle inicial en Android y desktop.
-- **Preload inteligente para escritorio (4.2)**: `useLazyPreloadOnIdle.ts` (usado en `App.tsx`) precarga los chunks de los editores más comunes durante los momentos de inactividad (`requestIdleCallback` / `setTimeout` fallback). En Android la precarga se omite por defecto para conservar memoria y datos móviles. Los delays escalonados son: MarkdownView (1500 ms), MermaidView (1900 ms), InkdocView (2300 ms), GraphView (3500 ms), TaskManagerApp (4500 ms).
-- **Dynamic imports existentes verificados (4.3/4.4/4.5)**: `mermaidEngine.ts` ya importa `mermaid` de forma dinámica; `@milkdown/crepe` y sus plugins viven exclusivamente dentro del chunk `MarkdownView`; `@monaco-editor/react` y `monaco-editor` solo se cargan dentro del chunk `MermaidView`. Esto evita que el bundle inicial incluya ~1.4 MB de Milkdown, ~80 KB de Mermaid + Monaco y ~1 MB de Inkdoc/KaTeX hasta que sean necesarios.
+- **Code splitting con `React.lazy` (4.1)**: `MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp` se cargan bajo demanda. `FileViewHost` y `NotiaWorkspace` envuelven estas vistas en `Suspense` con fallback mínimo (spinner Notia), reduciendo el tiempo de parseo/ejecución del bundle inicial en Android y desktop.
+- **Preload inteligente para escritorio (4.2)**: `useLazyPreloadOnIdle.ts` (usado en `App.tsx`) precarga los chunks de los editores más comunes durante los momentos de inactividad (`requestIdleCallback` / `setTimeout` fallback). En Android la precarga se omite por defecto para conservar memoria y datos móviles.
+- **Dynamic imports existentes verificados (4.3/4.4/4.5)**: `mermaidEngine.ts` ya importa `mermaid` de forma dinámica; `@milkdown/crepe` y sus plugins viven exclusivamente dentro del chunk `MarkdownView`; `@monaco-editor/react` y `monaco-editor` solo se cargan dentro del chunk `MermaidView`.
+- **Exportación Markdown bajo demanda**: `markdownExportEngine.ts` carga dinámicamente `marked`, `docx`, `html2canvas`, `jspdf` y KaTeX únicamente al exportar. PDF pagina el documento renderizado; Google Docs genera un `.docx` y conserva visualmente las fórmulas renderizadas.
 - **Bundle splitting con `manualChunks` (5.1/5.6)**: `vite.config.ts` define `manualChunks` para `vendor-mui`, `vendor-milkdown`, `vendor-mermaid`, `vendor-monaco`, `vendor-katex`, `vendor-cytoscape`, `vendor-lucide` y `vendor-iconify-packs`. El bundle inicial `index-*.js` quedó en ~460 KB gzip mientras que las librerías pesadas se cargan bajo demanda en chunks separados.
-- **Dynamic imports de dependencias grandes (5.5)**: los icon packs de Mermaid (`@iconify-json/*`) se cargan de forma dinámica desde `MermaidIconsMenu`; `html2canvas` y `jspdf` se cargan dinámicamente solo al exportar PDF desde Inkdoc. Esto evita que el bundle inicial arrastre ~2.5 MB de iconos o ~170 KB de librerías PDF.
+- **Dynamic imports de dependencias grandes (5.5)**: los icon packs de Mermaid (`@iconify-json/*`) se cargan de forma dinámica desde `MermaidIconsMenu`.
 - **Perfil de compilación release optimizado (6.1)**: `src-tauri/Cargo.toml` configura `lto = true`, `codegen-units = 1`, `strip = true` y `panic = "abort"` para reducir tamaño y mejorar rendimiento en Android. `overflow-checks` se mantiene habilitado por seguridad.
 - **Logging y SAF optimizados (6.2/6.3)**: Android release usa log level `Info`. Se agregó throttle de 200 ms a `refresh_root_tree_cache` y una cache LRU de 500 entradas en `AndroidDirectoryPickerState` para resoluciones de paths SAF sin JNI repetido.
 - **Commands de lectura async con spawn_blocking (6.5)**: `read_library_tree`, `search_library_files` y `read_markdown_files` son ahora commands `async` que delegan el escaneo recursivo a `tokio::task::spawn_blocking`, evitando bloquear el hilo principal de Tauri en bibliotecas grandes.
-- **Cleanup de vistas pesadas (7.1)**: `MarkdownView`, `MermaidView`, `MermaidCanvas`, `InkdocView` y `GraphView` limpian explícitamente DOM, refs, timeouts, listeners y canvas al desmontar. `InkDocView.disposeCanvases()` ahora remueve elementos canvas, capas de texto/imagen y llama `viewportController.dispose()`.
+- **Cleanup de vistas pesadas (7.1)**: `MarkdownView`, `MermaidView`, `MermaidCanvas` y `GraphView` limpian explícitamente DOM, refs, timeouts, listeners y canvas al desmontar.
 - **Cachés LRU acotadas (7.2)**: `mermaidEngine.ts` usa límites reducidos en Android (10 entradas / 2 MB) frente a desktop (20 / 5 MB).
 - **Invalidación agresiva de caches (7.3)**: al cambiar de biblioteca (`librarySlice.setSelectedLibraryId`) o cerrar tabs (`documentsSlice.resetTabs` / `closeAllTextDocuments`) se invalida la caché de renders Mermaid, evitando retención de SVGs de librerías anteriores.
 - **Listeners globales verificados (7.4)**: `useLibraryTreeSync` corrige la desuscripción del watcher desktop; `useGlobalEventListeners` y `useRightPanelMount` remueven listeners/RAF en cleanup; `uiSlice` desmonta el panel de chat al cerrarlo.
@@ -3099,7 +2976,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 #### Reutilización de módulos
 
 - **Duplicaciones detectadas**: Ninguna crítica. `frontmatterEngine.ts` se usa tanto en Markdown general como en Task Manager. `normalizeFilesystemPath.ts` se usa en todo el frontend.
-- **Abstracciones compartidas**: `filesystemEngine.ts` es la única abstracción de I/O de archivos; todos los módulos (`inkdoc`, `mermaid`, `task-manager`, `coldpass`) la consumen.
+- **Abstracciones compartidas**: `filesystemEngine.ts` es la única abstracción de I/O de archivos; los módulos que persisten datos (`mermaid`, `task-manager`, `coldpass`) la consumen.
 - **Nueva abstracción compartida — Mermaid inline preview**: `InlineMermaidPreview.tsx` demuestra que los módulos aislados pueden exponer componentes autocontenidos que se integran en vistas externas sin acoplamiento directo. El `Provider` de Redux dentro del portal asegura que el componente lea estado global sin depender de props drill.
 
 #### Acoplamiento aferente/eferente (qualitativo)
@@ -3175,7 +3052,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 | Código puro sin side-effects (`engines/`, `utils/`) | ~25% del frontend | `frontmatterEngine.ts`, `wikiLinkEngine.ts`, `graphSearchEngine.ts`, `pomodoroLogEngine.ts`, etc. Son ideales para tests unitarios sin mocking. |
 | Código acoplado a Tauri (`services/` con `invoke`) | ~40% del frontend | Requiere mock de `invoke()` o extracción de la capa de Tauri. |
 | Código acoplado a Redux (`components/` + `hooks/`) | ~30% del frontend | Requiere `Provider` de test o mocks de `useAppSelector`/`useAppDispatch`. |
-| Código con side-effects del navegador (`localStorage`, `canvas`) | ~5% del frontend | `taskManagerStorage.ts`, `InkDocView.ts`. Requiere mocks de `Storage` o `CanvasRenderingContext2D`. El nuevo `mermaidPreviewRuntime.tsx` requiere mock de `ReactDOM.createRoot` y `WeakMap`. |
+| Código con side-effects del navegador (`localStorage`, `canvas`) | ~5% del frontend | `taskManagerStorage.ts` e InkMath. Requiere mocks de `Storage` o `CanvasRenderingContext2D`. El nuevo `mermaidPreviewRuntime.tsx` requiere mock de `ReactDOM.createRoot` y `WeakMap`. |
 
 > **Plan para aumentar cobertura**:
 > 1. **Fase 1 (bajo esfuerzo, alto impacto)**: tests unitarios para `engines/` (puro, sin mocking). `frontmatterEngine.ts`, `wikiLinkEngine.ts`, `pomodoroLogEngine.ts`, `taskEngine.ts`.

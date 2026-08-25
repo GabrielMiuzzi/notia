@@ -29,7 +29,6 @@ export interface NotiaActions {
   libraryAdded: (library: NotiaLibrary) => void
   libraryRemoved: (library: NotiaLibrary) => Promise<void>
   textDocumentChange: (nextSource: string) => void
-  inkdocDocumentPersist: (nextSource: string) => Promise<void>
   chatWorkspaceTreeChanged: (pathHint?: string) => void
   windowAction: (action: NotiaWindowAction) => void
   coldPassOpenCredentialModal: () => void

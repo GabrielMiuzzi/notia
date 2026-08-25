@@ -69,7 +69,7 @@ function collectWikiLinkTargets(
 
     const extension = getFileExtension(node.path)
     const viewKind = resolveFileViewKind(extension)
-    if (viewKind !== 'markdown' && viewKind !== 'inkdoc') {
+    if (viewKind !== 'markdown') {
       continue
     }
 

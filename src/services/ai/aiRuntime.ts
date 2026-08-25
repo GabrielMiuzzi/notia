@@ -63,11 +63,6 @@ export interface AiImageAttachment {
   base64: string
 }
 
-export interface InkdocOcrBlock {
-  type: 'text' | 'latex'
-  content: string
-}
-
 interface AiMessagePayload {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
@@ -810,49 +805,6 @@ function extractJsonArrayCandidate(value: string): string {
   return value.trim()
 }
 
-function extractJsonObjectCandidate(value: string): string {
-  const fencedMatch = /```(?:json)?\s*([\s\S]*?)```/i.exec(value)
-  if (fencedMatch?.[1]) {
-    return fencedMatch[1].trim()
-  }
-
-  const firstBraceIndex = value.indexOf('{')
-  const lastBraceIndex = value.lastIndexOf('}')
-  if (firstBraceIndex >= 0 && lastBraceIndex > firstBraceIndex) {
-    return value.slice(firstBraceIndex, lastBraceIndex + 1)
-  }
-
-  return value.trim()
-}
-
-function parseInkdocOcrBlocks(value: string): InkdocOcrBlock[] {
-  const candidate = extractJsonObjectCandidate(value)
-
-  try {
-    const parsed = JSON.parse(candidate) as { blocks?: unknown }
-    if (!Array.isArray(parsed.blocks)) {
-      return []
-    }
-
-    return parsed.blocks.flatMap((block) => {
-      if (!block || typeof block !== 'object') {
-        return []
-      }
-
-      const candidateBlock = block as { type?: unknown; content?: unknown }
-      const type = candidateBlock.type === 'latex' ? 'latex' : candidateBlock.type === 'text' ? 'text' : null
-      const content = typeof candidateBlock.content === 'string' ? candidateBlock.content.trim() : ''
-      if (!type || !content) {
-        return []
-      }
-
-      return [{ type, content }]
-    })
-  } catch {
-    return []
-  }
-}
-
 function parseGeneratedMemoryList(value: string): string[] {
   const candidate = extractJsonArrayCandidate(value)
 
@@ -958,34 +910,6 @@ function buildLongTermMemoryGenerationMessages(input: GenerateAiLongTermMemories
     {
       role: 'user',
       content: sections.join('\n'),
-    },
-  ]
-}
-
-function buildInkdocOcrMessages(image: AiImageAttachment): AiMessagePayload[] {
-  return [
-    {
-      role: 'system',
-      content: [
-        'Sos un OCR estructurado para Notia InkDoc.',
-        'Analiza escritura manuscrita y formulas matematicas.',
-        'Debes responder solo JSON valido.',
-        'Formato exacto: {"blocks":[{"type":"text"|"latex","content":"..."}]}',
-        'Usa type="text" para lenguaje natural y type="latex" para expresiones o bloques matematicos.',
-        'Si hay mezcla de texto y formulas, separalas en bloques distintos y manten el orden visual de arriba hacia abajo.',
-        'En bloques latex devuelve solo el contenido LaTeX, sin fences y sin texto extra.',
-        'No inventes contenido que no se vea.',
-      ].join(' '),
-    },
-    {
-      role: 'user',
-      content: [
-        'Convierte esta seleccion manuscrita en bloques estructurados.',
-        'Si hay parrafos y formulas separadas, devuelve multiples bloques.',
-        'Si una formula es multilinea, conserva su estructura.',
-        'No agregues explicaciones.',
-      ].join('\n'),
-      images: [image.base64.trim()],
     },
   ]
 }
@@ -1764,49 +1688,67 @@ export async function generateAiLongTermMemories(
   }
 }
 
-export async function recognizeInkdocSelectionWithAi(
+export async function recognizeInkMathWithAi(
   preferences: AiPreferences,
   image: AiImageAttachment,
-): Promise<InkdocOcrBlock[]> {
+  abortSignal?: AbortSignal,
+): Promise<string> {
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
   const model = await resolveDefaultModel(normalizedPreferences)
-
-  if (!image.base64.trim()) {
-    throw new Error('La imagen OCR esta vacia.')
+  const base64 = image.base64.trim()
+  if (!base64) {
+    throw new Error('La imagen de InkMath esta vacia.')
   }
 
+  const prompt = [
+    'Transcribi exclusivamente la formula matematica manuscrita de la imagen a LaTeX.',
+    'Responde solo con el codigo LaTeX, sin delimitadores, bloques Markdown ni explicaciones.',
+    'Conserva fracciones, indices, exponentes, raices, integrales, sumatorias y saltos de linea visibles.',
+    'No inventes simbolos que no aparezcan en la imagen.',
+  ].join(' ')
+  const options: StreamAiChatReplyOptions = { abortSignal, thinking: false }
+
+  let answer: string
   if (getRuntimeDevice() === 'Android') {
-    const answer = await invokeAndroidAiChat(
+    answer = await invokeAndroidAiChat(
       normalizedPreferences,
       model,
       {
-        prompt: [
-          'Convierte esta seleccion manuscrita en JSON.',
-          'Responde solo con {"blocks":[{"type":"text"|"latex","content":"..."}]}.',
-          'Separa texto natural y formulas matematicas en bloques distintos.',
-          'Mantene el orden visual.',
-        ].join('\n'),
+        prompt,
         previousMessages: [],
         longTermMemories: [],
         files: [],
         image,
         selectedContextMode: 'direct',
       },
-      {},
+      options,
     )
-
-    return parseInkdocOcrBlocks(answer)
+  } else {
+    const messages: AiMessagePayload[] = [
+      { role: 'system', content: 'Sos un transcriptor preciso de formulas matematicas manuscritas a LaTeX.' },
+      { role: 'user', content: prompt, images: [base64] },
+    ]
+    try {
+      answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, options)
+    } catch {
+      answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, options)
+    }
   }
 
-  const messages = buildInkdocOcrMessages(image)
-
-  try {
-    const answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, {})
-    return parseInkdocOcrBlocks(answer)
-  } catch {
-    const answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, {})
-    return parseInkdocOcrBlocks(answer)
+  if (abortSignal?.aborted) {
+    throw new DOMException('Reconocimiento cancelado.', 'AbortError')
   }
+
+  const latex = answer
+    .trim()
+    .replace(/^```(?:latex|tex)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .replace(/^\$\$([\s\S]*)\$\$$/, '$1')
+    .trim()
+  if (!latex) {
+    throw new Error('Ollama no devolvio una formula LaTeX.')
+  }
+  return latex
 }
 
 async function invokeAndroidAiModelList(preferences: AiPreferences): Promise<string[]> {

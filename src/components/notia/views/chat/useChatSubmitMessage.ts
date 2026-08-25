@@ -49,7 +49,6 @@ export function useChatSubmitMessage(
     preferredContextScopeKey,
     persistTransientContext,
     hasTransientContext,
-    ephemeralSession,
     onChatCreated,
   } = deps
 
@@ -106,19 +105,7 @@ export function useChatSubmitMessage(
     let targetChatDocument = activeChatDocument
     let targetChatFilePath = selectedChatFilePath
 
-    if (ephemeralSession) {
-      targetChatFilePath = null
-      targetChatDocument ??= {
-        title: 'Graph View',
-        longTermMemoryEnabled: false,
-        contextMemoryEnabled: true,
-        contextMemoryMessageCount: 10,
-        contextScopeKey: preferredContextScopeKey,
-        selectedContextMode: effectiveSelectedContextMode,
-        selectedContextFiles: effectiveSelectedContextPaths,
-        messages: [],
-      }
-    } else if (!targetChatDocument || !targetChatFilePath) {
+    if (!targetChatDocument || !targetChatFilePath) {
       try {
         const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
         setPendingAutoCreatedChatFilePath(filePath)
@@ -267,7 +254,7 @@ export function useChatSubmitMessage(
           library,
           scopePaths: agentCorpusPaths,
           taskManagerScopeKey: agentScope === 'task-manager' ? preferredContextScopeKey : null,
-          activeDocumentPath: agentScope === 'document' ? effectiveSelectedContextPaths[0] ?? null : null,
+          activeDocumentPath: agentScope === 'document' ? agentCorpusPaths[0] ?? null : null,
           explicitlySelectedPaths: agentScope === 'graph' && effectiveSelectedContextMode === 'direct'
             ? effectiveSelectedContextPaths
             : [],
@@ -336,7 +323,7 @@ export function useChatSubmitMessage(
         }],
       }
 
-      if (!ephemeralSession && targetChatFilePath) {
+      if (targetChatFilePath) {
         const titleChanged = resolvedTitle !== targetChatDocument.title
         if (titleChanged) {
           await saveChatDocument(targetChatFilePath, persistedDocument, library)
@@ -390,7 +377,6 @@ export function useChatSubmitMessage(
 
       setActiveChatDocument(persistedDocument)
       setOptimisticThreadMessages(null)
-      setPendingAutoCreatedChatFilePath((current) => (targetChatFilePath && current === targetChatFilePath ? null : current))
       setStreamingThinking('')
       setStreamingAssistantMessage('')
       if (targetChatFilePath) {

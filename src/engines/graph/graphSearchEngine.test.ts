@@ -6,7 +6,6 @@ const graphModel: LibraryGraphModel = {
   nodes: [
     { id: 'one', path: '/vault/Plan.md', label: 'Plan anual', degree: 2 },
     { id: 'two', path: '/vault/Notas.md', label: 'Notas', degree: 1 },
-    { id: 'three', path: '/vault/Dibujo.inkdoc', label: 'Dibujo', degree: 0 },
   ],
   edges: [],
 }
@@ -28,19 +27,5 @@ describe('buildGraphSearchResults', () => {
     expect(results).toHaveLength(1)
     expect(results[0]).toMatchObject({ path: '/vault/Notas.md' })
     expect(results[0]?.preview).toContain('proyecto secreto')
-  })
-
-  it('extracts searchable text from InkDoc blocks', () => {
-    const results = buildGraphSearchResults(
-      graphModel,
-      {
-        '/vault/Dibujo.inkdoc': JSON.stringify({
-          pages: [{ textBlocks: [{ html: '<p>Idea dibujada</p>' }] }],
-        }),
-      },
-      'idea dibujada',
-    )
-
-    expect(results.map((result) => result.path)).toEqual(['/vault/Dibujo.inkdoc'])
   })
 })

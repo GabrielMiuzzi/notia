@@ -186,25 +186,6 @@ export function useTabManager({
         return persistTextDocumentSource(tabPath, tab.document.source)
       }
 
-      if (tab.document.viewKind === 'inkdoc' && tab.document.source !== tab.latestSavedSource) {
-        const result = await writeLibraryFileContent(tabPath, tab.document.source, {
-          androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(tabPath),
-        })
-        if (result.ok) {
-          if (activeLibraryPath) { invalidateLibrarySearchGraphIndex(activeLibraryPath, tabPath) }
-          bumpLibraryIndexRevision()
-          return true
-        }
-        if (!store.getState().documents.dialogState) {
-          dispatch(setDialogState({
-            type: 'info',
-            title: 'No se pudo guardar',
-            message: result.error ?? 'No se pudo guardar el archivo Inkdoc.',
-          }))
-        }
-        return false
-      }
-
       return true
     },
     [activeLibraryPath, bumpLibraryIndexRevision, clearPendingTextSaveByPath, dispatch, persistTextDocumentSource, resolveActiveLibraryAndroidDirectoryUri],

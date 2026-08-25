@@ -212,6 +212,12 @@ describe('chatScopedAgentRuntime', () => {
     expect(buildChatAgentSystemPrompt('document')).toContain('Solo el archivo activo esta autorizado')
   })
 
+  it('identifies the active file without embedding its contents', () => {
+    const prompt = buildChatAgentSystemPrompt('document', 'Base', 'C:/vault/Nota.md')
+
+    expect(prompt).toContain('Archivo activo (solo identidad; su contenido no fue incluido): C:/vault/Nota.md')
+  })
+
   it('instructs Task Manager to use RAG before full reads', () => {
     const prompt = buildChatAgentSystemPrompt('task-manager')
     expect(prompt).toContain('usa primero search_task_context')

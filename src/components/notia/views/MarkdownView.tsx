@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../../store/hooks'
-import { selectTheme } from '../../../features/preferences/preferencesSelectors'
+import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
@@ -46,11 +46,17 @@ import { createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiL
 import { useMarkdownZoom } from './markdown/useMarkdownZoom'
 import { quickHash } from '../../../modules/mermaid/engines/mermaidEngine'
 import { mountInlineMermaidPreview, unmountInlineMermaidPreview } from '../../../modules/mermaid/services/mermaidPreviewRuntime'
+import { createInkMathApp, type InkMathHostBridge } from '../../../modules/inkmath/platform/inkmathPlatform'
+import { InkMathModal } from '../../../modules/inkmath/view/InkMathModal'
+import { recognizeInkMathWithAi } from '../../../services/ai/aiRuntime'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/nord.css'
+import '../../../modules/inkmath/inkmath.css'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
+const MATH_CODE_BLOCK_LANGUAGES = new Set(['latex', 'math', 'tex'])
+const OCR_BUTTON_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
 
 interface MarkdownViewProps {
   source: string
@@ -209,6 +215,50 @@ function renderMermaidPreview(
   })
 }
 
+function createMarkdownInkMathApp(getDocumentPath: () => string) {
+  const unavailable = async (): Promise<never> => {
+    throw new Error('Esta operación no está disponible desde el editor Markdown.')
+  }
+  const bridge: InkMathHostBridge = {
+    rootPath: '',
+    getActiveFilePath: getDocumentPath,
+    listFilePaths: () => [],
+    readFile: unavailable,
+    writeFile: unavailable,
+    createFile: unavailable,
+    createFolder: unavailable,
+    deletePath: unavailable,
+    existsPath: async () => false,
+    writeBinaryFile: unavailable,
+    onOpenFile: unavailable,
+  }
+  return createInkMathApp(bridge)
+}
+
+function findCodeBlockPosition(editorView: EditorView, codeBlockElement: HTMLElement): number | null {
+  let domPosition: number
+  try {
+    domPosition = editorView.posAtDOM(codeBlockElement, 0)
+  } catch {
+    return null
+  }
+
+  for (const candidate of [domPosition, domPosition - 1]) {
+    if (candidate >= 0 && editorView.state.doc.nodeAt(candidate)?.type.name === 'code_block') {
+      return candidate
+    }
+  }
+
+  const resolvedPosition = editorView.state.doc.resolve(domPosition)
+  for (let depth = resolvedPosition.depth; depth > 0; depth -= 1) {
+    if (resolvedPosition.node(depth).type.name === 'code_block') {
+      return resolvedPosition.before(depth)
+    }
+  }
+
+  return null
+}
+
 function MarkdownViewInner({
   source,
   documentPath,
@@ -261,10 +311,22 @@ function MarkdownViewInner({
   }, [parsedDocument, source])
 
   const appTheme = useAppSelector(selectTheme)
+  const inkMathPreferences = useAppSelector(selectInkMathPreferences)
+  const aiPreferences = useAppSelector(selectAiSettings)
+  const inkMathPreferencesRef = useRef(inkMathPreferences)
+  const aiPreferencesRef = useRef(aiPreferences)
   const themeRef = useRef(appTheme)
   useEffect(() => {
     themeRef.current = appTheme
   }, [appTheme])
+
+  useEffect(() => {
+    inkMathPreferencesRef.current = inkMathPreferences
+  }, [inkMathPreferences])
+
+  useEffect(() => {
+    aiPreferencesRef.current = aiPreferences
+  }, [aiPreferences])
 
   useEffect(() => {
     onSourceChangeRef.current = onSourceChange
@@ -324,6 +386,76 @@ function MarkdownViewInner({
 
     let isMounted = true
     const inlineHosts = new Set<HTMLElement>()
+    const inkMathApp = createMarkdownInkMathApp(() => documentPathRef.current)
+
+    const addMathOcrButtons = () => {
+      const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+      rootRef.current?.querySelectorAll<HTMLElement>('.milkdown-code-block').forEach((codeBlockElement) => {
+        const toolsGroup = codeBlockElement.querySelector<HTMLElement>('.tools-button-group')
+        if (!toolsGroup) {
+          return
+        }
+
+        const language = codeBlockElement
+          .querySelector<HTMLElement>('.language-button')
+          ?.textContent?.toLowerCase().trim() ?? ''
+        const existingButton = toolsGroup.querySelector('.notia-math-ocr-button')
+        if (!MATH_CODE_BLOCK_LANGUAGES.has(language)) {
+          existingButton?.remove()
+          return
+        }
+        if (existingButton) {
+          return
+        }
+
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'notia-math-ocr-button'
+        button.setAttribute('aria-label', 'Abrir OCR matemático')
+        button.title = 'Abrir OCR matemático'
+        button.innerHTML = `${OCR_BUTTON_ICON}<span>OCR</span>`
+        button.addEventListener('click', () => {
+          const currentPosition = findCodeBlockPosition(editorView, codeBlockElement)
+          if (currentPosition === null) {
+            return
+          }
+          const currentNode = editorView.state.doc.nodeAt(currentPosition)
+          if (!currentNode || currentNode.type.name !== 'code_block') {
+            return
+          }
+          const preferences = inkMathPreferencesRef.current
+          new InkMathModal(inkMathApp, {
+            initialOcrDebounceMs: preferences.debounceMs,
+            recognizeLatex: (imageBase64, abortSignal) => recognizeInkMathWithAi(aiPreferencesRef.current, {
+              name: 'inkmath-formula.png',
+              mimeType: 'image/png',
+              base64: imageBase64.replace(/^data:image\/png;base64,/, '').trim(),
+            }, abortSignal),
+            onAccept: (latex) => {
+              const acceptedBlockPosition = findCodeBlockPosition(editorView, codeBlockElement)
+              if (acceptedBlockPosition === null) {
+                return
+              }
+              const acceptedBlockNode = editorView.state.doc.nodeAt(acceptedBlockPosition)
+              if (!acceptedBlockNode || acceptedBlockNode.type.name !== 'code_block') {
+                return
+              }
+              const transaction = editorView.state.tr.replaceWith(
+                acceptedBlockPosition + 1,
+                acceptedBlockPosition + acceptedBlockNode.nodeSize - 1,
+                editorView.state.schema.text(latex),
+              )
+              editorView.dispatch(transaction.scrollIntoView())
+              editorView.focus()
+            },
+          }).open()
+        })
+        toolsGroup.prepend(button)
+      })
+    }
+
+    const codeBlockObserver = new MutationObserver(addMathOcrButtons)
+    codeBlockObserver.observe(rootRef.current, { childList: true, characterData: true, subtree: true })
 
     const cleanupInlinePreviews = () => {
       rootRef.current?.querySelectorAll('.notia-mermaid-inline-host').forEach((node) => {
@@ -465,6 +597,7 @@ function MarkdownViewInner({
       }
 
       isReadyRef.current = true
+      addMathOcrButtons()
     })
 
     return () => {
@@ -472,6 +605,7 @@ function MarkdownViewInner({
       isReadyRef.current = false
       crepeRef.current = null
       setWikiLinkMenuState(null)
+      codeBlockObserver.disconnect()
       cleanupInlinePreviews()
       clearDocumentRefs()
       void crepe.destroy()

@@ -16,7 +16,7 @@ export default defineConfig(() => ({
   ],
   resolve: {
     alias: {
-      settings: resolve(__dirname, 'src/modules/inkdoc/settings.ts'),
+      settings: resolve(__dirname, 'src/modules/inkmath/settings.ts'),
     },
   },
   define: {

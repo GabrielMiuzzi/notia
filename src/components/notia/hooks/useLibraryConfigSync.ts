@@ -8,9 +8,9 @@ import {
   saveExplorerRefreshIntervalMs,
 } from '../../../services/preferences/explorerPanelStorage'
 import {
-  saveInkdocPreferences,
-  type InkdocPreferences,
-} from '../../../services/preferences/inkdocSettingsStorage'
+  saveInkMathPreferences,
+  type InkMathPreferences,
+} from '../../../services/preferences/inkMathSettingsStorage'
 import {
   readLibraryConfig,
   writeLibraryConfig,
@@ -25,10 +25,10 @@ interface UseLibraryConfigSyncParams {
   activeLibrary: NotiaLibrary | null
   aiPreferences: AiPreferences
   explorerRefreshIntervalMs: number
-  inkdocPreferences: InkdocPreferences
+  inkMathPreferences: InkMathPreferences
   setAiPreferences: (value: AiPreferences) => void
   setExplorerRefreshIntervalMs: (value: number) => void
-  setInkdocPreferences: (value: InkdocPreferences) => void
+  setInkMathPreferences: (value: InkMathPreferences) => void
   telegramPreferences: TelegramPreferences
   setTelegramPreferences: (value: TelegramPreferences) => void
 }
@@ -37,10 +37,10 @@ export function useLibraryConfigSync({
   activeLibrary,
   aiPreferences,
   explorerRefreshIntervalMs,
-  inkdocPreferences,
+  inkMathPreferences,
   setAiPreferences,
   setExplorerRefreshIntervalMs,
-  setInkdocPreferences,
+  setInkMathPreferences,
   telegramPreferences,
   setTelegramPreferences,
 }: UseLibraryConfigSyncParams): void {
@@ -51,7 +51,7 @@ export function useLibraryConfigSync({
   const fallbackPreferencesRef = useRef({
     aiPreferences,
     explorerRefreshIntervalMs,
-    inkdocPreferences,
+    inkMathPreferences,
     telegramPreferences,
   })
 
@@ -64,10 +64,10 @@ export function useLibraryConfigSync({
     fallbackPreferencesRef.current = {
       aiPreferences,
       explorerRefreshIntervalMs,
-      inkdocPreferences,
+      inkMathPreferences,
       telegramPreferences,
     }
-  }, [aiPreferences, explorerRefreshIntervalMs, inkdocPreferences, telegramPreferences])
+  }, [aiPreferences, explorerRefreshIntervalMs, inkMathPreferences, telegramPreferences])
 
   useEffect(() => {
     if (!activeLibrary) {
@@ -107,8 +107,8 @@ export function useLibraryConfigSync({
         if (config.panelDesplegable?.refreshIntervalMs !== undefined) {
           setExplorerRefreshIntervalMs(config.panelDesplegable.refreshIntervalMs)
         }
-        if (config.inkdocs) {
-          setInkdocPreferences(config.inkdocs)
+        if (config.inkMath) {
+          setInkMathPreferences(config.inkMath)
         }
         if (config.ia) {
           setAiPreferences(config.ia)
@@ -122,7 +122,7 @@ export function useLibraryConfigSync({
           panelDesplegable: {
             refreshIntervalMs: fallbackPreferencesRef.current.explorerRefreshIntervalMs,
           },
-          inkdocs: fallbackPreferencesRef.current.inkdocPreferences,
+          inkMath: fallbackPreferencesRef.current.inkMathPreferences,
           ia: fallbackPreferencesRef.current.aiPreferences,
           telegram: fallbackPreferencesRef.current.telegramPreferences,
         }
@@ -154,7 +154,7 @@ export function useLibraryConfigSync({
       panelDesplegable: {
         refreshIntervalMs: explorerRefreshIntervalMs,
       },
-      inkdocs: inkdocPreferences,
+      inkMath: inkMathPreferences,
       ia: aiPreferences,
       telegram: telegramPreferences,
     }
@@ -193,15 +193,15 @@ export function useLibraryConfigSync({
         libraryConfigTimeoutRef.current = null
       }
     }
-  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, aiPreferences, explorerRefreshIntervalMs, inkdocPreferences, telegramPreferences])
+  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, aiPreferences, explorerRefreshIntervalMs, inkMathPreferences, telegramPreferences])
 
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)
   }, [explorerRefreshIntervalMs])
 
   useEffect(() => {
-    saveInkdocPreferences(inkdocPreferences)
-  }, [inkdocPreferences])
+    saveInkMathPreferences(inkMathPreferences)
+  }, [inkMathPreferences])
 
   useEffect(() => {
     const normalizedPreferences = normalizeAiSettingsInput(aiPreferences)

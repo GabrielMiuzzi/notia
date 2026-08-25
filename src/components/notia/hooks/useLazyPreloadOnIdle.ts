@@ -4,7 +4,7 @@ import { preloadLazyComponent, preloadLazyComponentSequence } from '../../../ser
 
 /**
  * Hook that preloads heavy editor modules when the app is idle.
- * On desktop it warms up Markdown, Mermaid and Inkdoc editors so that
+ * On desktop it warms up Markdown and Mermaid editors so that
  * opening the first file feels instant. On Android the preload is skipped
  * by default to avoid consuming memory and mobile data unnecessarily.
  */
@@ -25,10 +25,6 @@ export function useLazyPreloadOnIdle() {
         {
           key: 'MermaidView',
           factory: () => import('../views/mermaid/MermaidView'),
-        },
-        {
-          key: 'InkdocView',
-          factory: () => import('../views/inkdoc/InkdocView'),
         },
       ],
       { delayMs: 1500, gapMs: 400 },

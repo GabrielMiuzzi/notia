@@ -20,11 +20,8 @@ export function resolveRightPanelPreferredContextMode(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
   activeDocument: OpenFileDocument | null,
 ): ChatFileContextMode | null {
+  void activeDocument
   if (activeWorkspaceView === 'task-manager') {
-    return 'index'
-  }
-
-  if (activeDocument?.viewKind === 'markdown') {
     return 'index'
   }
 
@@ -46,11 +43,25 @@ export function resolveRightPanelAttachedContextPaths(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
   activeDocument: OpenFileDocument | null,
 ): string[] {
-  if (activeWorkspaceView !== 'task-manager' && activeDocument?.viewKind === 'markdown') {
-    return [activeDocument.path]
-  }
-
+  void activeWorkspaceView
+  void activeDocument
   return EMPTY_CONTEXT_PATHS
+}
+
+export function resolveRightPanelContextScopeKey(
+  activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
+  activeDocument: OpenFileDocument | null,
+  taskManagerScopeKey: string | null,
+  taskManagerPanelId = '',
+): string | null {
+  if (activeWorkspaceView === 'task-manager') {
+    return `task-manager:${taskManagerScopeKey?.trim() || taskManagerPanelId.trim() || 'default'}`
+  }
+  if (activeWorkspaceView === 'graph') return 'graph-view:right-panel'
+  if (activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown') {
+    return `document:${activeDocument.path.replace(/\\/g, '/')}`
+  }
+  return null
 }
 
 function buildRightPanelChatContextLabel(
@@ -96,10 +107,6 @@ function buildRightPanelChatContextLabel(
 
   if (activeDocument.viewKind === 'markdown') {
     return `Contexto activo: archivo Markdown ${activeDocument.name}`
-  }
-
-  if (activeDocument.viewKind === 'inkdoc') {
-    return `Contexto activo: archivo Inkdoc ${activeDocument.name}`
   }
 
   if (activeDocument.viewKind === 'image') {
@@ -162,32 +169,20 @@ export function useRightPanelChatContext({
     return EMPTY_CONTEXT_PATHS
   }, [activeDocument, activeWorkspaceView, graphChatEffectivePaths, taskManagerChatContext?.filePaths])
 
-  const preferredContextName = useMemo(() => {
-    if (
-      activeWorkspaceView !== 'task-manager'
-      && activeDocument?.viewKind === 'markdown'
-    ) {
-      return activeDocument.name
-    }
-
-    return null
-  }, [activeDocument, activeWorkspaceView])
+  const preferredContextName = null
 
   const preferredContextMode = useMemo(() => {
     return resolveRightPanelPreferredContextMode(activeWorkspaceView, activeDocument)
   }, [activeDocument, activeWorkspaceView])
 
   const preferredContextScopeKey = useMemo(() => {
-    if (activeWorkspaceView === 'task-manager') {
-      return taskManagerChatContext?.scopeKey ?? null
-    }
-
-    if (activeWorkspaceView === 'graph') {
-      return 'graph-view:right-panel'
-    }
-
-    return null
-  }, [activeWorkspaceView, taskManagerChatContext?.scopeKey])
+    return resolveRightPanelContextScopeKey(
+      activeWorkspaceView,
+      activeDocument,
+      taskManagerChatContext?.scopeKey ?? null,
+      taskManagerActivePanelId,
+    )
+  }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
 
   const transientContextPaths = useMemo(
     () => activeWorkspaceView === 'graph'

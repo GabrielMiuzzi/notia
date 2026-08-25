@@ -6,7 +6,7 @@ import { joinFileName, splitFileName } from '../../utils/files/splitFileName'
 
 interface PendingCreation {
   id: string
-  kind: 'folder' | 'note' | 'inkdoc' | 'mermaid'
+  kind: 'folder' | 'note' | 'mermaid'
   initialName: string
   parentPath: string
 }
@@ -68,7 +68,6 @@ const TREE_ROW_HEIGHT = 27
 
 const CREATION_EXTENSION_BY_KIND: Readonly<Record<Exclude<PendingCreation['kind'], 'folder'>, string>> = {
   note: '.md',
-  inkdoc: '.inkdoc',
   mermaid: '.mmd',
 }
 

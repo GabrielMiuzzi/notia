@@ -3,7 +3,7 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store/hooks'
 import { selectIsSettingsOpen, selectIsLibraryManagerOpen } from '../../features/ui/uiSelectors'
 import { setSettingsOpen, setLibraryManagerOpen } from '../../features/ui/uiSlice'
-import { selectAiSettings, selectInkdocPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
+import { selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
 import { selectLibraries, selectSelectedLibraryId } from '../../features/library/librarySelectors'
 import { selectContextMenu, selectDialogState, selectClipboardEntry } from '../../features/documents/documentsSelectors'
 import { setDialogState, setPendingCreation, setRenamingPath, setClipboardEntry, setContextMenu, setTreeNodes } from '../../features/documents/documentsSlice'
@@ -20,7 +20,7 @@ import { setFolderExpandedByPath } from '../../utils/tree/setFolderExpandedByPat
 import { store } from '../../store/index'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
-import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { ColdPassEntry } from '../../types/coldpass'
 
@@ -37,7 +37,7 @@ function getParentDirectory(filePath: string): string {
 interface NotiaModalsProps {
   onAiPreferencesChange: (value: AiPreferences) => void
   onExplorerRefreshIntervalMsChange: (value: number) => void
-  onInkdocPreferencesChange: (value: InkdocPreferences) => void
+  onInkMathPreferencesChange: (value: InkMathPreferences) => void
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
   coldPassPromptState: {
     open: boolean
@@ -79,7 +79,7 @@ interface NotiaModalsProps {
 function NotiaModalsComponent({
   onAiPreferencesChange,
   onExplorerRefreshIntervalMsChange,
-  onInkdocPreferencesChange,
+  onInkMathPreferencesChange,
   onTelegramPreferencesChange,
   coldPassPromptState,
   coldPassDeletePromptState,
@@ -102,7 +102,7 @@ function NotiaModalsComponent({
   const isSettingsOpen = useAppSelector(selectIsSettingsOpen)
   const isLibraryManagerOpen = useAppSelector(selectIsLibraryManagerOpen)
   const explorerRefreshIntervalMs = useAppSelector(selectExplorerRefreshIntervalMs)
-  const inkdocPreferences = useAppSelector(selectInkdocPreferences, shallowEqual)
+  const inkMathPreferences = useAppSelector(selectInkMathPreferences, shallowEqual)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
   const libraries = useAppSelector(selectLibraries)
@@ -132,11 +132,6 @@ function NotiaModalsComponent({
     }
     if (actionId === 'new-note-root') {
       dispatch(setPendingCreation({ id: `pending-note-${Date.now()}`, kind: 'note', initialName: 'Nueva nota', parentPath: activeLibrary.path }))
-      dispatch(setContextMenu(null))
-      return
-    }
-    if (actionId === 'new-inkdoc-root') {
-      dispatch(setPendingCreation({ id: `pending-inkdoc-${Date.now()}`, kind: 'inkdoc', initialName: 'Nuevo inkdoc', parentPath: activeLibrary.path }))
       dispatch(setContextMenu(null))
       return
     }
@@ -227,13 +222,6 @@ function NotiaModalsComponent({
       dispatch(setContextMenu(null))
       return
     }
-    if (actionId === 'new-inkdoc' && targetNode.type === 'folder') {
-      const currentTreeNodes = store.getState().documents.treeNodes
-      store.dispatch(setTreeNodes(setFolderExpandedByPath(currentTreeNodes, targetPath, true)))
-      dispatch(setPendingCreation({ id: `pending-inkdoc-${Date.now()}`, kind: 'inkdoc', initialName: 'Nuevo inkdoc', parentPath: targetPath }))
-      dispatch(setContextMenu(null))
-      return
-    }
     if (actionId === 'new-mermaid' && targetNode.type === 'folder') {
       const currentTreeNodes = store.getState().documents.treeNodes
       store.dispatch(setTreeNodes(setFolderExpandedByPath(currentTreeNodes, targetPath, true)))
@@ -271,7 +259,6 @@ function NotiaModalsComponent({
     ? [
         { id: 'new-folder-root', label: 'Crear carpeta nueva' },
         { id: 'new-note-root', label: 'Crear nota nueva' },
-        { id: 'new-inkdoc-root', label: 'Crear inkdoc nuevo' },
         { id: 'new-mermaid-root', label: 'Crear diagrama nuevo' },
       ]
     : contextMenu?.type === 'node'
@@ -288,7 +275,6 @@ function NotiaModalsComponent({
             ? [
                 { id: 'new-subfolder', label: 'Crear subcarpeta' },
                 { id: 'new-note', label: 'Crear nota' },
-                { id: 'new-inkdoc', label: 'Crear inkdoc' },
                 { id: 'new-mermaid', label: 'Crear diagrama' },
               ]
             : []),
@@ -302,8 +288,8 @@ function NotiaModalsComponent({
         onClose={handleCloseSettings}
         explorerRefreshIntervalMs={explorerRefreshIntervalMs}
         onExplorerRefreshIntervalMsChange={onExplorerRefreshIntervalMsChange}
-        inkdocPreferences={inkdocPreferences}
-        onInkdocPreferencesChange={onInkdocPreferencesChange}
+        inkMathPreferences={inkMathPreferences}
+        onInkMathPreferencesChange={onInkMathPreferencesChange}
         aiPreferences={aiPreferences}
         onAiPreferencesChange={onAiPreferencesChange}
         telegramPreferences={telegramPreferences}

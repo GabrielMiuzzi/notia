@@ -14,10 +14,6 @@ const IMAGE_EXTENSIONS = new Set([
 ])
 
 export function resolveFileViewKind(extension: string): NotiaFileViewKind {
-  if (extension === 'inkdoc') {
-    return 'inkdoc'
-  }
-
   if (extension === 'mmd') {
     return 'mermaid'
   }

@@ -4,13 +4,12 @@ import { useAppSelector } from '../../store/hooks'
 import { selectIsHeavyWorkspaceView } from '../../features/ui/uiSelectors'
 import { selectActiveWorkspaceView, selectActiveDocument, selectSaveStatus, selectTreeNodes } from '../../features/documents/documentsSelectors'
 import { selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
-import { selectAiSettings, selectInkdocPreferences, selectTheme } from '../../features/preferences/preferencesSelectors'
+import { selectAiSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { MainView } from './MainView'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
-import { collectFilesFromTree } from '../../utils/tree/collectFilesFromTree'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
@@ -78,7 +77,6 @@ function NotiaWorkspaceComponent({
   const handleColdPassEditCredential = useNotiaAction('coldPassEditCredential')
   const handleColdPassDeleteCredential = useNotiaAction('coldPassDeleteCredential')
   const handleTextDocumentChange = useNotiaAction('textDocumentChange')
-  const handleInkdocDocumentPersist = useNotiaAction('inkdocDocumentPersist')
 
   const chatCallbacks = useMemo(() => ({
     onChatCreated: handleChatWorkspaceTreeChanged,
@@ -101,16 +99,8 @@ function NotiaWorkspaceComponent({
   const treeNodes = useAppSelector(selectTreeNodes)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
-  const inkdocPreferences = useAppSelector(selectInkdocPreferences, shallowEqual)
   const appTheme = useAppSelector(selectTheme)
   const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
-
-  const libraryFilePaths = useMemo(() => {
-    if (activeWorkspaceView !== 'documents') {
-      return []
-    }
-    return collectFilesFromTree(treeNodes)
-  }, [activeWorkspaceView, treeNodes])
 
   const markdownWikiLinkTargets = useMemo(
     () => (isMarkdownDocumentActive ? buildWikiLinkTargets(treeNodes, activeLibrary?.path ?? null) : []),
@@ -209,12 +199,6 @@ function NotiaWorkspaceComponent({
       activeDocument={activeDocument}
       saveStatus={saveStatus}
       onTextDocumentChange={handleTextDocumentChange}
-      onInkdocDocumentPersist={handleInkdocDocumentPersist}
-      rootPath={activeLibrary?.path ?? null}
-      libraryAndroidTreeUri={activeLibrary?.androidTreeUri}
-      libraryFilePaths={libraryFilePaths}
-      inkdocPreferences={inkdocPreferences}
-      aiPreferences={aiPreferences}
       markdownWikiLinkTargets={markdownWikiLinkTargets}
       onOpenLinkedFile={handleOpenFileFromView}
       theme={appTheme}

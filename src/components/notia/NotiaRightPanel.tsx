@@ -154,7 +154,6 @@ function NotiaRightPanelComponent({
             }}
             persistTransientContext={false}
             selectMatchingChatOnly
-            ephemeralSession={rightPanelPreferredContextScopeKey === 'graph-view:right-panel'}
             historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
             onChatCreated={chatCallbacks.onChatCreated}
             onChatDeleted={chatCallbacks.onChatDeleted}

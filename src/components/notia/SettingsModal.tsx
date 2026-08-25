@@ -4,11 +4,10 @@ import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
 import { Brain, ChevronDown, Eye, Wrench, X } from 'lucide-react'
 import {
   clampOcrDebounceMs,
-  INKDOC_OCR_DEBOUNCE_MAX_MS,
-  INKDOC_OCR_DEBOUNCE_MIN_MS,
-  normalizeServiceUrl,
-} from '../../modules/inkdoc/settings'
-import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+  INKMATH_OCR_DEBOUNCE_MAX_MS,
+  INKMATH_OCR_DEBOUNCE_MIN_MS,
+} from '../../modules/inkmath/settings'
+import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import {
   getDefaultOllamaApiUrl,
   normalizeAiSettingsInput,
@@ -23,22 +22,22 @@ import { NotiaButton } from '../common/NotiaButton'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkDocs' | 'IA' | 'Telegram'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Telegram'
 
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
   explorerRefreshIntervalMs: number
   onExplorerRefreshIntervalMsChange: (value: number) => void
-  inkdocPreferences: InkdocPreferences
-  onInkdocPreferencesChange: (value: InkdocPreferences) => void
+  inkMathPreferences: InkMathPreferences
+  onInkMathPreferencesChange: (value: InkMathPreferences) => void
   aiPreferences: AiPreferences
   onAiPreferencesChange: (value: AiPreferences) => void
   telegramPreferences: TelegramPreferences
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkDocs', 'IA', 'Telegram']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Telegram']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
@@ -46,8 +45,8 @@ export function SettingsModal({
   onClose,
   explorerRefreshIntervalMs,
   onExplorerRefreshIntervalMsChange,
-  inkdocPreferences,
-  onInkdocPreferencesChange,
+  inkMathPreferences,
+  onInkMathPreferencesChange,
   aiPreferences,
   onAiPreferencesChange,
   telegramPreferences,
@@ -67,7 +66,6 @@ export function SettingsModal({
       setActiveSection(requestedSection)
     }
   }, [open, requestedSection])
-  const [inkmathServiceUrlDraft, setInkmathServiceUrlDraft] = useState(inkdocPreferences.inkmathServiceUrl)
   const [ollamaUrlDraft, setOllamaUrlDraft] = useState(normalizedIncomingAiPreferences.ollamaUrl)
   const [apiKeyDraft, setApiKeyDraft] = useState(normalizedIncomingAiPreferences.apiKey)
   const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
@@ -101,7 +99,7 @@ export function SettingsModal({
   const refreshIntervalRangeLabel = refreshBounds.allowDisabled
     ? `Cooldown del chequeo automatico (0 = manual, ${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
     : `Cooldown del chequeo automatico (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
-  const ocrDebounceMs = clampOcrDebounceMs(inkdocPreferences.inkmathDebounceMs)
+  const ocrDebounceMs = clampOcrDebounceMs(inkMathPreferences.debounceMs)
   const ocrDebounceLabel = `${ocrDebounceMs} ms`
   const normalizedAiPreferences = normalizeAiSettingsInput({
     ollamaUrl: ollamaUrlDraft,
@@ -111,14 +109,6 @@ export function SettingsModal({
     thinkingLevel: thinkingLevelDraft,
   })
   const selectedModelOption = availableModels.find((model) => model.name === selectedModelDraft) ?? null
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setInkmathServiceUrlDraft(inkdocPreferences.inkmathServiceUrl)
-  }, [inkdocPreferences.inkmathServiceUrl, open])
 
   useEffect(() => {
     if (!open) {
@@ -212,15 +202,6 @@ export function SettingsModal({
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
   }, [isModelMenuOpen])
 
-  const commitInkMathServiceUrl = () => {
-    const normalized = normalizeServiceUrl(inkmathServiceUrlDraft)
-    setInkmathServiceUrlDraft(normalized)
-    onInkdocPreferencesChange({
-      ...inkdocPreferences,
-      inkmathServiceUrl: normalized,
-    })
-  }
-
   const commitAiPreferences = () => {
     const normalized = normalizeAiSettingsInput({
       ollamaUrl: ollamaUrlDraft,
@@ -243,7 +224,6 @@ export function SettingsModal({
     if (!open) {
       console.log('[SettingsModal] Modal closing, committing changes...')
       // Commit any pending changes when closing
-      commitInkMathServiceUrl()
       commitAiPreferences()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -342,52 +322,25 @@ export function SettingsModal({
                 />
               </div>
             </div>
-          ) : activeSection === 'InkDocs' ? (
+          ) : activeSection === 'InkMath' ? (
             <>
-              <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Backend de InkMath</div>
-                <div className="notia-settings-card-value">
-                  {normalizeServiceUrl(inkdocPreferences.inkmathServiceUrl)}
-                </div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  URL del servicio OCR para el canvas matemático de InkDocs
-                </div>
-                <div className="notia-settings-input-wrap">
-                  <input
-                    className="notia-settings-input"
-                    type="text"
-                    value={inkmathServiceUrlDraft}
-                    onChange={(event) => {
-                      setInkmathServiceUrlDraft(event.target.value)
-                    }}
-                    onBlur={commitInkMathServiceUrl}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        commitInkMathServiceUrl()
-                      }
-                    }}
-                    placeholder="http://127.0.0.1:8767"
-                  />
-                </div>
-              </div>
               <div className="notia-settings-card">
                 <div className="notia-settings-card-label">Debounce OCR</div>
                 <div className="notia-settings-card-value">{ocrDebounceLabel}</div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Tiempo de espera antes de enviar el dibujo al backend
+                  Tiempo de inactividad antes de enviar la fórmula manuscrita a Ollama
                 </div>
                 <div className="notia-settings-slider-wrap">
                   <input
                     type="range"
-                    min={INKDOC_OCR_DEBOUNCE_MIN_MS}
-                    max={INKDOC_OCR_DEBOUNCE_MAX_MS}
+                    min={INKMATH_OCR_DEBOUNCE_MIN_MS}
+                    max={INKMATH_OCR_DEBOUNCE_MAX_MS}
                     step={50}
                     value={ocrDebounceMs}
                     onChange={(event) => {
-                      onInkdocPreferencesChange({
-                        ...inkdocPreferences,
-                        inkmathDebounceMs: clampOcrDebounceMs(Number(event.target.value)),
+                      onInkMathPreferencesChange({
+                        ...inkMathPreferences,
+                        debounceMs: clampOcrDebounceMs(Number(event.target.value)),
                       })
                     }}
                   />

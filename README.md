@@ -55,7 +55,7 @@ Las sesiones admiten hasta 15 minutos. Las etiquetas de hablante se calculan al 
 - **Librerías de Notas**: organiza carpetas locales del filesystem como bibliotecas de documentos.
 - **Editor de Markdown enriquecido**: edición WYSIWYG con soporte para wikilinks (`[[nota]]`), frontmatter y propiedades. Optimizado para baja memoria con memoización selectiva y selectores de acciones.
 - **Enlaces secuenciales (Page Links)**: definí relaciones de orden entre notas con `nextPage` y `previousPage` en el frontmatter. Notia actualiza automáticamente el vínculo inverso y ordena las notas conectadas en bloques secuenciales en el explorador.
-- **InkDoc**: editor especializado para documentos de tinta manuscrita, con reconocimiento de texto y fórmulas matemáticas vía IA.
+- **InkMath en Markdown**: dibujá una fórmula desde los bloques Math y obtené su transcripción LaTeX mediante el modelo de visión configurado en Ollama.
 - **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas. Los diagramas embebidos en Markdown y los archivos `.mmd` comparten el **mismo motor visual**, temas y estilos. Renderizado lazy con `IntersectionObserver`, cancelación vía `AbortSignal` y caché LRU.
 - **Graph View**: visualización interactiva de relaciones entre notas mediante nodos y conexiones.
 - **AI Chat local**: conversación con modelos de lenguaje ejecutados localmente via Ollama, con memoria a largo plazo y contexto de archivos de la librería.
@@ -83,7 +83,7 @@ El corazón de Notia son las **librerías**: carpetas locales del filesystem que
 
 Desde el panel izquierdo (Explorador) podés:
 - Navegar carpetas y archivos en forma de árbol expandible. El nombre se muestra separado del formato, que se conserva al renombrar.
-- Crear carpetas, notas Markdown, documentos InkDoc o diagramas Mermaid.
+- Crear carpetas, notas Markdown o diagramas Mermaid.
 - Copiar, mover, renombrar y eliminar archivos mediante el **menú contextual** (clic derecho).
 - Buscar archivos por nombre con la barra de búsqueda integrada.
 - En escritorio, el árbol se actualiza automáticamente cuando detecta cambios externos en el filesystem.
@@ -101,14 +101,8 @@ Características:
 - **Indicadores de estado**: visualización de "Guardando...", "Guardado ✓" o "Error ✗" en la pestaña activa.
 - **Zoom de lectura**: ampliá o reducí el contenido con `Ctrl + rueda del mouse` en Windows, con el gesto de pinza de dos dedos en Android o con el deslizador junto al estado de guardado. El porcentaje visible y el botón **Restablecer** permiten consultar o volver rápidamente al 100%.
 - **Diagramas Mermaid embebidos**: insertá bloques de código con lenguaje `mermaid` dentro de cualquier nota Markdown. El editor renderiza el diagrama con el **mismo motor visual** que los archivos `.mmd` (temas Notia, zoom/pan interactivo, manejo de errores uniforme). Los diagramas embebidos son de **solo lectura**: se pueden explorar (zoom, paneo, exportar a PNG/SVG) pero no se pueden editar nodos ni flechas desde el editor Markdown. Desde la versión 1.0.13, el renderizado embebido es **lazy** (solo renderiza cuando el diagrama entra en el viewport), cancela renders previos al cambiar de archivo y gestiona la memoria mediante una caché LRU con límite de tamaño.
-
-### InkDoc
-
-InkDoc es un formato propio de Notia para documentos que combinan texto manuscrito (tinta) y contenido estructurado.
-
-- Dibujá a mano alzada con stylus o dedo (en dispositivos táctiles).
-- La IA local puede reconocer selecciones manuscritas y convertirlas en bloques de texto o fórmulas LaTeX.
-- Ideal para tomar notas rápidas, esquemas y anotaciones matemáticas.
+- **InkMath**: el botón **OCR** de cada bloque Math abre un lienzo compatible con mouse, stylus y touch. Al terminar de escribir, espera el intervalo configurado, rasteriza los trazos y solicita a Ollama la fórmula en LaTeX; una entrada nueva invalida cualquier resultado anterior.
+- **Exportación**: el menú de tres puntos junto a **Restablecer** permite exportar la nota Markdown como PDF o como `.docx` importable en Google Docs. Las fórmulas LaTeX se renderizan con formato matemático en ambos destinos.
 
 ### Diagramas Mermaid
 
@@ -127,7 +121,7 @@ Visualización gráfica de las relaciones entre todas tus notas.
 - Navegación interactiva: zoom, paneo, clic para abrir la nota desde el grafo.
 - El layout se genera como un diagrama Mermaid agrupado por carpetas, manteniendo la legibilidad en bibliotecas grandes.
 - Búsqueda integrada por título y contenido: muestra las notas coincidentes en un desplegable sobre la barra, permite enfocarlas en el grafo, agregarlas al contexto del chat o abrirlas, y resalta sus nodos.
-- El chat lateral del Graph View es efímero: no crea archivos de chat. Sin selección consulta la biblioteca mediante RAG local, incluyendo nombres y rutas de carpetas; por ejemplo, preguntar por `chats` recupera los documentos ubicados dentro de esa carpeta. Al seleccionar archivos usa su contenido completo como contexto directo. También puede buscar y leer por título mediante tool calling nativo de Ollama.
+- Los chats laterales de Graph View, Task Manager y archivos comparten el mismo flujo persistente de creación, selección, hidratación y visualización. Cada contexto usa una clave estable y su propio archivo dentro del historial de chats. En Graph View, sin selección consulta la biblioteca mediante RAG local, incluyendo nombres y rutas de carpetas; por ejemplo, preguntar por `chats` recupera los documentos ubicados dentro de esa carpeta. Al seleccionar archivos usa su contenido completo como contexto directo. También puede buscar y leer por título mediante tool calling nativo de Ollama.
 - Durante una consulta con herramientas, el panel muestra si está analizando, ejecutando una búsqueda o procesando resultados. Los modelos grandes disponen de un tiempo ampliado para completar las distintas rondas del agente y la operación se puede cancelar desde el compositor.
 - Notia mantiene un archivo `linkCache.md` dentro de `.notia/` con el diagrama del grafo, que se regenera automáticamente en segundo plano cuando cambian las notas.
 
@@ -319,7 +313,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
    - Seleccioná **"Agregar librería"** y elegí una carpeta de tu filesystem (escritorio) o concedé permisos de carpeta (Android).
    - La carpeta seleccionada se indexará y aparecerá en el Explorador.
 3. **Crear contenido**:
-   - Desde la **barra superior** (Toolbar): **"New Note"** (nota Markdown), **"New InkDoc"** (documento de tinta), **"New Folder"** (carpeta).
+   - Desde la **barra superior** (Toolbar): **"New Note"** (nota Markdown) o **"New Folder"** (carpeta).
    - O desde el **menú contextual** (clic derecho) en cualquier carpeta del Explorador.
 4. **Abrir archivos**: hacé clic en cualquier archivo del árbol de archivos. Se abrirá en una pestaña.
 5. **Navegar entre vistas**: el **Icon Rail** (barra vertical izquierda) permite cambiar entre:
@@ -391,7 +385,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 1. Abrí **Settings** (⚙️) desde la barra de título o el menú.
 2. En **Apariencia**, seleccioná **Claro** u **Oscuro**.
 3. En **Explorador**, ajustá el **intervalo de refresco** (útil en Android para detectar cambios externos).
-4. En **InkDoc**, configurá preferencias de estilo y comportamiento.
+4. En **InkMath**, configurá el intervalo de inactividad previo al reconocimiento OCR.
 
 ---
 
@@ -522,8 +516,8 @@ Notia almacena las preferencias del usuario localmente en el navegador (localSto
 ### Explorador de archivos
 - **Intervalo de refresco**: en Android, podés configurar un intervalo en milisegundos para que el árbol de archivos se refresque periódicamente (default: deshabilitado).
 
-### InkDoc
-- **Preferencias de estilo**: configuración visual y comportamiento del editor de tinta.
+### InkMath
+- **Espera de OCR**: intervalo de inactividad antes de enviar a Ollama los trazos de una fórmula dibujada.
 
 ### Logging (Android)
 - Podés habilitar o deshabilitar el envío de logs a `logcat` para diagnóstico de rendimiento:
@@ -572,9 +566,9 @@ Notia almacena las preferencias del usuario localmente en el navegador (localSto
 - En Android, Notia aplaza la carga de vistas pesadas (Graph, Chat, Task Manager) un par de frames para mantener la UI responsiva.
 - En Android, Notia ajusta automáticamente la caché de renders Mermaid a 10 entradas / 2 MB para reducir consumo de memoria, mientras que en desktop conserva 20 / 5 MB.
 - Al cambiar de biblioteca o cerrar todos los documentos, Notia invalida la caché de renders Mermaid para liberar SVGs de la librería anterior.
-- Los componentes pesados (`MarkdownView`, `MermaidView`, `InkdocView`, `GraphView`) limpian sus recursos al desmontar: destruyen editores, remueven canvas, cancelan timeouts y limpian listeners globales.
+- Los componentes pesados (`MarkdownView`, `MermaidView`, `GraphView`) limpian sus recursos al desmontar: destruyen editores, remueven canvas, cancelan timeouts y limpian listeners globales.
 - Las vistas pesadas usan selectores Redux memoizados (`selectTheme`, `selectMermaidViewerState`, `selectActiveLibraryPath`) en lugar de funciones inline, reduciendo re-renders en cadena.
-- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `InkdocView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, Cytoscape, MUI ni dependencias de exportación PDF.
+- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, Cytoscape ni MUI.
 - En escritorio, Notia precarga esas vistas de forma inteligente durante los momentos de inactividad (`requestIdleCallback`) para que la primera apertura de archivo sea instantánea; en Android la precarga se omite por defecto para ahorrar memoria y datos.
 - `vite.config.ts` agrupa dependencias grandes en chunks separados (`vendor-milkdown`, `vendor-mermaid`, `vendor-iconify-packs`, `vendor-mui`, `vendor-cytoscape`, `vendor-lucide`, etc.), manteniendo el bundle inicial en ~460 KB gzip.
 - Los icon packs de Mermaid (`@iconify-json/*`) y las librerías de exportación PDF (`jspdf`, `html2canvas`) se cargan dinámicamente solo cuando se abre el menú de iconos o se exporta un PDF, respectivamente.

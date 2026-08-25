@@ -137,8 +137,8 @@ function collectSearchGraphDescriptors(
       path: normalizedPath,
       label: logicalPath,
       normalizedLabel: normalizeGraphSearchText(`${logicalPath} ${node.name}`),
-      graphSource: viewKind === 'markdown' || viewKind === 'inkdoc',
-      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'text',
+      graphSource: viewKind === 'markdown',
+      searchableContent: viewKind === 'markdown' || viewKind === 'text',
     })
   }
 }
@@ -163,8 +163,8 @@ function collectSearchGraphDescriptorsFromFlatList(
       path: normalizedPath,
       label: logicalPath,
       normalizedLabel: normalizeGraphSearchText(`${logicalPath} ${file.name}`),
-      graphSource: viewKind === 'markdown' || viewKind === 'inkdoc',
-      searchableContent: viewKind === 'markdown' || viewKind === 'inkdoc' || viewKind === 'text',
+      graphSource: viewKind === 'markdown',
+      searchableContent: viewKind === 'markdown' || viewKind === 'text',
     })
   }
 }

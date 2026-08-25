@@ -21,8 +21,6 @@ pub(crate) fn normalize_library_entry_name(kind: &str, name: &str) -> String {
     let trimmed_name = name.trim();
     if kind == "note" && !trimmed_name.to_lowercase().ends_with(".md") {
         format!("{}.md", trimmed_name)
-    } else if kind == "inkdoc" && !trimmed_name.to_lowercase().ends_with(".inkdoc") {
-        format!("{}.inkdoc", trimmed_name)
     } else if kind == "mermaid" && !trimmed_name.to_lowercase().ends_with(".mmd") {
         format!("{}.mmd", trimmed_name)
     } else {
@@ -37,11 +35,7 @@ pub(crate) fn validate_create_library_entry_payload(
         return Err(operation_error("Invalid entry data."));
     }
 
-    if payload.kind != "folder"
-        && payload.kind != "note"
-        && payload.kind != "inkdoc"
-        && payload.kind != "mermaid"
-    {
+    if payload.kind != "folder" && payload.kind != "note" && payload.kind != "mermaid" {
         return Err(operation_error("Invalid entry type."));
     }
 
@@ -123,10 +117,6 @@ mod tests {
     #[test]
     fn normalize_library_entry_name_adds_expected_extensions() {
         assert_eq!(normalize_library_entry_name("note", "hola"), "hola.md");
-        assert_eq!(
-            normalize_library_entry_name("inkdoc", "dibujo"),
-            "dibujo.inkdoc"
-        );
         assert_eq!(normalize_library_entry_name("folder", "carpeta"), "carpeta");
         assert_eq!(normalize_library_entry_name("note", "ya.md"), "ya.md");
     }

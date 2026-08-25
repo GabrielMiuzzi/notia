@@ -62,15 +62,6 @@ export function useToolbarActions({
       }))
       return
     }
-    if (toolId === 'new-inkdoc') {
-      dispatch(setPendingCreation({
-        id: `pending-inkdoc-${Date.now()}`,
-        kind: 'inkdoc',
-        initialName: 'Nuevo inkdoc',
-        parentPath: activeLibrary.path,
-      }))
-      return
-    }
     if (toolId === 'new-mermaid') {
       dispatch(setPendingCreation({
         id: `pending-mermaid-${Date.now()}`,

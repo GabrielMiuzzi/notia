@@ -45,7 +45,7 @@ export function useDocumentOpener({
 
     const openFileMeasurement = startPerformanceMeasurement('document.open', { extension, filePath, viewKind })
 
-    if (isTextualViewKind(viewKind) || viewKind === 'inkdoc') {
+    if (isTextualViewKind(viewKind)) {
       openingDocumentPathsRef.current.add(filePath)
       try {
         const isMarkdown = extension === 'md'

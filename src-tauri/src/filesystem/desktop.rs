@@ -7,7 +7,7 @@ use crate::notia_timer::NotiaTimer;
 
 use super::helpers::{
     canonical_or_original, collect_directory_signature, copy_entry_recursive,
-    default_inkdoc_content, has_invalid_entry_name, is_same_or_nested_path, read_directory_tree,
+    has_invalid_entry_name, is_same_or_nested_path, read_directory_tree,
     read_markdown_files_in_directory, search_library_files_in_directory,
 };
 use super::types::{
@@ -210,16 +210,6 @@ pub(crate) fn create_library_entry(
 
     let operation_result = if kind == "folder" {
         fs::create_dir(target_path)
-    } else if kind == "inkdoc" {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target_path)
-            .and_then(|mut file| {
-                use std::io::Write;
-
-                file.write_all(default_inkdoc_content().as_bytes())
-            })
     } else {
         OpenOptions::new()
             .write(true)

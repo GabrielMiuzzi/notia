@@ -1,11 +1,11 @@
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
-import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 
 export interface PreferencesState {
   theme: 'dark' | 'light'
   aiSettings: AiPreferences
-  inkdocPreferences: InkdocPreferences
+  inkMathPreferences: InkMathPreferences
   explorerRefreshIntervalMs: number
   telegramSettings: TelegramPreferences
 }

@@ -34,24 +34,6 @@ pub(crate) fn has_invalid_entry_name(name: &str) -> bool {
     trimmed.contains('/') || trimmed.contains('\\')
 }
 
-pub(crate) fn default_inkdoc_content() -> &'static str {
-    r#"{
-  "version": 1,
-  "title": "InkDoc sin titulo",
-  "page": {
-    "size": "A4",
-    "marginMm": 10
-  },
-  "pages": [
-    {
-      "id": "p1",
-      "canvas": null
-    }
-  ]
-}
-"#
-}
-
 pub(crate) fn is_hidden_entry_name(name: &str) -> bool {
     name.trim_start().starts_with('.')
 }

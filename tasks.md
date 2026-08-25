@@ -19,7 +19,7 @@ El comportamiento esperado para la primera versión es:
 ## Decisiones de alcance v1
 
 - El corpus incluye todos los archivos que `isTaskMarkdownFile` reconoce dentro de Task Manager en el vault activo, no sólo el tablero visible. Deben incluirse tareas, subtareas, completadas y canceladas; deben excluirse índices, logs de Pomodoro y archivos ajenos al módulo.
-- El corpus de Graph View incluye los documentos textuales admitidos por el índice de biblioteca y visibles para el grafo/búsqueda (`markdown`, `inkdoc` y, si el contrato actual lo permite, texto plano). Debe excluir `.notia/`, historiales de chat, índices técnicos, archivos binarios y cualquier ruta no destinada a contexto de usuario.
+- El corpus de Graph View incluye los documentos Markdown admitidos por el índice de biblioteca y visibles para el grafo/búsqueda. Debe excluir `.notia/`, historiales de chat, índices técnicos, archivos binarios y cualquier ruta no destinada a contexto de usuario.
 - El título canónico de un ticket es `TaskItem.title` (frontmatter `tarea`) y el nombre del archivo funciona como alias.
 - Para Graph View, el título canónico es el título extraído del documento cuando exista; el nombre sin extensión y la ruta lógica funcionan como alias.
 - RAG v1 será local y lexical, sin agregar dependencias ni requerir un servicio externo de embeddings. Debe recuperar y rankear fragmentos por título, metadatos y cuerpo. La API interna debe permitir sustituir el ranker por embeddings más adelante sin cambiar el chat ni las herramientas.

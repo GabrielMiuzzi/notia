@@ -246,7 +246,7 @@ export async function readLibraryTreeSignature(
 export async function createLibraryEntry(
   directoryPath: string,
   name: string,
-  kind: 'folder' | 'note' | 'inkdoc' | 'mermaid',
+  kind: 'folder' | 'note' | 'mermaid',
   options?: { androidDirectoryUri?: string },
 ): Promise<CreateLibraryEntryResult> {
   const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)

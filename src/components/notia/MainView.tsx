@@ -1,11 +1,12 @@
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { Ellipsis } from 'lucide-react'
 import { FileViewHost } from './views/FileViewHost' // memoized export
-import type { InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
-import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
 import { NotiaButton } from '../common/NotiaButton'
 import { MAX_MARKDOWN_ZOOM, MIN_MARKDOWN_ZOOM } from './views/markdown/useMarkdownZoom'
+import { MarkdownExportModal } from './MarkdownExportModal'
+import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 
 const DEFAULT_MARKDOWN_ZOOM = 1
 
@@ -13,12 +14,6 @@ interface MainViewProps {
   activeDocument: OpenFileDocument | null
   saveStatus: NotiaDocumentSaveStatus
   onTextDocumentChange: (nextSource: string) => void
-  onInkdocDocumentPersist: (nextSource: string) => Promise<void>
-  rootPath: string | null
-  libraryAndroidTreeUri?: string
-  libraryFilePaths: string[]
-  inkdocPreferences: InkdocPreferences
-  aiPreferences: AiPreferences
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
   theme: string
@@ -40,21 +35,39 @@ function MainViewComponent({
   activeDocument,
   saveStatus,
   onTextDocumentChange,
-  onInkdocDocumentPersist,
-  rootPath,
-  libraryAndroidTreeUri,
-  libraryFilePaths,
-  inkdocPreferences,
-  aiPreferences,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
   theme,
 }: MainViewProps) {
   const [markdownZoom, setMarkdownZoom] = useState(DEFAULT_MARKDOWN_ZOOM)
+  const [isDocumentMenuOpen, setIsDocumentMenuOpen] = useState(false)
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
+  const [exportingFormat, setExportingFormat] = useState<MarkdownExportFormat | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const documentMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setMarkdownZoom(DEFAULT_MARKDOWN_ZOOM)
+    setIsDocumentMenuOpen(false)
+    setIsExportModalOpen(false)
+    setExportError(null)
   }, [activeDocument?.path])
+
+  useEffect(() => {
+    if (!isDocumentMenuOpen) return
+    const closeMenu = (event: PointerEvent) => {
+      if (!documentMenuRef.current?.contains(event.target as Node)) setIsDocumentMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsDocumentMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [isDocumentMenuOpen])
 
   const handleNewNote = useCallback(() => {
     // Placeholder shortcut handler; currently rendered as static UI hint.
@@ -67,6 +80,21 @@ function MainViewComponent({
   const handleClose = useCallback(() => {
     // Placeholder shortcut handler; currently rendered as static UI hint.
   }, [])
+
+  const handleExport = useCallback(async (format: MarkdownExportFormat) => {
+    if (!activeDocument || !isTextFileDocument(activeDocument) || activeDocument.viewKind !== 'markdown') return
+    setExportingFormat(format)
+    setExportError(null)
+    try {
+      const { exportMarkdownDocument } = await import('../../modules/markdown-export/markdownExportEngine')
+      const exported = await exportMarkdownDocument(activeDocument.source, activeDocument.name, format)
+      if (exported) setIsExportModalOpen(false)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'No se pudo exportar el documento.')
+    } finally {
+      setExportingFormat(null)
+    }
+  }, [activeDocument])
 
   if (!activeDocument) {
     return (
@@ -120,6 +148,33 @@ function MainViewComponent({
               >
                 Restablecer
               </button>
+              <div className="notia-markdown-document-menu" ref={documentMenuRef}>
+                <button
+                  type="button"
+                  className="notia-markdown-document-menu-trigger"
+                  aria-label="Más acciones del documento"
+                  aria-haspopup="menu"
+                  aria-expanded={isDocumentMenuOpen}
+                  onClick={() => setIsDocumentMenuOpen((isOpen) => !isOpen)}
+                >
+                  <Ellipsis size={18} />
+                </button>
+                {isDocumentMenuOpen ? (
+                  <div className="notia-markdown-document-submenu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setIsDocumentMenuOpen(false)
+                        setExportError(null)
+                        setIsExportModalOpen(true)
+                      }}
+                    >
+                      Exportar
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
         </div>
@@ -128,12 +183,6 @@ function MainViewComponent({
         <FileViewHost
           document={activeDocument}
           onTextSourceChange={onTextDocumentChange}
-          onInkdocSourcePersist={onInkdocDocumentPersist}
-          rootPath={rootPath}
-          libraryAndroidTreeUri={libraryAndroidTreeUri}
-          libraryFilePaths={libraryFilePaths}
-          inkdocPreferences={inkdocPreferences}
-          aiPreferences={aiPreferences}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
           theme={theme}
@@ -141,6 +190,13 @@ function MainViewComponent({
           onMarkdownZoomChange={setMarkdownZoom}
         />
       </section>
+      <MarkdownExportModal
+        open={isExportModalOpen}
+        exportingFormat={exportingFormat}
+        error={exportError}
+        onExport={(format) => void handleExport(format)}
+        onClose={() => setIsExportModalOpen(false)}
+      />
     </main>
   )
 }

@@ -14,32 +14,8 @@ export function normalizeGraphSearchText(value: string): string {
     .replace(/[\u0300-\u036f]/g, '')
 }
 
-function stripHtmlTags(value: string): string {
-  return value.replace(/<[^>]+>/g, ' ')
-}
-
 export function extractSearchableContent(path: string, source: string): string {
-  if (path.toLowerCase().endsWith('.inkdoc')) {
-    try {
-      const parsed = JSON.parse(source) as {
-        pages?: Array<{
-          textBlocks?: Array<{
-            text?: string
-            html?: string
-          }>
-        }>
-      }
-      const blocks =
-        parsed.pages?.flatMap((page) =>
-          (page.textBlocks ?? []).map((block) => stripHtmlTags(block.html ?? block.text ?? '')),
-        ) ?? []
-      const extractedText = blocks.join(' ').replace(/\s+/g, ' ').trim()
-      return extractedText || source
-    } catch {
-      return source
-    }
-  }
-
+  void path
   return source
 }
 

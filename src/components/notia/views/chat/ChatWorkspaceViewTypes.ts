@@ -36,7 +36,6 @@ export interface ChatWorkspaceViewProps {
   onTransientContextPathRemove?: (path: string) => void
   persistTransientContext?: boolean
   selectMatchingChatOnly?: boolean
-  ephemeralSession?: boolean
   historyHydrationMode?: 'full' | 'minimal'
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
@@ -154,7 +153,6 @@ export interface UseChatSubmitMessageDependencies {
   preferredContextScopeKey: string | null
   persistTransientContext: boolean
   hasTransientContext: boolean
-  ephemeralSession: boolean
   onChatCreated?: (filePath: string) => void | Promise<void>
 }
 

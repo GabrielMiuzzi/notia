@@ -55,7 +55,6 @@
   --color-active-item-bg: #3a3452;
   --color-icon-search: #8be9fd;
   --color-icon-new-note: #50fa7b;
-  --color-icon-new-inkdoc: #7dd3fc;
   --color-icon-new-folder: #ffb86c;
   --color-icon-collapse-folders: #ff9f68;
   --color-icon-expand-folders: #8be9fd;
@@ -133,7 +132,6 @@
   --color-active-item-bg: #ebe2ff;
   --color-icon-search: #3aa8c3;
   --color-icon-new-note: #2ea555;
-  --color-icon-new-inkdoc: #0ea5e9;
   --color-icon-new-folder: #d28c1b;
   --color-icon-collapse-folders: #be6d1d;
   --color-icon-expand-folders: #3aa8c3;
@@ -647,11 +645,6 @@
 .notia-toolbar-button--new-note,
 .notia-icon-button--new-note {
   color: var(--color-icon-new-note);
-}
-
-.notia-toolbar-button--new-inkdoc,
-.notia-icon-button--new-inkdoc {
-  color: var(--color-icon-new-inkdoc);
 }
 
 .notia-toolbar-button--new-folder,
@@ -1512,24 +1505,6 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
-}
-
-.notia-inkdoc-host {
-  display: flex;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.notia-inkdoc-host > div {
-  display: flex;
-  flex: 1 1 auto;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  min-width: 0;
 }
 
 .notia-graph-content {
@@ -3583,6 +3558,191 @@
 
 .notia-markdown-editor-root .milkdown .milkdown-slash-menu {
   z-index: 12;
+}
+
+.notia-markdown-document-menu {
+  position: relative;
+}
+
+.notia-markdown-zoom-control .notia-markdown-document-menu-trigger {
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.notia-markdown-document-submenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 150px;
+  padding: 5px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--color-card-bg);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+}
+
+.notia-markdown-zoom-control .notia-markdown-document-submenu button {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px;
+  border-radius: 7px;
+  text-align: left;
+}
+
+.notia-markdown-editor-root .milkdown .notia-math-ocr-button {
+  display: inline-flex;
+  min-width: 48px;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--crepe-color-on-surface-variant);
+  cursor: pointer;
+  font: inherit;
+}
+
+.notia-markdown-export-modal {
+  overflow: hidden;
+  padding: 18px;
+}
+
+.notia-markdown-export-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.notia-markdown-export-modal-header h2,
+.notia-markdown-export-modal-header p {
+  margin: 0;
+}
+
+.notia-markdown-export-modal-header h2 {
+  font-size: 17px;
+  color: var(--color-heading-text);
+}
+
+.notia-markdown-export-modal-header p {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-subtle-text);
+}
+
+.notia-markdown-export-options {
+  display: grid;
+  gap: 10px;
+}
+
+.notia-markdown-export-options > button {
+  min-height: 64px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-main-bg);
+  color: var(--color-heading-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-markdown-export-options > button:hover:not(:disabled),
+.notia-markdown-export-options > button:focus-visible {
+  border-color: var(--color-focus-ring);
+  background: var(--color-hover-surface);
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.notia-markdown-export-options > button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.notia-markdown-export-options span {
+  display: grid;
+  gap: 3px;
+}
+
+.notia-markdown-export-options small {
+  color: var(--color-subtle-text);
+}
+
+.notia-markdown-export-error {
+  margin: 12px 0 0;
+  color: #f38ba8;
+  font-size: 12px;
+}
+
+.notia-spin {
+  animation: notia-export-spin 0.8s linear infinite;
+}
+
+@keyframes notia-export-spin {
+  to { transform: rotate(360deg); }
+}
+
+.notia-markdown-export-host {
+  position: fixed;
+  left: -100000px;
+  top: 0;
+  width: 794px;
+  background: #fff;
+  color: #111;
+  pointer-events: none;
+}
+
+.notia-markdown-export-document {
+  box-sizing: border-box;
+  width: 794px;
+  padding: 64px 72px;
+  background: #fff;
+  color: #111;
+  font: 16px/1.55 Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.notia-markdown-export-document h1 { font-size: 30px; }
+.notia-markdown-export-document h2 { font-size: 25px; }
+.notia-markdown-export-document h3 { font-size: 21px; }
+.notia-markdown-export-document pre {
+  padding: 12px;
+  background: #f2f3f5;
+  white-space: pre-wrap;
+}
+.notia-markdown-export-document img { max-width: 100%; }
+.notia-markdown-export-math { overflow: visible; }
+
+.notia-markdown-editor-root .milkdown .notia-math-ocr-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none !important;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.notia-markdown-editor-root .milkdown .notia-math-ocr-button:hover {
+  background: var(--crepe-color-hover);
+  color: var(--crepe-color-on-surface);
+}
+
+.notia-markdown-editor-root .milkdown .notia-math-ocr-button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
 }
 
 /* ── Mermaid SVG inside Milkdown code-block previews ──────────── */

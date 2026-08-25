@@ -2,6 +2,6 @@ import type { RootState } from '../../store/index'
 
 export const selectTheme = (state: RootState) => state.preferences.theme
 export const selectAiSettings = (state: RootState) => state.preferences.aiSettings
-export const selectInkdocPreferences = (state: RootState) => state.preferences.inkdocPreferences
+export const selectInkMathPreferences = (state: RootState) => state.preferences.inkMathPreferences
 export const selectExplorerRefreshIntervalMs = (state: RootState) => state.preferences.explorerRefreshIntervalMs
 export const selectTelegramSettings = (state: RootState) => state.preferences.telegramSettings

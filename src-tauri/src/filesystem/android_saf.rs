@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use crate::mobile_directory_picker;
 use crate::notia_timer::NotiaTimer;
 
-use super::helpers::default_inkdoc_content;
 use super::types::{
     IsDirectoryPathResult, OperationResult, PathExistsResult, ReadLibraryFileResult,
     WriteLibraryFileResult,
@@ -522,8 +521,6 @@ pub(crate) fn create_library_entry(
 
     let (entry_type, content) = if kind == "folder" {
         ("folder", None)
-    } else if kind == "inkdoc" {
-        ("file", Some(default_inkdoc_content()))
     } else {
         ("file", Some(""))
     };

@@ -317,7 +317,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     transientContextMode = null,
     transientContextSummary = null,
     selectMatchingChatOnly = false,
-    ephemeralSession = false,
     historyHydrationMode = 'full',
   } = props
 
@@ -604,16 +603,16 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     selectedChatFilePath,
   ])
 
-  // Clear pending auto-created chat once it appears in previous chats
+  // Keep the optimistic selection until context matching has hydrated the new chat.
   useEffect(() => {
     if (!pendingAutoCreatedChatFilePath) {
       return
     }
 
-    if (availablePreviousChats.some((chat) => chat.filePath === pendingAutoCreatedChatFilePath)) {
+    if (matchedPreferredChatFilePath === pendingAutoCreatedChatFilePath) {
       setPendingAutoCreatedChatFilePath(null)
     }
-  }, [availablePreviousChats, pendingAutoCreatedChatFilePath])
+  }, [matchedPreferredChatFilePath, pendingAutoCreatedChatFilePath])
 
   // Scroll history to selected chat
   useEffect(() => {
@@ -794,9 +793,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   // Load active chat document when selection changes
   useEffect(() => {
     if (!selectedChatFilePath) {
-      if (ephemeralSession) {
-        return
-      }
       setActiveChatDocument(null)
       setOptimisticThreadMessages(null)
       setStreamingThinking('')
@@ -863,7 +859,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
       cancelled = true
     }
   }, [
-    ephemeralSession,
     isSubmitting,
     preferredContextMode,
     preferredContextOption,

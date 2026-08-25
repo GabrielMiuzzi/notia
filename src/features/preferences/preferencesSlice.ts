@@ -1,7 +1,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
 import { loadAiPreferences, saveAiPreferences, type AiPreferences } from '../../services/preferences/aiSettingsStorage'
-import { loadInkdocPreferences, saveInkdocPreferences, type InkdocPreferences } from '../../services/preferences/inkdocSettingsStorage'
+import { loadInkMathPreferences, saveInkMathPreferences, type InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
 import type { PreferencesState } from './preferencesTypes'
 import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
@@ -9,7 +9,7 @@ import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../se
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
   aiSettings: loadAiPreferences(),
-  inkdocPreferences: loadInkdocPreferences(),
+  inkMathPreferences: loadInkMathPreferences(),
   explorerRefreshIntervalMs: loadExplorerRefreshIntervalMs(),
   telegramSettings: DEFAULT_TELEGRAM_PREFERENCES,
 }
@@ -31,9 +31,9 @@ const preferencesSlice = createSlice({
       state.aiSettings = action.payload
       saveAiPreferences(action.payload)
     },
-    setInkdocPreferences(state, action: PayloadAction<InkdocPreferences>) {
-      state.inkdocPreferences = action.payload
-      saveInkdocPreferences(action.payload)
+    setInkMathPreferences(state, action: PayloadAction<InkMathPreferences>) {
+      state.inkMathPreferences = action.payload
+      saveInkMathPreferences(action.payload)
     },
     setExplorerRefreshIntervalMs(state, action: PayloadAction<number>) {
       state.explorerRefreshIntervalMs = action.payload
@@ -49,7 +49,7 @@ export const {
   setTheme,
   toggleTheme,
   setAiSettings,
-  setInkdocPreferences,
+  setInkMathPreferences,
   setExplorerRefreshIntervalMs,
   setTelegramSettings,
 } = preferencesSlice.actions

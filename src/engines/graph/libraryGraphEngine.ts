@@ -323,44 +323,9 @@ function extractAllLinkReferences(sourceContent: string): string[] {
   return [...uniqueReferences]
 }
 
-function extractInkDocLinkReferences(sourceContent: string): string[] {
-  const uniqueReferences = new Set<string>()
-
-  try {
-    const parsedDocument = JSON.parse(sourceContent) as {
-      pages?: Array<{ textBlocks?: Array<{ text?: string; html?: string; type?: string }> }>
-    }
-
-    for (const page of parsedDocument.pages ?? []) {
-      for (const block of page.textBlocks ?? []) {
-        if (block.type === 'latex') {
-          continue
-        }
-
-        const linkSource = typeof block.html === 'string' && block.html.trim().length > 0 ? block.html : block.text ?? ''
-        if (!linkSource) {
-          continue
-        }
-
-        for (const reference of extractWikiLinkReferences(linkSource)) {
-          uniqueReferences.add(reference)
-        }
-      }
-    }
-  } catch {
-    return []
-  }
-
-  return [...uniqueReferences]
-}
-
 function extractGraphLinkReferences(filePath: string, sourceContent: string): string[] {
   const extension = getFileExtension(filePath)
   const viewKind = resolveFileViewKind(extension)
-
-  if (viewKind === 'inkdoc') {
-    return extractInkDocLinkReferences(sourceContent)
-  }
 
   if (viewKind === 'markdown') {
     return extractAllLinkReferences(sourceContent)
@@ -489,7 +454,7 @@ export function collectGraphSourceFilePaths(nodes: NotiaFileNode[]): string[] {
     .filter((descriptor) => {
       const extension = getFileExtension(descriptor.path)
       const viewKind = resolveFileViewKind(extension)
-      return viewKind === 'markdown' || viewKind === 'inkdoc'
+      return viewKind === 'markdown'
     })
     .map((descriptor) => descriptor.path)
 }

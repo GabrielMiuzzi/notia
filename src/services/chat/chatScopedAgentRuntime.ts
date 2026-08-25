@@ -452,6 +452,7 @@ function taskMutationTool(
 export function buildChatAgentSystemPrompt(
   scope: ChatAgentScope,
   defaultPrompt = DEFAULT_AGENT_PROMPT,
+  activeDocumentPath?: string | null,
 ): string {
   const base = [defaultPrompt.trim() || DEFAULT_AGENT_PROMPT]
   if (scope === 'task-manager') {
@@ -495,6 +496,9 @@ export function buildChatAgentSystemPrompt(
   } else {
     base.push(
       'Estas en el chat de un archivo abierto. Solo el archivo activo esta autorizado inicialmente.',
+      activeDocumentPath
+        ? `Archivo activo (solo identidad; su contenido no fue incluido): ${activeDocumentPath}`
+        : 'No hay una ruta de archivo activo disponible.',
       'Podes buscar otros archivos por metadatos, pero antes de leerlos o recuperar sus fragmentos debes llamar request_file_read_permission.',
       'Respeta una negativa y no uses RAG global sin permiso explicito.',
     )
@@ -511,7 +515,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   const defaultPrompt = await loadAgentPrompt(options.library, options.promptFileName ?? 'default.md')
   const allOptions = await loadLibraryFileOptions(options.library)
   const normalizedScopePaths = new Set(options.scopePaths.map((path) => path.replace(/\\/g, '/')))
-  const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt|inkdoc)$/i.test(item.name))
+  const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt)$/i.test(item.name))
   const candidates = options.scope === 'document'
     ? readableOptions
     : readableOptions.filter((item) => normalizedScopePaths.has(item.path.replace(/\\/g, '/')))
@@ -1009,7 +1013,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   }
 
   return {
-    systemPrompt: buildChatAgentSystemPrompt(options.scope, defaultPrompt),
+    systemPrompt: buildChatAgentSystemPrompt(options.scope, defaultPrompt, options.activeDocumentPath),
     tools: buildChatAgentTools(options.scope),
     executeTool,
     validateFinalAnswer: (answer) => options.scope === 'task-manager'

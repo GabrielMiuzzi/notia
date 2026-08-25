@@ -63,7 +63,6 @@ export function ChatWorkspaceViewComponent({
   onTransientContextPathRemove,
   persistTransientContext = false,
   selectMatchingChatOnly = false,
-  ephemeralSession = false,
   historyHydrationMode = 'full',
   onChatCreated,
   onChatDeleted,
@@ -85,18 +84,17 @@ export function ChatWorkspaceViewComponent({
   const chatState = useChatState({
     library,
     aiPreferences,
-    previousChats: ephemeralSession ? EMPTY_PREVIOUS_CHATS : previousChats,
+    previousChats,
     suggestions,
     preferredContextPaths,
     preferredContextName,
     preferredContextMode,
-    preferredContextScopeKey: ephemeralSession ? null : preferredContextScopeKey,
+    preferredContextScopeKey,
     transientContextPaths,
     transientContextMode,
     transientContextSummary,
     persistTransientContext,
-    selectMatchingChatOnly: ephemeralSession ? false : selectMatchingChatOnly,
-    ephemeralSession,
+    selectMatchingChatOnly,
     historyHydrationMode,
   })
   const [agentPromptOptions, setAgentPromptOptions] = useState<AgentPromptOption[]>([
@@ -387,7 +385,6 @@ export function ChatWorkspaceViewComponent({
       preferredContextScopeKey,
       persistTransientContext,
       hasTransientContext,
-      ephemeralSession,
       onChatCreated,
     },
     {
@@ -892,10 +889,6 @@ function areChatWorkspaceViewPropsEqual(
   }
 
   if (previous.selectMatchingChatOnly !== next.selectMatchingChatOnly) {
-    return false
-  }
-
-  if (previous.ephemeralSession !== next.ephemeralSession) {
     return false
   }
 
