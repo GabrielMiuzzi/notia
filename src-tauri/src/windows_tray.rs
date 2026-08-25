@@ -26,9 +26,10 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+pub fn configure(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder
         .setup(|app| {
+            crate::services::speech_service::preload_at_startup(app.handle().clone());
             let open_item =
                 MenuItem::with_id(app, OPEN_MENU_ID, "Abrir Notia", true, None::<&str>)?;
             let exit_item = MenuItem::with_id(app, EXIT_MENU_ID, "Salir", true, None::<&str>)?;

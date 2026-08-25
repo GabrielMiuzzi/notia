@@ -24,6 +24,12 @@ src-tauri/target-check*/
 target-check*/
 .gradle-local/
 
+# Speech installer outputs (large platform binaries and models)
+src-tauri/resources/speech/models/*
+!src-tauri/resources/speech/models/README.md
+src-tauri/resources/speech/runtime/*
+!src-tauri/resources/speech/runtime/README.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

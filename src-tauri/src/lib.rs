@@ -11,18 +11,29 @@ use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, Libra
 mod commands {
     pub mod ai;
     pub mod bluetooth;
+    pub mod speech;
     pub mod telegram;
 }
 mod dto {
     pub mod bluetooth;
+    pub mod speech;
 }
 mod filesystem;
 mod mobile_ai_bridge;
 mod mobile_directory_picker;
+mod mobile_speech_permission;
 mod notia_timer;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
+    pub mod sherpa_diarization;
+    pub mod sherpa_offline;
+    pub mod sherpa_runtime;
+    pub mod speech_audio;
+    pub mod speech_model_repository;
+    pub mod speech_service;
+    pub mod speech_worker;
+    pub mod telegram_audio;
     pub mod telegram_service;
 }
 mod state {
@@ -127,11 +138,18 @@ fn start_window_dragging_with_restore(_window: tauri::Window) {}
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(state::bluetooth_state::ColdPassBluetoothState::default())
+        .manage(services::speech_service::SpeechRuntimeState::default())
         .manage(LibraryTreeWatchState::default())
         .plugin(tauri_plugin_dialog::init());
 
     #[cfg(target_os = "windows")]
     let builder = windows_tray::configure(builder);
+
+    #[cfg(target_os = "android")]
+    let builder = builder.setup(|app| {
+        services::speech_service::preload_at_startup(app.handle().clone());
+        Ok(())
+    });
 
     builder
         .invoke_handler(tauri::generate_handler![
@@ -155,9 +173,19 @@ pub fn run() {
             commands::ai::run_desktop_ai_tool_chat,
             commands::ai::run_desktop_ai_chat_streaming,
             commands::ai::list_desktop_ai_models,
+            commands::speech::get_speech_capabilities,
+            commands::speech::get_speech_model_status,
+            commands::speech::probe_speech_audio_input,
+            commands::speech::probe_sherpa_runtime,
+            commands::speech::start_speech_session,
+            commands::speech::pause_speech_session,
+            commands::speech::resume_speech_session,
+            commands::speech::stop_speech_session,
+            commands::speech::cancel_speech_session,
             commands::telegram::check_telegram_bot,
             commands::telegram::poll_telegram_updates,
             commands::telegram::send_telegram_message,
+            commands::telegram::transcribe_telegram_audio,
             commands::telegram::answer_telegram_callback,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
@@ -180,6 +208,7 @@ pub fn run() {
         ])
         .plugin(mobile_ai_bridge::init())
         .plugin(mobile_directory_picker::init())
+        .plugin(mobile_speech_permission::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

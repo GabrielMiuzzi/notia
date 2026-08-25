@@ -3282,7 +3282,73 @@ sequenceDiagram
 
 No se exponen comandos, DTOs ni datos persistidos nuevos. Si el icono configurado no está disponible, el arranque devuelve un error visible; los fallos al mostrar, enfocar u ocultar la ventana se registran sin contenido privado.
 
+## Dictado offline del chat
+
+La integración incorpora contratos TypeScript validados, coordinación React y comandos Tauri de capabilities, probes y ciclo completo de sesión. La UI conserva el borrador, reemplaza sólo el texto parcial y prepara resultados con etiquetas estables `Hablante N`.
+
+La captura nativa usa `cpal`; reconocimiento y diarización cargan la C API de sherpa-onnx 1.13.4. El mismo servicio Rust opera en Windows y Android. Android agrega un plugin Kotlin mínimo que declara y solicita `RECORD_AUDIO` sólo desde la acción explícita del usuario. El build copia ese plugin y los `.so` arm64 al proyecto generado.
+
+Los modelos se resuelven primero bajo `app_data_dir/speech-models` y, si no hay una instalación privada, desde los recursos generados por `scripts/install-speech.sh`. `get_speech_model_status` no expone rutas absolutas y sólo acepta archivos con ruta confinada, tamaño declarado y SHA-256 correcto. El instalador genera el manifiesto para Parakeet TDT, Silero VAD y diarización.
+
+Cada perfil ASR debe declarar `offlineNemoTransducer` con `encoder`, `decoder`, `joiner`, `tokens` y `vad`. Notia usa Parakeet TDT 0.6b v3 int8 para español mediante `OfflineRecognizer`; Silero VAD delimita utterances y permite streaming simulado. Cada rol debe coincidir con un archivo verificado del perfil.
+
+`speech_audio` convierte entradas `f32`, `i16` o `u16`, hace downmix mono, remuestrea a 16 kHz y escribe en una cola de dos segundos. El callback no ejecuta inferencia. `speech_worker` consume lotes de 200 ms fuera del hilo UI, admite pausa/cancelación, limita la sesión a quince minutos y finaliza el stream al detener.
+
+Windows resuelve sólo `resources/speech/runtime/windows-x86_64/sherpa-onnx-c-api.dll`; Android carga `libsherpa-onnx-c-api.so` desde el namespace nativo. Nunca se acepta una ruta del frontend ni se busca en `PATH`. El repositorio no distribuye binarios/modelos sin auditar licencia y hashes; si faltan, capabilities lo informa y no abre el micrófono.
+
+La consulta de capacidades usa únicamente metadatos seguros (archivo regular, ruta confinada y tamaño esperado), evitando leer y hashear Parakeet al montar el chat. La verificación SHA-256 completa continúa siendo obligatoria justo antes de resolver los modelos para una sesión. El símbolo `SherpaOnnxGetOnnxruntimeVersionStr` es diagnóstico y opcional porque el paquete oficial Windows 1.13.4 no lo exporta; la compatibilidad se decide con el símbolo obligatorio `SherpaOnnxGetVersionStr`.
+
+En Windows, `LoadedSherpaLibrary` precarga por ruta absoluta la `onnxruntime.dll` empaquetada y usa `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` para cargar la C API. Esto impide que una versión incompatible presente en `PATH` sea elegida por el buscador de DLL del sistema. El handle de ONNX Runtime permanece vivo mientras se usan reconocimiento, VAD o diarización y se libera después de destruir sus objetos nativos.
+
+Windows y Android disparan `preload_at_startup` desde el setup nativo. Un thread dedicado valida los hashes y construye `OfflineVadRecognizer` sin bloquear la ventana; el resultado queda en `SpeechRuntimeState`. `SpeechWorker::start_with_recycler` toma ownership exclusivo durante una grabación y devuelve el reconocedor al caché después de limpiar el estado de Silero, incluso al cancelar. Los hashes se memorizan por ruta, tamaño y fecha de modificación durante el proceso para que las sesiones siguientes mantengan la validación sin releer cientos de MB.
+
+`sherpa_offline` implementa el ABI de `OfflineRecognizer` NeMo transducer y Silero VAD; `sherpa_diarization` usa segmentación pyannote, embeddings y clustering. Los handles son RAII. La diarización corre al finalizar; si falla, se conserva el ASR sin etiquetas.
+
+Eventos públicos: `speech://state`, `speech://partial` y `speech://segments`. Todos incluyen `sessionId`; el hook ignora sesiones obsoletas y libera listeners al desmontar.
+
+Inicio: `{"language":"es","diarizationEnabled":true,"maxDurationSeconds":900}`. Respuesta: `{"sessionId":"7a5dd258-2675-47cc-a32d-01ef4f414946"}`. Los controles reciben el mismo `sessionId`.
+
+```mermaid
+flowchart TD
+    Mic[Botón micrófono] --> Check[Runtime, modelos y permiso]
+    Check --> PCM[PCM mono 16 kHz]
+    PCM --> ASR[ASR streaming]
+    ASR --> Partial[Texto parcial]
+    PCM --> Diar[Diarización al finalizar]
+    Diar --> Draft[Borrador editable]
+```
+
+```mermaid
+flowchart LR
+    Composer --> Hook[useVoiceTranscription]
+    Hook --> Adapter[speechService.ts]
+    Adapter --> Commands[commands/speech.rs]
+    Commands --> Session[speech_service]
+    Session --> Audio[speech_audio]
+    Session --> Worker[speech_worker]
+    Worker --> Sherpa[sherpa_offline + Silero VAD]
+    Session --> Speakers[sherpa_diarization]
+```
+
+```mermaid
+sequenceDiagram
+    actor U as Usuario
+    participant UI as ChatComposer
+    participant T as Tauri
+    participant W as Worker sherpa
+    U->>UI: Iniciar
+    UI->>T: start_speech_session
+    T->>W: Captura + ASR
+    W-->>UI: speech://partial
+    U->>UI: Detener
+    UI->>T: stop_speech_session
+    T->>W: finish + diarización
+    W-->>UI: segments + completed
+```
+
 ## Agente de Notia por Telegram
+
+Los updates `voice` y `audio` se normalizan como `{ fileId, duration, mimeType?, fileSize? }` únicamente después del control de identidad. `transcribe_telegram_audio` repite en Rust los límites de 15 minutos y 20 MB, llama `getFile`, valida la ruta devuelta, descarga con timeout y decodifica OGG/Opus mediante `ogg` + `ropus`, ambos sin FFmpeg ni FFI adicional. `ropus` es un port fixed-point bit-exact del códec de referencia y cubre los modos SILK, CELT e híbrido que puede producir Telegram. El PCM mono a 16 kHz se procesa fuera del hilo UI con el `OfflineVadRecognizer` cargado desde el arranque y luego se devuelve a la caché residente. Antes de invocar al agente, el bridge envía un mensaje HTML con la transcripción escapada y en negrita; solamente el texto transcrito entra al flujo normal de herramientas.
 
 La integración usa long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
 
@@ -3294,7 +3360,8 @@ Comandos Tauri:
 |---|---|---|
 | `check_telegram_bot` | `{ token }` | Identidad del bot |
 | `poll_telegram_updates` | `{ token, offset }` | Updates normalizados |
-| `send_telegram_message` | `{ token, chatId, text, buttons[] }` | `void` |
+| `send_telegram_message` | `{ token, chatId, text, buttons[], parseMode? }` | `void` |
+| `transcribe_telegram_audio` | `{ token, audio: { fileId, duration, mimeType?, fileSize? } }` | Transcripción UTF-8 |
 | `answer_telegram_callback` | `{ token, callbackQueryId }` | `void` |
 
 ```mermaid
@@ -3306,6 +3373,11 @@ flowchart TD
     Approve -->|Sí| Paired[Chat y usuario autorizados]
     Approve -->|No| Denied[Sin acceso]
     Paired --> Agent[Agente scope library]
+    Paired --> Voice[Nota de voz OGG Opus]
+    Voice --> Decode[Descarga acotada y decode 16 kHz]
+    Decode --> ASR[Parakeet y Silero precargados]
+    ASR --> Ack[Acuse con transcripción]
+    Ack --> Agent
     Agent --> Read[Búsqueda y lectura]
     Agent --> Mutation[Mutación propuesta]
     Mutation --> Confirm{Callback Confirmar/Cancelar}
@@ -3320,6 +3392,8 @@ flowchart LR
     TelegramRuntime --> Commands[commands/telegram.rs]
     Commands --> Service[telegram_service.rs]
     Service --> API[Telegram Bot API]
+    Commands --> Audio[telegram_audio]
+    Audio --> Speech[speech_service cache ASR]
     Bridge --> Agent[chatScopedAgentRuntime]
     Agent --> Filesystem[Filesystem adapters]
     Agent --> Ollama[Ollama]
@@ -3330,6 +3404,7 @@ sequenceDiagram
     actor User as Usuario Telegram
     participant TG as Telegram API
     participant Bridge as Notia bridge
+    participant Speech as ASR offline
     participant Agent as Agente IA
     participant FS as Biblioteca
     User->>TG: Solicitud de modificación
@@ -3343,6 +3418,12 @@ sequenceDiagram
     Agent->>FS: Escritura validada
     Agent-->>Bridge: Resultado final
     Bridge->>TG: Respuesta
+    User->>TG: Nota de voz OGG Opus
+    TG-->>Bridge: fileId y metadatos
+    Bridge->>Speech: Descargar, decodificar y transcribir
+    Speech-->>Bridge: Texto
+    Bridge->>TG: Acuse con texto en negrita
+    Bridge->>Agent: Texto como consulta normal
 ```
 
 La recepción usa `offset = update_id + 1` para evitar duplicados y limita los updates a mensajes y callbacks. Solo se procesa una consulta a la vez; el historial remoto es efímero, acotado a veinte mensajes y se limpia al cambiar de biblioteca. Telegram conserva updates por hasta 24 horas y `getUpdates` no funciona si el bot tiene un webhook activo, según la Bot API oficial.

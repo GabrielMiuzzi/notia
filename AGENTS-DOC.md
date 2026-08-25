@@ -1,5 +1,11 @@
 # Documentación
 
+## Capacidad de voz offline
+
+La frontera pública de voz vive en `src/services/speech/` y `src-tauri/src/commands/speech.rs`; los componentes no invocan Tauri directamente. Captura, worker ASR, runtime dinámico, repositorio de modelos y diarización son servicios Rust separados. Windows y Android conservan el mismo contrato, con permiso/empaquetado Android detrás de `mobile_speech_permission` y `build.rs`.
+
+Los eventos `speech://state`, `speech://partial` y `speech://segments` se filtran por `sessionId` y todo listener requiere cleanup. No registrar audio/transcripciones, aceptar rutas nativas desde la UI ni marcar modelos como instalados sin tamaño y SHA-256 válidos.
+
 La documentación es un entregable obligatorio de cada cambio de código. No se considera una tarea completa hasta que la documentación refleje fielmente el estado actual del sistema.
 
 ### Reglas generales

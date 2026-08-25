@@ -1,10 +1,11 @@
 import { memo } from 'react'
-import { ArrowUp, FileImage, Files, Info, Plus, X } from 'lucide-react'
+import { ArrowUp, FileImage, Files, Info, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
 import type { ChatFileContextMode, ChatLibraryFileOption } from '../../../../services/chat/chatAttachmentRuntime'
 import type { SelectedImageAttachment, AttachmentMenuPosition } from './ChatWorkspaceViewTypes'
+import { useVoiceTranscription } from './useVoiceTranscription'
 
 interface ChatComposerProps {
   draft: string
@@ -71,6 +72,7 @@ function ChatComposerComponent({
   panelRef,
   imageInputRef,
 }: ChatComposerProps) {
+  const voice = useVoiceTranscription({ draft, setDraft })
   const hasAnyAttachment = selectedImageAttachment
     || selectedLibraryFileSummary.length > 0
     || transientContextSummaryLabel
@@ -213,7 +215,8 @@ function ChatComposerComponent({
           placeholder={awaitingAgentClarification
             ? 'Escribí la aclaración para que el agente continúe...'
             : library ? 'Escribi tu mensaje...' : 'Primero elegí una librería activa...'}
-          disabled={!library || !isAiAvailable}
+          disabled={!library}
+          readOnly={voice.isActive}
           onChange={(event) => {
             setDraft(event.target.value)
           }}
@@ -225,9 +228,50 @@ function ChatComposerComponent({
           }}
         />
       </label>
+      {voice.state.status !== 'idle' ? (
+        <div
+          className={`notia-chat-voice-status notia-chat-voice-status--${voice.state.status}`}
+          role={voice.state.status === 'error' ? 'alert' : 'status'}
+          aria-live="polite"
+        >
+          <span>{describeVoiceState(voice.state)}</span>
+          {voice.isActive ? (
+            <div className="notia-chat-voice-controls" role="group" aria-label="Controles de dictado">
+              {voice.state.status === 'recording' ? (
+                <NotiaButton type="button" size="icon" variant="secondary" title="Pausar dictado" aria-label="Pausar dictado" onClick={voice.pause}>
+                  <Pause size={16} />
+                </NotiaButton>
+              ) : voice.state.status === 'paused' ? (
+                <NotiaButton type="button" size="icon" variant="secondary" title="Reanudar dictado" aria-label="Reanudar dictado" onClick={voice.resume}>
+                  <Play size={16} />
+                </NotiaButton>
+              ) : null}
+              <NotiaButton type="button" size="icon" variant="primary" title="Finalizar dictado" aria-label="Finalizar dictado" onClick={voice.stop} disabled={voice.state.status === 'finalizing'}>
+                <Square size={15} />
+              </NotiaButton>
+              <NotiaButton type="button" size="icon" variant="secondary" title="Cancelar dictado" aria-label="Cancelar dictado" onClick={voice.cancel}>
+                <X size={16} />
+              </NotiaButton>
+            </div>
+          ) : voice.state.status === 'error' || voice.state.status === 'completed' ? (
+            <NotiaButton type="button" variant="secondary" onClick={voice.dismissError}>Cerrar</NotiaButton>
+          ) : null}
+        </div>
+      ) : null}
       <div className="notia-chat-composer-footer">
         <span>{activeModelLabel} · Enter para enviar. Shift + Enter para salto de linea.</span>
         <div className="notia-chat-composer-actions">
+          <NotiaButton
+            type="button"
+            size="icon"
+            variant="secondary"
+            title="Dictar mensaje sin conexion"
+            aria-label="Iniciar dictado por microfono"
+            onClick={voice.start}
+            disabled={!library || voice.isActive}
+          >
+            <Mic size={16} />
+          </NotiaButton>
           <div className="notia-chat-attachment-menu-shell">
             <NotiaButton
               ref={triggerRef}
@@ -300,3 +344,15 @@ function ChatComposerComponent({
 
 export const ChatComposer = memo(ChatComposerComponent)
 ChatComposer.displayName = 'ChatComposer'
+
+function describeVoiceState(state: ReturnType<typeof useVoiceTranscription>['state']): string {
+  switch (state.status) {
+    case 'preparing': return 'Preparando el dictado offline...'
+    case 'recording': return `Escuchando · ${Math.floor(state.elapsedMs / 1_000)} s`
+    case 'paused': return `Dictado pausado · ${Math.floor(state.elapsedMs / 1_000)} s`
+    case 'finalizing': return 'Finalizando transcripcion y diarizacion...'
+    case 'completed': return 'Transcripcion lista para revisar.'
+    case 'error': return state.error.message
+    case 'idle': return ''
+  }
+}

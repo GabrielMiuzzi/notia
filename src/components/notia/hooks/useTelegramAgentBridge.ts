@@ -6,7 +6,7 @@ import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRun
 import { runNativeToolAgent } from '../../../services/ai/aiRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
-import { answerTelegramCallback, pollTelegramUpdates, sendTelegramMessage, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
+import { answerTelegramCallback, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
 
 interface Params {
   library: NotiaLibrary | null
@@ -17,6 +17,11 @@ interface Params {
 }
 
 interface PendingInput { resolve: (value: string) => void; reject: (error: Error) => void }
+
+const escapeTelegramHtml = (value: string): string => value
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
 
 export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTelegramChange, onLibraryChanged }: Params): void {
   const currentRef = useRef({ library, aiPreferences, telegram, onTelegramChange, onLibraryChanged })
@@ -126,14 +131,36 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         if (selected && pendingInputRef.current) pendingInputRef.current.resolve(selected)
         return
       }
-      const text = update.text?.trim()
+      let text = update.text?.trim()
+      if (!text && update.audio) {
+        try {
+          text = (await transcribeTelegramAudio(state.telegram.botToken, update.audio)).trim()
+        } catch (error) {
+          await sendTelegramMessage(
+            state.telegram.botToken,
+            peer.chatId,
+            error instanceof Error ? error.message : 'No se pudo transcribir el audio recibido.',
+          )
+          return
+        }
+        const acknowledgementText = Array.from(text).slice(0, 3_000).join('')
+        await sendTelegramMessage(
+          state.telegram.botToken,
+          peer.chatId,
+          `Solicitud <b>${escapeTelegramHtml(acknowledgementText)}</b> recibida y en proceso.`,
+          [],
+          'HTML',
+        )
+      }
       if (!text) return
       if (pendingInputRef.current) { pendingInputRef.current.resolve(text); return }
-      await sendTelegramMessage(
-        state.telegram.botToken,
-        peer.chatId,
-        'Solicitud recibida y en proceso.',
-      )
+      if (!update.audio) {
+        await sendTelegramMessage(
+          state.telegram.botToken,
+          peer.chatId,
+          'Solicitud recibida y en proceso.',
+        )
+      }
       await runAgent(text)
     }
 

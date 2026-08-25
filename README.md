@@ -1,5 +1,22 @@
 # Notia
 
+## Dictado offline en el chat
+
+El contacto autorizado de Telegram también puede enviar una nota de voz OGG/Opus de hasta 15 minutos y 20 MB. Notia la descarga, la decodifica y la transcribe localmente con el mismo modelo offline precargado. La decodificación admite los modos SILK, CELT e híbrido usados por Telegram, incluso en notas de voz rápidas. Primero responde **Solicitud transcripción recibida y en proceso.**, mostrando la transcripción en negrita, y después procesa ese texto como una consulta normal del agente. El audio no se envía al proveedor de IA; Telegram sí interviene necesariamente en su transporte y descarga.
+
+Notia inicia la carga de Parakeet y Silero al arrancar la aplicación, sin esperar a que se abra el chat o llegue un audio de Telegram. La carga ocurre en segundo plano para no bloquear la interfaz; si se intenta dictar durante esos primeros segundos, la acción espera a que el reconocedor esté disponible. El dato de versión de ONNX Runtime es opcional en el paquete oficial de sherpa-onnx 1.13.4 y su ausencia no deshabilita el dictado.
+
+Notia precarga Parakeet y Silero en segundo plano al arrancar tanto en Windows como en Android. Después de grabar, finalizar o cancelar, reutiliza el reconocedor ya cargado; por eso el dictado normalmente comienza sin espera. Si se pulsa el micrófono inmediatamente después de abrir la aplicación y la precarga aún no terminó, se muestra temporalmente **Preparando el dictado offline**. Mantener el modelo residente aumenta el consumo de memoria de la aplicación.
+
+El compositor incluye un botón de micrófono para dictar sin enviar audio ni texto a servicios externos. En Windows y Android arm64, Notia muestra texto parcial en tiempo real y, al detener, ejecuta diarización para separar intervenciones como `Hablante 1` y `Hablante 2`. El resultado queda editable y nunca se envía automáticamente.
+
+1. Instale sherpa-onnx 1.13.4 y un perfil de modelos auditado siguiendo `src-tauri/resources/speech/runtime/README.md`.
+2. Abra un chat y pulse **Dictar mensaje sin conexión**.
+3. En Android, conceda el permiso de micrófono cuando lo solicite el sistema.
+4. Use los controles visibles para pausar, reanudar, finalizar o cancelar. Cancelar restaura el borrador anterior.
+
+Las sesiones admiten hasta 15 minutos. Las etiquetas de hablante se calculan al finalizar; voces solapadas, ruido y fragmentos breves pueden reducir la precisión. Si falla únicamente la diarización, se conserva el texto sin etiquetas. Si Android denegó el permiso permanentemente, habilítelo desde Ajustes. En Windows, compruebe el dispositivo predeterminado y los permisos de privacidad.
+
 ![Versión](https://img.shields.io/badge/version-1.0.13-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-orange)
 ![React](https://img.shields.io/badge/React-19-blue)
