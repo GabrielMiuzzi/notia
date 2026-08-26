@@ -15,6 +15,8 @@ const MODEL_DIRECTORY_17B: &str = "qwen3-tts-1.7b-customvoice-q4_k_m";
 const TALKER_FILE_17B: &str = "qwen-talker-1.7b-customvoice-Q4_K_M.gguf";
 const TOKENIZER_FILE: &str = "qwen-tokenizer-12hz-Q4_K_M.gguf";
 const MAX_TEXT_CHARS: usize = 2_000;
+const MIN_AUDIO_TOKENS: usize = 256;
+const MAX_AUDIO_TOKENS: usize = 2_048;
 
 #[repr(C)]
 struct QwenParams {
@@ -99,10 +101,6 @@ impl Default for Qwen3TtsRuntimeState {
 }
 
 pub fn preload_at_startup(app: AppHandle) {
-    // The model is selected in frontend preferences; defer loading until synthesis.
-    let _ = app;
-    return;
-    /*
     {
         let state = app.state::<Qwen3TtsRuntimeState>();
         if state.loading.swap(true, Ordering::AcqRel)
@@ -143,7 +141,6 @@ pub fn preload_at_startup(app: AppHandle) {
             *slot = Some(error.to_string());
         };
     }
-    */
 }
 
 pub fn status(state: &Qwen3TtsRuntimeState) -> Qwen3TtsStatusDto {
@@ -216,6 +213,7 @@ pub fn synthesize(
     // Keep the setting in the contract so GPU-enabled builds can honor it without a UI change.
     let _ = device;
     ensure_loaded(app, state, model_directory, talker_file)?;
+    ensure_tts_generation_memory(model)?;
     let text_c =
         CString::new(text).map_err(|_| "El texto contiene caracteres nulos.".to_string())?;
     let voice_c = CString::new(voice).map_err(|_| "La voz no es valida.".to_string())?;
@@ -227,7 +225,7 @@ pub fn synthesize(
         .as_mut()
         .ok_or_else(|| "Qwen3-TTS no esta listo.".to_string())?;
     let params = QwenParams {
-        max_audio_tokens: 4096,
+        max_audio_tokens: audio_token_budget(text),
         temperature: 0.5,
         top_p: 1.0,
         top_k: 50,
@@ -260,6 +258,14 @@ pub fn synthesize(
 
 fn available_threads() -> i32 {
     std::thread::available_parallelism().map_or(4, |value| value.get().clamp(2, 8)) as i32
+}
+
+fn audio_token_budget(text: &str) -> i32 {
+    text.chars()
+        .count()
+        .saturating_mul(5)
+        .div_ceil(4)
+        .clamp(MIN_AUDIO_TOKENS, MAX_AUDIO_TOKENS) as i32
 }
 
 fn language_id(language: &str) -> Result<i32, String> {
@@ -298,6 +304,10 @@ fn load_engine(
     model_directory: &str,
     talker_file: &str,
 ) -> Result<QwenEngine, String> {
+    // Dedicated CodePred schedulers trade a large duplicated compute reserve
+    // for throughput. Notia keeps ASR and TTS resident together, so use the
+    // shared scheduler to keep the combined native memory budget bounded.
+    std::env::set_var("QWEN3_TTS_CODE_PRED_DEDICATED_SCHED", "0");
     let runtime = runtime_path(app)?;
     let models = model_root(app, model_directory, talker_file)?;
     let mut dependencies = Vec::new();
@@ -381,6 +391,30 @@ fn load_engine(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn ensure_tts_generation_memory(model: &str) -> Result<(), String> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe { GlobalMemoryStatusEx(&mut status) }
+        .map_err(|error| format!("No se pudo consultar la memoria disponible: {error}"))?;
+    let required = if model == "1.7b" { 3_u64 } else { 2_u64 } * 1024 * 1024 * 1024;
+    if status.ullAvailPageFile < required {
+        return Err(format!(
+            "No hay memoria virtual suficiente para generar voz con Qwen3-TTS {model}. Cerrá aplicaciones pesadas o ampliá el archivo de paginación de Windows; Notia mantuvo activos los runtimes y evitó un cierre inesperado."
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_tts_generation_memory(_model: &str) -> Result<(), String> {
+    Ok(())
+}
+
 fn native_last_error(engine: &QwenEngine) -> String {
     let pointer = unsafe { (engine.last_error)(engine.context) };
     if pointer.is_null() {
@@ -445,7 +479,9 @@ fn model_root(
     if model_files_are_ready(&bundled, talker_file) {
         return Ok(bundled);
     }
-    Err(format!("Los modelos Qwen3-TTS ({model_directory}) no estan instalados."))
+    Err(format!(
+        "Los modelos Qwen3-TTS ({model_directory}) no estan instalados."
+    ))
 }
 
 fn model_files_are_ready(root: &Path, talker_file: &str) -> bool {
@@ -478,7 +514,15 @@ fn encode_wav(samples: &[f32], sample_rate: i32) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{language_id, model_files_are_ready, TALKER_FILE_06B, TOKENIZER_FILE};
+    use super::{
+        audio_token_budget, language_id, model_files_are_ready, TALKER_FILE_06B, TOKENIZER_FILE,
+    };
+    #[test]
+    fn audio_cache_budget_scales_with_text_length() {
+        assert_eq!(audio_token_budget("Hola"), 256);
+        assert_eq!(audio_token_budget(&"a".repeat(1_000)), 1_250);
+        assert_eq!(audio_token_budget(&"a".repeat(2_000)), 2_048);
+    }
     #[test]
     fn maps_spanish_language() {
         assert_eq!(language_id("es"), Ok(2054));
@@ -487,7 +531,7 @@ mod tests {
     fn requires_both_qwen_model_files() {
         let root = std::env::temp_dir().join(format!("notia-qwen3-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("fixture");
-        std::fs::write(root.join(TALKER_FILE), []).expect("talker");
+        std::fs::write(root.join(TALKER_FILE_06B), []).expect("talker");
         assert!(!model_files_are_ready(&root, TALKER_FILE_06B));
         std::fs::write(root.join(TOKENIZER_FILE), []).expect("tokenizer");
         assert!(model_files_are_ready(&root, TALKER_FILE_06B));

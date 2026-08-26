@@ -21,8 +21,8 @@ import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
-import { selectQwen3TtsSettings } from '../../features/preferences/preferencesSelectors'
-import { setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
+import { selectQwen3AsrSettings, selectQwen3TtsSettings } from '../../features/preferences/preferencesSelectors'
+import { setQwen3AsrSettings, setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
 import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
 import { checkQwen3TtsConnection, getQwen3TtsStatus, reloadQwen3Tts } from '../../services/qwen3Tts/qwen3TtsRuntime'
 
@@ -58,6 +58,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const dispatch = useAppDispatch()
   const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
+  const qwen3AsrPreferences = useAppSelector(selectQwen3AsrSettings)
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
@@ -557,6 +558,31 @@ export function SettingsModal({
               </div>
             </>
           ) : activeSection === 'Voz' ? (
+            <>
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Qwen3-ASR</div>
+              <div className="notia-settings-card-value">{qwen3AsrPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Reconocimiento local GGUF mediante llama.cpp.</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Modelo</div>
+              <select className="notia-settings-input" aria-label="Modelo de Qwen3-ASR" value={qwen3AsrPreferences.model}
+                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, model: event.target.value as '0.6b' | '1.7b' }))}>
+                <option value="0.6b">Qwen3-ASR 0.6B Q8</option><option value="1.7b">Qwen3-ASR 1.7B Q8</option>
+              </select>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
+              <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-ASR" value={qwen3AsrPreferences.device}
+                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: event.target.value as 'cpu' | 'gpu' }))}>
+                <option value="cpu">CPU</option><option value="gpu">GPU</option>
+              </select>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
+              <input className="notia-settings-input" aria-label="Idioma de Qwen3-ASR" value={qwen3AsrPreferences.language}
+                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, language: event.target.value }))} />
+              <div className="notia-settings-actions">
+                <NotiaButton variant={qwen3AsrPreferences.enabled ? 'primary' : 'secondary'}
+                  onClick={() => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, enabled: !qwen3AsrPreferences.enabled }))}>
+                  {qwen3AsrPreferences.enabled ? 'Desactivar' : 'Activar'}
+                </NotiaButton>
+              </div>
+            </div>
             <div className="notia-settings-card">
               <div className="notia-settings-card-label">Qwen3-TTS</div>
               <div className="notia-settings-card-value">{qwen3TtsPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
@@ -607,6 +633,7 @@ export function SettingsModal({
               </div>
               <div className="notia-settings-status">{qwen3TtsStatus}</div>
             </div>
+            </>
           ) : activeSection === 'Telegram' ? (
             <>
               <div className="notia-settings-card">

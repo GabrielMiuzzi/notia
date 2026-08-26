@@ -27,9 +27,9 @@ mod notia_timer;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
+    pub mod qwen3_asr_service;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
-    pub mod sherpa_offline;
     pub mod sherpa_runtime;
     pub mod speech_audio;
     pub mod speech_model_repository;

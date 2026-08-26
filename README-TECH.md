@@ -3165,23 +3165,29 @@ No se exponen comandos, DTOs ni datos persistidos nuevos. Si el icono configurad
 
 La integración incorpora contratos TypeScript validados, coordinación React y comandos Tauri de capabilities, probes y ciclo completo de sesión. La UI conserva el borrador, reemplaza sólo el texto parcial y prepara resultados con etiquetas estables `Hablante N`.
 
-La captura nativa usa `cpal`; reconocimiento y diarización cargan la C API de sherpa-onnx 1.13.4. El mismo servicio Rust opera en Windows y Android. Android agrega un plugin Kotlin mínimo que declara y solicita `RECORD_AUDIO` sólo desde la acción explícita del usuario. El build copia ese plugin y los `.so` arm64 al proyecto generado.
+La captura nativa usa `cpal`; Qwen3-ASR se ejecuta con un bridge C sobre `llama.cpp`/`libmtmd`, mientras sherpa-onnx 1.13.4 queda limitado a diarización. El mismo servicio Rust opera en Windows y Android. Android agrega un plugin Kotlin mínimo que declara y solicita `RECORD_AUDIO` sólo desde la acción explícita del usuario.
 
-Los modelos se resuelven primero bajo `app_data_dir/speech-models` y, si no hay una instalación privada, desde los recursos generados por `scripts/install-speech.sh`. `get_speech_model_status` no expone rutas absolutas y sólo acepta archivos con ruta confinada, tamaño declarado y SHA-256 correcto. El instalador genera el manifiesto para Parakeet TDT, Silero VAD y diarización.
+Los modelos se resuelven primero bajo `app_data_dir/speech-models` y luego desde recursos empaquetados. El manifiesto declara Qwen3-ASR 0.6B/1.7B Q8 como pares de modelo y proyector multimodal GGUF, además de los modelos independientes de diarización. Las rutas, tamaños y SHA-256 se verifican antes de cargar.
 
-Cada perfil ASR debe declarar `offlineNemoTransducer` con `encoder`, `decoder`, `joiner`, `tokens` y `vad`. Notia usa Parakeet TDT 0.6b v3 int8 para español mediante `OfflineRecognizer`; Silero VAD delimita utterances y permite streaming simulado. Cada rol debe coincidir con un archivo verificado del perfil.
+Cada perfil ASR declara `qwen3Asr` con `model` y `mmproj`. `qwen3_asr_service` carga el bridge dinámico, mantiene el modelo residente y fuerza el idioma solicitado en el prefijo de decodificación de Qwen3-ASR.
 
 `speech_audio` convierte entradas `f32`, `i16` o `u16`, hace downmix mono, remuestrea a 16 kHz y escribe en una cola de dos segundos. El callback no ejecuta inferencia. `speech_worker` consume lotes de 200 ms fuera del hilo UI, admite pausa/cancelación, limita la sesión a quince minutos y finaliza el stream al detener.
 
+`MeetingView` reutiliza `useVoiceTranscription` y el contrato de sesiones de voz para ofrecer transcripción editable en vivo y diarización final desde una pestaña de workspace dedicada. En Windows, `speech_audio` abre simultáneamente el micrófono con CPAL y el endpoint de render predeterminado con `AUDCLNT_STREAMFLAGS_LOOPBACK`. Ambas fuentes se convierten a mono de 16 kHz y se mezclan con ganancia limitada antes de entrar en la única cola acotada del reconocedor. El thread COM pertenece a la captura, se detiene y se une al destruir la sesión; pausa y cancelación afectan ambas fuentes.
+
+La sesión vuelve a decodificar con Qwen3-ASR el tramo activo cada 800 ms y publica el resultado como `partialText`. Un detector de energía acotado confirma el tramo después de 700 ms de silencio; la UI conserva el parcial resaltado hasta ese momento. La diarización continúa ejecutándose únicamente al finalizar la sesión.
+
+El idioma configurado se normaliza en frontend, se valida en Rust y se traduce al nombre esperado por Qwen3-ASR. Así se evita que una sesión en español cambie de idioma por autodetección inestable.
+
 Windows resuelve sólo `resources/speech/runtime/windows-x86_64/sherpa-onnx-c-api.dll`; Android carga `libsherpa-onnx-c-api.so` desde el namespace nativo. Nunca se acepta una ruta del frontend ni se busca en `PATH`. El repositorio no distribuye binarios/modelos sin auditar licencia y hashes; si faltan, capabilities lo informa y no abre el micrófono.
 
-La consulta de capacidades usa únicamente metadatos seguros (archivo regular, ruta confinada y tamaño esperado), evitando leer y hashear Parakeet al montar el chat. La verificación SHA-256 completa continúa siendo obligatoria justo antes de resolver los modelos para una sesión. El símbolo `SherpaOnnxGetOnnxruntimeVersionStr` es diagnóstico y opcional porque el paquete oficial Windows 1.13.4 no lo exporta; la compatibilidad se decide con el símbolo obligatorio `SherpaOnnxGetVersionStr`.
+La consulta de capacidades usa únicamente metadatos seguros (archivo regular, ruta confinada y tamaño esperado), evitando hashear modelos GGUF grandes al montar el chat. La verificación SHA-256 completa continúa siendo obligatoria justo antes de resolver los modelos para una sesión.
 
 En Windows, `LoadedSherpaLibrary` precarga por ruta absoluta la `onnxruntime.dll` empaquetada y usa `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` para cargar la C API. Esto impide que una versión incompatible presente en `PATH` sea elegida por el buscador de DLL del sistema. El handle de ONNX Runtime permanece vivo mientras se usan reconocimiento, VAD o diarización y se libera después de destruir sus objetos nativos.
 
-Windows y Android disparan `preload_at_startup` desde el setup nativo. Un thread dedicado valida los hashes y construye `OfflineVadRecognizer` sin bloquear la ventana; el resultado queda en `SpeechRuntimeState`. `SpeechWorker::start_with_recycler` toma ownership exclusivo durante una grabación y devuelve el reconocedor al caché después de limpiar el estado de Silero, incluso al cancelar. Los hashes se memorizan por ruta, tamaño y fecha de modificación durante el proceso para que las sesiones siguientes mantengan la validación sin releer cientos de MB.
+Windows y Android disparan `preload_at_startup` desde el setup nativo. Un thread dedicado valida los hashes y construye `Qwen3AsrRecognizer` sin bloquear la ventana; el resultado queda en `SpeechRuntimeState`. `SpeechWorker::start_with_recycler` toma ownership exclusivo durante una grabación y devuelve el reconocedor al caché después de limpiar el tramo activo. Los hashes se memorizan por ruta, tamaño y fecha de modificación.
 
-`sherpa_offline` implementa el ABI de `OfflineRecognizer` NeMo transducer y Silero VAD; `sherpa_diarization` usa segmentación pyannote, embeddings y clustering. Los handles son RAII. La diarización corre al finalizar; si falla, se conserva el ASR sin etiquetas.
+`qwen3_asr_service` implementa el adapter del bridge `llama.cpp`; `sherpa_diarization` usa segmentación pyannote, embeddings y clustering. Los handles son RAII. La diarización corre al finalizar; si falla, se conserva el ASR sin etiquetas.
 
 Eventos públicos: `speech://state`, `speech://partial` y `speech://segments`. Todos incluyen `sessionId`; el hook ignora sesiones obsoletas y libera listeners al desmontar.
 
@@ -3205,7 +3211,7 @@ flowchart LR
     Commands --> Session[speech_service]
     Session --> Audio[speech_audio]
     Session --> Worker[speech_worker]
-    Worker --> Sherpa[sherpa_offline + Silero VAD]
+    Worker --> Qwen[llama.cpp + Qwen3-ASR]
     Session --> Speakers[sherpa_diarization]
 ```
 
@@ -3227,7 +3233,7 @@ sequenceDiagram
 
 ## Agente de Notia por Telegram
 
-Los updates `voice` y `audio` se normalizan como `{ fileId, duration, mimeType?, fileSize? }` únicamente después del control de identidad. `transcribe_telegram_audio` repite en Rust los límites de 15 minutos y 20 MB, llama `getFile`, valida la ruta devuelta, descarga con timeout y decodifica OGG/Opus mediante `ogg` + `ropus`, ambos sin FFmpeg ni FFI adicional. `ropus` es un port fixed-point bit-exact del códec de referencia y cubre los modos SILK, CELT e híbrido que puede producir Telegram. El PCM mono a 16 kHz se procesa fuera del hilo UI con el `OfflineVadRecognizer` cargado desde el arranque y luego se devuelve a la caché residente. Antes de invocar al agente, el bridge envía un mensaje HTML con la transcripción escapada y en negrita; solamente el texto transcrito entra al flujo normal de herramientas.
+Los updates `voice` y `audio` se normalizan como `{ fileId, duration, mimeType?, fileSize? }` únicamente después del control de identidad. `transcribe_telegram_audio` repite en Rust los límites de 15 minutos y 20 MB, llama `getFile`, valida la ruta devuelta, descarga con timeout y decodifica OGG/Opus mediante `ogg` + `ropus`, ambos sin FFmpeg ni FFI adicional. El PCM mono a 16 kHz se procesa con el mismo `Qwen3AsrRecognizer` local y luego se devuelve a la caché residente.
 
 La integración usa long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
 
@@ -3254,7 +3260,7 @@ flowchart TD
     Paired --> Agent[Agente scope library]
     Paired --> Voice[Nota de voz OGG Opus]
     Voice --> Decode[Descarga acotada y decode 16 kHz]
-    Decode --> ASR[Parakeet y Silero precargados]
+    Decode --> ASR[Qwen3-ASR precargado]
     ASR --> Ack[Acuse con transcripción]
     Ack --> Agent
     Agent --> Read[Búsqueda y lectura]

@@ -22,7 +22,7 @@ struct CachedModelHash {
     sha256: String,
 }
 const SUPPORTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
-const MAX_MODEL_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_MODEL_FILE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,13 +62,7 @@ pub struct ResolvedDiarizationModel {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum SpeechAsrConfig {
-    OfflineNemoTransducer {
-        encoder: String,
-        decoder: String,
-        joiner: String,
-        tokens: String,
-        vad: String,
-    },
+    Qwen3Asr { model: String, mmproj: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,12 +79,36 @@ pub fn inspect_installed_models(app: &AppHandle) -> Result<SpeechModelStatusDto,
 }
 
 fn model_root(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        // En desarrollo, los recursos del checkout son la fuente de verdad.
+        // Esto evita que una instalación anterior en AppData oculte modelos
+        // actualizados del proyecto al ejecutar `npm run dev:tauri:windows`.
+        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("speech")
+            .join("models");
+        let source_asr = source_root.join("qwen3-asr-0.6b-q8");
+        if source_asr.join("Qwen3-ASR-0.6B-Q8_0.gguf").is_file()
+            && source_asr.join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").is_file()
+        {
+            return Ok(source_root);
+        }
+    }
     let installed_root = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("No se pudo resolver el directorio privado de modelos: {error}"))?
         .join(MODEL_DIRECTORY_NAME);
-    if installed_root.is_dir() {
+    // No alcanza con que exista la carpeta: instalaciones interrumpidas pueden
+    // dejarla creada pero sin los archivos requeridos. Solo la usamos cuando el
+    // perfil Qwen3-ASR realmente contiene ambos artefactos principales.
+    let installed_asr = installed_root.join("qwen3-asr-0.6b-q8");
+    if installed_asr.join("Qwen3-ASR-0.6B-Q8_0.gguf").is_file()
+        && installed_asr
+            .join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf")
+            .is_file()
+    {
         return Ok(installed_root);
     }
     Ok(app
@@ -103,18 +121,22 @@ fn model_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub fn resolve_offline_nemo_transducer_model(
+pub fn resolve_qwen3_asr_model(
     app: &AppHandle,
+    model_size: &str,
     language: &str,
-) -> Result<crate::services::sherpa_offline::OfflineNemoTransducerConfig, String> {
+    device: &str,
+) -> Result<crate::services::qwen3_asr_service::Qwen3AsrModelConfig, String> {
     let manifest: SpeechModelManifest = serde_json::from_str(MODEL_MANIFEST_JSON)
         .map_err(|error| format!("El manifiesto de modelos de voz no es valido: {error}"))?;
     validate_manifest(&manifest)?;
     let profile = manifest
         .profiles
         .iter()
-        .find(|profile| profile.language == language && profile.asr.is_some())
-        .ok_or_else(|| format!("No hay un modelo ASR configurado para el idioma {language}."))?;
+        .find(|profile| {
+            profile.profile_id == format!("qwen3-asr-{model_size}-q8") && profile.asr.is_some()
+        })
+        .ok_or_else(|| format!("No hay un modelo Qwen3-ASR {model_size} configurado."))?;
     let models_root = model_root(app)?;
     let profile_root = models_root.join(&profile.profile_id);
     let status = inspect_profile(&models_root, profile)?;
@@ -124,26 +146,16 @@ pub fn resolve_offline_nemo_transducer_model(
             profile.profile_id
         ));
     }
-    let (encoder, decoder, joiner, tokens, vad) = match profile.asr.as_ref() {
-        Some(SpeechAsrConfig::OfflineNemoTransducer {
-            encoder,
-            decoder,
-            joiner,
-            tokens,
-            vad,
-        }) => (encoder, decoder, joiner, tokens, vad),
+    let (model, mmproj) = match profile.asr.as_ref() {
+        Some(SpeechAsrConfig::Qwen3Asr { model, mmproj }) => (model, mmproj),
         None => return Err("El perfil seleccionado no declara un modelo ASR.".to_string()),
     };
-    Ok(
-        crate::services::sherpa_offline::OfflineNemoTransducerConfig {
-            encoder: resolve_verified_role_path(&profile_root, encoder)?,
-            decoder: resolve_verified_role_path(&profile_root, decoder)?,
-            joiner: resolve_verified_role_path(&profile_root, joiner)?,
-            tokens: resolve_verified_role_path(&profile_root, tokens)?,
-            vad: resolve_verified_role_path(&profile_root, vad)?,
-            num_threads: 2,
-        },
-    )
+    Ok(crate::services::qwen3_asr_service::Qwen3AsrModelConfig {
+        model: resolve_verified_role_path(&profile_root, model)?,
+        mmproj: resolve_verified_role_path(&profile_root, mmproj)?,
+        language: language.to_string(),
+        use_gpu: device == "gpu",
+    })
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -157,7 +169,7 @@ pub fn resolve_diarization_model(
     let profile = manifest
         .profiles
         .iter()
-        .find(|profile| profile.language == language && profile.diarization.is_some())
+        .find(|profile| profile.diarization.is_some())
         .ok_or_else(|| format!("No hay un modelo de diarizacion para el idioma {language}."))?;
     let models_root = model_root(app)?;
     if !inspect_profile(&models_root, profile)?.ready {
@@ -291,14 +303,8 @@ fn validate_asr_roles(
     config: &SpeechAsrConfig,
     declared_paths: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
-    let SpeechAsrConfig::OfflineNemoTransducer {
-        encoder,
-        decoder,
-        joiner,
-        tokens,
-        vad,
-    } = config;
-    let roles = [encoder, decoder, joiner, tokens, vad];
+    let SpeechAsrConfig::Qwen3Asr { model, mmproj } = config;
+    let roles = [model, mmproj];
     let mut unique_roles = std::collections::HashSet::new();
     for path in roles {
         validate_relative_path(path)?;
@@ -317,9 +323,9 @@ fn validate_asr_roles(
 fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 80
-        || !value
-            .bytes()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_'))
+        || !value.bytes().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_' | b'.')
+        })
     {
         return Err(format!("El identificador de {label} no es valido."));
     }

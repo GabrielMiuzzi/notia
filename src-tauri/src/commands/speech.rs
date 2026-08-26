@@ -15,7 +15,17 @@ pub fn get_speech_capabilities(
     app: AppHandle,
     permission_state: State<'_, AndroidSpeechPermissionState>,
 ) -> Result<SpeechCapabilitiesDto, String> {
-    let model_status = speech_model_repository::inspect_installed_models(&app)?;
+    // La comprobación de capacidades es informativa y no debe quedar inutilizable
+    // por un directorio de modelos ausente (por ejemplo, en el primer arranque).
+    // La resolución estricta se hace al iniciar la sesión y allí se devuelve el
+    // error accionable de modelo faltante/inválido.
+    let model_status =
+        speech_model_repository::inspect_installed_models(&app).unwrap_or_else(|_| {
+            SpeechModelStatusDto {
+                schema_version: 1,
+                profiles: Vec::new(),
+            }
+        });
     let runtime = sherpa_runtime::probe(&app);
     let permission = microphone_permission(&permission_state);
     let audio_available = if permission == "granted" {
@@ -67,6 +77,12 @@ pub fn start_speech_session(
     permission_state: State<'_, AndroidSpeechPermissionState>,
 ) -> Result<StartSpeechSessionResultDto, String> {
     speech_service::validate_start_input(&payload.language, payload.max_duration_seconds)?;
+    if !matches!(payload.model.as_str(), "0.6b" | "1.7b") {
+        return Err("El modelo Qwen3-ASR seleccionado no es válido.".to_string());
+    }
+    if !matches!(payload.device.as_str(), "cpu" | "gpu") {
+        return Err("El dispositivo Qwen3-ASR seleccionado no es válido.".to_string());
+    }
     let _diarization_enabled = payload.diarization_enabled;
     let phase = *state
         .phase
@@ -84,15 +100,11 @@ pub fn start_speech_session(
         crate::mobile_speech_permission::ensure_microphone_permission(&permission_state)?;
         #[cfg(not(target_os = "android"))]
         let _ = permission_state;
-        let runtime = sherpa_runtime::probe(&app);
-        if !runtime.compatible {
-            return Err(runtime.error_message.unwrap_or_else(|| {
-                "El runtime sherpa-onnx no esta instalado o no es compatible.".to_string()
-            }));
-        }
-        let model = speech_model_repository::resolve_offline_nemo_transducer_model(
+        let model = speech_model_repository::resolve_qwen3_asr_model(
             &app,
+            &payload.model,
             &payload.language,
+            &payload.device,
         )?;
         let diarization_model = payload
             .diarization_enabled
@@ -117,6 +129,7 @@ pub fn start_speech_session(
             session_id.clone(),
             model,
             diarization_model,
+            payload.capture_system_audio,
         ) {
             if let Ok(mut phase) = state.phase.lock() {
                 *phase = SpeechPhase::Idle;

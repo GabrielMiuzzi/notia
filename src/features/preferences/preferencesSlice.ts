@@ -6,6 +6,7 @@ import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '..
 import type { PreferencesState } from './preferencesTypes'
 import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { loadQwen3TtsPreferences, saveQwen3TtsPreferences, type Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
+import { loadQwen3AsrPreferences, saveQwen3AsrPreferences, type Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
 
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
@@ -14,6 +15,7 @@ const initialState: PreferencesState = {
   explorerRefreshIntervalMs: loadExplorerRefreshIntervalMs(),
   telegramSettings: DEFAULT_TELEGRAM_PREFERENCES,
   qwen3TtsSettings: loadQwen3TtsPreferences(),
+  qwen3AsrSettings: loadQwen3AsrPreferences(),
 }
 
 const preferencesSlice = createSlice({
@@ -48,6 +50,10 @@ const preferencesSlice = createSlice({
       state.qwen3TtsSettings = action.payload
       saveQwen3TtsPreferences(action.payload)
     },
+    setQwen3AsrSettings(state, action: PayloadAction<Qwen3AsrPreferences>) {
+      state.qwen3AsrSettings = action.payload
+      saveQwen3AsrPreferences(action.payload)
+    },
   },
 })
 
@@ -59,6 +65,7 @@ export const {
   setExplorerRefreshIntervalMs,
   setTelegramSettings,
   setQwen3TtsSettings,
+  setQwen3AsrSettings,
 } = preferencesSlice.actions
 
 export default preferencesSlice.reducer

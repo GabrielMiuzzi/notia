@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAppSelector } from '../../../../store/hooks'
+import { selectQwen3AsrSettings } from '../../../../features/preferences/preferencesSelectors'
 import {
   cancelSpeechSession,
   consumeSpeechTurn,
@@ -30,22 +32,38 @@ interface UseVoiceTranscriptionInput {
   pauseDetectionMs?: number | null
   continuousSession?: boolean
   onCompleted?: (text: string) => void
+  captureSystemAudio?: boolean
 }
 
 export function hasNewRecognizedSpeech(previous: string, next: string): boolean {
   return Boolean(next.trim()) && next.trim() !== previous
 }
 
-export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, onCompleted }: UseVoiceTranscriptionInput) {
+export function stabilizePartialTranscript(previous: string, next: string): string {
+  const normalizedPrevious = previous.trim()
+  const normalizedNext = next.trim()
+  if (!normalizedNext) return normalizedPrevious
+  if (!normalizedPrevious || normalizedNext.startsWith(normalizedPrevious)) return normalizedNext
+  const previousWords = normalizedPrevious.split(/\s+/).length
+  const nextWords = normalizedNext.split(/\s+/).length
+  return nextWords > previousWords ? normalizedNext : normalizedPrevious
+}
+
+export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
+  const qwen3Asr = useAppSelector(selectQwen3AsrSettings)
   const [capabilities, setCapabilities] = useState<SpeechCapabilities | null>(null)
   const [audioInput, setAudioInput] = useState<SpeechAudioInputStatus | null>(null)
   const [sherpaRuntime, setSherpaRuntime] = useState<SherpaRuntimeStatus | null>(null)
   const [state, setState] = useState<SpeechSessionState>(INITIAL_STATE)
+  const [visiblePartialText, setVisiblePartialText] = useState('')
   const sessionIdRef = useRef<string | null>(null)
   const baseDraftRef = useRef('')
   const silenceTimerRef = useRef<number | null>(null)
   const lastObservedSpeechRef = useRef('')
+  const confirmedTextRef = useRef('')
+  const visiblePartialTextRef = useRef('')
   const onCompletedRef = useRef(onCompleted)
+  const environmentErrorRef = useRef<string | null>(null)
 
   useEffect(() => {
     onCompletedRef.current = onCompleted
@@ -53,24 +71,22 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
 
   useEffect(() => {
     let current = true
-    void Promise.all([getSpeechCapabilities(), probeSpeechAudioInput(), probeSherpaRuntime()])
-      .then(([nextCapabilities, nextAudioInput, nextSherpaRuntime]) => {
-        if (!current) return
-        setCapabilities(nextCapabilities)
-        setAudioInput(nextAudioInput)
-        setSherpaRuntime(nextSherpaRuntime)
-      })
-      .catch(() => {
-        if (current) setCapabilities({
-          supported: false,
-          platform: 'other',
-          architecture: 'unknown',
-          permission: 'unavailable',
-          asrModelInstalled: false,
-          diarizationModelInstalled: false,
-          unavailableReason: 'not-integrated',
-        })
-      })
+    void Promise.allSettled([
+      getSpeechCapabilities(),
+      probeSpeechAudioInput(),
+      probeSherpaRuntime(),
+    ]).then(([capabilitiesResult, audioResult, sherpaResult]) => {
+      if (!current) return
+      if (capabilitiesResult.status === 'fulfilled') setCapabilities(capabilitiesResult.value)
+      else environmentErrorRef.current = capabilitiesResult.reason instanceof Error
+        ? capabilitiesResult.reason.message
+        : 'No se pudo comprobar las capacidades de voz.'
+      if (audioResult.status === 'fulfilled') setAudioInput(audioResult.value)
+      else if (!environmentErrorRef.current) environmentErrorRef.current = audioResult.reason instanceof Error
+        ? audioResult.reason.message
+        : 'No se pudo comprobar el micrófono.'
+      if (sherpaResult.status === 'fulfilled') setSherpaRuntime(sherpaResult.value)
+    })
     return () => { current = false }
   }, [])
 
@@ -103,14 +119,26 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
             const transcript = formatDiarizedTranscript(event.state.transcript)
             setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, transcript))
             sessionIdRef.current = null
+            setVisiblePartialText('')
             onCompletedRef.current?.(transcript)
           } else if (event.state.status === 'error') {
             sessionIdRef.current = null
+            setVisiblePartialText('')
           }
         }),
         listenSpeechPartial((event) => {
           if (event.sessionId !== sessionIdRef.current) return
-          const observedSpeech = `${event.confirmedText} ${event.partialText}`.trim()
+          if (event.confirmedText !== confirmedTextRef.current) {
+            confirmedTextRef.current = event.confirmedText
+            visiblePartialTextRef.current = ''
+          }
+          visiblePartialTextRef.current = stabilizePartialTranscript(
+            visiblePartialTextRef.current,
+            event.partialText,
+          )
+          setVisiblePartialText(visiblePartialTextRef.current)
+          const observedSpeech = `${confirmedTextRef.current} ${visiblePartialTextRef.current}`.trim()
+          if (!observedSpeech) return
           setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, observedSpeech))
           if (pauseDetectionMs && hasNewRecognizedSpeech(lastObservedSpeechRef.current, observedSpeech)) {
             lastObservedSpeechRef.current = observedSpeech
@@ -162,17 +190,50 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   }, [state.status])
 
   const start = useCallback(async () => {
-    if (!capabilities?.supported) {
+    let currentCapabilities = capabilities
+    let currentAudioInput = audioInput
+    if (!currentCapabilities || !currentAudioInput) {
+      setState({ status: 'preparing' })
+      try {
+        const [capabilitiesResult, audioResult] = await Promise.allSettled([
+          getSpeechCapabilities(),
+          probeSpeechAudioInput(),
+        ])
+        if (capabilitiesResult.status === 'rejected') {
+          throw capabilitiesResult.reason
+        }
+        currentCapabilities = capabilitiesResult.value
+        setCapabilities(currentCapabilities)
+        if (audioResult.status === 'fulfilled') {
+          currentAudioInput = audioResult.value
+          setAudioInput(currentAudioInput)
+        }
+      } catch (error) {
+        setState({
+          status: 'error',
+          error: {
+            code: 'internal',
+            message: error instanceof Error ? error.message : environmentErrorRef.current || (typeof error === 'string' ? error : 'No se pudo comprobar el runtime de voz.'),
+          },
+        })
+        return false
+      }
+    }
+    if (!currentCapabilities.supported && currentCapabilities.platform !== 'windows' && currentCapabilities.platform !== 'android') {
       setState({
         status: 'error',
         error: {
           code: 'unsupported-platform',
-          message: sherpaRuntime?.errorMessage || 'La integracion nativa con sherpa-onnx todavia no esta disponible.',
+          message: environmentErrorRef.current || 'Qwen3-ASR no está disponible en esta plataforma.',
         },
       })
       return false
     }
-    if (capabilities.permission === 'denied') {
+    if (!qwen3Asr.enabled) {
+      setState({ status: 'error', error: { code: 'internal', message: 'Activa Qwen3-ASR en Configuraciones → Voz.' } })
+      return false
+    }
+    if (currentCapabilities.permission === 'denied') {
       setState({
         status: 'error',
         error: {
@@ -182,37 +243,57 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
       })
       return false
     }
-    if (capabilities.permission === 'granted' && !audioInput?.available) {
+    if (!currentAudioInput) {
+      setState({
+        status: 'error',
+        error: { code: 'microphone-unavailable', message: 'No se pudo comprobar el micrófono.' },
+      })
+      return false
+    }
+    if (currentCapabilities.permission === 'granted' && !currentAudioInput.available) {
       setState({
         status: 'error',
         error: {
           code: 'microphone-unavailable',
-          message: audioInput?.errorMessage || 'No hay un microfono disponible.',
+          message: currentAudioInput.errorMessage || 'No hay un micrófono disponible.',
         },
       })
       return false
     }
-    if (!capabilities.asrModelInstalled || !capabilities.diarizationModelInstalled) {
-      setState({ status: 'error', error: { code: 'model-not-installed', message: 'Instala los modelos de voz para usar el dictado offline.' } })
-      return false
-    }
     baseDraftRef.current = draft
     lastObservedSpeechRef.current = ''
+    confirmedTextRef.current = ''
+    visiblePartialTextRef.current = ''
+    setVisiblePartialText('')
     if (silenceTimerRef.current !== null) {
       window.clearTimeout(silenceTimerRef.current)
       silenceTimerRef.current = null
     }
     setState({ status: 'preparing' })
     try {
-      const result = await startSpeechSession({ language: 'es', diarizationEnabled: !continuousSession, maxDurationSeconds: 900 })
+      const result = await startSpeechSession({
+        language: qwen3Asr.language,
+        model: qwen3Asr.model,
+        device: qwen3Asr.device,
+        diarizationEnabled: !continuousSession,
+        maxDurationSeconds: 900,
+        captureSystemAudio,
+      })
       sessionIdRef.current = result.sessionId
       setState({ status: 'recording', elapsedMs: 0, hasSpeech: false })
       return true
     } catch (error) {
-      setState({ status: 'error', error: { code: 'internal', message: error instanceof Error ? error.message : 'No se pudo iniciar el microfono.' } })
+      const message = error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+              ? error.message
+              : 'No se pudo iniciar el micrófono.')
+      setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
-  }, [audioInput, capabilities, continuousSession, draft, sherpaRuntime])
+  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, qwen3Asr, sherpaRuntime])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current
@@ -240,6 +321,9 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
     const sessionId = sessionIdRef.current
     sessionIdRef.current = null
     lastObservedSpeechRef.current = ''
+    confirmedTextRef.current = ''
+    visiblePartialTextRef.current = ''
+    setVisiblePartialText('')
     if (sessionId) await cancelSpeechSession(sessionId).catch(() => undefined)
     setDraft(baseDraftRef.current)
     setState(INITIAL_STATE)
@@ -250,6 +334,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
     audioInput,
     sherpaRuntime,
     state,
+    visiblePartialText,
     isActive: ACTIVE_STATUSES.has(state.status),
     start,
     pause: () => invokeForCurrentSession(pauseSpeechSession),

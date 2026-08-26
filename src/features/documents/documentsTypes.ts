@@ -14,6 +14,7 @@ export interface OpenWorkspaceSpecialTabs {
   chat: boolean
   taskManager: boolean
   coldPass: boolean
+  meeting: boolean
 }
 
 export interface DocumentsState {

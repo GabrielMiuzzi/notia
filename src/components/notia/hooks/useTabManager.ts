@@ -17,6 +17,7 @@ import {
   CHAT_WORKSPACE_TAB_PATH,
   TASK_MANAGER_WORKSPACE_TAB_PATH,
   COLDPASS_WORKSPACE_TAB_PATH,
+  MEETING_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import {
   invalidateLibrarySearchGraphIndex,
@@ -46,6 +47,7 @@ interface OpenWorkspaceSpecialTabs {
   chat: boolean
   taskManager: boolean
   coldPass: boolean
+  meeting: boolean
 }
 
 function getDisplayBaseName(value: string): string {
@@ -97,6 +99,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.chat) { tabs.push({ path: CHAT_WORKSPACE_TAB_PATH, title: 'Chat' }) }
   if (specialTabs.taskManager) { tabs.push({ path: TASK_MANAGER_WORKSPACE_TAB_PATH, title: 'Task manager' }) }
   if (specialTabs.coldPass) { tabs.push({ path: COLDPASS_WORKSPACE_TAB_PATH, title: 'ColdPass' }) }
+  if (specialTabs.meeting) { tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' }) }
 
   return tabs
 }
@@ -197,6 +200,7 @@ export function useTabManager({
       || tabPath === CHAT_WORKSPACE_TAB_PATH
       || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
+      || tabPath === MEETING_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = store.getState().documents.specialTabs
       if (
@@ -204,6 +208,7 @@ export function useTabManager({
         || (tabPath === CHAT_WORKSPACE_TAB_PATH && !currentSpecialTabs.chat)
         || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !currentSpecialTabs.taskManager)
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !currentSpecialTabs.coldPass)
+        || (tabPath === MEETING_WORKSPACE_TAB_PATH && !currentSpecialTabs.meeting)
       ) { return }
 
       const currentTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, currentSpecialTabs)
@@ -215,6 +220,7 @@ export function useTabManager({
         chat: tabPath === CHAT_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.chat,
         taskManager: tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.taskManager,
         coldPass: tabPath === COLDPASS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.coldPass,
+        meeting: tabPath === MEETING_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.meeting,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)
       const currentActiveTabPath = selectActiveTabPath(store.getState())
@@ -324,6 +330,7 @@ export function useTabManager({
       || tabPath === CHAT_WORKSPACE_TAB_PATH
       || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
+      || tabPath === MEETING_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = store.getState().documents.specialTabs
       if (
@@ -331,6 +338,7 @@ export function useTabManager({
         || (tabPath === CHAT_WORKSPACE_TAB_PATH && !specialTabs.chat)
         || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !specialTabs.taskManager)
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !specialTabs.coldPass)
+        || (tabPath === MEETING_WORKSPACE_TAB_PATH && !specialTabs.meeting)
       ) { return }
       dispatch(setActiveTabPath(tabPath))
       return

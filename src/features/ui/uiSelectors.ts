@@ -1,4 +1,5 @@
 import type { RootState } from '../../store/index'
+import { CHAT_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, GRAPH_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH } from '../documents/documentsSlice'
 
 export const selectActiveView = (state: RootState) => state.ui.activeView
 export const selectIsSidebarOpen = (state: RootState) => state.ui.isSidebarOpen
@@ -12,11 +13,12 @@ export const selectIsLibraryManagerOpen = (state: RootState) => state.ui.isLibra
 export const selectActiveModal = (state: RootState) => state.ui.activeModal
 
 export const selectActiveRailActionId = (state: RootState): string | null => {
-  const view = state.ui.activeView
-  if (view === 'graph') return 'graph-view'
-  if (view === 'chat') return 'chat'
-  if (view === 'task-manager') return 'task-manager'
-  if (view === 'coldpass') return 'coldpass'
+  const path = state.documents.activeTabPath
+  if (path === GRAPH_WORKSPACE_TAB_PATH) return 'graph-view'
+  if (path === CHAT_WORKSPACE_TAB_PATH) return 'chat'
+  if (path === TASK_MANAGER_WORKSPACE_TAB_PATH) return 'task-manager'
+  if (path === COLDPASS_WORKSPACE_TAB_PATH) return 'coldpass'
+  if (path === MEETING_WORKSPACE_TAB_PATH) return 'meeting'
   return null
 }
 

@@ -2,57 +2,30 @@
   "schemaVersion": 1,
   "profiles": [
     {
-      "profileId": "es-parakeet-tdt-v3",
-      "language": "es",
-      "asr": {
-        "type": "offlineNemoTransducer",
-        "encoder": "encoder.onnx",
-        "decoder": "decoder.onnx",
-        "joiner": "joiner.onnx",
-        "tokens": "tokens.txt",
-        "vad": "silero_vad.onnx"
-      },
-      "diarization": {
-        "type": "pyannote",
-        "segmentation": "segmentation.onnx",
-        "embedding": "embedding.onnx"
-      },
+      "profileId": "qwen3-asr-0.6b-q8",
+      "language": "multilingual",
+      "asr": { "type": "qwen3Asr", "model": "Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf" },
       "files": [
-        {
-          "relativePath": "encoder.onnx",
-          "bytes": 652184281,
-          "sha256": "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247"
-        },
-        {
-          "relativePath": "decoder.onnx",
-          "bytes": 11845275,
-          "sha256": "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e"
-        },
-        {
-          "relativePath": "joiner.onnx",
-          "bytes": 6355277,
-          "sha256": "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3"
-        },
-        {
-          "relativePath": "tokens.txt",
-          "bytes": 93939,
-          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
-        },
-        {
-          "relativePath": "silero_vad.onnx",
-          "bytes": 643854,
-          "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
-        },
-        {
-          "relativePath": "segmentation.onnx",
-          "bytes": 5992913,
-          "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
-        },
-        {
-          "relativePath": "embedding.onnx",
-          "bytes": 39593761,
-          "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"
-        }
+        { "relativePath": "Qwen3-ASR-0.6B-Q8_0.gguf", "bytes": 804749248, "sha256": "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971" },
+        { "relativePath": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf", "bytes": 214392480, "sha256": "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d" }
+      ]
+    },
+    {
+      "profileId": "qwen3-asr-1.7b-q8",
+      "language": "multilingual",
+      "asr": { "type": "qwen3Asr", "model": "Qwen3-ASR-1.7B-Q8_0.gguf", "mmproj": "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf" },
+      "files": [
+        { "relativePath": "Qwen3-ASR-1.7B-Q8_0.gguf", "bytes": 2165034944, "sha256": "58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57" },
+        { "relativePath": "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf", "bytes": 355709344, "sha256": "46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d" }
+      ]
+    },
+    {
+      "profileId": "speaker-diarization-v1",
+      "language": "es",
+      "diarization": { "type": "pyannote", "segmentation": "segmentation.onnx", "embedding": "embedding.onnx" },
+      "files": [
+        { "relativePath": "segmentation.onnx", "bytes": 5992913, "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079" },
+        { "relativePath": "embedding.onnx", "bytes": 39593761, "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b" }
       ]
     }
   ]

@@ -1,7 +1,7 @@
 import { createSelector } from '@reduxjs/toolkit'
 import type { RootState } from '../../store/index'
 import type { OpenDocumentTab } from './documentsTypes'
-import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH } from './documentsSlice'
+import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH } from './documentsSlice'
 
 export const selectOpenTabs = (state: RootState) => state.documents.openTabs
 export const selectActiveTabPath = (state: RootState) => state.documents.activeTabPath
@@ -35,12 +35,13 @@ export const selectSaveStatus = createSelector(
   (tab) => tab?.saveStatus ?? 'idle' as const,
 )
 
-export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' => {
+export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' => {
   const path = state.documents.activeTabPath
   if (path === GRAPH_WORKSPACE_TAB_PATH) return 'graph'
   if (path === CHAT_WORKSPACE_TAB_PATH) return 'chat'
   if (path === TASK_MANAGER_WORKSPACE_TAB_PATH) return 'task-manager'
   if (path === COLDPASS_WORKSPACE_TAB_PATH) return 'coldpass'
+  if (path === MEETING_WORKSPACE_TAB_PATH) return 'meeting'
   return 'documents'
 }
 
@@ -85,6 +86,7 @@ export const selectTitleBarTabs = createSelector(
     if (specialTabs.chat) tabs.push({ path: CHAT_WORKSPACE_TAB_PATH, title: 'Chat' })
     if (specialTabs.taskManager) tabs.push({ path: TASK_MANAGER_WORKSPACE_TAB_PATH, title: 'Task manager' })
     if (specialTabs.coldPass) tabs.push({ path: COLDPASS_WORKSPACE_TAB_PATH, title: 'ColdPass' })
+    if (specialTabs.meeting) tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' })
 
     return tabs
   },

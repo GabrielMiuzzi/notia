@@ -14,6 +14,7 @@ import {
   X,
   Minus,
   Square,
+  Mic,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
 
@@ -27,6 +28,7 @@ export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'task-manager', label: 'Task manager', icon: ListChecks },
   { id: 'coldpass', label: 'ColdPass', icon: Lock },
+  { id: 'meeting', label: 'Transcribir meeting', icon: Mic },
 ]
 
 export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [

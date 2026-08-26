@@ -8,8 +8,9 @@ const GRAPH_WORKSPACE_TAB_PATH = '__workspace_graph__'
 const CHAT_WORKSPACE_TAB_PATH = '__workspace_chat__'
 const TASK_MANAGER_WORKSPACE_TAB_PATH = '__workspace_task_manager__'
 const COLDPASS_WORKSPACE_TAB_PATH = '__workspace_coldpass__'
+const MEETING_WORKSPACE_TAB_PATH = '__workspace_meeting__'
 
-export { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH }
+export { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH }
 
 const initialState: DocumentsState = {
   openTabs: [],
@@ -19,6 +20,7 @@ const initialState: DocumentsState = {
     chat: false,
     taskManager: false,
     coldPass: false,
+    meeting: false,
   },
   treeNodes: [],
   searchQuery: '',
@@ -99,6 +101,7 @@ const documentsSlice = createSlice({
         chat: CHAT_WORKSPACE_TAB_PATH,
         taskManager: TASK_MANAGER_WORKSPACE_TAB_PATH,
         coldPass: COLDPASS_WORKSPACE_TAB_PATH,
+        meeting: MEETING_WORKSPACE_TAB_PATH,
       }
       state.activeTabPath = pathMap[action.payload]
     },
@@ -135,7 +138,7 @@ const documentsSlice = createSlice({
     resetTabs(state) {
       state.openTabs = []
       state.activeTabPath = null
-      state.specialTabs = { graph: false, chat: false, taskManager: false, coldPass: false }
+      state.specialTabs = { graph: false, chat: false, taskManager: false, coldPass: false, meeting: false }
       state.pendingCreation = null
       state.renamingPath = null
       state.contextMenu = null

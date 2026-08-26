@@ -16,8 +16,12 @@ pub struct SpeechCapabilitiesDto {
 #[serde(rename_all = "camelCase")]
 pub struct StartSpeechSessionPayload {
     pub language: String,
+    pub model: String,
+    pub device: String,
     pub diarization_enabled: bool,
     pub max_duration_seconds: u32,
+    #[serde(default)]
+    pub capture_system_audio: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -27,12 +27,21 @@ target-check*/
 # Speech installer outputs (large platform binaries and models)
 src-tauri/resources/speech/models/*
 !src-tauri/resources/speech/models/README.md
+# Modelos base distribuidos con el APK/EXE (no requieren instalación manual).
+!src-tauri/resources/speech/models/qwen3-asr-0.6b-q8/
+!src-tauri/resources/speech/models/qwen3-asr-0.6b-q8/**
+!src-tauri/resources/speech/models/qwen3-asr-1.7b-q8/
+!src-tauri/resources/speech/models/qwen3-asr-1.7b-q8/**
+!src-tauri/resources/speech/models/speaker-diarization-v1/
+!src-tauri/resources/speech/models/speaker-diarization-v1/**
 src-tauri/resources/speech/runtime/*
 !src-tauri/resources/speech/runtime/README.md
 src-tauri/resources/qwen3-tts/models/*
 !src-tauri/resources/qwen3-tts/models/README.md
 src-tauri/resources/qwen3-tts/runtime/windows-x86_64/*.dll
 src-tauri/resources/qwen3-tts/runtime/android-arm64-v8a/*.so
+src-tauri/resources/qwen3-asr/runtime/windows-x86_64/*.dll
+src-tauri/resources/qwen3-asr/runtime/android-arm64-v8a/*.so
 # Legacy local weights are no longer built or packaged.
 src-tauri/resources/supertonic/
 

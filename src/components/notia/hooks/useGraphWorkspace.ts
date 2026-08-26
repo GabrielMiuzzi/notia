@@ -7,7 +7,7 @@ import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
 
 interface UseGraphWorkspaceParams {
   activeLibrary: NotiaLibrary | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'documents'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'documents'
   treeNodes: NotiaFileNode[]
 }
 

@@ -9,6 +9,7 @@ import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { MainView } from './MainView'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
+import { MeetingView } from './views/MeetingView'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
@@ -193,6 +194,10 @@ function NotiaWorkspaceComponent({
         onDeleteCredential={handleColdPassDeleteCredential}
       />
     )
+  }
+
+  if (activeWorkspaceView === 'meeting') {
+    return <MeetingView />
   }
 
   return (

@@ -2,6 +2,7 @@ import type { AiPreferences } from '../../services/preferences/aiSettingsStorage
 import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
+import type { Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
 
 export interface PreferencesState {
   theme: 'dark' | 'light'
@@ -10,4 +11,5 @@ export interface PreferencesState {
   explorerRefreshIntervalMs: number
   telegramSettings: TelegramPreferences
   qwen3TtsSettings: Qwen3TtsPreferences
+  qwen3AsrSettings: Qwen3AsrPreferences
 }

@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 pub const MAX_SPEECH_SESSION_SECONDS: u32 = 900;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub(crate) type PreloadedRecognizer =
-    Arc<StdMutex<Option<crate::services::sherpa_offline::OfflineVadRecognizer>>>;
+    Arc<StdMutex<Option<crate::services::qwen3_asr_service::Qwen3AsrRecognizer>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechPhase {
@@ -62,14 +62,20 @@ pub fn transcribe_external_audio(
         .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?
         .take()
     {
-        Some(recognizer) => recognizer,
-        None => {
-            let runtime = crate::services::sherpa_runtime::resolve_platform_runtime_path(app)?;
-            let model =
-                crate::services::speech_model_repository::resolve_offline_nemo_transducer_model(
-                    app, "es",
-                )?;
-            crate::services::sherpa_offline::OfflineVadRecognizer::load(&runtime, &model)?
+        Some(recognizer)
+            if recognizer.matches(
+                &crate::services::speech_model_repository::resolve_qwen3_asr_model(
+                    app, "0.6b", "es", "cpu",
+                )?,
+            ) =>
+        {
+            recognizer
+        }
+        Some(_) | None => {
+            let model = crate::services::speech_model_repository::resolve_qwen3_asr_model(
+                app, "0.6b", "es", "cpu",
+            )?;
+            crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(app, &model)?
         }
     };
     let result = (|| {
@@ -138,9 +144,10 @@ pub fn preload_at_startup(app: AppHandle) {
         .name("notia-speech-preload".to_string())
         .spawn(move || {
             let result = (|| {
-                let runtime = crate::services::sherpa_runtime::resolve_platform_runtime_path(&app)?;
-                let model = crate::services::speech_model_repository::resolve_offline_nemo_transducer_model(&app, "es")?;
-                crate::services::sherpa_offline::OfflineVadRecognizer::load(&runtime, &model)
+                let model = crate::services::speech_model_repository::resolve_qwen3_asr_model(
+                    &app, "0.6b", "es", "cpu",
+                )?;
+                crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(&app, &model)
             })();
             match result {
                 Ok(recognizer) => {
@@ -166,8 +173,9 @@ pub fn start_platform_session(
     app: &AppHandle,
     state: &SpeechRuntimeState,
     session_id: String,
-    model: crate::services::sherpa_offline::OfflineNemoTransducerConfig,
+    model: crate::services::qwen3_asr_service::Qwen3AsrModelConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
+    capture_system_audio: bool,
 ) -> Result<(), String> {
     let mut slot = state
         .active_session
@@ -176,13 +184,17 @@ pub fn start_platform_session(
     if slot.is_some() {
         return Err("Ya existe una sesion de voz activa.".to_string());
     }
-    let runtime_path = crate::services::sherpa_runtime::resolve_platform_runtime_path(app)?;
-    let recognizer_runtime_path = runtime_path.clone();
+    let diarization_runtime_path = diarization_model
+        .as_ref()
+        .map(|_| crate::services::sherpa_runtime::resolve_platform_runtime_path(app))
+        .transpose()?;
+    let recognizer_app = app.clone();
     let recognizer_cache = Arc::clone(&state.preloaded_recognizer);
     let recycler_cache = Arc::clone(&recognizer_cache);
     let buffer = crate::services::speech_audio::create_shared_pcm_buffer();
     let capture = crate::services::speech_audio::PlatformAudioCapture::start_with_buffer(
         Arc::clone(&buffer),
+        capture_system_audio,
     )?;
     let started_at = Instant::now();
     let confirmed_text = Arc::new(StdMutex::new(String::new()));
@@ -197,12 +209,11 @@ pub fn start_platform_session(
                 .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?
                 .take()
             {
-                return Ok(recognizer);
+                if recognizer.matches(&model) {
+                    return Ok(recognizer);
+                }
             }
-            crate::services::sherpa_offline::OfflineVadRecognizer::load(
-                &recognizer_runtime_path,
-                &model,
-            )
+            crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(&recognizer_app, &model)
         },
         move |event| {
             handle_worker_event(
@@ -210,7 +221,7 @@ pub fn start_platform_session(
                 &callback_session_id,
                 started_at,
                 &callback_confirmed,
-                &runtime_path,
+                diarization_runtime_path.as_deref(),
                 diarization_model.as_ref(),
                 event,
             );
@@ -387,7 +398,7 @@ fn handle_worker_event(
     session_id: &str,
     started_at: Instant,
     confirmed_text: &Arc<StdMutex<String>>,
-    runtime_path: &std::path::Path,
+    diarization_runtime_path: Option<&std::path::Path>,
     diarization_model: Option<&crate::services::speech_model_repository::ResolvedDiarizationModel>,
     event: crate::services::speech_worker::SpeechWorkerEvent,
 ) {
@@ -438,11 +449,11 @@ fn handle_worker_event(
                 Err(_) => update.text,
             };
             let transcript = match diarization_model {
-                Some(model) => match crate::services::sherpa_diarization::process(
-                    runtime_path,
-                    model,
-                    &samples,
-                ) {
+                Some(model) => match diarization_runtime_path
+                    .ok_or_else(|| "No se encontró el runtime de diarización.".to_string())
+                    .and_then(|runtime_path| {
+                        crate::services::sherpa_diarization::process(runtime_path, model, &samples)
+                    }) {
                     Ok(result) => build_diarized_transcript(&text, &result),
                     Err(message) => {
                         log::warn!(
@@ -619,8 +630,8 @@ impl SpeechPhase {
 
 pub fn current_capabilities(
     model_status: &SpeechModelStatusDto,
-    runtime_compatible: bool,
-    audio_available: bool,
+    _diarization_runtime_compatible: bool,
+    _audio_available: bool,
     permission: &str,
 ) -> SpeechCapabilitiesDto {
     let platform = if cfg!(target_os = "windows") {
@@ -640,7 +651,7 @@ pub fn current_capabilities(
         .profiles
         .iter()
         .any(|profile| profile.diarization_ready);
-    let supported = platform_supported && runtime_compatible && audio_available;
+    let supported = platform_supported;
     SpeechCapabilitiesDto {
         supported,
         platform: platform.to_string(),
@@ -672,7 +683,7 @@ pub fn validate_start_input(language: &str, max_duration_seconds: u32) -> Result
 }
 
 pub fn not_integrated_error() -> String {
-    "La integracion nativa con sherpa-onnx todavia no esta disponible.".to_string()
+    "La integración nativa con llama.cpp y Qwen3-ASR todavía no está disponible.".to_string()
 }
 
 #[cfg(test)]
@@ -711,7 +722,10 @@ mod tests {
             false,
             "unavailable",
         );
-        assert!(!capabilities.supported);
+        assert_eq!(
+            capabilities.supported,
+            cfg!(any(target_os = "windows", target_os = "android"))
+        );
         assert!(!capabilities.asr_model_installed);
         assert!(!capabilities.diarization_model_installed);
     }

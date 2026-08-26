@@ -1,3 +1,6 @@
 [submodule "src-tauri/vendor/qwen3-tts.cpp"]
 	path = src-tauri/vendor/qwen3-tts.cpp
 	url = https://github.com/Danmoreng/qwen3-tts.cpp.git
+[submodule "src-tauri/vendor/llama.cpp"]
+	path = src-tauri/vendor/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp.git
