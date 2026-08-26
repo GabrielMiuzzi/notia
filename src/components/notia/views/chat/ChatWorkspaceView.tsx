@@ -538,6 +538,12 @@ export function ChatWorkspaceViewComponent({
     setIsAttachmentMenuOpen((current) => !current)
   }
 
+  const lastAssistantMessage = pendingAgentConfirmation
+    ?? (awaitingAgentExecutionPlanApproval ? 'Preparé un plan de ejecución. ¿Querés aprobarlo?' : null)
+    ?? pendingAgentQuestion?.question
+    ?? [...displayedMessages].reverse().find((message) => message.role === 'assistant')?.content
+    ?? null
+
   return (
     <main className="notia-main notia-chat-view" data-notia-prevent-menu-close>
       <section className="notia-chat-shell" data-notia-prevent-menu-close>
@@ -688,6 +694,31 @@ export function ChatWorkspaceViewComponent({
                 setPendingAgentAnswer(null)
                 void submitMessage(draft)
               }}
+              onSubmitText={(text) => {
+                const normalizedVoiceAnswer = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+                if (confirmationResolverRef.current && /^(si|confirmo|acepto|confirmar)\b/.test(normalizedVoiceAnswer)) {
+                  confirmationResolverRef.current(true)
+                  return Promise.resolve()
+                }
+                if (confirmationResolverRef.current && /^(no|cancelo|rechazo|cancelar)\b/.test(normalizedVoiceAnswer)) {
+                  confirmationResolverRef.current(false)
+                  return Promise.resolve()
+                }
+                if (planApprovalResolverRef.current && awaitingAgentExecutionPlanApproval && /^(si|apruebo|acepto|confirmo)\b/.test(normalizedVoiceAnswer)) {
+                  planApprovalResolverRef.current({ approved: true })
+                  return Promise.resolve()
+                }
+                const clarificationResolver = clarificationResolverRef.current
+                if (clarificationResolver) {
+                  setPendingAgentAnswer(text)
+                  setPendingAgentQuestion(null)
+                  clarificationResolver(text)
+                  return Promise.resolve()
+                }
+                setPendingAgentAnswer(null)
+                return submitMessage(text)
+              }}
+              lastAssistantMessage={lastAssistantMessage}
               onCancel={cancelActiveReply}
               triggerRef={attachmentMenuTriggerRef}
               panelRef={attachmentMenuPanelRef}

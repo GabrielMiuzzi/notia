@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   cancelSpeechSession,
+  consumeSpeechTurn,
   getSpeechCapabilities,
   listenSpeechPartial,
   listenSpeechSegments,
@@ -26,15 +27,29 @@ const ACTIVE_STATUSES = new Set<SpeechSessionState['status']>(['preparing', 'rec
 interface UseVoiceTranscriptionInput {
   draft: string
   setDraft: (value: string) => void
+  pauseDetectionMs?: number | null
+  continuousSession?: boolean
+  onCompleted?: (text: string) => void
 }
 
-export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscriptionInput) {
+export function hasNewRecognizedSpeech(previous: string, next: string): boolean {
+  return Boolean(next.trim()) && next.trim() !== previous
+}
+
+export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, onCompleted }: UseVoiceTranscriptionInput) {
   const [capabilities, setCapabilities] = useState<SpeechCapabilities | null>(null)
   const [audioInput, setAudioInput] = useState<SpeechAudioInputStatus | null>(null)
   const [sherpaRuntime, setSherpaRuntime] = useState<SherpaRuntimeStatus | null>(null)
   const [state, setState] = useState<SpeechSessionState>(INITIAL_STATE)
   const sessionIdRef = useRef<string | null>(null)
   const baseDraftRef = useRef('')
+  const silenceTimerRef = useRef<number | null>(null)
+  const lastObservedSpeechRef = useRef('')
+  const onCompletedRef = useRef(onCompleted)
+
+  useEffect(() => {
+    onCompletedRef.current = onCompleted
+  }, [onCompleted])
 
   useEffect(() => {
     let current = true
@@ -62,25 +77,62 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
   useEffect(() => {
     let disposed = false
     const unlisteners: Array<() => void> = []
+    const completeDetectedTurn = (sessionId: string) => {
+      if (!continuousSession) {
+        void stopSpeechSession(sessionId).catch(() => undefined)
+        return
+      }
+      void consumeSpeechTurn(sessionId).then((text) => {
+        if (sessionId !== sessionIdRef.current) return
+        baseDraftRef.current = ''
+        lastObservedSpeechRef.current = ''
+        setDraft('')
+        onCompletedRef.current?.(text)
+      }).catch((error) => {
+        if (sessionId === sessionIdRef.current) {
+          setState({ status: 'error', error: { code: 'internal', message: error instanceof Error ? error.message : 'No se pudo completar el turno hablado.' } })
+        }
+      })
+    }
     const register = async () => {
       const listeners = await Promise.all([
         listenSpeechState((event) => {
           if (event.sessionId !== sessionIdRef.current) return
           setState(event.state)
           if (event.state.status === 'completed') {
-            setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, formatDiarizedTranscript(event.state.transcript)))
+            const transcript = formatDiarizedTranscript(event.state.transcript)
+            setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, transcript))
             sessionIdRef.current = null
+            onCompletedRef.current?.(transcript)
           } else if (event.state.status === 'error') {
             sessionIdRef.current = null
           }
         }),
         listenSpeechPartial((event) => {
           if (event.sessionId !== sessionIdRef.current) return
-          setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, `${event.confirmedText} ${event.partialText}`))
+          const observedSpeech = `${event.confirmedText} ${event.partialText}`.trim()
+          setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, observedSpeech))
+          if (pauseDetectionMs && hasNewRecognizedSpeech(lastObservedSpeechRef.current, observedSpeech)) {
+            lastObservedSpeechRef.current = observedSpeech
+            if (silenceTimerRef.current !== null) window.clearTimeout(silenceTimerRef.current)
+            silenceTimerRef.current = window.setTimeout(() => {
+              silenceTimerRef.current = null
+              completeDetectedTurn(event.sessionId)
+            }, pauseDetectionMs)
+          }
         }),
         listenSpeechSegments((event) => {
           if (event.sessionId !== sessionIdRef.current) return
-          setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, formatDiarizedTranscript(event.transcript)))
+          const observedSpeech = formatDiarizedTranscript(event.transcript).trim()
+          setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, observedSpeech))
+          if (pauseDetectionMs && hasNewRecognizedSpeech(lastObservedSpeechRef.current, observedSpeech)) {
+            lastObservedSpeechRef.current = observedSpeech
+            if (silenceTimerRef.current !== null) window.clearTimeout(silenceTimerRef.current)
+            silenceTimerRef.current = window.setTimeout(() => {
+              silenceTimerRef.current = null
+              completeDetectedTurn(event.sessionId)
+            }, pauseDetectionMs)
+          }
         }),
       ])
       if (disposed) listeners.forEach((unlisten) => unlisten())
@@ -92,11 +144,12 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
     return () => {
       disposed = true
       unlisteners.forEach((unlisten) => unlisten())
+      if (silenceTimerRef.current !== null) window.clearTimeout(silenceTimerRef.current)
       const sessionId = sessionIdRef.current
       sessionIdRef.current = null
       if (sessionId) void cancelSpeechSession(sessionId).catch(() => undefined)
     }
-  }, [setDraft])
+  }, [continuousSession, pauseDetectionMs, setDraft])
 
   useEffect(() => {
     if (state.status !== 'recording') return
@@ -117,7 +170,7 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
           message: sherpaRuntime?.errorMessage || 'La integracion nativa con sherpa-onnx todavia no esta disponible.',
         },
       })
-      return
+      return false
     }
     if (capabilities.permission === 'denied') {
       setState({
@@ -127,7 +180,7 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
           message: 'Habilita el permiso de micrófono de Notia en la configuración del sistema.',
         },
       })
-      return
+      return false
     }
     if (capabilities.permission === 'granted' && !audioInput?.available) {
       setState({
@@ -137,22 +190,29 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
           message: audioInput?.errorMessage || 'No hay un microfono disponible.',
         },
       })
-      return
+      return false
     }
     if (!capabilities.asrModelInstalled || !capabilities.diarizationModelInstalled) {
       setState({ status: 'error', error: { code: 'model-not-installed', message: 'Instala los modelos de voz para usar el dictado offline.' } })
-      return
+      return false
     }
     baseDraftRef.current = draft
+    lastObservedSpeechRef.current = ''
+    if (silenceTimerRef.current !== null) {
+      window.clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
     setState({ status: 'preparing' })
     try {
-      const result = await startSpeechSession({ language: 'es', diarizationEnabled: true, maxDurationSeconds: 900 })
+      const result = await startSpeechSession({ language: 'es', diarizationEnabled: !continuousSession, maxDurationSeconds: 900 })
       sessionIdRef.current = result.sessionId
       setState({ status: 'recording', elapsedMs: 0, hasSpeech: false })
+      return true
     } catch (error) {
       setState({ status: 'error', error: { code: 'internal', message: error instanceof Error ? error.message : 'No se pudo iniciar el microfono.' } })
+      return false
     }
-  }, [audioInput, capabilities, draft, sherpaRuntime])
+  }, [audioInput, capabilities, continuousSession, draft, sherpaRuntime])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current
@@ -164,9 +224,22 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
     }
   }, [])
 
+  const resume = useCallback(async () => {
+    const sessionId = sessionIdRef.current
+    if (!sessionId) return false
+    try {
+      await resumeSpeechSession(sessionId)
+      return true
+    } catch (error) {
+      setState({ status: 'error', error: { code: 'internal', message: error instanceof Error ? error.message : 'No se pudo reanudar el micrófono.' } })
+      throw error
+    }
+  }, [])
+
   const cancel = useCallback(async () => {
     const sessionId = sessionIdRef.current
     sessionIdRef.current = null
+    lastObservedSpeechRef.current = ''
     if (sessionId) await cancelSpeechSession(sessionId).catch(() => undefined)
     setDraft(baseDraftRef.current)
     setState(INITIAL_STATE)
@@ -180,7 +253,7 @@ export function useVoiceTranscription({ draft, setDraft }: UseVoiceTranscription
     isActive: ACTIVE_STATUSES.has(state.status),
     start,
     pause: () => invokeForCurrentSession(pauseSpeechSession),
-    resume: () => invokeForCurrentSession(resumeSpeechSession),
+    resume,
     stop: () => invokeForCurrentSession(stopSpeechSession),
     cancel,
     dismissError: () => setState(INITIAL_STATE),

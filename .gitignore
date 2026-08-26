@@ -29,6 +29,12 @@ src-tauri/resources/speech/models/*
 !src-tauri/resources/speech/models/README.md
 src-tauri/resources/speech/runtime/*
 !src-tauri/resources/speech/runtime/README.md
+src-tauri/resources/qwen3-tts/models/*
+!src-tauri/resources/qwen3-tts/models/README.md
+src-tauri/resources/qwen3-tts/runtime/windows-x86_64/*.dll
+src-tauri/resources/qwen3-tts/runtime/android-arm64-v8a/*.so
+# Legacy local weights are no longer built or packaged.
+src-tauri/resources/supertonic/
 
 # Editor directories and files
 .vscode/*

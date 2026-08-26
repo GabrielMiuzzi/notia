@@ -90,6 +90,7 @@ export interface AiNativeToolDefinition {
 export interface NativeToolAgentInput {
   systemPrompt: string
   prompt: string
+  image?: AiImageAttachment | null
   previousMessages: StoredChatMessage[]
   tools: AiNativeToolDefinition[]
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
@@ -1395,7 +1396,11 @@ export async function runNativeToolAgent(
   const messages: AiMessagePayload[] = [
     { role: 'system', content: input.systemPrompt.trim() },
     ...input.previousMessages.map((message) => ({ role: message.role, content: message.content })),
-    { role: 'user', content: input.prompt.trim() },
+    {
+      role: 'user',
+      content: input.prompt.trim(),
+      images: input.image?.base64.trim() ? [input.image.base64.trim()] : undefined,
+    },
   ]
 
   try {

@@ -10,7 +10,11 @@ import {
   startCancelableAiChatReply,
   type CancelableAiReplyHandle,
 } from '../../../../services/ai/aiRuntime'
-import { createChatScopedAgent } from '../../../../services/chat/chatScopedAgentRuntime'
+import {
+  CHAT_AGENT_MAX_ROUNDS,
+  CHAT_AGENT_SINGLE_CALL_TOOL_NAMES,
+  createChatScopedAgent,
+} from '../../../../services/chat/chatScopedAgentRuntime'
 import { loadInlineFileAttachments } from '../../../../services/chat/chatAttachmentRuntime'
 import { loadLongTermMemories } from '../../../../services/chat/chatDocumentStorage'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
@@ -266,25 +270,17 @@ export function useChatSubmitMessage(
         replyHandle = {
           abort: () => controller.abort(),
           promise: runNativeToolAgent(aiPreferences, {
-            systemPrompt: agent.systemPrompt,
+            systemPrompt: longTermMemories.length > 0
+              ? `${agent.systemPrompt}\n\nMemorias de largo plazo relevantes:\n${longTermMemories.map((memory) => `- ${memory}`).join('\n')}`
+              : agent.systemPrompt,
             prompt: trimmedMessage,
+            image: selectedImageAttachment,
             previousMessages: chatMemory,
             tools: agent.tools,
             executeTool: agent.executeTool,
             validateFinalAnswer: agent.validateFinalAnswer,
-            maxRounds: agentScope === 'task-manager' ? 64 : undefined,
-            singleCallToolNames: agentScope === 'task-manager' ? [
-              'set_task_execution_plan',
-              'create_task_ticket',
-              'replace_task_content',
-              'add_task_comment',
-              'add_task_subtask',
-              'move_task_group',
-              'change_task_state',
-              'change_task_priority',
-              'create_task_group',
-              'delete_task_group',
-            ] : undefined,
+            maxRounds: CHAT_AGENT_MAX_ROUNDS,
+            singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
           }, { ...streamCallbacks, abortSignal: controller.signal }),
         }
       } else {

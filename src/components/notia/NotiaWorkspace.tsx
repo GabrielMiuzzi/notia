@@ -156,6 +156,7 @@ function NotiaWorkspaceComponent({
   if (activeWorkspaceView === 'chat') {
     return (
       <ChatWorkspaceView
+        agentScope="library"
         library={activeLibrary}
         aiPreferences={aiPreferences}
         previousChats={previousChatFiles}

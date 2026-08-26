@@ -2,7 +2,11 @@ import { useEffect, useRef } from 'react'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
-import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRuntime'
+import {
+  CHAT_AGENT_MAX_ROUNDS,
+  CHAT_AGENT_SINGLE_CALL_TOOL_NAMES,
+  createChatScopedAgent,
+} from '../../../services/chat/chatScopedAgentRuntime'
 import { runNativeToolAgent } from '../../../services/ai/aiRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
@@ -17,6 +21,22 @@ interface Params {
 }
 
 interface PendingInput { resolve: (value: string) => void; reject: (error: Error) => void }
+
+const TELEGRAM_CONFIRMATION_TIMEOUT_MS = 2 * 60 * 1_000
+
+export function parseTelegramConfirmationDecision(value: string): boolean | null {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[,.!?¿¡]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (/^(si|confirmo|si confirmo|confirmar|acepto)$/.test(normalized)) return true
+  if (/^(no|cancelo|no confirmo|cancelar|rechazo)$/.test(normalized)) return false
+  return null
+}
 
 const escapeTelegramHtml = (value: string): string => value
   .replaceAll('&', '&amp;')
@@ -71,9 +91,23 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         { label: 'Confirmar', data: `confirm:${id}:yes` }, { label: 'Cancelar', data: `confirm:${id}:no` },
       ])
       return new Promise((resolve, reject) => {
-        const abort = () => { confirmationRef.current.delete(id); reject(new Error('Operacion cancelada.')) }
+        const timeoutId = window.setTimeout(() => {
+          confirmationRef.current.delete(id)
+          resolve(false)
+          void sendTelegramMessage(token, authorizedChatId, 'La confirmacion vencio despues de 2 minutos. No se aplicaron cambios.')
+        }, TELEGRAM_CONFIRMATION_TIMEOUT_MS)
+        const abort = () => {
+          window.clearTimeout(timeoutId)
+          confirmationRef.current.delete(id)
+          reject(new Error('Operacion cancelada.'))
+        }
         signal.addEventListener('abort', abort, { once: true })
-        confirmationRef.current.set(id, (accepted) => { signal.removeEventListener('abort', abort); confirmationRef.current.delete(id); resolve(accepted) })
+        confirmationRef.current.set(id, (accepted) => {
+          window.clearTimeout(timeoutId)
+          signal.removeEventListener('abort', abort)
+          confirmationRef.current.delete(id)
+          resolve(accepted)
+        })
       })
     }
 
@@ -90,12 +124,18 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           scope: 'library', library: state.library, scopePaths: files.map((file) => file.path),
           requestClarification: (question, signal, choices = []) => waitForText(question, choices, signal),
           requestConfirmation: confirm,
+          requestExecutionPlanApproval: async (steps, signal) => ({
+            approved: await confirm(
+              `Aprobar este plan de ejecucion:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
+              signal,
+            ),
+          }),
         })
         const answer = await runNativeToolAgent(state.aiPreferences, {
           systemPrompt: agent.systemPrompt, prompt: text, previousMessages: historyRef.current,
           tools: agent.tools, executeTool: agent.executeTool, validateFinalAnswer: agent.validateFinalAnswer,
-          maxRounds: 24,
-          singleCallToolNames: ['create_library_note', 'replace_library_document', 'delete_library_document'],
+          maxRounds: CHAT_AGENT_MAX_ROUNDS,
+          singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
         })
         const nextMessages: StoredChatMessage[] = [
           ...historyRef.current,
@@ -123,7 +163,11 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       if (update.callbackQueryId) await answerTelegramCallback(state.telegram.botToken, update.callbackQueryId)
       if (update.callbackData?.startsWith('confirm:')) {
         const [, id, decision] = update.callbackData.split(':')
-        confirmationRef.current.get(id)?.(decision === 'yes')
+        const resolveConfirmation = confirmationRef.current.get(id)
+        if (resolveConfirmation) {
+          resolveConfirmation(decision === 'yes')
+          await sendTelegramMessage(state.telegram.botToken, peer.chatId, decision === 'yes' ? 'Confirmacion recibida. Aplicando el cambio...' : 'Operacion cancelada.')
+        }
         return
       }
       if (update.callbackData?.startsWith('choice:')) {
@@ -153,6 +197,15 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         )
       }
       if (!text) return
+      if (confirmationRef.current.size === 1) {
+        const decision = parseTelegramConfirmationDecision(text)
+        if (decision !== null) {
+          const resolveConfirmation = confirmationRef.current.values().next().value
+          resolveConfirmation?.(decision)
+          await sendTelegramMessage(state.telegram.botToken, peer.chatId, decision ? 'Confirmacion recibida. Aplicando el cambio...' : 'Operacion cancelada.')
+          return
+        }
+      }
       if (pendingInputRef.current) { pendingInputRef.current.resolve(text); return }
       if (!update.audio) {
         await sendTelegramMessage(
@@ -161,7 +214,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           'Solicitud recibida y en proceso.',
         )
       }
-      await runAgent(text)
+      void runAgent(text)
     }
 
     const loop = async () => {

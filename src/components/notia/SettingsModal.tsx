@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useAppSelector } from '../../store/hooks'
+import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
 import { Brain, ChevronDown, Eye, Wrench, X } from 'lucide-react'
 import {
@@ -21,8 +21,12 @@ import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
+import { selectQwen3TtsSettings } from '../../features/preferences/preferencesSelectors'
+import { setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
+import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
+import { checkQwen3TtsConnection, getQwen3TtsStatus, reloadQwen3Tts } from '../../services/qwen3Tts/qwen3TtsRuntime'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Telegram'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram'
 
 interface SettingsModalProps {
   open: boolean
@@ -37,7 +41,7 @@ interface SettingsModalProps {
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Telegram']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
@@ -52,6 +56,11 @@ export function SettingsModal({
   telegramPreferences,
   onTelegramPreferencesChange,
 }: SettingsModalProps) {
+  const dispatch = useAppDispatch()
+  const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
+  const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
+  const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
+  const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
   const normalizedIncomingAiPreferences = normalizeAiSettingsInput(aiPreferences)
   const requestedSection = useAppSelector(selectSettingsActiveSection)
   const [activeSection, setActiveSection] = useState<SettingsSection>(() => {
@@ -66,6 +75,23 @@ export function SettingsModal({
       setActiveSection(requestedSection)
     }
   }, [open, requestedSection])
+
+  useEffect(() => {
+    if (!open || activeSection !== 'Voz') return
+    let active = true
+    void getQwen3TtsStatus()
+      .then((status) => {
+        if (!active) return
+        if (status.ready && !qwen3TtsLoadedSelection) setQwen3TtsLoadedSelection({ model: qwen3TtsPreferences.model, device: qwen3TtsPreferences.device })
+        if (status.ready) setQwen3TtsStatus('Runtime Qwen3-TTS listo con el modelo seleccionado.')
+        else if (status.loading) setQwen3TtsStatus('Cargando el modelo seleccionado...')
+        else setQwen3TtsStatus(status.error ?? 'El runtime nativo todavía no está listo.')
+      })
+      .catch((error) => {
+        if (active) setQwen3TtsStatus(error instanceof Error ? error.message : 'No se pudo consultar el runtime local.')
+      })
+    return () => { active = false }
+  }, [activeSection, open, qwen3TtsLoadedSelection, qwen3TtsPreferences.model, qwen3TtsPreferences.device])
   const [ollamaUrlDraft, setOllamaUrlDraft] = useState(normalizedIncomingAiPreferences.ollamaUrl)
   const [apiKeyDraft, setApiKeyDraft] = useState(normalizedIncomingAiPreferences.apiKey)
   const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
@@ -530,6 +556,57 @@ export function SettingsModal({
                 </div>
               </div>
             </>
+          ) : activeSection === 'Voz' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Qwen3-TTS</div>
+              <div className="notia-settings-card-value">{qwen3TtsPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Motor GGML nativo precargado al iniciar Notia en Windows y Android.</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Modelo</div>
+              <select className="notia-settings-input" aria-label="Modelo de Qwen3-TTS" value={qwen3TtsPreferences.model}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, model: event.target.value as '0.6b' | '1.7b' }))}>
+                <option value="0.6b">Qwen3-TTS 0.6B</option><option value="1.7b">Qwen3-TTS 1.7B</option>
+              </select>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
+              <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-TTS" value={qwen3TtsPreferences.device}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: event.target.value as 'cpu' | 'gpu' }))}>
+                <option value="cpu">CPU</option><option value="gpu">GPU</option>
+              </select>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Voz</div>
+              <select className="notia-settings-input" aria-label="Voz de Qwen3-TTS" value={qwen3TtsPreferences.voice}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, voice: event.target.value }))}>
+                {QWEN3_TTS_VOICES.map((voice) => <option key={voice} value={voice}>{voice}</option>)}
+              </select>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
+              <input className="notia-settings-input" aria-label="Idioma de Qwen3-TTS" value={qwen3TtsPreferences.language}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, language: event.target.value }))} />
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Velocidad: {qwen3TtsPreferences.speed.toFixed(2)}</div>
+              <input type="range" min="0.7" max="1.8" step="0.05" value={qwen3TtsPreferences.speed}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, speed: Number(event.target.value) }))} />
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Pausa para enviar: {qwen3TtsPreferences.pauseDetectionMs} ms</div>
+              <input type="range" min="600" max="4000" step="100" value={qwen3TtsPreferences.pauseDetectionMs}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, pauseDetectionMs: Number(event.target.value) }))} />
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Saludo inicial</div>
+              <input className="notia-settings-input" aria-label="Saludo del modo charla" value={qwen3TtsPreferences.greeting}
+                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, greeting: event.target.value }))} />
+              <div className="notia-settings-actions">
+                <NotiaButton variant={qwen3TtsPreferences.enabled ? 'primary' : 'secondary'}
+                  onClick={() => {
+                    if (qwen3TtsLoadedSelection && (qwen3TtsLoadedSelection.model !== qwen3TtsPreferences.model || qwen3TtsLoadedSelection.device !== qwen3TtsPreferences.device)) {
+                      void reloadQwen3Tts().then(() => setQwen3TtsLoadedSelection(null))
+                    } else dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, enabled: !qwen3TtsPreferences.enabled }))
+                  }}>
+                  {qwen3TtsLoadedSelection && (qwen3TtsLoadedSelection.model !== qwen3TtsPreferences.model || qwen3TtsLoadedSelection.device !== qwen3TtsPreferences.device) ? 'Recargar' : qwen3TtsPreferences.enabled ? 'Desactivar' : 'Activar'}
+                </NotiaButton>
+                <NotiaButton variant="secondary" disabled={isCheckingQwen3Tts} onClick={() => {
+                  setIsCheckingQwen3Tts(true)
+                  void checkQwen3TtsConnection(qwen3TtsPreferences)
+                    .then(() => setQwen3TtsStatus('Runtime Qwen3-TTS y voz verificados.'))
+                    .catch((error) => setQwen3TtsStatus(error instanceof Error ? error.message : 'No se pudo iniciar la voz local.'))
+                    .finally(() => setIsCheckingQwen3Tts(false))
+                }}>{isCheckingQwen3Tts ? 'Probando...' : 'Probar voz'}</NotiaButton>
+              </div>
+              <div className="notia-settings-status">{qwen3TtsStatus}</div>
+            </div>
           ) : activeSection === 'Telegram' ? (
             <>
               <div className="notia-settings-card">

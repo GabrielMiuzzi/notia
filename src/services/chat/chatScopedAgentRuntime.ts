@@ -81,6 +81,22 @@ const TASK_MUTATION_TOOL_NAMES = new Set([
 ])
 const TASK_STATES = new Set<TaskState>(['Pendiente', 'Cancelada', 'En progreso', 'Finalizada', 'Bloqueada'])
 const TASK_PRIORITIES = new Set<TaskPriority>(['Baja', 'Media', 'Alta', 'Urgente'])
+export const CHAT_AGENT_MAX_ROUNDS = 64
+export const CHAT_AGENT_SINGLE_CALL_TOOL_NAMES = [
+  'set_task_execution_plan',
+  'create_task_ticket',
+  'replace_task_content',
+  'add_task_comment',
+  'add_task_subtask',
+  'move_task_group',
+  'change_task_state',
+  'change_task_priority',
+  'create_task_group',
+  'delete_task_group',
+  'create_library_note',
+  'replace_library_document',
+  'delete_library_document',
+] as const
 
 function isTaskState(value: unknown): value is TaskState {
   return typeof value === 'string' && TASK_STATES.has(value as TaskState)
@@ -279,15 +295,12 @@ export function buildTicketSectionCorrection(
 }
 
 export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefinition[] {
-  const searchName = scope === 'task-manager' ? 'search_task_tickets' : 'search_library_documents'
-  const readName = scope === 'task-manager' ? 'read_task_tickets' : 'read_library_documents'
-  const ragName = scope === 'task-manager' ? 'search_task_context' : 'search_library_context'
-  const idField = scope === 'task-manager' ? 'ticketIds' : 'documentIds'
+  void scope
   const tools: AiNativeToolDefinition[] = [
     {
       type: 'function',
       function: {
-        name: searchName,
+        name: 'search_library_documents',
         description: 'Busca uno o varios elementos por titulo o nombre. No lee su contenido.',
         parameters: {
           type: 'object',
@@ -299,24 +312,24 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
     {
       type: 'function',
       function: {
-        name: ragName,
+        name: 'search_library_context',
         description: 'Recupera fragmentos relevantes mediante RAG local. Usala para preguntas generales antes de leer archivos completos.',
         parameters: {
           type: 'object',
           required: ['query'],
-          properties: { query: { type: 'string' }, [idField]: { type: 'array', items: { type: 'string' } } },
+          properties: { query: { type: 'string' }, documentIds: { type: 'array', items: { type: 'string' } } },
         },
       },
     },
     {
       type: 'function',
       function: {
-        name: readName,
+        name: 'read_library_documents',
         description: 'Lee el contenido completo de elementos previamente identificados. Usala solo cuando se pidan detalles.',
         parameters: {
           type: 'object',
-          required: [idField],
-          properties: { [idField]: { type: 'array', items: { type: 'string' } } },
+          required: ['documentIds'],
+          properties: { documentIds: { type: 'array', items: { type: 'string' } } },
         },
       },
     },
@@ -336,7 +349,33 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
       },
     },
   ]
-  if (scope === 'task-manager') {
+  {
+    tools.push(
+      {
+        type: 'function',
+        function: {
+          name: 'search_task_tickets',
+          description: 'Busca uno o varios tickets de Task Manager por titulo. No lee su contenido.',
+          parameters: { type: 'object', required: ['titles'], properties: { titles: { type: 'array', items: { type: 'string' } } } },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'search_task_context',
+          description: 'Recupera fragmentos relevantes de tickets mediante RAG local.',
+          parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, ticketIds: { type: 'array', items: { type: 'string' } } } },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'read_task_tickets',
+          description: 'Lee tickets completos previamente identificados, incluyendo sus subtareas.',
+          parameters: { type: 'object', required: ['ticketIds'], properties: { ticketIds: { type: 'array', items: { type: 'string' } } } },
+        },
+      },
+    )
     tools.splice(2, 0, {
       type: 'function',
       function: {
@@ -352,8 +391,8 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
       type: 'function',
       function: {
         name: 'get_task_manager_options',
-        description: 'Devuelve el tablero activo y los grupos, estados y prioridades validos. Consultala antes de preguntar o mutar si algun valor no esta definido con precision; nunca inventes opciones.',
-        parameters: { type: 'object', properties: {} },
+        description: 'Devuelve el tablero solicitado o activo y sus grupos, estados y prioridades validos. Consultala antes de preguntar o mutar si algun valor no esta definido con precision; nunca inventes opciones.',
+        parameters: { type: 'object', properties: { board: { type: 'string' } } },
       },
     })
     tools.push({
@@ -370,6 +409,7 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
     })
     tools.push(
       taskMutationTool('create_task_ticket', 'Crea un ticket solo con definiciones completas y despues de pedir confirmacion individual. Si falta o es ambiguo cualquier campo, usa request_user_clarification primero.', ['title', 'content', 'group', 'state', 'priority'], {
+        board: { type: 'string', description: 'Tablero de destino; obligatorio cuando no hay un tablero activo.' },
         title: { type: 'string' }, content: { type: 'string' }, group: { type: 'string' },
         state: { type: 'string', enum: ['Pendiente', 'Cancelada', 'En progreso', 'Finalizada', 'Bloqueada'] },
         priority: { type: 'string', enum: ['Baja', 'Media', 'Alta', 'Urgente'] },
@@ -395,14 +435,15 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
         ticketId: { type: 'string' }, priority: { type: 'string', enum: ['Baja', 'Media', 'Alta', 'Urgente'] },
       }),
       taskMutationTool('create_task_group', 'Crea un grupo en el tablero activo solo despues de definir exactamente nombre y color y pedir confirmacion individual.', ['name', 'color'], {
+        board: { type: 'string', description: 'Tablero de destino; obligatorio cuando no hay un tablero activo.' },
         name: { type: 'string' }, color: { type: 'string', description: 'Color hexadecimal exacto con formato #RRGGBB.' },
       }),
       taskMutationTool('delete_task_group', 'Elimina un grupo del tablero activo solo despues de pedir confirmacion. La operacion sera rechazada si tiene cualquier ticket asignado.', ['name'], {
-        name: { type: 'string' },
+        board: { type: 'string', description: 'Tablero de destino; obligatorio cuando no hay un tablero activo.' }, name: { type: 'string' },
       }),
     )
   }
-  if (scope === 'library') {
+  {
     tools.push(
       taskMutationTool('create_library_note', 'Crea una nota Markdown dentro de la biblioteca solo tras confirmacion individual.', ['relativePath', 'content'], {
         relativePath: { type: 'string', description: 'Ruta relativa terminada en .md.' }, content: { type: 'string' },
@@ -415,7 +456,7 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
       }),
     )
   }
-  if (scope === 'document') {
+  {
     tools.push({
       type: 'function',
       function: {
@@ -454,7 +495,12 @@ export function buildChatAgentSystemPrompt(
   defaultPrompt = DEFAULT_AGENT_PROMPT,
   activeDocumentPath?: string | null,
 ): string {
-  const base = [defaultPrompt.trim() || DEFAULT_AGENT_PROMPT]
+  const base = [
+    defaultPrompt.trim() || DEFAULT_AGENT_PROMPT,
+    'Todos los chats de Notia comparten este mismo catalogo de herramientas y tool calling nativo. Usa herramientas de biblioteca para notas y herramientas de Task Manager para tickets; no simules una accion especifica reemplazando archivos completos.',
+    'Toda escritura requiere una confirmacion individual visible. Una aclaracion nunca equivale a autorizacion. Para dos o mas escrituras presenta primero un plan con set_task_execution_plan y ejecuta un cambio por llamada.',
+    'El contexto activo limita los archivos inicialmente autorizados, pero no cambia las capacidades. Si falta un tablero, archivo, opcion o permiso, usa las herramientas de consulta o request_user_clarification en lugar de inventarlo.',
+  ]
   if (scope === 'task-manager') {
     base.push(
       'Estas en Task Manager. No recibiste todos los tickets como contexto.',
@@ -489,6 +535,7 @@ export function buildChatAgentSystemPrompt(
     base.push(
       'Estas conectado a la biblioteca activa desde Telegram. Puedes buscar y leer cualquier documento de esta biblioteca.',
       'Puedes crear, reemplazar o eliminar documentos, pero cada escritura requiere una confirmacion individual y concreta.',
+      'Si el usuario pide agregar un comentario a un ticket de Task Manager, usa add_task_comment. Nunca uses replace_library_document para simular un comentario.',
       'Nunca agrupes escrituras ni interpretes una aclaracion como autorizacion. Identifica un documento de forma univoca antes de modificarlo o eliminarlo.',
       'Para consultas sobre personas, tareas o tickets, usa search_library_context con los terminos relevantes y lee solamente los documentos encontrados cuando los fragmentos no alcancen.',
       'Reutiliza los resultados ya obtenidos: no repitas una busqueda ni una lectura con los mismos argumentos. Cuando tengas evidencia suficiente, responde inmediatamente.',
@@ -516,10 +563,14 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   const allOptions = await loadLibraryFileOptions(options.library)
   const normalizedScopePaths = new Set(options.scopePaths.map((path) => path.replace(/\\/g, '/')))
   const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt)$/i.test(item.name))
-  const candidates = options.scope === 'document'
+  const candidates = options.scope === 'document' || (options.scope === 'library' && normalizedScopePaths.size === 0)
     ? readableOptions
     : readableOptions.filter((item) => normalizedScopePaths.has(item.path.replace(/\\/g, '/')))
   const documents: AgentDocument[] = candidates.map((option, index) => ({ id: `doc-${index + 1}`, option }))
+  const taskDocuments = documents.filter((document) => {
+    const path = document.option.relativePath.replace(/\\/g, '/').toLowerCase()
+    return path.startsWith('task-mannager/') || path.startsWith('task-manager/')
+  })
   const byId = new Map(documents.map((document) => [document.id, document]))
   const authorized = new Set<string>()
   let requiredTicketSections: RequiredTicketSection[] = []
@@ -577,7 +628,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       throw new Error('Se cancelo la ejecucion del agente.')
     }
     const { name, arguments: args } = call.function
-    if (name === 'set_task_execution_plan' && options.scope === 'task-manager') {
+    if (name === 'set_task_execution_plan') {
       const labels = stringArray(args.steps, 20).map((step) => step.trim()).filter(Boolean)
       if (labels.length < 2) {
         return { ok: false, error: 'compound-plan-requires-at-least-two-steps' }
@@ -605,7 +656,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       if (!question) {
         return { ok: false, error: 'missing-question' }
       }
-      if (options.scope === 'task-manager' && pendingAmbiguousTickets.length > 1) {
+      if (pendingAmbiguousTickets.length > 1) {
         const normalizedOptions = choices.map(normalizeAgentSearchText)
         const omittedOptions = pendingAmbiguousTickets.filter((candidate) => (
           !normalizedOptions.some((option) => (
@@ -625,12 +676,16 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       pendingAmbiguousTickets.forEach((candidate) => clarifiedAmbiguousTicketIds.add(candidate.ticketId))
       return { ok: true, answer }
     }
-    if (name === 'request_file_read_permission' && options.scope === 'document') {
+    if (name === 'request_file_read_permission') {
       const selected = resolveIds(args.documentIds)
       if (selected.length === 0) {
         return { ok: false, error: 'unknown-documents' }
       }
       const reason = typeof args.reason === 'string' ? args.reason.trim() : 'Responder la consulta'
+      if (options.scope !== 'document') {
+        selected.forEach((document) => authorized.add(document.id))
+        return { ok: true, accepted: true, alreadyAuthorized: true, grantedDocumentIds: selected.map((item) => item.id) }
+      }
       const accepted = await options.requestConfirmation(
         `La IA solicita leer ${selected.map((item) => item.option.relativePath).join(', ')}. Motivo: ${reason}`,
         signal,
@@ -641,7 +696,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       return { ok: true, accepted, grantedDocumentIds: accepted ? selected.map((item) => item.id) : [] }
     }
 
-    if (options.scope === 'library' && ['create_library_note', 'replace_library_document', 'delete_library_document'].includes(name)) {
+    if (['create_library_note', 'replace_library_document', 'delete_library_document'].includes(name)) {
       const { createFile, writeTextFile } = await import('../files/filesystemEngine')
       const { performLibraryEntryOperation } = await import('../libraries/libraryRuntime')
       const content = typeof args.content === 'string' ? args.content : ''
@@ -660,6 +715,9 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         const documentId = typeof args.documentId === 'string' ? args.documentId.trim() : ''
         const document = byId.get(documentId)
         if (!document) return { ok: false, error: 'unknown-document' }
+        if (!authorized.has(document.id)) {
+          return { ok: false, error: 'permission-required', documentIds: [document.id] }
+        }
         if (name === 'replace_library_document') {
           confirmation = `Reemplazar por completo "${document.option.relativePath}" por: ${mutationTextPreview(content)}`
           execute = () => writeTextFile(document.option.path, content, { androidDirectoryUri: options.library.androidTreeUri })
@@ -673,19 +731,24 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       return result.ok ? { ok: true, changed: true } : { ok: false, error: result.error ?? 'mutation-failed' }
     }
 
-    if (name === 'get_task_manager_options' && options.scope === 'task-manager') {
+    if (name === 'get_task_manager_options') {
       const { getTaskManagerAgentOptions } = await import(
         '../../modules/task-manager/services/taskManagerAgentMutationService'
       )
       return getTaskManagerAgentOptions(
         options.library.path,
-        resolveTaskManagerBoard(options.taskManagerScopeKey),
+        resolveTaskManagerBoard(options.taskManagerScopeKey)
+          ?? (typeof args.board === 'string' ? args.board.trim() || null : null),
       )
     }
 
-    if (TASK_MUTATION_TOOL_NAMES.has(name) && options.scope === 'task-manager') {
-      const selectedDocument = typeof args.ticketId === 'string' ? byId.get(args.ticketId.trim()) : undefined
+    if (TASK_MUTATION_TOOL_NAMES.has(name)) {
+      const ticketId = typeof args.ticketId === 'string' ? args.ticketId.trim() : ''
+      const selectedDocument = ticketId
+        ? taskDocuments.find((document) => document.id === ticketId)
+        : undefined
       const board = resolveTaskManagerBoard(options.taskManagerScopeKey)
+        ?? (typeof args.board === 'string' ? args.board.trim() || null : null)
       let mutation: TaskManagerAgentMutation
       let confirmation: string
       const planStepId = typeof args.planStepId === 'string' ? args.planStepId.trim() : ''
@@ -747,6 +810,9 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       } else {
         if (!selectedDocument) {
           return { ok: false, error: 'unknown-ticket' }
+        }
+        if (!authorized.has(selectedDocument.id)) {
+          return { ok: false, error: 'permission-required', documentIds: [selectedDocument.id] }
         }
         if (
           pendingAmbiguousTickets.some((candidate) => candidate.ticketId === selectedDocument.id)
@@ -838,10 +904,11 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
 
     const isSearch = name === 'search_task_tickets' || name === 'search_library_documents'
     if (isSearch) {
+      const searchedDocuments = name === 'search_task_tickets' ? taskDocuments : documents
       const titles = stringArray(args.titles)
       const matches = titles.map((title) => ({
           requestedTitle: title,
-          candidates: documents
+          candidates: searchedDocuments
             .map((document) => ({
               document,
               score: Math.max(
@@ -853,13 +920,13 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
             .sort((left, right) => right.score - left.score)
             .slice(0, 5)
             .map(({ document, score }) => ({
-              [options.scope === 'task-manager' ? 'ticketId' : 'documentId']: document.id,
+              [name === 'search_task_tickets' ? 'ticketId' : 'documentId']: document.id,
               title: document.option.name,
               logicalPath: document.option.relativePath,
               score,
             })),
         }))
-      if (options.scope === 'task-manager') {
+      if (name === 'search_task_tickets') {
         clarifiedAmbiguousTicketIds.clear()
         pendingAmbiguousTickets = matches.flatMap((match) => match.candidates.length > 1
           ? match.candidates.map((candidate) => ({
@@ -876,8 +943,13 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
 
     const isRead = name === 'read_task_tickets' || name === 'read_library_documents'
     if (isRead) {
-      const requestedIds = stringArray(options.scope === 'task-manager' ? args.ticketIds : args.documentIds)
-      const selected = resolveIds(requestedIds).slice(0, MAX_DIRECT_FILES)
+      const isTaskRead = name === 'read_task_tickets'
+      const requestedIds = stringArray(isTaskRead ? args.ticketIds : args.documentIds)
+      const availableDocuments = isTaskRead ? taskDocuments : documents
+      const selected = requestedIds
+        .map((id) => availableDocuments.find((document) => document.id === id))
+        .filter((document): document is AgentDocument => Boolean(document))
+        .slice(0, MAX_DIRECT_FILES)
       if (selected.length === 0 || selected.length !== Math.min(requestedIds.length, MAX_DIRECT_FILES)) {
         return { ok: false, error: 'unknown-documents' }
       }
@@ -885,7 +957,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       if (!permission.ok) {
         return { ok: false, error: 'permission-required', documentIds: permission.missing.map((item) => item.id) }
       }
-      const loadedDocuments = options.scope === 'task-manager'
+      const loadedDocuments = isTaskRead
         ? await loadTaskDocumentsWithSubtasks(selected)
         : (await loadInlineFileAttachments(options.library, selected.map((item) => item.option.path), candidates))
           .map((file, index) => ({ document: selected[index] as AgentDocument, ...file }))
@@ -899,7 +971,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         consumed += content.length
         return [{ document: file.document, title: file.name, path: file.path, content }]
       })
-      if (options.scope === 'task-manager') {
+      if (isTaskRead) {
         requiredTicketSections = returnedDocuments.map(({ document }) => ({
           title: document.option.name,
           path: document.option.relativePath,
@@ -914,10 +986,10 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       }
     }
 
-    if (name === 'read_all_task_tickets' && options.scope === 'task-manager') {
+    if (name === 'read_all_task_tickets') {
       const files = await loadInlineFileAttachments(
         options.library,
-        documents.map((document) => document.option.path),
+        taskDocuments.map((document) => document.option.path),
         candidates,
       )
       let consumed = 0
@@ -936,7 +1008,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         return [{ title: file.name, path: file.path, content }]
       })
       return {
-        totalTickets: documents.length,
+        totalTickets: taskDocuments.length,
         returnedTickets: tickets.length,
         truncated,
         tickets,
@@ -945,16 +1017,20 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
 
     const isRag = name === 'search_task_context' || name === 'search_library_context'
     if (isRag) {
+      const isTaskRag = name === 'search_task_context'
+      const availableDocuments = isTaskRag ? taskDocuments : documents
       const query = typeof args.query === 'string' ? args.query.trim() : ''
       if (!query) {
         return { ok: false, error: 'missing-query' }
       }
-      const rawRequestedIds = options.scope === 'task-manager' ? args.ticketIds : args.documentIds
-      const requested = resolveIds(rawRequestedIds)
+      const rawRequestedIds = isTaskRag ? args.ticketIds : args.documentIds
+      const requested = stringArray(rawRequestedIds)
+        .map((id) => availableDocuments.find((document) => document.id === id))
+        .filter((document): document is AgentDocument => Boolean(document))
       if (Array.isArray(rawRequestedIds) && stringArray(rawRequestedIds).length !== requested.length) {
         return { ok: false, error: 'unknown-documents' }
       }
-      const selected = (requested.length > 0 ? requested : documents).slice(0, MAX_RAG_FILES)
+      const selected = (requested.length > 0 ? requested : availableDocuments).slice(0, MAX_RAG_FILES)
       const permission = requireAuthorized(selected)
       if (!permission.ok) {
         return { ok: false, error: 'permission-required', documentIds: permission.missing.slice(0, 20).map((item) => item.id) }
@@ -982,7 +1058,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         return results
       })
       const fragments = selectDiverseAgentFragments(chunks)
-      if (options.scope === 'task-manager') {
+      if (isTaskRag) {
         const tickets = groupTaskContextMatches(fragments)
         const matchedDocuments = resolveIds(tickets.map((ticket) => ticket.ticketId))
         const expandedDocuments = await loadTaskDocumentsWithSubtasks(matchedDocuments)

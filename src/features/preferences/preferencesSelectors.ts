@@ -5,3 +5,4 @@ export const selectAiSettings = (state: RootState) => state.preferences.aiSettin
 export const selectInkMathPreferences = (state: RootState) => state.preferences.inkMathPreferences
 export const selectExplorerRefreshIntervalMs = (state: RootState) => state.preferences.explorerRefreshIntervalMs
 export const selectTelegramSettings = (state: RootState) => state.preferences.telegramSettings
+export const selectQwen3TtsSettings = (state: RootState) => state.preferences.qwen3TtsSettings

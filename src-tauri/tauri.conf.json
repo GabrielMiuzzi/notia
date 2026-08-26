@@ -37,7 +37,9 @@
     ],
     "resources": [
       "resources/speech/runtime/**/*",
-      "resources/speech/models/**/*"
+      "resources/speech/models/**/*",
+      "resources/qwen3-tts/runtime/**/*",
+      "resources/qwen3-tts/models/**/*"
     ]
   }
 }

@@ -1,11 +1,14 @@
-import { memo } from 'react'
-import { ArrowUp, FileImage, Files, Info, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowUp, FileImage, Files, Info, Mic, Pause, Phone, PhoneOff, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
 import type { ChatFileContextMode, ChatLibraryFileOption } from '../../../../services/chat/chatAttachmentRuntime'
 import type { SelectedImageAttachment, AttachmentMenuPosition } from './ChatWorkspaceViewTypes'
 import { useVoiceTranscription } from './useVoiceTranscription'
+import { useAppSelector } from '../../../../store/hooks'
+import { selectQwen3TtsSettings } from '../../../../features/preferences/preferencesSelectors'
+import { playConversationReadyCue, speakWithQwen3Tts, stopQwen3TtsSpeech } from '../../../../services/qwen3Tts/qwen3TtsRuntime'
 
 interface ChatComposerProps {
   draft: string
@@ -34,6 +37,8 @@ interface ChatComposerProps {
   onSelectImage: () => void
   onOpenLibraryFilesModal: () => void
   onSubmit: () => void
+  onSubmitText: (text: string) => void | Promise<void>
+  lastAssistantMessage: string | null
   onCancel?: () => void
   triggerRef: React.RefObject<HTMLButtonElement | null>
   panelRef: React.RefObject<HTMLDivElement | null>
@@ -67,12 +72,76 @@ function ChatComposerComponent({
   onSelectImage,
   onOpenLibraryFilesModal,
   onSubmit,
+  onSubmitText,
+  lastAssistantMessage,
   onCancel,
   triggerRef,
   panelRef,
   imageInputRef,
 }: ChatComposerProps) {
-  const voice = useVoiceTranscription({ draft, setDraft })
+  const qwen3Tts = useAppSelector(selectQwen3TtsSettings)
+  const [isConversationMode, setIsConversationMode] = useState(false)
+  const [conversationStatus, setConversationStatus] = useState('')
+  const waitingForAssistantRef = useRef(false)
+  const lastSpokenAssistantRef = useRef<string | null>(null)
+  const voice = useVoiceTranscription({
+    draft,
+    setDraft,
+    pauseDetectionMs: isConversationMode ? qwen3Tts.pauseDetectionMs : null,
+    continuousSession: isConversationMode,
+    onCompleted: (text) => {
+      const spokenText = text.trim()
+      if (!isConversationMode || !spokenText) return
+      waitingForAssistantRef.current = true
+      setConversationStatus('Pensando...')
+      setDraft('')
+      void Promise.resolve(onSubmitText(spokenText)).catch((error) => {
+        waitingForAssistantRef.current = false
+        setConversationStatus(error instanceof Error ? error.message : 'No se pudo enviar el mensaje hablado.')
+      })
+    },
+  })
+  const stopConversation = useCallback(() => {
+    setIsConversationMode(false)
+    waitingForAssistantRef.current = false
+    setConversationStatus('')
+    stopQwen3TtsSpeech()
+    void voice.cancel()
+  }, [voice])
+
+  useEffect(() => {
+    if (!isConversationMode || !waitingForAssistantRef.current || !lastAssistantMessage || lastSpokenAssistantRef.current === lastAssistantMessage) return
+    waitingForAssistantRef.current = false
+    lastSpokenAssistantRef.current = lastAssistantMessage
+    setConversationStatus('Respondiendo...')
+    void speakWithQwen3Tts(lastAssistantMessage, qwen3Tts)
+      .then(async () => {
+        setConversationStatus('Preparando micrófono...')
+        const resumedExistingSession = await voice.resume()
+        if (!resumedExistingSession && !await voice.start()) throw new Error('No se pudo preparar el micrófono.')
+        await playConversationReadyCue()
+        setConversationStatus('Escuchando...')
+      })
+      .catch((error) => { setConversationStatus(error instanceof Error ? error.message : 'Falló la voz.'); setIsConversationMode(false) })
+  }, [isConversationMode, lastAssistantMessage, qwen3Tts, voice])
+
+  const startConversation = useCallback(() => {
+    if (!qwen3Tts.enabled) {
+      setConversationStatus('Activa Qwen3-TTS 0.6B en Configuraciones → Voz.')
+      return
+    }
+    setIsConversationMode(true)
+    lastSpokenAssistantRef.current = lastAssistantMessage
+    setConversationStatus('Iniciando llamada...')
+    void speakWithQwen3Tts(qwen3Tts.greeting, qwen3Tts)
+      .then(async () => {
+        setConversationStatus('Preparando micrófono...')
+        if (!await voice.start()) throw new Error('No se pudo preparar el micrófono.')
+        await playConversationReadyCue()
+        setConversationStatus('Escuchando...')
+      })
+      .catch((error) => { setConversationStatus(error instanceof Error ? error.message : 'No se pudo iniciar la llamada.'); setIsConversationMode(false) })
+  }, [lastAssistantMessage, qwen3Tts, voice])
   const hasAnyAttachment = selectedImageAttachment
     || selectedLibraryFileSummary.length > 0
     || transientContextSummaryLabel
@@ -258,6 +327,7 @@ function ChatComposerComponent({
           ) : null}
         </div>
       ) : null}
+      {conversationStatus ? <div className="notia-chat-voice-status" role="status" aria-live="polite">{conversationStatus}</div> : null}
       <div className="notia-chat-composer-footer">
         <span>{activeModelLabel} · Enter para enviar. Shift + Enter para salto de linea.</span>
         <div className="notia-chat-composer-actions">
@@ -271,6 +341,13 @@ function ChatComposerComponent({
             disabled={!library || voice.isActive}
           >
             <Mic size={16} />
+          </NotiaButton>
+          <NotiaButton type="button" size="icon" variant={isConversationMode ? 'primary' : 'secondary'}
+            title={isConversationMode ? 'Finalizar modo charla' : 'Iniciar modo charla'}
+            aria-label={isConversationMode ? 'Finalizar modo charla' : 'Iniciar modo charla'}
+            onClick={isConversationMode ? stopConversation : startConversation}
+            disabled={!library || (!isConversationMode && (voice.isActive || isSubmitting))}>
+            {isConversationMode ? <PhoneOff size={16} /> : <Phone size={16} />}
           </NotiaButton>
           <div className="notia-chat-attachment-menu-shell">
             <NotiaButton

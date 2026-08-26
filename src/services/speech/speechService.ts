@@ -251,6 +251,7 @@ const invokeSessionCommand = async (command: string, sessionId: string): Promise
 
 export const pauseSpeechSession = (sessionId: string) => invokeSessionCommand('pause_speech_session', sessionId)
 export const resumeSpeechSession = (sessionId: string) => invokeSessionCommand('resume_speech_session', sessionId)
+export const consumeSpeechTurn = (sessionId: string) => invoke<string>('consume_speech_turn', { payload: { sessionId } })
 export const stopSpeechSession = (sessionId: string) => invokeSessionCommand('stop_speech_session', sessionId)
 export const cancelSpeechSession = (sessionId: string) => invokeSessionCommand('cancel_speech_session', sessionId)
 

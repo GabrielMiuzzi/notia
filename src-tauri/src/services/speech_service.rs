@@ -106,6 +106,7 @@ struct ActivePlatformSpeechSession {
     audio_capture: crate::services::speech_audio::PlatformAudioCapture,
     worker: crate::services::speech_worker::SpeechWorker,
     started_at: Instant,
+    confirmed_text: Arc<StdMutex<String>>,
 }
 
 impl Default for SpeechRuntimeState {
@@ -225,8 +226,46 @@ pub fn start_platform_session(
         audio_capture: capture,
         worker,
         started_at,
+        confirmed_text,
     });
     Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub fn consume_platform_turn(
+    state: &SpeechRuntimeState,
+    session_id: &str,
+) -> Result<String, String> {
+    let slot = state
+        .active_session
+        .lock()
+        .map_err(|_| "No se pudo bloquear la sesion de voz.".to_string())?;
+    let session = slot
+        .as_ref()
+        .filter(|session| session.session_id == session_id)
+        .ok_or_else(|| "La sesion de voz no coincide con la sesion activa.".to_string())?;
+    session.audio_capture.pause()?;
+    session.worker.pause()?;
+    let mut confirmed = session
+        .confirmed_text
+        .lock()
+        .map_err(|_| "No se pudo obtener el turno reconocido.".to_string())?;
+    let text = std::mem::take(&mut *confirmed).trim().to_string();
+    drop(confirmed);
+    if text.is_empty() {
+        session.worker.resume()?;
+        session.audio_capture.resume()?;
+        return Err("No se detecto voz en este turno.".to_string());
+    }
+    Ok(text)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
+pub fn consume_platform_turn(
+    _state: &SpeechRuntimeState,
+    _session_id: &str,
+) -> Result<String, String> {
+    Err("La captura de voz todavia no esta integrada en esta plataforma.".to_string())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "android")))]

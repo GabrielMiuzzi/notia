@@ -260,6 +260,30 @@ pub fn stop_speech_session(
 }
 
 #[tauri::command]
+pub fn consume_speech_turn(
+    payload: SpeechSessionPayload,
+    app: AppHandle,
+    state: State<'_, SpeechRuntimeState>,
+) -> Result<String, String> {
+    validate_session_command(&payload)?;
+    let elapsed_ms = speech_service::validate_active_session(&state, &payload.session_id)?;
+    let text = speech_service::consume_platform_turn(&state, &payload.session_id)?;
+    if text.is_empty() {
+        return Err("No se detecto voz en este turno.".to_string());
+    }
+    if let Ok(mut phase) = state.phase.lock() {
+        *phase = SpeechPhase::Paused;
+    }
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    speech_service::emit_session_state(
+        &app,
+        &payload.session_id,
+        crate::dto::speech::SpeechSessionStateDto::Paused { elapsed_ms },
+    );
+    Ok(text)
+}
+
+#[tauri::command]
 pub fn cancel_speech_session(
     payload: SpeechSessionPayload,
     state: State<'_, SpeechRuntimeState>,

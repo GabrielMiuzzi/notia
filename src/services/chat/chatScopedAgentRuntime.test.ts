@@ -17,6 +17,9 @@ describe('chatScopedAgentRuntime', () => {
     const prompt = buildChatAgentSystemPrompt('library', 'Base')
     expect(prompt).toContain('no repitas una busqueda ni una lectura')
     expect(prompt).toContain('personas, tareas o tickets')
+    expect(prompt).toContain('usa add_task_comment')
+    expect(prompt).toContain('Nunca uses replace_library_document para simular un comentario')
+    expect(buildChatAgentTools('library').map((tool) => tool.function.name)).toContain('add_task_comment')
   })
   it('normalizes accents, punctuation and case for title matching', () => {
     expect(normalizeAgentSearchText('  Migración: AUTENTICACIÓN.md ')).toBe('migracion autenticacion md')
@@ -180,15 +183,21 @@ describe('chatScopedAgentRuntime', () => {
     expect(buildTicketSectionCorrection(separatedAnswer, tickets)).toBeNull()
   })
 
-  it('exposes only Task Manager tools in the task scope', () => {
+  it('exposes the same complete native-tool catalog in every chat scope', () => {
     const names = buildChatAgentTools('task-manager').map((tool) => tool.function.name)
+    expect(buildChatAgentTools('library').map((tool) => tool.function.name)).toEqual(names)
+    expect(buildChatAgentTools('graph').map((tool) => tool.function.name)).toEqual(names)
+    expect(buildChatAgentTools('document').map((tool) => tool.function.name)).toEqual(names)
     expect(names).toContain('search_task_context')
     expect(names).toContain('read_task_tickets')
     expect(names).toContain('read_all_task_tickets')
     expect(names).toContain('get_task_manager_options')
     expect(names).toContain('set_task_execution_plan')
-    expect(names).not.toContain('search_library_context')
-    expect(names).not.toContain('request_file_read_permission')
+    expect(names).toContain('search_library_context')
+    expect(names).toContain('request_file_read_permission')
+    expect(names).toContain('create_library_note')
+    expect(names).toContain('replace_library_document')
+    expect(names).toContain('delete_library_document')
     expect(names).toEqual(expect.arrayContaining([
       'create_task_ticket',
       'replace_task_content',
@@ -200,13 +209,18 @@ describe('chatScopedAgentRuntime', () => {
       'create_task_group',
       'delete_task_group',
     ]))
+    const mutationNames = [
+      'create_task_ticket', 'replace_task_content', 'add_task_comment', 'add_task_subtask',
+      'move_task_group', 'change_task_state', 'change_task_priority', 'create_task_group',
+      'delete_task_group', 'create_library_note', 'replace_library_document', 'delete_library_document',
+    ]
     const mutationTools = buildChatAgentTools('task-manager')
-      .filter((tool) => names.slice(-9).includes(tool.function.name))
-    expect(mutationTools).toHaveLength(9)
+      .filter((tool) => mutationNames.includes(tool.function.name))
+    expect(mutationTools).toHaveLength(12)
     expect(mutationTools.every((tool) => tool.function.description.includes('confirmacion'))).toBe(true)
   })
 
-  it('requires file permission only in the document scope', () => {
+  it('includes file permission in the shared catalog and enforces it through document context', () => {
     const names = buildChatAgentTools('document').map((tool) => tool.function.name)
     expect(names).toContain('request_file_read_permission')
     expect(buildChatAgentSystemPrompt('document')).toContain('Solo el archivo activo esta autorizado')

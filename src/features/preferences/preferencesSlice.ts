@@ -5,6 +5,7 @@ import { loadInkMathPreferences, saveInkMathPreferences, type InkMathPreferences
 import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
 import type { PreferencesState } from './preferencesTypes'
 import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
+import { loadQwen3TtsPreferences, saveQwen3TtsPreferences, type Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
 
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
@@ -12,6 +13,7 @@ const initialState: PreferencesState = {
   inkMathPreferences: loadInkMathPreferences(),
   explorerRefreshIntervalMs: loadExplorerRefreshIntervalMs(),
   telegramSettings: DEFAULT_TELEGRAM_PREFERENCES,
+  qwen3TtsSettings: loadQwen3TtsPreferences(),
 }
 
 const preferencesSlice = createSlice({
@@ -42,6 +44,10 @@ const preferencesSlice = createSlice({
     setTelegramSettings(state, action: PayloadAction<TelegramPreferences>) {
       state.telegramSettings = action.payload
     },
+    setQwen3TtsSettings(state, action: PayloadAction<Qwen3TtsPreferences>) {
+      state.qwen3TtsSettings = action.payload
+      saveQwen3TtsPreferences(action.payload)
+    },
   },
 })
 
@@ -52,6 +58,7 @@ export const {
   setInkMathPreferences,
   setExplorerRefreshIntervalMs,
   setTelegramSettings,
+  setQwen3TtsSettings,
 } = preferencesSlice.actions
 
 export default preferencesSlice.reducer

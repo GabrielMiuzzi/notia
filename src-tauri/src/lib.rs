@@ -11,6 +11,7 @@ use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, Libra
 mod commands {
     pub mod ai;
     pub mod bluetooth;
+    pub mod qwen3_tts;
     pub mod speech;
     pub mod telegram;
 }
@@ -26,6 +27,7 @@ mod notia_timer;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
+    pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
     pub mod sherpa_offline;
     pub mod sherpa_runtime;
@@ -139,6 +141,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(state::bluetooth_state::ColdPassBluetoothState::default())
         .manage(services::speech_service::SpeechRuntimeState::default())
+        .manage(services::qwen3_tts_service::Qwen3TtsRuntimeState::default())
         .manage(LibraryTreeWatchState::default())
         .plugin(tauri_plugin_dialog::init());
 
@@ -148,6 +151,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.setup(|app| {
         services::speech_service::preload_at_startup(app.handle().clone());
+        services::qwen3_tts_service::preload_at_startup(app.handle().clone());
         Ok(())
     });
 
@@ -180,8 +184,12 @@ pub fn run() {
             commands::speech::start_speech_session,
             commands::speech::pause_speech_session,
             commands::speech::resume_speech_session,
+            commands::speech::consume_speech_turn,
             commands::speech::stop_speech_session,
             commands::speech::cancel_speech_session,
+            commands::qwen3_tts::get_qwen3_tts_status,
+            commands::qwen3_tts::reload_qwen3_tts,
+            commands::qwen3_tts::synthesize_qwen3_tts_speech,
             commands::telegram::check_telegram_bot,
             commands::telegram::poll_telegram_updates,
             commands::telegram::send_telegram_message,

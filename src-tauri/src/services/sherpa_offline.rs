@@ -2,8 +2,12 @@
 
 use crate::services::speech_audio::SPEECH_SAMPLE_RATE;
 use crate::services::speech_worker::{RecognitionUpdate, StreamingRecognizer};
+use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
+
+const VAD_PRE_SPEECH_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize / 4;
+const VAD_HISTORY_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize * 30;
 
 pub struct OfflineNemoTransducerConfig {
     pub encoder: PathBuf,
@@ -224,6 +228,8 @@ pub struct OfflineVadRecognizer {
     vad: *const c_void,
     api: Api,
     _strings: Strings,
+    audio_history: VecDeque<f32>,
+    history_start_sample: i64,
 }
 
 struct Api {
@@ -329,6 +335,8 @@ impl OfflineVadRecognizer {
                 vad,
                 api,
                 _strings: strings,
+                audio_history: VecDeque::with_capacity(VAD_HISTORY_SAMPLES),
+                history_start_sample: 0,
             })
         }
     }
@@ -348,11 +356,23 @@ impl OfflineVadRecognizer {
                         (self.api.destroy_segment)(segment);
                         return Err("No se pudo crear el stream offline.".into());
                     }
+                    let segment_start = i64::from(raw._start).max(0);
+                    let padded_start = segment_start.saturating_sub(VAD_PRE_SPEECH_SAMPLES as i64);
+                    let mut padded_samples = collect_history_range(
+                        &self.audio_history,
+                        self.history_start_sample,
+                        padded_start,
+                        segment_start,
+                    );
+                    padded_samples
+                        .extend_from_slice(std::slice::from_raw_parts(raw.samples, raw.n as usize));
+                    let padded_n = i32::try_from(padded_samples.len())
+                        .map_err(|_| "El segmento de voz es demasiado grande.".to_string())?;
                     (self.api.accept_offline)(
                         stream,
                         SPEECH_SAMPLE_RATE as i32,
-                        raw.samples,
-                        raw.n,
+                        padded_samples.as_ptr(),
+                        padded_n,
                     );
                     (self.api.decode)(self.recognizer, stream);
                     let result = (self.api.get_result)(stream);
@@ -382,6 +402,11 @@ impl StreamingRecognizer for OfflineVadRecognizer {
     fn accept_waveform(&mut self, samples: &[f32]) -> Result<RecognitionUpdate, String> {
         let n =
             i32::try_from(samples.len()).map_err(|_| "Lote PCM demasiado grande.".to_string())?;
+        self.audio_history.extend(samples.iter().copied());
+        while self.audio_history.len() > VAD_HISTORY_SAMPLES {
+            self.audio_history.pop_front();
+            self.history_start_sample = self.history_start_sample.saturating_add(1);
+        }
         unsafe { (self.api.vad_accept)(self.vad, samples.as_ptr(), n) };
         let text = self.drain_segments()?;
         Ok(RecognitionUpdate {
@@ -402,8 +427,31 @@ impl StreamingRecognizer for OfflineVadRecognizer {
 
     fn reset_session(&mut self) -> Result<(), String> {
         unsafe { (self.api.vad_reset)(self.vad) };
+        self.audio_history.clear();
+        self.history_start_sample = 0;
         Ok(())
     }
+}
+
+fn collect_history_range(
+    history: &VecDeque<f32>,
+    history_start: i64,
+    requested_start: i64,
+    requested_end: i64,
+) -> Vec<f32> {
+    let start = requested_start
+        .max(history_start)
+        .saturating_sub(history_start) as usize;
+    let end = requested_end
+        .max(history_start)
+        .saturating_sub(history_start) as usize;
+    if start >= history.len() || start >= end {
+        return Vec::new();
+    }
+    history
+        .range(start..end.min(history.len()))
+        .copied()
+        .collect()
 }
 
 // The native handles are exclusively owned and only accessed by the speech
@@ -438,8 +486,21 @@ unsafe fn symbol<T: Copy>(
 
 #[cfg(all(test, target_os = "windows"))]
 mod native_smoke_tests {
-    use super::{OfflineNemoTransducerConfig, OfflineVadRecognizer};
-    use std::path::PathBuf;
+    use super::{collect_history_range, OfflineNemoTransducerConfig, OfflineVadRecognizer};
+    use std::{collections::VecDeque, path::PathBuf};
+
+    #[test]
+    fn collects_available_audio_before_the_vad_segment_start() {
+        let history = (0..100).map(|value| value as f32).collect::<VecDeque<_>>();
+        assert_eq!(
+            collect_history_range(&history, 0, 70, 80),
+            (70..80).map(|value| value as f32).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            collect_history_range(&history, 50, 40, 55),
+            (0..5).map(|value| value as f32).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     #[ignore = "requires the speech installer assets and loads the full Parakeet model"]
