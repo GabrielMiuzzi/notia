@@ -570,8 +570,9 @@ export function SettingsModal({
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
               <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-ASR" value={qwen3AsrPreferences.device}
-                onChange={() => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: 'cpu' }))}>
+                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: event.target.value as 'cpu' | 'gpu' }))}>
                 <option value="cpu">CPU</option>
+                <option value="gpu">GPU (Vulkan)</option>
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
               <input className="notia-settings-input" aria-label="Idioma de Qwen3-ASR" value={qwen3AsrPreferences.language}

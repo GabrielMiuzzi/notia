@@ -307,4 +307,4 @@ mod windows {
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub use windows::{process, DiarizationResult};
+pub use windows::{process, DiarizationResult, DiarizationSegment};

@@ -79,18 +79,16 @@ pub fn transcribe_external_audio(
         }
     };
     let result = (|| {
-        let mut parts = Vec::new();
+        let mut text = String::new();
         for chunk in samples.chunks(3_200) {
             let update = recognizer.accept_waveform(chunk)?;
-            if !update.text.trim().is_empty() {
-                parts.push(update.text);
+            if commit_external_update(&mut text, &update, false) {
+                recognizer.reset_after_endpoint()?;
             }
         }
         let final_update = recognizer.finish()?;
-        if !final_update.text.trim().is_empty() {
-            parts.push(final_update.text);
-        }
-        let text = parts.join(" ").trim().to_string();
+        commit_external_update(&mut text, &final_update, true);
+        let text = text.trim().to_string();
         if text.is_empty() {
             return Err("No se detecto voz en el audio de Telegram.".to_string());
         }
@@ -104,6 +102,17 @@ pub fn transcribe_external_audio(
     }
     reset_result?;
     result
+}
+
+fn commit_external_update(
+    target: &mut String,
+    update: &crate::services::speech_worker::RecognitionUpdate,
+    is_final: bool,
+) -> bool {
+    if update.endpoint_detected || is_final {
+        append_text(target, &update.text);
+    }
+    update.endpoint_detected
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -429,7 +438,7 @@ fn handle_worker_event(
                 append_text(&mut confirmed, &update.text);
                 String::new()
             } else {
-                update.text
+                unconfirmed_suffix(&confirmed, &update.text)
             };
             let _ = app.emit(
                 "speech://partial",
@@ -497,22 +506,102 @@ fn append_text(target: &mut String, text: &str) {
     }
     let target_words = target.split_whitespace().collect::<Vec<_>>();
     let incoming_words = text.split_whitespace().collect::<Vec<_>>();
-    let overlap = (1..=target_words.len().min(incoming_words.len()))
-        .rev()
-        .find(|&count| {
-            target_words[target_words.len() - count..]
-                .iter()
-                .zip(&incoming_words[..count])
-                .all(|(left, right)| words_match(left, right))
-        })
-        .unwrap_or(0);
+    let overlap = matching_boundary_words(&target_words, &incoming_words);
     if overlap == incoming_words.len() {
         return;
     }
+    normalize_transcript_chunk_boundary(target, incoming_words[overlap]);
     if !target.is_empty() {
         target.push(' ');
     }
     target.push_str(&incoming_words[overlap..].join(" "));
+}
+
+fn normalize_transcript_chunk_boundary(target: &mut String, next_word: &str) {
+    let starts_lowercase = next_word.chars().next().is_some_and(char::is_lowercase);
+    if !starts_lowercase || !target.ends_with('.') {
+        return;
+    }
+    target.pop();
+    if matches!(
+        next_word.to_lowercase().as_str(),
+        "aunque" | "pero" | "porque" | "pues" | "sino"
+    ) {
+        target.push(',');
+    }
+}
+
+fn unconfirmed_suffix(confirmed: &str, partial: &str) -> String {
+    let confirmed_words = confirmed.split_whitespace().collect::<Vec<_>>();
+    let partial_words = partial.split_whitespace().collect::<Vec<_>>();
+    let overlap = matching_boundary_words(&confirmed_words, &partial_words);
+    partial_words[overlap..].join(" ")
+}
+
+fn matching_boundary_words(left_words: &[&str], right_words: &[&str]) -> usize {
+    let exact_overlap = (1..=left_words.len().min(right_words.len()))
+        .rev()
+        .find(|&count| {
+            left_words[left_words.len() - count..]
+                .iter()
+                .zip(&right_words[..count])
+                .all(|(left, right)| words_match(left, right))
+        })
+        .unwrap_or(0);
+    if exact_overlap > 0 {
+        return exact_overlap;
+    }
+
+    // Forced endpoints retain audio from the previous window. The model can
+    // render that same boundary slightly differently (for example,
+    // `Espartinas` / `las partinas`). Reconcile a sufficiently long fuzzy
+    // boundary so that one changed word does not duplicate the whole overlap.
+    const MAX_BOUNDARY_WORDS: usize = 12;
+    const MIN_FUZZY_BOUNDARY_WORDS: usize = 4;
+    const MAX_BOUNDARY_EDITS: usize = 2;
+    let max_left = left_words.len().min(MAX_BOUNDARY_WORDS);
+    let max_right = right_words.len().min(MAX_BOUNDARY_WORDS);
+    let mut best: Option<(usize, usize, usize)> = None;
+
+    for left_count in MIN_FUZZY_BOUNDARY_WORDS..=max_left {
+        for right_count in MIN_FUZZY_BOUNDARY_WORDS..=max_right {
+            let span = left_count.max(right_count);
+            let allowed_edits = (span / 3).min(MAX_BOUNDARY_EDITS);
+            if left_count.abs_diff(right_count) > allowed_edits {
+                continue;
+            }
+            let distance = boundary_edit_distance(
+                &left_words[left_words.len() - left_count..],
+                &right_words[..right_count],
+            );
+            if distance == 0 || distance > allowed_edits {
+                continue;
+            }
+            let candidate = (span, usize::MAX - distance, right_count);
+            if best.is_none_or(|current| candidate > current) {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    best.map_or(0, |(_, _, right_count)| right_count)
+}
+
+fn boundary_edit_distance(left: &[&str], right: &[&str]) -> usize {
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_word) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_word) in right.iter().enumerate() {
+            let substitution =
+                previous[right_index] + usize::from(!words_match(left_word, right_word));
+            current[right_index + 1] = substitution
+                .min(previous[right_index + 1] + 1)
+                .min(current[right_index] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
 
 fn words_match(left: &str, right: &str) -> bool {
@@ -547,20 +636,26 @@ fn build_diarized_transcript(
     diarization: &crate::services::sherpa_diarization::DiarizationResult,
 ) -> DiarizedTranscriptDto {
     let words = text.split_whitespace().collect::<Vec<_>>();
-    let total_duration = diarization
-        .segments
+    let diarization_segments = merge_adjacent_speaker_segments(&diarization.segments);
+    let total_duration = diarization_segments
         .iter()
         .map(|segment| (segment.end_seconds - segment.start_seconds).max(0.0))
         .sum::<f32>();
     let mut word_offset = 0_usize;
-    let mut segments = Vec::with_capacity(diarization.segments.len());
-    for (index, segment) in diarization.segments.iter().enumerate() {
+    let mut elapsed_duration = 0.0_f32;
+    let mut segments = Vec::with_capacity(diarization_segments.len());
+    for (index, segment) in diarization_segments.iter().enumerate() {
         let remaining = words.len().saturating_sub(word_offset);
-        let word_count = if index + 1 == diarization.segments.len() {
+        let duration = (segment.end_seconds - segment.start_seconds).max(0.0);
+        elapsed_duration += duration;
+        let word_count = if index + 1 == diarization_segments.len() {
             remaining
         } else if total_duration > 0.0 {
-            let duration = (segment.end_seconds - segment.start_seconds).max(0.0);
-            ((duration / total_duration * words.len() as f32).round() as usize).min(remaining)
+            let ideal_boundary =
+                (elapsed_duration / total_duration * words.len() as f32).round() as usize;
+            let boundary =
+                nearest_sentence_boundary(&words, word_offset, ideal_boundary).min(words.len());
+            boundary.saturating_sub(word_offset).min(remaining)
         } else {
             0
         };
@@ -580,6 +675,44 @@ fn build_diarized_transcript(
         segments,
         speaker_count: diarization.speaker_count,
     }
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn merge_adjacent_speaker_segments(
+    source: &[crate::services::sherpa_diarization::DiarizationSegment],
+) -> Vec<crate::services::sherpa_diarization::DiarizationSegment> {
+    let mut merged: Vec<crate::services::sherpa_diarization::DiarizationSegment> = Vec::new();
+    for segment in source {
+        if let Some(previous) = merged.last_mut() {
+            if previous.speaker == segment.speaker
+                && segment.start_seconds <= previous.end_seconds + 0.5
+            {
+                previous.end_seconds = previous.end_seconds.max(segment.end_seconds);
+                continue;
+            }
+        }
+        merged.push(segment.clone());
+    }
+    merged
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn nearest_sentence_boundary(words: &[&str], minimum: usize, ideal: usize) -> usize {
+    const MAX_BOUNDARY_SHIFT_WORDS: usize = 12;
+    let lower = ideal
+        .saturating_sub(MAX_BOUNDARY_SHIFT_WORDS)
+        .max(minimum.saturating_add(1));
+    let upper = ideal
+        .saturating_add(MAX_BOUNDARY_SHIFT_WORDS)
+        .min(words.len().saturating_sub(1));
+    (lower..=upper)
+        .filter(|&boundary| {
+            words[boundary - 1]
+                .trim_end_matches(|character: char| matches!(character, '\"' | '\'' | ')' | ']'))
+                .ends_with(['.', '?', '!'])
+        })
+        .min_by_key(|&boundary| boundary.abs_diff(ideal))
+        .unwrap_or_else(|| ideal.clamp(minimum.saturating_add(1), words.len()))
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -707,10 +840,11 @@ pub fn not_integrated_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_text, current_capabilities, validate_start_input, SpeechPhase,
-        MAX_SPEECH_SESSION_SECONDS,
+        append_text, commit_external_update, current_capabilities, nearest_sentence_boundary,
+        unconfirmed_suffix, validate_start_input, SpeechPhase, MAX_SPEECH_SESSION_SECONDS,
     };
     use crate::dto::speech::SpeechModelStatusDto;
+    use crate::services::speech_worker::RecognitionUpdate;
 
     #[test]
     fn speech_phase_rejects_invalid_transitions() {
@@ -757,9 +891,89 @@ mod tests {
     }
 
     #[test]
+    fn external_audio_does_not_append_repeated_partial_hypotheses() {
+        let mut transcript = String::new();
+        for _ in 0..3 {
+            assert!(!commit_external_update(
+                &mut transcript,
+                &RecognitionUpdate {
+                    text: "Que es Spring Boot.".to_string(),
+                    endpoint_detected: false,
+                },
+                false,
+            ));
+        }
+        commit_external_update(
+            &mut transcript,
+            &RecognitionUpdate {
+                text: "Que es Spring Boot.".to_string(),
+                endpoint_detected: false,
+            },
+            true,
+        );
+        assert_eq!(transcript, "Que es Spring Boot.");
+    }
+
+    #[test]
+    fn confirmed_utterances_reconcile_fuzzy_audio_overlap() {
+        let mut transcript =
+            "Hola, buenas tardes. Hoy estamos en Espartinas para hacer unas preguntas".to_string();
+        append_text(
+            &mut transcript,
+            "las partinas para hacer unas preguntas sobre el ahorro",
+        );
+        assert_eq!(
+            transcript,
+            "Hola, buenas tardes. Hoy estamos en Espartinas para hacer unas preguntas sobre el ahorro"
+        );
+    }
+
+    #[test]
     fn confirmed_utterances_keep_distinct_text() {
         let mut transcript = "Hola equipo".to_string();
         append_text(&mut transcript, "empecemos la reunión");
         assert_eq!(transcript, "Hola equipo empecemos la reunión");
+    }
+
+    #[test]
+    fn partial_text_hides_audio_overlap_already_confirmed() {
+        assert_eq!(
+            unconfirmed_suffix(
+                "La transcripcion de la reunion",
+                "de la reunion continua ahora"
+            ),
+            "continua ahora"
+        );
+    }
+
+    #[test]
+    fn confirmed_chunks_repair_false_sentence_boundaries() {
+        let mut transcript = "preguntas sobre el ahorro.".to_string();
+        append_text(&mut transcript, "y contaminación del agua");
+        assert_eq!(
+            transcript,
+            "preguntas sobre el ahorro y contaminación del agua"
+        );
+
+        let mut transcript = "Hay muchos factores.".to_string();
+        append_text(&mut transcript, "pero sobre todo está el ser humano");
+        assert_eq!(
+            transcript,
+            "Hay muchos factores, pero sobre todo está el ser humano"
+        );
+    }
+
+    #[test]
+    fn diarization_moves_word_allocation_to_a_sentence_boundary() {
+        let words =
+            "Cuáles son las causas de la contaminación del agua? Hombre hay muchos factores"
+                .split_whitespace()
+                .collect::<Vec<_>>();
+        let boundary = nearest_sentence_boundary(&words, 0, 6);
+        assert_eq!(
+            words[..boundary].join(" "),
+            "Cuáles son las causas de la contaminación del agua?"
+        );
+        assert_eq!(words[boundary..].join(" "), "Hombre hay muchos factores");
     }
 }

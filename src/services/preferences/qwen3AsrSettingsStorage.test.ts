@@ -28,4 +28,8 @@ describe('normalizeQwen3AsrPreferences', () => {
       language: 'es',
     })
   })
+
+  it('preserves the GPU preference', () => {
+    expect(normalizeQwen3AsrPreferences({ device: 'gpu' })).toMatchObject({ device: 'gpu' })
+  })
 })

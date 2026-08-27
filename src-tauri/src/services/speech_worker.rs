@@ -1,4 +1,4 @@
-use crate::services::speech_audio::{SharedPcmBuffer, SPEECH_SAMPLE_RATE};
+use crate::services::speech_audio::{PcmBufferStats, SharedPcmBuffer, SPEECH_SAMPLE_RATE};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -15,6 +15,7 @@ pub struct RecognitionUpdate {
 }
 
 pub trait StreamingRecognizer {
+    fn update_capture_stats(&mut self, _stats: PcmBufferStats) {}
     fn accept_waveform(&mut self, samples: &[f32]) -> Result<RecognitionUpdate, String>;
     fn finish(&mut self) -> Result<RecognitionUpdate, String>;
     fn reset_after_endpoint(&mut self) -> Result<(), String>;
@@ -202,6 +203,13 @@ fn run_worker<R, F, C, D>(
         match take_ready_chunk(&buffer) {
             Ok(samples) if samples.is_empty() => {}
             Ok(samples) => {
+                match read_buffer_stats(&buffer) {
+                    Ok(stats) => recognizer.get_mut().update_capture_stats(stats),
+                    Err(error) => {
+                        event_callback(SpeechWorkerEvent::Error(error));
+                        return;
+                    }
+                }
                 if let Err(error) = archive_samples(&mut recorded_samples, &samples)
                     .and_then(|()| process_samples(recognizer.get_mut(), &samples, &event_callback))
                 {
@@ -308,6 +316,13 @@ fn take_ready_chunk(buffer: &SharedPcmBuffer) -> Result<Vec<f32>, String> {
                 buffer.drain(PCM_CHUNK_SAMPLES)
             }
         })
+}
+
+fn read_buffer_stats(buffer: &SharedPcmBuffer) -> Result<PcmBufferStats, String> {
+    buffer
+        .lock()
+        .map_err(|_| "No se pudo consultar la cola PCM del worker.".to_string())
+        .map(|buffer| buffer.stats())
 }
 
 #[cfg(test)]
