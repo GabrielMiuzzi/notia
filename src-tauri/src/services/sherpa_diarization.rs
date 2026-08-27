@@ -1,6 +1,7 @@
 #[cfg(any(target_os = "windows", target_os = "android"))]
 mod windows {
     use crate::services::speech_model_repository::ResolvedDiarizationModel;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::{c_char, c_void, CString};
     use std::path::Path;
     use std::ptr::NonNull;
@@ -131,10 +132,83 @@ mod windows {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-        Ok(DiarizationResult {
-            speaker_count,
+        let _reported_speaker_count = speaker_count;
+        Ok(stabilize_speakers(segments))
+    }
+
+    fn stabilize_speakers(mut segments: Vec<DiarizationSegment>) -> DiarizationResult {
+        const MIN_SPEAKER_EVIDENCE_SECONDS: f32 = 1.5;
+        const MIN_SPEAKER_SHARE: f32 = 0.04;
+        const MIN_RECORDING_FOR_EVIDENCE_FILTER_SECONDS: f32 = 10.0;
+
+        let mut durations = BTreeMap::<i32, f32>::new();
+        for segment in &segments {
+            *durations.entry(segment.speaker).or_default() +=
+                (segment.end_seconds - segment.start_seconds).max(0.0);
+        }
+        let total_duration = durations.values().sum::<f32>();
+        let weak_speakers = durations
+            .iter()
+            .filter_map(|(&speaker, &duration)| {
+                let too_short = total_duration >= MIN_RECORDING_FOR_EVIDENCE_FILTER_SECONDS
+                    && duration < MIN_SPEAKER_EVIDENCE_SECONDS;
+                let too_rare =
+                    total_duration > 0.0 && duration / total_duration < MIN_SPEAKER_SHARE;
+                (too_short || too_rare).then_some(speaker)
+            })
+            .collect::<BTreeSet<_>>();
+
+        for index in 0..segments.len() {
+            if !weak_speakers.contains(&segments[index].speaker) {
+                continue;
+            }
+            let previous = segments[..index]
+                .iter()
+                .rev()
+                .find(|segment| !weak_speakers.contains(&segment.speaker));
+            let next = segments[index + 1..]
+                .iter()
+                .find(|segment| !weak_speakers.contains(&segment.speaker));
+            let replacement = match (previous, next) {
+                (Some(previous), Some(next)) if previous.speaker == next.speaker => {
+                    Some(previous.speaker)
+                }
+                (Some(previous), Some(next)) => {
+                    let previous_gap = (segments[index].start_seconds - previous.end_seconds).abs();
+                    let next_gap = (next.start_seconds - segments[index].end_seconds).abs();
+                    Some(if previous_gap <= next_gap {
+                        previous.speaker
+                    } else {
+                        next.speaker
+                    })
+                }
+                (Some(previous), None) => Some(previous.speaker),
+                (None, Some(next)) => Some(next.speaker),
+                (None, None) => None,
+            };
+            if let Some(speaker) = replacement {
+                segments[index].speaker = speaker;
+            }
+        }
+
+        let speaker_ids = segments
+            .iter()
+            .map(|segment| segment.speaker)
+            .collect::<BTreeSet<_>>();
+        let normalized_ids = speaker_ids
+            .into_iter()
+            .enumerate()
+            .map(|(normalized, original)| (original, normalized as i32))
+            .collect::<BTreeMap<_, _>>();
+        for segment in &mut segments {
+            if let Some(&normalized) = normalized_ids.get(&segment.speaker) {
+                segment.speaker = normalized;
+            }
+        }
+        DiarizationResult {
+            speaker_count: normalized_ids.len() as u32,
             segments,
-        })
+        }
     }
 
     fn path_string(path: &Path, label: &str) -> Result<CString, String> {
@@ -297,11 +371,39 @@ mod windows {
 
     #[cfg(test)]
     mod tests {
-        use super::OfflineSpeakerDiarizationConfig;
+        use super::{stabilize_speakers, DiarizationSegment, OfflineSpeakerDiarizationConfig};
 
         #[test]
         fn c_struct_layout_matches_sherpa_onnx_1_13_4() {
             assert_eq!(std::mem::size_of::<OfflineSpeakerDiarizationConfig>(), 64);
+        }
+
+        #[test]
+        fn removes_a_short_phantom_speaker_between_interview_speakers() {
+            let result = stabilize_speakers(vec![
+                DiarizationSegment {
+                    start_seconds: 0.0,
+                    end_seconds: 8.0,
+                    speaker: 0,
+                },
+                DiarizationSegment {
+                    start_seconds: 8.0,
+                    end_seconds: 18.0,
+                    speaker: 1,
+                },
+                DiarizationSegment {
+                    start_seconds: 18.0,
+                    end_seconds: 18.7,
+                    speaker: 2,
+                },
+                DiarizationSegment {
+                    start_seconds: 18.7,
+                    end_seconds: 30.0,
+                    speaker: 1,
+                },
+            ]);
+            assert_eq!(result.speaker_count, 2);
+            assert_eq!(result.segments[2].speaker, 1);
         }
     }
 }
