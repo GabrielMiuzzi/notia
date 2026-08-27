@@ -2353,6 +2353,10 @@
 .notia-meeting-source p { margin: 0; font-size: 13px; line-height: 1.5; }
 .notia-meeting-transcript { display: flex; flex: 1 1 320px; min-height: 280px; flex-direction: column; overflow: hidden; }
 .notia-meeting-transcript label { padding: 14px 16px; border-bottom: 1px solid var(--color-border-soft); font-weight: 650; }
+.notia-meeting-speaker-names { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--color-border-soft); }
+.notia-meeting-speaker-names label { display: grid; gap: 6px; padding: 0; border: 0; font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-speaker-names input { width: 100%; min-height: 48px; border: 1px solid var(--color-border-soft); border-radius: 9px; padding: 0 12px; background: var(--color-card-bg); color: inherit; font: inherit; }
+.notia-meeting-speaker-names input:focus-visible { outline: 2px solid var(--color-active-border); outline-offset: 2px; }
 .notia-meeting-transcript textarea { flex: 1; min-height: 240px; resize: vertical; border: 0; outline: 0; padding: 18px; background: transparent; color: inherit; font: inherit; line-height: 1.65; }
 .notia-meeting-live-transcript { flex: 1; min-height: 240px; overflow: auto; padding: 18px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.65; }
 .notia-meeting-provisional-text {
@@ -2367,6 +2371,9 @@
 .notia-meeting-transcript-placeholder { color: var(--color-muted-text); }
 .notia-meeting-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 .notia-meeting-controls button { min-height: 48px; gap: 8px; }
+.notia-meeting-ai-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; }
+.notia-meeting-ai-actions button { min-height: 48px; gap: 8px; }
+.notia-meeting-ai-actions span { color: #ef4444; }
 .notia-meeting-error { display: flex; justify-content: space-between; align-items: center; gap: 12px; border: 1px solid #ef4444; border-radius: 10px; padding: 10px 14px; color: #ef4444; }
 
 @media (max-width: 640px) {
@@ -4450,6 +4457,38 @@
   min-width: 0;
   flex-direction: column;
   gap: 18px;
+}
+
+.notia-meeting-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
+}
+
+.notia-meeting-chat-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.notia-meeting-chat-header span,
+.notia-meeting-chat-ephemeral {
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.notia-meeting-chat-ephemeral {
+  white-space: nowrap;
+}
+
+.notia-meeting-chat-error {
+  color: var(--color-error-text);
+  font-size: 12px;
 }
 
 .notia-chat-agent-select {

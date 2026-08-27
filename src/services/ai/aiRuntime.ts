@@ -1756,6 +1756,72 @@ export async function recognizeInkMathWithAi(
   return latex
 }
 
+export async function improveMeetingTranscript(
+  preferences: AiPreferences,
+  transcript: string,
+): Promise<string> {
+  const normalizedTranscript = transcript.trim()
+  if (!normalizedTranscript) throw new Error('No hay una transcripción para mejorar.')
+
+  return streamAiChatReply(preferences, {
+    prompt: [
+      'Organiza y mejora la siguiente transcripción de una reunión.',
+      'Corrige puntuación, ortografía, concordancia y frases evidentemente cortadas.',
+      'Conserva los nombres o etiquetas de hablante exactamente como aparecen y mantén cada intervención con su hablante.',
+      'No inventes información, no resumas, no elimines detalles y no agregues comentarios.',
+      'Devuelve únicamente la transcripción mejorada, sin introducción ni bloque de código.',
+      '',
+      normalizedTranscript,
+    ].join('\n'),
+    previousMessages: [],
+    longTermMemories: [],
+    files: [],
+    image: null,
+    selectedContextMode: 'direct',
+  }, { thinking: false })
+}
+
+export interface MeetingTranscriptChatOptions {
+  abortSignal?: AbortSignal
+  onMessageDelta?: (delta: string) => void
+}
+
+export async function chatAboutMeetingTranscript(
+  preferences: AiPreferences,
+  transcript: string,
+  question: string,
+  previousMessages: StoredChatMessage[],
+  options: MeetingTranscriptChatOptions = {},
+): Promise<string> {
+  const normalizedTranscript = transcript.trim()
+  const normalizedQuestion = question.trim()
+  if (!normalizedTranscript) throw new Error('Todavía no hay una transcripción para consultar.')
+  if (!normalizedQuestion) throw new Error('Escribí una pregunta sobre la transcripción.')
+
+  return streamAiChatReply(preferences, {
+    prompt: [
+      'Respondé la consulta usando la transcripción de la reunión incluida abajo como fuente principal.',
+      'Podés analizarla, resumirla, extraer acuerdos o responder preguntas sobre su contenido.',
+      'Si la respuesta no surge de la transcripción, indicá claramente que esa información no está disponible.',
+      'No afirmes que este chat o su contenido fueron guardados.',
+      '',
+      'TRANSCRIPCIÓN ACTUAL:',
+      normalizedTranscript,
+      '',
+      'CONSULTA:',
+      normalizedQuestion,
+    ].join('\n'),
+    previousMessages,
+    longTermMemories: [],
+    files: [],
+    image: null,
+    selectedContextMode: 'direct',
+  }, {
+    abortSignal: options.abortSignal,
+    onMessageDelta: options.onMessageDelta,
+  })
+}
+
 async function invokeAndroidAiModelList(preferences: AiPreferences): Promise<string[]> {
   let lastError: unknown = null
 

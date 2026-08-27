@@ -463,7 +463,15 @@ fn handle_worker_event(
                     .and_then(|runtime_path| {
                         crate::services::sherpa_diarization::process(runtime_path, model, &samples)
                     }) {
-                    Ok(result) => build_diarized_transcript(&text, &result),
+                    Ok(result) => match transcribe_diarized_turns(app, &samples, &result) {
+                        Ok(transcript) => transcript,
+                        Err(message) => {
+                            log::warn!(
+                                "[notia:speech] turn-aligned ASR failed; using proportional alignment: {message}"
+                            );
+                            build_diarized_transcript(&text, &result)
+                        }
+                    },
                     Err(message) => {
                         log::warn!(
                             "[notia:speech] diarization failed; preserving ASR transcript: {message}"
@@ -675,6 +683,98 @@ fn build_diarized_transcript(
         segments,
         speaker_count: diarization.speaker_count,
     }
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn transcribe_diarized_turns(
+    app: &AppHandle,
+    samples: &[f32],
+    diarization: &crate::services::sherpa_diarization::DiarizationResult,
+) -> Result<DiarizedTranscriptDto, String> {
+    use crate::services::speech_worker::StreamingRecognizer;
+
+    const SAMPLE_RATE: f32 = 16_000.0;
+    const ASR_CHUNK_SAMPLES: usize = 3_200;
+    const MIN_TURN_SAMPLES: usize = 12_800;
+
+    let turns = merge_adjacent_speaker_segments(&diarization.segments);
+    if turns.is_empty() {
+        return Err("La diarización no detectó turnos de voz.".to_string());
+    }
+    let cache = recognizer_cache(&app.state::<SpeechRuntimeState>());
+    let mut recognizer = cache
+        .lock()
+        .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?
+        .take()
+        .ok_or_else(|| {
+            "El reconocedor no estaba disponible para alinear los turnos.".to_string()
+        })?;
+
+    let result = (|| {
+        let mut transcript_segments = Vec::with_capacity(turns.len());
+        let mut complete_text = String::new();
+        for turn in turns {
+            let start = (turn.start_seconds.max(0.0) * SAMPLE_RATE).round() as usize;
+            let end = (turn.end_seconds.max(turn.start_seconds) * SAMPLE_RATE).round() as usize;
+            let start = start.min(samples.len());
+            let end = end.min(samples.len());
+            if end <= start {
+                continue;
+            }
+            let mut padded_samples = Vec::new();
+            let turn_samples = if end - start < MIN_TURN_SAMPLES {
+                padded_samples.extend_from_slice(&samples[start..end]);
+                padded_samples.resize(MIN_TURN_SAMPLES, 0.0);
+                padded_samples.as_slice()
+            } else {
+                &samples[start..end]
+            };
+            recognizer.reset_session()?;
+            let mut turn_text = String::new();
+            for chunk in turn_samples.chunks(ASR_CHUNK_SAMPLES) {
+                let update = recognizer.accept_waveform(chunk)?;
+                if update.endpoint_detected {
+                    append_text(&mut turn_text, &update.text);
+                    recognizer.reset_after_endpoint()?;
+                }
+            }
+            let final_update = recognizer.finish()?;
+            append_text(&mut turn_text, &final_update.text);
+            let turn_text = turn_text.trim().to_string();
+            if turn_text.is_empty() {
+                continue;
+            }
+            if !complete_text.is_empty() {
+                complete_text.push(' ');
+            }
+            complete_text.push_str(&turn_text);
+            transcript_segments.push(SpeechTranscriptSegmentDto {
+                id: format!("segment-{}", transcript_segments.len() + 1),
+                start_ms: seconds_to_ms(turn.start_seconds),
+                end_ms: seconds_to_ms(turn.end_seconds),
+                speaker_id: Some(format!("speaker-{}", turn.speaker + 1)),
+                text: turn_text,
+                is_final: true,
+            });
+        }
+        if transcript_segments.is_empty() {
+            return Err("La segunda pasada ASR no produjo texto para los turnos.".to_string());
+        }
+        Ok(DiarizedTranscriptDto {
+            text: complete_text,
+            segments: transcript_segments,
+            speaker_count: diarization.speaker_count,
+        })
+    })();
+
+    let reset_result = recognizer.reset_session();
+    if reset_result.is_ok() {
+        if let Ok(mut slot) = cache.lock() {
+            *slot = Some(recognizer);
+        }
+    }
+    reset_result?;
+    result
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]

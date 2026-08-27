@@ -338,7 +338,7 @@ function ChatComposerComponent({
             title="Dictar mensaje sin conexion"
             aria-label="Iniciar dictado por microfono"
             onClick={voice.start}
-            disabled={!library || voice.isActive}
+            disabled={!library || voice.isActive || !voice.isModelReady}
           >
             <Mic size={16} />
           </NotiaButton>
@@ -346,7 +346,7 @@ function ChatComposerComponent({
             title={isConversationMode ? 'Finalizar modo charla' : 'Iniciar modo charla'}
             aria-label={isConversationMode ? 'Finalizar modo charla' : 'Iniciar modo charla'}
             onClick={isConversationMode ? stopConversation : startConversation}
-            disabled={!library || (!isConversationMode && (voice.isActive || isSubmitting))}>
+            disabled={!library || (!isConversationMode && (voice.isActive || isSubmitting || !voice.isModelReady))}>
             {isConversationMode ? <PhoneOff size={16} /> : <Phone size={16} />}
           </NotiaButton>
           <div className="notia-chat-attachment-menu-shell">
@@ -424,7 +424,7 @@ ChatComposer.displayName = 'ChatComposer'
 
 function describeVoiceState(state: ReturnType<typeof useVoiceTranscription>['state']): string {
   switch (state.status) {
-    case 'preparing': return 'Preparando el dictado offline...'
+    case 'preparing': return 'Iniciando el micrófono...'
     case 'recording': return `Escuchando · ${Math.floor(state.elapsedMs / 1_000)} s`
     case 'paused': return `Dictado pausado · ${Math.floor(state.elapsedMs / 1_000)} s`
     case 'finalizing': return 'Finalizando transcripcion y diarizacion...'

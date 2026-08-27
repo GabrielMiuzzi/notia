@@ -187,10 +187,13 @@ fn run_worker<R, F, C, D>(
                     return;
                 }
                 match recognizer.get_mut().finish() {
-                    Ok(update) => event_callback(SpeechWorkerEvent::Finished {
-                        update,
-                        samples: recorded_samples,
-                    }),
+                    Ok(update) => match recognizer.recycle_now() {
+                        Ok(()) => event_callback(SpeechWorkerEvent::Finished {
+                            update,
+                            samples: recorded_samples,
+                        }),
+                        Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
+                    },
                     Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
                 }
                 return;
@@ -240,6 +243,17 @@ impl<R: StreamingRecognizer, D: FnOnce(R)> RecycledRecognizer<R, D> {
 
     fn get_mut(&mut self) -> &mut R {
         self.recognizer.as_mut().expect("recognizer is present")
+    }
+
+    fn recycle_now(&mut self) -> Result<(), String> {
+        let Some(mut recognizer) = self.recognizer.take() else {
+            return Ok(());
+        };
+        recognizer.reset_session()?;
+        if let Some(recycler) = self.recycler.take() {
+            recycler(recognizer);
+        }
+        Ok(())
     }
 }
 
@@ -445,5 +459,34 @@ mod tests {
                 .accepted_samples,
             0
         );
+    }
+
+    #[test]
+    fn stop_recycles_recognizer_before_emitting_finished() {
+        let mut pcm = BoundedPcmBuffer::with_capacity(16).expect("valid test buffer");
+        pcm.push([0.1, 0.2, 0.3]);
+        let pcm = Arc::new(Mutex::new(pcm));
+        let recycled = Arc::new(Mutex::new(false));
+        let callback_recycled = Arc::clone(&recycled);
+        let recycler_recycled = Arc::clone(&recycled);
+        let observed = Arc::new(Mutex::new(false));
+        let callback_observed = Arc::clone(&observed);
+        let worker = SpeechWorker::start_with_recycler(
+            pcm,
+            || Ok(FakeRecognizer::default()),
+            move |event| {
+                if matches!(event, SpeechWorkerEvent::Finished { .. }) {
+                    *callback_observed.lock().expect("observation lock") =
+                        *callback_recycled.lock().expect("recycle lock");
+                }
+            },
+            move |_| *recycler_recycled.lock().expect("recycle lock") = true,
+        )
+        .expect("start worker");
+
+        worker.stop().expect("stop worker");
+        worker.join().expect("join worker");
+
+        assert!(*observed.lock().expect("read observation"));
     }
 }

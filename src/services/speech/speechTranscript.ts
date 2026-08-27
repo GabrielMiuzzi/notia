@@ -38,3 +38,19 @@ export function formatDiarizedTranscript(transcript: DiarizedTranscript): string
 export function mergeVoiceTextIntoDraft(baseDraft: string, voiceText: string): string {
   return joinDraft(baseDraft, voiceText)
 }
+
+export function extractSpeakerNames(transcript: string): string[] {
+  const speakerNumbers = [...transcript.matchAll(/^Hablante\s+(\d+):/gmi)]
+    .map((match) => Number(match[1]))
+    .filter((number, index, values) => Number.isInteger(number) && values.indexOf(number) === index)
+    .sort((left, right) => left - right)
+  return speakerNumbers.map((number) => `Hablante ${number}`)
+}
+
+export function replaceSpeakerName(transcript: string, previousName: string, nextName: string): string {
+  const normalizedPrevious = previousName.trim()
+  const normalizedNext = nextName.trim()
+  if (!normalizedPrevious || !normalizedNext) return transcript
+  const escapedName = normalizedPrevious.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return transcript.replace(new RegExp(`^${escapedName}:`, 'gm'), `${normalizedNext}:`)
+}

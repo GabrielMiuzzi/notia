@@ -457,6 +457,7 @@ function NotiaMenuComponent() {
             isImportingVault={isImportingVault}
           />
           <NotiaRightPanel
+            isMeetingContext={activeWorkspaceView === 'meeting'}
             agentCorpusPaths={rightPanelAgentCorpusPaths}
             agentScope={rightPanelAgentScope}
             previousChats={previousChatFiles}

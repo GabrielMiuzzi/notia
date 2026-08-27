@@ -11,6 +11,7 @@ import {
   pauseSpeechSession,
   probeSpeechAudioInput,
   probeSherpaRuntime,
+  prepareSpeechModel,
   resumeSpeechSession,
   startSpeechSession,
   stopSpeechSession,
@@ -56,6 +57,8 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   const [sherpaRuntime, setSherpaRuntime] = useState<SherpaRuntimeStatus | null>(null)
   const [state, setState] = useState<SpeechSessionState>(INITIAL_STATE)
   const [visiblePartialText, setVisiblePartialText] = useState('')
+  const [isModelReady, setIsModelReady] = useState(false)
+  const [modelPreparationError, setModelPreparationError] = useState<string | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const baseDraftRef = useRef('')
   const silenceTimerRef = useRef<number | null>(null)
@@ -68,6 +71,21 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   useEffect(() => {
     onCompletedRef.current = onCompleted
   }, [onCompleted])
+
+  useEffect(() => {
+    let current = true
+    setIsModelReady(false)
+    setModelPreparationError(null)
+    void prepareSpeechModel(qwen3Asr)
+      .then(() => {
+        if (current) setIsModelReady(true)
+      })
+      .catch((error) => {
+        if (!current) return
+        setModelPreparationError(error instanceof Error ? error.message : 'No se pudo preparar Qwen3-ASR al iniciar Notia.')
+      })
+    return () => { current = false }
+  }, [qwen3Asr])
 
   useEffect(() => {
     let current = true
@@ -190,6 +208,16 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   }, [state.status])
 
   const start = useCallback(async () => {
+    if (!isModelReady) {
+      setState({
+        status: 'error',
+        error: {
+          code: 'internal',
+          message: modelPreparationError ?? 'Qwen3-ASR todavía se está preparando desde el inicio de Notia.',
+        },
+      })
+      return false
+    }
     let currentCapabilities = capabilities
     let currentAudioInput = audioInput
     if (!currentCapabilities || !currentAudioInput) {
@@ -293,7 +321,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
       setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
-  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, qwen3Asr, sherpaRuntime])
+  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, isModelReady, modelPreparationError, qwen3Asr])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current
@@ -335,6 +363,8 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
     sherpaRuntime,
     state,
     visiblePartialText,
+    isModelReady,
+    modelPreparationError,
     isActive: ACTIVE_STATUSES.has(state.status),
     start,
     pause: () => invokeForCurrentSession(pauseSpeechSession),

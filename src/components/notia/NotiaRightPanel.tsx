@@ -6,6 +6,7 @@ import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import { selectAiSettings } from '../../features/preferences/preferencesSelectors'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
+import { MeetingEphemeralChat } from './views/chat/MeetingEphemeralChat'
 import type { ChatFileContextMode } from '../../services/chat/chatAttachmentRuntime'
 import type { ChatAgentScope } from '../../services/chat/chatScopedAgentRuntime'
 import {
@@ -15,6 +16,7 @@ import {
 } from '../../services/preferences/rightPanelStorage'
 
 interface NotiaRightPanelProps {
+  isMeetingContext: boolean
   agentCorpusPaths: string[]
   agentScope: ChatAgentScope | null
   previousChats: { id: string; filePath: string; title: string }[]
@@ -33,6 +35,7 @@ interface NotiaRightPanelProps {
 }
 
 function NotiaRightPanelComponent({
+  isMeetingContext,
   agentCorpusPaths,
   agentScope,
   previousChats,
@@ -128,36 +131,40 @@ function NotiaRightPanelComponent({
       ) : null}
       {isRightChatPanelOpen ? (
         isRightPanelChatMounted ? (
-          <ChatWorkspaceView
-            agentCorpusPaths={agentCorpusPaths}
-            agentScope={agentScope}
-            key={rightPanelChatContextKey}
-            library={activeLibrary}
-            aiPreferences={aiPreferences}
-            previousChats={previousChats}
-            title="Chat lateral"
-            description="Acceso rapido a la IA desde el panel derecho."
-            showHistoryPanel={false}
-            composerContextLabel={rightPanelChatContextLabel}
-            preferredContextPaths={rightPanelPreferredContextPaths}
-            preferredContextName={rightPanelPreferredContextName}
-            preferredContextMode={rightPanelPreferredContextMode}
-            preferredContextScopeKey={rightPanelPreferredContextScopeKey}
-            transientContextPaths={rightPanelTransientContextPaths}
-            transientContextMode={rightPanelTransientContextMode}
-            transientContextSummary={rightPanelTransientContextSummary}
-            transientContextDisplayPaths={rightPanelTransientSelectedPaths}
-            onTransientContextPathRemove={(path) => {
-              onRightPanelTransientSelectedPathsChange(
-                rightPanelTransientSelectedPaths.filter((selectedPath) => selectedPath !== path),
-              )
-            }}
-            persistTransientContext={false}
-            selectMatchingChatOnly
-            historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
-            onChatCreated={chatCallbacks.onChatCreated}
-            onChatDeleted={chatCallbacks.onChatDeleted}
-          />
+          isMeetingContext ? (
+            <MeetingEphemeralChat aiPreferences={aiPreferences} />
+          ) : (
+            <ChatWorkspaceView
+              agentCorpusPaths={agentCorpusPaths}
+              agentScope={agentScope}
+              key={rightPanelChatContextKey}
+              library={activeLibrary}
+              aiPreferences={aiPreferences}
+              previousChats={previousChats}
+              title="Chat lateral"
+              description="Acceso rapido a la IA desde el panel derecho."
+              showHistoryPanel={false}
+              composerContextLabel={rightPanelChatContextLabel}
+              preferredContextPaths={rightPanelPreferredContextPaths}
+              preferredContextName={rightPanelPreferredContextName}
+              preferredContextMode={rightPanelPreferredContextMode}
+              preferredContextScopeKey={rightPanelPreferredContextScopeKey}
+              transientContextPaths={rightPanelTransientContextPaths}
+              transientContextMode={rightPanelTransientContextMode}
+              transientContextSummary={rightPanelTransientContextSummary}
+              transientContextDisplayPaths={rightPanelTransientSelectedPaths}
+              onTransientContextPathRemove={(path) => {
+                onRightPanelTransientSelectedPathsChange(
+                  rightPanelTransientSelectedPaths.filter((selectedPath) => selectedPath !== path),
+                )
+              }}
+              persistTransientContext={false}
+              selectMatchingChatOnly
+              historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
+              onChatCreated={chatCallbacks.onChatCreated}
+              onChatDeleted={chatCallbacks.onChatDeleted}
+            />
+          )
         ) : (
           <main className="notia-main">
             <div className="notia-workspace-deferred-view notia-workspace-deferred-view--panel" role="status" aria-live="polite">
