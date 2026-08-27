@@ -2,12 +2,19 @@ use libloading::Library;
 use serde::Serialize;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::Cursor;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
 use tauri::{AppHandle, Manager};
+
+#[cfg(target_os = "windows")]
+const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
+#[cfg(target_os = "windows")]
+const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
 
 const MODEL_DIRECTORY_06B: &str = "qwen3-tts-0.6b-customvoice-q4_k_m";
 const TALKER_FILE_06B: &str = "qwen-talker-0.6b-customvoice-Q4_K_M.gguf";
@@ -46,6 +53,8 @@ struct QwenResult {
 
 type InitFn = unsafe extern "C" fn() -> *mut c_void;
 type FreeFn = unsafe extern "C" fn(*mut c_void);
+type SetBackendFn = unsafe extern "C" fn(i32) -> i32;
+type ActiveBackendFn = unsafe extern "C" fn() -> *mut c_char;
 type LoadFn = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> i32;
 type SynthesizeFn = unsafe extern "C" fn(*mut c_void, *const c_char, QwenParams) -> QwenResult;
 type FreeResultFn = unsafe extern "C" fn(QwenResult);
@@ -55,12 +64,33 @@ type FreeStringFn = unsafe extern "C" fn(*mut c_char);
 struct QwenEngine {
     _library: Library,
     _dependencies: Vec<Library>,
+    #[cfg(target_os = "windows")]
+    _cuda_directory: Option<WindowsDllDirectory>,
     context: *mut c_void,
     free: FreeFn,
     synthesize: SynthesizeFn,
     free_result: FreeResultFn,
     last_error: LastErrorFn,
     free_string: FreeStringFn,
+    model_directory: String,
+    device: String,
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsDllDirectory(*mut c_void);
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for WindowsDllDirectory {}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsDllDirectory {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            let _ = unsafe {
+                windows::Win32::System::LibraryLoader::RemoveDllDirectory(self.0.cast_const())
+            };
+        }
+    }
 }
 
 // The native context is only accessed while held by Qwen3TtsRuntimeState.engine's Mutex.
@@ -113,7 +143,7 @@ pub fn preload_at_startup(app: AppHandle) {
     if let Err(error) = std::thread::Builder::new()
         .name("notia-qwen3-tts-preload".into())
         .spawn(move || {
-            let result = load_engine(&worker_app, MODEL_DIRECTORY_06B, TALKER_FILE_06B);
+            let result = load_engine(&worker_app, MODEL_DIRECTORY_06B, TALKER_FILE_06B, "cpu");
             let state = worker_app.state::<Qwen3TtsRuntimeState>();
             match result {
                 Ok(engine) => {
@@ -204,15 +234,15 @@ pub fn synthesize(
     if !matches!(device, "cpu" | "gpu") {
         return Err("El dispositivo de Qwen3-TTS no es valido.".into());
     }
+    // CUDA is intentionally disabled for the local runtime. Keep accepting
+    // the legacy value so existing frontend settings remain compatible.
+    let device = "cpu";
     let (model_directory, talker_file) = if model == "1.7b" {
         (MODEL_DIRECTORY_17B, TALKER_FILE_17B)
     } else {
         (MODEL_DIRECTORY_06B, TALKER_FILE_06B)
     };
-    // The selected backend is determined by the native runtime compiled for the platform.
-    // Keep the setting in the contract so GPU-enabled builds can honor it without a UI change.
-    let _ = device;
-    ensure_loaded(app, state, model_directory, talker_file)?;
+    ensure_loaded(app, state, model_directory, talker_file, device)?;
     ensure_tts_generation_memory(model)?;
     let text_c =
         CString::new(text).map_err(|_| "El texto contiene caracteres nulos.".to_string())?;
@@ -287,11 +317,23 @@ fn ensure_loaded(
     state: &Qwen3TtsRuntimeState,
     model_directory: &str,
     talker_file: &str,
+    device: &str,
 ) -> Result<(), String> {
-    if state.engine.lock().is_ok_and(|slot| slot.is_some()) {
-        return Ok(());
+    {
+        let mut slot = state
+            .engine
+            .lock()
+            .map_err(|_| "No se pudo preparar Qwen3-TTS.".to_string())?;
+        if slot.as_ref().is_some_and(|engine| {
+            engine.model_directory == model_directory && engine.device == device
+        }) {
+            return Ok(());
+        }
+        // The backend preference is global inside qwen3-tts.cpp. Release the
+        // previous model and its buffers before switching CPU/CUDA.
+        *slot = None;
     }
-    let engine = load_engine(app, model_directory, talker_file)?;
+    let engine = load_engine(app, model_directory, talker_file, device)?;
     *state
         .engine
         .lock()
@@ -303,6 +345,7 @@ fn load_engine(
     app: &AppHandle,
     model_directory: &str,
     talker_file: &str,
+    device: &str,
 ) -> Result<QwenEngine, String> {
     // Dedicated CodePred schedulers trade a large duplicated compute reserve
     // for throughput. Notia keeps ASR and TTS resident together, so use the
@@ -312,21 +355,41 @@ fn load_engine(
     let models = model_root(app, model_directory, talker_file)?;
     let mut dependencies = Vec::new();
     #[cfg(target_os = "windows")]
+    let cuda_directory;
+    #[cfg(target_os = "windows")]
     {
         let directory = runtime
             .parent()
             .ok_or_else(|| "La ruta del runtime nativo no tiene directorio.".to_string())?;
+        cuda_directory = if device == "gpu" {
+            let (registration, cublas) = register_cuda_runtime()?;
+            dependencies.push(cublas);
+            Some(registration)
+        } else {
+            None
+        };
         // ggml-cpu depends on ggml-base; load the dependency chain from the
         // bottom up so Windows can resolve every import reliably.
         for name in ["ggml-base.dll", "ggml-cpu.dll", "ggml.dll"] {
             let path = directory.join(name);
             if path.is_file() {
-                dependencies.push(unsafe { Library::new(&path) }.map_err(|error| {
-                    format!("No se pudo cargar la dependencia nativa {name}: {error}")
+                dependencies.push(load_windows_library(&path).map_err(|error| {
+                    format!(
+                        "No se pudo cargar la dependencia nativa {}: {error:?}",
+                        path.display()
+                    )
                 })?);
             }
         }
     }
+    #[cfg(target_os = "windows")]
+    let library = load_windows_library(&runtime).map_err(|error| {
+        format!(
+            "No se pudo cargar el runtime nativo de Qwen3-TTS en {}: {error}",
+            runtime.display()
+        )
+    })?;
+    #[cfg(not(target_os = "windows"))]
     let library = unsafe { Library::new(&runtime) }.map_err(|error| {
         format!(
             "No se pudo cargar el runtime nativo de Qwen3-TTS en {}: {error}",
@@ -339,6 +402,12 @@ fn load_engine(
             .map_err(|error| error.to_string())?;
         let free: FreeFn = *library
             .get(b"qwen3_tts_free_export\0")
+            .map_err(|error| error.to_string())?;
+        let set_backend: SetBackendFn = *library
+            .get(b"qwen3_tts_set_backend_preference_export\0")
+            .map_err(|error| error.to_string())?;
+        let active_backend: ActiveBackendFn = *library
+            .get(b"qwen3_tts_get_active_backend_name_export\0")
             .map_err(|error| error.to_string())?;
         let load: LoadFn = *library
             .get(b"qwen3_tts_load_models_with_name_export\0")
@@ -355,6 +424,12 @@ fn load_engine(
         let free_string: FreeStringFn = *library
             .get(b"qwen3_tts_free_string_export\0")
             .map_err(|error| error.to_string())?;
+        let backend_preference = if device == "gpu" { 2 } else { 1 };
+        if set_backend(backend_preference) == 0 {
+            return Err(format!(
+                "Qwen3-TTS no pudo seleccionar el backend {device}."
+            ));
+        }
         let context = init();
         if context.is_null() {
             return Err("Qwen3-TTS no pudo crear el contexto nativo.".into());
@@ -366,29 +441,149 @@ fn load_engine(
             let temporary = QwenEngine {
                 _library: library,
                 _dependencies: dependencies,
+                #[cfg(target_os = "windows")]
+                _cuda_directory: cuda_directory,
                 context,
                 free,
                 synthesize,
                 free_result,
                 last_error,
                 free_string,
+                model_directory: model_directory.to_string(),
+                device: device.to_string(),
             };
             return Err(format!(
                 "No se pudieron cargar los modelos de Qwen3-TTS: {}",
                 native_last_error(&temporary)
             ));
         }
+        let active_backend_pointer = active_backend();
+        let active_backend_name = if active_backend_pointer.is_null() {
+            String::new()
+        } else {
+            let name = CStr::from_ptr(active_backend_pointer)
+                .to_string_lossy()
+                .into_owned();
+            free_string(active_backend_pointer);
+            name
+        };
+        if device == "gpu" && !active_backend_name.to_ascii_lowercase().contains("cuda") {
+            let _temporary = QwenEngine {
+                _library: library,
+                _dependencies: dependencies,
+                #[cfg(target_os = "windows")]
+                _cuda_directory: cuda_directory,
+                context,
+                free,
+                synthesize,
+                free_result,
+                last_error,
+                free_string,
+                model_directory: model_directory.to_string(),
+                device: device.to_string(),
+            };
+            return Err(format!(
+                "Qwen3-TTS solicitó CUDA pero activó el backend '{}'.",
+                if active_backend_name.is_empty() {
+                    "desconocido"
+                } else {
+                    &active_backend_name
+                }
+            ));
+        }
         Ok(QwenEngine {
             _library: library,
             _dependencies: dependencies,
+            #[cfg(target_os = "windows")]
+            _cuda_directory: cuda_directory,
             context,
             free,
             synthesize,
             free_result,
             last_error,
             free_string,
+            model_directory: model_directory.to_string(),
+            device: device.to_string(),
         })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn register_cuda_runtime() -> Result<(WindowsDllDirectory, Library), String> {
+    let cuda_bin = cuda_binary_directories()
+        .into_iter()
+        .find(|directory| directory.join("cublas64_13.dll").is_file())
+        .ok_or_else(|| {
+            "No se encontró cublas64_13.dll. Instalá CUDA Toolkit 13 o configurá CUDA_PATH."
+                .to_string()
+        })?;
+    let path = cuda_bin.join("cublas64_13.dll");
+    prepend_process_path(&cuda_bin)?;
+    let wide_directory = cuda_bin
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let cookie = unsafe {
+        windows::Win32::System::LibraryLoader::AddDllDirectory(windows::core::PCWSTR(
+            wide_directory.as_ptr(),
+        ))
+    };
+    if cookie.is_null() {
+        return Err(format!(
+            "Windows no pudo registrar el directorio CUDA {}.",
+            cuda_bin.display()
+        ));
+    }
+    let registration = WindowsDllDirectory(cookie);
+    let cublas = load_windows_library(&path).map_err(|error| {
+        format!(
+            "No se pudo cargar CUDA desde {}: {error:?}",
+            cuda_bin.display()
+        )
+    })?;
+    Ok((registration, cublas))
+}
+
+#[cfg(target_os = "windows")]
+fn prepend_process_path(directory: &Path) -> Result<(), String> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![directory.to_path_buf()];
+    paths.extend(std::env::split_paths(&current));
+    let joined = std::env::join_paths(paths)
+        .map_err(|error| format!("No se pudo configurar la ruta de CUDA: {error}"))?;
+    std::env::set_var("PATH", joined);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn load_windows_library(path: &Path) -> Result<Library, libloading::Error> {
+    let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+    unsafe { libloading::os::windows::Library::load_with_flags(path, flags) }.map(Into::into)
+}
+
+#[cfg(target_os = "windows")]
+fn cuda_binary_directories() -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(cuda_path) = std::env::var_os("CUDA_PATH") {
+        let root = PathBuf::from(cuda_path);
+        directories.push(root.join("bin").join("x64"));
+        directories.push(root.join("bin"));
+    }
+    let toolkit_root = Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA");
+    if let Ok(entries) = std::fs::read_dir(toolkit_root) {
+        let mut versions = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        versions.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+        for root in versions {
+            directories.push(root.join("bin").join("x64"));
+            directories.push(root.join("bin"));
+        }
+    }
+    directories
 }
 
 #[cfg(target_os = "windows")]

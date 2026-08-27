@@ -1,6 +1,6 @@
 export interface Qwen3TtsPreferences {
   model: '0.6b' | '1.7b'
-  device: 'cpu' | 'gpu'
+  device: 'cpu'
   enabled: boolean
   voice: string
   language: string
@@ -23,7 +23,7 @@ export function normalizeQwen3TtsPreferences(value: Partial<Qwen3TtsPreferences>
   const pauseDetectionMs = Number(value?.pauseDetectionMs)
   return {
     model: value?.model === '1.7b' ? '1.7b' : '0.6b',
-    device: value?.device === 'gpu' ? 'gpu' : 'cpu',
+    device: 'cpu',
     enabled: value?.enabled === true,
     voice: QWEN3_TTS_VOICES.includes(value?.voice?.trim().toLowerCase() as typeof QWEN3_TTS_VOICES[number])
       ? value?.voice?.trim().toLowerCase() as typeof QWEN3_TTS_VOICES[number]

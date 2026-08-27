@@ -1,10 +1,22 @@
-param([ValidateSet('windows','android')][string]$Platform = 'windows')
+param(
+  [ValidateSet('windows','android')][string]$Platform = 'windows',
+  [ValidateSet('cpu','gpu')][string]$Device = 'cpu'
+)
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $source = Join-Path $root 'src-tauri\vendor\qwen3-tts.cpp'
 $wrapper = Join-Path $root 'src-tauri\resources\qwen3-tts\runtime'
-$build = Join-Path $root "src-tauri\target\qwen3-tts-$Platform"
-if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) { throw 'CMake 3.22 o posterior es obligatorio para compilar qwen3-tts.cpp.' }
+$nativeBuildRoot = Join-Path ([IO.Path]::GetPathRoot($root)) 'notia-native-build'
+$build = Join-Path $nativeBuildRoot "qwen3-tts-$Platform-$Device"
+if ($Platform -eq 'android' -and $Device -eq 'gpu') {
+  throw 'El runtime Qwen3-TTS GPU está integrado mediante CUDA y solo está disponible en Windows.'
+}
+$cmake = (Get-Command cmake -ErrorAction SilentlyContinue).Source
+if (-not $cmake) {
+  $cmake = @('C:\Program Files\CMake\bin\cmake.exe', 'C:\Program Files (x86)\CMake\bin\cmake.exe') |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $cmake) { throw 'CMake 3.22 o posterior es obligatorio para compilar qwen3-tts.cpp.' }
 $buildSource = $source
 if ($Platform -eq 'android') {
   if (-not $env:ANDROID_NDK_HOME) { throw 'ANDROID_NDK_HOME no esta definido.' }
@@ -20,11 +32,36 @@ if ($Platform -eq 'android') {
   }
 }
 $arguments = @('-S', $wrapper, '-B', $build, "-DQWEN3_TTS_SOURCE=$($buildSource.Replace('\','/'))", '-DCMAKE_BUILD_TYPE=Release')
+if ($Platform -eq 'windows' -and $Device -eq 'gpu') {
+  $cudaRoot = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
+  if (-not $cudaRoot -or -not (Test-Path -LiteralPath (Join-Path $cudaRoot 'bin\nvcc.exe'))) {
+    throw 'CUDA Toolkit es obligatorio para compilar Qwen3-TTS con GPU.'
+  }
+  $env:CUDA_PATH = $cudaRoot
+  $env:CUDA_PATH_V13_3 = $cudaRoot
+  $env:Path = (Join-Path $cudaRoot 'bin') + ';' + $env:Path
+  $arguments += @(
+    '-G', 'Visual Studio 17 2022', '-A', 'x64',
+    '-DQWEN3_TTS_CUDA=ON',
+    "-DCMAKE_CUDA_COMPILER=$((Join-Path $cudaRoot 'bin\nvcc.exe').Replace('\','/'))"
+  )
+}
 if ($Platform -eq 'android') {
   $arguments += @("-DCMAKE_TOOLCHAIN_FILE=$($env:ANDROID_NDK_HOME.Replace('\','/'))/build/cmake/android.toolchain.cmake", '-DANDROID_ABI=arm64-v8a', '-DANDROID_PLATFORM=android-31')
 }
-& cmake @arguments
-& cmake --build $build --config Release --parallel
+$cache = Join-Path $build 'CMakeCache.txt'
+if (Test-Path -LiteralPath $cache) {
+  $resolvedBuild = [IO.Path]::GetFullPath($build)
+  $resolvedNativeRoot = [IO.Path]::GetFullPath($nativeBuildRoot).TrimEnd('\') + '\'
+  if (-not $resolvedBuild.StartsWith($resolvedNativeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'El directorio temporal de Qwen3-TTS quedó fuera de la raíz autorizada.'
+  }
+  Remove-Item -LiteralPath $resolvedBuild -Recurse -Force
+}
+& $cmake @arguments
+if ($LASTEXITCODE -ne 0) { throw 'Falló la configuración de Qwen3-TTS.' }
+& $cmake --build $build --config Release --parallel
+if ($LASTEXITCODE -ne 0) { throw 'Falló la compilación de Qwen3-TTS.' }
 $extension = if ($Platform -eq 'windows') { 'dll' } else { 'so' }
 $platformDirectory = if ($Platform -eq 'windows') { 'windows-x86_64' } else { 'android-arm64-v8a' }
 $outputDirectory = Join-Path $wrapper $platformDirectory
@@ -35,6 +72,9 @@ Copy-Item -LiteralPath $library.FullName -Destination (Join-Path $outputDirector
 if ($Platform -eq 'windows') {
   Get-ChildItem -LiteralPath $build -Recurse -File -Filter 'ggml*.dll' | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $outputDirectory $_.Name) -Force
+  }
+  if ($Device -eq 'gpu' -and -not (Test-Path -LiteralPath (Join-Path $outputDirectory 'ggml-cuda.dll'))) {
+    throw 'El runtime Qwen3-TTS GPU se compiló sin ggml-cuda.dll.'
   }
 } else {
   Get-ChildItem -LiteralPath $build -Recurse -File -Filter 'libggml*.so' | ForEach-Object {

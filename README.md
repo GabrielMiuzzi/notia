@@ -17,7 +17,7 @@ El acceso **Meeting**, ubicado debajo de ColdPass en el panel izquierdo, abre un
 3. En Android, conceda el permiso de micrófono cuando lo solicite el sistema.
 4. Use los controles visibles para pausar, reanudar, finalizar o cancelar. Cancelar restaura el borrador anterior.
 
-Las sesiones admiten hasta 15 minutos. Las etiquetas de hablante se calculan al finalizar; voces solapadas, ruido y fragmentos breves pueden reducir la precisión. Si falla únicamente la diarización, se conserva el texto sin etiquetas. Si Android denegó el permiso permanentemente, habilítelo desde Ajustes. En Windows, compruebe el dispositivo predeterminado y los permisos de privacidad.
+Las sesiones admiten hasta 15 minutos. La captura conserva una cola acotada para absorber el costo temporal del reconocimiento. El texto en vivo se actualiza cada 1,5 segundos de voz nueva mediante ventanas solapadas y cada intervención se confirma completa después de una pausa clara, evitando duplicar o perder palabras en sus bordes. El reconocimiento y la síntesis de voz funcionan exclusivamente con CPU. Las etiquetas de hablante se calculan únicamente al finalizar, con cantidad automática y un clustering conservador; voces solapadas, ruido y fragmentos breves pueden reducir la precisión. Si falla únicamente la diarización, se conserva el texto sin etiquetas. Si Android denegó el permiso permanentemente, habilítelo desde Ajustes. En Windows, compruebe el dispositivo predeterminado y los permisos de privacidad.
 
 ![Versión](https://img.shields.io/badge/version-1.0.13-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-orange)

@@ -570,8 +570,8 @@ export function SettingsModal({
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
               <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-ASR" value={qwen3AsrPreferences.device}
-                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: event.target.value as 'cpu' | 'gpu' }))}>
-                <option value="cpu">CPU</option><option value="gpu">GPU</option>
+                onChange={() => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: 'cpu' }))}>
+                <option value="cpu">CPU</option>
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
               <input className="notia-settings-input" aria-label="Idioma de Qwen3-ASR" value={qwen3AsrPreferences.language}
@@ -594,8 +594,8 @@ export function SettingsModal({
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
               <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-TTS" value={qwen3TtsPreferences.device}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: event.target.value as 'cpu' | 'gpu' }))}>
-                <option value="cpu">CPU</option><option value="gpu">GPU</option>
+                onChange={() => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: 'cpu' }))}>
+                <option value="cpu">CPU</option>
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Voz</div>
               <select className="notia-settings-input" aria-label="Voz de Qwen3-TTS" value={qwen3TtsPreferences.voice}

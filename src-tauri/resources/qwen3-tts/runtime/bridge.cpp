@@ -8,6 +8,8 @@
 
 NOTIA_EXPORT qwen3_tts_context_t* qwen3_tts_init_export() { return qwen3_tts_init(); }
 NOTIA_EXPORT void qwen3_tts_free_export(qwen3_tts_context_t* value) { qwen3_tts_free(value); }
+NOTIA_EXPORT int32_t qwen3_tts_set_backend_preference_export(int32_t preference) { return qwen3_tts_set_backend_preference(preference); }
+NOTIA_EXPORT char* qwen3_tts_get_active_backend_name_export() { return qwen3_tts_get_active_backend_name(); }
 NOTIA_EXPORT int32_t qwen3_tts_load_models_with_name_export(qwen3_tts_context_t* value, const char* root, const char* name) { return qwen3_tts_load_models_with_name(value, root, name); }
 NOTIA_EXPORT qwen3_tts_result_t qwen3_tts_synthesize_export(qwen3_tts_context_t* value, const char* text, qwen3_tts_params_t params) { return qwen3_tts_synthesize(value, text, params); }
 NOTIA_EXPORT void qwen3_tts_free_result_export(qwen3_tts_result_t value) { qwen3_tts_free_result(value); }

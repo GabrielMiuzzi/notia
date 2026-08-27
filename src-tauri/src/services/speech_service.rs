@@ -490,16 +490,34 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-#[cfg(any(target_os = "windows", target_os = "android"))]
 fn append_text(target: &mut String, text: &str) {
     let text = text.trim();
-    if text.is_empty() || target.trim_end().ends_with(text) {
+    if text.is_empty() {
+        return;
+    }
+    let target_words = target.split_whitespace().collect::<Vec<_>>();
+    let incoming_words = text.split_whitespace().collect::<Vec<_>>();
+    let overlap = (1..=target_words.len().min(incoming_words.len()))
+        .rev()
+        .find(|&count| {
+            target_words[target_words.len() - count..]
+                .iter()
+                .zip(&incoming_words[..count])
+                .all(|(left, right)| words_match(left, right))
+        })
+        .unwrap_or(0);
+    if overlap == incoming_words.len() {
         return;
     }
     if !target.is_empty() {
         target.push(' ');
     }
-    target.push_str(text);
+    target.push_str(&incoming_words[overlap..].join(" "));
+}
+
+fn words_match(left: &str, right: &str) -> bool {
+    left.trim_matches(|character: char| !character.is_alphanumeric())
+        .eq_ignore_ascii_case(right.trim_matches(|character: char| !character.is_alphanumeric()))
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -689,7 +707,8 @@ pub fn not_integrated_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        current_capabilities, validate_start_input, SpeechPhase, MAX_SPEECH_SESSION_SECONDS,
+        append_text, current_capabilities, validate_start_input, SpeechPhase,
+        MAX_SPEECH_SESSION_SECONDS,
     };
     use crate::dto::speech::SpeechModelStatusDto;
 
@@ -728,5 +747,19 @@ mod tests {
         );
         assert!(!capabilities.asr_model_installed);
         assert!(!capabilities.diarization_model_installed);
+    }
+
+    #[test]
+    fn confirmed_utterances_reconcile_overlapping_boundary_words() {
+        let mut transcript = "La transcripcion de la reunion".to_string();
+        append_text(&mut transcript, "de la reunion continúa ahora");
+        assert_eq!(transcript, "La transcripcion de la reunion continúa ahora");
+    }
+
+    #[test]
+    fn confirmed_utterances_keep_distinct_text() {
+        let mut transcript = "Hola equipo".to_string();
+        append_text(&mut transcript, "empecemos la reunión");
+        assert_eq!(transcript, "Hola equipo empecemos la reunión");
     }
 }

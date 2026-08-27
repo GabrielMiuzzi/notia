@@ -7,9 +7,14 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 const SAMPLE_RATE: usize = 16_000;
-const PARTIAL_INTERVAL_SAMPLES: usize = SAMPLE_RATE * 4 / 5;
+const PARTIAL_INTERVAL_SAMPLES: usize = SAMPLE_RATE * 3 / 2;
 const MIN_DECODE_SAMPLES: usize = SAMPLE_RATE * 4 / 5;
-const ENDPOINT_SILENCE_SAMPLES: usize = SAMPLE_RATE * 7 / 10;
+const PARTIAL_WINDOW_SAMPLES: usize = SAMPLE_RATE * 12;
+const PARTIAL_OVERLAP_SAMPLES: usize = SAMPLE_RATE * 2;
+const PARTIAL_WINDOW_STEP_SAMPLES: usize = PARTIAL_WINDOW_SAMPLES - PARTIAL_OVERLAP_SAMPLES;
+// A meeting often contains short hesitations inside a word or sentence. Keep a
+// wider silence margin so those pauses do not reset the utterance prematurely.
+const ENDPOINT_SILENCE_SAMPLES: usize = SAMPLE_RATE * 11 / 10;
 const SPEECH_ENERGY_THRESHOLD: f32 = 0.000_12;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -24,6 +29,8 @@ type TranscribeFn = unsafe extern "C" fn(
     usize,
 ) -> c_int;
 type LastErrorFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
+#[cfg(target_os = "windows")]
+type BackendLoadFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
 
 #[derive(Debug, Clone)]
 pub struct Qwen3AsrModelConfig {
@@ -43,6 +50,8 @@ pub struct Qwen3AsrRecognizer {
     language: CString,
     utterance: Vec<f32>,
     samples_since_decode: usize,
+    partial_window_start: usize,
+    has_new_speech_since_decode: bool,
     trailing_silence: usize,
     has_speech: bool,
     last_text: String,
@@ -62,6 +71,10 @@ impl Drop for Qwen3AsrRecognizer {
 
 impl Qwen3AsrRecognizer {
     pub fn load(app: &AppHandle, config: &Qwen3AsrModelConfig) -> Result<Self, String> {
+        let mut config = config.clone();
+        // GPU inference is intentionally disabled; preserve the field only
+        // for compatibility with existing settings payloads.
+        config.use_gpu = false;
         let runtime_dir = runtime_directory(app)?;
         // Las DLL de llama.cpp dependen entre sí. En Windows el cargador no
         // siempre incluye el directorio de una DLL cargada dinámicamente en su
@@ -92,15 +105,41 @@ impl Qwen3AsrRecognizer {
             }
         }
         let (library_name, dependencies) = runtime_files();
+        #[cfg(target_os = "windows")]
+        if config.use_gpu && !runtime_dir.join("notia_asr_ggml-vulkan.dll").is_file() {
+            return Err(
+                "El runtime Qwen3-ASR instalado no incluye el backend Vulkan requerido para usar GPU. Reconstruilo con scripts/build-qwen3-asr-runtime.ps1 -Device gpu."
+                    .to_string(),
+            );
+        }
         let mut loaded_dependencies = Vec::new();
         for dependency in dependencies {
             let path = runtime_dir.join(dependency);
             if path.is_file() {
-                loaded_dependencies.push(
-                    unsafe { Library::new(&path) }.map_err(|error| {
-                        format!("No se pudo cargar {}: {error}", path.display())
-                    })?,
-                );
+                let loaded = unsafe { Library::new(&path) }
+                    .map_err(|error| format!("No se pudo cargar {}: {error}", path.display()))?;
+                #[cfg(target_os = "windows")]
+                if dependency == &"notia_asr_ggml.dll" {
+                    let load_backend =
+                        unsafe { loaded.get::<BackendLoadFn>(b"ggml_backend_load\0") }.map_err(
+                            |error| {
+                                format!("El runtime GGML no permite registrar backends: {error}")
+                            },
+                        )?;
+                    let mut backend_names = vec!["notia_asr_ggml-cpu.dll"];
+                    if config.use_gpu {
+                        backend_names.push("notia_asr_ggml-vulkan.dll");
+                    }
+                    for backend_name in backend_names {
+                        let backend_path = path_to_cstring(&runtime_dir.join(backend_name))?;
+                        if unsafe { load_backend(backend_path.as_ptr()) }.is_null() {
+                            return Err(format!(
+                                "No se pudo registrar el backend {backend_name} de Qwen3-ASR."
+                            ));
+                        }
+                    }
+                }
+                loaded_dependencies.push(loaded);
             }
         }
         let library_path = runtime_dir.join(library_name);
@@ -143,6 +182,8 @@ impl Qwen3AsrRecognizer {
             language,
             utterance: Vec::new(),
             samples_since_decode: 0,
+            partial_window_start: 0,
+            has_new_speech_since_decode: false,
             trailing_silence: 0,
             has_speech: false,
             last_text: String::new(),
@@ -157,16 +198,17 @@ impl Qwen3AsrRecognizer {
             && self.config.use_gpu == config.use_gpu
     }
 
-    fn decode(&mut self) -> Result<String, String> {
-        if !self.has_speech || self.utterance.len() < MIN_DECODE_SAMPLES {
+    fn decode_from(&mut self, start: usize) -> Result<String, String> {
+        let samples = &self.utterance[start.min(self.utterance.len())..];
+        if !self.has_speech || samples.len() < MIN_DECODE_SAMPLES {
             return Ok(String::new());
         }
         let mut output = vec![0_i8; MAX_OUTPUT_BYTES];
         let result = unsafe {
             (self.transcribe)(
                 self.context,
-                self.utterance.as_ptr(),
-                self.utterance.len(),
+                samples.as_ptr(),
+                samples.len(),
                 self.language.as_ptr(),
                 output.as_mut_ptr(),
                 output.len(),
@@ -194,6 +236,8 @@ impl Qwen3AsrRecognizer {
     fn clear_utterance(&mut self) {
         self.utterance.clear();
         self.samples_since_decode = 0;
+        self.partial_window_start = 0;
+        self.has_new_speech_since_decode = false;
         self.trailing_silence = 0;
         self.has_speech = false;
         self.last_text.clear();
@@ -208,16 +252,41 @@ impl StreamingRecognizer for Qwen3AsrRecognizer {
             samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len().max(1) as f32;
         if energy >= SPEECH_ENERGY_THRESHOLD {
             self.has_speech = true;
+            self.has_new_speech_since_decode = true;
             self.trailing_silence = 0;
         } else if self.has_speech {
             self.trailing_silence = self.trailing_silence.saturating_add(samples.len());
         }
         let endpoint = self.has_speech && self.trailing_silence >= ENDPOINT_SILENCE_SAMPLES;
-        if endpoint || self.samples_since_decode >= PARTIAL_INTERVAL_SAMPLES {
+        if endpoint {
             self.samples_since_decode = 0;
-            let decoded = self.decode()?;
+            self.has_new_speech_since_decode = false;
+            let decoded = self.decode_from(0)?;
             if !decoded.is_empty() {
                 self.last_text = decoded;
+            }
+        } else if self.samples_since_decode >= PARTIAL_INTERVAL_SAMPLES
+            && self.has_new_speech_since_decode
+        {
+            self.samples_since_decode = 0;
+            self.has_new_speech_since_decode = false;
+            let decoded = self.decode_from(self.partial_window_start)?;
+            // `speech_service` keeps confirmed text separately and treats
+            // this field as the current utterance preview. Replacing the
+            // preview avoids duplicating words when successive windows share
+            // audio context.
+            if !decoded.is_empty() {
+                self.last_text = decoded;
+            }
+            if self
+                .utterance
+                .len()
+                .saturating_sub(self.partial_window_start)
+                >= PARTIAL_WINDOW_SAMPLES
+            {
+                self.partial_window_start = self
+                    .partial_window_start
+                    .saturating_add(PARTIAL_WINDOW_STEP_SAMPLES);
             }
         }
         Ok(RecognitionUpdate {
@@ -227,7 +296,7 @@ impl StreamingRecognizer for Qwen3AsrRecognizer {
     }
 
     fn finish(&mut self) -> Result<RecognitionUpdate, String> {
-        let decoded = self.decode()?;
+        let decoded = self.decode_from(0)?;
         if !decoded.is_empty() {
             self.last_text = decoded;
         }
@@ -298,6 +367,17 @@ fn runtime_files() -> (&'static str, &'static [&'static str]) {
             "notia_asr_mtmd.dll",
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PARTIAL_OVERLAP_SAMPLES, PARTIAL_WINDOW_SAMPLES, SAMPLE_RATE};
+
+    #[test]
+    fn partial_windows_keep_two_seconds_of_audio_context() {
+        assert_eq!(PARTIAL_WINDOW_SAMPLES, SAMPLE_RATE * 12);
+        assert_eq!(PARTIAL_OVERLAP_SAMPLES, SAMPLE_RATE * 2);
+    }
 }
 
 #[cfg(target_os = "android")]

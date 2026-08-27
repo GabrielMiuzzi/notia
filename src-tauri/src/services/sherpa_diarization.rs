@@ -52,10 +52,13 @@ mod windows {
             },
             clustering: FastClusteringConfig {
                 num_clusters: 0,
-                threshold: 0.5,
+                // Sherpa uses a distance threshold: larger values merge more
+                // embeddings. 0.5 over-segments normal meeting audio and tends
+                // to turn channel/noise variation into phantom speakers.
+                threshold: 0.9,
             },
-            min_duration_on: 0.3,
-            min_duration_off: 0.2,
+            min_duration_on: 0.5,
+            min_duration_off: 0.3,
         };
         let api = unsafe { DiarizationApi::load(runtime_path) }?;
         let diarizer = NonNull::new(unsafe { (api.create)(&config) } as *mut c_void)

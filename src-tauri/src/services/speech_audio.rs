@@ -3,7 +3,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 pub const SPEECH_SAMPLE_RATE: u32 = 16_000;
-const MAX_BUFFERED_SECONDS: usize = 2;
+// Qwen decodes on the worker thread and can temporarily fall behind real-time
+// capture on mid-range hardware. A two-second queue silently discarded speech
+// while a decode was in progress, which surfaced as clipped words.
+const MAX_BUFFERED_SECONDS: usize = 15;
 const MAX_BUFFERED_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize * MAX_BUFFERED_SECONDS;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +140,7 @@ mod native {
         fn push_microphone(&mut self, samples: Vec<f32>) {
             if !self.system_active {
                 if let Some(target) = &self.target {
-                    if let Ok(mut target) = target.try_lock() {
+                    if let Ok(mut target) = target.lock() {
                         target.push(samples);
                     }
                 }
@@ -167,7 +170,7 @@ mod native {
                     })
                     .collect::<Vec<_>>();
                 if let Some(target) = &self.target {
-                    if let Ok(mut target) = target.try_lock() {
+                    if let Ok(mut target) = target.lock() {
                         target.push(mixed);
                     }
                 }
@@ -275,7 +278,7 @@ mod native {
                         }
                         let normalized: Vec<f32> = data.iter().copied().map($convert).collect();
                         let samples = downmix_and_resample(&normalized, channels, sample_rate);
-                        if let Ok(mut target) = mixer.try_lock() {
+                        if let Ok(mut target) = mixer.lock() {
                             target.push_microphone(samples);
                         }
                     },

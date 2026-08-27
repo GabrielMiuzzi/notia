@@ -5,12 +5,12 @@ describe('normalizeQwen3AsrPreferences', () => {
   it('normalizes the selected model, device and language', () => {
     expect(normalizeQwen3AsrPreferences({
       model: '1.7b',
-      device: 'gpu',
+      device: 'cpu',
       enabled: false,
       language: ' ES ',
     })).toEqual({
       model: '1.7b',
-      device: 'gpu',
+      device: 'cpu',
       enabled: false,
       language: 'es',
     })

@@ -73,7 +73,7 @@ export interface SpeechSegmentsEvent {
 export interface StartSpeechSessionInput {
   language: string
   model: '0.6b' | '1.7b'
-  device: 'cpu' | 'gpu'
+  device: 'cpu'
   diarizationEnabled: boolean
   maxDurationSeconds: number
   captureSystemAudio?: boolean

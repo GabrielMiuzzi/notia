@@ -4,6 +4,7 @@ project(notia_qwen3_asr LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -16,7 +17,7 @@ add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../../vendor/llama.cpp llama EXCLU
 
 # TTS carga otra versión de estas bibliotecas en el mismo proceso. Nombres
 # únicos evitan que el cargador de Windows reutilice DLL incompatibles.
-foreach(_target llama mtmd ggml ggml-base ggml-cpu)
+foreach(_target llama mtmd ggml ggml-base ggml-cpu ggml-vulkan)
   if(TARGET ${_target})
     set_target_properties(${_target} PROPERTIES OUTPUT_NAME "notia_asr_${_target}")
   endif()

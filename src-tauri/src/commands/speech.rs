@@ -8,7 +8,7 @@ use crate::services::speech_audio;
 use crate::services::speech_model_repository;
 use crate::services::speech_service;
 use crate::services::speech_service::{SpeechPhase, SpeechRuntimeState};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 pub fn get_speech_capabilities(
@@ -70,7 +70,7 @@ pub fn probe_sherpa_runtime(app: AppHandle) -> SherpaRuntimeStatusDto {
 }
 
 #[tauri::command]
-pub fn start_speech_session(
+pub async fn start_speech_session(
     payload: StartSpeechSessionPayload,
     app: AppHandle,
     state: State<'_, SpeechRuntimeState>,
@@ -100,16 +100,6 @@ pub fn start_speech_session(
         crate::mobile_speech_permission::ensure_microphone_permission(&permission_state)?;
         #[cfg(not(target_os = "android"))]
         let _ = permission_state;
-        let model = speech_model_repository::resolve_qwen3_asr_model(
-            &app,
-            &payload.model,
-            &payload.language,
-            &payload.device,
-        )?;
-        let diarization_model = payload
-            .diarization_enabled
-            .then(|| speech_model_repository::resolve_diarization_model(&app, &payload.language))
-            .transpose()?;
         let session_id = uuid::Uuid::new_v4().to_string();
         {
             let mut phase = state
@@ -123,14 +113,46 @@ pub fn start_speech_session(
             &session_id,
             crate::dto::speech::SpeechSessionStateDto::Preparing { progress: None },
         );
-        if let Err(error) = speech_service::start_platform_session(
-            &app,
-            &state,
-            session_id.clone(),
-            model,
-            diarization_model,
-            payload.capture_system_audio,
-        ) {
+        let model_size = payload.model;
+        let language = payload.language;
+        let device = payload.device;
+        let diarization_enabled = payload.diarization_enabled;
+        let capture_system_audio = payload.capture_system_audio;
+        let worker_app = app.clone();
+        let worker_session_id = session_id.clone();
+        let result = match tauri::async_runtime::spawn_blocking(move || {
+            let model = speech_model_repository::resolve_qwen3_asr_model(
+                &worker_app,
+                &model_size,
+                &language,
+                &device,
+            )?;
+            let diarization_model = diarization_enabled
+                .then(|| speech_model_repository::resolve_diarization_model(&worker_app, &language))
+                .transpose()?;
+            let worker_state = worker_app.state::<SpeechRuntimeState>();
+            speech_service::start_platform_session(
+                &worker_app,
+                &worker_state,
+                worker_session_id,
+                model,
+                diarization_model,
+                capture_system_audio,
+            )
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if let Ok(mut phase) = state.phase.lock() {
+                    *phase = SpeechPhase::Idle;
+                }
+                return Err(format!(
+                    "El worker de inicio de voz finalizo inesperadamente: {error}"
+                ));
+            }
+        };
+        if let Err(error) = result {
             if let Ok(mut phase) = state.phase.lock() {
                 *phase = SpeechPhase::Idle;
             }
@@ -246,7 +268,7 @@ pub fn resume_speech_session(
 }
 
 #[tauri::command]
-pub fn stop_speech_session(
+pub async fn stop_speech_session(
     payload: SpeechSessionPayload,
     app: AppHandle,
     state: State<'_, SpeechRuntimeState>,
@@ -269,7 +291,15 @@ pub fn stop_speech_session(
         &payload.session_id,
         crate::dto::speech::SpeechSessionStateDto::Finalizing { progress: None },
     );
-    speech_service::stop_platform_session(&state)
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let worker_state = worker_app.state::<SpeechRuntimeState>();
+        speech_service::stop_platform_session(&worker_state)
+    })
+    .await
+    .map_err(|error| {
+        format!("El worker de finalizacion de voz finalizo inesperadamente: {error}")
+    })?
 }
 
 #[tauri::command]
