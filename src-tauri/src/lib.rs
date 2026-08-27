@@ -148,13 +148,6 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     let builder = windows_tray::configure(builder);
 
-    #[cfg(target_os = "android")]
-    let builder = builder.setup(|app| {
-        services::speech_service::preload_at_startup(app.handle().clone());
-        services::qwen3_tts_service::preload_at_startup(app.handle().clone());
-        Ok(())
-    });
-
     builder
         .invoke_handler(tauri::generate_handler![
             read_library_tree,
@@ -178,6 +171,7 @@ pub fn run() {
             commands::ai::run_desktop_ai_chat_streaming,
             commands::ai::list_desktop_ai_models,
             commands::speech::get_speech_capabilities,
+            commands::speech::prepare_speech_model,
             commands::speech::get_speech_model_status,
             commands::speech::probe_speech_audio_input,
             commands::speech::probe_sherpa_runtime,
@@ -190,6 +184,7 @@ pub fn run() {
             commands::qwen3_tts::get_qwen3_tts_status,
             commands::qwen3_tts::reload_qwen3_tts,
             commands::qwen3_tts::synthesize_qwen3_tts_speech,
+            commands::qwen3_tts::prepare_qwen3_tts,
             commands::telegram::check_telegram_bot,
             commands::telegram::poll_telegram_updates,
             commands::telegram::send_telegram_message,

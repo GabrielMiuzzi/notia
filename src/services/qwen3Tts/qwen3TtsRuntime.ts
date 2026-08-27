@@ -15,6 +15,9 @@ let activeAudio: HTMLAudioElement | null = null
 let activeObjectUrl: string | null = null
 let cancelActivePlayback: (() => void) | null = null
 let speechGeneration = 0
+let preparedModelKey: string | null = null
+let pendingModelPreparation: Promise<void> | null = null
+let pendingModelKey: string | null = null
 
 function releaseActiveAudio(): void {
   const audio = activeAudio
@@ -70,6 +73,34 @@ export async function getQwen3TtsStatus(): Promise<Qwen3TtsStatus> {
 
 export async function reloadQwen3Tts(): Promise<void> {
   await invoke('reload_qwen3_tts')
+  preparedModelKey = null
+}
+
+export async function prepareQwen3Tts(preferences: Qwen3TtsPreferences): Promise<void> {
+  const settings = normalizeQwen3TtsPreferences(preferences)
+  const key = `${settings.model}:${settings.device}`
+  if (preparedModelKey === key) return
+  if (pendingModelPreparation) {
+    if (pendingModelKey === key) return pendingModelPreparation
+    await pendingModelPreparation.catch(() => undefined)
+    return prepareQwen3Tts(preferences)
+  }
+  const preparation = invoke<void>('prepare_qwen3_tts', {
+    input: { model: settings.model, device: settings.device },
+  })
+  pendingModelPreparation = preparation
+  pendingModelKey = key
+  try {
+    await preparation
+    preparedModelKey = key
+  } catch (error) {
+    throw error
+  } finally {
+    if (pendingModelPreparation === preparation) {
+      pendingModelPreparation = null
+      pendingModelKey = null
+    }
+  }
 }
 
 function normalizeInvokeError(error: unknown): Error {

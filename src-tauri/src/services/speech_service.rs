@@ -5,10 +5,7 @@ use crate::dto::speech::{
 };
 use std::sync::Mutex;
 #[cfg(any(target_os = "windows", target_os = "android"))]
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex as StdMutex,
-};
+use std::sync::{Arc, Mutex as StdMutex};
 #[cfg(any(target_os = "windows", target_os = "android"))]
 use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -40,8 +37,6 @@ pub struct SpeechRuntimeState {
     active_session: Mutex<Option<ActivePlatformSpeechSession>>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     preloaded_recognizer: PreloadedRecognizer,
-    #[cfg(any(target_os = "windows", target_os = "android"))]
-    preload_started: AtomicBool,
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -132,45 +127,50 @@ impl Default for SpeechRuntimeState {
             active_session: Mutex::new(None),
             #[cfg(any(target_os = "windows", target_os = "android"))]
             preloaded_recognizer: Arc::new(StdMutex::new(None)),
-            #[cfg(any(target_os = "windows", target_os = "android"))]
-            preload_started: AtomicBool::new(false),
         }
     }
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub fn preload_at_startup(app: AppHandle) {
+pub fn prepare_recognizer(
+    app: &AppHandle,
+    model: &str,
+    language: &str,
+    device: &str,
+) -> Result<(), String> {
+    let resolved = crate::services::speech_model_repository::resolve_qwen3_asr_model(
+        app, model, language, device,
+    )?;
     let state = app.state::<SpeechRuntimeState>();
-    if state
-        .preload_started
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
     {
-        return;
+        let cache = state
+            .preloaded_recognizer
+            .lock()
+            .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?;
+        if cache
+            .as_ref()
+            .is_some_and(|recognizer| recognizer.matches(&resolved))
+        {
+            return Ok(());
+        }
     }
-    let cache = Arc::clone(&state.preloaded_recognizer);
-    if let Err(error) = std::thread::Builder::new()
-        .name("notia-speech-preload".to_string())
-        .spawn(move || {
-            let result = (|| {
-                let model = crate::services::speech_model_repository::resolve_qwen3_asr_model(
-                    &app, "0.6b", "es", "cpu",
-                )?;
-                crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(&app, &model)
-            })();
-            match result {
-                Ok(recognizer) => {
-                    if let Ok(mut slot) = cache.lock() {
-                        *slot = Some(recognizer);
-                    }
-                    log::info!("[notia:speech] offline recognizer preloaded");
-                }
-                Err(error) => log::warn!("[notia:speech] preload failed: {error}"),
-            }
-        })
-    {
-        log::warn!("[notia:speech] could not start preload: {error}");
-    }
+    let recognizer = crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(app, &resolved)?;
+    *state
+        .preloaded_recognizer
+        .lock()
+        .map_err(|_| "No se pudo guardar el modelo precargado.".to_string())? = Some(recognizer);
+    log::info!("[notia:speech] selected offline recognizer prepared");
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
+pub fn prepare_recognizer(
+    _app: &tauri::AppHandle,
+    _model: &str,
+    _language: &str,
+    _device: &str,
+) -> Result<(), String> {
+    Err(not_integrated_error())
 }
 
 pub fn runtime_integrated() -> bool {

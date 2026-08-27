@@ -116,6 +116,7 @@ pub struct Qwen3TtsStatusDto {
 
 pub struct Qwen3TtsRuntimeState {
     engine: Mutex<Option<QwenEngine>>,
+    model_loading: Mutex<()>,
     loading: AtomicBool,
     error: Mutex<Option<String>>,
 }
@@ -124,52 +125,10 @@ impl Default for Qwen3TtsRuntimeState {
     fn default() -> Self {
         Self {
             engine: Mutex::new(None),
+            model_loading: Mutex::new(()),
             loading: AtomicBool::new(false),
             error: Mutex::new(None),
         }
-    }
-}
-
-pub fn preload_at_startup(app: AppHandle) {
-    {
-        let state = app.state::<Qwen3TtsRuntimeState>();
-        if state.loading.swap(true, Ordering::AcqRel)
-            || state.engine.lock().is_ok_and(|slot| slot.is_some())
-        {
-            return;
-        }
-    }
-    let worker_app = app.clone();
-    if let Err(error) = std::thread::Builder::new()
-        .name("notia-qwen3-tts-preload".into())
-        .spawn(move || {
-            let result = load_engine(&worker_app, MODEL_DIRECTORY_06B, TALKER_FILE_06B, "cpu");
-            let state = worker_app.state::<Qwen3TtsRuntimeState>();
-            match result {
-                Ok(engine) => {
-                    if let Ok(mut slot) = state.engine.lock() {
-                        *slot = Some(engine);
-                    }
-                    if let Ok(mut slot) = state.error.lock() {
-                        *slot = None;
-                    }
-                    log::info!("[notia:qwen3-tts] native runtime preloaded");
-                }
-                Err(error) => {
-                    if let Ok(mut slot) = state.error.lock() {
-                        *slot = Some(error.clone());
-                    }
-                    log::warn!("[notia:qwen3-tts] preload failed: {error}");
-                }
-            }
-            state.loading.store(false, Ordering::Release);
-        })
-    {
-        let state = app.state::<Qwen3TtsRuntimeState>();
-        state.loading.store(false, Ordering::Release);
-        if let Ok(mut slot) = state.error.lock() {
-            *slot = Some(error.to_string());
-        };
     }
 }
 
@@ -192,6 +151,36 @@ pub fn reload(state: &Qwen3TtsRuntimeState) -> Result<(), String> {
         *error = None;
     }
     Ok(())
+}
+
+pub fn prepare(
+    app: &AppHandle,
+    state: &Qwen3TtsRuntimeState,
+    model: &str,
+    device: &str,
+) -> Result<(), String> {
+    if !matches!(model, "0.6b" | "1.7b") {
+        return Err("El modelo Qwen3-TTS no es válido.".into());
+    }
+    if !matches!(device, "cpu" | "gpu") {
+        return Err("El dispositivo de Qwen3-TTS no es válido.".into());
+    }
+    let (model_directory, talker_file) = if model == "1.7b" {
+        (MODEL_DIRECTORY_17B, TALKER_FILE_17B)
+    } else {
+        (MODEL_DIRECTORY_06B, TALKER_FILE_06B)
+    };
+    let _loading_guard = state
+        .model_loading
+        .lock()
+        .map_err(|_| "No se pudo coordinar la carga de Qwen3-TTS.".to_string())?;
+    state.loading.store(true, Ordering::Release);
+    let result = ensure_loaded(app, state, model_directory, talker_file, "cpu");
+    state.loading.store(false, Ordering::Release);
+    if let Ok(mut error) = state.error.lock() {
+        *error = result.as_ref().err().cloned();
+    }
+    result
 }
 
 pub fn synthesize(
@@ -242,6 +231,10 @@ pub fn synthesize(
     } else {
         (MODEL_DIRECTORY_06B, TALKER_FILE_06B)
     };
+    let _loading_guard = state
+        .model_loading
+        .lock()
+        .map_err(|_| "No se pudo coordinar la carga de Qwen3-TTS.".to_string())?;
     ensure_loaded(app, state, model_directory, talker_file, device)?;
     ensure_tts_generation_memory(model)?;
     let text_c =

@@ -14,6 +14,24 @@ pub struct Qwen3TtsSynthesisInput {
     device: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrepareQwen3TtsInput {
+    model: String,
+    device: String,
+}
+
+#[tauri::command]
+pub async fn prepare_qwen3_tts(app: AppHandle, input: PrepareQwen3TtsInput) -> Result<(), String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<Qwen3TtsRuntimeState>();
+        qwen3_tts_service::prepare(&worker_app, &state, &input.model, &input.device)
+    })
+    .await
+    .map_err(|error| format!("Falló la preparación de Qwen3-TTS: {error}"))?
+}
+
 #[tauri::command]
 pub fn get_qwen3_tts_status(state: State<'_, Qwen3TtsRuntimeState>) -> Qwen3TtsStatusDto {
     qwen3_tts_service::status(&state)

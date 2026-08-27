@@ -10,6 +10,37 @@ use crate::services::speech_service;
 use crate::services::speech_service::{SpeechPhase, SpeechRuntimeState};
 use tauri::{AppHandle, Manager, State};
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrepareSpeechModelPayload {
+    model: String,
+    device: String,
+    language: String,
+}
+
+#[tauri::command]
+pub async fn prepare_speech_model(
+    payload: PrepareSpeechModelPayload,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !matches!(payload.model.as_str(), "0.6b" | "1.7b") {
+        return Err("El modelo Qwen3-ASR seleccionado no es válido.".to_string());
+    }
+    if !matches!(payload.device.as_str(), "cpu" | "gpu") {
+        return Err("El dispositivo Qwen3-ASR seleccionado no es válido.".to_string());
+    }
+    let language = payload.language.trim().to_string();
+    if language.is_empty() {
+        return Err("El idioma de Qwen3-ASR no puede estar vacío.".to_string());
+    }
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        speech_service::prepare_recognizer(&worker_app, &payload.model, &language, &payload.device)
+    })
+    .await
+    .map_err(|error| format!("Falló la preparación de Qwen3-ASR: {error}"))?
+}
+
 #[tauri::command]
 pub fn get_speech_capabilities(
     app: AppHandle,

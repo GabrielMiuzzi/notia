@@ -14,6 +14,7 @@ import type {
   StartSpeechSessionInput,
   StartSpeechSessionResult,
 } from './speechTypes'
+import type { Qwen3AsrPreferences } from '../preferences/qwen3AsrSettingsStorage'
 
 const SPEECH_STATE_EVENT = 'speech://state'
 const SPEECH_PARTIAL_EVENT = 'speech://partial'
@@ -28,6 +29,9 @@ const SPEECH_ERROR_CODES: SpeechErrorCode[] = [
   'cancelled',
   'internal',
 ]
+let preparedModelKey: string | null = null
+let pendingModelPreparation: Promise<void> | null = null
+let pendingModelKey: string | null = null
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null
@@ -144,6 +148,36 @@ function parseSpeechSessionState(value: unknown): SpeechSessionState {
 
 export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
   return parseSpeechCapabilities(await invoke<unknown>('get_speech_capabilities'))
+}
+
+export async function prepareSpeechModel(preferences: Qwen3AsrPreferences): Promise<void> {
+  const key = `${preferences.model}:${preferences.device}:${preferences.language.trim().toLowerCase()}`
+  if (preparedModelKey === key) return
+  if (pendingModelPreparation) {
+    if (pendingModelKey === key) return pendingModelPreparation
+    await pendingModelPreparation.catch(() => undefined)
+    return prepareSpeechModel(preferences)
+  }
+  const preparation = invoke<void>('prepare_speech_model', {
+    payload: {
+      model: preferences.model,
+      device: preferences.device,
+      language: preferences.language,
+    },
+  })
+  pendingModelPreparation = preparation
+  pendingModelKey = key
+  try {
+    await preparation
+    preparedModelKey = key
+  } catch (error) {
+    throw error
+  } finally {
+    if (pendingModelPreparation === preparation) {
+      pendingModelPreparation = null
+      pendingModelKey = null
+    }
+  }
 }
 
 export function parseSpeechModelStatus(value: unknown): SpeechModelStatus {

@@ -6,7 +6,7 @@ El contacto autorizado de Telegram también puede enviar una nota de voz OGG/Opu
 
 Notia usa Qwen3-ASR Q8 mediante un runtime nativo basado en `llama.cpp`. El reconocimiento funciona localmente y permite seleccionar 0.6B o 1.7B, CPU/GPU e idioma desde **Configuraciones → Voz**.
 
-Notia precarga Qwen3-ASR 0.6B en segundo plano y reutiliza el reconocedor cuando la selección no cambia. Al elegir otro modelo, dispositivo o idioma se descarta de forma segura el runtime anterior y se carga la nueva configuración.
+Notia precarga en segundo plano los modelos Qwen3-ASR y Qwen3-TTS seleccionados desde el arranque y mantiene ambos runtimes listos para el chat, el dictado y Meeting. Al elegir otro modelo, dispositivo o idioma, prepara inmediatamente la nueva configuración y descarta de forma segura el runtime anterior.
 
 El compositor incluye un botón de micrófono para dictar sin enviar audio ni texto a servicios externos. En Windows y Android arm64, Notia muestra texto parcial en tiempo real y, al detener, ejecuta diarización para separar intervenciones como `Hablante 1` y `Hablante 2`. El resultado queda editable y nunca se envía automáticamente.
 
