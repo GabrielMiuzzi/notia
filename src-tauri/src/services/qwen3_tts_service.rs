@@ -21,9 +21,13 @@ const TALKER_FILE_06B: &str = "qwen-talker-0.6b-customvoice-Q4_K_M.gguf";
 const MODEL_DIRECTORY_17B: &str = "qwen3-tts-1.7b-customvoice-q4_k_m";
 const TALKER_FILE_17B: &str = "qwen-talker-1.7b-customvoice-Q4_K_M.gguf";
 const TOKENIZER_FILE: &str = "qwen-tokenizer-12hz-Q4_K_M.gguf";
-const MAX_TEXT_CHARS: usize = 2_000;
+// Qwen3-TTS supports long-form synthesis; keep normal chat answers in one
+// inference so prosody and speaker identity do not reset between paragraphs.
+const MAX_TEXT_CHARS: usize = 6_000;
 const MIN_AUDIO_TOKENS: usize = 256;
-const MAX_AUDIO_TOKENS: usize = 2_048;
+const MAX_AUDIO_TOKENS: usize = 8_192;
+const STABLE_SPEECH_INSTRUCTION: &str =
+    "Habla en espanol de forma natural, clara y fluida. Mantiene exactamente la misma voz, timbre, ritmo y entonacion durante todo el mensaje.";
 
 #[repr(C)]
 struct QwenParams {
@@ -74,6 +78,7 @@ struct QwenEngine {
     free_string: FreeStringFn,
     model_directory: String,
     device: String,
+    active_backend: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -112,6 +117,7 @@ pub struct Qwen3TtsStatusDto {
     pub ready: bool,
     pub loading: bool,
     pub error: Option<String>,
+    pub backend: Option<String>,
 }
 
 pub struct Qwen3TtsRuntimeState {
@@ -133,11 +139,18 @@ impl Default for Qwen3TtsRuntimeState {
 }
 
 pub fn status(state: &Qwen3TtsRuntimeState) -> Qwen3TtsStatusDto {
+    let (ready, backend) = state.engine.lock().map_or((false, None), |slot| {
+        (
+            slot.is_some(),
+            slot.as_ref().map(|engine| engine.active_backend.clone()),
+        )
+    });
     Qwen3TtsStatusDto {
         supported: cfg!(any(target_os = "windows", target_os = "android")),
-        ready: state.engine.lock().is_ok_and(|slot| slot.is_some()),
+        ready,
         loading: state.loading.load(Ordering::Acquire),
         error: state.error.lock().ok().and_then(|value| value.clone()),
+        backend,
     }
 }
 
@@ -175,7 +188,7 @@ pub fn prepare(
         .lock()
         .map_err(|_| "No se pudo coordinar la carga de Qwen3-TTS.".to_string())?;
     state.loading.store(true, Ordering::Release);
-    let result = ensure_loaded(app, state, model_directory, talker_file, "cpu");
+    let result = ensure_loaded_with_acceleration(app, state, model_directory, talker_file);
     state.loading.store(false, Ordering::Release);
     if let Ok(mut error) = state.error.lock() {
         *error = result.as_ref().err().cloned();
@@ -198,7 +211,7 @@ pub fn synthesize(
         return Err("El texto para sintetizar esta vacio.".into());
     }
     if text.chars().count() > MAX_TEXT_CHARS {
-        return Err("El texto supera el limite de 2000 caracteres.".into());
+        return Err("El texto supera el limite de 6000 caracteres.".into());
     }
     if !matches!(
         voice,
@@ -223,9 +236,7 @@ pub fn synthesize(
     if !matches!(device, "cpu" | "gpu") {
         return Err("El dispositivo de Qwen3-TTS no es valido.".into());
     }
-    // CUDA is intentionally disabled for the local runtime. Keep accepting
-    // the legacy value so existing frontend settings remain compatible.
-    let device = "cpu";
+    let _requested_device = device;
     let (model_directory, talker_file) = if model == "1.7b" {
         (MODEL_DIRECTORY_17B, TALKER_FILE_17B)
     } else {
@@ -235,11 +246,13 @@ pub fn synthesize(
         .model_loading
         .lock()
         .map_err(|_| "No se pudo coordinar la carga de Qwen3-TTS.".to_string())?;
-    ensure_loaded(app, state, model_directory, talker_file, device)?;
+    ensure_loaded_with_acceleration(app, state, model_directory, talker_file)?;
     ensure_tts_generation_memory(model)?;
     let text_c =
         CString::new(text).map_err(|_| "El texto contiene caracteres nulos.".to_string())?;
     let voice_c = CString::new(voice).map_err(|_| "La voz no es valida.".to_string())?;
+    let instruction_c = CString::new(STABLE_SPEECH_INSTRUCTION)
+        .map_err(|_| "La instruccion de voz no es valida.".to_string())?;
     let mut guard = state
         .engine
         .lock()
@@ -249,15 +262,17 @@ pub fn synthesize(
         .ok_or_else(|| "Qwen3-TTS no esta listo.".to_string())?;
     let params = QwenParams {
         max_audio_tokens: audio_token_budget(text),
-        temperature: 0.5,
-        top_p: 1.0,
-        top_k: 50,
+        // Each frontend chunk is an independent native inference. Conservative
+        // sampling keeps the selected speaker and prosody stable across chunks.
+        temperature: 0.15,
+        top_p: 0.85,
+        top_k: 20,
         n_threads: available_threads(),
         print_progress: 0,
         print_timing: 0,
         repetition_penalty: 1.05,
         language_id: language_id(language)?,
-        instruction: std::ptr::null(),
+        instruction: instruction_c.as_ptr(),
         speaker: voice_c.as_ptr(),
         vocoder_left_context_sec: 0.0,
     };
@@ -334,6 +349,36 @@ fn ensure_loaded(
     Ok(())
 }
 
+fn ensure_loaded_with_acceleration(
+    app: &AppHandle,
+    state: &Qwen3TtsRuntimeState,
+    model_directory: &str,
+    talker_file: &str,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if cuda_runtime_is_available(app) {
+        return ensure_loaded(app, state, model_directory, talker_file, "gpu").map_err(|error| {
+            format!(
+                "Qwen3-TTS detecto CUDA pero no pudo activarlo; no se usara CPU silenciosamente: {error}"
+            )
+        });
+    }
+
+    ensure_loaded(app, state, model_directory, talker_file, "cpu")
+}
+
+#[cfg(target_os = "windows")]
+fn cuda_runtime_is_available(app: &AppHandle) -> bool {
+    let runtime_has_cuda = runtime_path(app)
+        .ok()
+        .and_then(|runtime| runtime.parent().map(Path::to_path_buf))
+        .is_some_and(|directory| directory.join("ggml-cuda.dll").is_file());
+    runtime_has_cuda
+        && cuda_binary_directories()
+            .iter()
+            .any(|directory| directory.join("cublas64_13.dll").is_file())
+}
+
 fn load_engine(
     app: &AppHandle,
     model_directory: &str,
@@ -344,6 +389,13 @@ fn load_engine(
     // for throughput. Notia keeps ASR and TTS resident together, so use the
     // shared scheduler to keep the combined native memory budget bounded.
     std::env::set_var("QWEN3_TTS_CODE_PRED_DEDICATED_SCHED", "0");
+    // The speech/reference encoder is optional in the upstream runtime and
+    // defaults to CPU. Keep it aligned with the selected backend so CUDA mode
+    // does not silently leave part of the TTS pipeline on the host.
+    std::env::set_var(
+        "QWEN3_TTS_SPEECH_ENCODER_CUDA",
+        if device == "gpu" { "1" } else { "0" },
+    );
     let runtime = runtime_path(app)?;
     let models = model_root(app, model_directory, talker_file)?;
     let mut dependencies = Vec::new();
@@ -361,9 +413,15 @@ fn load_engine(
         } else {
             None
         };
-        // ggml-cpu depends on ggml-base; load the dependency chain from the
-        // bottom up so Windows can resolve every import reliably.
-        for name in ["ggml-base.dll", "ggml-cpu.dll", "ggml.dll"] {
+        // Load the GGML dependency chain explicitly. ggml-cuda is a dynamic
+        // backend and must be loaded before qwen3_tts_runtime initializes;
+        // merely placing the DLL beside the runtime does not register CUDA.
+        let mut dependency_names = vec!["ggml-base.dll", "ggml-cpu.dll"];
+        if device == "gpu" {
+            dependency_names.push("ggml-cuda.dll");
+        }
+        dependency_names.push("ggml.dll");
+        for name in dependency_names {
             let path = directory.join(name);
             if path.is_file() {
                 dependencies.push(load_windows_library(&path).map_err(|error| {
@@ -444,6 +502,7 @@ fn load_engine(
                 free_string,
                 model_directory: model_directory.to_string(),
                 device: device.to_string(),
+                active_backend: String::new(),
             };
             return Err(format!(
                 "No se pudieron cargar los modelos de Qwen3-TTS: {}",
@@ -474,6 +533,7 @@ fn load_engine(
                 free_string,
                 model_directory: model_directory.to_string(),
                 device: device.to_string(),
+                active_backend: active_backend_name.clone(),
             };
             return Err(format!(
                 "Qwen3-TTS solicitó CUDA pero activó el backend '{}'.",
@@ -484,6 +544,11 @@ fn load_engine(
                 }
             ));
         }
+        log::info!(
+            "Qwen3-TTS activo con backend '{}' para {}",
+            active_backend_name,
+            model_directory
+        );
         Ok(QwenEngine {
             _library: library,
             _dependencies: dependencies,
@@ -497,6 +562,7 @@ fn load_engine(
             free_string,
             model_directory: model_directory.to_string(),
             device: device.to_string(),
+            active_backend: active_backend_name,
         })
     }
 }
@@ -709,7 +775,9 @@ mod tests {
     fn audio_cache_budget_scales_with_text_length() {
         assert_eq!(audio_token_budget("Hola"), 256);
         assert_eq!(audio_token_budget(&"a".repeat(1_000)), 1_250);
-        assert_eq!(audio_token_budget(&"a".repeat(2_000)), 2_048);
+        assert_eq!(audio_token_budget(&"a".repeat(2_000)), 2_500);
+        assert_eq!(audio_token_budget(&"a".repeat(6_000)), 7_500);
+        assert_eq!(audio_token_budget(&"a".repeat(8_000)), 8_192);
     }
     #[test]
     fn maps_spanish_language() {

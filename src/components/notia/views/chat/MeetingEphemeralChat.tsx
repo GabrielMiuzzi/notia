@@ -1,20 +1,26 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from 'react'
 import { Bot, Send, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
-import { chatAboutMeetingTranscript } from '../../../../services/ai/aiRuntime'
+import { loadLibraryFileOptions } from '../../../../services/chat/chatAttachmentRuntime'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
+import { runNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
+import { createChatScopedAgent } from '../../../../services/chat/chatScopedAgentRuntime'
+import { loadSelectedAgentPromptFileName } from '../../../../services/ai/agentPromptRuntime'
 import {
   getMeetingTranscriptContext,
   subscribeMeetingTranscriptContext,
 } from '../../../../services/meeting/meetingTranscriptContext'
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
+import type { NotiaLibrary } from '../../../../types/notia'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 
 interface MeetingEphemeralChatProps {
   aiPreferences: AiPreferences
+  library: NotiaLibrary | null
+  onLibraryChanged: () => void
 }
 
-export function MeetingEphemeralChat({ aiPreferences }: MeetingEphemeralChatProps) {
+export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged }: MeetingEphemeralChatProps) {
   const transcript = useSyncExternalStore(
     subscribeMeetingTranscriptContext,
     getMeetingTranscriptContext,
@@ -41,6 +47,10 @@ export function MeetingEphemeralChat({ aiPreferences }: MeetingEphemeralChatProp
       setError('Todavía no hay una transcripción de Meeting para consultar.')
       return
     }
+    if (!library) {
+      setError('Abrí una biblioteca para usar el chat de Meeting.')
+      return
+    }
 
     const previousMessages = messages
     const userMessage: StoredChatMessage = { role: 'user', content: question }
@@ -53,17 +63,45 @@ export function MeetingEphemeralChat({ aiPreferences }: MeetingEphemeralChatProp
     setIsSubmitting(true)
 
     try {
-      const answer = await chatAboutMeetingTranscript(
-        aiPreferences,
-        transcript,
-        question,
+      const files = await loadLibraryFileOptions(library)
+      const agent = await createChatScopedAgent({
+        scope: 'library',
+        library,
+        scopePaths: files.map((file) => file.path),
+        promptFileName: loadSelectedAgentPromptFileName(library.id),
+        requestClarification: async (prompt, signal) => {
+          if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
+          return window.prompt(prompt)?.trim() ?? ''
+        },
+        requestConfirmation: async (prompt, signal) => {
+          if (signal.aborted) return false
+          return window.confirm(prompt)
+        },
+        requestExecutionPlanApproval: async (steps, signal) => ({
+          approved: !signal.aborted && window.confirm(
+            `Aprobar este plan de ejecución:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
+          ),
+        }),
+      })
+      const answer = await runNotiaChatReply(aiPreferences, {
+        agent,
+        prompt: [
+          'Usá la siguiente transcripción actual de Meeting como contexto para responder la consulta.',
+          'Si la respuesta no surge de ella ni de una herramienta autorizada, indicá que no está disponible.',
+          '',
+          'TRANSCRIPCIÓN ACTUAL:',
+          transcript.trim(),
+          '',
+          'CONSULTA:',
+          question,
+        ].join('\n'),
         previousMessages,
-        {
+      }, {
           abortSignal: controller.signal,
           onMessageDelta: (delta) => setStreamingMessage((current) => current + delta),
-        },
-      )
+      })
       setMessages((current) => [...current, { role: 'assistant', content: answer }])
+      onLibraryChanged()
     } catch (submitError) {
       if (!controller.signal.aborted) {
         setError(submitError instanceof Error ? submitError.message : 'No se pudo consultar la transcripción.')

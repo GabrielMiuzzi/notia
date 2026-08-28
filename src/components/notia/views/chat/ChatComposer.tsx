@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, FileImage, Files, Info, Mic, Pause, Phone, PhoneOff, Play, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, FileImage, Files, Info, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
@@ -82,6 +82,7 @@ function ChatComposerComponent({
   const qwen3Tts = useAppSelector(selectQwen3TtsSettings)
   const [isConversationMode, setIsConversationMode] = useState(false)
   const [conversationStatus, setConversationStatus] = useState('')
+  void conversationStatus
   const waitingForAssistantRef = useRef(false)
   const lastSpokenAssistantRef = useRef<string | null>(null)
   const voice = useVoiceTranscription({
@@ -95,7 +96,7 @@ function ChatComposerComponent({
       waitingForAssistantRef.current = true
       setConversationStatus('Pensando...')
       setDraft('')
-      void Promise.resolve(onSubmitText(spokenText)).catch((error) => {
+      void Promise.resolve().then(() => onSubmitText(spokenText)).catch((error) => {
         waitingForAssistantRef.current = false
         setConversationStatus(error instanceof Error ? error.message : 'No se pudo enviar el mensaje hablado.')
       })
@@ -142,6 +143,10 @@ function ChatComposerComponent({
       })
       .catch((error) => { setConversationStatus(error instanceof Error ? error.message : 'No se pudo iniciar la llamada.'); setIsConversationMode(false) })
   }, [lastAssistantMessage, qwen3Tts, voice])
+  // Conversational call mode is intentionally not exposed in chat UI. Keep
+  // the legacy handlers isolated until the dedicated call surface is removed.
+  void stopConversation
+  void startConversation
   const hasAnyAttachment = selectedImageAttachment
     || selectedLibraryFileSummary.length > 0
     || transientContextSummaryLabel
@@ -327,7 +332,6 @@ function ChatComposerComponent({
           ) : null}
         </div>
       ) : null}
-      {conversationStatus ? <div className="notia-chat-voice-status" role="status" aria-live="polite">{conversationStatus}</div> : null}
       <div className="notia-chat-composer-footer">
         <span>{activeModelLabel} · Enter para enviar. Shift + Enter para salto de linea.</span>
         <div className="notia-chat-composer-actions">
@@ -341,13 +345,6 @@ function ChatComposerComponent({
             disabled={!library || voice.isActive || !voice.isModelReady}
           >
             <Mic size={16} />
-          </NotiaButton>
-          <NotiaButton type="button" size="icon" variant={isConversationMode ? 'primary' : 'secondary'}
-            title={isConversationMode ? 'Finalizar modo charla' : 'Iniciar modo charla'}
-            aria-label={isConversationMode ? 'Finalizar modo charla' : 'Iniciar modo charla'}
-            onClick={isConversationMode ? stopConversation : startConversation}
-            disabled={!library || (!isConversationMode && (voice.isActive || isSubmitting || !voice.isModelReady))}>
-            {isConversationMode ? <PhoneOff size={16} /> : <Phone size={16} />}
           </NotiaButton>
           <div className="notia-chat-attachment-menu-shell">
             <NotiaButton

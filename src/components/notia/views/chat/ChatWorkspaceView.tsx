@@ -114,7 +114,7 @@ export function ChatWorkspaceViewComponent({
   const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string }) => void) | null>(null)
 
   useEffect(() => {
-    if (!library || !agentScope) {
+    if (!library) {
       setAgentPromptOptions([{ fileName: 'default.md', name: 'default' }])
       setAgentPromptFileName('default.md')
       return

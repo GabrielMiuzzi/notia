@@ -7,7 +7,6 @@ import { normalizeAiSettingsInput } from '../preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 const AI_REQUEST_TIMEOUT_MS = 15_000
-const AI_CHAT_TIMEOUT_MS = 180_000
 const AI_TOOL_AGENT_TIMEOUT_MS = 600_000
 const AI_HEALTH_CACHE_TTL_MS = 10_000
 const MAX_MEMORY_ITEMS = 50
@@ -135,15 +134,6 @@ interface OllamaTagsResponse {
 
 interface OllamaShowResponse {
   capabilities?: unknown
-}
-
-interface OllamaStreamChunk {
-  message?: {
-    content?: unknown
-    thinking?: unknown
-  }
-  error?: unknown
-  done?: unknown
 }
 
 interface OllamaNativeToolResponse {
@@ -1203,115 +1193,6 @@ async function invokeDesktopAiChat(
   throw describeAiError(lastError, 'No se pudo completar la consulta en desktop.')
 }
 
-async function streamDesktopAiChatViaFetch(
-  preferences: AiPreferences,
-  model: string,
-  messages: AiMessagePayload[],
-  options: StreamAiChatReplyOptions,
-): Promise<string> {
-  const controller = new AbortController()
-  options.abortSignal?.addEventListener('abort', () => controller.abort(), { once: true })
-  const timeoutId = window.setTimeout(() => controller.abort(), AI_CHAT_TIMEOUT_MS)
-
-  try {
-    const response = await fetch(buildOllamaUrl(preferences, '/api/chat'), {
-      method: 'POST',
-      headers: {
-        ...buildOllamaHeaders(preferences, 'application/x-ndjson'),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        think: options.thinking ?? false,
-        messages,
-      }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) {
-      const detail = await response.text()
-      throw new Error(detail || `La IA respondio con HTTP ${response.status}.`)
-    }
-
-    if (!response.body) {
-      throw new Error('La IA no devolvio un stream legible.')
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let answer = ''
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-
-      let lineBreakIndex = buffer.indexOf('\n')
-      while (lineBreakIndex >= 0) {
-        const rawLine = buffer.slice(0, lineBreakIndex).trim()
-        buffer = buffer.slice(lineBreakIndex + 1)
-
-        if (rawLine) {
-          const payload = JSON.parse(rawLine) as OllamaStreamChunk
-          if (typeof payload.error === 'string' && payload.error.trim()) {
-            throw new Error(payload.error.trim())
-          }
-
-          const thinkingDelta = typeof payload.message?.thinking === 'string'
-            ? payload.message.thinking
-            : ''
-          if (thinkingDelta) {
-            options.onThinkingDelta?.(thinkingDelta)
-          }
-
-          const delta = typeof payload.message?.content === 'string'
-            ? payload.message.content
-            : ''
-          if (delta) {
-            answer += delta
-            options.onMessageDelta?.(delta)
-          }
-        }
-
-        lineBreakIndex = buffer.indexOf('\n')
-      }
-
-      if (done) {
-        break
-      }
-    }
-
-    if (buffer.trim()) {
-      const payload = JSON.parse(buffer.trim()) as OllamaStreamChunk
-      const thinkingDelta = typeof payload.message?.thinking === 'string'
-        ? payload.message.thinking
-        : ''
-      if (thinkingDelta) {
-        options.onThinkingDelta?.(thinkingDelta)
-      }
-      const delta = typeof payload.message?.content === 'string'
-        ? payload.message.content
-        : ''
-      if (delta) {
-        answer += delta
-        options.onMessageDelta?.(delta)
-      }
-    }
-
-    const normalizedAnswer = answer.trim()
-    if (!normalizedAnswer) {
-      throw new Error('La IA no devolvio contenido.')
-    }
-
-    return normalizedAnswer
-  } catch (error) {
-    throw describeAiError(error, 'No se pudo completar la consulta con Ollama.')
-  } finally {
-    window.clearTimeout(timeoutId)
-  }
-}
-
 function buildAiHealthCacheKey(preferences: AiPreferences): string {
   const normalized = normalizeAiSettingsInput(preferences)
   return `${normalized.ollamaUrl}::${normalized.selectedModel}::${normalized.apiKey}`
@@ -1406,6 +1287,7 @@ export async function runNativeToolAgent(
   try {
     const maxRounds = Math.min(80, Math.max(1, input.maxRounds ?? 6))
     for (let round = 0; round < maxRounds; round += 1) {
+      let answerStreamed = false
       options.onThinkingDelta?.(
         round === 0
           ? 'Analizando la consulta y eligiendo herramientas…\n'
@@ -1436,6 +1318,34 @@ export async function runNativeToolAgent(
           throw new Error(detail || `La IA respondio con HTTP ${response.status}.`)
         }
         payload = await response.json() as OllamaNativeToolResponse
+      } else if (round > 0) {
+        // Tool rounds stay on the native tool-calling runtime. Once tools have
+        // produced context, stream the final natural-language round so callers
+        // (including conversation-mode TTS) receive deltas immediately.
+        try {
+          const streamedAnswer = await streamDesktopAiChatViaBridge(
+            normalizedPreferences,
+            model,
+            messages,
+            {
+              abortSignal: controller.signal,
+              onMessageDelta: (delta) => {
+                answerStreamed = true
+                options.onMessageDelta?.(delta)
+              },
+              onThinkingDelta: options.onThinkingDelta,
+              thinking: normalizedPreferences.thinkingEnabled
+                ? supportsThinkingLevels(model) ? normalizedPreferences.thinkingLevel : true
+                : false,
+            },
+          )
+          payload = { message: { content: streamedAnswer } }
+        } catch (streamError) {
+          if (controller.signal.aborted) throw streamError
+          payload = await invoke<OllamaNativeToolResponse>('run_desktop_ai_tool_chat', {
+            payload: requestPayload,
+          })
+        }
       } else {
         payload = await invoke<OllamaNativeToolResponse>('run_desktop_ai_tool_chat', {
           payload: requestPayload,
@@ -1466,7 +1376,7 @@ export async function runNativeToolAgent(
           messages.push({ role: 'user', content: correctionPrompt })
           continue
         }
-        options.onMessageDelta?.(answer)
+        if (!answerStreamed) options.onMessageDelta?.(answer)
         return answer
       }
 
@@ -1548,14 +1458,6 @@ export async function streamAiChatReply(
     if (chatOptions.abortSignal?.aborted) {
       throw nativeStreamError
     }
-  }
-
-  try {
-    return await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, chatOptions)
-  } catch (streamError) {
-    if (chatOptions.abortSignal?.aborted) {
-      throw streamError
-    }
     return invokeDesktopAiChat(normalizedPreferences, model, messages, chatOptions)
   }
 }
@@ -1622,21 +1524,12 @@ export async function generateAiChatTitle(
 
   const messages = buildTitleGenerationMessages(normalizedPrompt)
 
-  try {
-    const answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, {})
-    const title = sanitizeGeneratedTitle(answer)
-    if (!title) {
-      throw new Error('La IA no devolvio un titulo valido.')
-    }
-    return title
-  } catch {
-    const answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, {})
-    const title = sanitizeGeneratedTitle(answer)
-    if (!title) {
-      throw new Error('La IA no devolvio un titulo valido.')
-    }
-    return title
+  const answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, {})
+  const title = sanitizeGeneratedTitle(answer)
+  if (!title) {
+    throw new Error('La IA no devolvio un titulo valido.')
   }
+  return title
 }
 
 export async function generateAiLongTermMemories(
@@ -1684,13 +1577,8 @@ export async function generateAiLongTermMemories(
 
   const messages = buildLongTermMemoryGenerationMessages(input)
 
-  try {
-    const answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, {})
-    return parseGeneratedMemoryList(answer)
-  } catch {
-    const answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, {})
-    return parseGeneratedMemoryList(answer)
-  }
+  const answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, {})
+  return parseGeneratedMemoryList(answer)
 }
 
 export async function recognizeInkMathWithAi(
@@ -1733,11 +1621,7 @@ export async function recognizeInkMathWithAi(
       { role: 'system', content: 'Sos un transcriptor preciso de formulas matematicas manuscritas a LaTeX.' },
       { role: 'user', content: prompt, images: [base64] },
     ]
-    try {
-      answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, options)
-    } catch {
-      answer = await streamDesktopAiChatViaFetch(normalizedPreferences, model, messages, options)
-    }
+    answer = await invokeDesktopAiChat(normalizedPreferences, model, messages, options)
   }
 
   if (abortSignal?.aborted) {
@@ -1779,47 +1663,6 @@ export async function improveMeetingTranscript(
     image: null,
     selectedContextMode: 'direct',
   }, { thinking: false })
-}
-
-export interface MeetingTranscriptChatOptions {
-  abortSignal?: AbortSignal
-  onMessageDelta?: (delta: string) => void
-}
-
-export async function chatAboutMeetingTranscript(
-  preferences: AiPreferences,
-  transcript: string,
-  question: string,
-  previousMessages: StoredChatMessage[],
-  options: MeetingTranscriptChatOptions = {},
-): Promise<string> {
-  const normalizedTranscript = transcript.trim()
-  const normalizedQuestion = question.trim()
-  if (!normalizedTranscript) throw new Error('Todavía no hay una transcripción para consultar.')
-  if (!normalizedQuestion) throw new Error('Escribí una pregunta sobre la transcripción.')
-
-  return streamAiChatReply(preferences, {
-    prompt: [
-      'Respondé la consulta usando la transcripción de la reunión incluida abajo como fuente principal.',
-      'Podés analizarla, resumirla, extraer acuerdos o responder preguntas sobre su contenido.',
-      'Si la respuesta no surge de la transcripción, indicá claramente que esa información no está disponible.',
-      'No afirmes que este chat o su contenido fueron guardados.',
-      '',
-      'TRANSCRIPCIÓN ACTUAL:',
-      normalizedTranscript,
-      '',
-      'CONSULTA:',
-      normalizedQuestion,
-    ].join('\n'),
-    previousMessages,
-    longTermMemories: [],
-    files: [],
-    image: null,
-    selectedContextMode: 'direct',
-  }, {
-    abortSignal: options.abortSignal,
-    onMessageDelta: options.onMessageDelta,
-  })
 }
 
 async function invokeAndroidAiModelList(preferences: AiPreferences): Promise<string[]> {

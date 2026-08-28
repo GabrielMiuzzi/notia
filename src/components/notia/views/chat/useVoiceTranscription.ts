@@ -60,6 +60,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   const [isModelReady, setIsModelReady] = useState(false)
   const [modelPreparationError, setModelPreparationError] = useState<string | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  const consumingTurnRef = useRef<string | null>(null)
   const baseDraftRef = useRef('')
   const silenceTimerRef = useRef<number | null>(null)
   const lastObservedSpeechRef = useRef('')
@@ -116,15 +117,24 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
         void stopSpeechSession(sessionId).catch(() => undefined)
         return
       }
+      // Partial-text and diarization events can observe the same silence. Only
+      // one consume request may be in flight for a session; a second request
+      // would race and report a misleading generic speech error.
+      if (consumingTurnRef.current === sessionId) return
+      consumingTurnRef.current = sessionId
       void consumeSpeechTurn(sessionId).then((text) => {
         if (sessionId !== sessionIdRef.current) return
         baseDraftRef.current = ''
         lastObservedSpeechRef.current = ''
         setDraft('')
-        onCompletedRef.current?.(text)
+        // Keep UI callbacks outside the consume promise: an exception in the
+        // chat/TTS flow must not turn a successfully recognized turn into a
+        // misleading "No se pudo completar" speech error.
+        queueMicrotask(() => onCompletedRef.current?.(text))
       }).catch((error) => {
         if (sessionId === sessionIdRef.current) {
           setState({ status: 'error', error: { code: 'internal', message: error instanceof Error ? error.message : 'No se pudo completar el turno hablado.' } })
+          consumingTurnRef.current = null
         }
       })
     }
@@ -137,8 +147,9 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
             const transcript = formatDiarizedTranscript(event.state.transcript)
             setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, transcript))
             sessionIdRef.current = null
+            consumingTurnRef.current = null
             setVisiblePartialText('')
-            onCompletedRef.current?.(transcript)
+            queueMicrotask(() => onCompletedRef.current?.(transcript))
           } else if (event.state.status === 'error') {
             sessionIdRef.current = null
             setVisiblePartialText('')
@@ -158,7 +169,11 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
           const observedSpeech = `${confirmedTextRef.current} ${visiblePartialTextRef.current}`.trim()
           if (!observedSpeech) return
           setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, observedSpeech))
-          if (pauseDetectionMs && hasNewRecognizedSpeech(lastObservedSpeechRef.current, observedSpeech)) {
+          // In conversation mode only arm the silence timer after sherpa has
+          // confirmed an endpoint. A partial hypothesis is not yet available
+          // to consume_speech_turn and would otherwise produce a misleading
+          // generic turn error for short questions.
+          if (pauseDetectionMs && confirmedTextRef.current.trim() && hasNewRecognizedSpeech(lastObservedSpeechRef.current, observedSpeech)) {
             lastObservedSpeechRef.current = observedSpeech
             if (silenceTimerRef.current !== null) window.clearTimeout(silenceTimerRef.current)
             silenceTimerRef.current = window.setTimeout(() => {
@@ -193,6 +208,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
       if (silenceTimerRef.current !== null) window.clearTimeout(silenceTimerRef.current)
       const sessionId = sessionIdRef.current
       sessionIdRef.current = null
+      consumingTurnRef.current = null
       if (sessionId) void cancelSpeechSession(sessionId).catch(() => undefined)
     }
   }, [continuousSession, pauseDetectionMs, setDraft])
@@ -338,6 +354,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
     if (!sessionId) return false
     try {
       await resumeSpeechSession(sessionId)
+      if (consumingTurnRef.current === sessionId) consumingTurnRef.current = null
       return true
     } catch (error) {
       setState({ status: 'error', error: { code: 'internal', message: error instanceof Error ? error.message : 'No se pudo reanudar el micrófono.' } })

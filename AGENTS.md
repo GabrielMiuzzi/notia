@@ -51,6 +51,19 @@ Antes de finalizar:
 
 ## 4. Arquitectura y límites
 
+### Runtime único de IA conversacional
+
+Todos los chats conversacionales —incluidos chat general, Meeting efímero y Telegram— deben pasar por el runtime común de `src/services/chat/notiaChatRuntime.ts` y `src/services/ai/aiRuntime.ts`. Mantener idénticas las opciones, native tool calling, streaming, cancelación y manejo de errores; solo pueden variar el contexto, la personalización del prompt y si la conversación es efímera. En desktop, el acceso a Ollama debe realizarse exclusivamente mediante comandos/eventos Tauri nativos (`run_desktop_ai_*`); el frontend no debe usar `fetch` directo a Ollama como atajo o fallback.
+
+### Runtime único de conversaciones IA
+
+- Toda conversación con IA de Notia, sin excepciones de canal o vista (chat principal, panel lateral, Meeting, Telegram y futuras superficies), debe ejecutarse mediante `notiaChatRuntime.ts`.
+- Ese runtime es la única fachada conversacional y siempre usa `runNativeToolAgent`, el prompt cargado por `createChatScopedAgent`, el mismo catálogo de native tools, configuración de modelo/thinking, límites de rondas, validación y reglas de serialización de mutaciones.
+- Una vista puede variar exclusivamente el scope/contexto autorizado, el historial que aporta y su política de persistencia. Ser persistente o efímera nunca habilita otro motor, otro transporte conversacional ni una llamada directa a `streamAiChatReply`.
+- Las operaciones auxiliares que no constituyen una conversación (por ejemplo, generar un título, extraer memorias, reconocer InkMath o transformar una transcripción con **Pasar por IA**) pueden usar APIs especializadas, pero no deben reutilizarse para implementar chats.
+- Toda nueva superficie de chat debe incluir una prueba que demuestre su paso por la fachada común y debe documentar explícitamente si el historial se persiste o se descarta.
+- Los chats no implementan modo llamada ni lectura automática de respuestas. Las capacidades Qwen3-TTS y Qwen3-ASR/STT se mantienen como runtimes independientes para las superficies que las necesiten; el compositor puede usar STT para convertir una grabación o audio adjunto en texto.
+
 ### Frontend
 
 Respetar las responsabilidades existentes:

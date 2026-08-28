@@ -132,7 +132,11 @@ function NotiaRightPanelComponent({
       {isRightChatPanelOpen ? (
         isRightPanelChatMounted ? (
           isMeetingContext ? (
-            <MeetingEphemeralChat aiPreferences={aiPreferences} />
+            <MeetingEphemeralChat
+              aiPreferences={aiPreferences}
+              library={activeLibrary}
+              onLibraryChanged={handleChatWorkspaceTreeChanged}
+            />
           ) : (
             <ChatWorkspaceView
               agentCorpusPaths={agentCorpusPaths}

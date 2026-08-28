@@ -6,16 +6,10 @@ import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatL
 import { scheduleAiChatTitle } from '../../../../services/chat/chatTitleSync'
 import {
   checkAiHealth,
-  runNativeToolAgent,
-  startCancelableAiChatReply,
   type CancelableAiReplyHandle,
 } from '../../../../services/ai/aiRuntime'
-import {
-  CHAT_AGENT_MAX_ROUNDS,
-  CHAT_AGENT_SINGLE_CALL_TOOL_NAMES,
-  createChatScopedAgent,
-} from '../../../../services/chat/chatScopedAgentRuntime'
-import { loadInlineFileAttachments } from '../../../../services/chat/chatAttachmentRuntime'
+import { startNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
+import { createChatScopedAgent } from '../../../../services/chat/chatScopedAgentRuntime'
 import { loadLongTermMemories } from '../../../../services/chat/chatDocumentStorage'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
@@ -164,32 +158,11 @@ export function useChatSubmitMessage(
       content: trimmedMessage,
     } as const
 
-    let inlineFileAttachments: Awaited<ReturnType<typeof loadInlineFileAttachments>> = []
     let longTermMemories: string[] = []
     const previousImageAttachment = selectedImageAttachment
     const previousLibraryFilePaths = selectedLibraryFilePaths
     const previousLibraryFileOptions = selectedLibraryFileOptions
     const previousFileContextMode = selectedFileContextMode
-
-    try {
-      inlineFileAttachments = agentScope
-        ? []
-        : await loadInlineFileAttachments(
-          library,
-          effectiveSelectedContextPaths,
-          selectedLibraryFileOptions,
-        )
-    } catch (error) {
-      submitMeasurement.error(error, {
-        stage: 'load_inline_attachments',
-      })
-      setDialogMessage(
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : 'No se pudieron preparar los archivos seleccionados.',
-      )
-      return
-    }
 
     if (targetChatDocument.longTermMemoryEnabled) {
       try {
@@ -248,55 +221,30 @@ export function useChatSubmitMessage(
           setStreamingAssistantMessage((current) => current + delta)
         },
       }
-      let replyHandle: CancelableAiReplyHandle
-      if (agentScope) {
-        onAgentExecutionPlanChange([])
-        const agent = await createChatScopedAgent({
-          scope: agentScope,
+      const effectiveAgentScope = agentScope ?? 'library'
+      onAgentExecutionPlanChange([])
+      const agent = await createChatScopedAgent({
+          scope: effectiveAgentScope,
           promptFileName: agentPromptFileName,
           requestClarification: requestAgentClarification,
           library,
           scopePaths: agentCorpusPaths,
-          taskManagerScopeKey: agentScope === 'task-manager' ? preferredContextScopeKey : null,
-          activeDocumentPath: agentScope === 'document' ? agentCorpusPaths[0] ?? null : null,
-          explicitlySelectedPaths: agentScope === 'graph' && effectiveSelectedContextMode === 'direct'
+          taskManagerScopeKey: effectiveAgentScope === 'task-manager' ? preferredContextScopeKey : null,
+          activeDocumentPath: effectiveAgentScope === 'document' ? agentCorpusPaths[0] ?? null : null,
+          explicitlySelectedPaths: effectiveAgentScope === 'graph' && effectiveSelectedContextMode === 'direct'
             ? effectiveSelectedContextPaths
             : [],
           requestConfirmation: requestAgentConfirmation,
           onExecutionPlanChange: onAgentExecutionPlanChange,
           requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
         })
-        const controller = new AbortController()
-        replyHandle = {
-          abort: () => controller.abort(),
-          promise: runNativeToolAgent(aiPreferences, {
-            systemPrompt: longTermMemories.length > 0
-              ? `${agent.systemPrompt}\n\nMemorias de largo plazo relevantes:\n${longTermMemories.map((memory) => `- ${memory}`).join('\n')}`
-              : agent.systemPrompt,
+      const replyHandle: CancelableAiReplyHandle = startNotiaChatReply(aiPreferences, {
+            agent,
             prompt: trimmedMessage,
             image: selectedImageAttachment,
             previousMessages: chatMemory,
-            tools: agent.tools,
-            executeTool: agent.executeTool,
-            validateFinalAnswer: agent.validateFinalAnswer,
-            maxRounds: CHAT_AGENT_MAX_ROUNDS,
-            singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
-          }, { ...streamCallbacks, abortSignal: controller.signal }),
-        }
-      } else {
-        replyHandle = startCancelableAiChatReply(
-          aiPreferences,
-          {
-            prompt: trimmedMessage,
-            previousMessages: chatMemory,
             longTermMemories,
-            files: inlineFileAttachments,
-            image: selectedImageAttachment ?? undefined,
-            selectedContextMode: effectiveSelectedContextMode,
-          },
-          streamCallbacks,
-        )
-      }
+          }, streamCallbacks)
       activeReplyRef.current = replyHandle
       const streamedAnswer = await replyHandle.promise
       activeReplyRef.current = null

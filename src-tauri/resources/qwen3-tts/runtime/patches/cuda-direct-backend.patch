@@ -1,0 +1,35 @@
+diff --git a/src/gguf_loader.cpp b/src/gguf_loader.cpp
+index 4ef4bf4..6f84a5c 100644
+--- a/src/gguf_loader.cpp
++++ b/src/gguf_loader.cpp
+@@ -5,6 +5,10 @@
+ #include <fstream>
+ #include <thread>
+ 
++#ifdef QWEN3_TTS_CUDA_ENABLED
++#include "ggml-cuda.h"
++#endif
++
+ namespace qwen3_tts {
+ 
+ namespace {
+@@ -49,7 +53,18 @@ void configure_cpu_backend_threads(ggml_backend_t backend) {
+ }
+ 
+ ggml_backend_t init_backend_by_type(enum ggml_backend_dev_type type) {
+-    ggml_backend_t backend = ggml_backend_init_by_type(type, nullptr);
++    ggml_backend_t backend = nullptr;
++#ifdef QWEN3_TTS_CUDA_ENABLED
++    // The Windows shared GGML build does not register ggml-cuda in ggml.dll:
++    // the CUDA implementation lives in its own DLL. Initialize it directly so
++    // requesting a GPU does not depend on the generic registry containing it.
++    if (type == GGML_BACKEND_DEVICE_TYPE_GPU) {
++        backend = ggml_backend_cuda_init(0);
++    } else
++#endif
++    {
++        backend = ggml_backend_init_by_type(type, nullptr);
++    }
+     if (type == GGML_BACKEND_DEVICE_TYPE_CPU) {
+         configure_cpu_backend_threads(backend);
+     }

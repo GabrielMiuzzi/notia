@@ -84,7 +84,7 @@ export function SettingsModal({
       .then((status) => {
         if (!active) return
         if (status.ready && !qwen3TtsLoadedSelection) setQwen3TtsLoadedSelection({ model: qwen3TtsPreferences.model, device: qwen3TtsPreferences.device })
-        if (status.ready) setQwen3TtsStatus('Runtime Qwen3-TTS listo con el modelo seleccionado.')
+        if (status.ready) setQwen3TtsStatus(`Runtime Qwen3-TTS listo con backend ${status.backend ?? 'desconocido'}.`)
         else if (status.loading) setQwen3TtsStatus('Cargando el modelo seleccionado...')
         else setQwen3TtsStatus(status.error ?? 'El runtime nativo todavía no está listo.')
       })
@@ -596,7 +596,7 @@ export function SettingsModal({
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
               <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-TTS" value={qwen3TtsPreferences.device}
                 onChange={() => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: 'cpu' }))}>
-                <option value="cpu">CPU</option>
+                <option value="cpu">Automático (CUDA en Windows, CPU como respaldo)</option>
               </select>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Voz</div>
               <select className="notia-settings-input" aria-label="Voz de Qwen3-TTS" value={qwen3TtsPreferences.voice}

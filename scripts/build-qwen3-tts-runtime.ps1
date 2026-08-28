@@ -18,6 +18,21 @@ if (-not $cmake) {
 }
 if (-not $cmake) { throw 'CMake 3.22 o posterior es obligatorio para compilar qwen3-tts.cpp.' }
 $buildSource = $source
+if ($Platform -eq 'windows' -and $Device -eq 'gpu') {
+  $buildSource = Join-Path $root 'src-tauri\target\qwen3-tts-windows-gpu-source'
+  $resolvedSourceCopy = [IO.Path]::GetFullPath($buildSource)
+  $resolvedTargetRoot = [IO.Path]::GetFullPath((Join-Path $root 'src-tauri\target')).TrimEnd('\') + '\'
+  if (-not $resolvedSourceCopy.StartsWith($resolvedTargetRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'La copia temporal de Qwen3-TTS quedó fuera de src-tauri/target.'
+  }
+  if (Test-Path -LiteralPath $resolvedSourceCopy) {
+    Remove-Item -LiteralPath $resolvedSourceCopy -Recurse -Force
+  }
+  Copy-Item -LiteralPath $source -Destination $resolvedSourceCopy -Recurse
+  $cudaPatch = Join-Path $wrapper 'patches\cuda-direct-backend.patch'
+  & git -C $resolvedSourceCopy apply --whitespace=nowarn $cudaPatch
+  if ($LASTEXITCODE -ne 0) { throw 'No se pudo aplicar el registro directo del backend CUDA de Qwen3-TTS.' }
+}
 if ($Platform -eq 'android') {
   if (-not $env:ANDROID_NDK_HOME) { throw 'ANDROID_NDK_HOME no esta definido.' }
   # Upstream enables -march=native for every Clang build. That flag targets the

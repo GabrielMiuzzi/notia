@@ -2,12 +2,9 @@ import { useEffect, useRef } from 'react'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
-import {
-  CHAT_AGENT_MAX_ROUNDS,
-  CHAT_AGENT_SINGLE_CALL_TOOL_NAMES,
-  createChatScopedAgent,
-} from '../../../services/chat/chatScopedAgentRuntime'
-import { runNativeToolAgent } from '../../../services/ai/aiRuntime'
+import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRuntime'
+import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
+import { loadSelectedAgentPromptFileName } from '../../../services/ai/agentPromptRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
 import { answerTelegramCallback, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
@@ -122,6 +119,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const files = await loadLibraryFileOptions(state.library)
         const agent = await createChatScopedAgent({
           scope: 'library', library: state.library, scopePaths: files.map((file) => file.path),
+          promptFileName: loadSelectedAgentPromptFileName(state.library.id),
           requestClarification: (question, signal, choices = []) => waitForText(question, choices, signal),
           requestConfirmation: confirm,
           requestExecutionPlanApproval: async (steps, signal) => ({
@@ -131,11 +129,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             ),
           }),
         })
-        const answer = await runNativeToolAgent(state.aiPreferences, {
-          systemPrompt: agent.systemPrompt, prompt: text, previousMessages: historyRef.current,
-          tools: agent.tools, executeTool: agent.executeTool, validateFinalAnswer: agent.validateFinalAnswer,
-          maxRounds: CHAT_AGENT_MAX_ROUNDS,
-          singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
+        const answer = await runNotiaChatReply(state.aiPreferences, {
+          agent,
+          prompt: text,
+          previousMessages: historyRef.current,
         })
         const nextMessages: StoredChatMessage[] = [
           ...historyRef.current,
