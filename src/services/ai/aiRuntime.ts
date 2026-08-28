@@ -1263,6 +1263,57 @@ export function parseNativeToolCalls(value: unknown): AiNativeToolCall[] {
   })
 }
 
+function normalizeLegacyToolName(value: string): string {
+  return value.trim().toLowerCase().replace(/[/-]/g, '_')
+}
+
+function resolveLegacyToolName(rawName: string, toolNames: Set<string>): string | null {
+  const normalizedName = normalizeLegacyToolName(rawName)
+  if (toolNames.has(normalizedName)) return normalizedName
+
+  const aliases: Record<string, string> = {
+    read_librarydocument: 'read_library_documents',
+    read_library_document: 'read_library_documents',
+    read_taskticket: 'read_task_tickets',
+    read_task_ticket: 'read_task_tickets',
+  }
+  const alias = aliases[normalizedName]
+  return alias && toolNames.has(alias) ? alias : null
+}
+
+/** Recovers the XML tool-call syntax emitted by models that ignore Ollama's native schema. */
+export function parseLegacyXmlToolCalls(value: string, tools: AiNativeToolDefinition[]): AiNativeToolCall[] {
+  const toolNames = new Set(tools.map((tool) => tool.function.name))
+  const calls: AiNativeToolCall[] = []
+  const callPattern = /<([a-z][a-z0-9_/-]*)>\s*([\s\S]*?)<\/\1>/gi
+  for (const match of value.matchAll(callPattern)) {
+    const name = resolveLegacyToolName(match[1] ?? '', toolNames)
+    if (!name) continue
+    const argumentsObject: Record<string, unknown> = {}
+    const argumentPattern = /<([a-z][a-z0-9_]*)>\s*([\s\S]*?)\s*<\/\1>/gi
+    for (const argument of (match[2] ?? '').matchAll(argumentPattern)) {
+      const argumentName = argument[1]
+      const argumentValue = argument[2]?.trim() ?? ''
+      if (!argumentName || !argumentValue) continue
+      try {
+        argumentsObject[argumentName] = JSON.parse(argumentValue) as unknown
+      } catch {
+        argumentsObject[argumentName] = argumentValue
+      }
+    }
+    if (name === 'read_library_documents' && 'documentId' in argumentsObject && !('documentIds' in argumentsObject)) {
+      argumentsObject.documentIds = [argumentsObject.documentId]
+      delete argumentsObject.documentId
+    }
+    if (name === 'read_task_tickets' && 'ticketId' in argumentsObject && !('ticketIds' in argumentsObject)) {
+      argumentsObject.ticketIds = [argumentsObject.ticketId]
+      delete argumentsObject.ticketId
+    }
+    calls.push({ function: { name, arguments: argumentsObject } })
+  }
+  return calls
+}
+
 export async function runNativeToolAgent(
   preferences: AiPreferences,
   input: NativeToolAgentInput,
@@ -1363,9 +1414,13 @@ export async function runNativeToolAgent(
         options.onThinkingDelta?.(thinking)
       }
       const toolCalls = parseNativeToolCalls(payload.message?.tool_calls)
-      messages.push({ role: 'assistant', content, tool_calls: toolCalls })
+      const recoveredToolCalls = toolCalls.length === 0
+        ? parseLegacyXmlToolCalls(content, input.tools)
+        : []
+      const effectiveToolCalls = toolCalls.length > 0 ? toolCalls : recoveredToolCalls
+      messages.push({ role: 'assistant', content, tool_calls: effectiveToolCalls })
 
-      if (toolCalls.length === 0) {
+      if (effectiveToolCalls.length === 0) {
         const answer = content.trim()
         if (!answer) {
           throw new Error('La IA no devolvio contenido ni solicito herramientas.')
@@ -1382,7 +1437,7 @@ export async function runNativeToolAgent(
 
       const singleCallToolNames = new Set(input.singleCallToolNames ?? [])
       let acceptedSingleCall = false
-      const acceptedToolCalls = toolCalls.filter((call) => {
+      const acceptedToolCalls = effectiveToolCalls.filter((call) => {
         if (!singleCallToolNames.has(call.function.name)) {
           return true
         }
@@ -1393,7 +1448,7 @@ export async function runNativeToolAgent(
         return true
       })
       const acceptedCallSet = new Set(acceptedToolCalls)
-      const deferredToolCalls = toolCalls.filter((call) => !acceptedCallSet.has(call))
+      const deferredToolCalls = effectiveToolCalls.filter((call) => !acceptedCallSet.has(call))
       for (const call of acceptedToolCalls) {
         options.onThinkingDelta?.(`Ejecutando ${call.function.name}…\n`)
         const result = await input.executeTool(call, controller.signal)
@@ -1638,6 +1693,40 @@ export async function recognizeInkMathWithAi(
     throw new Error('Ollama no devolvio una formula LaTeX.')
   }
   return latex
+}
+
+export interface OrganizedAgentKnowledge { rules: string[]; memories: string[] }
+
+export async function organizeAiAgentKnowledge(
+  preferences: AiPreferences,
+  knowledge: OrganizedAgentKnowledge,
+): Promise<OrganizedAgentKnowledge> {
+  const normalized = normalizeAiSettingsInput(preferences)
+  const model = await resolveDefaultModel(normalized)
+  const prompt = [
+    'Clasifica y reorganiza el conocimiento persistente del agente.',
+    'Devuelve exclusivamente JSON valido con esta forma: {"rules":["..."],"memories":["..."]}.',
+    'rules contiene solo instrucciones imperativas sobre el comportamiento futuro del asistente.',
+    'memories contiene identidad, preferencias, empleo, proyectos y hechos duraderos del usuario.',
+    'Deduplica, conserva todos los hechos utiles y no inventes informacion.',
+    `Entrada: ${JSON.stringify(knowledge)}`,
+  ].join('\n')
+  const answer = getRuntimeDevice() === 'Android'
+    ? await invokeAndroidAiChat(normalized, model, {
+        prompt, previousMessages: [], longTermMemories: [], files: [], image: null, selectedContextMode: 'direct',
+      }, {})
+    : await invokeDesktopAiChat(normalized, model, [
+        { role: 'system', content: 'Sos un clasificador estricto de reglas y memorias.' },
+        { role: 'user', content: prompt },
+      ], {})
+  const cleaned = answer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  const parsed = JSON.parse(cleaned) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Ollama devolvio conocimiento invalido.')
+  const candidate = parsed as Record<string, unknown>
+  const strings = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim())
+    : []
+  return { rules: strings(candidate.rules), memories: strings(candidate.memories) }
 }
 
 export async function improveMeetingTranscript(

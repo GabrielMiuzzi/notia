@@ -536,8 +536,81 @@ const LEGACY_DEFAULT_AGENT_PROMPT = [
 
 const AGENT_DIRECTORY_NAME = '.agent'
 const PROMPTS_DIRECTORY_NAME = 'promps'
+const MEMORY_DIRECTORY_NAME = 'memory'
+const SKILLS_DIRECTORY_NAME = 'skills'
+const MEMORY_RULES_FILE_NAME = 'rules.md'
+const MEMORY_FILE_NAME = 'memory.md'
 const DEFAULT_PROMPT_FILE_NAME = 'default.md'
 const AGENT_SELECTION_STORAGE_KEY = 'notia:agent-prompt-selection:v1'
+const RULES_START = '<!-- NOTIA_DEFAULT_RULES_START -->'
+const RULES_END = '<!-- NOTIA_DEFAULT_RULES_END -->'
+const IA_RULES_START = '<!-- NOTIA_IA_RULES_START -->'
+const IA_RULES_END = '<!-- NOTIA_IA_RULES_END -->'
+
+export const DEFAULT_AGENT_RULES = [
+  RULES_START,
+  'Todos los chats de Notia comparten el mismo catalogo de herramientas y tool calling nativo.',
+  'Toda escritura requiere confirmacion individual visible; una aclaracion nunca equivale a autorizacion.',
+  'Responde unicamente con evidencia del contexto o de herramientas; nunca atribuyas una tarea, responsable, estado, fecha o compromiso que no figure en la fuente.',
+  'Si el usuario pide texto exacto, contenido completo o comentarios de una fecha concreta, lee el documento completo antes de responder.',
+  '[telegram-html] No uses Markdown ni sus marcadores. Usa texto plano y solo HTML compatible con Telegram: <b>, <i>, <u>, <s>, <code>, <pre> y <a href="...">.',
+  '[telegram-html] Usa siempre tool calling nativo; nunca escribas llamadas XML como <read/...> o <search/...> en la respuesta.',
+  'Usa add_agent_rule solo ante una instruccion explicita sobre tu comportamiento futuro, como "cuando X, hace Y". Identidad, preferencias, trabajo y contexto personal son memorias: usa add_agent_memory y nunca add_agent_rule.',
+  RULES_END,
+].join('\n')
+
+export function ensureDefaultAgentRules(content: string): string {
+  const start = content.indexOf(RULES_START)
+  const end = content.indexOf(RULES_END)
+  if (start >= 0 && end > start) {
+    content = `${content.slice(0, start)}${DEFAULT_AGENT_RULES}${content.slice(end + RULES_END.length)}`.trim()
+  } else {
+    content = [DEFAULT_AGENT_RULES, content.trim()].filter(Boolean).join('\n\n')
+  }
+  return content.includes(IA_RULES_START) && content.includes(IA_RULES_END)
+    ? content
+    : `${content}\n\n${IA_RULES_START}\n${IA_RULES_END}`
+}
+
+export function appendAgentRuleContent(content: string, rule: string): { content: string; added: boolean } {
+  const ensured = ensureDefaultAgentRules(content)
+  const normalized = rule.trim().replace(/\s+/g, ' ')
+  if (!normalized) return { content: ensured, added: false }
+  const start = ensured.indexOf(IA_RULES_START) + IA_RULES_START.length
+  const end = ensured.indexOf(IA_RULES_END, start)
+  const current = ensured.slice(start, end).trim()
+  if (current.split('\n').some((line) => line.replace(/^[-*]\s*/, '').trim().toLowerCase() === normalized.toLowerCase())) {
+    return { content: ensured, added: false }
+  }
+  const block = [current, `- ${normalized}`].filter(Boolean).join('\n')
+  return { content: `${ensured.slice(0, start)}\n${block}\n${ensured.slice(end)}`, added: true }
+}
+
+export function isLikelyPersonalMemory(value: string): boolean {
+  return /^(?:[-*]\s*)?(?:el usuario|la usuaria|mi nombre|me llamo|se llama|su nombre|trabajo|trabaja|vive|le gusta|prefiere|est[aá] (?:trabajando|arreglando)|tiene)\b/i.test(value.trim())
+}
+
+export function migrateMisclassifiedRules(content: string): { rules: string; memories: string[] } {
+  const ensured = ensureDefaultAgentRules(content)
+  const start = ensured.indexOf(IA_RULES_START) + IA_RULES_START.length
+  const end = ensured.indexOf(IA_RULES_END, start)
+  const lines = ensured.slice(start, end).trim().split('\n').filter(Boolean)
+  const memories = lines.filter(isLikelyPersonalMemory).map((line) => line.replace(/^[-*]\s*/, '').trim())
+  const retained = lines.filter((line) => !isLikelyPersonalMemory(line)).join('\n')
+  return { rules: `${ensured.slice(0, start)}\n${retained}${retained ? '\n' : ''}${ensured.slice(end)}`, memories }
+}
+
+export function resolveAgentRulesContent(content: string, responseFormat?: string): string {
+  return content.split('\n')
+    .filter((line) => !line.trim().startsWith('<!--'))
+    .flatMap((line) => {
+      const match = line.match(/^\[([^\]]+)]\s*(.*)$/)
+      if (!match) return [line]
+      return match[1] === responseFormat ? [match[2] ?? ''] : []
+    })
+    .join('\n')
+    .trim()
+}
 
 export interface AgentPromptOption {
   fileName: string
@@ -562,6 +635,14 @@ export function resolveDefaultAgentPromptPath(libraryPath: string): string {
 
 function resolveAgentPromptsDirectoryPath(libraryPath: string): string {
   return joinLibraryPath(joinLibraryPath(libraryPath, AGENT_DIRECTORY_NAME), PROMPTS_DIRECTORY_NAME)
+}
+
+export function resolveAgentMemoryDirectoryPath(libraryPath: string): string {
+  return joinLibraryPath(joinLibraryPath(libraryPath, AGENT_DIRECTORY_NAME), MEMORY_DIRECTORY_NAME)
+}
+
+export function resolveAgentSkillsDirectoryPath(libraryPath: string): string {
+  return joinLibraryPath(joinLibraryPath(libraryPath, AGENT_DIRECTORY_NAME), SKILLS_DIRECTORY_NAME)
 }
 
 export function normalizeAgentPromptFileName(fileName: string): string {
@@ -596,6 +677,121 @@ async function ensureFolder(
   })
 }
 
+async function ensureAgentMemoryStructure(
+  agentDirectoryPath: string,
+  library: NotiaLibrary,
+): Promise<void> {
+  const memoryDirectoryPath = resolveAgentMemoryDirectoryPath(library.path)
+  await ensureFolder(agentDirectoryPath, MEMORY_DIRECTORY_NAME, library)
+
+  let existingNames = new Set<string>()
+  try {
+    const nodes = await readLibraryDirectory(memoryDirectoryPath, {
+      androidDirectoryUri: library.androidTreeUri,
+    })
+    existingNames = new Set(nodes.filter((node) => node.type === 'file').map((node) => node.name))
+  } catch {
+    // Creation below is idempotent and also recovers if the directory was just created.
+  }
+
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  await Promise.all([
+    existingNames.has(MEMORY_RULES_FILE_NAME)
+      ? Promise.resolve()
+      : createLibraryEntry(memoryDirectoryPath, MEMORY_RULES_FILE_NAME, 'note', options).then(() => undefined),
+    existingNames.has(MEMORY_FILE_NAME)
+      ? Promise.resolve()
+      : createLibraryEntry(memoryDirectoryPath, MEMORY_FILE_NAME, 'note', options).then(() => undefined),
+  ])
+
+  const rulesPath = joinLibraryPath(memoryDirectoryPath, MEMORY_RULES_FILE_NAME)
+  const currentRules = await readTextFile(rulesPath, options)
+  const migration = migrateMisclassifiedRules(currentRules.ok ? currentRules.content : '')
+  const nextRules = migration.rules
+  if (!currentRules.ok || currentRules.content.trim() !== nextRules) {
+    const result = await writeTextFile(rulesPath, nextRules, options)
+    if (!result.ok) throw new Error(result.error || 'No se pudieron inicializar las reglas del agente.')
+  }
+  if (migration.memories.length > 0) {
+    const memoryPath = joinLibraryPath(memoryDirectoryPath, MEMORY_FILE_NAME)
+    const currentMemory = await readTextFile(memoryPath, options)
+    const existing = currentMemory.ok
+      ? currentMemory.content.split('\n').map((line) => line.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean)
+      : []
+    const merged = Array.from(new Set([...existing, ...migration.memories]))
+    const result = await writeTextFile(memoryPath, merged.map((memory) => `- ${memory}`).join('\n'), options)
+    if (!result.ok) throw new Error(result.error || 'No se pudieron migrar las memorias del agente.')
+  }
+}
+
+export async function loadAgentRules(library: NotiaLibrary, responseFormat?: string): Promise<string> {
+  await ensureAgentPromptFile(library)
+  const result = await readTextFile(
+    joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME),
+    { androidDirectoryUri: library.androidTreeUri },
+  )
+  return resolveAgentRulesContent(result.ok ? result.content : DEFAULT_AGENT_RULES, responseFormat)
+}
+
+export async function appendAgentRule(library: NotiaLibrary, rule: string): Promise<{ added: boolean }> {
+  await ensureAgentPromptFile(library)
+  const path = joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME)
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  const current = await readTextFile(path, options)
+  const next = appendAgentRuleContent(current.ok ? current.content : '', rule)
+  if (!next.added) return { added: false }
+  const result = await writeTextFile(path, next.content, options)
+  if (!result.ok) throw new Error(result.error || 'No se pudo guardar la regla del agente.')
+  return { added: true }
+}
+
+export async function loadAgentIaRules(library: NotiaLibrary): Promise<string[]> {
+  await ensureAgentPromptFile(library)
+  const path = joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME)
+  const result = await readTextFile(path, { androidDirectoryUri: library.androidTreeUri })
+  const content = ensureDefaultAgentRules(result.ok ? result.content : '')
+  const start = content.indexOf(IA_RULES_START) + IA_RULES_START.length
+  const end = content.indexOf(IA_RULES_END, start)
+  return content.slice(start, end).split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter(Boolean)
+}
+
+export async function writeAgentIaRules(library: NotiaLibrary, rules: string[]): Promise<void> {
+  await ensureAgentPromptFile(library)
+  const path = joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME)
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  const current = await readTextFile(path, options)
+  const content = ensureDefaultAgentRules(current.ok ? current.content : '')
+  const start = content.indexOf(IA_RULES_START) + IA_RULES_START.length
+  const end = content.indexOf(IA_RULES_END, start)
+  const unique = Array.from(new Set(rules.map((rule) => rule.trim()).filter(Boolean)))
+  const block = unique.map((rule) => `- ${rule}`).join('\n')
+  const result = await writeTextFile(path, `${content.slice(0, start)}\n${block}${block ? '\n' : ''}${content.slice(end)}`, options)
+  if (!result.ok) throw new Error(result.error || 'No se pudieron reorganizar las reglas del agente.')
+}
+
+export async function loadAgentMemories(library: NotiaLibrary): Promise<string[]> {
+  await ensureAgentPromptFile(library)
+  const result = await readTextFile(
+    joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_FILE_NAME),
+    { androidDirectoryUri: library.androidTreeUri },
+  )
+  if (!result.ok) return []
+  return result.content.split('\n').map((line) => line.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean)
+}
+
+export async function writeAgentMemories(library: NotiaLibrary, memories: string[]): Promise<void> {
+  await ensureAgentPromptFile(library)
+  const unique = Array.from(new Map(memories.map((memory) => [memory.trim().toLowerCase(), memory.trim()])).values())
+    .filter(Boolean)
+    .slice(0, 100)
+  const result = await writeTextFile(
+    joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_FILE_NAME),
+    unique.map((memory) => `- ${memory}`).join('\n'),
+    { androidDirectoryUri: library.androidTreeUri },
+  )
+  if (!result.ok) throw new Error(result.error || 'No se pudo guardar la memoria del agente.')
+}
+
 export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<string> {
   const agentDirectoryPath = joinLibraryPath(library.path, AGENT_DIRECTORY_NAME)
   const promptsDirectoryPath = joinLibraryPath(agentDirectoryPath, PROMPTS_DIRECTORY_NAME)
@@ -603,6 +799,8 @@ export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<stri
 
   await ensureFolder(library.path, AGENT_DIRECTORY_NAME, library)
   await ensureFolder(agentDirectoryPath, PROMPTS_DIRECTORY_NAME, library)
+  await ensureFolder(agentDirectoryPath, SKILLS_DIRECTORY_NAME, library)
+  await ensureAgentMemoryStructure(agentDirectoryPath, library)
 
   const options = { androidDirectoryUri: library.androidTreeUri }
   const current = await readTextFile(promptPath, options)

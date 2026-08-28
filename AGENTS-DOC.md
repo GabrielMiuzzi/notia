@@ -1,5 +1,11 @@
 # Documentación
 
+El canal de Telegram personaliza el prompt del agente para evitar Markdown y envía las respuestas con el subconjunto HTML compatible de Telegram. Esta regla no se aplica al chat principal, los chats laterales ni Meeting.
+
+La inicialización del agente garantiza también `.agent/memory/rules.md` y `.agent/memory/memory.md` en cada biblioteca, creando únicamente los elementos faltantes.
+También crea `.agent/skills/` si no existe.
+Las reglas permanentes detectadas en una conversación se escriben directamente en `NOTIA_IA_RULES` sin confirmación; esta excepción no se extiende a documentos, tickets ni otras mutaciones del usuario.
+
 ## Capacidad de voz offline
 
 La frontera pública de voz vive en `src/services/speech/` y `src-tauri/src/commands/speech.rs`; los componentes no invocan Tauri directamente. Captura, worker ASR, runtime dinámico, repositorio de modelos y diarización son servicios Rust separados. Windows y Android conservan el mismo contrato, con permiso/empaquetado Android detrás de `mobile_speech_permission` y `build.rs`.

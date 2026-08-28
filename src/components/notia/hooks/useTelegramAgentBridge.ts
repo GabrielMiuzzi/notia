@@ -8,6 +8,9 @@ import { loadSelectedAgentPromptFileName } from '../../../services/ai/agentPromp
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
 import { answerTelegramCallback, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
+import { formatTelegramMessage } from '../../../services/telegram/telegramMessageFormatter'
+import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
+import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
 
 interface Params {
   library: NotiaLibrary | null
@@ -119,7 +122,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const files = await loadLibraryFileOptions(state.library)
         const agent = await createChatScopedAgent({
           scope: 'library', library: state.library, scopePaths: files.map((file) => file.path),
+          aiPreferences: state.aiPreferences,
           promptFileName: loadSelectedAgentPromptFileName(state.library.id),
+          responseFormat: 'telegram-html',
           requestClarification: (question, signal, choices = []) => waitForText(question, choices, signal),
           requestConfirmation: confirm,
           requestExecutionPlanApproval: async (steps, signal) => ({
@@ -134,13 +139,24 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           prompt: text,
           previousMessages: historyRef.current,
         })
+        const previousMessages = historyRef.current
         const nextMessages: StoredChatMessage[] = [
           ...historyRef.current,
           { role: 'user', content: text },
           { role: 'assistant', content: answer },
         ]
         historyRef.current = nextMessages.slice(-20)
-        await sendTelegramMessage(token, authorizedChatId, answer)
+        void loadAgentMemories(state.library).then((existingLongTermMemories) => {
+          scheduleLongTermMemoriesForTurn({
+            library: state.library as NotiaLibrary,
+            aiPreferences: state.aiPreferences,
+            prompt: text,
+            assistantReply: answer,
+            previousMessages,
+            existingLongTermMemories,
+          })
+        })
+        await sendTelegramMessage(token, authorizedChatId, formatTelegramMessage(answer), [], 'HTML')
         state.onLibraryChanged()
       } catch (error) {
         await sendTelegramMessage(token, authorizedChatId, error instanceof Error ? error.message : 'No se pudo completar la consulta.')

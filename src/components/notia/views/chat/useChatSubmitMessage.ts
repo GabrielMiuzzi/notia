@@ -225,6 +225,7 @@ export function useChatSubmitMessage(
       onAgentExecutionPlanChange([])
       const agent = await createChatScopedAgent({
           scope: effectiveAgentScope,
+          aiPreferences,
           promptFileName: agentPromptFileName,
           requestClarification: requestAgentClarification,
           library,

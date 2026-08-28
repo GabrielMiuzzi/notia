@@ -13,6 +13,8 @@ import {
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
+import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatLongTermMemorySync'
+import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 
 interface MeetingEphemeralChatProps {
   aiPreferences: AiPreferences
@@ -66,6 +68,7 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
       const files = await loadLibraryFileOptions(library)
       const agent = await createChatScopedAgent({
         scope: 'library',
+        aiPreferences,
         library,
         scopePaths: files.map((file) => file.path),
         promptFileName: loadSelectedAgentPromptFileName(library.id),
@@ -101,6 +104,16 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
           onMessageDelta: (delta) => setStreamingMessage((current) => current + delta),
       })
       setMessages((current) => [...current, { role: 'assistant', content: answer }])
+      void loadAgentMemories(library).then((existingLongTermMemories) => {
+        scheduleLongTermMemoriesForTurn({
+          library,
+          aiPreferences,
+          prompt: question,
+          assistantReply: answer,
+          previousMessages,
+          existingLongTermMemories,
+        })
+      })
       onLibraryChanged()
     } catch (submitError) {
       if (!controller.signal.aborted) {

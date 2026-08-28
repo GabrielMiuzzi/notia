@@ -19,6 +19,8 @@ describe('chatScopedAgentRuntime', () => {
     expect(prompt).toContain('personas, tareas o tickets')
     expect(prompt).toContain('usa add_task_comment')
     expect(prompt).toContain('Nunca uses replace_library_document para simular un comentario')
+    expect(prompt).toContain('nunca atribuyas una tarea, responsable, estado, fecha o compromiso')
+    expect(prompt).toContain('lee el documento completo antes de responder')
     expect(buildChatAgentTools('library').map((tool) => tool.function.name)).toContain('add_task_comment')
   })
   it('normalizes accents, punctuation and case for title matching', () => {
@@ -279,6 +281,15 @@ describe('chatScopedAgentRuntime', () => {
     const prompt = buildChatAgentSystemPrompt('task-manager', 'Responde siempre en español.')
     expect(prompt).toContain('Responde siempre en español.')
     expect(prompt).toContain('Estas en Task Manager.')
+  })
+
+  it('reserva el formato HTML compatible con Telegram para ese canal', () => {
+    const telegramPrompt = buildChatAgentSystemPrompt('library', 'Base', null, 'telegram-html')
+    const regularPrompt = buildChatAgentSystemPrompt('library', 'Base')
+
+    expect(telegramPrompt).toContain('No uses Markdown ni sus marcadores')
+    expect(telegramPrompt).toContain('HTML compatible con Telegram')
+    expect(regularPrompt).not.toContain('HTML compatible con Telegram')
   })
 
   it('instructs Graph View to resolve named folders by path', () => {

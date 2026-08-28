@@ -1,6 +1,6 @@
 import type { NotiaLibrary } from '../../types/notia'
 import type { AiNativeToolCall, AiNativeToolDefinition } from '../ai/aiRuntime'
-import { DEFAULT_AGENT_PROMPT, loadAgentPrompt } from '../ai/agentPromptRuntime'
+import { appendAgentRule, DEFAULT_AGENT_PROMPT, isLikelyPersonalMemory, loadAgentMemories, loadAgentPrompt, loadAgentRules, resolveAgentRulesContent, DEFAULT_AGENT_RULES, writeAgentMemories } from '../ai/agentPromptRuntime'
 import {
   loadInlineFileAttachments,
   loadLibraryFileOptions,
@@ -10,17 +10,20 @@ import type { TaskManagerAgentMutation } from '../../modules/task-manager/servic
 import type { TaskPriority, TaskState } from '../../modules/task-manager/types/taskManagerTypes'
 
 export type ChatAgentScope = 'task-manager' | 'graph' | 'document' | 'library'
+export type ChatAgentResponseFormat = 'telegram-html'
 export type TaskExecutionStepStatus = 'pending' | 'in-progress' | 'completed' | 'blocked'
 export interface TaskExecutionStep { id: string; label: string; status: TaskExecutionStepStatus }
 
 export interface ChatAgentRuntimeOptions {
   scope: ChatAgentScope
   library: NotiaLibrary
+  aiPreferences: import('../preferences/aiSettingsStorage').AiPreferences
   scopePaths: string[]
   activeDocumentPath?: string | null
   explicitlySelectedPaths?: string[]
   promptFileName?: string
   taskManagerScopeKey?: string | null
+  responseFormat?: ChatAgentResponseFormat
   requestClarification: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestConfirmation: (question: string, signal: AbortSignal) => Promise<boolean>
   onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
@@ -300,6 +303,22 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
     {
       type: 'function',
       function: {
+        name: 'add_agent_rule',
+        description: 'Guarda solo una instruccion imperativa y explicita sobre tu comportamiento futuro. Nunca guarda identidad, gustos, empleo, proyectos ni otros hechos personales.',
+        parameters: { type: 'object', required: ['rule'], properties: { rule: { type: 'string' } } },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'add_agent_memory',
+        description: 'Guarda sin confirmacion un hecho duradero sobre el usuario: identidad, preferencias, empleo, proyectos o contexto personal.',
+        parameters: { type: 'object', required: ['memory'], properties: { memory: { type: 'string' } } },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'search_library_documents',
         description: 'Busca uno o varios elementos por titulo o nombre. No lee su contenido.',
         parameters: {
@@ -494,12 +513,13 @@ export function buildChatAgentSystemPrompt(
   scope: ChatAgentScope,
   defaultPrompt = DEFAULT_AGENT_PROMPT,
   activeDocumentPath?: string | null,
+  responseFormat?: ChatAgentResponseFormat,
+  rules = resolveAgentRulesContent(DEFAULT_AGENT_RULES, responseFormat),
 ): string {
   const base = [
     defaultPrompt.trim() || DEFAULT_AGENT_PROMPT,
-    'Todos los chats de Notia comparten este mismo catalogo de herramientas y tool calling nativo. Usa herramientas de biblioteca para notas y herramientas de Task Manager para tickets; no simules una accion especifica reemplazando archivos completos.',
-    'Toda escritura requiere una confirmacion individual visible. Una aclaracion nunca equivale a autorizacion. Para dos o mas escrituras presenta primero un plan con set_task_execution_plan y ejecuta un cambio por llamada.',
     'El contexto activo limita los archivos inicialmente autorizados, pero no cambia las capacidades. Si falta un tablero, archivo, opcion o permiso, usa las herramientas de consulta o request_user_clarification en lugar de inventarlo.',
+    rules,
   ]
   if (scope === 'task-manager') {
     base.push(
@@ -560,6 +580,8 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   validateFinalAnswer: (answer: string) => string | null
 }> {
   const defaultPrompt = await loadAgentPrompt(options.library, options.promptFileName ?? 'default.md')
+  const rules = await loadAgentRules(options.library, options.responseFormat)
+  const agentMemories = await loadAgentMemories(options.library)
   const allOptions = await loadLibraryFileOptions(options.library)
   const normalizedScopePaths = new Set(options.scopePaths.map((path) => path.replace(/\\/g, '/')))
   const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt)$/i.test(item.name))
@@ -628,6 +650,25 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       throw new Error('Se cancelo la ejecucion del agente.')
     }
     const { name, arguments: args } = call.function
+    if (name === 'add_agent_rule') {
+      const rule = typeof args.rule === 'string' ? args.rule.trim() : ''
+      if (!rule || rule.length > 2_000 || isLikelyPersonalMemory(rule)) {
+        return { ok: false, error: 'personal-facts-belong-in-agent-memory', useTool: 'add_agent_memory' }
+      }
+      const result = await appendAgentRule(options.library, rule)
+      const { scheduleAgentKnowledgeOrganization } = await import('./chatLongTermMemorySync')
+      scheduleAgentKnowledgeOrganization(options.library, options.aiPreferences)
+      return { ok: true, changed: result.added, duplicate: !result.added }
+    }
+    if (name === 'add_agent_memory') {
+      const memory = typeof args.memory === 'string' ? args.memory.trim() : ''
+      if (!memory || memory.length > 2_000) return { ok: false, error: 'invalid-agent-memory' }
+      const current = await loadAgentMemories(options.library)
+      await writeAgentMemories(options.library, [...current, memory])
+      const { scheduleAgentKnowledgeOrganization } = await import('./chatLongTermMemorySync')
+      scheduleAgentKnowledgeOrganization(options.library, options.aiPreferences)
+      return { ok: true, changed: !current.some((item) => item.toLowerCase() === memory.toLowerCase()) }
+    }
     if (name === 'set_task_execution_plan') {
       const labels = stringArray(args.steps, 20).map((step) => step.trim()).filter(Boolean)
       if (labels.length < 2) {
@@ -1089,7 +1130,15 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   }
 
   return {
-    systemPrompt: buildChatAgentSystemPrompt(options.scope, defaultPrompt, options.activeDocumentPath),
+    systemPrompt: buildChatAgentSystemPrompt(
+      options.scope,
+      defaultPrompt,
+      options.activeDocumentPath,
+      options.responseFormat,
+      agentMemories.length > 0
+        ? `${rules}\n\nMemorias persistentes del usuario:\n${agentMemories.map((memory) => `- ${memory}`).join('\n')}`
+        : rules,
+    ),
     tools: buildChatAgentTools(options.scope),
     executeTool,
     validateFinalAnswer: (answer) => options.scope === 'task-manager'

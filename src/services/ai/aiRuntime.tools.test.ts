@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseNativeToolCalls } from './aiRuntime'
+import { parseLegacyXmlToolCalls, parseNativeToolCalls } from './aiRuntime'
 
 describe('parseNativeToolCalls', () => {
   it('accepts native object arguments', () => {
@@ -21,5 +21,19 @@ describe('parseNativeToolCalls', () => {
       { function: { name: '', arguments: {} } },
       { function: { name: 'read_file', arguments: '{bad json}' } },
     ])).toEqual([])
+  })
+
+  it('recovers legacy XML read calls as native tool calls', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'read_library_documents', description: 'read', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls(
+      '<read/librarydocument>\n<documentId>doc-44</documentId>\n</read/librarydocument>',
+      tools,
+    )).toEqual([{
+      function: { name: 'read_library_documents', arguments: { documentIds: ['doc-44'] } },
+    }])
   })
 })
