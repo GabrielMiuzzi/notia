@@ -18,6 +18,7 @@ import {
   TASK_MANAGER_WORKSPACE_TAB_PATH,
   COLDPASS_WORKSPACE_TAB_PATH,
   MEETING_WORKSPACE_TAB_PATH,
+  FINANCE_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import {
   invalidateLibrarySearchGraphIndex,
@@ -48,6 +49,7 @@ interface OpenWorkspaceSpecialTabs {
   taskManager: boolean
   coldPass: boolean
   meeting: boolean
+  finance: boolean
 }
 
 function getDisplayBaseName(value: string): string {
@@ -100,6 +102,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.taskManager) { tabs.push({ path: TASK_MANAGER_WORKSPACE_TAB_PATH, title: 'Task manager' }) }
   if (specialTabs.coldPass) { tabs.push({ path: COLDPASS_WORKSPACE_TAB_PATH, title: 'ColdPass' }) }
   if (specialTabs.meeting) { tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' }) }
+  if (specialTabs.finance) { tabs.push({ path: FINANCE_WORKSPACE_TAB_PATH, title: 'Finanzas' }) }
 
   return tabs
 }
@@ -201,6 +204,7 @@ export function useTabManager({
       || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
       || tabPath === MEETING_WORKSPACE_TAB_PATH
+      || tabPath === FINANCE_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = store.getState().documents.specialTabs
       if (
@@ -209,6 +213,7 @@ export function useTabManager({
         || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !currentSpecialTabs.taskManager)
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !currentSpecialTabs.coldPass)
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !currentSpecialTabs.meeting)
+        || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !currentSpecialTabs.finance)
       ) { return }
 
       const currentTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, currentSpecialTabs)
@@ -221,6 +226,7 @@ export function useTabManager({
         taskManager: tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.taskManager,
         coldPass: tabPath === COLDPASS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.coldPass,
         meeting: tabPath === MEETING_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.meeting,
+        finance: tabPath === FINANCE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.finance,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)
       const currentActiveTabPath = selectActiveTabPath(store.getState())
@@ -331,6 +337,7 @@ export function useTabManager({
       || tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
       || tabPath === MEETING_WORKSPACE_TAB_PATH
+      || tabPath === FINANCE_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = store.getState().documents.specialTabs
       if (
@@ -339,6 +346,7 @@ export function useTabManager({
         || (tabPath === TASK_MANAGER_WORKSPACE_TAB_PATH && !specialTabs.taskManager)
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !specialTabs.coldPass)
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !specialTabs.meeting)
+        || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !specialTabs.finance)
       ) { return }
       dispatch(setActiveTabPath(tabPath))
       return

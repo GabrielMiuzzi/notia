@@ -10,6 +10,7 @@ import { MainView } from './MainView'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
 import { MeetingView } from './views/MeetingView'
+import { FinanceView } from './views/FinanceView'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
@@ -198,6 +199,10 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'meeting') {
     return <MeetingView />
+  }
+
+  if (activeWorkspaceView === 'finance') {
+    return <FinanceView />
   }
 
   return (

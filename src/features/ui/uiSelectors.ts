@@ -1,5 +1,5 @@
 import type { RootState } from '../../store/index'
-import { CHAT_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, GRAPH_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH } from '../documents/documentsSlice'
+import { CHAT_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, GRAPH_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH } from '../documents/documentsSlice'
 
 export const selectActiveView = (state: RootState) => state.ui.activeView
 export const selectIsSidebarOpen = (state: RootState) => state.ui.isSidebarOpen
@@ -19,6 +19,7 @@ export const selectActiveRailActionId = (state: RootState): string | null => {
   if (path === TASK_MANAGER_WORKSPACE_TAB_PATH) return 'task-manager'
   if (path === COLDPASS_WORKSPACE_TAB_PATH) return 'coldpass'
   if (path === MEETING_WORKSPACE_TAB_PATH) return 'meeting'
+  if (path === FINANCE_WORKSPACE_TAB_PATH) return 'finance'
   return null
 }
 
