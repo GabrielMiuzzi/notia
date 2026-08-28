@@ -34,6 +34,7 @@ import { setSelectedFileByPath } from '../../../utils/tree/setSelectedFileByPath
 import { toggleFolderNodeExpanded } from '../../../utils/tree/toggleFolderNodeExpanded'
 import { ensureChatLibraryStructure } from '../../../services/chat/chatLibraryStructure'
 import { ensureAgentPromptFile } from '../../../services/ai/agentPromptRuntime'
+import { initializeLibraryDatabase } from '../../../services/libraries/libraryDatabase'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
 import type { NotiaFileNode } from '../../../types/notia'
 import type { SetStateAction } from 'react'
@@ -513,6 +514,11 @@ export function useLibraryTreeSync({
           await Promise.all([
             ensureChatLibraryStructure(activeLibrary),
             ensureAgentPromptFile(activeLibrary),
+            [initializeLibraryDatabase(activeLibrary.path, activeLibrary.androidTreeUri).then((result) => {
+              if (!result.ok) {
+                throw new Error(result.error ?? 'No se pudo inicializar la base SQLite.')
+              }
+            })],
           ])
         } catch (error) {
           console.warn('[notia] could not ensure auxiliary library structure', {

@@ -20,6 +20,25 @@ android-signing.properties
 # Rust / Tauri
 src-tauri/target
 src-tauri/gen
+!src-tauri/gen/
+src-tauri/gen/*
+!src-tauri/gen/android/
+src-tauri/gen/android/*
+!src-tauri/gen/android/app/
+src-tauri/gen/android/app/*
+!src-tauri/gen/android/app/src/
+src-tauri/gen/android/app/src/*
+!src-tauri/gen/android/app/src/main/
+src-tauri/gen/android/app/src/main/*
+!src-tauri/gen/android/app/src/main/java/
+src-tauri/gen/android/app/src/main/java/*
+!src-tauri/gen/android/app/src/main/java/com/
+src-tauri/gen/android/app/src/main/java/com/*
+!src-tauri/gen/android/app/src/main/java/com/gabriel/
+src-tauri/gen/android/app/src/main/java/com/gabriel/*
+!src-tauri/gen/android/app/src/main/java/com/gabriel/notia/
+src-tauri/gen/android/app/src/main/java/com/gabriel/notia/*
+!src-tauri/gen/android/app/src/main/java/com/gabriel/notia/LibraryDatabasePlugin.kt
 src-tauri/target-check*/
 target-check*/
 .gradle-local/

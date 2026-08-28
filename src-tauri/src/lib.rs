@@ -8,6 +8,8 @@ use filesystem::commands::{
 };
 use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, LibraryTreeWatchState};
 
+mod database;
+
 mod commands {
     pub mod ai;
     pub mod bluetooth;
@@ -145,6 +147,8 @@ pub fn run() {
         .manage(LibraryTreeWatchState::default())
         .plugin(tauri_plugin_dialog::init());
 
+    let builder = builder.plugin(database::init());
+
     #[cfg(target_os = "windows")]
     let builder = windows_tray::configure(builder);
 
@@ -165,6 +169,7 @@ pub fn run() {
             library_entry_operation,
             start_library_tree_watch,
             stop_library_tree_watch,
+            database::initialize_library_database,
             commands::ai::check_desktop_ai_health,
             commands::ai::run_desktop_ai_chat,
             commands::ai::run_desktop_ai_tool_chat,
