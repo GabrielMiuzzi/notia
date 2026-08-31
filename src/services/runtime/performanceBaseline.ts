@@ -2,8 +2,6 @@ import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { notiaLog } from './notiaLogger'
 
 const PERFORMANCE_BASELINE_STORAGE_KEY = 'notia.perfBaseline.enabled'
-const PERFORMANCE_BASELINE_CONSOLE_KEY = 'notia.perfBaseline.console'
-const PERFORMANCE_BASELINE_LOGCAT_KEY = 'notia.perfBaseline.logcat'
 const PERFORMANCE_BASELINE_MAX_ENTRIES = 400
 
 export type NotiaPerformanceMeasurementStatus = 'success' | 'error' | 'canceled'
@@ -31,10 +29,6 @@ interface NotiaPerformanceBaselineApi {
   clearEntries: () => void
   setEnabled: (enabled: boolean) => void
   isEnabled: () => boolean
-  setConsoleLoggingEnabled: (enabled: boolean) => void
-  isConsoleLoggingEnabled: () => boolean
-  setLogcatEnabled: (enabled: boolean) => void
-  isLogcatEnabled: () => boolean
 }
 
 declare global {
@@ -90,15 +84,6 @@ export function isPerformanceBaselineEnabled(): boolean {
   return readBooleanStorageValue(PERFORMANCE_BASELINE_STORAGE_KEY, true)
 }
 
-export function isPerformanceBaselineConsoleLoggingEnabled(): boolean {
-  return readBooleanStorageValue(PERFORMANCE_BASELINE_CONSOLE_KEY, false)
-}
-
-export function isPerformanceBaselineLogcatEnabled(): boolean {
-  // Default to true on Android, false on desktop
-  return readBooleanStorageValue(PERFORMANCE_BASELINE_LOGCAT_KEY, getRuntimeDevice() === 'Android')
-}
-
 function getStoredEntries(): NotiaPerformanceMeasurementEntry[] {
   if (typeof window === 'undefined') {
     return []
@@ -149,13 +134,11 @@ function recordEntry(entry: NotiaPerformanceMeasurementEntry): void {
     entries.splice(0, entries.length - PERFORMANCE_BASELINE_MAX_ENTRIES)
   }
 
-  if (isPerformanceBaselineConsoleLoggingEnabled()) {
-    const consoleMethod = entry.status === 'error' ? console.error : console.info
-    consoleMethod(buildConsoleSummary(entry), entry)
+  if (entry.status === 'error') {
+    console.error(buildConsoleSummary(entry), entry)
   }
 
-  // Emit to logcat via notiaLogger when enabled
-  if (isPerformanceBaselineLogcatEnabled()) {
+  if (entry.status === 'error') {
     const data: Record<string, unknown> = {
       durationMs: entry.durationMs,
       status: entry.status,
@@ -167,7 +150,7 @@ function recordEntry(entry: NotiaPerformanceMeasurementEntry): void {
     if (entry.errorMessage) {
       data.errorMessage = entry.errorMessage
     }
-    notiaLog('perf', entry.name, data, 'perf')
+    notiaLog('perf', entry.name, data, 'error')
   }
 }
 
@@ -185,14 +168,6 @@ function ensurePerformanceBaselineApi(): void {
       writeBooleanStorageValue(PERFORMANCE_BASELINE_STORAGE_KEY, enabled)
     },
     isEnabled: () => isPerformanceBaselineEnabled(),
-    setConsoleLoggingEnabled: (enabled: boolean) => {
-      writeBooleanStorageValue(PERFORMANCE_BASELINE_CONSOLE_KEY, enabled)
-    },
-    isConsoleLoggingEnabled: () => isPerformanceBaselineConsoleLoggingEnabled(),
-    setLogcatEnabled: (enabled: boolean) => {
-      writeBooleanStorageValue(PERFORMANCE_BASELINE_LOGCAT_KEY, enabled)
-    },
-    isLogcatEnabled: () => isPerformanceBaselineLogcatEnabled(),
   }
 }
 

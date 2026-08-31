@@ -41,6 +41,9 @@
       "resources/qwen3-tts/runtime/**/*",
       "resources/qwen3-tts/models/**/*",
       "resources/qwen3-asr/runtime/**/*"
-    ]
+    ],
+    "android": {
+      "minSdkVersion": 26
+    }
   }
 }

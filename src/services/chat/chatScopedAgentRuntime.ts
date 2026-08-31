@@ -1,6 +1,6 @@
 import type { NotiaLibrary } from '../../types/notia'
 import type { AiNativeToolCall, AiNativeToolDefinition } from '../ai/aiRuntime'
-import { appendAgentRule, DEFAULT_AGENT_PROMPT, isLikelyPersonalMemory, loadAgentMemories, loadAgentPrompt, loadAgentRules, resolveAgentRulesContent, DEFAULT_AGENT_RULES, writeAgentMemories } from '../ai/agentPromptRuntime'
+import { appendAgentRule, DEFAULT_AGENT_PROMPT, isInternalAgentCorrection, isLikelyPersonalMemory, loadAgentMemories, loadAgentPrompt, loadAgentRules, resolveAgentRulesContent, DEFAULT_AGENT_RULES, writeAgentMemories } from '../ai/agentPromptRuntime'
 import {
   loadInlineFileAttachments,
   loadLibraryFileOptions,
@@ -9,7 +9,7 @@ import {
 import type { TaskManagerAgentMutation } from '../../modules/task-manager/services/taskManagerAgentMutationService'
 import type { TaskPriority, TaskState } from '../../modules/task-manager/types/taskManagerTypes'
 
-export type ChatAgentScope = 'task-manager' | 'graph' | 'document' | 'library'
+export type ChatAgentScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance'
 export type ChatAgentResponseFormat = 'telegram-html'
 export type TaskExecutionStepStatus = 'pending' | 'in-progress' | 'completed' | 'blocked'
 export interface TaskExecutionStep { id: string; label: string; status: TaskExecutionStepStatus }
@@ -24,6 +24,11 @@ export interface ChatAgentRuntimeOptions {
   promptFileName?: string
   taskManagerScopeKey?: string | null
   responseFormat?: ChatAgentResponseFormat
+  actorUserId?: number
+  financeSourceReference?: string | null
+  onFinancePurchaseSaved?: (sourceReference: string) => void
+  onFinanceSalarySaved?: (sourceReference: string) => void
+  onFinanceCreditCardStatementSaved?: (sourceReference: string) => void
   requestClarification: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestConfirmation: (question: string, signal: AbortSignal) => Promise<boolean>
   onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
@@ -99,7 +104,87 @@ export const CHAT_AGENT_SINGLE_CALL_TOOL_NAMES = [
   'create_library_note',
   'replace_library_document',
   'delete_library_document',
+  'create_finance_category',
+  'create_finance_purchase',
+  'create_finance_salary',
+  'create_finance_credit_card_statement',
 ] as const
+
+const FINANCE_TOOL_NAMES = new Set([
+  'request_user_clarification',
+  'get_finance_dashboard',
+  'create_finance_transaction',
+  'create_finance_savings_movement',
+  'list_finance_accounts',
+  'list_finance_categories',
+  'list_finance_movements',
+  'update_finance_transaction_status',
+  'search_finance_categories',
+  'create_finance_category',
+  'create_finance_purchase',
+  'create_finance_salary',
+  'create_finance_credit_card_statement',
+  'list_finance_credit_card_statements',
+  'list_finance_salaries',
+  'list_finance_purchases',
+])
+
+/** Accepts canonical, numeric and common ARS/USD locale forms from tool-calling models. */
+export function normalizeFinanceDecimal(value: unknown, maxFractionDigits = 2): string | null {
+  if (maxFractionDigits < 0 || maxFractionDigits > 8) return null
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return null
+    const numericText = String(value)
+    const match = /^(\d+)(?:\.(\d+))?$/.exec(numericText)
+    if (!match || (match[2]?.length ?? 0) > maxFractionDigits) return null
+    const fraction = (match[2] ?? '').replace(/0+$/, '')
+    return fraction ? `${match[1]}.${fraction}` : match[1] ?? null
+  }
+  const rawValue = typeof value === 'string' ? value.trim() : ''
+  if (!rawValue) return null
+
+  const compact = rawValue
+    .replace(/(?:ARS|USD|US\$|\$)/gi, '')
+    .replace(/\s+/g, '')
+  if (!compact || compact.startsWith('-') || /[^\d.,]/.test(compact)) return null
+
+  const commaIndex = compact.lastIndexOf(',')
+  const dotIndex = compact.lastIndexOf('.')
+  const lastSeparatorIndex = Math.max(commaIndex, dotIndex)
+  let integerPart = compact
+  let fractionPart = ''
+  if (lastSeparatorIndex >= 0) {
+    const trailingDigits = compact.length - lastSeparatorIndex - 1
+    const separator = compact[lastSeparatorIndex]
+    const separatorCount = [...compact].filter((character) => character === separator).length
+    const hasDifferentSeparator = commaIndex >= 0 && dotIndex >= 0
+    const isDecimalSeparator = trailingDigits > 0
+      && trailingDigits <= maxFractionDigits
+      && (hasDifferentSeparator || separatorCount === 1)
+    if (isDecimalSeparator) {
+      integerPart = compact.slice(0, lastSeparatorIndex)
+      fractionPart = compact.slice(lastSeparatorIndex + 1)
+    }
+  }
+
+  integerPart = integerPart.replace(/[.,]/g, '').replace(/^0+(?=\d)/, '')
+  if (!/^\d+$/.test(integerPart) || (fractionPart && !/^\d+$/.test(fractionPart))) return null
+  const normalizedFraction = fractionPart.replace(/0+$/, '')
+  return normalizedFraction ? `${integerPart}.${normalizedFraction}` : integerPart
+}
+
+export function sumFinanceAmounts(values: readonly string[]): string | null {
+  let totalCents = 0n
+  for (const value of values) {
+    const normalized = normalizeFinanceDecimal(value)
+    if (!normalized) return null
+    const [whole = '0', fraction = ''] = normalized.split('.')
+    totalCents += BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'))
+  }
+  const whole = totalCents / 100n
+  const fraction = String(totalCents % 100n).padStart(2, '0').replace(/0+$/, '')
+  return fraction ? `${whole}.${fraction}` : String(whole)
+}
 
 function isTaskState(value: unknown): value is TaskState {
   return typeof value === 'string' && TASK_STATES.has(value as TaskState)
@@ -297,8 +382,7 @@ export function buildTicketSectionCorrection(
   ].join('\n')
 }
 
-export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefinition[] {
-  void scope
+export function buildChatAgentTools(scope: ChatAgentScope, autoConfirmFinanceMutations = false): AiNativeToolDefinition[] {
   const tools: AiNativeToolDefinition[] = [
     {
       type: 'function',
@@ -368,6 +452,160 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
       },
     },
   ]
+  if (scope === 'finance') {
+    tools.push(
+      {
+        type: 'function', function: {
+          name: 'get_finance_dashboard',
+          description: 'Consulta el resumen de un mes: cuentas y saldos por moneda, categorias y movimientos. Usala antes de responder saldos o totales; los totales excluyen transferencias.',
+          parameters: { type: 'object', required: ['month'], properties: { month: { type: 'string', description: 'Mes YYYY-MM.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_transaction',
+          description: autoConfirmFinanceMutations
+            ? 'Crea y confirma inmediatamente un ingreso, gasto, transferencia o ajuste de Telegram usando IDs obtenidos de las herramientas financieras. Usala solo cuando importe, moneda, fecha, cuenta, categoría y descripción sean inequívocos. Nunca pidas confirmación: el usuario revisará y editará luego en Finanzas.'
+            : 'Crea un ingreso, gasto, transferencia o ajuste usando IDs obtenidos de las herramientas financieras. Llamala solo cuando importe, moneda, fecha, cuenta y descripcion sean inequivocos. Con confianza menor a 0.95 crea un borrador pendiente y solicita la confirmacion visible; con 0.95 o mas queda confirmado. Nunca pidas una confirmacion en texto ni digas que se registro sin llamar esta herramienta y recibir ok:true.',
+          parameters: { type: 'object', required: ['transactionType', 'amount', 'currency', 'effectiveDate', 'accountId', 'description'], properties: {
+            transactionType: { type: 'string', enum: ['income', 'expense', 'transfer', 'adjustment'], description: 'expense descuenta, income acredita, transfer mueve entre cuentas y adjustment corrige un saldo sin clasificarlo como ingreso o gasto.' }, amount: { type: 'string', description: 'Importe decimal exacto como texto, sin simbolo de moneda ni separador de miles.' }, currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda de la cuenta elegida; nunca conviertas monedas.' }, effectiveDate: { type: 'string', description: 'Fecha efectiva exacta en formato YYYY-MM-DD.' }, accountId: { type: 'string', description: 'ID opaco de una cuenta activa obtenido con list_finance_accounts.' }, destinationAccountId: { type: 'string', description: 'ID opaco obligatorio para transfer; es la cuenta que recibe el importe.' }, categoryId: { type: 'string', description: 'ID opaco de una categoria existente o creada y confirmada mediante create_finance_category.' }, description: { type: 'string', description: 'Descripcion breve del hecho, por ejemplo Nafta.' }, confidence: { type: 'number', description: 'Entre 0 y 1. Usa 0.95 solo si todos los campos fueron expresados sin ambiguedad; si no, usa menos de 0.95.' }, sourceReference: { type: 'string', description: 'Referencia opaca al audio o archivo original, si existe.' }, rawSource: { type: 'string', description: 'Transcripción original, si existe.' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_savings_movement',
+          description: 'Crea un movimiento de una reserva de ahorro vinculada a una cuenta real. Usala solo con IDs existentes. Los aportes y retiros son movimientos internos, no ingresos ni gastos; un retiro exige motivo. Solicita confirmacion visible salvo confianza alta.',
+          parameters: { type: 'object', required: ['reserveId', 'accountId', 'movementType', 'amount', 'currency', 'effectiveDate'], properties: {
+            reserveId: { type: 'string', description: 'ID opaco de una reserva existente.' }, accountId: { type: 'string', description: 'ID opaco de la cuenta real vinculada.' }, movementType: { type: 'string', enum: ['contribution', 'withdrawal', 'return', 'loss', 'adjustment'], description: 'contribution aporta, withdrawal retira, return registra rendimiento, loss una perdida y adjustment una correccion.' }, amount: { type: 'string', description: 'Importe decimal exacto como texto.' }, currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda de la reserva y cuenta, sin conversion.' }, effectiveDate: { type: 'string', description: 'Fecha efectiva en formato YYYY-MM-DD.' }, description: { type: 'string', description: 'Descripcion breve del movimiento.' }, reason: { type: 'string', description: 'Motivo obligatorio cuando movementType es withdrawal.' }, confidence: { type: 'number', description: 'Entre 0 y 1; solo 0.95 o mas permite confirmacion automatica.' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_accounts',
+          description: 'Lista las cuentas activas, sus IDs opacos, monedas y saldos actuales. Usala antes de crear un movimiento si el usuario no indico una cuenta inequivoca; muestra las alternativas y solicita una eleccion.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_categories',
+          description: 'Lista las categorias activas con sus IDs opacos y tipo. Usala para explorar categorias existentes; no crea categorias.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_movements',
+          description: 'Lista los movimientos de un mes, incluidos pendientes, confirmados, corregidos y descartados. Usala para localizar el ID antes de corregir, confirmar o descartar.',
+          parameters: { type: 'object', required: ['month'], properties: { month: { type: 'string', description: 'Mes YYYY-MM.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'update_finance_transaction_status',
+          description: 'Confirma, corrige o descarta un movimiento existente por ID. Primero obtene el ID con list_finance_movements. Toda modificacion solicita confirmacion visible y nunca modifica saldos directamente.',
+          parameters: { type: 'object', required: ['transactionId', 'status'], properties: { transactionId: { type: 'string', description: 'ID opaco de un movimiento devuelto por list_finance_movements.' }, status: { type: 'string', enum: ['confirmed', 'corrected', 'discarded'], description: 'confirmed acepta el borrador, corrected guarda los campos corregidos, discarded lo descarta.' }, amount: { type: 'string', description: 'Nuevo importe decimal exacto, solo para una correccion.' }, effectiveDate: { type: 'string', description: 'Nueva fecha YYYY-MM-DD, solo para una correccion.' }, accountId: { type: 'string', description: 'Nuevo ID opaco de cuenta, solo para una correccion.' }, categoryId: { type: 'string', description: 'Nuevo ID opaco de categoria existente, solo para una correccion.' }, description: { type: 'string', description: 'Nueva descripcion, solo para una correccion.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'search_finance_categories',
+          description: autoConfirmFinanceMutations
+            ? 'Busca categorías existentes por nombre y tipo y devuelve coincidencias con IDs. Si no hay una compatible, crea una nueva con create_finance_category y continúa la carga automáticamente; no pidas confirmación.'
+            : 'Busca categorias existentes por nombre y tipo y devuelve coincidencias con IDs. Si devuelve cero o varias coincidencias, solicita aclaracion. Si no hay coincidencias, podes proponer una categoria nueva y crearla solo mediante create_finance_category con confirmacion visible.',
+          parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, kind: { type: 'string', enum: ['income', 'expense'] } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_category',
+          description: autoConfirmFinanceMutations
+            ? 'Crea automáticamente una categoría financiera para una carga de Telegram cuando una búsqueda previa no encontró una compatible. Si ya existe una categoría activa con el mismo nombre y tipo, devuelve la existente sin duplicarla.'
+            : 'Crea una categoria financiera cuando no existe una adecuada. Solo usala despues de buscar categorias y con un nombre propuesto de forma explicita; solicita confirmacion visible antes de persistir. Si ya existe una categoria activa con el mismo nombre y tipo, devuelve la existente sin duplicarla.',
+          parameters: { type: 'object', required: ['name', 'kind'], properties: {
+            name: { type: 'string', description: 'Nombre breve de categoria, entre 1 y 80 caracteres, por ejemplo Transporte.' },
+            kind: { type: 'string', enum: ['income', 'expense'], description: 'expense para gastos e income para ingresos.' },
+            description: { type: 'string', description: 'Descripcion opcional de la categoria, hasta 500 caracteres.' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_purchase',
+          description: autoConfirmFinanceMutations
+            ? 'Guarda y confirma automáticamente un ticket de Telegram extraído de una imagen: crea la compra, sus líneas, observaciones históricas de precio y gasto asociado. Antes busca una categoría compatible y créala si no existe. Solo pregunta si la cuenta de pago no se puede inferir razonablemente.'
+            : 'Guarda un ticket de compra extraido de una imagen: crea la compra, sus lineas, observaciones historicas de precio y el gasto asociado. Usala solamente si la imagen es un ticket legible y cada importe fue extraido; primero pide la cuenta si falta. Muestra confirmacion visible antes de persistir.',
+          parameters: { type: 'object', required: ['accountId', ...(autoConfirmFinanceMutations ? ['categoryId'] : []), 'merchantName', 'observedAt', 'currency', 'subtotalAmount', 'discountAmount', 'taxAmount', 'totalAmount', 'items'], properties: {
+            accountId: { type: 'string', description: 'ID o nombre exacto de la cuenta real que pago el ticket.' }, categoryId: { type: 'string', description: 'ID o nombre de una categoría de gasto existente o recién creada; se aplica a las líneas del ticket.' }, merchantName: { type: 'string', description: 'Comercio leido del ticket.' }, observedAt: { type: 'string', description: 'Fecha y hora ISO; usa la fecha actual solo si el ticket no la muestra.' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, subtotalAmount: { type: 'string', description: 'Subtotal exacto como texto. Si no está impreso, usa la suma de lineTotal, incluyendo cualquier línea de ajuste de redondeo.' }, discountAmount: { type: 'string', description: 'Descuentos exactos como texto; usa 0 si no aparecen.' }, taxAmount: { type: 'string', description: 'Impuestos exactos como texto; usa 0 si no aparecen.' }, totalAmount: { type: 'string', description: 'Total final exacto impreso en el ticket.' }, items: { type: 'array', minItems: 1, maxItems: 100, description: 'Una línea por producto o ajuste legible del ticket. Incluye los ajustes de redondeo impresos como líneas independientes. No inventes líneas ni importes.', items: { type: 'object', required: ['originalDescription', 'quantity', 'unitPrice', 'discountAmount', 'lineTotal'], properties: { originalDescription: { type: 'string', description: 'Descripcion literal del producto o ajuste en el ticket.' }, normalizedDescription: { type: 'string', description: 'Nombre limpio opcional, sin marca de precio.' }, quantity: { type: 'string', description: 'Cantidad exacta en formato decimal, por ejemplo 2 o 0.5.' }, unitPrice: { type: 'string', description: 'Precio unitario exacto antes de descuento.' }, discountAmount: { type: 'string', description: 'Descuento de la linea, o 0.' }, lineTotal: { type: 'string', description: 'Importe final exacto de la linea.' } } } }, rawExtraction: { type: 'string', description: 'Resumen estructurado de lo que se leyo de la imagen para auditoria.' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_salary',
+          description: autoConfirmFinanceMutations
+            ? 'Guarda y confirma automáticamente un recibo de sueldo recibido por Telegram: persiste el recibo, sus conceptos y el ingreso por el neto en la cuenta elegida. No usa categorías. Solo pregunta si la cuenta de cobro no puede inferirse razonablemente.'
+            : 'Guarda un recibo de sueldo extraído de una imagen, sus conceptos y el ingreso por el neto. Usala solo cuando período, fecha de cobro, empleador, bruto, descuentos, neto, moneda y cuenta estén definidos; solicita confirmación visible antes de persistir.',
+          parameters: { type: 'object', required: ['accountId', 'period', 'paymentDate', 'employer', 'grossAmount', 'deductionsTotal', 'netAmount', 'currency', 'concepts'], properties: {
+            accountId: { type: 'string', description: 'ID o nombre exacto de la cuenta real que recibió el sueldo.' },
+            period: { type: 'string', description: 'Período liquidado en formato YYYY-MM.' },
+            paymentDate: { type: 'string', description: 'Fecha efectiva de cobro en formato YYYY-MM-DD. No uses la fecha de carga si el recibo muestra otra.' },
+            employer: { type: 'string', description: 'Razón social o nombre del empleador leído del recibo.' },
+            grossAmount: { type: 'string', description: 'Total bruto exacto como texto.' },
+            deductionsTotal: { type: 'string', description: 'Total de descuentos exacto como texto.' },
+            netAmount: { type: 'string', description: 'Neto cobrado exacto como texto; este importe crea el ingreso.' },
+            currency: { type: 'string', enum: ['ARS', 'USD'] },
+            concepts: { type: 'array', maxItems: 200, description: 'Conceptos legibles del recibo, sin inventar. earning para haberes y deduction para descuentos.', items: { type: 'object', required: ['name', 'conceptType', 'amount'], properties: { name: { type: 'string' }, conceptType: { type: 'string', enum: ['earning', 'deduction'] }, amount: { type: 'string', description: 'Importe exacto y positivo del concepto.' } } } },
+            rawExtraction: { type: 'string', description: 'Resumen estructurado de los campos leídos para auditoría.' },
+            sourceReference: { type: 'string', description: 'Referencia opaca a la imagen original; Telegram la aporta automáticamente.' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_credit_card_statement',
+          description: autoConfirmFinanceMutations
+            ? 'Guarda y confirma automáticamente un resumen de tarjeta de crédito recibido por Telegram. Registra cada consumo, cargo, interés e impuesto como gasto en la cuenta de tarjeta; pagos y créditos quedan conciliados sin crear otro gasto. El total a pagar nunca se registra como gasto adicional.'
+            : 'Guarda un resumen de tarjeta, sus líneas y los movimientos de consumos/cargos en la cuenta de tarjeta. El total a pagar del resumen no es otro gasto y el pago posterior debe registrarse como transferencia. Solicita confirmación visible antes de persistir.',
+          parameters: { type: 'object', required: ['accountId', 'issuer', 'period', 'closingDate', 'dueDate', 'currency', 'previousBalance', 'paymentsAmount', 'creditsAmount', 'purchasesAmount', 'feesAmount', 'interestAmount', 'taxesAmount', 'totalDue', 'items'], properties: {
+            accountId: { type: 'string', description: 'ID o nombre exacto de una cuenta activa de tipo credit_card que corresponde al resumen; no es la cuenta bancaria desde la que se pagará.' },
+            issuer: { type: 'string', description: 'Banco o emisor leído del resumen.' },
+            cardLastFour: { type: 'string', description: 'Últimos cuatro dígitos si están visibles; nunca inventarlos.' },
+            period: { type: 'string', description: 'Período del resumen en formato YYYY-MM.' },
+            closingDate: { type: 'string', description: 'Fecha de cierre YYYY-MM-DD.' },
+            dueDate: { type: 'string', description: 'Fecha de vencimiento YYYY-MM-DD.' },
+            currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Genera una llamada independiente por cada moneda del resumen.' },
+            previousBalance: { type: 'string' }, paymentsAmount: { type: 'string' }, creditsAmount: { type: 'string' }, purchasesAmount: { type: 'string' }, feesAmount: { type: 'string' }, interestAmount: { type: 'string' }, taxesAmount: { type: 'string' }, totalDue: { type: 'string' }, minimumPayment: { type: 'string' },
+            items: { type: 'array', minItems: 1, maxItems: 300, description: 'Todas las líneas legibles. Incluye totales agregados impresos como una línea cuando no exista su desglose. Usa importes positivos.', items: { type: 'object', required: ['purchaseDate', 'description', 'amount', 'itemType'], properties: { purchaseDate: { type: 'string', description: 'Fecha YYYY-MM-DD.' }, description: { type: 'string' }, amount: { type: 'string' }, itemType: { type: 'string', enum: ['purchase', 'fee', 'interest', 'tax', 'payment', 'credit'] }, installmentNumber: { type: 'integer' }, installmentCount: { type: 'integer' } } } },
+            rawExtraction: { type: 'string' }, sourceReference: { type: 'string' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_salaries',
+          description: 'Consulta recibos de sueldo y su evolucion historica. Es solo lectura: no crea ni modifica sueldos.',
+          parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_credit_card_statements',
+          description: 'Consulta resúmenes de tarjeta importados, sus fechas, totales y líneas. Es solo lectura.',
+          parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_purchases',
+          description: 'Consulta compras confirmadas y pendientes por fecha, incluidos tickets y lineas cuando existan. Es solo lectura: no extrae ni modifica archivos.',
+          parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } },
+        },
+      },
+    )
+  }
   {
     tools.push(
       {
@@ -492,7 +730,9 @@ export function buildChatAgentTools(scope: ChatAgentScope): AiNativeToolDefiniti
       },
     })
   }
-  return tools
+  return scope === 'finance'
+    ? tools.filter((tool) => FINANCE_TOOL_NAMES.has(tool.function.name))
+    : tools
 }
 
 function taskMutationTool(
@@ -551,6 +791,27 @@ export function buildChatAgentSystemPrompt(
       'Sin seleccion, busca titulos, rutas o carpetas nombradas; si no se nombra ninguno usa search_library_context.',
       'Una carpeta nombrada representa los documentos cuya ruta esta dentro de esa carpeta. Usa sus coincidencias para responder y lee los documentos cuando sus fragmentos no alcancen.',
     )
+  } else if (scope === 'finance') {
+    const autoConfirmTelegramFinance = responseFormat === 'telegram-html'
+    base.push(
+      'Estas en Finanzas. Usa exclusivamente las herramientas financieras; no uses SQL ni modifiques saldos directamente.',
+      'No recibiste documentos de la biblioteca como contexto. Consulta solamente los datos mínimos necesarios mediante herramientas tipadas.',
+      `La fecha actual para registrar operaciones sin fecha indicada es ${new Date().toISOString().slice(0, 10)}. Usa esa fecha solo cuando el usuario no indique otra.`,
+      'Antes de registrar cualquier movimiento lista las cuentas. Si el usuario no indicó una cuenta inequívoca, llama request_user_clarification y espera; esto es obligatorio también en Telegram.',
+      autoConfirmTelegramFinance
+        ? 'Para cargas financieras de Telegram esta política específica reemplaza la confirmación general: en gastos y tickets busca una categoría compatible y créala automáticamente si no existe; recibos de sueldo y resúmenes de tarjeta no requieren buscar categorías. No propongas ni pidas confirmación. Cuando cuenta, importes y fecha sean suficientemente claros, registra y confirma la operación de inmediato para que el usuario pueda revisarla y editarla luego en Finanzas.'
+        : 'Busca categorías existentes. Si no hay ninguna adecuada, podes proponer una nueva relacionada con el hecho y crearla solo con create_finance_category, que exige confirmación individual visible. Ante varias coincidencias solicita aclaración.',
+      autoConfirmTelegramFinance
+        ? 'Si recibes una imagen, clasifícala primero como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Para un ticket usa create_finance_purchase. Para un recibo de sueldo usa create_finance_salary. Para un resumen extrae emisor, tarjeta, período, cierre, vencimiento, moneda, saldos y todas las líneas; resuelve una cuenta de tipo credit_card y usa create_finance_credit_card_statement. En un resumen registra consumos/cargos, nunca el total a pagar como gasto adicional y nunca inventes la cuenta bancaria del pago. Guarda automáticamente: no finalices con un resumen y responde solo después de recibir ok:true.'
+        : 'Si recibes una imagen, clasifícala como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Orden obligatorio: usa create_finance_purchase para tickets, create_finance_salary para recibos y create_finance_credit_card_statement para resúmenes después de resolver la cuenta de tarjeta. El total del resumen no es otro gasto y el pago posterior es una transferencia separada. No afirmes que se guardó sin ejecutar la herramienta correspondiente.',
+      autoConfirmTelegramFinance
+        ? 'La única aclaración permitida antes de guardar es una cuenta que no pueda inferirse de modo razonable: cuenta de pago para tickets, de cobro para sueldos o cuenta credit_card para resúmenes. Una vez resuelta, continúa automáticamente.'
+        : 'Una aclaración no confirma una mutación. Las operaciones ambiguas quedan pendientes y cada confirmación es individual.',
+      autoConfirmTelegramFinance
+        ? 'Nunca anuncies una carga como realizada sin ejecutar la herramienta correspondiente y recibir ok:true. Al completar un ticket informa cuenta, categoría, fecha e importe; un recibo informa cuenta, período, fecha de cobro y neto; un resumen informa tarjeta, período, vencimiento, total y cantidad de movimientos creados o conciliados.'
+        : 'Nunca anuncies un resumen para pedir una confirmacion en texto ni afirmes que un movimiento fue registrado sin ejecutar create_finance_transaction. Cuando todos los datos esten completos, llama esa herramienta: ella solicita la confirmacion real y solo entonces persiste el movimiento.',
+      'ARS y USD son libros separados: nunca conviertas ni sumes monedas.',
+    )
   } else if (scope === 'library') {
     base.push(
       'Estas conectado a la biblioteca activa desde Telegram. Puedes buscar y leer cualquier documento de esta biblioteca.',
@@ -573,10 +834,170 @@ export function buildChatAgentSystemPrompt(
   return base.join('\n')
 }
 
+export function validateFinanceFinalAnswer(
+  answer: string,
+  mutationExecuted: boolean,
+  clarificationRequested = false,
+  ticketPurchaseRequired = false,
+  purchaseExecuted = false,
+  salaryExecuted = false,
+  creditCardStatementExecuted = false,
+): string | null {
+  const reportsDetectedTicket = /\bticket\s+(?:de\s+compra\s+)?detectado\b/i.test(answer)
+  const reportsDetectedSalary = /\b(?:recibo\s+de\s+sueldo|liquidaci[oó]n\s+de\s+haberes)\s+(?:detectad[oa]|identificad[oa])\b/i.test(answer)
+  const reportsDetectedCardStatement = /\bresumen\s+de\s+tarjeta(?:\s+de\s+cr[eé]dito)?\s+(?:detectad[oa]|identificad[oa])\b/i.test(answer)
+  if (ticketPurchaseRequired && reportsDetectedTicket && !purchaseExecuted) {
+    return 'Detectaste un ticket recibido por Telegram, pero aún no fue persistido. No finalices con un resumen: usa create_finance_purchase con la cuenta, categoría, comercio, fecha, total, líneas y sourceReference disponibles. Espera ok:true antes de responder que el ticket quedó registrado.'
+  }
+  if (ticketPurchaseRequired && reportsDetectedSalary && !salaryExecuted) {
+    return 'Detectaste un recibo de sueldo recibido por Telegram, pero aún no fue persistido. Usa create_finance_salary con cuenta, período, fecha de cobro, empleador, bruto, descuentos, neto, moneda, conceptos y sourceReference. Espera ok:true antes de responder que quedó registrado.'
+  }
+  if (ticketPurchaseRequired && reportsDetectedCardStatement && !creditCardStatementExecuted) {
+    return 'Detectaste un resumen de tarjeta recibido por Telegram, pero aún no fue persistido. Usa create_finance_credit_card_statement con la cuenta credit_card, período, fechas, moneda, saldos, totales, líneas y sourceReference. Espera ok:true antes de responder que quedó registrado.'
+  }
+  if (mutationExecuted) return null
+  const claimsPersistedOperation = /\b(?:he\s+)?(?:registr(?:é|e|ado)|guard(?:é|e|ado)|carg(?:ué|ue|ado)|anot(?:é|e|ado))\b|\blisto\b[^\n]*(?:gasto|ingreso|movimiento)/i.test(answer)
+  const promisesFutureMutation = /\b(?:ahora\s+)?(?:voy|vamos|procederé|procedere)\s+a\s+(?:registrar|guardar|cargar|anotar|crear)\b/i.test(answer)
+  const asksForMissingFinanceField = /(?:\b(?:que|qué|cual|cuál)\s+(?:cuenta|categor[ií]a|fecha|moneda)\b|[¿?][\s\S]{0,160}\b(?:cuenta|categor[ií]a|fecha|moneda)\b|\b(?:cuenta|categor[ií]a|fecha|moneda)\b[\s\S]{0,160}[?])/i.test(answer)
+  return claimsPersistedOperation || promisesFutureMutation
+    ? 'No afirmes ni prometas que el movimiento fue registrado o que lo registrarás: ninguna mutación financiera se ejecutó. Si falta la cuenta o categoría, usa request_user_clarification. Si todos los datos están completos, llama create_finance_transaction y espera su resultado antes de responder.'
+    : asksForMissingFinanceField && !clarificationRequested
+      ? 'No hagas la pregunta financiera como texto final. Llama request_user_clarification con la cuenta, categoría, fecha o moneda que falta y espera su respuesta dentro de esta misma operación; así se conserva la referencia del ticket y no se inicia otra conversación.'
+    : null
+}
+
+interface FinanceToolResult {
+  ok?: unknown
+  changed?: unknown
+  duplicate?: unknown
+  error?: unknown
+  code?: unknown
+  message?: unknown
+  purchase?: unknown
+  salary?: unknown
+  statement?: unknown
+  matchedExistingTransactions?: unknown
+  createdTransactions?: unknown
+  accountName?: unknown
+  categoryName?: unknown
+}
+
+function financeToolResult(value: unknown): FinanceToolResult | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as FinanceToolResult : null
+}
+
+function formatFinanceAmount(value: unknown): string {
+  const normalized = normalizeFinanceDecimal(value)
+  if (!normalized) return typeof value === 'string' ? value : ''
+  return new Intl.NumberFormat('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(normalized))
+}
+
+export function resolveFinanceToolResultAnswer(call: AiNativeToolCall, result: unknown): string | null {
+  if (call.function.name === 'create_finance_credit_card_statement') {
+    const resolved = financeToolResult(result)
+    if (!resolved) return 'No pude registrar el resumen de tarjeta porque la herramienta financiera devolvió una respuesta inválida.'
+    const args = call.function.arguments
+    if (resolved.ok === true && resolved.duplicate === true) return 'Este resumen de tarjeta ya estaba registrado. No lo cargué nuevamente.'
+    if (resolved.ok === true && resolved.changed === true) {
+      const issuer = typeof args.issuer === 'string' ? args.issuer.trim() : 'el emisor detectado'
+      const total = formatFinanceAmount(args.totalDue)
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : ''
+      const account = typeof resolved.accountName === 'string' ? resolved.accountName.trim() : typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const period = typeof args.period === 'string' ? args.period.trim() : ''
+      const dueDate = typeof args.dueDate === 'string' ? args.dueDate.slice(0, 10) : ''
+      return [
+        `Listo. Registré el resumen de tarjeta de ${issuer}.`,
+        account ? `Tarjeta: ${account}` : '', period ? `Período: ${period}` : '',
+        dueDate ? `Vencimiento: ${dueDate}` : '', total ? `Total a pagar: $ ${total}${currency ? ` ${currency}` : ''}` : '',
+        `Movimientos creados: ${typeof resolved.createdTransactions === 'number' ? resolved.createdTransactions : 0}`,
+        `Consumos ya existentes conciliados: ${typeof resolved.matchedExistingTransactions === 'number' ? resolved.matchedExistingTransactions : 0}`,
+      ].filter(Boolean).join('\n')
+    }
+    if (resolved.error === 'finance-credit-card-statement-save-failed') {
+      const message = typeof resolved.message === 'string' ? resolved.message.trim() : ''
+      return resolved.code === 'validation' && message
+        ? `No pude registrar el resumen porque sus importes o campos no son coherentes: ${message}`
+        : 'No pude guardar el resumen de tarjeta por un error de almacenamiento. El detalle técnico quedó registrado en la terminal.'
+    }
+    return null
+  }
+  if (call.function.name === 'create_finance_salary') {
+    const resolved = financeToolResult(result)
+    if (!resolved) return 'No pude registrar el recibo de sueldo porque la herramienta financiera devolvió una respuesta inválida.'
+    const args = call.function.arguments
+    if (resolved.ok === true && resolved.duplicate === true) {
+      return 'Este recibo de sueldo ya estaba registrado. No lo cargué nuevamente.'
+    }
+    if (resolved.ok === true && resolved.changed === true) {
+      const employer = typeof args.employer === 'string' ? args.employer.trim() : 'el empleador detectado'
+      const net = formatFinanceAmount(args.netAmount)
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : ''
+      const account = typeof resolved.accountName === 'string'
+        ? resolved.accountName.trim()
+        : typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const period = typeof args.period === 'string' ? args.period.trim() : ''
+      const date = typeof args.paymentDate === 'string' ? args.paymentDate.slice(0, 10) : ''
+      const conceptCount = Array.isArray(args.concepts) ? args.concepts.length : 0
+      return [
+        `Listo. Registré el recibo de sueldo de ${employer}.`,
+        period ? `Período: ${period}` : '',
+        net ? `Neto: $ ${net}${currency ? ` ${currency}` : ''}` : '',
+        account ? `Cuenta: ${account}` : '',
+        date ? `Fecha de cobro: ${date}` : '',
+        `Conceptos: ${conceptCount}`,
+      ].filter(Boolean).join('\n')
+    }
+    if (resolved.error === 'finance-salary-save-failed') {
+      const message = typeof resolved.message === 'string' ? resolved.message.trim() : ''
+      return resolved.code === 'validation' && message
+        ? `No pude registrar el recibo de sueldo porque sus importes o campos no son coherentes: ${message}`
+        : 'No pude guardar el recibo de sueldo por un error de almacenamiento. El detalle técnico quedó registrado en la terminal.'
+    }
+    return null
+  }
+  if (call.function.name !== 'create_finance_purchase') return null
+  const resolved = financeToolResult(result)
+  if (!resolved) return 'No pude registrar el ticket porque la herramienta financiera devolvió una respuesta inválida.'
+  const args = call.function.arguments
+  if (resolved.ok === true && resolved.duplicate === true) {
+    return 'Este ticket ya estaba registrado. No lo cargué nuevamente.'
+  }
+  if (resolved.ok === true && resolved.changed === true) {
+    const merchant = typeof args.merchantName === 'string' ? args.merchantName.trim() : 'el comercio detectado'
+    const amount = formatFinanceAmount(args.totalAmount)
+    const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : ''
+    const account = typeof resolved.accountName === 'string'
+      ? resolved.accountName.trim()
+      : typeof args.accountId === 'string' ? args.accountId.trim() : ''
+    const category = typeof resolved.categoryName === 'string'
+      ? resolved.categoryName.trim()
+      : typeof args.categoryId === 'string' ? args.categoryId.trim() : ''
+    const date = typeof args.observedAt === 'string' ? args.observedAt.slice(0, 10) : ''
+    const itemCount = Array.isArray(args.items) ? args.items.length : 0
+    return [
+      `Listo. Registré el ticket de ${merchant}.`,
+      amount ? `Importe: $ ${amount}${currency ? ` ${currency}` : ''}` : '',
+      account ? `Cuenta: ${account}` : '',
+      category ? `Categoría: ${category}` : '',
+      date ? `Fecha: ${date}` : '',
+      itemCount > 0 ? `Productos: ${itemCount}` : '',
+    ].filter(Boolean).join('\n')
+  }
+  if (resolved.error === 'finance-purchase-save-failed') {
+    const message = typeof resolved.message === 'string' ? resolved.message.trim() : ''
+    const validationFailure = resolved.code === 'validation'
+    return validationFailure && message
+      ? `No pude registrar el ticket porque los importes no son coherentes: ${message}`
+      : 'No pude guardar el ticket por un error de almacenamiento. El detalle técnico quedó registrado en la terminal.'
+  }
+  return null
+}
+
 export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): Promise<{
   systemPrompt: string
   tools: AiNativeToolDefinition[]
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
+  resolveToolResultAnswer: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer: (answer: string) => string | null
 }> {
   const defaultPrompt = await loadAgentPrompt(options.library, options.promptFileName ?? 'default.md')
@@ -585,7 +1006,9 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   const allOptions = await loadLibraryFileOptions(options.library)
   const normalizedScopePaths = new Set(options.scopePaths.map((path) => path.replace(/\\/g, '/')))
   const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt)$/i.test(item.name))
-  const candidates = options.scope === 'document' || (options.scope === 'library' && normalizedScopePaths.size === 0)
+  const candidates = options.scope === 'finance'
+    ? []
+    : options.scope === 'document' || (options.scope === 'library' && normalizedScopePaths.size === 0)
     ? readableOptions
     : readableOptions.filter((item) => normalizedScopePaths.has(item.path.replace(/\\/g, '/')))
   const documents: AgentDocument[] = candidates.map((option, index) => ({ id: `doc-${index + 1}`, option }))
@@ -599,6 +1022,11 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   let pendingAmbiguousTickets: Array<{ ticketId: string; title: string; path: string }> = []
   let executionPlan: TaskExecutionStep[] = []
   let executionPlanApproved = false
+  let financeMutationExecuted = false
+  let financePurchaseExecuted = false
+  let financeSalaryExecuted = false
+  let financeCreditCardStatementExecuted = false
+  let financeClarificationRequested = false
   const clarifiedAmbiguousTicketIds = new Set<string>()
   const initiallyAuthorizedPaths = new Set([
     ...(options.explicitlySelectedPaths ?? []),
@@ -652,6 +1080,9 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     const { name, arguments: args } = call.function
     if (name === 'add_agent_rule') {
       const rule = typeof args.rule === 'string' ? args.rule.trim() : ''
+      if (isInternalAgentCorrection(rule)) {
+        return { ok: false, error: 'internal-validator-instruction' }
+      }
       if (!rule || rule.length > 2_000 || isLikelyPersonalMemory(rule)) {
         return { ok: false, error: 'personal-facts-belong-in-agent-memory', useTool: 'add_agent_memory' }
       }
@@ -668,6 +1099,416 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const { scheduleAgentKnowledgeOrganization } = await import('./chatLongTermMemorySync')
       scheduleAgentKnowledgeOrganization(options.library, options.aiPreferences)
       return { ok: true, changed: !current.some((item) => item.toLowerCase() === memory.toLowerCase()) }
+    }
+    if (name === 'get_finance_dashboard') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const month = typeof args.month === 'string' && /^\d{4}-\d{2}$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
+      const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
+      return getFinanceDashboard(options.library, month)
+    }
+    if (name === 'list_finance_accounts' || name === 'list_finance_categories' || name === 'list_finance_movements') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const month = typeof args.month === 'string' && /^\d{4}-\d{2}$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
+      const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, month)
+      if (name === 'list_finance_accounts') return { accounts: dashboard.accounts.filter((account) => account.active) }
+      if (name === 'list_finance_categories') return { categories: dashboard.categories.filter((category) => category.active) }
+      return { month, movements: dashboard.transactions }
+    }
+    if (name === 'search_finance_categories') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const query = typeof args.query === 'string' ? args.query.trim().toLocaleLowerCase('es') : ''
+      const kind = args.kind === 'income' || args.kind === 'expense' ? args.kind : null
+      if (!query) return { ok: false, error: 'category-query-required' }
+      const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7))
+      const matches = dashboard.categories.filter((category) => category.active && (!kind || category.kind === kind) && category.name.toLocaleLowerCase('es').includes(query))
+      return { matches, exact: matches.length === 1 && matches[0]?.name.toLocaleLowerCase('es') === query, categoryCreationAllowed: matches.length === 0 }
+    }
+    if (name === 'create_finance_category') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const name = typeof args.name === 'string' ? args.name.trim().replace(/\s+/g, ' ') : ''
+      const kind = args.kind === 'income' || args.kind === 'expense' ? args.kind : null
+      const description = typeof args.description === 'string' ? args.description.trim() : ''
+      if (!name || name.length > 80 || !kind || description.length > 500) {
+        return { ok: false, error: 'invalid-finance-category', requiresClarification: true }
+      }
+      const { getFinanceDashboard, saveFinanceCategory } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7))
+      const existing = dashboard.categories.find((category) => category.active && category.kind === kind && category.name.localeCompare(name, 'es', { sensitivity: 'accent' }) === 0)
+      if (existing) return { ok: true, changed: false, category: existing, duplicate: true }
+      const accepted = options.responseFormat === 'telegram-html'
+        ? true
+        : await options.requestConfirmation(`Crear la categoria ${name} para ${kind === 'expense' ? 'gastos' : 'ingresos'}.`, signal)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const category: import('../../modules/finance/types/financeTypes').FinanceCategory = {
+        id: crypto.randomUUID(), name, kind, active: true, parentId: null, description: description || null,
+      }
+      return { ok: true, changed: true, category: await saveFinanceCategory(options.library, category) }
+    }
+    if (name === 'create_finance_purchase') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const accountValue = typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const categoryValue = typeof args.categoryId === 'string' ? args.categoryId.trim() : ''
+      const merchantName = typeof args.merchantName === 'string' ? args.merchantName.trim() : ''
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+      const observedAt = typeof args.observedAt === 'string' && /^\d{4}-\d{2}-\d{2}/.test(args.observedAt)
+        ? args.observedAt.trim()
+        : `${new Date().toISOString().slice(0, 10)}T12:00:00Z`
+      const discountAmount = normalizeFinanceDecimal(args.discountAmount) ?? '0'
+      const taxAmount = normalizeFinanceDecimal(args.taxAmount) ?? '0'
+      const totalAmount = normalizeFinanceDecimal(args.totalAmount)
+      const rawItems = Array.isArray(args.items) ? args.items.slice(0, 100) : []
+      const items = rawItems.flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+        const item = value as Record<string, unknown>
+        const originalDescription = typeof item.originalDescription === 'string' ? item.originalDescription.trim() : ''
+        const quantity = normalizeFinanceDecimal(item.quantity, 6)
+        const unitPrice = normalizeFinanceDecimal(item.unitPrice)
+        const itemDiscountAmount = normalizeFinanceDecimal(item.discountAmount) ?? '0'
+        const lineTotal = normalizeFinanceDecimal(item.lineTotal)
+        if (!originalDescription || !quantity || !unitPrice || !lineTotal) return []
+        return [{ id: crypto.randomUUID(), originalDescription, normalizedDescription: typeof item.normalizedDescription === 'string' ? item.normalizedDescription.trim() || null : null, quantity, unitPrice, discountAmount: itemDiscountAmount, lineTotal, categoryId: null }]
+      })
+      const subtotalAmount = sumFinanceAmounts(items.map((item) => item.lineTotal))
+      if (!accountValue || !merchantName || !currency || !subtotalAmount || !totalAmount || rawItems.length === 0 || items.length !== rawItems.length) {
+        const invalidFields = [
+          !accountValue ? 'accountId' : null,
+          !merchantName ? 'merchantName' : null,
+          !currency ? 'currency' : null,
+          !subtotalAmount ? 'subtotalAmount' : null,
+          !totalAmount ? 'totalAmount' : null,
+          rawItems.length === 0 ? 'items' : null,
+          items.length !== rawItems.length ? 'itemAmounts' : null,
+        ].filter((field): field is string => Boolean(field))
+        return { ok: false, error: 'invalid-finance-purchase', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
+      }
+      const { getFinanceDashboard, saveFinancePurchase } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, observedAt.slice(0, 7))
+      const normalizedAccount = accountValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedAccount))
+      if (!account || account.currency !== currency) return { ok: false, error: 'finance-purchase-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta listada con la misma moneda del ticket.' }
+      const normalizedCategory = categoryValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const category = dashboard.categories.find((candidate) => candidate.active && candidate.kind === 'expense' && (candidate.id === categoryValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedCategory))
+      if (!category && options.responseFormat === 'telegram-html') return { ok: false, error: 'finance-purchase-category-invalid', invalidFields: ['categoryId'], instruction: 'Usa el ID exacto devuelto por search_finance_categories o create_finance_category.' }
+      const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
+      if (!reference) return { ok: false, error: 'finance-purchase-source-required' }
+      const autoConfirm = options.responseFormat === 'telegram-html'
+      const purchase: import('../../modules/finance/types/financeTypes').FinancePurchaseRecord = { id: crypto.randomUUID(), accountId: account.id, merchantName, observedAt, currency: currency as import('../../modules/finance/types/financeTypes').FinanceCurrency, subtotalAmount, discountAmount, taxAmount, totalAmount, status: autoConfirm ? 'confirmed' : 'pending', sourceReference: reference, rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null, items: items.map((item) => ({ ...item, categoryId: category?.id ?? null })) }
+      const accepted = autoConfirm || await options.requestConfirmation(`Guardar ticket de ${merchantName}: ${items.length} producto(s), total ${totalAmount} ${currency}, en ${account.name}.`, signal)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      let saved: import('../../modules/finance/types/financeTypes').FinanceSavedPurchase
+      try {
+        saved = await saveFinancePurchase(options.library, { ...purchase, status: 'confirmed' })
+      } catch (error) {
+        const message = typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+          ? error.message
+          : error instanceof Error ? error.message : typeof error === 'string' ? error : 'No se pudo guardar el ticket.'
+        const normalizedMessage = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es')
+        const externalCode = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : null
+        const code = /duplic|ya existe|ya fue registrado|registrado anteriormente/.test(normalizedMessage)
+          ? 'conflict'
+          : /requiere|inval|debe|diferencia|no coincide|suma de lineas|importe/.test(normalizedMessage)
+            ? 'validation'
+            : externalCode ?? 'storage'
+        const storageStep = /finance_purchase\.([a-z_]+)/i.exec(message)?.[1]
+        const storageReason = /foreign key constraint failed/i.test(message)
+          ? 'foreign-key'
+          : /unique constraint failed/i.test(message)
+            ? 'unique-constraint'
+            : /not null constraint failed/i.test(message) ? 'not-null-constraint' : 'storage'
+        const diagnosticReason = code === 'validation'
+          ? 'purchase-validation'
+          : code === 'conflict'
+            ? 'purchase-conflict'
+            : `${storageStep ?? 'unknown'}-${storageReason}`
+        if (code === 'conflict' && /ticket.*registrado|duplic/i.test(message)) {
+          financeMutationExecuted = true
+          financePurchaseExecuted = true
+          options.onFinancePurchaseSaved?.(reference)
+          return { ok: true, changed: false, duplicate: true, message }
+        }
+        return { ok: false, error: 'finance-purchase-save-failed', code, message, diagnosticReason, instruction: 'Informa el error si no es corregible; no afirmes que el ticket fue guardado.' }
+      }
+      financeMutationExecuted = true
+      financePurchaseExecuted = true
+      options.onFinancePurchaseSaved?.(reference)
+      return {
+        ok: true,
+        changed: true,
+        purchase: saved.purchase,
+        validation: saved.validation,
+        accountName: account.name,
+        categoryName: category?.name ?? null,
+      }
+    }
+    if (name === 'create_finance_salary') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const accountValue = typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const period = typeof args.period === 'string' && /^\d{4}-\d{2}$/.test(args.period.trim()) ? args.period.trim() : ''
+      const paymentDate = typeof args.paymentDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.paymentDate.trim()) ? args.paymentDate.trim() : ''
+      const employer = typeof args.employer === 'string' ? args.employer.trim().replace(/\s+/g, ' ') : ''
+      const grossAmount = normalizeFinanceDecimal(args.grossAmount)
+      const deductionsTotal = normalizeFinanceDecimal(args.deductionsTotal)
+      const netAmount = normalizeFinanceDecimal(args.netAmount)
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+      const rawConcepts = Array.isArray(args.concepts) ? args.concepts.slice(0, 200) : []
+      const concepts: Array<{ id: string; name: string; conceptType: 'earning' | 'deduction'; amount: string }> = rawConcepts.flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+        const concept = value as Record<string, unknown>
+        const name = typeof concept.name === 'string' ? concept.name.trim().replace(/\s+/g, ' ') : ''
+        const conceptType = concept.conceptType === 'earning' || concept.conceptType === 'deduction' ? concept.conceptType : null
+        const amount = normalizeFinanceDecimal(concept.amount)
+        if (!name || !conceptType || !amount) return []
+        return [{ id: crypto.randomUUID(), name, conceptType, amount }]
+      })
+      if (!accountValue || !period || !paymentDate || !employer || employer.length > 200 || !grossAmount || !deductionsTotal || !netAmount || !currency || concepts.length !== rawConcepts.length) {
+        const invalidFields = [
+          !accountValue ? 'accountId' : null,
+          !period ? 'period' : null,
+          !paymentDate ? 'paymentDate' : null,
+          !employer || employer.length > 200 ? 'employer' : null,
+          !grossAmount ? 'grossAmount' : null,
+          !deductionsTotal ? 'deductionsTotal' : null,
+          !netAmount ? 'netAmount' : null,
+          !currency ? 'currency' : null,
+          concepts.length !== rawConcepts.length ? 'concepts' : null,
+        ].filter((field): field is string => Boolean(field))
+        return { ok: false, error: 'invalid-finance-salary', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
+      }
+      const { getFinanceDashboard, saveFinanceSalary } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, paymentDate.slice(0, 7))
+      const normalizedAccount = accountValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedAccount))
+      if (!account || account.currency !== currency) return { ok: false, error: 'finance-salary-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta listada con la misma moneda del recibo.' }
+      const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
+      if (!reference) return { ok: false, error: 'finance-salary-source-required' }
+      const salary: import('../../modules/finance/types/financeTypes').FinanceSalaryReceipt = {
+        id: crypto.randomUUID(), period, paymentDate, employer, grossAmount, deductionsTotal, netAmount,
+        currency, accountId: account.id, status: 'confirmed', sourceReference: reference,
+        rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null,
+        concepts,
+      }
+      const autoConfirm = options.responseFormat === 'telegram-html'
+      const accepted = autoConfirm || await options.requestConfirmation(`Guardar recibo de sueldo de ${employer}, período ${period}, neto ${netAmount} ${currency}, en ${account.name}.`, signal)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      try {
+        const saved = await saveFinanceSalary(options.library, salary)
+        financeMutationExecuted = true
+        financeSalaryExecuted = true
+        options.onFinanceSalarySaved?.(reference)
+        return { ok: true, changed: true, salary: saved, accountName: account.name }
+      } catch (error) {
+        const message = typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+          ? error.message
+          : error instanceof Error ? error.message : typeof error === 'string' ? error : 'No se pudo guardar el recibo de sueldo.'
+        const normalizedMessage = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es')
+        const externalCode = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : null
+        const code = /duplic|ya existe|ya fue registrado|registrado anteriormente/.test(normalizedMessage)
+          ? 'conflict'
+          : /requiere|inval|debe|diferencia|no coincide|importe|neto|bruto|descuento|moneda|cuenta/.test(normalizedMessage)
+            ? 'validation'
+            : externalCode ?? 'storage'
+        if (code === 'conflict') {
+          financeMutationExecuted = true
+          financeSalaryExecuted = true
+          options.onFinanceSalarySaved?.(reference)
+          return { ok: true, changed: false, duplicate: true, message }
+        }
+        return { ok: false, error: 'finance-salary-save-failed', code, message, diagnosticReason: code === 'validation' ? 'salary-validation' : 'salary-storage', instruction: 'Informa el error si no es corregible; no afirmes que el recibo fue guardado.' }
+      }
+    }
+    if (name === 'create_finance_credit_card_statement') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const accountValue = typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const issuer = typeof args.issuer === 'string' ? args.issuer.trim().replace(/\s+/g, ' ') : ''
+      const cardLastFour = typeof args.cardLastFour === 'string' && /^\d{4}$/.test(args.cardLastFour.trim()) ? args.cardLastFour.trim() : null
+      const period = typeof args.period === 'string' && /^\d{4}-\d{2}$/.test(args.period.trim()) ? args.period.trim() : ''
+      const closingDate = typeof args.closingDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.closingDate.trim()) ? args.closingDate.trim() : ''
+      const dueDate = typeof args.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.dueDate.trim()) ? args.dueDate.trim() : ''
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+      const amountFields = {
+        previousBalance: normalizeFinanceDecimal(args.previousBalance),
+        paymentsAmount: normalizeFinanceDecimal(args.paymentsAmount),
+        creditsAmount: normalizeFinanceDecimal(args.creditsAmount),
+        purchasesAmount: normalizeFinanceDecimal(args.purchasesAmount),
+        feesAmount: normalizeFinanceDecimal(args.feesAmount),
+        interestAmount: normalizeFinanceDecimal(args.interestAmount),
+        taxesAmount: normalizeFinanceDecimal(args.taxesAmount),
+        totalDue: normalizeFinanceDecimal(args.totalDue),
+      }
+      const minimumPayment = args.minimumPayment === null || args.minimumPayment === undefined || args.minimumPayment === ''
+        ? null
+        : normalizeFinanceDecimal(args.minimumPayment)
+      const rawItems = Array.isArray(args.items) ? args.items.slice(0, 500) : []
+      const items: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatementItem[] = rawItems.flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+        const item = value as Record<string, unknown>
+        const purchaseDate = typeof item.purchaseDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.purchaseDate.trim()) ? item.purchaseDate.trim() : ''
+        const description = typeof item.description === 'string' ? item.description.trim().replace(/\s+/g, ' ') : ''
+        const amount = normalizeFinanceDecimal(item.amount)
+        const itemType = ['purchase', 'fee', 'interest', 'tax', 'payment', 'credit'].includes(String(item.itemType))
+          ? item.itemType as import('../../modules/finance/types/financeTypes').FinanceCreditCardStatementItemType
+          : null
+        const installmentNumber = typeof item.installmentNumber === 'number' && Number.isInteger(item.installmentNumber) ? item.installmentNumber : null
+        const installmentCount = typeof item.installmentCount === 'number' && Number.isInteger(item.installmentCount) ? item.installmentCount : null
+        if (!purchaseDate || !description || !amount || !itemType || !currency) return []
+        return [{ id: crypto.randomUUID(), purchaseDate, description, amount, currency, itemType, installmentNumber, installmentCount, transactionId: null }]
+      })
+      const invalidFields = [
+        !accountValue ? 'accountId' : null,
+        !issuer || issuer.length > 200 ? 'issuer' : null,
+        !period ? 'period' : null,
+        !closingDate ? 'closingDate' : null,
+        !dueDate ? 'dueDate' : null,
+        !currency ? 'currency' : null,
+        ...Object.entries(amountFields).filter(([, value]) => !value).map(([field]) => field),
+        args.minimumPayment !== null && args.minimumPayment !== undefined && args.minimumPayment !== '' && !minimumPayment ? 'minimumPayment' : null,
+        rawItems.length === 0 || items.length !== rawItems.length ? 'items' : null,
+      ].filter((field): field is string => Boolean(field))
+      if (invalidFields.length > 0) {
+        return { ok: false, error: 'invalid-finance-credit-card-statement', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
+      }
+      const { getFinanceDashboard, saveFinanceCreditCardStatement } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, period)
+      const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || normalizeEntityName(candidate.name) === normalizeEntityName(accountValue)))
+      if (!account || account.accountType !== 'credit_card' || account.currency !== currency) {
+        return { ok: false, error: 'finance-credit-card-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta activa de tipo credit_card con la misma moneda del resumen.' }
+      }
+      const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
+      if (!reference) return { ok: false, error: 'finance-credit-card-statement-source-required' }
+      const statement: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatement = {
+        id: crypto.randomUUID(), accountId: account.id, issuer, cardLastFour, period, closingDate, dueDate, currency,
+        previousBalance: amountFields.previousBalance!, paymentsAmount: amountFields.paymentsAmount!, creditsAmount: amountFields.creditsAmount!,
+        purchasesAmount: amountFields.purchasesAmount!, feesAmount: amountFields.feesAmount!, interestAmount: amountFields.interestAmount!,
+        taxesAmount: amountFields.taxesAmount!, totalDue: amountFields.totalDue!, minimumPayment, status: 'confirmed', sourceReference: reference,
+        rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null, items,
+      }
+      const autoConfirm = options.responseFormat === 'telegram-html'
+      const accepted = autoConfirm || await options.requestConfirmation(`Guardar resumen de ${issuer}, período ${period}, total ${statement.totalDue} ${currency}, en ${account.name}.`, signal)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      try {
+        const saved = await saveFinanceCreditCardStatement(options.library, statement)
+        financeMutationExecuted = true
+        financeCreditCardStatementExecuted = true
+        options.onFinanceCreditCardStatementSaved?.(reference)
+        return { ok: true, changed: true, statement: saved.statement, matchedExistingTransactions: saved.matchedExistingTransactions, createdTransactions: saved.createdTransactions, accountName: account.name }
+      } catch (error) {
+        const message = typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+          ? error.message
+          : error instanceof Error ? error.message : typeof error === 'string' ? error : 'No se pudo guardar el resumen de tarjeta.'
+        const normalizedMessage = normalizeEntityName(message)
+        const externalCode = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : null
+        const code = /duplic|ya existe|registrado anteriormente/.test(normalizedMessage)
+          ? 'conflict'
+          : /requiere|inval|debe|diferencia|no coincide|suma de lineas|importe|saldo|moneda|cuenta|tarjeta/.test(normalizedMessage)
+            ? 'validation'
+            : externalCode ?? 'storage'
+        if (code === 'conflict') {
+          financeMutationExecuted = true
+          financeCreditCardStatementExecuted = true
+          options.onFinanceCreditCardStatementSaved?.(reference)
+          return { ok: true, changed: false, duplicate: true, message }
+        }
+        return { ok: false, error: 'finance-credit-card-statement-save-failed', code, message, diagnosticReason: code === 'validation' ? 'credit-card-statement-validation' : 'credit-card-statement-storage', instruction: 'Informa el error si no es corregible; no afirmes que el resumen fue guardado.' }
+      }
+    }
+    if (name === 'update_finance_transaction_status') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const transactionId = typeof args.transactionId === 'string' ? args.transactionId.trim() : ''
+      const status = typeof args.status === 'string' && ['confirmed', 'corrected', 'discarded'].includes(args.status) ? args.status : ''
+      if (!transactionId || !status) return { ok: false, error: 'invalid-finance-status-update' }
+      const { getFinanceDashboard, saveFinanceTransaction } = await import('../../modules/finance/services/financeService')
+      const month = typeof args.effectiveDate === 'string' && /^\d{4}-\d{2}/.test(args.effectiveDate) ? args.effectiveDate.slice(0, 7) : new Date().toISOString().slice(0, 7)
+      const dashboard = await getFinanceDashboard(options.library, month)
+      const current = dashboard.transactions.find((transaction) => transaction.id === transactionId)
+      if (!current) return { ok: false, error: 'finance-transaction-not-found' }
+      const updated = { ...current, status: status as import('../../modules/finance/types/financeTypes').FinanceTransactionStatus, amount: typeof args.amount === 'string' ? args.amount : current.amount, effectiveDate: typeof args.effectiveDate === 'string' ? args.effectiveDate : current.effectiveDate, accountId: typeof args.accountId === 'string' ? args.accountId : current.accountId, categoryId: typeof args.categoryId === 'string' ? args.categoryId : current.categoryId, description: typeof args.description === 'string' ? args.description : current.description }
+      const accepted = await options.requestConfirmation(`${status === 'discarded' ? 'Descartar' : 'Guardar'} el movimiento ${transactionId}.`, signal)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      return { ok: true, changed: true, transaction: await saveFinanceTransaction(options.library, updated) }
+    }
+    if (name === 'list_finance_salaries' || name === 'list_finance_purchases' || name === 'list_finance_credit_card_statements') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const filters = { from: typeof args.from === 'string' ? args.from : undefined, to: typeof args.to === 'string' ? args.to : undefined }
+      const service = await import('../../modules/finance/services/financeService')
+      if (name === 'list_finance_salaries') return { salaries: await service.listFinanceSalaries(options.library, filters) }
+      if (name === 'list_finance_credit_card_statements') return { statements: await service.listFinanceCreditCardStatements(options.library, filters) }
+      return { purchases: await service.listFinancePurchases(options.library, filters) }
+    }
+    if (name === 'create_finance_transaction') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const amount = typeof args.amount === 'string' ? args.amount.trim() : ''
+      const transactionType = typeof args.transactionType === 'string' ? args.transactionType : ''
+      const requestedCurrency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+      const effectiveDate = typeof args.effectiveDate === 'string' && args.effectiveDate.trim()
+        ? args.effectiveDate.trim()
+        : new Date().toISOString().slice(0, 10)
+      const requestedAccountId = typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const requestedDestinationAccountId = typeof args.destinationAccountId === 'string' ? args.destinationAccountId.trim() : ''
+      const requestedCategoryId = typeof args.categoryId === 'string' ? args.categoryId.trim() : ''
+      const description = typeof args.description === 'string' ? args.description.trim() : ''
+      if (!/^-?\d+(\.\d+)?$/.test(amount) || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || !requestedAccountId || !description || !['income', 'expense', 'transfer', 'adjustment'].includes(transactionType)) {
+        return { ok: false, error: 'invalid-finance-transaction', requiresClarification: true }
+      }
+      const { getFinanceDashboard, saveFinanceTransaction } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7))
+      const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === requestedAccountId || normalizeEntityName(candidate.name) === normalizeEntityName(requestedAccountId)))
+      if (!account) return { ok: false, error: 'finance-account-not-found', requiresClarification: true }
+      const currency = requestedCurrency ?? account.currency
+      if (currency !== account.currency) return { ok: false, error: 'finance-account-currency-mismatch', requiresClarification: true }
+      const destinationAccount = requestedDestinationAccountId
+        ? dashboard.accounts.find((candidate) => candidate.active && (candidate.id === requestedDestinationAccountId || normalizeEntityName(candidate.name) === normalizeEntityName(requestedDestinationAccountId)))
+        : null
+      if ((transactionType === 'transfer' && !destinationAccount) || (destinationAccount && destinationAccount.currency !== currency)) {
+        return { ok: false, error: 'invalid-finance-transfer-account', requiresClarification: true }
+      }
+      const category = requestedCategoryId
+        ? dashboard.categories.find((candidate) => candidate.active && (candidate.id === requestedCategoryId || normalizeEntityName(candidate.name) === normalizeEntityName(requestedCategoryId)))
+        : null
+      if (requestedCategoryId && !category) return { ok: false, error: 'finance-category-not-found', requiresClarification: true }
+      if (transactionType === 'expense' && !category && options.responseFormat === 'telegram-html') return { ok: false, error: 'finance-expense-category-required', requiresClarification: true }
+      if (category && (transactionType === 'income' || transactionType === 'expense') && category.kind !== transactionType) {
+        return { ok: false, error: 'finance-category-kind-mismatch', requiresClarification: true }
+      }
+      const confidence = typeof args.confidence === 'number' ? args.confidence : 0
+      const status = options.responseFormat === 'telegram-html' || confidence >= 0.95 ? 'confirmed' : 'pending'
+      const transaction: import('../../modules/finance/types/financeTypes').FinanceTransaction = { id: crypto.randomUUID(), transactionType: transactionType as import('../../modules/finance/types/financeTypes').FinanceTransactionType, amount, currency, effectiveDate, accountId: account.id, destinationAccountId: destinationAccount?.id ?? null, categoryId: category?.id ?? null, description, source: options.responseFormat === 'telegram-html' ? 'telegram' : 'chat', status: status as import('../../modules/finance/types/financeTypes').FinanceTransactionStatus, actorUserId: options.actorUserId, sourceReference: typeof args.sourceReference === 'string' ? args.sourceReference : null, rawSource: typeof args.rawSource === 'string' ? args.rawSource : null }
+      const saved = await saveFinanceTransaction(options.library, transaction)
+      financeMutationExecuted = true
+      if (status === 'confirmed') return { ok: true, changed: true, autoConfirmed: true, transaction: saved }
+      const accepted = await options.requestConfirmation(`Confirmar ${transactionType === 'expense' ? 'gasto' : 'movimiento'} de ${amount} ${currency}: ${description || 'sin descripción'}.`, signal)
+      if (!accepted) return { ok: true, changed: false, declined: true, transaction: saved }
+      const confirmed = await saveFinanceTransaction(options.library, { ...transaction, status: 'confirmed' })
+      financeMutationExecuted = true
+      return { ok: true, changed: true, transaction: confirmed }
+    }
+    if (name === 'create_finance_savings_movement') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const reserveId = typeof args.reserveId === 'string' ? args.reserveId.trim() : ''
+      const accountId = typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      const movementType = typeof args.movementType === 'string' ? args.movementType : ''
+      const amount = typeof args.amount === 'string' ? args.amount.trim() : ''
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+      const effectiveDate = typeof args.effectiveDate === 'string' ? args.effectiveDate.trim() : ''
+      const reason = typeof args.reason === 'string' ? args.reason.trim() : ''
+      if (!reserveId || !accountId || !currency || !/^-?\d+(\.\d+)?$/.test(amount) || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || !['contribution', 'withdrawal', 'return', 'loss', 'adjustment'].includes(movementType) || (movementType === 'withdrawal' && !reason)) return { ok: false, error: 'invalid-finance-savings-movement', requiresClarification: true }
+      const movement: import('../../modules/finance/types/financeTypes').FinanceSavingsMovement = { id: crypto.randomUUID(), reserveId, accountId, movementType: movementType as import('../../modules/finance/types/financeTypes').FinanceSavingsMovementType, amount, currency, effectiveDate, description: typeof args.description === 'string' ? args.description.trim() : movementType, reason: reason || null, source: 'chat', status: 'pending', actorUserId: options.actorUserId }
+      const { saveFinanceSavingsMovement } = await import('../../modules/finance/services/financeService')
+      const saved = await saveFinanceSavingsMovement(options.library, movement)
+      financeMutationExecuted = true
+      const confidence = typeof args.confidence === 'number' ? args.confidence : 0
+      if (confidence < 0.95) {
+        const accepted = await options.requestConfirmation(`Confirmar ${movementType === 'withdrawal' ? 'retiro' : 'movimiento'} de ahorro de ${amount} ${currency}.`, signal)
+        if (!accepted) return { ok: true, changed: false, declined: true, movement: saved }
+      }
+      const confirmed = await saveFinanceSavingsMovement(options.library, { ...movement, status: 'confirmed' })
+      financeMutationExecuted = true
+      return { ok: true, changed: true, movement: confirmed, autoConfirmed: confidence >= 0.95 }
     }
     if (name === 'set_task_execution_plan') {
       const labels = stringArray(args.steps, 20).map((step) => step.trim()).filter(Boolean)
@@ -692,6 +1533,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       return { ok: true, approved: true, steps: executionPlan }
     }
     if (name === 'request_user_clarification') {
+      if (options.scope === 'finance') financeClarificationRequested = true
       const question = typeof args.question === 'string' ? args.question.trim() : ''
       const choices = stringArray(args.choices, 8)
       if (!question) {
@@ -1139,10 +1981,21 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         ? `${rules}\n\nMemorias persistentes del usuario:\n${agentMemories.map((memory) => `- ${memory}`).join('\n')}`
         : rules,
     ),
-    tools: buildChatAgentTools(options.scope),
+    tools: buildChatAgentTools(options.scope, options.responseFormat === 'telegram-html'),
     executeTool,
+    resolveToolResultAnswer: options.scope === 'finance' ? resolveFinanceToolResultAnswer : () => null,
     validateFinalAnswer: (answer) => options.scope === 'task-manager'
       ? buildTicketSectionCorrection(answer, requiredTicketSections)
-      : null,
+      : options.scope === 'finance'
+        ? validateFinanceFinalAnswer(
+          answer,
+          financeMutationExecuted,
+          financeClarificationRequested,
+          options.responseFormat === 'telegram-html' && Boolean(options.financeSourceReference),
+          financePurchaseExecuted,
+          financeSalaryExecuted,
+          financeCreditCardStatementExecuted,
+        )
+        : null,
   }
 }

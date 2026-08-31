@@ -16,6 +16,7 @@ describe('notiaChatRuntime', () => {
   it('aplica el mismo contrato de native tool calling a cualquier canal', async () => {
     vi.mocked(runNativeToolAgent).mockResolvedValue('respuesta')
     const executeTool = vi.fn()
+    const resolveToolResultAnswer = vi.fn()
     const preferences = {
       ollamaUrl: 'http://localhost:11434',
       apiKey: '',
@@ -27,6 +28,7 @@ describe('notiaChatRuntime', () => {
       systemPrompt: 'Prompt compartido',
       tools: [{ type: 'function' as const, function: { name: 'buscar', description: 'Busca', parameters: {} } }],
       executeTool,
+      resolveToolResultAnswer,
     }
 
     await expect(runNotiaChatReply(preferences, {
@@ -42,8 +44,31 @@ describe('notiaChatRuntime', () => {
       previousMessages: [],
       tools: agent.tools,
       executeTool,
+      resolveToolResultAnswer,
       maxRounds: CHAT_AGENT_MAX_ROUNDS,
       singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
+    }), {})
+  })
+
+  it('forwards channel-specific diagnostics and a defensive round limit', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('ticket cargado')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: false, thinkingLevel: 'medium' as const,
+    }
+    const agent = { systemPrompt: 'Prompt', tools: [], executeTool: vi.fn() }
+
+    await runNotiaChatReply(preferences, {
+      agent,
+      prompt: 'ticket',
+      previousMessages: [],
+      maxRounds: 12,
+      diagnosticModule: 'telegram-ai',
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      maxRounds: 12,
+      diagnosticModule: 'telegram-ai',
     }), {})
   })
 })

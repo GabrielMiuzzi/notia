@@ -11,6 +11,7 @@ export interface TelegramPreferences {
   authorizedPeer: TelegramPeer | null
   pendingPeer: TelegramPeer | null
   updateOffset: number
+  processedUpdateIds: number[]
 }
 
 export const DEFAULT_TELEGRAM_PREFERENCES: TelegramPreferences = {
@@ -19,6 +20,14 @@ export const DEFAULT_TELEGRAM_PREFERENCES: TelegramPreferences = {
   authorizedPeer: null,
   pendingPeer: null,
   updateOffset: 0,
+  processedUpdateIds: [],
+}
+
+const TELEGRAM_UPDATE_CHECKPOINT_PREFIX = 'notia:telegram-update-checkpoint:v1:'
+
+export interface TelegramUpdateCheckpoint {
+  updateOffset: number
+  processedUpdateIds: number[]
 }
 
 function normalizePeer(value: unknown): TelegramPeer | null {
@@ -43,5 +52,61 @@ export function normalizeTelegramPreferences(value: unknown): TelegramPreference
     pendingPeer: normalizePeer(candidate.pendingPeer),
     updateOffset: Number.isSafeInteger(candidate.updateOffset) && (candidate.updateOffset as number) >= 0
       ? candidate.updateOffset as number : 0,
+    processedUpdateIds: Array.isArray(candidate.processedUpdateIds)
+      ? candidate.processedUpdateIds.filter((id): id is number => Number.isSafeInteger(id) && id >= 0).slice(-500)
+      : [],
+  }
+}
+
+export function rememberTelegramUpdate(preferences: TelegramPreferences, updateId: number): TelegramPreferences {
+  if (preferences.processedUpdateIds.includes(updateId)) return preferences
+  return { ...preferences, processedUpdateIds: [...preferences.processedUpdateIds, updateId].slice(-500) }
+}
+
+export function mergeTelegramUpdateCheckpoint(
+  preferences: TelegramPreferences,
+  checkpoint: TelegramUpdateCheckpoint | null,
+): TelegramPreferences {
+  if (!checkpoint) return preferences
+  const processedUpdateIds = [...new Set([
+    ...preferences.processedUpdateIds,
+    ...checkpoint.processedUpdateIds,
+  ])].slice(-500)
+  return {
+    ...preferences,
+    updateOffset: Math.max(preferences.updateOffset, checkpoint.updateOffset),
+    processedUpdateIds,
+  }
+}
+
+export function loadTelegramUpdateCheckpoint(scopeId: string): TelegramUpdateCheckpoint | null {
+  if (typeof window === 'undefined' || !scopeId.trim()) return null
+  try {
+    const raw = window.localStorage.getItem(`${TELEGRAM_UPDATE_CHECKPOINT_PREFIX}${scopeId}`)
+    if (!raw) return null
+    const candidate = JSON.parse(raw) as Partial<TelegramUpdateCheckpoint>
+    return {
+      updateOffset: Number.isSafeInteger(candidate.updateOffset) && (candidate.updateOffset as number) >= 0
+        ? candidate.updateOffset as number
+        : 0,
+      processedUpdateIds: Array.isArray(candidate.processedUpdateIds)
+        ? candidate.processedUpdateIds.filter((id): id is number => Number.isSafeInteger(id) && id >= 0).slice(-500)
+        : [],
+    }
+  } catch {
+    return null
+  }
+}
+
+export function saveTelegramUpdateCheckpoint(scopeId: string, preferences: TelegramPreferences): void {
+  if (typeof window === 'undefined' || !scopeId.trim()) return
+  const checkpoint: TelegramUpdateCheckpoint = {
+    updateOffset: preferences.updateOffset,
+    processedUpdateIds: preferences.processedUpdateIds.slice(-500),
+  }
+  try {
+    window.localStorage.setItem(`${TELEGRAM_UPDATE_CHECKPOINT_PREFIX}${scopeId}`, JSON.stringify(checkpoint))
+  } catch {
+    // The library config remains the fallback if WebView storage is unavailable.
   }
 }

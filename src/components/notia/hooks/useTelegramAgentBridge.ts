@@ -1,16 +1,19 @@
 import { useEffect, useRef } from 'react'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
+import { loadTelegramUpdateCheckpoint, mergeTelegramUpdateCheckpoint, rememberTelegramUpdate, saveTelegramUpdateCheckpoint } from '../../../services/preferences/telegramSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
 import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRuntime'
 import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
 import { loadSelectedAgentPromptFileName } from '../../../services/ai/agentPromptRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
-import { answerTelegramCallback, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
+import { answerTelegramCallback, downloadTelegramPhoto, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramPhoto, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
 import { formatTelegramMessage } from '../../../services/telegram/telegramMessageFormatter'
 import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
+import type { AiImageAttachment } from '../../../services/ai/aiRuntime'
+import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from '../../../services/runtime/notiaLogger'
 
 interface Params {
   library: NotiaLibrary | null
@@ -21,8 +24,61 @@ interface Params {
 }
 
 interface PendingInput { resolve: (value: string) => void; reject: (error: Error) => void }
+type TelegramAgentScope = 'finance' | 'library'
+interface TelegramAgentRequest {
+  text: string
+  actorUserId: number
+  scope: TelegramAgentScope
+  photo: TelegramPhoto | null
+}
 
-const TELEGRAM_CONFIRMATION_TIMEOUT_MS = 2 * 60 * 1_000
+export const TELEGRAM_CONFIRMATION_TIMEOUT_MS = 2 * 60 * 1_000
+export const TELEGRAM_PENDING_REQUEST_LIMIT = 10
+export const TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS = 90_000
+export const TELEGRAM_IMAGE_AI_MAX_ROUNDS = 12
+export const TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS = 12_000
+
+export function buildTelegramImageRoundMessage(round: number): string | null {
+  if (round === 2) return 'Documento leído. Estoy consultando los datos financieros necesarios…'
+  if (round === 3) return 'Datos recibidos. Estoy preparando el registro…'
+  if (round >= 4) return `Estoy validando y guardando el documento (paso ${round - 2})…`
+  return null
+}
+
+export function buildTelegramFinanceSourceReference(fileId: string): string {
+  return `telegram:telegram-${fileId}.jpg`
+}
+
+/** Adds an update without losing its order; the active request is tracked separately. */
+export function enqueueTelegramAgentRequest<T>(queue: T[], request: T, limit = TELEGRAM_PENDING_REQUEST_LIMIT): number | null {
+  if (queue.length >= limit) return null
+  const queuedAhead = queue.length
+  queue.push(request)
+  return queuedAhead
+}
+
+export function isTelegramFinanceRequest(value: string): boolean {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es')
+  const financeTerms = /\b(finanzas?|financier[oa]s?|gast(?:o|os|e|aste|amos|ar)|pague|pagaste|pago|cobre|cobraste|cobro|ingreso|ingresos|saldo|saldos|cuenta|cuentas|categoria|categorias|ahorro|ahorros|retiro|aporte|transferencia|movimiento|movimientos|sueldo|ticket|precio|nafta|combustible)\b/
+  if (financeTerms.test(normalized)) return true
+  const moneyAmount = /(?:\$\s*\d|\b\d+(?:[.,]\d{1,2})?\s*(?:ars|usd|pesos?)\b)/
+  const financeVerb = /\b(carg(?:a|ue|aste|amos|ar|ado)|anot(?:a|alo|arla|ar|e|aste|amos|ado)|registr(?:a|alo|arla|ar|e|aste|amos|ado))\b/
+  return moneyAmount.test(normalized) && financeVerb.test(normalized)
+}
+
+export function resolveTelegramAgentScope(value: string, previousScope: TelegramAgentScope | null): TelegramAgentScope {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es')
+  const explicitLibraryRequest = /\b(nota|notas|documento|documentos|archivo|archivos|biblioteca|carpeta|carpetas|tarea|tareas|tablero|board)\b/.test(normalized)
+  if (explicitLibraryRequest) return 'library'
+  if (isTelegramFinanceRequest(value)) return 'finance'
+  return previousScope === 'finance' && !explicitLibraryRequest ? 'finance' : 'library'
+}
 
 export function parseTelegramConfirmationDecision(value: string): boolean | null {
   const normalized = value
@@ -38,6 +94,14 @@ export function parseTelegramConfirmationDecision(value: string): boolean | null
   return null
 }
 
+/** Resolves a typed 1-based reply against the same choices shown as Telegram buttons. */
+export function resolveTelegramChoiceReply(value: string, choices: readonly string[]): string {
+  const match = /^(\d+)\s*[.)]?$/.exec(value.trim())
+  if (!match) return value
+  const index = Number(match[1]) - 1
+  return Number.isSafeInteger(index) && choices[index] !== undefined ? choices[index] : value
+}
+
 const escapeTelegramHtml = (value: string): string => value
   .replaceAll('&', '&amp;')
   .replaceAll('<', '&lt;')
@@ -47,9 +111,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
   const currentRef = useRef({ library, aiPreferences, telegram, onTelegramChange, onLibraryChanged })
   const historyRef = useRef<StoredChatMessage[]>([])
   const busyRef = useRef(false)
+  const pendingRequestsRef = useRef<TelegramAgentRequest[]>([])
+  const drainingRequestsRef = useRef(false)
+  const pendingFinanceSourceReferenceRef = useRef<string | null>(null)
   const pendingInputRef = useRef<PendingInput | null>(null)
   const confirmationRef = useRef<Map<string, (accepted: boolean) => void>>(new Map())
   const choicesRef = useRef<string[]>([])
+  const conversationScopeRef = useRef<TelegramAgentScope | null>(null)
   const libraryId = library?.id
   const telegramEnabled = telegram.enabled
   const telegramToken = telegram.botToken
@@ -62,22 +130,44 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     pendingInputRef.current?.reject(new Error('La biblioteca activa cambio.'))
     pendingInputRef.current = null
     confirmationRef.current.clear()
+    conversationScopeRef.current = null
+    pendingRequestsRef.current = []
+    drainingRequestsRef.current = false
+    pendingFinanceSourceReferenceRef.current = null
   }, [libraryId])
 
   useEffect(() => {
-    if (!currentRef.current.library || !telegramEnabled || !telegramToken) return
+    const activeLibrary = currentRef.current.library
+    if (!activeLibrary || !telegramEnabled || !telegramToken) return
     const token = telegramToken
     const authorizedChatId = authorizedChatIdValue
+    const checkpointScope = `${activeLibrary.id}:${token.split(':', 1)[0] ?? 'bot'}:${authorizedChatId}`
     let cancelled = false
-    let offset = currentRef.current.telegram.updateOffset
     const updateTelegram = (next: TelegramPreferences) => {
       currentRef.current = { ...currentRef.current, telegram: next }
       currentRef.current.onTelegramChange(next)
     }
+    const checkpointedTelegram = mergeTelegramUpdateCheckpoint(
+      currentRef.current.telegram,
+      loadTelegramUpdateCheckpoint(checkpointScope),
+    )
+    let offset = checkpointedTelegram.updateOffset
+    if (
+      checkpointedTelegram.updateOffset !== currentRef.current.telegram.updateOffset
+      || checkpointedTelegram.processedUpdateIds.length !== currentRef.current.telegram.processedUpdateIds.length
+    ) {
+      updateTelegram(checkpointedTelegram)
+    }
 
     const waitForText = (question: string, choices: string[], signal: AbortSignal): Promise<string> => {
       choicesRef.current = choices
-      void sendTelegramMessage(token, authorizedChatId, question, choices.map((choice, index) => ({ label: choice.slice(0, 48), data: `choice:${index}` })))
+      void sendTelegramMessage(
+        token,
+        authorizedChatId,
+        formatTelegramMessage(question),
+        choices.map((choice, index) => ({ label: choice.slice(0, 48), data: `choice:${index}` })),
+        'HTML',
+      )
       return new Promise((resolve, reject) => {
         const abort = () => reject(new Error('Operacion cancelada.'))
         signal.addEventListener('abort', abort, { once: true })
@@ -111,20 +201,56 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       })
     }
 
-    const runAgent = async (text: string) => {
+    const runAgent = async (request: TelegramAgentRequest) => {
       const state = currentRef.current
-      if (!state.library || busyRef.current) {
-        await sendTelegramMessage(token, authorizedChatId, 'Notia todavia esta procesando la consulta anterior.')
-        return
-      }
+      if (!state.library) return
       busyRef.current = true
+      const requestStartedAt = performance.now()
+      let lastImageProgressAt = 0
+      let phase = 'preparing'
       try {
+        let text = request.text
+        let image: AiImageAttachment | null = null
+        let financeSourceReference = pendingFinanceSourceReferenceRef.current
+        if (request.photo) {
+          phase = 'downloading-image'
+          const downloadStartedAt = performance.now()
+          notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image processing started', {
+            scope: request.scope,
+            width: request.photo.width,
+            height: request.photo.height,
+            fileSize: request.photo.fileSize,
+          }, 'info')
+          const downloaded = await downloadTelegramPhoto(state.telegram.botToken, request.photo)
+          notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image download completed', {
+            durationMs: Math.round(performance.now() - downloadStartedAt),
+            mimeType: downloaded.mimeType,
+            base64Chars: downloaded.base64.length,
+          }, 'info')
+          image = { name: `telegram-${downloaded.fileId}.jpg`, mimeType: downloaded.mimeType, base64: downloaded.base64 }
+          financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId)
+          pendingFinanceSourceReferenceRef.current = financeSourceReference
+          text = text || `[Origen: imagen de Telegram fileId=${downloaded.fileId}. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Si es ticket, extrae comercio, fecha, moneda, total y productos. Si es recibo de sueldo, extrae período, fecha de cobro, empleador, bruto, descuentos, neto, moneda y conceptos. Si es un resumen de tarjeta, extrae emisor, últimos cuatro dígitos, período, cierre, vencimiento, moneda, saldo anterior, pagos, créditos, compras, cargos, intereses, impuestos, total, pago mínimo y todas las líneas.]`
+        }
+        phase = 'building-agent'
+        const agentBuildStartedAt = performance.now()
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent context build started', undefined, 'info')
         const files = await loadLibraryFileOptions(state.library)
         const agent = await createChatScopedAgent({
-          scope: 'library', library: state.library, scopePaths: files.map((file) => file.path),
+          scope: request.scope, library: state.library, scopePaths: files.map((file) => file.path), actorUserId: request.actorUserId,
           aiPreferences: state.aiPreferences,
           promptFileName: loadSelectedAgentPromptFileName(state.library.id),
           responseFormat: 'telegram-html',
+          financeSourceReference,
+          onFinancePurchaseSaved: (sourceReference) => {
+            if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
+          },
+          onFinanceSalarySaved: (sourceReference) => {
+            if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
+          },
+          onFinanceCreditCardStatementSaved: (sourceReference) => {
+            if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
+          },
           requestClarification: (question, signal, choices = []) => waitForText(question, choices, signal),
           requestConfirmation: confirm,
           requestExecutionPlanApproval: async (steps, signal) => ({
@@ -134,11 +260,41 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             ),
           }),
         })
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent context build completed', {
+          durationMs: Math.round(performance.now() - agentBuildStartedAt),
+          libraryFileCount: files.length,
+          toolCount: agent.tools.length,
+        }, 'info')
+        phase = 'running-ollama'
         const answer = await runNotiaChatReply(state.aiPreferences, {
           agent,
           prompt: text,
+          image,
           previousMessages: historyRef.current,
+          toolCallTimeoutMs: TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS,
+          streamFinalResponse: false,
+          maxRounds: request.photo ? TELEGRAM_IMAGE_AI_MAX_ROUNDS : undefined,
+          diagnosticModule: request.photo ? TELEGRAM_AI_DIAGNOSTIC_MODULE : undefined,
+        }, {
+          onAgentRoundStart: (round) => {
+            if (!request.photo) return
+            const progressMessage = buildTelegramImageRoundMessage(round)
+            if (!progressMessage) return
+            const now = performance.now()
+            if (round > 4 && now - lastImageProgressAt < TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS) return
+            lastImageProgressAt = now
+            void sendTelegramMessage(token, authorizedChatId, progressMessage).catch((error) => {
+              notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram progress message failed', {
+                round,
+                error: error instanceof Error ? error.message : String(error),
+              }, 'error')
+            })
+          },
         })
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram answer ready', {
+          durationMs: Math.round(performance.now() - requestStartedAt),
+          answerChars: answer.length,
+        }, 'info')
         const previousMessages = historyRef.current
         const nextMessages: StoredChatMessage[] = [
           ...historyRef.current,
@@ -156,15 +312,50 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             existingLongTermMemories,
           })
         })
+        phase = 'sending-response'
         await sendTelegramMessage(token, authorizedChatId, formatTelegramMessage(answer), [], 'HTML')
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram answer sent', {
+          durationMs: Math.round(performance.now() - requestStartedAt),
+        }, 'info')
         state.onLibraryChanged()
       } catch (error) {
-        await sendTelegramMessage(token, authorizedChatId, error instanceof Error ? error.message : 'No se pudo completar la consulta.')
+        const message = error instanceof Error ? error.message : 'No se pudo completar la consulta.'
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent request failed', {
+          phase,
+          scope: request.scope,
+          hasPhoto: Boolean(request.photo),
+          durationMs: Math.round(performance.now() - requestStartedAt),
+          error: message,
+        }, 'error')
+        await sendTelegramMessage(token, authorizedChatId, message)
       } finally { busyRef.current = false }
+    }
+
+    const drainAgentRequests = async () => {
+      if (drainingRequestsRef.current) return
+      drainingRequestsRef.current = true
+      try {
+        while (!cancelled) {
+          const request = pendingRequestsRef.current.shift()
+          if (!request) return
+          await runAgent(request)
+        }
+      } finally {
+        drainingRequestsRef.current = false
+      }
+    }
+
+    const enqueueAgentRequest = (request: TelegramAgentRequest): number | null => {
+      const queuedAhead = enqueueTelegramAgentRequest(pendingRequestsRef.current, request)
+      if (queuedAhead === null) return null
+      const requestsAhead = queuedAhead + (busyRef.current ? 1 : 0)
+      void drainAgentRequests()
+      return requestsAhead
     }
 
     const handleUpdate = async (update: TelegramUpdate) => {
       const state = currentRef.current
+      if (!state.library) return
       const peer = state.telegram.authorizedPeer
       if (!peer || update.chatId !== peer.chatId || update.user.id !== peer.userId) {
         if (update.text?.trim() === '/start') {
@@ -173,6 +364,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         }
         return
       }
+      if (state.telegram.processedUpdateIds.includes(update.updateId)) return
+      const checkpointedUpdate = rememberTelegramUpdate({
+        ...state.telegram,
+        updateOffset: Math.max(state.telegram.updateOffset, update.updateId + 1),
+      }, update.updateId)
+      saveTelegramUpdateCheckpoint(checkpointScope, checkpointedUpdate)
+      updateTelegram(checkpointedUpdate)
       if (update.callbackQueryId) await answerTelegramCallback(state.telegram.botToken, update.callbackQueryId)
       if (update.callbackData?.startsWith('confirm:')) {
         const [, id, decision] = update.callbackData.split(':')
@@ -191,7 +389,8 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       let text = update.text?.trim()
       if (!text && update.audio) {
         try {
-          text = (await transcribeTelegramAudio(state.telegram.botToken, update.audio)).trim()
+          const transcription = (await transcribeTelegramAudio(state.telegram.botToken, update.audio)).trim()
+          text = `${transcription}\n\n[Origen: audio de Telegram fileId=${update.audio.fileId}; conservar esta referencia si se crea una operación financiera.]`
         } catch (error) {
           await sendTelegramMessage(
             state.telegram.botToken,
@@ -209,9 +408,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           'HTML',
         )
       }
-      if (!text) return
-      if (confirmationRef.current.size === 1) {
-        const decision = parseTelegramConfirmationDecision(text)
+      if (!text && !update.photo) return
+      const plainText = text ?? ''
+      if (!update.photo && confirmationRef.current.size === 1) {
+        const decision = parseTelegramConfirmationDecision(plainText)
         if (decision !== null) {
           const resolveConfirmation = confirmationRef.current.values().next().value
           resolveConfirmation?.(decision)
@@ -219,15 +419,41 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           return
         }
       }
-      if (pendingInputRef.current) { pendingInputRef.current.resolve(text); return }
+      if (!update.photo && pendingInputRef.current) {
+        pendingInputRef.current.resolve(resolveTelegramChoiceReply(plainText, choicesRef.current))
+        return
+      }
+      const prompt = text || '[Origen: imagen de Telegram. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente.]'
+      const scope = update.photo ? 'finance' : resolveTelegramAgentScope(prompt, conversationScopeRef.current)
+      if (update.photo) {
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram image received', {
+          updateId: update.updateId,
+          messageId: update.messageId,
+          width: update.photo.width,
+          height: update.photo.height,
+          fileSize: update.photo.fileSize,
+          pendingRequests: pendingRequestsRef.current.length,
+        }, 'info')
+      }
+      const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, scope, photo: update.photo ?? null })
+      if (requestsAhead === null) {
+        await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar mas de 10 solicitudes pendientes. Espera a que termine alguna e intenta nuevamente.')
+        return
+      }
       if (!update.audio) {
         await sendTelegramMessage(
           state.telegram.botToken,
           peer.chatId,
-          'Solicitud recibida y en proceso.',
+          update.photo
+            ? requestsAhead > 0
+              ? `Imagen recibida. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
+              : 'Imagen recibida y en proceso.'
+            : requestsAhead > 0
+              ? `Solicitud recibida. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
+              : 'Solicitud recibida y en proceso.',
         )
       }
-      void runAgent(text)
+      conversationScopeRef.current = scope
     }
 
     const loop = async () => {
@@ -239,11 +465,18 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             offset = Math.max(offset, update.updateId + 1)
             await handleUpdate(update)
           }
-          if (offset !== currentRef.current.telegram.updateOffset) updateTelegram({ ...currentRef.current.telegram, updateOffset: offset })
+          if (offset !== currentRef.current.telegram.updateOffset) {
+            const checkpointedOffset = { ...currentRef.current.telegram, updateOffset: offset }
+            saveTelegramUpdateCheckpoint(checkpointScope, checkpointedOffset)
+            updateTelegram(checkpointedOffset)
+          }
         } catch { await new Promise((resolve) => window.setTimeout(resolve, 3000)) }
       }
     }
     void loop()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      pendingRequestsRef.current = []
+    }
   }, [authorizedChatIdValue, authorizedUserId, libraryId, telegramEnabled, telegramToken])
 }

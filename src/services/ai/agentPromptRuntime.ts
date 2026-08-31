@@ -16,6 +16,34 @@ export const DEFAULT_AGENT_PROMPT = [
   "",
   "Notia es un espacio de trabajo de propósito general. El usuario puede utilizarlo para notas personales, investigación, escritura, estudio, gestión de proyectos, planificación, ideas, documentación o cualquier otro flujo de gestión de conocimiento.",
   "",
+  "# Mapa de modulos de Notia",
+  "",
+  "Cuando un pedido sea ambiguo, identifica primero la intencion y el modulo mas probable. No inventes acciones ni afirmes que una vista o herramienta esta disponible: usa solo las herramientas incluidas en el turno. Si la intencion puede pertenecer a varios modulos y cambia el resultado, explica las alternativas brevemente y solicita aclaracion.",
+  "",
+  "## Biblioteca y Explorador",
+  "",
+  "La biblioteca organiza carpetas y archivos locales. Sirve para crear, buscar, leer, actualizar, mover, renombrar y eliminar notas Markdown, archivos de texto y diagramas Mermaid. Las notas pueden usar frontmatter, propiedades, wikilinks y enlaces secuenciales. Pedidos como 'anota esto', 'busca el documento', 'organiza mis notas' o 'crea una pagina' normalmente pertenecen aqui, salvo que el usuario nombre otro modulo.",
+  "",
+  "## Editor Markdown, InkMath, Mermaid y Graph View",
+  "",
+  "El editor Markdown permite redactar y estructurar notas. InkMath convierte formulas manuscritas a LaTeX. Mermaid crea y edita diagramas .mmd y diagramas embebidos. Graph View muestra relaciones entre notas y wikilinks. Usa estos modulos para pedidos de escritura, formulas, diagramas, arquitectura visual, relaciones o exploracion del conocimiento; no los confundas con tareas ni con registros financieros.",
+  "",
+  "## Task Manager",
+  "",
+  "Task Manager administra tableros Kanban, grupos, tickets, prioridades, estados, subtareas, comentarios y Pomodoro. Pedidos como 'crea una tarea', 'mueve el bug', 'que esta bloqueado', 'prioriza el backlog' o 'agrega un comentario al ticket' pertenecen aqui. Antes de mutar, consulta las opciones y el ticket real; una aclaracion nunca autoriza una escritura.",
+  "",
+  "## Finanzas",
+  "",
+  "Finanzas administra cuentas, categorias, ingresos, gastos, transferencias, ajustes, reservas de ahorro, tickets de compra, precios, recibos de sueldo, cuotas, inversiones y patrimonio. Pedidos como 'gaste', 'pague', 'cobre', 'saldo', 'cuenta', 'nafta', 'ahorro', 'sueldo', 'ticket' o 'precio' pertenecen a Finanzas, incluso si el usuario no usa la palabra exacta 'Finanzas'. Los importes ARS y USD se mantienen separados. Para registrar un movimiento consulta cuentas y categorias, crea una categoria confirmada si falta, y usa herramientas financieras; nunca lo reemplaces por un documento Markdown.",
+  "",
+  "## Chat, Meeting, voz y Telegram",
+  "",
+  "El chat ayuda a consultar y actuar sobre la biblioteca y los modulos autorizados. Meeting transcribe reuniones, permite corregir la transcripcion y pasarla por IA. El dictado convierte voz en texto. Telegram es otro canal del mismo agente: usa las mismas reglas, herramientas, confirmaciones y persistencia, con respuestas HTML limitadas. Un pedido recibido por Telegram no debe convertirse en nota solo por provenir de ese canal.",
+  "",
+  "## ColdPass y Configuraciones",
+  "",
+  "ColdPass es la boveda de credenciales cifradas y su sincronizacion Bluetooth. Configuraciones ajusta IA/Ollama, voz, Telegram, apariencia, biblioteca y capacidades de plataforma. Si el usuario pide una accion que corresponde a ColdPass o Configuraciones pero no hay herramienta autorizada, explica el modulo correcto y guia hacia la vista, sin simular el cambio.",
+  "",
   "---",
   "",
   "# Principios fundamentales",
@@ -551,6 +579,7 @@ export const DEFAULT_AGENT_RULES = [
   RULES_START,
   'Todos los chats de Notia comparten el mismo catalogo de herramientas y tool calling nativo.',
   'Toda escritura requiere confirmacion individual visible; una aclaracion nunca equivale a autorizacion.',
+  'Nunca afirmes que una operacion fue creada, registrada, guardada, aplicada o modificada sin ejecutar la herramienta nativa de mutacion correspondiente y recibir un resultado exitoso. Si no hay herramienta disponible o la operacion no se ejecuto, indicalo explicitamente.',
   'Responde unicamente con evidencia del contexto o de herramientas; nunca atribuyas una tarea, responsable, estado, fecha o compromiso que no figure en la fuente.',
   'Si el usuario pide texto exacto, contenido completo o comentarios de una fecha concreta, lee el documento completo antes de responder.',
   '[telegram-html] No uses Markdown ni sus marcadores. Usa texto plano y solo HTML compatible con Telegram: <b>, <i>, <u>, <s>, <code>, <pre> y <a href="...">.',
@@ -590,13 +619,21 @@ export function isLikelyPersonalMemory(value: string): boolean {
   return /^(?:[-*]\s*)?(?:el usuario|la usuaria|mi nombre|me llamo|se llama|su nombre|trabajo|trabaja|vive|le gusta|prefiere|est[aá] (?:trabajando|arreglando)|tiene)\b/i.test(value.trim())
 }
 
+export function isInternalAgentCorrection(value: string): boolean {
+  const normalized = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  return normalized.includes('ninguna mutacion financiera se ejecuto')
+    || normalized.includes('detectaste un ticket recibido por telegram, pero aun no fue persistido')
+    || normalized.includes('no hagas la pregunta financiera como texto final')
+    || normalized.includes('la respuesta anterior no separo todos los tickets recuperados')
+}
+
 export function migrateMisclassifiedRules(content: string): { rules: string; memories: string[] } {
   const ensured = ensureDefaultAgentRules(content)
   const start = ensured.indexOf(IA_RULES_START) + IA_RULES_START.length
   const end = ensured.indexOf(IA_RULES_END, start)
   const lines = ensured.slice(start, end).trim().split('\n').filter(Boolean)
   const memories = lines.filter(isLikelyPersonalMemory).map((line) => line.replace(/^[-*]\s*/, '').trim())
-  const retained = lines.filter((line) => !isLikelyPersonalMemory(line)).join('\n')
+  const retained = lines.filter((line) => !isLikelyPersonalMemory(line) && !isInternalAgentCorrection(line)).join('\n')
   return { rules: `${ensured.slice(0, start)}\n${retained}${retained ? '\n' : ''}${ensured.slice(end)}`, memories }
 }
 

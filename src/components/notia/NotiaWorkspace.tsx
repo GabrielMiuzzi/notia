@@ -202,7 +202,7 @@ function NotiaWorkspaceComponent({
   }
 
   if (activeWorkspaceView === 'finance') {
-    return <FinanceView />
+    return <FinanceView library={activeLibrary} aiPreferences={aiPreferences} />
   }
 
   return (

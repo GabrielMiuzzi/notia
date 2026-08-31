@@ -36,4 +36,29 @@ describe('parseNativeToolCalls', () => {
       function: { name: 'read_library_documents', arguments: { documentIds: ['doc-44'] } },
     }])
   })
+
+  it('recovers wrapped legacy calls whose name omits underscores', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'list_finance_accounts', description: 'accounts', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls(
+      '<tool_call>\n<name>listfinanceaccounts</name>\n<arguments>{}</arguments>\n</tool_call>',
+      tools,
+    )).toEqual([{
+      function: { name: 'list_finance_accounts', arguments: {} },
+    }])
+  })
+
+  it('recovers empty legacy finance list calls instead of returning their XML to the user', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'list_finance_categories', description: 'categories', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls('<list_categories>\n</list_categories>', tools)).toEqual([{
+      function: { name: 'list_finance_categories', arguments: {} },
+    }])
+  })
 })

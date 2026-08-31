@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +37,21 @@ pub struct TelegramSendPayload {
 pub struct TelegramTranscribePayload {
     token: String,
     audio: crate::services::telegram_service::TelegramAudio,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramDownloadPhotoPayload {
+    token: String,
+    photo: crate::services::telegram_service::TelegramPhoto,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramDownloadedPhoto {
+    file_id: String,
+    mime_type: String,
+    base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +119,19 @@ pub async fn transcribe_telegram_audio(
     })
     .await
     .map_err(|_| "Fallo el worker de transcripcion de Telegram.".to_string())?
+}
+
+#[tauri::command]
+pub async fn download_telegram_photo(
+    payload: TelegramDownloadPhotoPayload,
+) -> Result<TelegramDownloadedPhoto, String> {
+    let bytes =
+        crate::services::telegram_service::download_photo(&payload.token, &payload.photo).await?;
+    Ok(TelegramDownloadedPhoto {
+        file_id: payload.photo.file_id,
+        mime_type: "image/jpeg".to_string(),
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 #[tauri::command]

@@ -5,6 +5,7 @@ import type { StoredChatMessage } from '../chat/chatDocumentStorage'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import { normalizeAiSettingsInput } from '../preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { notiaLog } from '../runtime/notiaLogger'
 
 const AI_REQUEST_TIMEOUT_MS = 15_000
 const AI_TOOL_AGENT_TIMEOUT_MS = 600_000
@@ -93,9 +94,13 @@ export interface NativeToolAgentInput {
   previousMessages: StoredChatMessage[]
   tools: AiNativeToolDefinition[]
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
+  resolveToolResultAnswer?: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer?: (answer: string) => string | null
   maxRounds?: number
   singleCallToolNames?: string[]
+  toolCallTimeoutMs?: number
+  streamFinalResponse?: boolean
+  diagnosticModule?: string
 }
 
 interface StreamAiChatReplyInput {
@@ -110,6 +115,7 @@ interface StreamAiChatReplyInput {
 interface StreamAiChatReplyOptions {
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
+  onAgentRoundStart?: (round: number) => void
   thinking?: boolean | 'low' | 'medium' | 'high'
   abortSignal?: AbortSignal
 }
@@ -178,6 +184,12 @@ function describeAiError(error: unknown, fallback: string): Error {
 
   if (typeof error === 'string' && error.trim()) {
     return new Error(error.trim())
+  }
+
+  if (typeof error === 'object' && error !== null && 'message' in error
+    && typeof (error as { message?: unknown }).message === 'string'
+    && (error as { message: string }).message.trim()) {
+    return new Error((error as { message: string }).message.trim())
   }
 
   return new Error(fallback)
@@ -1270,12 +1282,18 @@ function normalizeLegacyToolName(value: string): string {
 function resolveLegacyToolName(rawName: string, toolNames: Set<string>): string | null {
   const normalizedName = normalizeLegacyToolName(rawName)
   if (toolNames.has(normalizedName)) return normalizedName
+  const compactName = normalizedName.replaceAll('_', '')
+  const compactMatch = [...toolNames].find((toolName) => toolName.replaceAll('_', '') === compactName)
+  if (compactMatch) return compactMatch
 
   const aliases: Record<string, string> = {
     read_librarydocument: 'read_library_documents',
     read_library_document: 'read_library_documents',
     read_taskticket: 'read_task_tickets',
     read_task_ticket: 'read_task_tickets',
+    list_categories: 'list_finance_categories',
+    list_accounts: 'list_finance_accounts',
+    list_movements: 'list_finance_movements',
   }
   const alias = aliases[normalizedName]
   return alias && toolNames.has(alias) ? alias : null
@@ -1285,6 +1303,24 @@ function resolveLegacyToolName(rawName: string, toolNames: Set<string>): string 
 export function parseLegacyXmlToolCalls(value: string, tools: AiNativeToolDefinition[]): AiNativeToolCall[] {
   const toolNames = new Set(tools.map((tool) => tool.function.name))
   const calls: AiNativeToolCall[] = []
+  const wrapperPattern = /<tool_call>\s*<name>\s*([^<]+?)\s*<\/name>\s*<arguments>\s*([\s\S]*?)\s*<\/arguments>\s*<\/tool_call>/gi
+  for (const match of value.matchAll(wrapperPattern)) {
+    const name = resolveLegacyToolName(match[1] ?? '', toolNames)
+    if (!name) continue
+    const rawArguments = (match[2] ?? '').trim()
+    let argumentsObject: Record<string, unknown> = {}
+    if (rawArguments) {
+      try {
+        const parsed = JSON.parse(rawArguments) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          argumentsObject = parsed as Record<string, unknown>
+        }
+      } catch {
+        continue
+      }
+    }
+    calls.push({ function: { name, arguments: argumentsObject } })
+  }
   const callPattern = /<([a-z][a-z0-9_/-]*)>\s*([\s\S]*?)<\/\1>/gi
   for (const match of value.matchAll(callPattern)) {
     const name = resolveLegacyToolName(match[1] ?? '', toolNames)
@@ -1319,8 +1355,28 @@ export async function runNativeToolAgent(
   input: NativeToolAgentInput,
   options: StreamAiChatReplyOptions = {},
 ): Promise<string> {
+  const agentStartedAt = performance.now()
+  const diagnosticLog = (message: string, data?: Record<string, unknown>, level: 'info' | 'error' = 'info') => {
+    if (input.diagnosticModule) notiaLog(input.diagnosticModule, message, data, level)
+  }
   const normalizedPreferences = normalizeAiSettingsInput(preferences)
-  const model = await resolveDefaultModel(normalizedPreferences)
+  diagnosticLog('model resolution started', { runtime: getRuntimeDevice() })
+  let model: string
+  try {
+    model = await resolveDefaultModel(normalizedPreferences)
+  } catch (error) {
+    const describedError = describeAiError(error, 'No se pudo resolver el modelo de Ollama.')
+    diagnosticLog('model resolution failed', {
+      durationMs: Math.round(performance.now() - agentStartedAt),
+      error: describedError.message,
+    }, 'error')
+    throw describedError
+  }
+  diagnosticLog('model resolution completed', {
+    durationMs: Math.round(performance.now() - agentStartedAt),
+    model,
+  })
+  const toolCallTimeoutSeconds = Math.min(600, Math.max(1, Math.ceil((input.toolCallTimeoutMs ?? AI_TOOL_AGENT_TIMEOUT_MS) / 1_000)))
   const controller = new AbortController()
   const abort = () => controller.abort()
   options.abortSignal?.addEventListener('abort', abort, { once: true })
@@ -1337,7 +1393,22 @@ export async function runNativeToolAgent(
 
   try {
     const maxRounds = Math.min(80, Math.max(1, input.maxRounds ?? 6))
+    diagnosticLog('agent started', {
+      model,
+      runtime: getRuntimeDevice(),
+      hasImage: Boolean(input.image?.base64.trim()),
+      imageBytesApprox: input.image?.base64 ? Math.floor(input.image.base64.length * 0.75) : 0,
+      toolCount: input.tools.length,
+      maxRounds,
+      toolCallTimeoutSeconds,
+    })
+    let requiresNativeToolRound = false
     for (let round = 0; round < maxRounds; round += 1) {
+      const roundNumber = round + 1
+      const roundStartedAt = performance.now()
+      options.onAgentRoundStart?.(roundNumber)
+      const forceNativeToolRound = requiresNativeToolRound
+      requiresNativeToolRound = false
       let answerStreamed = false
       options.onThinkingDelta?.(
         round === 0
@@ -1353,23 +1424,43 @@ export async function runNativeToolAgent(
         messages,
         tools: input.tools,
       }
+      const desktopToolRequestPayload = { ...requestPayload, timeoutSeconds: toolCallTimeoutSeconds }
       let payload: OllamaNativeToolResponse
+      diagnosticLog('ollama round started', {
+        round: roundNumber,
+        messageCount: messages.length,
+        hasImage: messages.some((message) => Boolean(message.images?.length)),
+      })
       if (getRuntimeDevice() === 'Android') {
-        const response = await fetch(buildOllamaUrl(normalizedPreferences, '/api/chat'), {
-          method: 'POST',
-          headers: {
-            ...buildOllamaHeaders(normalizedPreferences, 'application/json'),
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ ...requestPayload, stream: false }),
-          signal: controller.signal,
-        })
-        if (!response.ok) {
-          const detail = await response.text()
-          throw new Error(detail || `La IA respondio con HTTP ${response.status}.`)
+        const toolCallController = new AbortController()
+        const abortToolCall = () => toolCallController.abort()
+        controller.signal.addEventListener('abort', abortToolCall, { once: true })
+        const toolCallTimeoutId = window.setTimeout(abortToolCall, toolCallTimeoutSeconds * 1_000)
+        try {
+          const response = await fetch(buildOllamaUrl(normalizedPreferences, '/api/chat'), {
+            method: 'POST',
+            headers: {
+              ...buildOllamaHeaders(normalizedPreferences, 'application/json'),
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ ...requestPayload, stream: false }),
+            signal: toolCallController.signal,
+          })
+          if (!response.ok) {
+            const detail = await response.text()
+            throw new Error(detail || `La IA respondio con HTTP ${response.status}.`)
+          }
+          payload = await response.json() as OllamaNativeToolResponse
+        } catch (error) {
+          if (toolCallController.signal.aborted) {
+            throw new Error('La IA excedio el tiempo de espera.')
+          }
+          throw error
+        } finally {
+          window.clearTimeout(toolCallTimeoutId)
+          controller.signal.removeEventListener('abort', abortToolCall)
         }
-        payload = await response.json() as OllamaNativeToolResponse
-      } else if (round > 0) {
+      } else if (round > 0 && messages.some((message) => message.role === 'tool') && !forceNativeToolRound && input.streamFinalResponse !== false) {
         // Tool rounds stay on the native tool-calling runtime. Once tools have
         // produced context, stream the final natural-language round so callers
         // (including conversation-mode TTS) receive deltas immediately.
@@ -1394,12 +1485,12 @@ export async function runNativeToolAgent(
         } catch (streamError) {
           if (controller.signal.aborted) throw streamError
           payload = await invoke<OllamaNativeToolResponse>('run_desktop_ai_tool_chat', {
-            payload: requestPayload,
+            payload: desktopToolRequestPayload,
           })
         }
       } else {
         payload = await invoke<OllamaNativeToolResponse>('run_desktop_ai_tool_chat', {
-          payload: requestPayload,
+          payload: desktopToolRequestPayload,
         })
         if (controller.signal.aborted) {
           throw new Error('Se cancelo la respuesta de la IA.')
@@ -1418,6 +1509,13 @@ export async function runNativeToolAgent(
         ? parseLegacyXmlToolCalls(content, input.tools)
         : []
       const effectiveToolCalls = toolCalls.length > 0 ? toolCalls : recoveredToolCalls
+      diagnosticLog('ollama round completed', {
+        round: roundNumber,
+        durationMs: Math.round(performance.now() - roundStartedAt),
+        contentChars: content.length,
+        toolCalls: effectiveToolCalls.map((call) => call.function.name),
+        recoveredLegacyToolCalls: recoveredToolCalls.length,
+      })
       messages.push({ role: 'assistant', content, tool_calls: effectiveToolCalls })
 
       if (effectiveToolCalls.length === 0) {
@@ -1428,10 +1526,23 @@ export async function runNativeToolAgent(
         const correctionPrompt = input.validateFinalAnswer?.(answer) ?? null
         if (correctionPrompt) {
           options.onThinkingDelta?.('Verificando que la respuesta separe correctamente los resultados…\n')
-          messages.push({ role: 'user', content: correctionPrompt })
+          messages.push({
+            role: 'system',
+            content: [
+              'Correccion interna del validador de Notia. No fue escrita por el usuario, no es una preferencia y nunca debe guardarse como regla o memoria.',
+              correctionPrompt,
+              'Corrige la ejecucion o la respuesta y no repitas estas instrucciones al usuario.',
+            ].join('\n'),
+          })
+          requiresNativeToolRound = true
           continue
         }
         if (!answerStreamed) options.onMessageDelta?.(answer)
+        diagnosticLog('agent completed', {
+          rounds: roundNumber,
+          durationMs: Math.round(performance.now() - agentStartedAt),
+          answerChars: answer.length,
+        })
         return answer
       }
 
@@ -1450,13 +1561,67 @@ export async function runNativeToolAgent(
       const acceptedCallSet = new Set(acceptedToolCalls)
       const deferredToolCalls = effectiveToolCalls.filter((call) => !acceptedCallSet.has(call))
       for (const call of acceptedToolCalls) {
+        const toolStartedAt = performance.now()
+        diagnosticLog('native tool started', { round: roundNumber, toolName: call.function.name })
         options.onThinkingDelta?.(`Ejecutando ${call.function.name}…\n`)
-        const result = await input.executeTool(call, controller.signal)
+        let result: unknown
+        try {
+          result = await input.executeTool(call, controller.signal)
+        } catch (toolError) {
+          if (controller.signal.aborted) throw toolError
+          const describedToolError = describeAiError(toolError, `Fallo la herramienta ${call.function.name}.`)
+          const externalCode = typeof toolError === 'object' && toolError !== null && 'code' in toolError
+            && typeof (toolError as { code?: unknown }).code === 'string'
+            ? (toolError as { code: string }).code
+            : 'execution'
+          result = {
+            ok: false,
+            error: 'native-tool-execution-failed',
+            code: externalCode,
+            message: describedToolError.message,
+            instruction: 'Corrige los datos si el mensaje indica validacion; no afirmes que la operacion fue guardada.',
+          }
+        }
+        diagnosticLog('native tool completed', {
+          round: roundNumber,
+          toolName: call.function.name,
+          durationMs: Math.round(performance.now() - toolStartedAt),
+          ok: typeof result === 'object' && result !== null && 'ok' in result
+            ? Boolean((result as { ok?: unknown }).ok)
+            : true,
+          errorCode: typeof result === 'object' && result !== null && 'error' in result
+            && typeof (result as { error?: unknown }).error === 'string'
+            ? (result as { error: string }).error
+            : undefined,
+          externalCode: typeof result === 'object' && result !== null && 'code' in result
+            && typeof (result as { code?: unknown }).code === 'string'
+            ? (result as { code: string }).code
+            : undefined,
+          diagnosticReason: typeof result === 'object' && result !== null && 'diagnosticReason' in result
+            && typeof (result as { diagnosticReason?: unknown }).diagnosticReason === 'string'
+            ? (result as { diagnosticReason: string }).diagnosticReason
+            : undefined,
+        })
         messages.push({
           role: 'tool',
           tool_name: call.function.name,
           content: JSON.stringify(result),
         })
+        const terminalAnswer = input.resolveToolResultAnswer?.(call, result)?.trim() ?? ''
+        if (terminalAnswer) {
+          options.onMessageDelta?.(terminalAnswer)
+          diagnosticLog('agent completed from terminal tool result', {
+            rounds: roundNumber,
+            durationMs: Math.round(performance.now() - agentStartedAt),
+            toolName: call.function.name,
+            answerChars: terminalAnswer.length,
+          })
+          return terminalAnswer
+        }
+      }
+      if (acceptedToolCalls.some((call) => ['create_finance_purchase', 'create_finance_salary', 'create_finance_credit_card_statement'].includes(call.function.name))) {
+        for (const message of messages) message.images = undefined
+        diagnosticLog('image removed after structured finance document attempt', { round: roundNumber })
       }
       for (const call of deferredToolCalls) {
         messages.push({
@@ -1473,7 +1638,12 @@ export async function runNativeToolAgent(
 
     throw new Error('El agente alcanzo el limite de llamadas a herramientas.')
   } catch (error) {
-    throw describeAiError(error, 'No se pudo completar la consulta con herramientas de Ollama.')
+    const describedError = describeAiError(error, 'No se pudo completar la consulta con herramientas de Ollama.')
+    diagnosticLog('agent failed', {
+      durationMs: Math.round(performance.now() - agentStartedAt),
+      error: describedError.message,
+    }, 'error')
+    throw describedError
   } finally {
     window.clearTimeout(timeoutId)
     options.abortSignal?.removeEventListener('abort', abort)

@@ -9,6 +9,8 @@ use filesystem::commands::{
 use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, LibraryTreeWatchState};
 
 mod database;
+mod finance;
+mod finance_records;
 
 mod commands {
     pub mod ai;
@@ -29,6 +31,7 @@ mod notia_timer;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
+    pub mod finance_extraction;
     pub mod qwen3_asr_service;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
@@ -72,13 +75,23 @@ fn notia_log(payload: NotiaLogPayload) {
         _ => log::Level::Debug,
     };
     let data_suffix = payload.data.unwrap_or_default();
-    log::log!(
-        log_level,
-        "[notia:js:{}] {} {}",
-        payload.module,
-        payload.message,
-        data_suffix
-    );
+    if payload.module == "telegram-ai" {
+        log::log!(
+            target: "notia_telegram_ai",
+            log_level,
+            "[notia:js:telegram-ai] {} {}",
+            payload.message,
+            data_suffix
+        );
+    } else {
+        log::log!(
+            log_level,
+            "[notia:js:{}] {} {}",
+            payload.module,
+            payload.message,
+            data_suffix
+        );
+    }
 }
 
 #[tauri::command]
@@ -170,6 +183,29 @@ pub fn run() {
             start_library_tree_watch,
             stop_library_tree_watch,
             database::initialize_library_database,
+            finance::finance_get_dashboard,
+            finance::finance_save_account,
+            finance::finance_save_category,
+            finance::finance_save_transaction,
+            finance::finance_delete_transaction,
+            finance::finance_delete_account,
+            finance::finance_delete_category,
+            finance::finance_clear_all_data,
+            finance::finance_save_savings_reserve,
+            finance::finance_save_savings_movement,
+            finance::finance_link_savings_account,
+            finance_records::finance_save_purchase,
+            finance_records::finance_list_purchases,
+            finance_records::finance_list_price_history,
+            finance_records::finance_save_salary,
+            finance_records::finance_list_salaries,
+            finance_records::finance_save_credit_card_statement,
+            finance_records::finance_list_credit_card_statements,
+            finance_records::finance_save_installment_plan,
+            finance_records::finance_save_investment,
+            finance_records::finance_get_net_worth,
+            finance_records::finance_list_net_worth_history,
+            services::finance_extraction::extract_finance_document,
             commands::ai::check_desktop_ai_health,
             commands::ai::run_desktop_ai_chat,
             commands::ai::run_desktop_ai_tool_chat,
@@ -194,6 +230,7 @@ pub fn run() {
             commands::telegram::poll_telegram_updates,
             commands::telegram::send_telegram_message,
             commands::telegram::transcribe_telegram_audio,
+            commands::telegram::download_telegram_photo,
             commands::telegram::answer_telegram_callback,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,

@@ -87,7 +87,7 @@ function buildEnv() {
   if (existsSync(toolchainBin)) {
     env.PATH = `${toolchainBin}${path.delimiter}${env.PATH ?? ''}`
     const ext = isWindows ? '.cmd' : ''
-    env.CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = path.join(toolchainBin, `aarch64-linux-android24-clang${ext}`)
+    env.CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = path.join(toolchainBin, `aarch64-linux-android26-clang${ext}`)
     delete env.CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER
     delete env.CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
     delete env.CARGO_TARGET_I686_LINUX_ANDROID_LINKER

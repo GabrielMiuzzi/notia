@@ -51,6 +51,8 @@ src-tauri/resources/speech/models/*
 !src-tauri/resources/speech/models/qwen3-asr-0.6b-q8/**
 !src-tauri/resources/speech/models/qwen3-asr-1.7b-q8/
 !src-tauri/resources/speech/models/qwen3-asr-1.7b-q8/**
+# GitHub LFS rejects the 1.7B model because its main GGUF exceeds 2 GiB.
+src-tauri/resources/speech/models/qwen3-asr-1.7b-q8/*.gguf
 !src-tauri/resources/speech/models/speaker-diarization-v1/
 !src-tauri/resources/speech/models/speaker-diarization-v1/**
 src-tauri/resources/speech/runtime/*

@@ -2,15 +2,23 @@
 
 ## Dictado offline en el chat
 
-El contacto autorizado de Telegram también puede enviar una nota de voz OGG/Opus de hasta 15 minutos y 20 MB. Notia la descarga, la decodifica y la transcribe localmente con el mismo modelo offline precargado. La decodificación admite los modos SILK, CELT e híbrido usados por Telegram, incluso en notas de voz rápidas. Primero responde **Solicitud transcripción recibida y en proceso.**, mostrando la transcripción en negrita, y después procesa ese texto como una consulta normal del agente. El audio no se envía al proveedor de IA; Telegram sí interviene necesariamente en su transporte y descarga.
+El contacto autorizado de Telegram también puede enviar una nota de voz OGG/Opus de hasta 15 minutos y 20 MB. Notia la descarga, la decodifica y carga bajo demanda el modelo offline necesario para transcribirla. La decodificación admite los modos SILK, CELT e híbrido usados por Telegram, incluso en notas de voz rápidas. Primero responde **Solicitud transcripción recibida y en proceso.**, mostrando la transcripción en negrita, y después procesa ese texto como una consulta normal del agente. El audio no se envía al proveedor de IA; Telegram sí interviene necesariamente en su transporte y descarga.
+
+El contacto autorizado también puede enviar una foto de hasta 4 MB. Notia registra de forma durable el update antes de descargarla, evitando reprocesarla si el WebView se reinicia, y la entrega al modelo de IA configurado junto con el contexto financiero. El agente clasifica la imagen como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Para tickets extrae comercio, fecha, productos, cantidades, precios y total, busca o crea la categoría y registra el gasto. Para recibos extrae período, fecha de cobro, empleador, bruto, descuentos, neto y conceptos, y registra tanto el recibo como el ingreso neto. Para resúmenes extrae emisor, tarjeta, período, vencimiento, saldos y líneas; registra consumos y cargos contra la cuenta de tarjeta, concilia pagos y créditos y evita duplicar el total a pagar como gasto. Solo pregunta si no puede identificar con suficiente claridad la cuenta correspondiente. Telegram informa los cambios de etapa y termina con un resultado verificable: documento registrado, duplicado o error concreto. Podés enviar varias fotos separadas o dentro de un álbum: Notia mantiene una cola de hasta diez solicitudes y las procesa de a una. Esta función requiere un modelo configurado que admita imágenes y herramientas.
 
 Notia usa Qwen3-ASR Q8 mediante un runtime nativo basado en `llama.cpp`. El reconocimiento funciona localmente y permite seleccionar 0.6B o 1.7B, CPU/GPU e idioma desde **Configuraciones → Voz**.
 
-Notia precarga en segundo plano los modelos Qwen3-ASR y Qwen3-TTS seleccionados desde el arranque y mantiene ambos runtimes listos para el chat, el dictado y Meeting. Al elegir otro modelo, dispositivo o idioma, prepara inmediatamente la nueva configuración y descarta de forma segura el runtime anterior.
+Notia carga Qwen3-ASR únicamente cuando el usuario inicia dictado/Meeting o envía audio por Telegram, y Qwen3-TTS cuando se solicita una síntesis. Imágenes, texto y otras operaciones de Ollama no inicializan runtimes de voz ni consumen memoria/GPU por ellos. Al elegir otra configuración, la próxima operación de voz prepara el runtime correspondiente y descarta de forma segura el anterior.
 
 El compositor incluye un botón de micrófono para dictar sin enviar audio ni texto a servicios externos. Cada respuesta del asistente muestra debajo del avatar una acción para leer ese mensaje con Qwen3-TTS usando la voz, el idioma y la velocidad configurados; una segunda pulsación detiene la reproducción. En Windows y Android arm64, Notia muestra texto parcial en tiempo real y, al detener, diariza el audio completo y vuelve a transcribir cada turno detectado para asignar el texto mediante sus límites temporales, separando intervenciones como `Hablante 1` y `Hablante 2` sin repartir palabras proporcionalmente. El resultado queda editable y nunca se envía automáticamente.
 
 El acceso **Meeting**, ubicado debajo de ColdPass en el panel izquierdo, abre un espacio dedicado para transcribir reuniones. Permite iniciar, pausar, reanudar, cancelar y finalizar una sesión, editar el texto en vivo y aplicar diarización al finalizar. Después permite asignar un nombre a cada hablante y reemplaza sus etiquetas en toda la transcripción; la acción **Pasar por IA** usa el modelo Ollama configurado para corregir y organizar el texto sin resumirlo ni cambiar la atribución de las intervenciones. El chat lateral usa la transcripción actual como contexto y el mismo runtime agente, prompt, native tool calling y opciones que el resto de los chats; solo es efímero, por lo que se descarta al salir de Meeting y no crea archivos en la carpeta de chats. En Windows mezcla el micrófono predeterminado con la salida de audio predeterminada mediante captura WASAPI nativa; no requiere dispositivos virtuales ni cambiar la entrada del sistema.
+
+El acceso **Finanzas**, ubicado debajo de **Transcribir meeting** en el panel izquierdo, abre el módulo local de finanzas personales. Permite administrar cuentas, categorías jerárquicas, ingresos, gastos, transferencias, ajustes, reservas de ahorro, tickets y precios históricos, recibos de sueldo, tarjetas/cuotas y valuaciones patrimoniales. Los importes usan centavos exactos y ARS/USD se muestran por separado; los saldos se derivan de movimientos confirmados en SQLite por biblioteca.
+
+Desde **Configuraciones → Finanzas** podés eliminar todos los datos financieros de la biblioteca activa. Notia muestra una confirmación destructiva antes de borrar cuentas, categorías, movimientos, tickets, productos y precios, sueldos, ahorro, cuotas e inversiones. La acción no elimina la biblioteca ni otros datos de Notia y no se puede deshacer.
+
+Los tickets, recibos y resúmenes de tarjeta mantienen el documento original y sus campos normalizados. La extracción visual opcional usa LlamaCloud desde el backend nativo: configurá `LLAMA_CLOUD_API_KEY` en el entorno donde se inicia Notia. El secreto nunca se envía al WebView, pero el documento sí se transmite a LlamaCloud cuando pulsás **Extraer con LlamaCloud**. Sin esa acción, la carga y corrección permanecen locales.
 
 1. Ejecute `scripts/install-qwen3-asr-models.ps1 -Model 0.6b` y `scripts/build-qwen3-asr-runtime.ps1 -Platform windows-x86_64 -Device cpu`. Para Vulkan use `-Device gpu`; en Android use además `-Platform android-arm64-v8a` con NDK y Vulkan SDK disponibles. La diarización conserva sus modelos ONNX independientes y el runtime documentado en `src-tauri/resources/speech/runtime/README.md`.
 2. Abra un chat y pulse **Dictar mensaje sin conexión**.
@@ -76,6 +84,28 @@ Cada biblioteca mantiene además `.agent/memory/` con `rules.md` y `memory.md`. 
 Las instrucciones permanentes dadas al agente se guardan automáticamente en su bloque interno de `rules.md`, sin pedir confirmación adicional.
 Los datos personales, preferencias y contextos duraderos mencionados en una conversación se guardan automáticamente en `.agent/memory/memory.md`, se reutilizan en chats futuros y se reorganizan en segundo plano mediante el Ollama configurado.
 También garantiza la carpeta `.agent/skills/` para las habilidades del agente.
+
+### Reglas y memoria del agente
+
+Notia mantiene esta estructura por biblioteca y repone automáticamente cualquier carpeta o archivo faltante:
+
+```text
+.agent/
+├── promps/
+│   └── default.md
+├── memory/
+│   ├── rules.md
+│   └── memory.md
+└── skills/
+```
+
+`rules.md` separa las reglas mínimas administradas por Notia (`NOTIA_DEFAULT_RULES`) de las instrucciones permanentes aprendidas (`NOTIA_IA_RULES`). Si indicás explícitamente “cuando ocurra X, hacé Y” o “a partir de ahora respondé de esta manera”, el agente guarda la instrucción en el segundo bloque sin pedir una confirmación adicional.
+
+`memory.md` conserva hechos duraderos, como nombre, preferencias, empleo o proyectos actuales. Esos datos no se consideran reglas de comportamiento. El agente los guarda sin confirmación y los incorpora como contexto en conversaciones posteriores de chat principal, chats laterales, Meeting y Telegram.
+
+Después de modificar reglas aprendidas o memorias, Notia solicita en segundo plano al Ollama configurado que deduplique, ordene y clasifique nuevamente ambos conjuntos. Una instrucción puede pasar a reglas y un dato personal puede pasar a memoria. La conversación no espera este trabajo. Si la configuración apunta a Ollama Cloud, el contenido de reglas y memorias se envía a ese servicio para la reorganización.
+
+En Telegram, las respuestas finales se transforman al subconjunto HTML permitido por Telegram. Encabezados, listas, negritas, código y enlaces se normalizan aunque el modelo produzca Markdown; el resto de los chats conserva Markdown. Si un modelo emite accidentalmente una llamada de herramienta XML, Notia intenta recuperarla como tool calling nativo en vez de mostrarla como texto.
 
 En Windows, pulsar la **X** oculta Notia en la bandeja del sistema en vez de finalizarla. Para volver, hacé doble clic izquierdo en el icono de Notia o abrí su menú y elegí **Abrir Notia**. Para terminar completamente la aplicación, elegí **Salir** desde ese mismo menú. Este comportamiento no se aplica en Android, macOS ni Linux.
 
@@ -531,12 +561,8 @@ Notia almacena las preferencias del usuario localmente en el navegador (localSto
 ### InkMath
 - **Espera de OCR**: intervalo de inactividad antes de enviar a Ollama los trazos de una fórmula dibujada.
 
-### Logging (Android)
-- Podés habilitar o deshabilitar el envío de logs a `logcat` para diagnóstico de rendimiento:
-  ```js
-  localStorage.setItem('notia.logcat.enabled', '1') // habilitar
-  localStorage.setItem('notia.logcat.enabled', '0') // deshabilitar
-  ```
+### Logging
+- Notia registra solamente errores, salvo una traza diagnóstica acotada para imágenes procesadas por Telegram/Ollama. Esa traza muestra descarga, rondas de IA, nombres de tools, persistencia, respuesta y tiempos sin incluir la imagen, el prompt, credenciales ni argumentos financieros.
 
 ---
 

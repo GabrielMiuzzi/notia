@@ -266,7 +266,7 @@ impl Qwen3AsrRecognizer {
         }
         let audio_samples = samples.len();
         let started_at = Instant::now();
-        let mut output = vec![0_i8; MAX_OUTPUT_BYTES];
+        let mut output = vec![0 as c_char; MAX_OUTPUT_BYTES];
         let result = unsafe {
             (self.transcribe)(
                 self.context,

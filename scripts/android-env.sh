@@ -86,7 +86,7 @@ configure_android_environment() {
   fi
 
   prepend_path_once "${toolchain_bin}"
-  export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${toolchain_bin}/aarch64-linux-android24-clang"
+  export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${toolchain_bin}/aarch64-linux-android26-clang"
   unset CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER
   unset CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
   unset CARGO_TARGET_I686_LINUX_ANDROID_LINKER

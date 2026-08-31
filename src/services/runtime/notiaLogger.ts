@@ -1,51 +1,5 @@
-import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
-
 export type NotiaLogLevel = 'info' | 'warn' | 'error' | 'perf'
-
-const LOGCAT_STORAGE_KEY = 'notia.logcat.enabled'
-
-function isLogcatEnabled(): boolean {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  try {
-    const storedValue = window.localStorage.getItem(LOGCAT_STORAGE_KEY)
-    if (storedValue === '0' || storedValue === 'false') {
-      return false
-    }
-    if (storedValue === '1' || storedValue === 'true') {
-      return true
-    }
-  } catch {
-    return false
-  }
-
-  // Default: enabled on Android, disabled on desktop
-  return getRuntimeDevice() === 'Android'
-}
-
-let logcatEnabledCache: boolean | null = null
-
-function resolveLogcatEnabled(): boolean {
-  if (logcatEnabledCache === null) {
-    logcatEnabledCache = isLogcatEnabled()
-  }
-  return logcatEnabledCache
-}
-
-export function setLogcatEnabled(enabled: boolean): void {
-  logcatEnabledCache = enabled
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  try {
-    window.localStorage.setItem(LOGCAT_STORAGE_KEY, enabled ? '1' : '0')
-  } catch {
-    // Ignore storage failures.
-  }
-}
+export const TELEGRAM_AI_DIAGNOSTIC_MODULE = 'telegram-ai'
 
 function formatLogTag(module: string, level: NotiaLogLevel): string {
   return level === 'perf' ? `[notia:perf:${module}]` : `[notia:${module}]`
@@ -67,9 +21,8 @@ function serializeData(data: Record<string, unknown> | undefined): string {
 }
 
 /**
- * Log a message to the Notia logging system.
- * On Android, this also sends the log to logcat via the `notia_log` Tauri command
- * so it appears under the `notia` tag alongside Rust logs.
+ * Logs actionable errors plus the narrowly-scoped Telegram AI diagnostic trace.
+ * Normal activity and performance measurements stay silent.
  */
 export function notiaLog(
   module: string,
@@ -77,7 +30,8 @@ export function notiaLog(
   data?: Record<string, unknown>,
   level: NotiaLogLevel = 'info',
 ): void {
-  if (!resolveLogcatEnabled() && level !== 'error') {
+  const isTelegramAiDiagnostic = module === TELEGRAM_AI_DIAGNOSTIC_MODULE && level === 'info'
+  if (level !== 'error' && !isTelegramAiDiagnostic) {
     return
   }
 
@@ -85,24 +39,14 @@ export function notiaLog(
   const dataSuffix = serializeData(data)
   const logLine = `${tag} ${message}${dataSuffix}`
 
-  switch (level) {
-    case 'error':
-      console.error(logLine)
-      break
-    case 'warn':
-      console.warn(logLine)
-      break
-    case 'perf':
-    case 'info':
-    default:
-      console.info(logLine)
-      break
+  if (level === 'error') {
+    console.error(logLine)
+  } else {
+    console.info(logLine)
   }
 
-  // Also send to Rust backend on Android for clean logcat tag
-  if (getRuntimeDevice() === 'Android') {
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     try {
-      // Dynamic import to avoid bundling issues
       import('@tauri-apps/api/core').then(({ invoke }) => {
         void invoke('notia_log', {
           payload: {
@@ -137,13 +81,6 @@ export function notiaTimer(
   label: string,
   meta?: Record<string, unknown>,
 ): NotiaTimerController {
-  if (!resolveLogcatEnabled()) {
-    return {
-      success: () => {},
-      error: () => {},
-    }
-  }
-
   const startedAt = performance.now()
   let finished = false
 
@@ -159,7 +96,7 @@ export function notiaTimer(
       const errorMessage = error instanceof Error ? error.message : String(error)
       combinedMeta.errorMessage = errorMessage
     }
-    notiaLog(module, `${label} duration_ms=${durationMs}`, combinedMeta, 'perf')
+    notiaLog(module, `${label} duration_ms=${durationMs}`, combinedMeta, error === undefined ? 'perf' : 'error')
   }
 
   return {

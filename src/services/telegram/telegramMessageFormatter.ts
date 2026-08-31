@@ -12,13 +12,13 @@ function preserveTelegramTags(value: string): { value: string; tags: string[] } 
   const tags: string[] = []
   const preserved = value.replace(TELEGRAM_TAG_PATTERN, (tag) => {
     const index = tags.push(tag) - 1
-    return `\u0000${index}\u0000`
+    return `\uE000${index}\uE001`
   })
   return { value: preserved, tags }
 }
 
 function restoreTelegramTags(value: string, tags: string[]): string {
-  return value.replace(/\u0000(\d+)\u0000/g, (_, index: string) => tags[Number(index)] ?? '')
+  return value.replace(/\uE000(\d+)\uE001/g, (_, index: string) => tags[Number(index)] ?? '')
 }
 
 function formatInlineMarkdown(value: string): string {
@@ -33,7 +33,8 @@ function formatInlineMarkdown(value: string): string {
 
 /** Converts common Markdown from the model into Telegram's small HTML subset. */
 export function formatTelegramMessage(markdown: string): string {
-  const { value: preservedMarkdown, tags } = preserveTelegramTags(markdown)
+  const normalizedMarkdown = markdown.replace(/\\(<\/?(?:b|i|u|s|code|pre)>|<a href="(?:https?|mailto):[^"<>]+">|<\/a>)/gi, '$1')
+  const { value: preservedMarkdown, tags } = preserveTelegramTags(normalizedMarkdown)
   const escaped = escapeHtml(preservedMarkdown)
   const withCodeBlocks = escaped.replace(/```(?:[^\n]*)\n([\s\S]*?)```/g, '<pre>$1</pre>')
   const formattedLines = withCodeBlocks.split('\n').map((line) => {

@@ -62,7 +62,17 @@ pub struct ResolvedDiarizationModel {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum SpeechAsrConfig {
-    Qwen3Asr { model: String, mmproj: String },
+    Qwen3Asr {
+        model: String,
+        mmproj: String,
+    },
+    OfflineNemoTransducer {
+        encoder: String,
+        decoder: String,
+        joiner: String,
+        tokens: String,
+        vad: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +158,9 @@ pub fn resolve_qwen3_asr_model(
     }
     let (model, mmproj) = match profile.asr.as_ref() {
         Some(SpeechAsrConfig::Qwen3Asr { model, mmproj }) => (model, mmproj),
+        Some(SpeechAsrConfig::OfflineNemoTransducer { .. }) => {
+            return Err("El perfil seleccionado no es un modelo Qwen3-ASR.".to_string())
+        }
         None => return Err("El perfil seleccionado no declara un modelo ASR.".to_string()),
     };
     Ok(crate::services::qwen3_asr_service::Qwen3AsrModelConfig {
@@ -303,8 +316,16 @@ fn validate_asr_roles(
     config: &SpeechAsrConfig,
     declared_paths: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
-    let SpeechAsrConfig::Qwen3Asr { model, mmproj } = config;
-    let roles = [model, mmproj];
+    let roles: Vec<&String> = match config {
+        SpeechAsrConfig::Qwen3Asr { model, mmproj } => vec![model, mmproj],
+        SpeechAsrConfig::OfflineNemoTransducer {
+            encoder,
+            decoder,
+            joiner,
+            tokens,
+            vad,
+        } => vec![encoder, decoder, joiner, tokens, vad],
+    };
     let mut unique_roles = std::collections::HashSet::new();
     for path in roles {
         validate_relative_path(path)?;

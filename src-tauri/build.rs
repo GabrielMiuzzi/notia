@@ -1,7 +1,39 @@
 fn main() {
     validate_bundled_speech_models();
     prepare_android_speech_runtime();
+    prepare_android_database_plugin();
     tauri_build::build()
+}
+
+fn prepare_android_database_plugin() {
+    if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(std::ffi::OsStr::new("android")) {
+        return;
+    }
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let source = manifest_dir
+        .join("resources")
+        .join("database")
+        .join("android")
+        .join("LibraryDatabasePlugin.kt");
+    let destination = manifest_dir
+        .join("gen")
+        .join("android")
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("gabriel")
+        .join("notia")
+        .join("LibraryDatabasePlugin.kt");
+    println!("cargo:rerun-if-changed={}", source.display());
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .expect("failed to create Android database plugin directory");
+    }
+    std::fs::copy(source, destination).expect("failed to install Android database plugin source");
 }
 
 /// Los modelos base se distribuyen dentro del bundle de la aplicación. Fallar

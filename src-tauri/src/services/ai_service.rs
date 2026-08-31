@@ -50,8 +50,6 @@ use std::time::Duration;
 const HEALTH_TIMEOUT_SECS: u64 = 15;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const CHAT_TIMEOUT_SECS: u64 = 180;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-const TOOL_CHAT_TIMEOUT_SECS: u64 = 600;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
@@ -358,6 +356,7 @@ pub async fn run_ollama_tool_chat(
     messages: &serde_json::Value,
     tools: &serde_json::Value,
     think: &serde_json::Value,
+    timeout_secs: u64,
 ) -> Result<serde_json::Value, String> {
     let normalized_model = model.trim();
     if normalized_model.is_empty() {
@@ -370,7 +369,7 @@ pub async fn run_ollama_tool_chat(
         return Err("No hay herramientas para enviar a la IA.".to_string());
     }
 
-    let client = build_client(TOOL_CHAT_TIMEOUT_SECS)?;
+    let client = build_client(timeout_secs)?;
     let endpoint = build_endpoint(&settings.ollama_url, "/api/chat")?;
     let response = with_auth(
         client

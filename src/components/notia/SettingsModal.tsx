@@ -25,8 +25,13 @@ import { selectQwen3AsrSettings, selectQwen3TtsSettings } from '../../features/p
 import { setQwen3AsrSettings, setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
 import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
 import { checkQwen3TtsConnection, getQwen3TtsStatus, reloadQwen3Tts } from '../../services/qwen3Tts/qwen3TtsRuntime'
+import { selectActiveLibrary } from '../../features/library/librarySelectors'
+import { clearAllFinanceData } from '../../modules/finance/services/financeService'
+import { financeErrorMessage } from '../../modules/finance/engines/financeError'
+import { notifyFinanceDataChanged } from '../../modules/finance/services/financeDataEvents'
+import { ConfirmationDialogModal } from './ConfirmationDialogModal'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas'
 
 interface SettingsModalProps {
   open: boolean
@@ -41,7 +46,7 @@ interface SettingsModalProps {
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
@@ -59,6 +64,7 @@ export function SettingsModal({
   const dispatch = useAppDispatch()
   const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
   const qwen3AsrPreferences = useAppSelector(selectQwen3AsrSettings)
+  const activeLibrary = useAppSelector(selectActiveLibrary)
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
@@ -101,6 +107,12 @@ export function SettingsModal({
   const [telegramTokenDraft, setTelegramTokenDraft] = useState(telegramPreferences.botToken)
   const [telegramStatus, setTelegramStatus] = useState('Todavia no se probo la conexion.')
   const [isCheckingTelegram, setIsCheckingTelegram] = useState(false)
+  const [isFinanceDeleteConfirmationOpen, setIsFinanceDeleteConfirmationOpen] = useState(false)
+  const [isClearingFinanceData, setIsClearingFinanceData] = useState(false)
+  const [financeClearStatus, setFinanceClearStatus] = useState<{
+    tone: 'idle' | 'success' | 'error'
+    message: string
+  }>({ tone: 'idle', message: 'Esta acción elimina definitivamente todos los datos del módulo Finanzas en la biblioteca activa.' })
   const [availableModels, setAvailableModels] = useState<AiModelOption[]>([])
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false)
   const modelSelectRef = useRef<HTMLDivElement | null>(null)
@@ -159,6 +171,10 @@ export function SettingsModal({
   useEffect(() => {
     if (open) setTelegramTokenDraft(telegramPreferences.botToken)
   }, [open, telegramPreferences.botToken])
+
+  useEffect(() => {
+    if (!open) setIsFinanceDeleteConfirmationOpen(false)
+  }, [open])
 
   useEffect(() => {
     if (!open) {
@@ -292,6 +308,25 @@ export function SettingsModal({
     } catch (error) {
       setTelegramStatus(error instanceof Error ? error.message : 'No se pudo verificar el bot.')
     } finally { setIsCheckingTelegram(false) }
+  }
+
+  const handleClearFinanceData = async () => {
+    if (!activeLibrary || isClearingFinanceData) return
+    setIsFinanceDeleteConfirmationOpen(false)
+    setIsClearingFinanceData(true)
+    setFinanceClearStatus({ tone: 'idle', message: 'Eliminando los datos financieros…' })
+    try {
+      await clearAllFinanceData(activeLibrary)
+      notifyFinanceDataChanged()
+      setFinanceClearStatus({ tone: 'success', message: 'Se eliminaron todos los datos financieros de esta biblioteca.' })
+    } catch (error) {
+      setFinanceClearStatus({
+        tone: 'error',
+        message: financeErrorMessage(error, 'No se pudieron eliminar los datos financieros.'),
+      })
+    } finally {
+      setIsClearingFinanceData(false)
+    }
   }
 
   if (!open) {
@@ -683,6 +718,26 @@ export function SettingsModal({
                 ) : null}
               </div>
             </>
+          ) : activeSection === 'Finanzas' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Datos financieros de la biblioteca activa</div>
+              <div className="notia-settings-card-value">{activeLibrary?.name ?? 'Sin biblioteca activa'}</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                Elimina cuentas, categorías, movimientos, tickets, productos y precios, sueldos, ahorro, cuotas, inversiones y sus archivos de extracción registrados. Esta acción no se puede deshacer.
+              </div>
+              <div className="notia-settings-actions">
+                <NotiaButton
+                  variant="danger"
+                  disabled={!activeLibrary || isClearingFinanceData}
+                  onClick={() => setIsFinanceDeleteConfirmationOpen(true)}
+                >
+                  {isClearingFinanceData ? 'Eliminando…' : 'Eliminar datos financieros'}
+                </NotiaButton>
+              </div>
+              <div className={`notia-settings-status notia-settings-status--${financeClearStatus.tone}`} role="status">
+                {financeClearStatus.message}
+              </div>
+            </div>
           ) : (
             <div>Seccion: {activeSection}</div>
           )}
@@ -702,6 +757,16 @@ export function SettingsModal({
           </NotiaButton>
         ))}
       </aside>
+      <ConfirmationDialogModal
+        open={isFinanceDeleteConfirmationOpen}
+        title="Eliminar datos financieros"
+        message={`Se eliminarán definitivamente todos los datos financieros de ${activeLibrary?.name ?? 'la biblioteca activa'}. Esta acción no se puede deshacer.`}
+        confirmLabel="Eliminar definitivamente"
+        cancelLabel="Cancelar"
+        tone="danger"
+        onConfirm={() => { void handleClearFinanceData() }}
+        onCancel={() => setIsFinanceDeleteConfirmationOpen(false)}
+      />
     </NotiaModalShell>
   )
 }

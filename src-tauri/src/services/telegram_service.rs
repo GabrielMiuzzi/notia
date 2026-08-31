@@ -6,6 +6,8 @@ const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 const MAX_MESSAGE_CHARS: usize = 4_000;
 const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_AUDIO_DURATION_SECONDS: u32 = 15 * 60;
+const MAX_PHOTO_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_PHOTO_PIXELS: u64 = 16_000_000;
 
 #[derive(Debug, Deserialize)]
 struct TelegramResponse<T> {
@@ -41,6 +43,8 @@ struct TelegramMessage {
     from: Option<TelegramUser>,
     chat: TelegramChat,
     text: Option<String>,
+    caption: Option<String>,
+    photo: Option<Vec<TelegramPhoto>>,
     voice: Option<TelegramAudio>,
     audio: Option<TelegramAudio>,
 }
@@ -55,6 +59,17 @@ pub struct TelegramAudio {
     mime_type: Option<String>,
     #[serde(alias = "file_size")]
     file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramPhoto {
+    #[serde(alias = "file_id")]
+    pub file_id: String,
+    #[serde(alias = "file_size")]
+    pub file_size: Option<u64>,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +102,7 @@ pub struct IncomingTelegramUpdate {
     pub message_id: Option<i64>,
     pub text: Option<String>,
     pub audio: Option<TelegramAudio>,
+    pub photo: Option<TelegramPhoto>,
     pub callback_query_id: Option<String>,
     pub callback_data: Option<String>,
 }
@@ -161,8 +177,13 @@ pub async fn get_updates(token: &str, offset: i64) -> Result<Vec<IncomingTelegra
                     chat_id: message.chat.id,
                     user,
                     message_id: Some(message.message_id),
-                    text: message.text,
+                    text: message.text.or(message.caption),
                     audio: message.voice.or(message.audio),
+                    photo: message.photo.and_then(|photos| {
+                        photos
+                            .into_iter()
+                            .max_by_key(|photo| u64::from(photo.width) * u64::from(photo.height))
+                    }),
                     callback_query_id: None,
                     callback_data: None,
                 });
@@ -176,6 +197,7 @@ pub async fn get_updates(token: &str, offset: i64) -> Result<Vec<IncomingTelegra
                 message_id: None,
                 text: None,
                 audio: None,
+                photo: None,
                 callback_query_id: Some(callback.id),
                 callback_data: callback.data,
             })
@@ -286,6 +308,72 @@ pub async fn download_audio(token: &str, audio: &TelegramAudio) -> Result<Vec<u8
     Ok(bytes.to_vec())
 }
 
+pub async fn download_photo(token: &str, photo: &TelegramPhoto) -> Result<Vec<u8>, String> {
+    if photo.file_id.is_empty()
+        || photo.file_id.len() > 256
+        || photo.width == 0
+        || photo.height == 0
+        || u64::from(photo.width) * u64::from(photo.height) > MAX_PHOTO_PIXELS
+    {
+        return Err("La imagen de Telegram no es valida.".to_string());
+    }
+    if photo
+        .file_size
+        .is_some_and(|size| size == 0 || size > MAX_PHOTO_BYTES)
+    {
+        return Err("La imagen de Telegram supera el tamaño permitido.".to_string());
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .post(endpoint(token, "getFile")?)
+        .json(&serde_json::json!({ "file_id": photo.file_id }))
+        .send()
+        .await
+        .map_err(|_| "No se pudo consultar la imagen en Telegram.".to_string())?;
+    let file = decode::<TelegramFile>(response).await?;
+    if file
+        .file_size
+        .is_some_and(|size| size == 0 || size > MAX_PHOTO_BYTES)
+    {
+        return Err("La imagen de Telegram supera el tamaño permitido.".to_string());
+    }
+    let file_path = file
+        .file_path
+        .filter(|path| {
+            !path.is_empty()
+                && path.len() <= 512
+                && path
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"/_.-".contains(&byte))
+                && !path.split('/').any(|component| component == "..")
+        })
+        .ok_or_else(|| "Telegram devolvio una ruta de imagen no valida.".to_string())?;
+    let download_url = format!("{TELEGRAM_API_BASE}/file/bot{}/{file_path}", token.trim());
+    let response = client
+        .get(download_url)
+        .send()
+        .await
+        .map_err(|_| "No se pudo descargar la imagen de Telegram.".to_string())?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|size| size > MAX_PHOTO_BYTES)
+    {
+        return Err("Telegram rechazo la descarga de la imagen.".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "Se interrumpio la descarga de la imagen de Telegram.".to_string())?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_PHOTO_BYTES {
+        return Err("La imagen descargada tiene un tamaño no valido.".to_string());
+    }
+    Ok(bytes.to_vec())
+}
+
 pub async fn answer_callback(token: &str, callback_query_id: &str) -> Result<(), String> {
     let response = Client::builder()
         .timeout(Duration::from_secs(15))
@@ -301,7 +389,7 @@ pub async fn answer_callback(token: &str, callback_query_id: &str) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoint, TelegramAudio};
+    use super::{endpoint, TelegramAudio, TelegramPhoto};
 
     #[test]
     fn endpoint_rejects_tokens_with_url_characters() {
@@ -328,5 +416,19 @@ mod tests {
         assert_eq!(value["fileId"], "voice-1");
         assert_eq!(value["mimeType"], "audio/ogg");
         assert_eq!(value["fileSize"], 345);
+    }
+
+    #[test]
+    fn telegram_photo_accepts_bot_api_fields_and_serializes_camel_case() {
+        let photo: TelegramPhoto = serde_json::from_str(
+            r#"{"file_id":"photo-1","file_size":678,"width":1280,"height":720}"#,
+        )
+        .expect("deserialize Telegram photo");
+        let value = serde_json::to_value(photo).expect("serialize frontend photo");
+
+        assert_eq!(value["fileId"], "photo-1");
+        assert_eq!(value["fileSize"], 678);
+        assert_eq!(value["width"], 1280);
+        assert_eq!(value["height"], 720);
     }
 }

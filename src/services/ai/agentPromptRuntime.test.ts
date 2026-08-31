@@ -11,13 +11,24 @@ import {
   resolveAgentRulesContent,
   appendAgentRuleContent,
   migrateMisclassifiedRules,
+  isInternalAgentCorrection,
 } from './agentPromptRuntime'
 
 describe('agentPromptRuntime', () => {
+  it('identifies and removes leaked internal validator corrections', () => {
+    const leaked = 'No afirmes ni prometas que el movimiento fue registrado: ninguna mutación financiera se ejecutó.'
+    expect(isInternalAgentCorrection(leaked)).toBe(true)
+    const migrated = migrateMisclassifiedRules(`<!-- NOTIA_IA_RULES_START -->\n- ${leaked}\n- Responde breve.\n<!-- NOTIA_IA_RULES_END -->`)
+    expect(migrated.rules).not.toContain(leaked)
+    expect(migrated.rules).toContain('Responde breve.')
+  })
   it('uses the bundled default when the prompt file is empty', () => {
     expect(resolveAgentPromptContent('  \n')).toBe(DEFAULT_AGENT_PROMPT)
     expect(DEFAULT_AGENT_PROMPT).toContain('# Agente IA de Notia')
     expect(DEFAULT_AGENT_PROMPT).toContain('# Principios fundamentales')
+    expect(DEFAULT_AGENT_PROMPT).toContain('# Mapa de modulos de Notia')
+    expect(DEFAULT_AGENT_PROMPT).toContain('## Finanzas')
+    expect(DEFAULT_AGENT_PROMPT).toContain('nunca lo reemplaces por un documento Markdown')
     expect(DEFAULT_AGENT_PROMPT).toContain('# Objetivo general')
   })
 
@@ -45,6 +56,7 @@ describe('agentPromptRuntime', () => {
   it('preserves custom rules while ensuring defaults and filtering channel rules', () => {
     const content = ensureDefaultAgentRules('Regla personalizada.')
     expect(content).toContain('Regla personalizada.')
+    expect(content).toContain('Nunca afirmes que una operacion fue creada, registrada, guardada, aplicada o modificada')
     expect(resolveAgentRulesContent(content)).not.toContain('No uses Markdown')
     expect(resolveAgentRulesContent(content, 'telegram-html')).toContain('No uses Markdown')
   })

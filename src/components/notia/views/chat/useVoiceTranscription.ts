@@ -74,18 +74,8 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   }, [onCompleted])
 
   useEffect(() => {
-    let current = true
     setIsModelReady(false)
     setModelPreparationError(null)
-    void prepareSpeechModel(qwen3Asr)
-      .then(() => {
-        if (current) setIsModelReady(true)
-      })
-      .catch((error) => {
-        if (!current) return
-        setModelPreparationError(error instanceof Error ? error.message : 'No se pudo preparar Qwen3-ASR al iniciar Notia.')
-      })
-    return () => { current = false }
   }, [qwen3Asr])
 
   useEffect(() => {
@@ -224,14 +214,26 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
   }, [state.status])
 
   const start = useCallback(async () => {
-    if (!isModelReady) {
+    if (!qwen3Asr.enabled) {
       setState({
         status: 'error',
         error: {
           code: 'internal',
-          message: modelPreparationError ?? 'Qwen3-ASR todavía se está preparando desde el inicio de Notia.',
+          message: 'Activa Qwen3-ASR en Configuraciones → Voz.',
         },
       })
+      return false
+    }
+    setState({ status: 'preparing' })
+    try {
+      await prepareSpeechModel(qwen3Asr)
+      setIsModelReady(true)
+      setModelPreparationError(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'No se pudo preparar Qwen3-ASR.'
+      setIsModelReady(false)
+      setModelPreparationError(message)
+      setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
     let currentCapabilities = capabilities
@@ -271,10 +273,6 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
           message: environmentErrorRef.current || 'Qwen3-ASR no está disponible en esta plataforma.',
         },
       })
-      return false
-    }
-    if (!qwen3Asr.enabled) {
-      setState({ status: 'error', error: { code: 'internal', message: 'Activa Qwen3-ASR en Configuraciones → Voz.' } })
       return false
     }
     if (currentCapabilities.permission === 'denied') {
@@ -337,7 +335,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
       setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
-  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, isModelReady, modelPreparationError, qwen3Asr])
+  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, qwen3Asr])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current

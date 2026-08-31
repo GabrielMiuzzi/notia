@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 import {
   buildChatAgentSystemPrompt,
   buildChatAgentTools,
+  validateFinanceFinalAnswer,
   buildTicketSectionCorrection,
   buildAgentSearchText,
   extractTaskChildTitles,
   groupTaskContextMatches,
   normalizeAgentSearchText,
+  normalizeFinanceDecimal,
+  resolveFinanceToolResultAnswer,
+  sumFinanceAmounts,
   scoreAgentText,
   selectDiverseAgentFragments,
   resolveTaskChildDocuments,
@@ -220,6 +224,161 @@ describe('chatScopedAgentRuntime', () => {
       .filter((tool) => mutationNames.includes(tool.function.name))
     expect(mutationTools).toHaveLength(12)
     expect(mutationTools.every((tool) => tool.function.description.includes('confirmacion'))).toBe(true)
+  })
+
+  it('keeps finance on the common chat facade with typed tools and no library context', () => {
+    const financeTools = buildChatAgentTools('finance')
+    const names = financeTools.map((tool) => tool.function.name)
+    expect(names).toEqual(expect.arrayContaining([
+      'get_finance_dashboard',
+      'create_finance_transaction',
+      'update_finance_transaction_status',
+      'search_finance_categories',
+      'create_finance_category',
+      'create_finance_purchase',
+      'create_finance_salary',
+      'create_finance_credit_card_statement',
+      'list_finance_salaries',
+      'list_finance_credit_card_statements',
+      'list_finance_purchases',
+    ]))
+    expect(names).not.toContain('add_agent_rule')
+    expect(names).not.toContain('add_agent_memory')
+    expect(names).not.toContain('create_library_note')
+    expect(names).not.toContain('create_task_ticket')
+    const prompt = buildChatAgentSystemPrompt('finance', 'Base')
+    expect(prompt).toContain('herramientas financieras')
+    expect(prompt).toContain('no indicó una cuenta inequívoca')
+    expect(prompt).toContain('Orden obligatorio')
+    expect(prompt).toContain('create_finance_category')
+    const createTransaction = financeTools.find((tool) => tool.function.name === 'create_finance_transaction')
+    expect(createTransaction?.function.description).toContain('Nunca pidas una confirmacion en texto')
+    expect(createTransaction?.function.parameters).toMatchObject({
+      properties: {
+        accountId: { description: expect.stringContaining('list_finance_accounts') },
+        confidence: { description: expect.stringContaining('0.95') },
+      },
+    })
+    const updateTransaction = financeTools.find((tool) => tool.function.name === 'update_finance_transaction_status')
+    expect(updateTransaction?.function.description).toContain('list_finance_movements')
+    const createCategory = financeTools.find((tool) => tool.function.name === 'create_finance_category')
+    expect(createCategory?.function.description).toContain('confirmacion visible')
+    const createPurchase = financeTools.find((tool) => tool.function.name === 'create_finance_purchase')
+    expect(createPurchase?.function.description).toContain('observaciones historicas de precio')
+    const createSalary = financeTools.find((tool) => tool.function.name === 'create_finance_salary')
+    expect(createSalary?.function.description).toContain('ingreso por el neto')
+    expect(createSalary?.function.parameters).toMatchObject({
+      required: expect.arrayContaining(['accountId', 'period', 'paymentDate', 'employer', 'grossAmount', 'deductionsTotal', 'netAmount', 'currency', 'concepts']),
+    })
+    const createStatement = financeTools.find((tool) => tool.function.name === 'create_finance_credit_card_statement')
+    expect(createStatement?.function.description).toContain('total a pagar')
+    expect(createStatement?.function.parameters).toMatchObject({
+      required: expect.arrayContaining(['accountId', 'issuer', 'period', 'closingDate', 'dueDate', 'currency', 'totalDue', 'items']),
+    })
+  })
+
+  it('configures Telegram finance tools to create categories and confirm purchases automatically', () => {
+    const financeTools = buildChatAgentTools('finance', true)
+    expect(financeTools.find((tool) => tool.function.name === 'create_finance_category')?.function.description).toContain('automáticamente')
+    expect(financeTools.find((tool) => tool.function.name === 'create_finance_purchase')?.function.description).toContain('automáticamente')
+    expect(financeTools.find((tool) => tool.function.name === 'create_finance_salary')?.function.description).toContain('automáticamente')
+    expect(financeTools.find((tool) => tool.function.name === 'create_finance_credit_card_statement')?.function.description).toContain('automáticamente')
+    expect(financeTools.find((tool) => tool.function.name === 'create_finance_purchase')?.function.parameters)
+      .toMatchObject({ required: expect.arrayContaining(['categoryId']) })
+    expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('registra y confirma la operación de inmediato')
+    expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('no finalices con un resumen')
+    expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('create_finance_salary')
+    expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('create_finance_credit_card_statement')
+  })
+
+  it('normalizes model-emitted finance amounts without repeated correction rounds', () => {
+    expect(normalizeFinanceDecimal(48000)).toBe('48000')
+    expect(normalizeFinanceDecimal('$ 48.000,00')).toBe('48000')
+    expect(normalizeFinanceDecimal('48,000.50')).toBe('48000.5')
+    expect(normalizeFinanceDecimal('1,000', 6)).toBe('1')
+    expect(normalizeFinanceDecimal('-10')).toBeNull()
+    expect(normalizeFinanceDecimal('cuarenta')).toBeNull()
+    expect(sumFinanceAmounts(['12000', '36.000,00'])).toBe('48000')
+  })
+
+  it('turns a ticket purchase result into a terminal factual answer', () => {
+    const call = {
+      function: {
+        name: 'create_finance_purchase',
+        arguments: {
+          merchantName: 'Shamishawarma', totalAmount: '48000', currency: 'ARS',
+          accountId: 'Digital', categoryId: 'Comida', observedAt: '2026-08-30T13:44:00',
+          items: [{ originalDescription: 'Cena Sharmi' }],
+        },
+      },
+    }
+
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: true, purchase: {} }))
+      .toContain('Registré el ticket de Shamishawarma')
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: false, duplicate: true }))
+      .toContain('ya estaba registrado')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: false, error: 'finance-purchase-save-failed', code: 'validation', message: 'La suma de líneas no coincide.',
+    })).toContain('los importes no son coherentes')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: false, error: 'finance-purchase-save-failed', code: 'storage', message: 'internal database detail',
+    })).not.toContain('internal database detail')
+  })
+
+  it('turns a salary receipt result into a terminal factual answer', () => {
+    const call = {
+      function: {
+        name: 'create_finance_salary',
+        arguments: {
+          employer: 'Empresa SA', period: '2026-08', paymentDate: '2026-08-31',
+          grossAmount: '1200000', deductionsTotal: '200000', netAmount: '1000000',
+          currency: 'ARS', accountId: 'Digital',
+          concepts: [{ name: 'Sueldo básico', conceptType: 'earning', amount: '1200000' }],
+        },
+      },
+    }
+
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: true, salary: {}, accountName: 'Digital' }))
+      .toContain('Registré el recibo de sueldo de Empresa SA')
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: false, duplicate: true }))
+      .toContain('ya estaba registrado')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: false, error: 'finance-salary-save-failed', code: 'validation', message: 'El neto no coincide.',
+    })).toContain('no son coherentes')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: false, error: 'finance-salary-save-failed', code: 'storage', message: 'internal database detail',
+    })).not.toContain('internal database detail')
+  })
+
+  it('turns a credit-card statement result into a terminal factual answer', () => {
+    const call = {
+      function: {
+        name: 'create_finance_credit_card_statement',
+        arguments: { issuer: 'Banco Notia', period: '2026-08', dueDate: '2026-09-08', totalDue: '2250', currency: 'ARS', accountId: 'Visa' },
+      },
+    }
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: true, accountName: 'Visa', createdTransactions: 4, matchedExistingTransactions: 2 }))
+      .toContain('Registré el resumen de tarjeta de Banco Notia')
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: false, duplicate: true })).toContain('ya estaba registrado')
+    expect(resolveFinanceToolResultAnswer(call, { ok: false, error: 'finance-credit-card-statement-save-failed', code: 'validation', message: 'El total no coincide.' }))
+      .toContain('no son coherentes')
+    expect(resolveFinanceToolResultAnswer(call, { ok: false, error: 'finance-credit-card-statement-save-failed', code: 'storage', message: 'database detail' }))
+      .not.toContain('database detail')
+  })
+
+  it('rejects a financial success claim when no mutation actually ran', () => {
+    expect(validateFinanceFinalAnswer('Listo, registré el gasto de 4000.', false)).toContain('ninguna mutación financiera se ejecutó')
+    expect(validateFinanceFinalAnswer('Ahora voy a registrar el gasto de 4000.', false)).toContain('ninguna mutación financiera se ejecutó')
+    expect(validateFinanceFinalAnswer('Necesito saber en qué cuenta cargarlo.', false)).toContain('request_user_clarification')
+    expect(validateFinanceFinalAnswer('Necesito saber en qué cuenta cargarlo.', false, true)).toBeNull()
+    expect(validateFinanceFinalAnswer('Listo, registré el gasto.', true)).toBeNull()
+    expect(validateFinanceFinalAnswer('Ticket de compra detectado\nComercio: Shell', false, false, true, false)).toContain('create_finance_purchase')
+    expect(validateFinanceFinalAnswer('Ticket de compra detectado', true, false, true, false)).toContain('create_finance_purchase')
+    expect(validateFinanceFinalAnswer('Ticket de compra detectado', true, false, true, true)).toBeNull()
+    expect(validateFinanceFinalAnswer('Recibo de sueldo detectado', false, false, true, false, false)).toContain('create_finance_salary')
+    expect(validateFinanceFinalAnswer('Recibo de sueldo detectado', true, false, true, false, true)).toBeNull()
+    expect(validateFinanceFinalAnswer('Resumen de tarjeta de crédito detectado', false, false, true, false, false, false)).toContain('create_finance_credit_card_statement')
+    expect(validateFinanceFinalAnswer('Resumen de tarjeta de crédito detectado', true, false, true, false, false, true)).toBeNull()
   })
 
   it('includes file permission in the shared catalog and enforces it through document context', () => {

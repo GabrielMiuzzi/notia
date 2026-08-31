@@ -51,6 +51,8 @@ pub struct RunDesktopAiToolChatPayload {
     think: serde_json::Value,
     messages: serde_json::Value,
     tools: serde_json::Value,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -140,6 +142,13 @@ pub async fn run_desktop_ai_tool_chat(
 ) -> Result<serde_json::Value, String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
+        let timeout_seconds = payload.timeout_seconds.unwrap_or(600);
+        if !(1..=600).contains(&timeout_seconds) {
+            return Err(
+                "El tiempo de espera de herramientas debe estar entre 1 y 600 segundos."
+                    .to_string(),
+            );
+        }
         let settings = build_ai_settings(payload.ollama_url, payload.api_key);
         return crate::services::ai_service::run_ollama_tool_chat(
             &settings,
@@ -147,6 +156,7 @@ pub async fn run_desktop_ai_tool_chat(
             &payload.messages,
             &payload.tools,
             &payload.think,
+            timeout_seconds,
         )
         .await;
     }

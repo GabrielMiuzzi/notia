@@ -346,9 +346,9 @@ $env:JAVA_HOME = $javaHome
 $env:PATH = "$javaHome\bin;$sdkRoot\platform-tools;$sdkRoot\cmdline-tools\latest\bin;$ndkDir\toolchains\llvm\prebuilt\windows-x86_64\bin;$env:PATH"
 
 $toolchainBin = Join-Path $ndkDir 'toolchains\llvm\prebuilt\windows-x86_64\bin'
-$env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = Join-Path $toolchainBin 'aarch64-linux-android24-clang.cmd'
+$env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = Join-Path $toolchainBin 'aarch64-linux-android26-clang.cmd'
 if (-not (Test-Path $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER)) {
-  $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = Join-Path $toolchainBin 'aarch64-linux-android24-clang'
+  $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = Join-Path $toolchainBin 'aarch64-linux-android26-clang'
 }
 $env:CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER = $null
 $env:CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = $null

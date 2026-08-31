@@ -16,6 +16,7 @@ export interface NotiaChatAgent {
   systemPrompt: string
   tools: AiNativeToolDefinition[]
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
+  resolveToolResultAnswer?: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer?: (answer: string) => string | null
 }
 
@@ -25,12 +26,17 @@ export interface NotiaChatReplyInput {
   agent: NotiaChatAgent
   image?: AiImageAttachment | null
   longTermMemories?: string[]
+  toolCallTimeoutMs?: number
+  streamFinalResponse?: boolean
+  maxRounds?: number
+  diagnosticModule?: string
 }
 
 export interface NotiaChatReplyOptions {
   abortSignal?: AbortSignal
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
+  onAgentRoundStart?: (round: number) => void
 }
 
 function buildSystemPrompt(agent: NotiaChatAgent, longTermMemories: string[]): string {
@@ -50,9 +56,13 @@ export function runNotiaChatReply(
     previousMessages: input.previousMessages,
     tools: input.agent.tools,
     executeTool: input.agent.executeTool,
+    resolveToolResultAnswer: input.agent.resolveToolResultAnswer,
     validateFinalAnswer: input.agent.validateFinalAnswer,
-    maxRounds: CHAT_AGENT_MAX_ROUNDS,
+    maxRounds: input.maxRounds ?? CHAT_AGENT_MAX_ROUNDS,
     singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
+    toolCallTimeoutMs: input.toolCallTimeoutMs,
+    streamFinalResponse: input.streamFinalResponse,
+    diagnosticModule: input.diagnosticModule,
   }, options)
 }
 
