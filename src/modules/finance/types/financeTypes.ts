@@ -74,6 +74,8 @@ export interface FinancePurchaseItem {
 export interface FinancePurchaseRecord {
   id: string;
   accountId: string;
+  /** Categoría del gasto asociado al ticket. Las líneas pueden conservar su propia categoría. */
+  categoryId?: string | null;
   merchantName: string;
   observedAt: string;
   currency: FinanceCurrency;

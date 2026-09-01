@@ -30,6 +30,7 @@ pub struct PurchaseItem {
 pub struct PurchaseRecord {
     pub id: String,
     pub account_id: String,
+    pub category_id: Option<String>,
     pub merchant_name: String,
     pub observed_at: String,
     pub currency: String,
@@ -293,8 +294,8 @@ pub fn finance_save_purchase(
         params![receipt_id, artifact_id, record.status, timestamp],
     ).map_err(|error| purchase_storage_error("receipt", error))?;
     transaction.execute(
-        "INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,description,source,status,source_artifact_id,merchant_id,operation_fingerprint,created_at,updated_at) VALUES (?1,'expense',?2,?3,?4,?5,?6,'ticket',?7,?8,?9,?10,?11,?11) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,description=excluded.description,status=excluded.status,merchant_id=excluded.merchant_id,updated_at=excluded.updated_at",
-        params![transaction_id, record.total_amount, record.currency, &record.observed_at[..10], record.account_id, format!("Compra en {}", record.merchant_name.trim()), record.status, artifact_id, resolved_merchant_id, operation_fingerprint, timestamp],
+        "INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,category_id,description,source,status,source_artifact_id,merchant_id,operation_fingerprint,created_at,updated_at) VALUES (?1,'expense',?2,?3,?4,?5,?6,?7,'ticket',?8,?9,?10,?11,?12,?12) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,category_id=excluded.category_id,description=excluded.description,status=excluded.status,merchant_id=excluded.merchant_id,updated_at=excluded.updated_at",
+        params![transaction_id, record.total_amount, record.currency, &record.observed_at[..10], record.account_id, record.category_id, format!("Compra en {}", record.merchant_name.trim()), record.status, artifact_id, resolved_merchant_id, operation_fingerprint, timestamp],
     ).map_err(|error| purchase_storage_error("transaction", error))?;
     transaction.execute(
         "INSERT INTO finance_purchases (id,transaction_id,merchant_id,observed_at,currency,total_amount,source_artifact_id,subtotal_amount,discount_amount,tax_amount,validation_status,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12) ON CONFLICT(id) DO UPDATE SET merchant_id=excluded.merchant_id,observed_at=excluded.observed_at,total_amount=excluded.total_amount,subtotal_amount=excluded.subtotal_amount,discount_amount=excluded.discount_amount,tax_amount=excluded.tax_amount,validation_status=excluded.validation_status,updated_at=excluded.updated_at",
@@ -1368,6 +1369,7 @@ mod tests {
         let record = PurchaseRecord {
             id: "p".into(),
             account_id: "a".into(),
+            category_id: None,
             merchant_name: "m".into(),
             observed_at: "2026-08-29".into(),
             currency: "ARS".into(),
@@ -1401,6 +1403,7 @@ mod tests {
         let record = PurchaseRecord {
             id: "included-tax".into(),
             account_id: "account".into(),
+            category_id: None,
             merchant_name: "Comercio".into(),
             observed_at: "2026-08-30".into(),
             currency: "ARS".into(),
@@ -1435,6 +1438,7 @@ mod tests {
         let record = PurchaseRecord {
             id: "rounded-fuel".into(),
             account_id: "account".into(),
+            category_id: None,
             merchant_name: "Estacion de servicio".into(),
             observed_at: "2026-08-28".into(),
             currency: "ARS".into(),
@@ -1469,6 +1473,7 @@ mod tests {
         let mut record = PurchaseRecord {
             id: "invalid-rounding".into(),
             account_id: "account".into(),
+            category_id: None,
             merchant_name: "Comercio".into(),
             observed_at: "2026-08-28".into(),
             currency: "ARS".into(),
@@ -1507,6 +1512,7 @@ mod tests {
         let mut first = PurchaseRecord {
             id: "p1".into(),
             account_id: "a".into(),
+            category_id: None,
             merchant_name: "Mercado".into(),
             observed_at: "2026-08-29".into(),
             currency: "ARS".into(),
