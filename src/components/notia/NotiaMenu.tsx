@@ -36,13 +36,14 @@ import { useTelegramAgentBridge } from './hooks/useTelegramAgentBridge'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
-import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings } from '../../features/preferences/preferencesSlice'
-import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings } from '../../features/preferences/preferencesSelectors'
+import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setBackupPreferences } from '../../features/preferences/preferencesSlice'
+import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectBackupPreferences } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 import { notiaTimer } from '../../services/runtime/notiaLogger'
+import { useWindowsBackups } from './hooks/useWindowsBackups'
 
 // --- Pure helper function ---
 
@@ -58,12 +59,14 @@ function NotiaMenuComponent() {
   const inkMathPreferences = useAppSelector(selectInkMathPreferences, shallowEqual)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
+  const backupPreferences = useAppSelector(selectBackupPreferences, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const treeNodes = useAppSelector(selectTreeNodes)
   const flatFileList = useAppSelector(selectFlatFileList)
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
+  useWindowsBackups(activeLibrary, backupPreferences.directoryPath)
 
   useEffect(() => {
     const mountTimer = notiaTimer('ui', 'NotiaMenu.mount')
@@ -475,11 +478,13 @@ function NotiaMenuComponent() {
             isAndroidRuntime={isAndroidRuntime}
           />
         </div>
-        <NotiaModals
+      <NotiaModals
           onAiPreferencesChange={handleAiPreferencesChange}
           onExplorerRefreshIntervalMsChange={handleExplorerRefreshIntervalMsChange}
           onInkMathPreferencesChange={handleInkMathPreferencesChange}
-          onTelegramPreferencesChange={handleTelegramPreferencesChange}
+        onTelegramPreferencesChange={handleTelegramPreferencesChange}
+        backupPreferences={backupPreferences}
+        onBackupPreferencesChange={(value) => dispatch(setBackupPreferences(value))}
           coldPassPromptState={coldPassPromptState}
           coldPassDeletePromptState={coldPassDeletePromptState}
           coldPassImportPromptState={coldPassImportPromptState}

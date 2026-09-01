@@ -30,8 +30,10 @@ import { clearAllFinanceData } from '../../modules/finance/services/financeServi
 import { financeErrorMessage } from '../../modules/finance/engines/financeError'
 import { notifyFinanceDataChanged } from '../../modules/finance/services/financeDataEvents'
 import { ConfirmationDialogModal } from './ConfirmationDialogModal'
+import { pickDirectory } from '../../services/files/filesystemEngine'
+import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups'
 
 interface SettingsModalProps {
   open: boolean
@@ -44,9 +46,11 @@ interface SettingsModalProps {
   onAiPreferencesChange: (value: AiPreferences) => void
   telegramPreferences: TelegramPreferences
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
+  backupPreferences: BackupPreferences
+  onBackupPreferencesChange: (value: BackupPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
@@ -60,6 +64,8 @@ export function SettingsModal({
   onAiPreferencesChange,
   telegramPreferences,
   onTelegramPreferencesChange,
+  backupPreferences,
+  onBackupPreferencesChange,
 }: SettingsModalProps) {
   const dispatch = useAppDispatch()
   const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
@@ -109,6 +115,7 @@ export function SettingsModal({
   const [isCheckingTelegram, setIsCheckingTelegram] = useState(false)
   const [isFinanceDeleteConfirmationOpen, setIsFinanceDeleteConfirmationOpen] = useState(false)
   const [isClearingFinanceData, setIsClearingFinanceData] = useState(false)
+  const [backupStatus, setBackupStatus] = useState('')
   const [financeClearStatus, setFinanceClearStatus] = useState<{
     tone: 'idle' | 'success' | 'error'
     message: string
@@ -128,6 +135,7 @@ export function SettingsModal({
   const [isCheckingAiHealth, setIsCheckingAiHealth] = useState(false)
   const projectVersion = getAppVersion()
   const runtimeDevice = getRuntimeDevice()
+  const visibleSections = runtimeDevice === 'Windows' ? SECTIONS : SECTIONS.filter((section) => section !== 'Backups')
   const refreshBounds = getExplorerRefreshIntervalBounds()
   const refreshSliderMin = refreshBounds.allowDisabled ? 0 : refreshBounds.minSeconds
   const isAutoRefreshDisabled = refreshBounds.allowDisabled && explorerRefreshIntervalMs <= 0
@@ -738,13 +746,30 @@ export function SettingsModal({
                 {financeClearStatus.message}
               </div>
             </div>
+          ) : activeSection === 'Backups' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Backups automáticos</div>
+              <div className="notia-settings-card-value">{backupPreferences.directoryPath || 'Desactivados'}</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                Disponible solo en Windows. Guarda un ZIP de la biblioteca activa cada hora y conserva como máximo 2 días (48 backups).
+              </div>
+              <div className="notia-settings-actions">
+                <NotiaButton variant="secondary" onClick={() => {
+                  void pickDirectory('Elegí la carpeta para guardar los backups').then((selection) => {
+                    if (selection) { onBackupPreferencesChange({ directoryPath: selection.path }); setBackupStatus('Carpeta de backups configurada.') }
+                  }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudo elegir la carpeta.'))
+                }}>Elegir carpeta</NotiaButton>
+                <NotiaButton variant="secondary" disabled={!backupPreferences.directoryPath} onClick={() => { onBackupPreferencesChange({ directoryPath: '' }); setBackupStatus('Backups desactivados.') }}>Desactivar</NotiaButton>
+              </div>
+              <div className="notia-settings-status" role="status">{backupStatus}</div>
+            </div>
           ) : (
             <div>Seccion: {activeSection}</div>
           )}
         </div>
       </div>
       <aside className="notia-settings-menu">
-        {SECTIONS.map((section) => (
+        {visibleSections.map((section) => (
           <NotiaButton
             key={section}
             className={`notia-settings-menu-item ${

@@ -3,6 +3,7 @@ import type { InkMathPreferences } from '../../services/preferences/inkMathSetti
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
 import type { Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
+import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 
 export interface PreferencesState {
   theme: 'dark' | 'light'
@@ -12,4 +13,5 @@ export interface PreferencesState {
   telegramSettings: TelegramPreferences
   qwen3TtsSettings: Qwen3TtsPreferences
   qwen3AsrSettings: Qwen3AsrPreferences
+  backupPreferences: BackupPreferences
 }

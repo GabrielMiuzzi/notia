@@ -7,6 +7,7 @@ import type { PreferencesState } from './preferencesTypes'
 import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { loadQwen3TtsPreferences, saveQwen3TtsPreferences, type Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
 import { loadQwen3AsrPreferences, saveQwen3AsrPreferences, type Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
+import { loadBackupPreferences, saveBackupPreferences, type BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
@@ -16,6 +17,7 @@ const initialState: PreferencesState = {
   telegramSettings: DEFAULT_TELEGRAM_PREFERENCES,
   qwen3TtsSettings: loadQwen3TtsPreferences(),
   qwen3AsrSettings: loadQwen3AsrPreferences(),
+  backupPreferences: loadBackupPreferences(),
 }
 
 const preferencesSlice = createSlice({
@@ -54,6 +56,10 @@ const preferencesSlice = createSlice({
       state.qwen3AsrSettings = action.payload
       saveQwen3AsrPreferences(action.payload)
     },
+    setBackupPreferences(state, action: PayloadAction<BackupPreferences>) {
+      state.backupPreferences = action.payload
+      saveBackupPreferences(action.payload)
+    },
   },
 })
 
@@ -66,6 +72,7 @@ export const {
   setTelegramSettings,
   setQwen3TtsSettings,
   setQwen3AsrSettings,
+  setBackupPreferences,
 } = preferencesSlice.actions
 
 export default preferencesSlice.reducer

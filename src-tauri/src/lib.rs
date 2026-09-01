@@ -8,6 +8,7 @@ use filesystem::commands::{
 };
 use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, LibraryTreeWatchState};
 
+mod backup;
 mod database;
 mod finance;
 mod finance_records;
@@ -178,6 +179,7 @@ pub fn run() {
             path_exists,
             is_directory_path,
             write_binary_file,
+            backup::create_windows_library_backup,
             create_library_entry,
             library_entry_operation,
             start_library_tree_watch,

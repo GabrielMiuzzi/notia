@@ -75,6 +75,7 @@ Las sesiones admiten hasta 15 minutos. La captura conserva una cola acotada para
 - **Temas**: soporte para tema claro y oscuro.
 - **Multiplataforma**: Windows, macOS, Linux y Android.
 - **Bandeja del sistema en Windows**: al cerrar la ventana principal, Notia continúa ejecutándose en segundo plano y puede restaurarse desde el icono junto al reloj.
+- **Backups en Windows**: configurá una carpeta del sistema para comprimir la biblioteca activa cada hora, conservando hasta 48 copias (2 días).
 - **Agente por Telegram**: vinculá de forma explícita un chat privado para buscar, leer y modificar la biblioteca activa desde el bot, conservando confirmaciones individuales para cada escritura.
 
 Las respuestas del agente en Telegram no usan Markdown. El modelo utiliza texto plano y, cuando hace falta, un subconjunto básico de HTML compatible con Telegram (por ejemplo, negrita, cursiva o código); el resto de los chats conserva su formato habitual.

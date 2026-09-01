@@ -23,6 +23,7 @@ import type { AiPreferences } from '../../services/preferences/aiSettingsStorage
 import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { ColdPassEntry } from '../../types/coldpass'
+import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 
 function getParentDirectory(filePath: string): string {
   const lastForwardSlash = filePath.lastIndexOf('/')
@@ -39,6 +40,8 @@ interface NotiaModalsProps {
   onExplorerRefreshIntervalMsChange: (value: number) => void
   onInkMathPreferencesChange: (value: InkMathPreferences) => void
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
+  backupPreferences: BackupPreferences
+  onBackupPreferencesChange: (value: BackupPreferences) => void
   coldPassPromptState: {
     open: boolean
     requiresConfirmation: boolean
@@ -81,6 +84,8 @@ function NotiaModalsComponent({
   onExplorerRefreshIntervalMsChange,
   onInkMathPreferencesChange,
   onTelegramPreferencesChange,
+  backupPreferences,
+  onBackupPreferencesChange,
   coldPassPromptState,
   coldPassDeletePromptState,
   coldPassImportPromptState,
@@ -294,6 +299,8 @@ function NotiaModalsComponent({
         onAiPreferencesChange={onAiPreferencesChange}
         telegramPreferences={telegramPreferences}
         onTelegramPreferencesChange={onTelegramPreferencesChange}
+        backupPreferences={backupPreferences}
+        onBackupPreferencesChange={onBackupPreferencesChange}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

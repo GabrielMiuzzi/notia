@@ -346,6 +346,19 @@ export async function pickDirectory(title: string): Promise<FilesystemPickDirect
   return { path: resolvedPath }
 }
 
+export async function createWindowsLibraryBackup(libraryPath: string, backupDirectory: string): Promise<FilesystemOperationResult> {
+  if (getRuntimeDevice() !== 'Windows' || !libraryPath.trim() || !backupDirectory.trim()) {
+    return { ok: false, error: 'Los backups solo están disponibles en Windows.' }
+  }
+  try {
+    return await invoke<FilesystemOperationResult>('create_windows_library_backup', {
+      payload: { libraryPath: normalizePath(libraryPath), backupDirectory: normalizePath(backupDirectory) },
+    })
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'No se pudo crear el backup.' }
+  }
+}
+
 export async function pickFile(
   title: string,
   extensions: string[] = [],

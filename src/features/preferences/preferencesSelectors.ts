@@ -7,3 +7,4 @@ export const selectExplorerRefreshIntervalMs = (state: RootState) => state.prefe
 export const selectTelegramSettings = (state: RootState) => state.preferences.telegramSettings
 export const selectQwen3TtsSettings = (state: RootState) => state.preferences.qwen3TtsSettings
 export const selectQwen3AsrSettings = (state: RootState) => state.preferences.qwen3AsrSettings
+export const selectBackupPreferences = (state: RootState) => state.preferences.backupPreferences
