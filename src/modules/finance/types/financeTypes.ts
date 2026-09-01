@@ -249,6 +249,12 @@ export interface FinanceNetWorth {
 
 export type FinanceNetWorthHistoryPoint = FinanceNetWorth;
 
+export interface FinanceDebtRatioHistoryPoint {
+  period: string;
+  debtByCurrency: Record<string, string>;
+  salaryByCurrency: Record<string, string>;
+}
+
 export interface FinanceDashboard {
   accounts: FinanceAccount[];
   categories: FinanceCategory[];
@@ -259,6 +265,9 @@ export interface FinanceDashboard {
   incomeByCurrency: Record<string, string>;
   expenseByCurrency: Record<string, string>;
   netByCurrency: Record<string, string>;
+  debtByCurrency: Record<string, string>;
+  salaryByCurrency: Record<string, string>;
+  debtRatioHistory: FinanceDebtRatioHistoryPoint[];
   savings: FinanceSavingsReserve[];
   savingsMovements: FinanceSavingsMovement[];
   merchants: FinanceMerchant[];

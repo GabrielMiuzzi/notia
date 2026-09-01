@@ -119,6 +119,9 @@ pub struct FinanceDashboard {
     pub income_by_currency: BTreeMap<String, String>,
     pub expense_by_currency: BTreeMap<String, String>,
     pub net_by_currency: BTreeMap<String, String>,
+    pub debt_by_currency: BTreeMap<String, String>,
+    pub salary_by_currency: BTreeMap<String, String>,
+    pub debt_ratio_history: Vec<FinanceDebtRatioHistoryPoint>,
     pub savings: Vec<FinanceSavingsReserve>,
     pub savings_movements: Vec<FinanceSavingsMovement>,
     pub merchants: Vec<FinanceMerchant>,
@@ -130,6 +133,14 @@ pub struct FinanceDashboard {
 pub struct FinanceMonthlyBalance {
     pub month: String,
     pub by_currency: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceDebtRatioHistoryPoint {
+    pub period: String,
+    pub debt_by_currency: BTreeMap<String, String>,
+    pub salary_by_currency: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -691,6 +702,8 @@ pub fn finance_get_dashboard(
             .unwrap_or_default();
         net_by_currency.insert(currency.clone(), format_cents(income - expense));
     }
+    let debt_by_currency = finance_debt_by_currency(&connection, &month)?;
+    let salary_by_currency = finance_salary_by_currency(&connection, &month)?;
     Ok(FinanceDashboard {
         accounts,
         categories,
@@ -719,11 +732,131 @@ pub fn finance_get_dashboard(
             .map(|(currency, value)| (currency, format_cents(value)))
             .collect(),
         net_by_currency,
+        debt_by_currency: debt_by_currency
+            .into_iter()
+            .map(|(currency, value)| (currency, format_cents(value)))
+            .collect(),
+        salary_by_currency: salary_by_currency
+            .into_iter()
+            .map(|(currency, value)| (currency, format_cents(value)))
+            .collect(),
+        debt_ratio_history: finance_debt_ratio_history(&connection, &month)?,
         savings: finance_list_savings_inner(&connection)?,
         savings_movements: finance_list_savings_movements_inner(&connection, &month)?,
         merchants: finance_list_merchants_inner(&connection)?,
         balance_history: finance_balance_history(&connection)?,
     })
+}
+
+fn finance_salary_by_currency(
+    connection: &Connection,
+    period: &str,
+) -> Result<BTreeMap<String, i128>, String> {
+    let mut statement = connection
+        .prepare("SELECT currency,net_amount FROM finance_salary_receipts WHERE period=?1")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([period], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut totals = BTreeMap::new();
+    for row in rows {
+        let (currency, amount) = row.map_err(|error| error.to_string())?;
+        add_currency_total(&mut totals, &currency, &amount);
+    }
+    Ok(totals)
+}
+
+fn finance_debt_by_currency(
+    connection: &Connection,
+    period: &str,
+) -> Result<BTreeMap<String, i128>, String> {
+    let mut totals = BTreeMap::new();
+    let mut card_statement = connection
+        .prepare("SELECT currency,total_due FROM finance_credit_card_statements WHERE period=?1")
+        .map_err(|error| error.to_string())?;
+    let card_rows = card_statement
+        .query_map([period], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in card_rows {
+        let (currency, amount) = row.map_err(|error| error.to_string())?;
+        add_currency_total(&mut totals, &currency, &amount);
+    }
+    drop(card_statement);
+    let period_end = format!("{period}-31");
+    let mut valuation_statement = connection
+        .prepare("SELECT i.currency,v.amount FROM finance_investments i JOIN finance_valuations v ON v.investment_id=i.id WHERE i.active=1 AND i.asset_type='debt' AND v.valuation_date=(SELECT MAX(v2.valuation_date) FROM finance_valuations v2 WHERE v2.investment_id=i.id AND v2.valuation_date<=?1)")
+        .map_err(|error| error.to_string())?;
+    let valuation_rows = valuation_statement
+        .query_map([&period_end], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in valuation_rows {
+        let (currency, amount) = row.map_err(|error| error.to_string())?;
+        add_currency_total(&mut totals, &currency, &amount);
+    }
+    Ok(totals)
+}
+
+fn finance_debt_ratio_history(
+    connection: &Connection,
+    end_period: &str,
+) -> Result<Vec<FinanceDebtRatioHistoryPoint>, String> {
+    let start_period = finance_history_start_period(end_period)?;
+    let mut statement = connection
+        .prepare("SELECT period FROM finance_salary_receipts WHERE period BETWEEN ?1 AND ?2 UNION SELECT period FROM finance_credit_card_statements WHERE period BETWEEN ?1 AND ?2 UNION SELECT substr(valuation_date,1,7) FROM finance_valuations WHERE substr(valuation_date,1,7) BETWEEN ?1 AND ?2 ORDER BY 1")
+        .map_err(|error| error.to_string())?;
+    let periods = statement
+        .query_map(params![start_period, end_period], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    periods
+        .into_iter()
+        .map(|period| {
+            let debt_by_currency = finance_debt_by_currency(connection, &period)?
+                .into_iter()
+                .map(|(currency, value)| (currency, format_cents(value)))
+                .collect();
+            let salary_by_currency = finance_salary_by_currency(connection, &period)?
+                .into_iter()
+                .map(|(currency, value)| (currency, format_cents(value)))
+                .collect();
+            Ok(FinanceDebtRatioHistoryPoint {
+                period,
+                debt_by_currency,
+                salary_by_currency,
+            })
+        })
+        .collect()
+}
+
+fn finance_history_start_period(end_period: &str) -> Result<String, String> {
+    let (year, month) = end_period
+        .split_once('-')
+        .ok_or_else(|| "El período financiero es inválido.".to_string())?;
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| "El período financiero es inválido.".to_string())?;
+    let month = month
+        .parse::<i32>()
+        .map_err(|_| "El período financiero es inválido.".to_string())?;
+    if !(1..=12).contains(&month) {
+        return Err("El período financiero es inválido.".into());
+    }
+    let months = year * 12 + month - 1 - 11;
+    Ok(format!(
+        "{:04}-{:02}",
+        months.div_euclid(12),
+        months.rem_euclid(12) + 1
+    ))
 }
 
 fn finance_balance_history(connection: &Connection) -> Result<Vec<FinanceMonthlyBalance>, String> {
@@ -1529,5 +1662,17 @@ mod tests {
         super::add_currency_total(&mut totals, "USD", "2.50");
         assert_eq!(totals.get("ARS"), Some(&1025));
         assert_eq!(totals.get("USD"), Some(&250));
+    }
+
+    #[test]
+    fn limits_finance_history_to_twelve_months() {
+        assert_eq!(
+            super::finance_history_start_period("2026-09"),
+            Ok("2025-10".into())
+        );
+        assert_eq!(
+            super::finance_history_start_period("2026-01"),
+            Ok("2025-02".into())
+        );
     }
 }

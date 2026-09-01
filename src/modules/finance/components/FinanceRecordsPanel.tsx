@@ -17,6 +17,7 @@ import {
 import type {
   FinanceAccount,
   FinanceCreditCardStatement,
+  FinanceDebtRatioHistoryPoint,
   FinanceCurrency,
   FinanceNetWorth,
   FinanceNetWorthHistoryPoint,
@@ -29,10 +30,16 @@ import { validateTicketArithmetic } from "../engines/ticketValidation";
 import { parseSalaryExtraction } from "../engines/salaryExtraction";
 import { financeErrorMessage } from "../engines/financeError";
 import { CreditCardStatementForm } from "./CreditCardStatementForm";
+import { CreditCardEvolutionChart } from "./CreditCardEvolutionChart";
+import { DebtRatioEvolutionChart } from "./DebtRatioEvolutionChart";
+import { SalaryEvolutionChart } from "./SalaryEvolutionChart";
 
 interface Props {
   library: NotiaLibrary;
   accounts: FinanceAccount[];
+  debtRatioHistory: FinanceDebtRatioHistoryPoint[];
+  historyFrom: string;
+  historyTo: string;
   onChanged: () => Promise<void>;
 }
 
@@ -42,7 +49,7 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function FinanceRecordsPanel({ library, accounts, onChanged }: Props) {
+export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
   const [form, setForm] = useState<FormKind>(null);
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
   const [prices, setPrices] = useState<FinancePriceObservation[]>([]);
@@ -56,8 +63,8 @@ export function FinanceRecordsPanel({ library, accounts, onChanged }: Props) {
       const [purchaseRows, priceRows, salaryRows, statementRows, worth, worthHistory] = await Promise.all([
         listFinancePurchases(library),
         listFinancePriceHistory(library),
-        listFinanceSalaries(library),
-        listFinanceCreditCardStatements(library),
+        listFinanceSalaries(library, { from: historyFrom, to: historyTo }),
+        listFinanceCreditCardStatements(library, { from: historyFrom, to: historyTo }),
         getFinanceNetWorth(library, today()),
         listFinanceNetWorthHistory(library),
       ]);
@@ -71,7 +78,7 @@ export function FinanceRecordsPanel({ library, accounts, onChanged }: Props) {
     } catch (reason) {
       setError(financeErrorMessage(reason));
     }
-  }, [library]);
+  }, [historyFrom, historyTo, library]);
   useEffect(() => void load(), [load]);
   const saved = async () => {
     setForm(null);
@@ -93,6 +100,9 @@ export function FinanceRecordsPanel({ library, accounts, onChanged }: Props) {
           <button type="button" onClick={() => setForm("investment")}>Valuar activo/deuda</button>
         </div>
       </div>
+      <SalaryEvolutionChart salaries={salaries} />
+      <CreditCardEvolutionChart accounts={accounts} statements={cardStatements} />
+      <DebtRatioEvolutionChart history={debtRatioHistory} />
       {error && <p className="finance-error" role="alert">{error}</p>}
       <div className="finance-grid">
         <article className="finance-card">

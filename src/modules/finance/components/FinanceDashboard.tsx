@@ -32,6 +32,7 @@ import {
   formatFinanceCents,
   parseFinanceCents,
 } from "../engines/financeAmounts";
+import { formatDebtToIncomeRatio } from "../engines/debtRatio";
 import { FinanceRecordsPanel } from "./FinanceRecordsPanel";
 import { DollarQuotesCards } from "./DollarQuotesCards";
 import { subscribeToFinanceDataChanges } from "../services/financeDataEvents";
@@ -42,6 +43,10 @@ interface FinanceDashboardProps {
 
 function currentMonth() {
   return new Date().toISOString().slice(0, 7);
+}
+function historyStartPeriod(endPeriod: string) {
+  const [year, month] = endPeriod.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 12, 1)).toISOString().slice(0, 7);
 }
 function matchesTransfer(type: FinanceSavingsMovement["movementType"]) {
   return type === "contribution" || type === "withdrawal";
@@ -248,6 +253,11 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               <span>Resultado neto</span>
               <strong>{formatTotals(data.netByCurrency)}</strong>
             </article>
+            <article>
+              <span>Deuda / sueldo</span>
+              <strong>{formatDebtToIncomeRatio(data.debtByCurrency, data.salaryByCurrency)}</strong>
+              <small className="finance-muted">Tarjetas y deudas registradas contra el sueldo del mes.</small>
+            </article>
           </section>
           {data.transactions.some((transaction) => transaction.status === "pending") && <section className="finance-card finance-pending" role="status"><h2>Cargas pendientes</h2><p>{data.transactions.filter((transaction) => transaction.status === "pending").length} operaciones esperan revisión.</p></section>}
           <section className="finance-card">
@@ -330,7 +340,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
         </section>
       )}
       {data && <section className="finance-card" aria-labelledby="finance-category-settings"><div className="finance-section-heading"><h2 id="finance-category-settings">Configuración de categorías</h2><button type="button" onClick={() => setIsCategoryFormOpen(true)}>Nueva categoría</button></div><ul className="finance-category-list">{data.categories.map((category) => <li key={category.id}><span>{category.name}<small>{category.kind} · {category.active ? "activa" : "inactiva"}{category.parentId ? " · subcategoría" : ""}</small></span><span className="finance-row-actions"><button type="button" onClick={() => setEditingCategory(category)}>Editar</button>{category.active && <button type="button" onClick={async () => { if (window.confirm(`¿Desactivar ${category.name}?`)) { await deleteFinanceCategory(library, category.id); await refresh(); } }}>Desactivar</button>}</span></li>)}</ul></section>}
-      {data && <FinanceRecordsPanel library={library} accounts={data.accounts} onChanged={refresh} />}
+      {data && <FinanceRecordsPanel library={library} accounts={data.accounts} debtRatioHistory={data.debtRatioHistory} historyFrom={historyStartPeriod(month)} historyTo={month} onChanged={refresh} />}
       {isFormOpen && (
         <FinanceTransactionForm
           accounts={data?.accounts ?? []}
