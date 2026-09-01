@@ -131,6 +131,19 @@ impl FinanceExtractionAdapter for LlamaCloudAdapter {
     }
 }
 
+pub async fn extract_document_bytes(
+    name: &str,
+    mime_type: &str,
+    bytes: Vec<u8>,
+) -> Result<serde_json::Value, String> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err("El documento debe pesar entre 1 byte y 15 MB.".to_string());
+    }
+    LlamaCloudAdapter::from_environment()?
+        .extract(name, mime_type, bytes)
+        .await
+}
+
 fn validated_document(
     payload: &ExtractFinanceDocumentPayload,
 ) -> Result<(String, String, Vec<u8>), String> {

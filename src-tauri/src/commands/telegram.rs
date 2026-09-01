@@ -46,12 +46,28 @@ pub struct TelegramDownloadPhotoPayload {
     photo: crate::services::telegram_service::TelegramPhoto,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramDownloadDocumentPayload {
+    token: String,
+    document: crate::services::telegram_service::TelegramDocument,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelegramDownloadedPhoto {
     file_id: String,
     mime_type: String,
     base64: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramDownloadedDocument {
+    file_id: String,
+    file_name: String,
+    mime_type: String,
+    extracted_content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +147,43 @@ pub async fn download_telegram_photo(
         file_id: payload.photo.file_id,
         mime_type: "image/jpeg".to_string(),
         base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+#[tauri::command]
+pub async fn extract_telegram_pdf(
+    payload: TelegramDownloadDocumentPayload,
+) -> Result<TelegramDownloadedDocument, String> {
+    let bytes =
+        crate::services::telegram_service::download_document(&payload.token, &payload.document)
+            .await
+            .map_err(|error| format!("No se pudo descargar el PDF de Telegram: {error}"))?;
+    let file_name = payload
+        .document
+        .file_name
+        .clone()
+        .unwrap_or_else(|| format!("telegram-{}.pdf", payload.document.file_id));
+    let extracted_content = match crate::services::telegram_service::extract_pdf_text(&bytes) {
+        Ok(text) => text,
+        Err(local_error) => {
+            let raw_result = crate::services::finance_extraction::extract_document_bytes(
+                &file_name,
+                "application/pdf",
+                bytes,
+            )
+            .await
+            .map_err(|cloud_error| format!(
+                "No se pudo leer el PDF localmente ({local_error}) ni con el extractor documental ({cloud_error})."
+            ))?;
+            serde_json::to_string(&raw_result)
+                .map_err(|_| "No se pudo serializar el contenido extraído del PDF.".to_string())?
+        }
+    };
+    Ok(TelegramDownloadedDocument {
+        file_id: payload.document.file_id,
+        file_name,
+        mime_type: "application/pdf".to_string(),
+        extracted_content,
     })
 }
 

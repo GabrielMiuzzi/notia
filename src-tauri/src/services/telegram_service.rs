@@ -8,6 +8,7 @@ const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_AUDIO_DURATION_SECONDS: u32 = 15 * 60;
 const MAX_PHOTO_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PHOTO_PIXELS: u64 = 16_000_000;
+const MAX_DOCUMENT_BYTES: u64 = 15 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct TelegramResponse<T> {
@@ -45,6 +46,7 @@ struct TelegramMessage {
     text: Option<String>,
     caption: Option<String>,
     photo: Option<Vec<TelegramPhoto>>,
+    document: Option<TelegramDocument>,
     voice: Option<TelegramAudio>,
     audio: Option<TelegramAudio>,
 }
@@ -70,6 +72,19 @@ pub struct TelegramPhoto {
     pub file_size: Option<u64>,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramDocument {
+    #[serde(alias = "file_id")]
+    pub file_id: String,
+    #[serde(alias = "file_name")]
+    pub file_name: Option<String>,
+    #[serde(alias = "mime_type")]
+    pub mime_type: Option<String>,
+    #[serde(alias = "file_size")]
+    pub file_size: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +118,7 @@ pub struct IncomingTelegramUpdate {
     pub text: Option<String>,
     pub audio: Option<TelegramAudio>,
     pub photo: Option<TelegramPhoto>,
+    pub document: Option<TelegramDocument>,
     pub callback_query_id: Option<String>,
     pub callback_data: Option<String>,
 }
@@ -184,6 +200,7 @@ pub async fn get_updates(token: &str, offset: i64) -> Result<Vec<IncomingTelegra
                             .into_iter()
                             .max_by_key(|photo| u64::from(photo.width) * u64::from(photo.height))
                     }),
+                    document: message.document,
                     callback_query_id: None,
                     callback_data: None,
                 });
@@ -198,6 +215,7 @@ pub async fn get_updates(token: &str, offset: i64) -> Result<Vec<IncomingTelegra
                 text: None,
                 audio: None,
                 photo: None,
+                document: None,
                 callback_query_id: Some(callback.id),
                 callback_data: callback.data,
             })
@@ -374,6 +392,101 @@ pub async fn download_photo(token: &str, photo: &TelegramPhoto) -> Result<Vec<u8
     Ok(bytes.to_vec())
 }
 
+pub async fn download_document(
+    token: &str,
+    document: &TelegramDocument,
+) -> Result<Vec<u8>, String> {
+    if document.file_id.is_empty() || document.file_id.len() > 256 {
+        return Err("El identificador del documento de Telegram no es valido.".to_string());
+    }
+    let file_name = document.file_name.as_deref().unwrap_or("");
+    let is_pdf = file_name.to_ascii_lowercase().ends_with(".pdf")
+        || document.mime_type.as_deref() == Some("application/pdf");
+    if !is_pdf {
+        return Err("Por ahora Telegram solo admite documentos PDF para Finanzas.".to_string());
+    }
+    if document
+        .file_size
+        .is_some_and(|size| size == 0 || size > MAX_DOCUMENT_BYTES)
+    {
+        return Err("El PDF de Telegram supera el tamaño permitido.".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|_| "No se pudo iniciar la descarga del documento.".to_string())?;
+    let response = client
+        .post(endpoint(token, "getFile")?)
+        .json(&serde_json::json!({ "file_id": document.file_id }))
+        .send()
+        .await
+        .map_err(|_| "No se pudo consultar el documento en Telegram.".to_string())?;
+    let file = decode::<TelegramFile>(response).await?;
+    if file
+        .file_size
+        .is_some_and(|size| size == 0 || size > MAX_DOCUMENT_BYTES)
+    {
+        return Err("El PDF de Telegram supera el tamaño permitido.".to_string());
+    }
+    let file_path = file
+        .file_path
+        .filter(|path| {
+            !path.is_empty()
+                && path.len() <= 512
+                && path
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"/_.-".contains(&byte))
+                && !path.split('/').any(|component| component == "..")
+        })
+        .ok_or_else(|| "Telegram devolvio una ruta de documento no valida.".to_string())?;
+    let response = client
+        .get(format!(
+            "{TELEGRAM_API_BASE}/file/bot{}/{file_path}",
+            token.trim()
+        ))
+        .send()
+        .await
+        .map_err(|_| "No se pudo descargar el PDF de Telegram.".to_string())?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|size| size > MAX_DOCUMENT_BYTES)
+    {
+        return Err("Telegram rechazo la descarga del PDF.".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "Se interrumpio la descarga del PDF de Telegram.".to_string())?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err("El PDF descargado tiene un tamaño no valido.".to_string());
+    }
+    Ok(bytes.to_vec())
+}
+
+pub fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
+    let document = lopdf::Document::load_mem(bytes)
+        .map_err(|_| "El documento de Telegram no es un PDF válido.".to_string())?;
+    let page_numbers: Vec<u32> = document.get_pages().into_keys().collect();
+    if page_numbers.is_empty() {
+        return Err("El PDF de Telegram no contiene páginas.".to_string());
+    }
+    let mut text = String::new();
+    for page_number in page_numbers {
+        let page_text = document
+            .extract_text(&[page_number])
+            .map_err(|_| "No se pudo leer el texto del PDF de Telegram.".to_string())?;
+        text.push_str(&page_text);
+        if text.len() > 120_000 {
+            return Err("El texto extraído del PDF supera el límite permitido.".to_string());
+        }
+    }
+    if text.trim().is_empty() {
+        return Err("El PDF no contiene texto seleccionable.".to_string());
+    }
+    Ok(text)
+}
+
 pub async fn answer_callback(token: &str, callback_query_id: &str) -> Result<(), String> {
     let response = Client::builder()
         .timeout(Duration::from_secs(15))
@@ -389,7 +502,7 @@ pub async fn answer_callback(token: &str, callback_query_id: &str) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoint, TelegramAudio, TelegramPhoto};
+    use super::{endpoint, TelegramAudio, TelegramDocument, TelegramPhoto};
 
     #[test]
     fn endpoint_rejects_tokens_with_url_characters() {
@@ -430,5 +543,16 @@ mod tests {
         assert_eq!(value["fileSize"], 678);
         assert_eq!(value["width"], 1280);
         assert_eq!(value["height"], 720);
+    }
+
+    #[test]
+    fn telegram_document_accepts_pdf_fields_and_serializes_camel_case() {
+        let document: TelegramDocument = serde_json::from_str(
+            r#"{"file_id":"doc-1","file_name":"sueldo.pdf","mime_type":"application/pdf","file_size":678}"#,
+        ).expect("deserialize Telegram document");
+        let value = serde_json::to_value(document).expect("serialize frontend document");
+        assert_eq!(value["fileId"], "doc-1");
+        assert_eq!(value["fileName"], "sueldo.pdf");
+        assert_eq!(value["mimeType"], "application/pdf");
     }
 }

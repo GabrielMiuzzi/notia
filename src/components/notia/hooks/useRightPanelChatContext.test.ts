@@ -3,6 +3,7 @@ import type { OpenFileDocument } from '../../../types/views/fileDocument'
 import {
   resolveGraphChatContextMode,
   resolveGraphAttachedContextPaths,
+  resolveRightPanelAgentScope,
   resolveRightPanelAttachedContextPaths,
   resolveRightPanelContextScopeKey,
   resolveRightPanelPreferredContextMode,
@@ -75,5 +76,11 @@ describe('resolveGraphAttachedContextPaths', () => {
 
   it('attaches only paths explicitly selected in Graph View', () => {
     expect(resolveGraphAttachedContextPaths(['selected.md'], true)).toEqual(['selected.md'])
+  })
+})
+
+describe('resolveRightPanelAgentScope', () => {
+  it('uses the finance scope while the Finance workspace is active', () => {
+    expect(resolveRightPanelAgentScope('finance', null)).toBe('finance')
   })
 })

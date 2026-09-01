@@ -1,10 +1,26 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { NotiaLibrary } from '../../../types/notia'
-import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult } from '../types/financeTypes'
+import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult, FinanceDevQueryResult, FinanceDevTable } from '../types/financeTypes'
 import { financeContext } from '../types/financeTypes'
 
 export function getFinanceDashboard(library: NotiaLibrary, month: string): Promise<FinanceDashboard> {
   return invoke<FinanceDashboard>('finance_get_dashboard', { context: financeContext(library), month })
+}
+
+export function listFinanceDevTables(): Promise<FinanceDevTable[]> {
+  return invoke<FinanceDevTable[]>('finance_dev_list_tables')
+}
+
+export function queryFinanceDevTable(library: NotiaLibrary, tableName: string, page: number, pageSize = 50): Promise<FinanceDevQueryResult> {
+  return invoke<FinanceDevQueryResult>('finance_dev_query_table', { payload: { context: financeContext(library), tableName, page, pageSize } })
+}
+
+export function queryFinanceDevSql(library: NotiaLibrary, sql: string, page: number, pageSize = 50): Promise<FinanceDevQueryResult> {
+  return invoke<FinanceDevQueryResult>('finance_dev_query_sql', { payload: { context: financeContext(library), sql, page, pageSize } })
+}
+
+export function seedFinanceDevData(library: NotiaLibrary): Promise<void> {
+  return invoke('finance_dev_seed_demo_data', { context: financeContext(library) })
 }
 
 export function saveFinanceAccount(library: NotiaLibrary, account: FinanceAccount): Promise<FinanceAccount> {

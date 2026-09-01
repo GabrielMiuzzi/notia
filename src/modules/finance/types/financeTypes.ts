@@ -1,6 +1,18 @@
 import type { NotiaLibrary } from "../../../types/notia";
 
 export type FinanceCurrency = "ARS" | "USD";
+
+export interface FinanceDevTable {
+  name: string;
+}
+
+export interface FinanceDevQueryResult {
+  columns: string[];
+  rows: Array<Array<string | null>>;
+  totalRows: number;
+  page: number;
+  pageSize: number;
+}
 export type FinanceTransactionType =
   "income" | "expense" | "transfer" | "adjustment";
 export type FinanceTransactionStatus =

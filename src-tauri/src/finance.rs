@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, types::ValueRef, Connection};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -213,11 +213,312 @@ pub struct LinkSavingsAccountPayload {
     pub account_id: String,
 }
 
+const FINANCE_DEV_TABLES: &[&str] = &[
+    "finance_accounts",
+    "finance_categories",
+    "finance_transactions",
+    "finance_merchants",
+    "finance_source_artifacts",
+    "finance_extraction_results",
+    "finance_receipts",
+    "finance_purchases",
+    "finance_products",
+    "finance_purchase_items",
+    "finance_salary_receipts",
+    "finance_salary_concepts",
+    "finance_savings_reserves",
+    "finance_savings_movements",
+    "finance_savings_accounts",
+    "finance_investments",
+    "finance_valuations",
+    "finance_price_observations",
+    "finance_installment_plans",
+    "finance_installments",
+    "finance_credit_card_statements",
+    "finance_credit_card_statement_items",
+];
+const FINANCE_DEV_PAGE_SIZE: u32 = 50;
+const FINANCE_DEV_MAX_PAGE_SIZE: u32 = 200;
+const FINANCE_DEV_MAX_SQL_CHARS: usize = 20_000;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceDevTable {
+    pub name: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceDevQueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub total_rows: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceDevTableQueryPayload {
+    pub context: FinanceContext,
+    pub table_name: String,
+    pub page: u32,
+    pub page_size: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceDevSqlQueryPayload {
+    pub context: FinanceContext,
+    pub sql: String,
+    pub page: u32,
+    pub page_size: Option<u32>,
+}
+
 pub(crate) fn now() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+fn finance_dev_page_size(value: Option<u32>) -> u32 {
+    value
+        .unwrap_or(FINANCE_DEV_PAGE_SIZE)
+        .clamp(1, FINANCE_DEV_MAX_PAGE_SIZE)
+}
+
+fn validate_finance_dev_sql(sql: &str) -> Result<String, String> {
+    let normalized = sql.trim().trim_end_matches(';').trim();
+    if normalized.is_empty() || normalized.len() > FINANCE_DEV_MAX_SQL_CHARS {
+        return Err("La consulta SQL debe tener entre 1 y 20000 caracteres.".to_string());
+    }
+    if sql.trim_end().ends_with(';') && sql.trim_end_matches(';').contains(';') {
+        return Err("La consola Dev admite una única consulta SQL.".to_string());
+    }
+    let lower = normalized.to_ascii_lowercase();
+    if !(lower.starts_with("select") || lower.starts_with("with")) {
+        return Err(
+            "La consola Dev solo admite consultas SELECT o WITH de solo lectura.".to_string(),
+        );
+    }
+    for keyword in [
+        "insert", "update", "delete", "replace", "drop", "alter", "create", "attach", "detach",
+        "vacuum", "pragma",
+    ] {
+        if lower
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .any(|token| token == keyword)
+        {
+            return Err(
+                "La consola Dev no admite sentencias que modifiquen la base de datos.".to_string(),
+            );
+        }
+    }
+    Ok(normalized.to_string())
+}
+
+fn finance_dev_value(value: ValueRef<'_>) -> Option<String> {
+    match value {
+        ValueRef::Null => None,
+        ValueRef::Integer(value) => Some(value.to_string()),
+        ValueRef::Real(value) => Some(value.to_string()),
+        ValueRef::Text(value) => Some(String::from_utf8_lossy(value).into_owned()),
+        ValueRef::Blob(value) => Some(format!("<blob: {} bytes>", value.len())),
+    }
+}
+
+fn finance_dev_query(
+    connection: &Connection,
+    sql: &str,
+    page: u32,
+    page_size: u32,
+) -> Result<FinanceDevQueryResult, String> {
+    let total_rows: i64 = connection
+        .query_row(
+            &format!("SELECT COUNT(*) FROM ({sql}) AS finance_dev_count"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "No se pudo contar el resultado de la consulta SQL.".to_string())?;
+    let offset = i64::from(page) * i64::from(page_size);
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT * FROM ({sql}) AS finance_dev_result LIMIT ?1 OFFSET ?2"
+        ))
+        .map_err(|_| "La consulta SQL no es válida.".to_string())?;
+    let columns = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let rows = statement
+        .query_map(params![page_size, offset], |row| {
+            (0..row.as_ref().column_count())
+                .map(|index| row.get_ref(index).map(finance_dev_value))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|_| "No se pudo ejecutar la consulta SQL.".to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "No se pudo leer el resultado de la consulta SQL.".to_string())?;
+    Ok(FinanceDevQueryResult {
+        columns,
+        rows,
+        total_rows,
+        page,
+        page_size,
+    })
+}
+
+#[tauri::command]
+pub fn finance_dev_list_tables() -> Vec<FinanceDevTable> {
+    FINANCE_DEV_TABLES
+        .iter()
+        .map(|name| FinanceDevTable { name })
+        .collect()
+}
+
+#[tauri::command]
+pub fn finance_dev_query_table(
+    app: tauri::AppHandle,
+    payload: FinanceDevTableQueryPayload,
+) -> FinanceCommandResult<FinanceDevQueryResult> {
+    if !FINANCE_DEV_TABLES.contains(&payload.table_name.as_str()) {
+        return Err("La entidad financiera solicitada no existe.".into());
+    }
+    let connection = validate_context(&payload.context, &app)?;
+    finance_dev_query(
+        &connection,
+        &format!("SELECT * FROM {}", payload.table_name),
+        payload.page,
+        finance_dev_page_size(payload.page_size),
+    )
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn finance_dev_query_sql(
+    app: tauri::AppHandle,
+    payload: FinanceDevSqlQueryPayload,
+) -> FinanceCommandResult<FinanceDevQueryResult> {
+    let sql = validate_finance_dev_sql(&payload.sql)?;
+    let connection = validate_context(&payload.context, &app)?;
+    finance_dev_query(
+        &connection,
+        &sql,
+        payload.page,
+        finance_dev_page_size(payload.page_size),
+    )
+    .map_err(Into::into)
+}
+
+fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute_batch(
+            "INSERT OR IGNORE INTO finance_accounts (id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES
+                ('dev-account-cash','Efectivo demo','cash','ARS','12500.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-account-bank','Cuenta bancaria demo','bank','ARS','85000.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-account-card','Tarjeta demo','credit_card','ARS','0.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-account-savings','Caja de ahorro demo','savings_reserve','ARS','0.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-account-usd','Cuenta USD inactiva','bank','USD','150.00',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_categories (id,name,kind,parent_id,active,description,created_at,updated_at) VALUES
+                ('dev-category-food','Alimentos','expense',NULL,1,'Compras de comida y supermercado.',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-category-coffee','Cafetería','expense','dev-category-food',1,'Consumos pequeños fuera de casa.',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-category-transport','Transporte','expense',NULL,1,'Traslados cotidianos.',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-category-salary','Sueldo','income',NULL,1,'Ingresos por empleo.',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-category-old','Categoría inactiva','expense',NULL,0,'Ejemplo de categoría desactivada.',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_merchants (id,name,normalized_name,created_at,updated_at) VALUES
+                ('dev-merchant-market','Mercado Central','mercado central',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-merchant-coffee','Café de la Plaza','cafe de la plaza',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_source_artifacts (id,source_type,reference,raw_text,content_hash,created_at) VALUES
+                ('dev-art-ticket-jul','ticket','ticket-demo-julio.pdf','Ticket demo de supermercado de julio.','demo-ticket-jul',CURRENT_TIMESTAMP),
+                ('dev-art-ticket-aug','ticket','ticket-demo-agosto.pdf','Ticket demo de supermercado de agosto.','demo-ticket-aug',CURRENT_TIMESTAMP),
+                ('dev-art-salary-jul','salary','recibo-demo-julio.pdf','Recibo de sueldo demo julio.','demo-salary-jul',CURRENT_TIMESTAMP),
+                ('dev-art-salary-aug','salary','recibo-demo-agosto.pdf','Recibo de sueldo demo agosto.','demo-salary-aug',CURRENT_TIMESTAMP),
+                ('dev-art-card-jul','credit_card_statement','resumen-demo-julio.pdf','Resumen de tarjeta demo julio.','demo-card-jul',CURRENT_TIMESTAMP),
+                ('dev-art-card-aug','credit_card_statement','resumen-demo-agosto.pdf','Resumen de tarjeta demo agosto.','demo-card-aug',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,category_id,description,source,status,source_artifact_id,merchant_id,operation_fingerprint,installment_id,created_at,updated_at) VALUES
+                ('dev-tx-salary-jul','income','120000.00','ARS','2026-07-31','dev-account-bank',NULL,'dev-category-salary','Sueldo julio 2026','salary','confirmed','dev-art-salary-jul',NULL,'demo-salary-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-ticket-jul','expense','18500.00','ARS','2026-07-18','dev-account-bank',NULL,'dev-category-food','Compra supermercado julio','ticket','confirmed','dev-art-ticket-jul','dev-merchant-market','demo-ticket-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-card-jul','expense','12000.00','ARS','2026-07-20','dev-account-card',NULL,'dev-category-transport','Viaje demo julio','credit_card_statement','confirmed',NULL,NULL,'demo-card-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-salary-aug','income','128000.00','ARS','2026-08-28','dev-account-bank',NULL,'dev-category-salary','Sueldo agosto 2026','salary','confirmed','dev-art-salary-aug',NULL,'demo-salary-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-ticket-aug','expense','24100.00','ARS','2026-08-12','dev-account-bank',NULL,'dev-category-food','Compra supermercado agosto','ticket','corrected','dev-art-ticket-aug','dev-merchant-market','demo-ticket-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-transfer-aug','transfer','30000.00','ARS','2026-08-15','dev-account-bank','dev-account-savings',NULL,'Aporte a ahorro','manual','confirmed',NULL,NULL,'demo-transfer-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-installment-aug','expense','15000.00','ARS','2026-08-10','dev-account-card',NULL,'dev-category-food','Cuota 1 de compra demo','manual','pending',NULL,'dev-merchant-market','demo-installment-aug','dev-installment-1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-coffee-aug','expense','3500.00','ARS','2026-08-22','dev-account-cash',NULL,'dev-category-coffee','Café demo','manual','discarded',NULL,'dev-merchant-coffee','demo-coffee-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_extraction_results (id,source_artifact_id,extractor,raw_result,confidence,status,created_at) VALUES
+                ('dev-extraction-ticket-jul','dev-art-ticket-jul','demo','{\"merchant\":\"Mercado Central\",\"total\":18500}',0.98,'confirmed',CURRENT_TIMESTAMP),
+                ('dev-extraction-salary-aug','dev-art-salary-aug','demo','{\"employer\":\"Empresa Demo SA\",\"net\":128000}',0.96,'confirmed',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_receipts (id,source_artifact_id,receipt_type,validation_status,created_at,updated_at) VALUES
+                ('dev-receipt-ticket-jul','dev-art-ticket-jul','ticket','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-receipt-salary-aug','dev-art-salary-aug','salary','corrected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_purchases (id,transaction_id,merchant_id,observed_at,currency,total_amount,source_artifact_id,subtotal_amount,discount_amount,tax_amount,validation_status,created_at,updated_at) VALUES
+                ('dev-purchase-jul','dev-tx-ticket-jul','dev-merchant-market','2026-07-18','ARS','18500.00','dev-art-ticket-jul','19000.00','500.00','0.00','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-purchase-aug','dev-tx-ticket-aug','dev-merchant-market','2026-08-12','ARS','24100.00','dev-art-ticket-aug','24100.00','0.00','0.00','corrected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_products (id,name,normalized_name,created_at,updated_at) VALUES
+                ('dev-product-milk','Leche entera 1 L','leche entera 1 l',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-product-bread','Pan lactal','pan lactal',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_purchase_items (id,purchase_id,product_id,original_description,normalized_description,quantity,unit_price,discount_amount,line_total,currency,category_id,created_at) VALUES
+                ('dev-item-jul-milk','dev-purchase-jul','dev-product-milk','Leche entera 1 L','leche entera 1 l','2','4500.00','0.00','9000.00','ARS','dev-category-food',CURRENT_TIMESTAMP),
+                ('dev-item-jul-bread','dev-purchase-jul','dev-product-bread','Pan lactal','pan lactal','1','10000.00','500.00','9500.00','ARS','dev-category-food',CURRENT_TIMESTAMP),
+                ('dev-item-aug-milk','dev-purchase-aug','dev-product-milk','Leche entera 1 L','leche entera 1 l','2','5200.00','0.00','10400.00','ARS','dev-category-food',CURRENT_TIMESTAMP),
+                ('dev-item-aug-bread','dev-purchase-aug','dev-product-bread','Pan lactal','pan lactal','1','13700.00','0.00','13700.00','ARS','dev-category-food',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_price_observations (id,purchase_item_id,product_id,merchant_id,observed_at,currency,quantity,unit_price,discount_amount,final_amount,status,created_at) VALUES
+                ('dev-price-jul-milk','dev-item-jul-milk','dev-product-milk','dev-merchant-market','2026-07-18','ARS','2','4500.00','0.00','9000.00','confirmed',CURRENT_TIMESTAMP),
+                ('dev-price-aug-milk','dev-item-aug-milk','dev-product-milk','dev-merchant-market','2026-08-12','ARS','2','5200.00','0.00','10400.00','corrected',CURRENT_TIMESTAMP),
+                ('dev-price-aug-bread','dev-item-aug-bread','dev-product-bread','dev-merchant-market','2026-08-12','ARS','1','13700.00','0.00','13700.00','pending',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_salary_receipts (id,period,payment_date,employer,gross_amount,deductions_total,net_amount,currency,account_id,transaction_id,source_artifact_id,validation_status,created_at,updated_at) VALUES
+                ('dev-salary-jul','2026-07','2026-07-31','Empresa Demo SA','150000.00','30000.00','120000.00','ARS','dev-account-bank','dev-tx-salary-jul','dev-art-salary-jul','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-salary-aug','2026-08','2026-08-28','Empresa Demo SA','160000.00','32000.00','128000.00','ARS','dev-account-bank','dev-tx-salary-aug','dev-art-salary-aug','corrected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_salary_concepts (id,salary_receipt_id,name,concept_type,amount,currency,created_at) VALUES
+                ('dev-salary-concept-jul-gross','dev-salary-jul','Sueldo básico','earning','150000.00','ARS',CURRENT_TIMESTAMP),
+                ('dev-salary-concept-jul-deduction','dev-salary-jul','Aportes jubilatorios','deduction','30000.00','ARS',CURRENT_TIMESTAMP),
+                ('dev-salary-concept-aug-gross','dev-salary-aug','Sueldo básico','earning','160000.00','ARS',CURRENT_TIMESTAMP),
+                ('dev-salary-concept-aug-deduction','dev-salary-aug','Aportes jubilatorios','deduction','32000.00','ARS',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_savings_reserves (id,name,currency,opening_balance,objective,active,ledger_account_id,created_at,updated_at) VALUES
+                ('dev-reserve-emergency','Fondo de emergencia','ARS','50000.00','Cubrir tres meses de gastos.',1,'dev-account-savings',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_savings_accounts (reserve_id,account_id,created_at) VALUES
+                ('dev-reserve-emergency','dev-account-bank',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_savings_movements (id,reserve_id,account_id,movement_type,amount,currency,effective_date,description,reason,source,status,linked_transaction_id,created_at,updated_at) VALUES
+                ('dev-savings-jul','dev-reserve-emergency','dev-account-bank','contribution','10000.00','ARS','2026-07-25','Aporte mensual',NULL,'manual','confirmed',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-savings-aug','dev-reserve-emergency','dev-account-bank','contribution','30000.00','ARS','2026-08-15','Aporte desde cuenta bancaria',NULL,'manual','confirmed','dev-tx-transfer-aug',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-savings-loss','dev-reserve-emergency',NULL,'loss','500.00','ARS','2026-08-20','Ajuste demo','Diferencia de caja','manual','pending',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_investments (id,account_id,name,asset_type,currency,active,created_at,updated_at) VALUES
+                ('dev-investment-fund','dev-account-bank','Fondo común demo','fund','ARS',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_valuations (id,investment_id,valuation_date,amount,currency,source,created_at) VALUES
+                ('dev-valuation-jul','dev-investment-fund','2026-07-31','75000.00','ARS','manual',CURRENT_TIMESTAMP),
+                ('dev-valuation-aug','dev-investment-fund','2026-08-31','82000.00','ARS','manual',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_installment_plans (id,account_id,merchant_id,description,purchase_date,currency,total_amount,installment_count,created_at,updated_at) VALUES
+                ('dev-plan-market','dev-account-card','dev-merchant-market','Compra demo en 3 cuotas','2026-08-10','ARS','45000.00',3,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_installments (id,plan_id,installment_number,due_date,amount,status,transaction_id,created_at,updated_at) VALUES
+                ('dev-installment-1','dev-plan-market',1,'2026-08-10','15000.00','pending','dev-tx-installment-aug',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-installment-2','dev-plan-market',2,'2026-09-10','15000.00','confirmed',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-installment-3','dev-plan-market',3,'2026-10-10','15000.00','discarded',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_credit_card_statements (id,account_id,issuer,card_last_four,period,closing_date,due_date,currency,previous_balance,payments_amount,credits_amount,purchases_amount,fees_amount,interest_amount,taxes_amount,total_due,minimum_payment,source_artifact_id,validation_status,created_at,updated_at) VALUES
+                ('dev-statement-jul','dev-account-card','Banco Demo','1234','2026-07','2026-07-25','2026-08-05','ARS','0.00','0.00','0.00','12000.00','500.00','0.00','0.00','12500.00','1250.00','dev-art-card-jul','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-statement-aug','dev-account-card','Banco Demo','1234','2026-08','2026-08-25','2026-09-05','ARS','12500.00','12500.00','0.00','15000.00','0.00','250.00','0.00','15250.00','1525.00','dev-art-card-aug','corrected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_credit_card_statement_items (id,statement_id,transaction_id,purchase_date,description,amount,currency,item_type,installment_number,installment_count,created_at) VALUES
+                ('dev-statement-item-jul-purchase','dev-statement-jul','dev-tx-card-jul','2026-07-20','Viaje demo julio','12000.00','ARS','purchase',NULL,NULL,CURRENT_TIMESTAMP),
+                ('dev-statement-item-jul-fee','dev-statement-jul',NULL,'2026-07-25','Mantenimiento','500.00','ARS','fee',NULL,NULL,CURRENT_TIMESTAMP),
+                ('dev-statement-item-aug-installment','dev-statement-aug','dev-tx-installment-aug','2026-08-10','Cuota 1 compra demo','15000.00','ARS','purchase',1,3,CURRENT_TIMESTAMP),
+                ('dev-statement-item-aug-interest','dev-statement-aug',NULL,'2026-08-25','Interés demo','250.00','ARS','interest',NULL,NULL,CURRENT_TIMESTAMP);",
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn finance_dev_seed_demo_data(
+    app: tauri::AppHandle,
+    context: FinanceContext,
+) -> FinanceCommandResult<()> {
+    let mut connection = validate_context(&context, &app)?;
+    seed_finance_demo_data(&mut connection)?;
+    sync_context(&context, &app)?;
+    Ok(())
 }
 pub(crate) fn validate_context(
     context: &FinanceContext,
@@ -846,6 +1147,18 @@ pub fn finance_save_transaction(
 }
 
 fn finance_list_accounts_inner(connection: &Connection) -> Result<Vec<FinanceAccount>, String> {
+    let current_month: String = connection
+        .query_row("SELECT strftime('%Y-%m', 'now', 'localtime')", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())?;
+    finance_list_accounts_for_month_inner(connection, &current_month)
+}
+
+fn finance_list_accounts_for_month_inner(
+    connection: &Connection,
+    current_month: &str,
+) -> Result<Vec<FinanceAccount>, String> {
     let mut statement = connection.prepare("SELECT id,name,account_type,currency,opening_balance,active FROM finance_accounts ORDER BY name").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -867,9 +1180,9 @@ fn finance_list_accounts_inner(connection: &Connection) -> Result<Vec<FinanceAcc
         .map_err(|e| e.to_string())?;
     for account in &mut accounts {
         let mut balance = parse_cents(&account.opening_balance).unwrap_or_default();
-        let mut movements = connection.prepare("SELECT transaction_type, amount, destination_account_id, account_id FROM finance_transactions WHERE deleted_at IS NULL AND status = 'confirmed' AND (account_id = ?1 OR destination_account_id = ?1)").map_err(|e| e.to_string())?;
+        let mut movements = connection.prepare("SELECT transaction_type, amount, destination_account_id, account_id FROM finance_transactions WHERE deleted_at IS NULL AND status = 'confirmed' AND substr(effective_date, 1, 7) = ?2 AND (account_id = ?1 OR destination_account_id = ?1)").map_err(|e| e.to_string())?;
         let movement_rows = movements
-            .query_map([&account.id], |row| {
+            .query_map(params![&account.id, current_month], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1005,8 +1318,10 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_savings_movement, clear_finance_data, format_cents, parse_cents, valid_amount,
-        validate_savings_movement, FinanceCommandError, FinanceSavingsMovement,
+        apply_savings_movement, clear_finance_data, finance_dev_query,
+        finance_list_accounts_for_month_inner, format_cents, parse_cents, seed_finance_demo_data,
+        valid_amount, validate_finance_dev_sql, validate_savings_movement, FinanceCommandError,
+        FinanceSavingsMovement, FINANCE_DEV_TABLES,
     };
     use rusqlite::{params, Connection};
 
@@ -1024,6 +1339,85 @@ mod tests {
         assert_eq!(parse_cents("-0.50"), Ok(-50));
         assert_eq!(parse_cents("12.345"), Err(()));
         assert_eq!(format_cents(-50), "-0.50");
+    }
+
+    #[test]
+    fn account_current_balance_ignores_confirmed_historical_movements() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        crate::database::migrate(&connection).expect("finance migrations");
+        connection.execute("INSERT INTO finance_accounts(id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES('account','Digital','bank','ARS','100.00',1,'now','now')", []).expect("account fixture");
+        for (id, kind, amount, date) in [
+            ("old-salary", "income", "900.00", "2026-07-31"),
+            ("current-salary", "income", "200.00", "2026-08-01"),
+            ("current-expense", "expense", "50.00", "2026-08-02"),
+        ] {
+            connection.execute("INSERT INTO finance_transactions(id,transaction_type,amount,currency,effective_date,account_id,description,source,status,created_at,updated_at) VALUES(?1,?2,?3,'ARS',?4,'account','Prueba','manual','confirmed','now','now')", params![id, kind, amount, date]).expect("transaction fixture");
+        }
+
+        let accounts = finance_list_accounts_for_month_inner(&connection, "2026-08")
+            .expect("account balances");
+
+        assert_eq!(accounts[0].current_balance, "250.00");
+    }
+
+    #[test]
+    fn finance_dev_queries_are_paginated_and_read_only() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection.execute_batch("CREATE TABLE finance_test(id INTEGER, label TEXT); INSERT INTO finance_test VALUES(1, 'uno'), (2, 'dos');").expect("fixture");
+
+        let result = finance_dev_query(
+            &connection,
+            "SELECT id, label FROM finance_test ORDER BY id",
+            1,
+            1,
+        )
+        .expect("dev query");
+
+        assert_eq!(result.columns, ["id", "label"]);
+        assert_eq!(result.total_rows, 2);
+        assert_eq!(
+            result.rows,
+            vec![vec![Some("2".into()), Some("dos".into())]]
+        );
+        assert!(validate_finance_dev_sql("DELETE FROM finance_test").is_err());
+        assert!(
+            validate_finance_dev_sql("SELECT * FROM finance_test; DELETE FROM finance_test")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn finance_dev_seed_populates_every_entity_for_two_months_without_duplicates() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        crate::database::migrate(&connection).expect("finance migrations");
+
+        seed_finance_demo_data(&mut connection).expect("first demo seed");
+        seed_finance_demo_data(&mut connection).expect("idempotent demo seed");
+
+        for table in FINANCE_DEV_TABLES {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("finance table count");
+            assert!(count > 0, "{table} should contain demo data");
+        }
+        let periods: i64 = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT substr(effective_date, 1, 7)) FROM finance_transactions WHERE id LIKE 'dev-%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("demo transaction periods");
+        assert_eq!(periods, 2);
+        let salary_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM finance_salary_receipts WHERE id LIKE 'dev-%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("demo salaries");
+        assert_eq!(salary_count, 2);
     }
 
     #[test]

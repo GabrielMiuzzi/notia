@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, enqueueTelegramAgentRequest, isTelegramFinanceRequest, parseTelegramConfirmationDecision, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
+import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramFinanceRequest, parseTelegramConfirmationDecision, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
 describe('Telegram finance scope', () => {
   it('detects financial requests', () => {
@@ -56,5 +56,11 @@ describe('Telegram finance scope', () => {
 
   it('keeps the original Telegram reference available across the account clarification', () => {
     expect(buildTelegramFinanceSourceReference('AgACAgQAAxkBAAIB')).toBe('telegram:telegram-AgACAgQAAxkBAAIB.jpg')
+    expect(buildTelegramFinanceSourceReference('doc-1', 'pdf')).toBe('telegram:telegram-doc-1.pdf')
+  })
+
+  it('preserves structured native errors from PDF extraction', () => {
+    expect(describeTelegramAgentError({ message: 'LlamaCloud rechazó el documento (HTTP 401).' })).toBe('LlamaCloud rechazó el documento (HTTP 401).')
+    expect(describeTelegramAgentError({ error: 'Configurá LLAMA_CLOUD_API_KEY.' })).toBe('Configurá LLAMA_CLOUD_API_KEY.')
   })
 })

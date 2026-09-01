@@ -32,6 +32,18 @@ export function resolveGraphChatContextMode(hasExplicitSelection: boolean): Chat
   return hasExplicitSelection ? 'direct' : 'index'
 }
 
+export function resolveRightPanelAgentScope(
+  activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
+  activeDocument: OpenFileDocument | null,
+): ChatAgentScope | null {
+  if (activeWorkspaceView === 'task-manager') return 'task-manager'
+  if (activeWorkspaceView === 'graph') return 'graph'
+  if (activeWorkspaceView === 'finance') return 'finance'
+  return activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
+    ? 'document'
+    : null
+}
+
 export function resolveGraphAttachedContextPaths(
   effectivePaths: string[],
   hasExplicitSelection: boolean,
@@ -101,6 +113,10 @@ function buildRightPanelChatContextLabel(
     return 'Contexto activo: vista principal de chat'
   }
 
+  if (activeWorkspaceView === 'finance') {
+    return 'Contexto activo: Finanzas'
+  }
+
   if (!activeDocument) {
     return 'Contexto activo: sin pestaña seleccionada'
   }
@@ -125,13 +141,7 @@ export function useRightPanelChatContext({
   taskManagerActivePanelId,
   taskManagerChatContext,
 }: UseRightPanelChatContextParams) {
-  const agentScope: ChatAgentScope | null = activeWorkspaceView === 'task-manager'
-    ? 'task-manager'
-    : activeWorkspaceView === 'graph'
-      ? 'graph'
-      : activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
-        ? 'document'
-        : null
+  const agentScope = resolveRightPanelAgentScope(activeWorkspaceView, activeDocument)
   const rightPanelChatContextLabel = useMemo(
     () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId),
     [activeDocument, activeWorkspaceView, taskManagerActivePanelId],

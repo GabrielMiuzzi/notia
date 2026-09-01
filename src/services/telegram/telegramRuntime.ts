@@ -7,13 +7,20 @@ export interface TelegramAudio {
 export interface TelegramPhoto {
   fileId: string; fileSize?: number; width: number; height: number
 }
+export interface TelegramDocument {
+  fileId: string; fileName?: string; mimeType?: string; fileSize?: number
+}
 export interface TelegramDownloadedPhoto {
   fileId: string; mimeType: string; base64: string
+}
+export interface TelegramDownloadedDocument {
+  fileId: string; fileName: string; mimeType: string; extractedContent: string
 }
 export interface TelegramUpdate {
   updateId: number; chatId: number; user: TelegramIdentity; messageId?: number; text?: string
   audio?: TelegramAudio
   photo?: TelegramPhoto
+  document?: TelegramDocument
   callbackQueryId?: string; callbackData?: string
 }
 export interface TelegramButton { label: string; data: string }
@@ -33,3 +40,5 @@ export const transcribeTelegramAudio = (token: string, audio: TelegramAudio) =>
   invoke<string>('transcribe_telegram_audio', { payload: { token, audio } })
 export const downloadTelegramPhoto = (token: string, photo: TelegramPhoto) =>
   invoke<TelegramDownloadedPhoto>('download_telegram_photo', { payload: { token, photo } })
+export const extractTelegramPdf = (token: string, document: TelegramDocument) =>
+  invoke<TelegramDownloadedDocument>('extract_telegram_pdf', { payload: { token, document } })

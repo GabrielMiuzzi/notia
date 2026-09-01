@@ -33,6 +33,7 @@ import {
   parseFinanceCents,
 } from "../engines/financeAmounts";
 import { FinanceRecordsPanel } from "./FinanceRecordsPanel";
+import { DollarQuotesCards } from "./DollarQuotesCards";
 import { subscribeToFinanceDataChanges } from "../services/financeDataEvents";
 
 interface FinanceDashboardProps {
@@ -62,14 +63,6 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [accountFilter, setAccountFilter] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [currencyFilter, setCurrencyFilter] = useState("");
-  const [dateFromFilter, setDateFromFilter] = useState("");
-  const [dateToFilter, setDateToFilter] = useState("");
-  const [merchantFilter, setMerchantFilter] = useState("");
   const [savingsReserveFilter, setSavingsReserveFilter] = useState("");
   const [savingsCurrencyFilter, setSavingsCurrencyFilter] = useState("");
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -106,33 +99,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
     void refresh();
   }), [refresh]);
 
-  const filteredTransactions = useMemo(
-    () =>
-      data?.transactions.filter(
-        (item) =>
-          (!accountFilter ||
-            item.accountId === accountFilter ||
-            item.destinationAccountId === accountFilter) &&
-          (!categoryFilter || item.categoryId === categoryFilter) &&
-          (!typeFilter || item.transactionType === typeFilter) &&
-          (!statusFilter || item.status === statusFilter) &&
-          (!currencyFilter || item.currency === currencyFilter) &&
-          (!merchantFilter || item.merchantId === merchantFilter) &&
-          (!dateFromFilter || item.effectiveDate >= dateFromFilter) &&
-          (!dateToFilter || item.effectiveDate <= dateToFilter),
-      ) ?? [],
-    [
-      accountFilter,
-      categoryFilter,
-      currencyFilter,
-      merchantFilter,
-      data,
-      dateFromFilter,
-      dateToFilter,
-      statusFilter,
-      typeFilter,
-    ],
-  );
+  const filteredTransactions = useMemo(() => data?.transactions ?? [], [data]);
 
   const expensesByCategory = useMemo(() => {
     if (!data) return [];
@@ -164,7 +131,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   }, [savingsMovements]);
   const transactionPageSize = 50;
   const visibleTransactions = filteredTransactions.slice(transactionPage * transactionPageSize, (transactionPage + 1) * transactionPageSize);
-  useEffect(() => setTransactionPage(0), [accountFilter, categoryFilter, typeFilter, statusFilter, currencyFilter, merchantFilter, dateFromFilter, dateToFilter, month]);
+  useEffect(() => setTransactionPage(0), [month]);
 
   async function submitTransaction(transaction: FinanceTransaction) {
     await saveFinanceTransaction(library, transaction);
@@ -180,138 +147,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
     );
   return (
     <main className="finance-module">
-      {data && (
-        <button
-          type="button"
-          onClick={() => setIsSavingsMovementOpen(true)}
-          disabled={!data.savings.length}
-        >
-          Registrar movimiento de ahorro
-        </button>
-      )}
-      {data && (
-        <section
-          className="finance-card finance-filters"
-          aria-label="Filtros de movimientos"
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setAccountFilter("");
-              setCategoryFilter("");
-              setTypeFilter("");
-              setStatusFilter("");
-              setCurrencyFilter("");
-              setMerchantFilter("");
-              setDateFromFilter("");
-              setDateToFilter("");
-            }}
-          >
-            Limpiar filtros
-          </button>
-          <label>
-            Cuenta
-            <select
-              value={accountFilter}
-              onChange={(event) => setAccountFilter(event.target.value)}
-            >
-              <option value="">Todas</option>
-              {data.accounts.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Categoría
-            <select
-              value={categoryFilter}
-              onChange={(event) => setCategoryFilter(event.target.value)}
-            >
-              <option value="">Todas</option>
-              {data.categories.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Tipo
-            <select
-              value={typeFilter}
-              onChange={(event) => setTypeFilter(event.target.value)}
-            >
-              <option value="">Todos</option>
-              <option value="income">Ingreso</option>
-              <option value="expense">Gasto</option>
-              <option value="transfer">Transferencia</option>
-              <option value="adjustment">Ajuste</option>
-            </select>
-          </label>
-          <label>
-            Estado
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-            >
-              <option value="">Todos</option>
-              <option value="confirmed">Confirmado</option>
-              <option value="pending">Pendiente</option>
-              <option value="corrected">Corregido</option>
-              <option value="discarded">Descartado</option>
-            </select>
-          </label>
-          <label>
-            Moneda
-            <select
-              value={currencyFilter}
-              onChange={(event) => setCurrencyFilter(event.target.value)}
-            >
-              <option value="">Todas</option>
-              <option value="ARS">ARS</option>
-              <option value="USD">USD</option>
-            </select>
-          </label>
-          <label>
-            Comercio
-            <select
-              value={merchantFilter}
-              onChange={(event) => setMerchantFilter(event.target.value)}
-            >
-              <option value="">Todos</option>
-              {data.merchants.map((merchant) => (
-                <option key={merchant.id} value={merchant.id}>
-                  {merchant.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Desde
-            <input
-              type="date"
-              value={dateFromFilter}
-              onChange={(event) => setDateFromFilter(event.target.value)}
-            />
-          </label>
-          <label>
-            Hasta
-            <input
-              type="date"
-              value={dateToFilter}
-              onChange={(event) => setDateToFilter(event.target.value)}
-            />
-          </label>
-        </section>
-      )}
-      <header className="finance-header">
-        <div>
-          <span className="finance-eyebrow">Notia · Finanzas</span>
-          <h1>Resumen financiero</h1>
-          <p>Datos locales de {library.name}</p>
-        </div>
+      <header className="finance-header finance-header--compact">
         <div className="finance-actions">
           <label>
             Mes{" "}
@@ -341,6 +177,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
           </button>
         </div>
       </header>
+      <DollarQuotesCards />
       {error && (
         <div className="finance-error" role="alert">
           {error}
@@ -348,23 +185,8 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
       )}
       {data && (
         <>
-          <section className="finance-metrics" aria-label="Totales del mes">
-            <article>
-              <span>Ingresos</span>
-              <strong>{formatTotals(data.incomeByCurrency)}</strong>
-            </article>
-            <article>
-              <span>Gastos</span>
-              <strong>{formatTotals(data.expenseByCurrency)}</strong>
-            </article>
-            <article>
-              <span>Resultado neto</span>
-              <strong>{formatTotals(data.netByCurrency)}</strong>
-            </article>
-          </section>
-          {data.transactions.some((transaction) => transaction.status === "pending") && <section className="finance-card finance-pending" role="status"><h2>Cargas pendientes</h2><p>{data.transactions.filter((transaction) => transaction.status === "pending").length} operaciones esperan revisión.</p><button type="button" onClick={() => setStatusFilter("pending")}>Revisar pendientes</button></section>}
           <section className="finance-grid">
-            <article className="finance-card">
+            <article className="finance-card finance-expenses-card">
               <h2>Gastos por categoría</h2>
               {expensesByCategory.length === 0 ? (
                 <p className="finance-muted">
@@ -374,7 +196,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                 <ul className="finance-category-list">
                   {expensesByCategory.map(([name, amount]) => (
                     <li key={name}>
-                      <button type="button" className="finance-category-drilldown" onClick={() => setCategoryFilter(data.categories.find((category) => category.name === name)?.id ?? "")}>{name}</button>
+                      <span>{name}</span>
                       <strong>
                         {formatAmount(formatFinanceCents(amount))}
                       </strong>
@@ -383,7 +205,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                 </ul>
               )}
             </article>
-            <article className="finance-card">
+            <article className="finance-card finance-accounts-card">
               <h2>Cuentas</h2>
               {data.accounts.length === 0 ? (
                 <p className="finance-muted">Creá una cuenta para comenzar.</p>
@@ -413,6 +235,21 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               )}
             </article>
           </section>
+          <section className="finance-metrics" aria-label="Totales del mes">
+            <article>
+              <span>Ingresos</span>
+              <strong>{formatTotals(data.incomeByCurrency)}</strong>
+            </article>
+            <article>
+              <span>Gastos</span>
+              <strong>{formatTotals(data.expenseByCurrency)}</strong>
+            </article>
+            <article>
+              <span>Resultado neto</span>
+              <strong>{formatTotals(data.netByCurrency)}</strong>
+            </article>
+          </section>
+          {data.transactions.some((transaction) => transaction.status === "pending") && <section className="finance-card finance-pending" role="status"><h2>Cargas pendientes</h2><p>{data.transactions.filter((transaction) => transaction.status === "pending").length} operaciones esperan revisión.</p></section>}
           <section className="finance-card">
             <h2>Movimientos recientes</h2>
             {filteredTransactions.length === 0 ? (

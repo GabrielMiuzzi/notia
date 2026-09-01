@@ -8,7 +8,7 @@ import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
 import { loadSelectedAgentPromptFileName } from '../../../services/ai/agentPromptRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
-import { answerTelegramCallback, downloadTelegramPhoto, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramPhoto, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
+import { answerTelegramCallback, downloadTelegramPhoto, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramDocument, type TelegramPhoto, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
 import { formatTelegramMessage } from '../../../services/telegram/telegramMessageFormatter'
 import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
@@ -29,7 +29,7 @@ interface TelegramAgentRequest {
   text: string
   actorUserId: number
   scope: TelegramAgentScope
-  photo: TelegramPhoto | null
+  attachment: { kind: 'photo'; value: TelegramPhoto } | { kind: 'pdf'; value: TelegramDocument } | null
 }
 
 export const TELEGRAM_CONFIRMATION_TIMEOUT_MS = 2 * 60 * 1_000
@@ -45,8 +45,27 @@ export function buildTelegramImageRoundMessage(round: number): string | null {
   return null
 }
 
-export function buildTelegramFinanceSourceReference(fileId: string): string {
-  return `telegram:telegram-${fileId}.jpg`
+export function buildTelegramFinanceSourceReference(fileId: string, extension = 'jpg'): string {
+  return `telegram:telegram-${fileId}.${extension}`
+}
+
+export function describeTelegramAgentError(error: unknown, fallback = 'No se pudo completar la consulta.'): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim()
+  if (typeof error === 'string' && error.trim()) return error.trim()
+  if (typeof error === 'object' && error !== null) {
+    const errorPayload = error as Record<string, unknown>
+    for (const key of ['message', 'error'] as const) {
+      const value = errorPayload[key]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    try {
+      const serialized = JSON.stringify(error)
+      if (serialized && serialized !== '{}') return serialized.slice(0, 500)
+    } catch {
+      // Preserve the safe generic error when the native payload is not serializable.
+    }
+  }
+  return fallback
 }
 
 /** Adds an update without losing its order; the active request is tracked separately. */
@@ -212,16 +231,22 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         let text = request.text
         let image: AiImageAttachment | null = null
         let financeSourceReference = pendingFinanceSourceReferenceRef.current
-        if (request.photo) {
-          phase = 'downloading-image'
+        if (request.attachment) {
+          phase = request.attachment.kind === 'photo' ? 'downloading-image' : 'extracting-pdf'
+          if (request.attachment.kind === 'pdf') {
+            const downloaded = await extractTelegramPdf(state.telegram.botToken, request.attachment.value)
+            financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId, 'pdf')
+            pendingFinanceSourceReferenceRef.current = financeSourceReference
+            text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente.`
+          } else {
           const downloadStartedAt = performance.now()
           notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image processing started', {
             scope: request.scope,
-            width: request.photo.width,
-            height: request.photo.height,
-            fileSize: request.photo.fileSize,
+            width: request.attachment.value.width,
+            height: request.attachment.value.height,
+            fileSize: request.attachment.value.fileSize,
           }, 'info')
-          const downloaded = await downloadTelegramPhoto(state.telegram.botToken, request.photo)
+          const downloaded = await downloadTelegramPhoto(state.telegram.botToken, request.attachment.value)
           notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image download completed', {
             durationMs: Math.round(performance.now() - downloadStartedAt),
             mimeType: downloaded.mimeType,
@@ -231,6 +256,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId)
           pendingFinanceSourceReferenceRef.current = financeSourceReference
           text = text || `[Origen: imagen de Telegram fileId=${downloaded.fileId}. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Si es ticket, extrae comercio, fecha, moneda, total y productos. Si es recibo de sueldo, extrae período, fecha de cobro, empleador, bruto, descuentos, neto, moneda y conceptos. Si es un resumen de tarjeta, extrae emisor, últimos cuatro dígitos, período, cierre, vencimiento, moneda, saldo anterior, pagos, créditos, compras, cargos, intereses, impuestos, total, pago mínimo y todas las líneas.]`
+          }
         }
         phase = 'building-agent'
         const agentBuildStartedAt = performance.now()
@@ -273,11 +299,11 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           previousMessages: historyRef.current,
           toolCallTimeoutMs: TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS,
           streamFinalResponse: false,
-          maxRounds: request.photo ? TELEGRAM_IMAGE_AI_MAX_ROUNDS : undefined,
-          diagnosticModule: request.photo ? TELEGRAM_AI_DIAGNOSTIC_MODULE : undefined,
+          maxRounds: request.attachment ? TELEGRAM_IMAGE_AI_MAX_ROUNDS : undefined,
+          diagnosticModule: request.attachment ? TELEGRAM_AI_DIAGNOSTIC_MODULE : undefined,
         }, {
           onAgentRoundStart: (round) => {
-            if (!request.photo) return
+            if (!request.attachment) return
             const progressMessage = buildTelegramImageRoundMessage(round)
             if (!progressMessage) return
             const now = performance.now()
@@ -319,11 +345,11 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         }, 'info')
         state.onLibraryChanged()
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'No se pudo completar la consulta.'
+        const message = describeTelegramAgentError(error)
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent request failed', {
           phase,
           scope: request.scope,
-          hasPhoto: Boolean(request.photo),
+          hasPhoto: Boolean(request.attachment),
           durationMs: Math.round(performance.now() - requestStartedAt),
           error: message,
         }, 'error')
@@ -408,9 +434,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           'HTML',
         )
       }
-      if (!text && !update.photo) return
+      if (!text && !update.photo && !update.document) return
       const plainText = text ?? ''
-      if (!update.photo && confirmationRef.current.size === 1) {
+      if (!update.photo && !update.document && confirmationRef.current.size === 1) {
         const decision = parseTelegramConfirmationDecision(plainText)
         if (decision !== null) {
           const resolveConfirmation = confirmationRef.current.values().next().value
@@ -419,23 +445,28 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           return
         }
       }
-      if (!update.photo && pendingInputRef.current) {
+      if (!update.photo && !update.document && pendingInputRef.current) {
         pendingInputRef.current.resolve(resolveTelegramChoiceReply(plainText, choicesRef.current))
         return
       }
-      const prompt = text || '[Origen: imagen de Telegram. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente.]'
-      const scope = update.photo ? 'finance' : resolveTelegramAgentScope(prompt, conversationScopeRef.current)
-      if (update.photo) {
+      const attachment = update.photo
+        ? { kind: 'photo' as const, value: update.photo }
+        : update.document
+          ? { kind: 'pdf' as const, value: update.document }
+          : null
+      const prompt = text || (attachment ? '[Origen: documento de Telegram. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente.]' : '')
+      const scope = attachment ? 'finance' : resolveTelegramAgentScope(prompt, conversationScopeRef.current)
+      if (attachment) {
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram image received', {
           updateId: update.updateId,
           messageId: update.messageId,
-          width: update.photo.width,
-          height: update.photo.height,
-          fileSize: update.photo.fileSize,
+          width: update.photo?.width,
+          height: update.photo?.height,
+          fileSize: update.photo?.fileSize ?? update.document?.fileSize,
           pendingRequests: pendingRequestsRef.current.length,
         }, 'info')
       }
-      const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, scope, photo: update.photo ?? null })
+      const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, scope, attachment })
       if (requestsAhead === null) {
         await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar mas de 10 solicitudes pendientes. Espera a que termine alguna e intenta nuevamente.')
         return
@@ -444,10 +475,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         await sendTelegramMessage(
           state.telegram.botToken,
           peer.chatId,
-          update.photo
+          attachment
             ? requestsAhead > 0
-              ? `Imagen recibida. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
-              : 'Imagen recibida y en proceso.'
+              ? `Documento recibido. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
+              : 'Documento recibido y en proceso.'
             : requestsAhead > 0
               ? `Solicitud recibida. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
               : 'Solicitud recibida y en proceso.',
