@@ -29,6 +29,7 @@ mod mobile_ai_bridge;
 mod mobile_directory_picker;
 mod mobile_speech_permission;
 mod notia_timer;
+mod task_manager_publication;
 mod services {
     pub mod ai_service;
     pub mod bluetooth_service;
@@ -159,6 +160,7 @@ pub fn run() {
         .manage(services::speech_service::SpeechRuntimeState::default())
         .manage(services::qwen3_tts_service::Qwen3TtsRuntimeState::default())
         .manage(LibraryTreeWatchState::default())
+        .manage(task_manager_publication::TaskManagerPublicationState::default())
         .plugin(tauri_plugin_dialog::init());
 
     let builder = builder.plugin(database::init());
@@ -257,6 +259,14 @@ pub fn run() {
             window_control,
             start_window_dragging,
             start_window_dragging_with_restore,
+            task_manager_publication::publish_task_manager_boards,
+            task_manager_publication::hash_task_manager_publication_password,
+            task_manager_publication::get_task_manager_publication_url,
+            task_manager_publication::list_pending_task_manager_publication_devices,
+            task_manager_publication::approve_task_manager_publication_device,
+            task_manager_publication::revoke_task_manager_publication_device,
+            task_manager_publication::open_task_manager_publication,
+            task_manager_publication::stop_task_manager_publication,
         ])
         .plugin(mobile_ai_bridge::init())
         .plugin(mobile_directory_picker::init())

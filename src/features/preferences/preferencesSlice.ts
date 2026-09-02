@@ -8,6 +8,7 @@ import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../se
 import { loadQwen3TtsPreferences, saveQwen3TtsPreferences, type Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
 import { loadQwen3AsrPreferences, saveQwen3AsrPreferences, type Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
 import { loadBackupPreferences, saveBackupPreferences, type BackupPreferences } from '../../services/preferences/backupSettingsStorage'
+import { loadTaskManagerPublicationPreferences, saveTaskManagerPublicationPreferences, type TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
@@ -18,6 +19,7 @@ const initialState: PreferencesState = {
   qwen3TtsSettings: loadQwen3TtsPreferences(),
   qwen3AsrSettings: loadQwen3AsrPreferences(),
   backupPreferences: loadBackupPreferences(),
+  taskManagerPublicationPreferences: loadTaskManagerPublicationPreferences(),
 }
 
 const preferencesSlice = createSlice({
@@ -60,6 +62,10 @@ const preferencesSlice = createSlice({
       state.backupPreferences = action.payload
       saveBackupPreferences(action.payload)
     },
+    setTaskManagerPublicationPreferences(state, action: PayloadAction<TaskManagerPublicationPreferences>) {
+      state.taskManagerPublicationPreferences = action.payload
+      saveTaskManagerPublicationPreferences(action.payload)
+    },
   },
 })
 
@@ -73,6 +79,7 @@ export const {
   setQwen3TtsSettings,
   setQwen3AsrSettings,
   setBackupPreferences,
+  setTaskManagerPublicationPreferences,
 } = preferencesSlice.actions
 
 export default preferencesSlice.reducer

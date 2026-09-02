@@ -24,6 +24,7 @@ import type { InkMathPreferences } from '../../services/preferences/inkMathSetti
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
+import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 
 function getParentDirectory(filePath: string): string {
   const lastForwardSlash = filePath.lastIndexOf('/')
@@ -42,6 +43,8 @@ interface NotiaModalsProps {
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
   backupPreferences: BackupPreferences
   onBackupPreferencesChange: (value: BackupPreferences) => void
+  taskManagerPublicationPreferences: TaskManagerPublicationPreferences
+  onTaskManagerPublicationPreferencesChange: (value: TaskManagerPublicationPreferences) => void
   coldPassPromptState: {
     open: boolean
     requiresConfirmation: boolean
@@ -86,6 +89,8 @@ function NotiaModalsComponent({
   onTelegramPreferencesChange,
   backupPreferences,
   onBackupPreferencesChange,
+  taskManagerPublicationPreferences,
+  onTaskManagerPublicationPreferencesChange,
   coldPassPromptState,
   coldPassDeletePromptState,
   coldPassImportPromptState,
@@ -301,6 +306,8 @@ function NotiaModalsComponent({
         onTelegramPreferencesChange={onTelegramPreferencesChange}
         backupPreferences={backupPreferences}
         onBackupPreferencesChange={onBackupPreferencesChange}
+        taskManagerPublicationPreferences={taskManagerPublicationPreferences}
+        onTaskManagerPublicationPreferencesChange={onTaskManagerPublicationPreferencesChange}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

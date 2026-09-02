@@ -1,6 +1,15 @@
 type RuntimeDevice = 'Windows' | 'macOS' | 'Linux' | 'Android' | 'Unknown'
 
+declare global {
+  interface Window {
+    __NOTIA_PUBLISHED_TASK_MANAGER__?: boolean
+  }
+}
+
 export function getRuntimeDevice(): RuntimeDevice {
+  if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    return 'Windows'
+  }
   const userAgent = navigator.userAgent.toLowerCase()
   if (userAgent.includes('android')) {
     return 'Android'

@@ -36,14 +36,15 @@ import { useTelegramAgentBridge } from './hooks/useTelegramAgentBridge'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
-import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setBackupPreferences } from '../../features/preferences/preferencesSlice'
-import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectBackupPreferences } from '../../features/preferences/preferencesSelectors'
+import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setBackupPreferences, setTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSlice'
+import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectBackupPreferences, selectTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
 import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 import { notiaTimer } from '../../services/runtime/notiaLogger'
 import { useWindowsBackups } from './hooks/useWindowsBackups'
+import { useTaskManagerPublicationAutostart } from '../../modules/task-manager/hooks/useTaskManagerPublicationAutostart'
 
 // --- Pure helper function ---
 
@@ -60,6 +61,7 @@ function NotiaMenuComponent() {
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
   const backupPreferences = useAppSelector(selectBackupPreferences, shallowEqual)
+  const taskManagerPublicationPreferences = useAppSelector(selectTaskManagerPublicationPreferences, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const treeNodes = useAppSelector(selectTreeNodes)
@@ -67,6 +69,12 @@ function NotiaMenuComponent() {
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
   useWindowsBackups(activeLibrary, backupPreferences.directoryPath)
+  useTaskManagerPublicationAutostart({
+    activeLibrary,
+    preferences: taskManagerPublicationPreferences,
+    theme,
+    aiPreferences,
+  })
 
   useEffect(() => {
     const mountTimer = notiaTimer('ui', 'NotiaMenu.mount')
@@ -485,6 +493,8 @@ function NotiaMenuComponent() {
         onTelegramPreferencesChange={handleTelegramPreferencesChange}
         backupPreferences={backupPreferences}
         onBackupPreferencesChange={(value) => dispatch(setBackupPreferences(value))}
+        taskManagerPublicationPreferences={taskManagerPublicationPreferences}
+        onTaskManagerPublicationPreferencesChange={(value) => dispatch(setTaskManagerPublicationPreferences(value))}
           coldPassPromptState={coldPassPromptState}
           coldPassDeletePromptState={coldPassDeletePromptState}
           coldPassImportPromptState={coldPassImportPromptState}

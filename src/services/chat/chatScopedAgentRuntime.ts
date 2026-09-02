@@ -23,6 +23,7 @@ export interface ChatAgentRuntimeOptions {
   explicitlySelectedPaths?: string[]
   promptFileName?: string
   taskManagerScopeKey?: string | null
+  publishedScope?: boolean
   responseFormat?: ChatAgentResponseFormat
   actorUserId?: number
   financeSourceReference?: string | null
@@ -89,6 +90,23 @@ const TASK_MUTATION_TOOL_NAMES = new Set([
 ])
 const TASK_STATES = new Set<TaskState>(['Pendiente', 'Cancelada', 'En progreso', 'Finalizada', 'Bloqueada'])
 const TASK_PRIORITIES = new Set<TaskPriority>(['Baja', 'Media', 'Alta', 'Urgente'])
+const PUBLISHED_TASK_MANAGER_TOOL_NAMES = new Set([
+  'search_library_documents',
+  'search_library_context',
+  'read_library_documents',
+  'request_user_clarification',
+  'read_all_task_tickets',
+  'search_task_tickets',
+  'search_task_context',
+  'read_task_tickets',
+  'get_task_manager_options',
+  'set_task_execution_plan',
+  'create_library_note',
+  'replace_library_document',
+  'delete_library_document',
+  'request_file_read_permission',
+  ...TASK_MUTATION_TOOL_NAMES,
+])
 export const CHAT_AGENT_MAX_ROUNDS = 64
 export const CHAT_AGENT_SINGLE_CALL_TOOL_NAMES = [
   'set_task_execution_plan',
@@ -382,7 +400,11 @@ export function buildTicketSectionCorrection(
   ].join('\n')
 }
 
-export function buildChatAgentTools(scope: ChatAgentScope, autoConfirmFinanceMutations = false): AiNativeToolDefinition[] {
+export function buildChatAgentTools(
+  scope: ChatAgentScope,
+  autoConfirmFinanceMutations = false,
+  publishedScope = false,
+): AiNativeToolDefinition[] {
   const tools: AiNativeToolDefinition[] = [
     {
       type: 'function',
@@ -730,6 +752,9 @@ export function buildChatAgentTools(scope: ChatAgentScope, autoConfirmFinanceMut
       },
     })
   }
+  if (publishedScope) {
+    return tools.filter((tool) => PUBLISHED_TASK_MANAGER_TOOL_NAMES.has(tool.function.name))
+  }
   return scope === 'finance'
     ? tools.filter((tool) => FINANCE_TOOL_NAMES.has(tool.function.name))
     : tools
@@ -1000,10 +1025,26 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   resolveToolResultAnswer: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer: (answer: string) => string | null
 }> {
-  const defaultPrompt = await loadAgentPrompt(options.library, options.promptFileName ?? 'default.md')
-  const rules = await loadAgentRules(options.library, options.responseFormat)
-  const agentMemories = await loadAgentMemories(options.library)
-  const allOptions = await loadLibraryFileOptions(options.library)
+  const defaultPrompt = options.publishedScope
+    ? DEFAULT_AGENT_PROMPT
+    : await loadAgentPrompt(options.library, options.promptFileName ?? 'default.md')
+  const rules = options.publishedScope
+    ? resolveAgentRulesContent(DEFAULT_AGENT_RULES, options.responseFormat)
+    : await loadAgentRules(options.library, options.responseFormat)
+  const agentMemories = options.publishedScope ? [] : await loadAgentMemories(options.library)
+  const normalizedLibraryPath = options.library.path.replace(/\\/g, '/').replace(/\/+$/, '')
+  const allOptions: ChatLibraryFileOption[] = options.publishedScope
+    ? options.scopePaths.map((pathValue) => {
+      const normalizedPath = pathValue.replace(/\\/g, '/')
+      return {
+        path: pathValue,
+        name: normalizedPath.split('/').pop() ?? normalizedPath,
+        relativePath: normalizedPath.startsWith(`${normalizedLibraryPath}/`)
+          ? normalizedPath.slice(normalizedLibraryPath.length + 1)
+          : normalizedPath,
+      }
+    })
+    : await loadLibraryFileOptions(options.library)
   const normalizedScopePaths = new Set(options.scopePaths.map((path) => path.replace(/\\/g, '/')))
   const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt)$/i.test(item.name))
   const candidates = options.scope === 'finance'
@@ -1078,6 +1119,9 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       throw new Error('Se cancelo la ejecucion del agente.')
     }
     const { name, arguments: args } = call.function
+    if (options.publishedScope && !PUBLISHED_TASK_MANAGER_TOOL_NAMES.has(name)) {
+      return { ok: false, error: 'published-task-manager-scope-required' }
+    }
     if (name === 'add_agent_rule') {
       const rule = typeof args.rule === 'string' ? args.rule.trim() : ''
       if (isInternalAgentCorrection(rule)) {
@@ -1979,9 +2023,11 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       options.responseFormat,
       agentMemories.length > 0
         ? `${rules}\n\nMemorias persistentes del usuario:\n${agentMemories.map((memory) => `- ${memory}`).join('\n')}`
-        : rules,
+        : options.publishedScope
+          ? `${rules}\n\nEsta sesion se ejecuta desde una publicacion de Task Manager. El limite de seguridad es estricto: solo podes consultar o modificar tickets y archivos pertenecientes a los tableros publicados. No menciones, busques, solicites permiso ni intentes acceder a ninguna otra parte de la biblioteca Notia. La sesion es efimera y no puede leer ni guardar reglas o memorias globales.`
+          : rules,
     ),
-    tools: buildChatAgentTools(options.scope, options.responseFormat === 'telegram-html'),
+    tools: buildChatAgentTools(options.scope, options.responseFormat === 'telegram-html', options.publishedScope),
     executeTool,
     resolveToolResultAnswer: options.scope === 'finance' ? resolveFinanceToolResultAnswer : () => null,
     validateFinalAnswer: (answer) => options.scope === 'task-manager'

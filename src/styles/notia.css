@@ -858,6 +858,94 @@
   text-overflow: ellipsis;
 }
 
+.notia-published-task-manager {
+  width: 100%;
+  height: 100%;
+}
+
+.notia-published-titlebar {
+  justify-content: space-between;
+  padding: 0 10px 0 14px;
+  -webkit-app-region: initial;
+}
+
+.notia-published-titlebar-label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  color: var(--color-heading-text);
+}
+
+.notia-published-titlebar-label span {
+  color: var(--color-subtle-text);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notia-published-chat-toggle {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+}
+
+.notia-published-workspace,
+.notia-published-task-content {
+  min-width: 0;
+  min-height: 0;
+}
+
+.notia-published-task-content {
+  display: flex;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.notia-published-chat .notia-chat-shell {
+  padding: 10px;
+}
+
+.notia-published-chat-plan {
+  max-height: 120px;
+  margin: 0 12px 8px;
+  padding: 8px 8px 8px 28px;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  color: var(--color-body-text);
+  font-size: 12px;
+}
+
+.notia-published-chat-plan li[data-status='completed'] {
+  color: var(--color-subtle-text);
+  text-decoration: line-through;
+}
+
+.notia-published-chat-thinking-text {
+  max-height: 112px;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  overflow: auto;
+  border-left: 2px solid var(--color-active-border);
+  color: var(--color-subtle-text);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .notia-published-task-manager {
+    --titlebar-height: 52px;
+  }
+
+  .notia-published-chat-toggle {
+    width: 48px;
+    height: 48px;
+  }
+}
+
 .notia-tree-extension {
   flex-shrink: 0;
   padding: 2px 5px;
@@ -4187,6 +4275,21 @@
   margin-top: 12px;
 }
 
+.notia-settings-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 10px;
+  cursor: pointer;
+  color: var(--color-heading-text);
+}
+
+.notia-settings-checkbox-label input {
+  width: 18px;
+  height: 18px;
+}
+
 .notia-settings-status {
   margin-top: 12px;
   border: 1px solid var(--color-border-soft);
@@ -5634,6 +5737,14 @@
 }
 
 @media (hover: none) and (pointer: coarse) {
+  .notia-app-shell.notia-published-task-manager {
+    --titlebar-height: 52px;
+  }
+
+  .notia-published-titlebar {
+    height: var(--titlebar-height);
+  }
+
   .notia-toolbar-button,
   .notia-icon-button,
   .notia-footer-button,

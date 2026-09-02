@@ -50,6 +50,10 @@ export default defineConfig(() => ({
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        'public-task-manager': resolve(__dirname, 'public-task-manager.html'),
+      },
       output: {
         manualChunks(id: string | undefined) {
           if (!id) return undefined

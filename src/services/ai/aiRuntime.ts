@@ -280,6 +280,9 @@ async function streamDesktopAiChatViaBridge(
   messages: AiMessagePayload[],
   options: StreamAiChatReplyOptions,
 ): Promise<string> {
+  if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    return streamPublishedTaskManagerAiChat(preferences, model, messages, options)
+  }
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   let answer = ''
   let settled = false
@@ -344,6 +347,63 @@ function isLikelyThinkingModelName(model: string): boolean {
 
 function supportsThinkingLevels(model: string): boolean {
   return model.trim().toLowerCase().includes('gpt-oss')
+}
+
+async function streamPublishedTaskManagerAiChat(
+  preferences: AiPreferences,
+  model: string,
+  messages: AiMessagePayload[],
+  options: StreamAiChatReplyOptions,
+): Promise<string> {
+  const publicationPath = window.location.pathname.replace(/\/app\/?$/, '').replace(/\/+$/, '')
+  const response = await fetch(`${publicationPath}/ai/stream`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
+    body: JSON.stringify({
+      ...normalizeAiSettingsInput(preferences),
+      model,
+      think: options.thinking ?? false,
+      messages,
+    }),
+    signal: options.abortSignal,
+  })
+  if (!response.ok || !response.body) {
+    const detail = await response.text()
+    throw new Error(detail || 'No se pudo iniciar el streaming publicado.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let pending = ''
+  let answer = ''
+  const processLine = (line: string) => {
+    if (!line.trim()) return
+    const event = JSON.parse(line) as { type?: unknown; delta?: unknown; answer?: unknown; message?: unknown }
+    if (event.type === 'thinking' && typeof event.delta === 'string') {
+      options.onThinkingDelta?.(event.delta)
+    } else if (event.type === 'delta' && typeof event.delta === 'string') {
+      answer += event.delta
+      options.onMessageDelta?.(event.delta)
+    } else if (event.type === 'done' && typeof event.answer === 'string') {
+      answer = event.answer
+    } else if (event.type === 'error') {
+      throw new Error(typeof event.message === 'string' ? event.message : 'Se interrumpio el stream de IA.')
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    pending += decoder.decode(value, { stream: !done })
+    const lines = pending.split('\n')
+    pending = lines.pop() ?? ''
+    lines.forEach(processLine)
+    if (done) break
+  }
+  processLine(pending)
+  const normalizedAnswer = answer.trim()
+  if (!normalizedAnswer) throw new Error('La IA no devolvio contenido.')
+  return normalizedAnswer
 }
 
 function isLikelyNativeToolModelName(model: string): boolean {
@@ -528,10 +588,12 @@ export async function listAiModels(preferences: AiPreferences): Promise<AiModelO
   }
 
   let names: string[] = []
-  try {
-    names = await fetchAvailableOllamaModels(normalizedPreferences)
-  } catch {
-    // The native bridge remains a fallback for runtimes where direct fetch is unavailable.
+  if (!window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    try {
+      names = await fetchAvailableOllamaModels(normalizedPreferences)
+    } catch {
+      // The native bridge remains a fallback for runtimes where direct fetch is unavailable.
+    }
   }
 
   if (names.length === 0) {
@@ -539,7 +601,15 @@ export async function listAiModels(preferences: AiPreferences): Promise<AiModelO
   }
 
   const uniqueNames = Array.from(new Set(names)).sort((left, right) => left.localeCompare(right, 'en'))
-  const models = await mapWithConcurrency(uniqueNames, 4, (name) => loadAiModelOption(normalizedPreferences, name))
+  const models = window.__NOTIA_PUBLISHED_TASK_MANAGER__
+    ? uniqueNames.map((name) => ({
+      name,
+      supportsThinking: isLikelyThinkingModelName(name),
+      supportsThinkingLevels: supportsThinkingLevels(name),
+      supportsVision: isLikelyMultimodalModelName(name),
+      supportsTools: isLikelyNativeToolModelName(name),
+    }))
+    : await mapWithConcurrency(uniqueNames, 4, (name) => loadAiModelOption(normalizedPreferences, name))
   writeCachedModelList(normalizedPreferences, models)
   return models
 }

@@ -21,7 +21,7 @@ import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
-import { selectQwen3AsrSettings, selectQwen3TtsSettings } from '../../features/preferences/preferencesSelectors'
+import { selectQwen3AsrSettings, selectQwen3TtsSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { setQwen3AsrSettings, setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
 import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
 import { checkQwen3TtsConnection, getQwen3TtsStatus, reloadQwen3Tts } from '../../services/qwen3Tts/qwen3TtsRuntime'
@@ -32,8 +32,12 @@ import { notifyFinanceDataChanged } from '../../modules/finance/services/finance
 import { ConfirmationDialogModal } from './ConfirmationDialogModal'
 import { pickDirectory } from '../../services/files/filesystemEngine'
 import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
+import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
+import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
+import { loadTaskManagerSnapshot } from '../../modules/task-manager/services/taskManagerService'
+import { approveTaskManagerPublicationDevice, buildTaskManagerPublicationPayload, getTaskManagerPublicationUrl, hashTaskManagerPublicationPassword, listPendingTaskManagerPublicationDevices, openTaskManagerPublication, publishTaskManagerBoards, revokeTaskManagerPublicationDevice, stopTaskManagerPublication } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups'
+type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
 
 interface SettingsModalProps {
   open: boolean
@@ -48,9 +52,11 @@ interface SettingsModalProps {
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
   backupPreferences: BackupPreferences
   onBackupPreferencesChange: (value: BackupPreferences) => void
+  taskManagerPublicationPreferences: TaskManagerPublicationPreferences
+  onTaskManagerPublicationPreferencesChange: (value: TaskManagerPublicationPreferences) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups']
+const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 export function SettingsModal({
@@ -66,11 +72,14 @@ export function SettingsModal({
   onTelegramPreferencesChange,
   backupPreferences,
   onBackupPreferencesChange,
+  taskManagerPublicationPreferences,
+  onTaskManagerPublicationPreferencesChange,
 }: SettingsModalProps) {
   const dispatch = useAppDispatch()
   const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
   const qwen3AsrPreferences = useAppSelector(selectQwen3AsrSettings)
   const activeLibrary = useAppSelector(selectActiveLibrary)
+  const appTheme = useAppSelector(selectTheme)
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
@@ -116,6 +125,11 @@ export function SettingsModal({
   const [isFinanceDeleteConfirmationOpen, setIsFinanceDeleteConfirmationOpen] = useState(false)
   const [isClearingFinanceData, setIsClearingFinanceData] = useState(false)
   const [backupStatus, setBackupStatus] = useState('')
+  const [publicationStatus, setPublicationStatus] = useState('Seleccioná uno o más tableros para habilitar la publicación local.')
+  const [publicationUrl, setPublicationUrl] = useState<string | null>(null)
+  const [isPublishingBoards, setIsPublishingBoards] = useState(false)
+  const [publicationPasswordDraft, setPublicationPasswordDraft] = useState('')
+  const [pendingPublicationDevices, setPendingPublicationDevices] = useState<Array<{ id: string, name: string }>>([])
   const [financeClearStatus, setFinanceClearStatus] = useState<{
     tone: 'idle' | 'success' | 'error'
     message: string
@@ -135,7 +149,9 @@ export function SettingsModal({
   const [isCheckingAiHealth, setIsCheckingAiHealth] = useState(false)
   const projectVersion = getAppVersion()
   const runtimeDevice = getRuntimeDevice()
-  const visibleSections = runtimeDevice === 'Windows' ? SECTIONS : SECTIONS.filter((section) => section !== 'Backups')
+  const visibleSections = runtimeDevice === 'Windows' ? SECTIONS : SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar')
+  const taskManagerSettings = loadTaskManagerSettings()
+  const publishedBoardNames = new Set(taskManagerPublicationPreferences.publishedBoardNames)
   const refreshBounds = getExplorerRefreshIntervalBounds()
   const refreshSliderMin = refreshBounds.allowDisabled ? 0 : refreshBounds.minSeconds
   const isAutoRefreshDisabled = refreshBounds.allowDisabled && explorerRefreshIntervalMs <= 0
@@ -159,6 +175,7 @@ export function SettingsModal({
 
   useEffect(() => {
     if (!open) {
+      setPublicationPasswordDraft('')
       return
     }
 
@@ -183,6 +200,25 @@ export function SettingsModal({
   useEffect(() => {
     if (!open) setIsFinanceDeleteConfirmationOpen(false)
   }, [open])
+
+  useEffect(() => {
+    if (!open || runtimeDevice !== 'Windows') return
+    let cancelled = false
+    void getTaskManagerPublicationUrl()
+      .then((url) => {
+        if (!cancelled) setPublicationUrl(url)
+      })
+      .catch(() => {
+        if (!cancelled) setPublicationUrl(null)
+      })
+    return () => { cancelled = true }
+  }, [open, runtimeDevice])
+
+  useEffect(() => {
+    if (!open || activeSection !== 'Publicar') return
+    const refresh = () => void listPendingTaskManagerPublicationDevices().then(setPendingPublicationDevices).catch(() => setPendingPublicationDevices([]))
+    refresh(); const timer = window.setInterval(refresh, 2000); return () => window.clearInterval(timer)
+  }, [activeSection, open])
 
   useEffect(() => {
     if (!open) {
@@ -334,6 +370,68 @@ export function SettingsModal({
       })
     } finally {
       setIsClearingFinanceData(false)
+    }
+  }
+
+  const handlePublicationBoardToggle = (boardName: string) => {
+    const nextBoardNames = new Set(taskManagerPublicationPreferences.publishedBoardNames)
+    if (nextBoardNames.has(boardName)) nextBoardNames.delete(boardName)
+    else nextBoardNames.add(boardName)
+    onTaskManagerPublicationPreferencesChange({
+      ...taskManagerPublicationPreferences,
+      publishedBoardNames: Array.from(nextBoardNames),
+    })
+    setPublicationUrl(null)
+    setPublicationStatus('La publicación anterior se detuvo. Publicá la nueva selección para generar una URL.')
+    void stopTaskManagerPublication().catch((error: unknown) => {
+      setPublicationStatus(error instanceof Error ? error.message : 'No se pudo detener la publicación anterior.')
+    })
+  }
+
+  const handlePublishBoards = async () => {
+    if (!activeLibrary?.path || taskManagerPublicationPreferences.publishedBoardNames.length === 0) {
+      setPublicationStatus('Seleccioná al menos un tablero y asegurate de tener una biblioteca activa.')
+      return
+    }
+    if (!publicationPasswordDraft && !taskManagerPublicationPreferences.passwordHash) {
+      setPublicationStatus('Configurá una contraseña de al menos 8 caracteres para publicar.')
+      return
+    }
+    if (publicationPasswordDraft && publicationPasswordDraft.length < 8) {
+      setPublicationStatus('La contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+
+    setIsPublishingBoards(true)
+    try {
+      const passwordHash = publicationPasswordDraft
+        ? await hashTaskManagerPublicationPassword(publicationPasswordDraft)
+        : taskManagerPublicationPreferences.passwordHash
+      if (!passwordHash) throw new Error('No se pudo configurar la contraseña de publicación.')
+      const snapshot = await loadTaskManagerSnapshot(activeLibrary.path)
+      const url = await publishTaskManagerBoards(buildTaskManagerPublicationPayload(
+        taskManagerSettings.boards,
+        taskManagerSettings.groups,
+        snapshot.tasks,
+        taskManagerPublicationPreferences.publishedBoardNames,
+        activeLibrary.path,
+        appTheme,
+        passwordHash,
+        normalizedAiPreferences,
+        taskManagerPublicationPreferences.approvedDevices,
+        taskManagerPublicationPreferences.port,
+      ))
+      onTaskManagerPublicationPreferencesChange({
+        ...taskManagerPublicationPreferences,
+        passwordHash,
+      })
+      setPublicationPasswordDraft('')
+      setPublicationUrl(url)
+      setPublicationStatus('Tableros publicados en la red local. La URL solo funciona mientras Notia esté abierta.')
+    } catch (error) {
+      setPublicationStatus(error instanceof Error ? error.message : 'No se pudieron publicar los tableros.')
+    } finally {
+      setIsPublishingBoards(false)
     }
   }
 
@@ -762,6 +860,99 @@ export function SettingsModal({
                 <NotiaButton variant="secondary" disabled={!backupPreferences.directoryPath} onClick={() => { onBackupPreferencesChange({ directoryPath: '' }); setBackupStatus('Backups desactivados.') }}>Desactivar</NotiaButton>
               </div>
               <div className="notia-settings-status" role="status">{backupStatus}</div>
+            </div>
+          ) : activeSection === 'Publicar' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Publicar tableros de Task Manager</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                Disponible solo en Windows. Abre el mismo Task Manager, con sus vistas y funciones de edición, para los tableros seleccionados en cualquier navegador de la red local. Notia debe permanecer abierta.
+              </div>
+              <div className="notia-settings-actions" role="group" aria-label="Tableros publicados">
+                {taskManagerSettings.boards.map((board) => (
+                  <label key={board.name} className="notia-settings-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={publishedBoardNames.has(board.name)}
+                      onChange={() => handlePublicationBoardToggle(board.name)}
+                    />
+                    {board.name}
+                  </label>
+                ))}
+              </div>
+              {taskManagerSettings.boards.length === 0 ? <div className="notia-settings-status">Todavía no hay tableros disponibles.</div> : null}
+              <label className="notia-settings-input-wrap">
+                <span className="notia-settings-card-label">Contraseña de acceso</span>
+                <input
+                  className="notia-settings-input"
+                  type="password"
+                  value={publicationPasswordDraft}
+                  minLength={8}
+                  maxLength={256}
+                  autoComplete="new-password"
+                  placeholder={taskManagerPublicationPreferences.passwordHash ? 'Contraseña configurada; dejá vacío para conservarla' : 'Mínimo 8 caracteres'}
+                  onChange={(event) => setPublicationPasswordDraft(event.target.value)}
+                />
+              </label>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                La contraseña nunca se guarda en texto plano: Notia conserva únicamente un hash unidireccional PBKDF2-HMAC-SHA256 con salt.
+              </div>
+              <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Puerto fijo de publicación</span><input className="notia-settings-input" type="number" min="1024" max="65535" value={taskManagerPublicationPreferences.port} onChange={(event) => { const port = Number(event.target.value); if (Number.isInteger(port) && port >= 1024 && port <= 65535) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, port }) }} /></label>
+              <div className="notia-settings-actions">
+                <NotiaButton onClick={() => void handlePublishBoards()} disabled={isPublishingBoards || !activeLibrary || taskManagerPublicationPreferences.publishedBoardNames.length === 0 || (!publicationPasswordDraft && !taskManagerPublicationPreferences.passwordHash)}>
+                  {isPublishingBoards ? 'Publicando…' : 'Publicar y actualizar'}
+                </NotiaButton>
+                <NotiaButton variant="secondary" onClick={() => void openTaskManagerPublication()} disabled={!publicationUrl}>
+                  Abrir en el navegador
+                </NotiaButton>
+              </div>
+              {publicationUrl ? <div className="notia-settings-card-value" aria-label="URL de publicación">{publicationUrl}</div> : null}
+              {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">Si otro equipo no puede abrirla, permití Notia en el Firewall de Windows para redes privadas.</div> : null}
+              {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">La URL usa HTTPS con un certificado autofirmado: en cada equipo remoto aceptá o instalá el certificado de Notia la primera vez.</div> : null}
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivos que solicitan acceso</div>
+              {pendingPublicationDevices.length === 0 ? (
+                <div className="notia-settings-card-label">No hay solicitudes pendientes.</div>
+              ) : pendingPublicationDevices.map((device) => (
+                <div key={device.id} className="notia-settings-actions">
+                  <span>{device.name}</span>
+                  <NotiaButton
+                    variant="secondary"
+                    onClick={() => void approveTaskManagerPublicationDevice(device.id)
+                      .then((approved) => {
+                        onTaskManagerPublicationPreferencesChange({
+                          ...taskManagerPublicationPreferences,
+                          approvedDevices: [...taskManagerPublicationPreferences.approvedDevices, approved],
+                        })
+                        setPendingPublicationDevices((current) => current.filter((item) => item.id !== approved.id))
+                      })
+                      .catch((error: unknown) => setPublicationStatus(error instanceof Error ? error.message : 'No se pudo autorizar el dispositivo.'))}
+                  >
+                    Aceptar dispositivo
+                  </NotiaButton>
+                </div>
+              ))}
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivos con acceso</div>
+              {taskManagerPublicationPreferences.approvedDevices.length === 0 ? (
+                <div className="notia-settings-card-label">No hay dispositivos autorizados.</div>
+              ) : taskManagerPublicationPreferences.approvedDevices.map((device) => (
+                <div key={device.id} className="notia-settings-actions">
+                  <span>{device.name}</span>
+                  <NotiaButton
+                    variant="secondary"
+                    onClick={() => void revokeTaskManagerPublicationDevice(device.id)
+                      .then(() => {
+                        onTaskManagerPublicationPreferencesChange({
+                          ...taskManagerPublicationPreferences,
+                          approvedDevices: taskManagerPublicationPreferences.approvedDevices.filter((item) => item.id !== device.id),
+                        })
+                        setPublicationStatus(`${device.name} ya no tiene acceso.`)
+                      })
+                      .catch((error: unknown) => setPublicationStatus(error instanceof Error ? error.message : 'No se pudo revocar el dispositivo.'))}
+                  >
+                    Revocar acceso
+                  </NotiaButton>
+                </div>
+              ))}
+              <div className="notia-settings-status" role="status">{publicationStatus}</div>
             </div>
           ) : (
             <div>Seccion: {activeSection}</div>

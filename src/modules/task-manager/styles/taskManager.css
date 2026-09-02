@@ -495,6 +495,23 @@
   opacity: 0.5;
 }
 
+.notia-published-task-manager .tareas-task-drag-wrap {
+  touch-action: none;
+}
+
+.notia-published-task-manager .tareas-task-drag-wrap.is-dragging .tareas-task-card {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 70%, transparent);
+}
+
+.notia-published-task-manager .tareas-board.is-touch-dragging .tareas-task-drop-slot {
+  min-height: 0;
+  height: 2px !important;
+  border-width: 0;
+  border-top: 2px solid color-mix(in srgb, var(--interactive-accent) 75%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
 .tareas-task-drag-wrap.is-drop-target .tareas-task-card {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 50%, transparent);
 }

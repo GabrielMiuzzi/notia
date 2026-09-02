@@ -1,4 +1,5 @@
 use crate::notia_timer::NotiaTimer;
+use serde_json::Value;
 use tauri::State;
 
 use crate::mobile_directory_picker;
@@ -368,4 +369,85 @@ pub fn library_entry_operation(
             desktop::paste_entry(source_path, target_directory_path, mode)
         }
     }
+}
+
+/// Executes the filesystem subset used by the browser-hosted Task Manager.
+/// Its caller must authorize every path before reaching this adapter.
+pub(crate) fn execute_desktop_filesystem_command(
+    command: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    let result = match command {
+        "read_library_tree" => serde_json::to_value(desktop::read_library_tree(
+            serde_json::from_value::<ReadLibraryTreePayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?,
+        )),
+        "read_markdown_files" => serde_json::to_value(desktop::read_markdown_files(
+            serde_json::from_value::<ReadMarkdownFilesPayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?,
+        )),
+        "read_library_file" => {
+            let payload = serde_json::from_value::<ReadLibraryFilePayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?;
+            serde_json::to_value(desktop::read_library_file(&payload.file_path))
+        }
+        "write_library_file" => {
+            let payload = serde_json::from_value::<WriteLibraryFilePayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?;
+            serde_json::to_value(desktop::write_library_file(
+                &payload.file_path,
+                &payload.content,
+            ))
+        }
+        "path_exists" => {
+            let payload = serde_json::from_value::<PathExistsPayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?;
+            serde_json::to_value(desktop::path_exists(&payload.path))
+        }
+        "is_directory_path" => {
+            let payload = serde_json::from_value::<PathExistsPayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?;
+            serde_json::to_value(desktop::is_directory_path(&payload.path))
+        }
+        "create_library_entry" => {
+            let payload = serde_json::from_value::<CreateLibraryEntryPayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?;
+            let name = validate_create_library_entry_payload(&payload).map_err(|result| {
+                result
+                    .error
+                    .unwrap_or_else(|| "Solicitud inválida.".to_string())
+            })?;
+            serde_json::to_value(desktop::create_library_entry(
+                &payload.directory_path,
+                &name,
+                &payload.kind,
+            ))
+        }
+        "library_entry_operation" => {
+            let payload = serde_json::from_value::<LibraryEntryOperationPayload>(payload)
+                .map_err(|_| "Solicitud inválida.")?;
+            let result =
+                match validate_library_entry_operation_payload(&payload).map_err(|result| {
+                    result
+                        .error
+                        .unwrap_or_else(|| "Solicitud inválida.".to_string())
+                })? {
+                    ValidatedLibraryEntryOperation::Delete { target_path } => {
+                        desktop::delete_entry(target_path)
+                    }
+                    ValidatedLibraryEntryOperation::Rename {
+                        target_path,
+                        new_name,
+                    } => desktop::rename_entry(target_path, new_name),
+                    ValidatedLibraryEntryOperation::Paste {
+                        source_path,
+                        target_directory_path,
+                        mode,
+                    } => desktop::paste_entry(source_path, target_directory_path, mode),
+                };
+            serde_json::to_value(result)
+        }
+        _ => return Err("Operación no disponible en la publicación.".to_string()),
+    };
+    result.map_err(|_| "No se pudo serializar la respuesta.".to_string())
 }

@@ -17,6 +17,14 @@ import {
 } from './chatScopedAgentRuntime'
 
 describe('chatScopedAgentRuntime', () => {
+  it('removes global agent knowledge tools from published Task Manager sessions', () => {
+    const names = buildChatAgentTools('task-manager', false, true).map((tool) => tool.function.name)
+    expect(names).toContain('change_task_state')
+    expect(names).toContain('read_all_task_tickets')
+    expect(names).not.toContain('add_agent_rule')
+    expect(names).not.toContain('add_agent_memory')
+  })
+
   it('instructs the Telegram library agent to reuse search results', () => {
     const prompt = buildChatAgentSystemPrompt('library', 'Base')
     expect(prompt).toContain('no repitas una busqueda ni una lectura')

@@ -41,17 +41,23 @@ const theme = createTheme({
 interface TaskManagerAppProps {
   embedded?: boolean
   vault?: TaskManagerVaultRef | null
+  publishedBoardNames?: readonly string[]
+  canManageBoards?: boolean
   onOpenTaskFile?: (taskPath: string) => void
   onActivePanelChange?: (panelId: string) => void
   onActiveChatContextChange?: (context: TaskManagerChatContext | null) => void
+  onPublishedChatContextChange?: (context: TaskManagerChatContext | null) => void
 }
 
 function TaskManagerAppComponent({
   embedded = false,
   vault = null,
+  publishedBoardNames,
+  canManageBoards = true,
   onOpenTaskFile,
   onActivePanelChange,
   onActiveChatContextChange,
+  onPublishedChatContextChange,
 }: TaskManagerAppProps) {
   const mountTimerRef = useRef(
     notiaTimer('task-manager', 'TaskManagerApp mount', {
@@ -73,6 +79,16 @@ function TaskManagerAppComponent({
   const deferredTasks = useDeferredValue(manager.snapshot.tasks)
   const deferredDocuments = useDeferredValue(manager.snapshot.documents)
   const deferredGroups = useDeferredValue(manager.settings.groups)
+  const publishedBoardNameSet = useMemo(() => (
+    publishedBoardNames
+      ? new Set(publishedBoardNames.map((boardName) => boardName.trim().toLowerCase()))
+      : null
+  ), [publishedBoardNames])
+  const visibleTasks = useMemo(() => (
+    publishedBoardNameSet
+      ? deferredTasks.filter((task) => publishedBoardNameSet.has(task.board.trim().toLowerCase()))
+      : deferredTasks
+  ), [deferredTasks, publishedBoardNameSet])
 
   useEffect(() => {
     onActivePanelChange?.(activeBoard)
@@ -102,24 +118,38 @@ function TaskManagerAppComponent({
     onActiveChatContextChange?.(activeBoardChatContext)
   }, [activeBoardChatContext, onActiveChatContextChange])
 
+  const publishedChatContext = useMemo(() => {
+    if (!manager.settings.activeVaultPath || !publishedBoardNameSet) return null
+    return {
+      scopeKey: 'task-manager:published-boards',
+      filePaths: Array.from(new Set(visibleTasks.map((task) => (
+        toAbsoluteVaultPath(manager.settings.activeVaultPath as string, task.filePath)
+      )))).sort((left, right) => left.localeCompare(right, 'es')),
+    } satisfies TaskManagerChatContext
+  }, [manager.settings.activeVaultPath, publishedBoardNameSet, visibleTasks])
+
+  useEffect(() => {
+    onPublishedChatContextChange?.(publishedChatContext)
+  }, [onPublishedChatContextChange, publishedChatContext])
+
   const visibleGroups = useMemo(
     () => deferredGroups.filter((group) => (group.board ?? 'default') === activeBoard),
     [activeBoard, deferredGroups],
   )
 
   const finishedTasks = useMemo(
-    () => deferredTasks.filter((task) => isTaskInFinishedFolder(task.filePath)),
-    [deferredTasks],
+    () => visibleTasks.filter((task) => isTaskInFinishedFolder(task.filePath)),
+    [visibleTasks],
   )
 
   const cancelledTasks = useMemo(
-    () => deferredTasks.filter((task) => isTaskInCancelledFolder(task.filePath)),
-    [deferredTasks],
+    () => visibleTasks.filter((task) => isTaskInCancelledFolder(task.filePath)),
+    [visibleTasks],
   )
 
   const activeBoardTasks = useMemo(
-    () => deferredTasks.filter((task) => task.board === activeBoard),
-    [activeBoard, deferredTasks],
+    () => visibleTasks.filter((task) => task.board === activeBoard),
+    [activeBoard, visibleTasks],
   )
 
   const activeBoardTasksCount = useMemo(
@@ -129,8 +159,8 @@ function TaskManagerAppComponent({
   )
 
   const activePomodoroTasks = useMemo(
-    () => deferredTasks.filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath)),
-    [deferredTasks],
+    () => visibleTasks.filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath)),
+    [visibleTasks],
   )
 
   const activeBoardConfig = manager.settings.boards.find((board) => board.name === activeBoard) ?? null
@@ -247,26 +277,30 @@ function TaskManagerAppComponent({
               Refrescar
             </NotiaButton>
 
-            <NotiaButton className="tareas-btn-new" onClick={manager.openBoardCreateDialog}>
-              <TaskManagerIcon name={TASK_ICON_NAME.plus} size={14} />
-              Nuevo tablero
-            </NotiaButton>
+            {canManageBoards ? (
+              <>
+                <NotiaButton className="tareas-btn-new" onClick={manager.openBoardCreateDialog}>
+                  <TaskManagerIcon name={TASK_ICON_NAME.plus} size={14} />
+                  Nuevo tablero
+                </NotiaButton>
 
-            <NotiaButton
-              className="tareas-btn-edit-board"
-              onClick={handleOpenBoardEditDialog}
-              disabled={!activeTabIsBoard}
-            >
-              Editar tablero
-            </NotiaButton>
+                <NotiaButton
+                  className="tareas-btn-edit-board"
+                  onClick={handleOpenBoardEditDialog}
+                  disabled={!activeTabIsBoard}
+                >
+                  Editar tablero
+                </NotiaButton>
 
-            <NotiaButton
-              className="tareas-btn-delete-board"
-              onClick={() => void handleRemoveBoard()}
-              disabled={!activeTabIsBoard || activeBoard === 'default'}
-            >
-              Eliminar tablero
-            </NotiaButton>
+                <NotiaButton
+                  className="tareas-btn-delete-board"
+                  onClick={() => void handleRemoveBoard()}
+                  disabled={!activeTabIsBoard || activeBoard === 'default'}
+                >
+                  Eliminar tablero
+                </NotiaButton>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -434,6 +468,14 @@ function areTaskManagerAppPropsEqual(
     return false
   }
 
+  if (!sameBoardNames(previous.publishedBoardNames, next.publishedBoardNames)) {
+    return false
+  }
+
+  if (previous.canManageBoards !== next.canManageBoards) {
+    return false
+  }
+
   if (previous.onOpenTaskFile !== next.onOpenTaskFile) {
     return false
   }
@@ -446,5 +488,15 @@ function areTaskManagerAppPropsEqual(
     return false
   }
 
+  if (previous.onPublishedChatContextChange !== next.onPublishedChatContextChange) {
+    return false
+  }
+
   return true
+}
+
+function sameBoardNames(previous?: readonly string[], next?: readonly string[]): boolean {
+  if (previous === next) return true
+  if (!previous || !next || previous.length !== next.length) return false
+  return previous.every((boardName, index) => boardName === next[index])
 }

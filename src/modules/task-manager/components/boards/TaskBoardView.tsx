@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { TextField } from '@mui/material'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
@@ -34,7 +34,18 @@ const STATUS_ACTIONS = [
   { id: 'finish', label: 'Finalizar', nextState: 'Finalizada', cls: 'is-finish' },
 ] as const
 const TASK_DROP_HYSTERESIS_RATIO = 0.15
+const TOUCH_DRAG_DELAY_MS = 350
+const TOUCH_DRAG_CANCEL_DISTANCE_PX = 10
 const EMPTY_TASKS: TaskItem[] = []
+
+interface TouchDragState {
+  pointerId: number
+  taskPath: string
+  originX: number
+  originY: number
+  timerId: number | null
+  active: boolean
+}
 
 interface TaskCommentDialogState {
   task: TaskItem
@@ -89,6 +100,8 @@ export function TaskBoardView({
   const [taskDropTarget, setTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
   const [pinnedTaskDropTarget, setPinnedTaskDropTarget] = useState<{ groupName: string; index: number } | null>(null)
   const [subtaskDropTarget, setSubtaskDropTarget] = useState<{ parentTaskPath: string; index: number } | null>(null)
+  const [isTouchDragging, setIsTouchDragging] = useState(false)
+  const touchDragRef = useRef<TouchDragState | null>(null)
 
   useEffect(() => {
     const currentGroupKeys = new Set(groups.map((group) => getGroupKey(group)))
@@ -255,12 +268,16 @@ export function TaskBoardView({
     await onReorderGroups(boardName, ordered)
   }, [boardName, draggedGroupName, managedGroupNames, onReorderGroups])
 
-  const handleTopLevelTaskDrop = useCallback(async (targetGroupName: string, targetIndex: number) => {
-    if (!draggedTaskPath) {
+  const handleTopLevelTaskDrop = useCallback(async (
+    targetGroupName: string,
+    targetIndex: number,
+    sourceTaskPath = draggedTaskPath,
+  ) => {
+    if (!sourceTaskPath) {
       return
     }
 
-    const draggedTask = topLevelTasks.find((task) => task.filePath === draggedTaskPath)
+    const draggedTask = topLevelTasks.find((task) => task.filePath === sourceTaskPath)
     if (!draggedTask) {
       setDraggedTaskPath(null)
       setPinnedTaskDropTarget(null)
@@ -448,10 +465,138 @@ export function TaskBoardView({
     setSourceDialog(null)
   }
 
+  const clearTouchDrag = useCallback(() => {
+    const touchDrag = touchDragRef.current
+    if (touchDrag && touchDrag.timerId !== null) {
+      window.clearTimeout(touchDrag.timerId)
+    }
+    touchDragRef.current = null
+    setIsTouchDragging(false)
+    setDraggedTaskPath(null)
+    setDraggedTaskHeight(0)
+    setTaskDropTarget(null)
+    setPinnedTaskDropTarget(null)
+  }, [])
+
+  useEffect(() => () => {
+    const touchDrag = touchDragRef.current
+    if (touchDrag && touchDrag.timerId !== null) {
+      window.clearTimeout(touchDrag.timerId)
+    }
+  }, [])
+
+  const resolveTouchDropTarget = useCallback((clientX: number, clientY: number) => {
+    const target = document.elementFromPoint(clientX, clientY)
+    const dropSlot = target?.closest<HTMLElement>('.tareas-task-drop-slot[data-drop-group][data-drop-index]')
+    if (dropSlot) {
+      const groupName = dropSlot.dataset.dropGroup
+      const index = Number(dropSlot.dataset.dropIndex)
+      if (groupName && Number.isInteger(index)) {
+        return { groupName, index }
+      }
+    }
+    const taskNode = target?.closest<HTMLElement>('.tareas-task-drag-wrap[data-task-group][data-task-index]')
+    if (taskNode) {
+      const groupName = taskNode.dataset.taskGroup
+      const index = Number(taskNode.dataset.taskIndex)
+      if (groupName && Number.isInteger(index)) {
+        const bounds = taskNode.getBoundingClientRect()
+        return { groupName, index: clientY < bounds.top + bounds.height / 2 ? index : index + 1 }
+      }
+    }
+
+    const groupNode = target?.closest<HTMLElement>('.tareas-group[data-group]')
+    const groupName = groupNode?.dataset.group
+    if (!groupName) {
+      return null
+    }
+    return { groupName, index: (groupedTopLevelTasks[groupName] ?? EMPTY_TASKS).length }
+  }, [groupedTopLevelTasks])
+
+  const handleTouchPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== 'touch') {
+      return
+    }
+    const target = event.target
+    if (!(target instanceof HTMLElement) || target.closest('button, input, textarea, select, a, [contenteditable="true"]')) {
+      return
+    }
+    const taskNode = target.closest<HTMLElement>('.tareas-task-drag-wrap[data-task-path]')
+    const taskPath = taskNode?.dataset.taskPath
+    if (!taskPath) {
+      return
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const touchDrag: TouchDragState = {
+      pointerId: event.pointerId,
+      taskPath,
+      originX: event.clientX,
+      originY: event.clientY,
+      timerId: null,
+      active: false,
+    }
+    touchDrag.timerId = window.setTimeout(() => {
+      touchDrag.active = true
+      touchDrag.timerId = null
+      setIsTouchDragging(true)
+      setDraggedTaskPath(taskPath)
+      setDraggedTaskHeight(0)
+    }, TOUCH_DRAG_DELAY_MS)
+    touchDragRef.current = touchDrag
+  }, [])
+
+  const handleTouchPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const touchDrag = touchDragRef.current
+    if (!touchDrag || touchDrag.pointerId !== event.pointerId) {
+      return
+    }
+    if (!touchDrag.active) {
+      if (Math.hypot(event.clientX - touchDrag.originX, event.clientY - touchDrag.originY) > TOUCH_DRAG_CANCEL_DISTANCE_PX) {
+        clearTouchDrag()
+      }
+      return
+    }
+    event.preventDefault()
+    const target = resolveTouchDropTarget(event.clientX, event.clientY)
+    if (target) {
+      setTaskDropTarget((previous) => (
+        previous?.groupName === target.groupName && previous.index === target.index ? previous : target
+      ))
+    }
+  }, [clearTouchDrag, resolveTouchDropTarget])
+
+  const handleTouchPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const touchDrag = touchDragRef.current
+    if (!touchDrag || touchDrag.pointerId !== event.pointerId) {
+      return
+    }
+    const wasActive = touchDrag.active
+    const sourceTaskPath = touchDrag.taskPath
+    const target = wasActive ? resolveTouchDropTarget(event.clientX, event.clientY) : null
+    clearTouchDrag()
+    if (target) {
+      void handleTopLevelTaskDrop(target.groupName, target.index, sourceTaskPath)
+    }
+  }, [clearTouchDrag, handleTopLevelTaskDrop, resolveTouchDropTarget])
+
+  const handleTouchPointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const touchDrag = touchDragRef.current
+    if (!touchDrag || event.pointerType !== 'touch' || touchDrag.pointerId !== event.pointerId) {
+      return
+    }
+    clearTouchDrag()
+  }, [clearTouchDrag])
+
   return (
     <>
       <div className="tareas-board-shell">
-        <div className="tareas-board">
+        <div
+          className={`tareas-board${isTouchDragging ? ' is-touch-dragging' : ''}`}
+          onPointerDown={handleTouchPointerDown}
+          onPointerMove={handleTouchPointerMove}
+          onPointerUp={handleTouchPointerEnd}
+          onPointerCancel={handleTouchPointerCancel}
+        >
           {groups.map((group) => {
             const groupTasks = groupedTopLevelTasks[group.name] ?? []
             const isExpanded = expandedGroups.has(getGroupKey(group))
@@ -596,6 +741,9 @@ export function TaskBoardView({
                           ) : null}
                           <div
                             className={`tareas-task-drag-wrap${draggedTaskPath === task.filePath ? ' is-dragging' : ''}`}
+                            data-task-path={task.filePath}
+                            data-task-group={group.name}
+                            data-task-index={index}
                             draggable
                             onDragStart={(event) => {
                               if (event.dataTransfer) {
@@ -834,6 +982,9 @@ export function TaskBoardView({
                         ) : null}
                         <div
                           className={`tareas-task-drag-wrap${draggedTaskPath === task.filePath ? ' is-dragging' : ''}`}
+                          data-task-path={task.filePath}
+                          data-task-group="Sin grupo"
+                          data-task-index={index}
                           draggable
                           onDragStart={(event) => {
                             if (event.dataTransfer) {
