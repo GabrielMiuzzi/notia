@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 use tauri::plugin::PluginHandle;
@@ -12,7 +12,77 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 10;
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+
+const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
+    (
+        "default-expense-food",
+        "Alimentación",
+        "Supermercado, comida y bebidas.",
+    ),
+    (
+        "default-expense-housing",
+        "Vivienda",
+        "Alquiler, expensas y mantenimiento del hogar.",
+    ),
+    (
+        "default-expense-services",
+        "Servicios",
+        "Luz, gas, agua, internet y telefonía.",
+    ),
+    (
+        "default-expense-transport",
+        "Transporte",
+        "Transporte público, combustible y mantenimiento vehicular.",
+    ),
+    (
+        "default-expense-health",
+        "Salud",
+        "Consultas, medicamentos y cobertura médica.",
+    ),
+    (
+        "default-expense-education",
+        "Educación",
+        "Cursos, cuotas y materiales educativos.",
+    ),
+    (
+        "default-expense-entertainment",
+        "Entretenimiento",
+        "Salidas, suscripciones y actividades recreativas.",
+    ),
+    (
+        "default-expense-clothing",
+        "Indumentaria",
+        "Ropa, calzado y accesorios.",
+    ),
+    (
+        "default-expense-taxes",
+        "Impuestos y comisiones",
+        "Impuestos, tasas y comisiones bancarias.",
+    ),
+    (
+        "default-expense-other",
+        "Otros",
+        "Gastos que no corresponden a otra categoría.",
+    ),
+];
+
+pub(crate) fn ensure_default_finance_categories(
+    connection: &Connection,
+) -> Result<(), rusqlite::Error> {
+    for (id, name, description) in DEFAULT_EXPENSE_CATEGORIES {
+        connection.execute(
+            "INSERT OR IGNORE INTO finance_categories (id,name,kind,parent_id,active,description,created_at,updated_at)
+             SELECT ?1,?2,'expense',NULL,1,?3,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM finance_categories
+                 WHERE kind='expense' AND lower(trim(name))=lower(trim(?2))
+             )",
+            params![id, name, description],
+        )?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -418,6 +488,32 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
         )?;
         transaction.commit()?;
     }
+    if current_version < 11 {
+        let transaction = connection.unchecked_transaction()?;
+        ensure_default_finance_categories(&transaction)?;
+        transaction.execute(
+            "INSERT INTO notia_schema_migrations (version) VALUES (11)",
+            [],
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 12 {
+        let transaction = connection.unchecked_transaction()?;
+        ensure_default_finance_categories(&transaction)?;
+        transaction.execute(
+            "INSERT INTO notia_schema_migrations (version) VALUES (12)",
+            [],
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 13 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE finance_salary_receipts ADD COLUMN signed_document INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO notia_schema_migrations (version) VALUES (13);",
+        )?;
+        transaction.commit()?;
+    }
     Ok(current_version.max(CURRENT_SCHEMA_VERSION))
 }
 
@@ -559,6 +655,32 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM pragma_table_info('finance_savings_reserves') WHERE name = 'ledger_account_id'", [], |row| row.get(0))
             .expect("ledger account column");
         assert_eq!(ledger_column, 1);
+        let signed_salary_column: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('finance_salary_receipts') WHERE name = 'signed_document'", [], |row| row.get(0))
+            .expect("signed salary column");
+        assert_eq!(signed_salary_column, 1);
+        let expense_categories = connection
+            .prepare("SELECT name FROM finance_categories WHERE kind='expense' ORDER BY name")
+            .expect("expense category query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("expense categories")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect expense categories");
+        assert_eq!(
+            expense_categories,
+            vec![
+                "Alimentación",
+                "Educación",
+                "Entretenimiento",
+                "Impuestos y comisiones",
+                "Indumentaria",
+                "Otros",
+                "Salud",
+                "Servicios",
+                "Transporte",
+                "Vivienda",
+            ]
+        );
     }
 
     #[test]
@@ -585,6 +707,80 @@ mod tests {
             )
             .expect("accounts table");
         assert_eq!(accounts, 1);
+    }
+
+    #[test]
+    fn default_expense_categories_preserve_an_existing_category_with_the_same_name() {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        connection.execute_batch(
+            "CREATE TABLE notia_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+             INSERT INTO notia_schema_migrations(version) VALUES(10);
+             CREATE TABLE finance_categories (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+                parent_id TEXT REFERENCES finance_categories(id), active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, description TEXT
+             );
+             CREATE TABLE finance_salary_receipts (id TEXT PRIMARY KEY);
+             INSERT INTO finance_categories(id,name,kind,active,description,created_at,updated_at)
+                VALUES('custom-food','Alimentación','expense',0,'Categoría personalizada','now','now');",
+        ).expect("version 10 fixture");
+
+        assert_eq!(
+            migrate(&connection).expect("migration"),
+            CURRENT_SCHEMA_VERSION
+        );
+
+        let category_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM finance_categories WHERE kind='expense'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("expense category count");
+        let existing: (String, i64, String) = connection
+            .query_row(
+                "SELECT id,active,description FROM finance_categories WHERE name='Alimentación'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("existing category");
+
+        assert_eq!(category_count, 10);
+        assert_eq!(
+            existing,
+            ("custom-food".into(), 0, "Categoría personalizada".into())
+        );
+    }
+
+    #[test]
+    fn version_12_restores_categories_in_an_already_cleared_database() {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        connection
+            .execute_batch(
+                "CREATE TABLE notia_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                 INSERT INTO notia_schema_migrations(version) VALUES(11);
+                 CREATE TABLE finance_categories (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+                    parent_id TEXT REFERENCES finance_categories(id), active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, description TEXT
+                 );
+                 CREATE TABLE finance_salary_receipts (id TEXT PRIMARY KEY);",
+            )
+            .expect("cleared version 11 fixture");
+
+        assert_eq!(
+            migrate(&connection).expect("migration"),
+            CURRENT_SCHEMA_VERSION
+        );
+
+        let category_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM finance_categories WHERE kind='expense' AND active=1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("restored category count");
+        assert_eq!(category_count, 10);
     }
 
     #[test]

@@ -240,6 +240,7 @@ describe('chatScopedAgentRuntime', () => {
     expect(names).toEqual(expect.arrayContaining([
       'get_finance_dashboard',
       'create_finance_transaction',
+      'create_finance_savings_exchange',
       'update_finance_transaction_status',
       'search_finance_categories',
       'create_finance_category',
@@ -267,6 +268,9 @@ describe('chatScopedAgentRuntime', () => {
         confidence: { description: expect.stringContaining('0.95') },
       },
     })
+    const createSavingsExchange = financeTools.find((tool) => tool.function.name === 'create_finance_savings_exchange')
+    expect(createSavingsExchange?.function.description).toContain('no pidas IDs al usuario')
+    expect(createSavingsExchange?.function.parameters.required).toEqual(expect.arrayContaining(['reserve', 'sourceAccount', 'sourceAmount', 'savingsAmount']))
     const updateTransaction = financeTools.find((tool) => tool.function.name === 'update_finance_transaction_status')
     expect(updateTransaction?.function.description).toContain('list_finance_movements')
     const createCategory = financeTools.find((tool) => tool.function.name === 'create_finance_category')
@@ -293,6 +297,10 @@ describe('chatScopedAgentRuntime', () => {
     expect(financeTools.find((tool) => tool.function.name === 'create_finance_credit_card_statement')?.function.description).toContain('automáticamente')
     expect(financeTools.find((tool) => tool.function.name === 'create_finance_purchase')?.function.parameters)
       .toMatchObject({ required: expect.arrayContaining(['categoryId']) })
+    const telegramSalary = financeTools.find((tool) => tool.function.name === 'create_finance_salary')
+    expect(telegramSalary?.function.description).toContain('neto impreso es autoritativo')
+    expect(telegramSalary?.function.parameters)
+      .toMatchObject({ required: expect.arrayContaining(['signedDocument']) })
     expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('registra y confirma la operación de inmediato')
     expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('no finalices con un resumen')
     expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('create_finance_salary')

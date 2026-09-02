@@ -49,6 +49,12 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function formatSalaryNet(amount: string, currency: FinanceCurrency): string {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return `${currency} ${amount}`;
+  return new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
+}
+
 export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
   const [form, setForm] = useState<FormKind>(null);
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
@@ -63,7 +69,7 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
       const [purchaseRows, priceRows, salaryRows, statementRows, worth, worthHistory] = await Promise.all([
         listFinancePurchases(library),
         listFinancePriceHistory(library),
-        listFinanceSalaries(library, { from: historyFrom, to: historyTo }),
+        listFinanceSalaries(library),
         listFinanceCreditCardStatements(library, { from: historyFrom, to: historyTo }),
         getFinanceNetWorth(library, today()),
         listFinanceNetWorthHistory(library),
@@ -84,6 +90,9 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
     setForm(null);
     await Promise.all([load(), onChanged()]);
   };
+  const latestSalaries = [...salaries]
+    .sort((left, right) => right.salary.period.localeCompare(left.salary.period))
+    .slice(0, 6);
 
   return (
     <section className="finance-records" aria-labelledby="finance-records-title">
@@ -114,7 +123,7 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
         </article>
         <article className="finance-card">
           <h3>Últimos sueldos</h3>
-          {salaries.length ? <ul className="finance-category-list">{salaries.slice(0, 6).map(({ salary, netChange, netChangePercent }) => <li key={salary.id}><span>{salary.period} · {salary.employer}<small>Neto {salary.currency} {salary.netAmount}</small></span><strong>{netChange} {netChangePercent ? `(${netChangePercent}%)` : ""}</strong></li>)}</ul> : <p className="finance-muted">Sin recibos registrados.</p>}
+          {latestSalaries.length ? <ul className="finance-category-list">{latestSalaries.map(({ salary }) => <li key={salary.id}><span>{salary.period} · {salary.employer}<small>Cobrado el {salary.paymentDate}</small></span><strong>Neto {formatSalaryNet(salary.netAmount, salary.currency)}</strong></li>)}</ul> : <p className="finance-muted">Sin recibos registrados.</p>}
         </article>
       </div>
       <div className="finance-grid">

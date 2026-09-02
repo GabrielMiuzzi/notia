@@ -2474,15 +2474,42 @@
 .finance-savings-breakdown { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 16px 0; color: var(--color-muted-text); }
 .finance-salary-chart-card { margin-top: 16px; }
 .finance-salary-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.finance-salary-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.finance-salary-summary__card { min-width: 0; padding: 14px; border: 1px solid var(--color-border-soft); background: var(--color-app-bg); }
+.finance-salary-summary__card h4 { margin: 0 0 10px; color: var(--color-muted-text); font-size: .8rem; font-weight: 600; }
+.finance-salary-summary__card strong { display: block; color: var(--color-heading-text); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.finance-salary-summary__card small { display: block; margin-top: 8px; color: var(--color-muted-text); font-size: .75rem; }
+.finance-salary-summary-unavailable { margin: 16px 0 0; }
+.finance-salary-inflation { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-border-soft); }
+.finance-salary-inflation h4 { margin: 0 0 6px; color: var(--color-heading-text); font-size: .9rem; }
+.finance-salary-inflation > p { margin: 0 0 12px; font-size: .8rem; }
+.finance-salary-inflation__cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.finance-salary-inflation__card { min-width: 0; padding: 14px; border: 1px solid var(--color-border-soft); background: var(--color-app-bg); }
+.finance-salary-inflation__card h5 { margin: 0 0 10px; color: var(--color-muted-text); font-size: .8rem; font-weight: 600; }
+.finance-salary-inflation__card strong, .finance-salary-inflation__card small { display: block; }
+.finance-salary-inflation__card strong { margin-bottom: 8px; font-size: .95rem; }
+.finance-salary-inflation__card small { color: var(--color-muted-text); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.finance-salary-inflation-status { margin: 16px 0 0; }
 .finance-salary-chart-panel { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--color-border-soft); background: var(--color-app-bg); }
 .finance-salary-chart-panel figcaption { margin-bottom: 8px; color: var(--color-heading-text); font-size: .85rem; font-weight: 650; }
 .finance-chart-scroll { overflow-x: auto; }
-.finance-salary-chart { min-width: 380px; width: 100%; height: auto; display: block; }
+.finance-salary-chart { min-width: 100%; width: auto; height: auto; display: block; }
 .finance-salary-chart__axis { stroke: var(--color-border-soft); stroke-width: 1; }
+.finance-salary-chart__grid { stroke: var(--color-border-soft); stroke-width: 1; opacity: .45; }
 .finance-salary-chart__line { fill: none; stroke-width: 3; stroke-linecap: square; stroke-linejoin: miter; }
+.finance-salary-chart__line-target { fill: none; stroke: transparent; stroke-width: 18; cursor: crosshair; }
 .finance-salary-chart__line--ars { stroke: var(--color-accent-text); }
 .finance-salary-chart__line--usd { stroke: var(--color-focus-ring); }
 .finance-salary-chart__label { fill: var(--color-muted-text); font-size: 12px; }
+.finance-salary-chart__y-label { font-size: 11px; }
+.finance-salary-chart__point { fill: var(--color-app-bg); stroke-width: 3; }
+.finance-salary-chart__point-target { fill: transparent; stroke: transparent; cursor: crosshair; outline: none; }
+.finance-salary-chart__point-target:focus { stroke: var(--color-focus-ring); stroke-width: 2; }
+.finance-salary-chart__crosshair { stroke: var(--color-muted-text); stroke-width: 1; stroke-dasharray: 3 3; opacity: .7; }
+.finance-salary-chart__tooltip rect { fill: var(--color-hover-surface); stroke: var(--color-border-soft); stroke-width: 1; }
+.finance-salary-chart__tooltip text { fill: var(--color-body-text); font-size: 11px; }
+.finance-salary-chart__tooltip-period { font-weight: 650; }
+.finance-salary-chart__tooltip-value { font-variant-numeric: tabular-nums; }
 .finance-credit-card-chart-card { margin-top: 16px; }
 .finance-card-chart-legend { display: inline-flex; flex-wrap: wrap; gap: 8px 12px; color: var(--color-muted-text); font-size: .8rem; }
 .finance-card-chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -2493,9 +2520,8 @@
 .finance-card-chart__line--1 { stroke: var(--color-focus-ring); }
 .finance-card-chart__line--2 { stroke: var(--color-icon-new-note); }
 .finance-card-chart__line--3 { stroke: var(--color-tree-folder); }
-.finance-balance-chart { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; align-items: end; }.finance-balance-chart > div { min-height: 96px; display: flex; flex-direction: column; justify-content: end; gap: 4px; padding: 10px; background: var(--color-accent-bg); border: 1px solid var(--color-border-soft); border-radius: 3px; }.finance-balance-chart span { color: var(--color-muted-text); font-size: .78rem; }.finance-balance-chart strong { font-size: .82rem; }
 .finance-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; }.finance-pagination button { min-height: 44px; }
-@media (max-width: 760px) { .finance-header, .finance-section-heading { flex-direction: column; align-items: stretch; }.finance-actions { width: 100%; }.finance-actions button { flex: 1; min-height: 48px; }.finance-metrics, .finance-grid, .finance-quotes__grid, .finance-salary-charts { grid-template-columns: 1fr; }.finance-module { padding: 20px 14px; }.finance-modal-backdrop { align-items: end; padding: 0; }.finance-form { width: 100%; max-height: 92dvh; border-radius: 4px 4px 0 0; padding-bottom: max(24px, env(safe-area-inset-bottom)); } }
+@media (max-width: 760px) { .finance-header, .finance-section-heading { flex-direction: column; align-items: stretch; }.finance-actions { width: 100%; }.finance-actions button { flex: 1; min-height: 48px; }.finance-metrics, .finance-grid, .finance-quotes__grid, .finance-salary-charts, .finance-salary-inflation__cards { grid-template-columns: 1fr; }.finance-salary-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.finance-module { padding: 20px 14px; }.finance-modal-backdrop { align-items: end; padding: 0; }.finance-form { width: 100%; max-height: 92dvh; border-radius: 4px 4px 0 0; padding-bottom: max(24px, env(safe-area-inset-bottom)); } }
 
 .notia-finance-webview {
   width: 100%;

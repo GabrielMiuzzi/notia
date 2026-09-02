@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { NotiaLibrary } from '../../../types/notia'
-import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult, FinanceDevQueryResult, FinanceDevTable } from '../types/financeTypes'
+import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinanceSavingsExchange, FinanceSavedSavingsExchange, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult, FinanceDevQueryResult, FinanceDevTable } from '../types/financeTypes'
 import { financeContext } from '../types/financeTypes'
 
 export function getFinanceDashboard(library: NotiaLibrary, month: string): Promise<FinanceDashboard> {
@@ -59,6 +59,10 @@ export function saveFinanceSavingsMovement(library: NotiaLibrary, movement: Fina
   return invoke<FinanceSavingsMovement>('finance_save_savings_movement', { payload: { context: financeContext(library), movement } })
 }
 
+export function saveFinanceSavingsExchange(library: NotiaLibrary, exchange: FinanceSavingsExchange): Promise<FinanceSavedSavingsExchange> {
+  return invoke<FinanceSavedSavingsExchange>('finance_save_savings_exchange', { payload: { context: financeContext(library), exchange } })
+}
+
 export function linkFinanceSavingsAccount(library: NotiaLibrary, reserveId: string, accountId: string): Promise<void> {
   return invoke('finance_link_savings_account', { payload: { context: financeContext(library), reserveId, accountId } })
 }
@@ -88,6 +92,46 @@ export function saveFinanceSalary(library: NotiaLibrary, salary: FinanceSalaryRe
 
 export function listFinanceSalaries(library: NotiaLibrary, filters: FinanceHistoryFilters = {}): Promise<FinanceSalaryEvolution[]> {
   return invoke<FinanceSalaryEvolution[]>('finance_list_salaries', { payload: { context: financeContext(library), ...filters } })
+}
+
+class FinanceSalaryPersistenceVerificationError extends Error {
+  readonly code = 'storage'
+}
+
+export function matchesSavedSalary(expected: FinanceSalaryReceipt, persisted: FinanceSalaryReceipt): boolean {
+  return persisted.id === expected.id
+    && persisted.period === expected.period
+    && persisted.paymentDate === expected.paymentDate
+    && persisted.employer === expected.employer
+    && persisted.grossAmount === expected.grossAmount
+    && persisted.deductionsTotal === expected.deductionsTotal
+    && persisted.netAmount === expected.netAmount
+    && persisted.currency === expected.currency
+    && persisted.accountId === expected.accountId
+    && persisted.status === expected.status
+    && Boolean(persisted.signedDocument) === Boolean(expected.signedDocument)
+    && persisted.sourceReference === expected.sourceReference
+    && persisted.concepts.length === expected.concepts.length
+    && expected.concepts.every((concept) => persisted.concepts.some((candidate) =>
+      candidate.id === concept.id
+      && candidate.name === concept.name
+      && candidate.conceptType === concept.conceptType
+      && candidate.amount === concept.amount))
+}
+
+/** Re-reads a salary from native SQLite and rejects success without the complete persisted record. */
+export async function verifyFinanceSalaryPersistence(library: NotiaLibrary, salary: FinanceSalaryReceipt): Promise<void> {
+  const persistedRows = await listFinanceSalaries(library, { from: salary.period, to: salary.period })
+  if (!persistedRows.some(({ salary: persisted }) => matchesSavedSalary(salary, persisted))) {
+    throw new FinanceSalaryPersistenceVerificationError('El recibo no pudo verificarse en la base financiera después de guardarlo.')
+  }
+}
+
+/** Saves a salary and confirms it through a separate native read before reporting success. */
+export async function saveVerifiedFinanceSalary(library: NotiaLibrary, salary: FinanceSalaryReceipt): Promise<FinanceSalaryReceipt> {
+  const saved = await saveFinanceSalary(library, salary)
+  await verifyFinanceSalaryPersistence(library, saved)
+  return saved
 }
 
 export function saveFinanceCreditCardStatement(library: NotiaLibrary, statement: FinanceCreditCardStatement): Promise<FinanceSavedCreditCardStatement> {

@@ -445,6 +445,8 @@ pub struct SalaryReceipt {
     pub currency: String,
     pub account_id: String,
     pub status: String,
+    #[serde(default)]
+    pub signed_document: bool,
     pub source_reference: Option<String>,
     pub raw_extraction: Option<String>,
     pub concepts: Vec<SalaryConcept>,
@@ -486,7 +488,17 @@ fn validate_salary_receipt(salary: &SalaryReceipt) -> Result<(), String> {
     let gross = ensure_money(&salary.gross_amount, "El bruto")?;
     let deductions = ensure_money(&salary.deductions_total, "Los descuentos")?;
     let net = ensure_money(&salary.net_amount, "El neto")?;
-    if salary.status != "pending" && gross - deductions != net {
+    let has_pdf_evidence = salary
+        .source_reference
+        .as_deref()
+        .is_some_and(|reference| reference.to_ascii_lowercase().ends_with(".pdf"));
+    if salary.signed_document && !has_pdf_evidence {
+        return Err("Un recibo marcado como firmado requiere una evidencia PDF.".into());
+    }
+    if salary.status != "pending"
+        && gross - deductions != net
+        && !(salary.signed_document && has_pdf_evidence)
+    {
         return Err(format!(
             "El neto debería ser {} según bruto menos descuentos.",
             format_cents(gross - deductions)
@@ -564,7 +576,7 @@ pub fn finance_save_salary(
     transaction.execute("INSERT INTO finance_source_artifacts (id,source_type,reference,raw_text,content_hash,created_at) VALUES (?1,'salary',?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text",params![artifact_id,salary.source_reference,salary.raw_extraction,format!("salary:{}:{}",normalize(&salary.employer),salary.period),timestamp]).map_err(|error|error.to_string())?;
     transaction.execute("INSERT INTO finance_receipts (id,source_artifact_id,receipt_type,validation_status,created_at,updated_at) VALUES (?1,?2,'salary',?3,?4,?4) ON CONFLICT(id) DO UPDATE SET validation_status=excluded.validation_status,updated_at=excluded.updated_at",params![receipt_id,artifact_id,salary.status,timestamp]).map_err(|error|error.to_string())?;
     transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,description,source,status,source_artifact_id,operation_fingerprint,created_at,updated_at) VALUES (?1,'income',?2,?3,?4,?5,?6,'salary',?7,?8,?9,?10,?10) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,status=excluded.status,updated_at=excluded.updated_at",params![transaction_id,salary.net_amount,salary.currency,&salary.payment_date[..10],salary.account_id,format!("Sueldo {} · {}",salary.employer,salary.period),salary.status,artifact_id,format!("salary:{}:{}",normalize(&salary.employer),salary.period),timestamp]).map_err(|error|error.to_string())?;
-    transaction.execute("INSERT INTO finance_salary_receipts (id,period,payment_date,employer,gross_amount,deductions_total,net_amount,currency,account_id,transaction_id,source_artifact_id,validation_status,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13) ON CONFLICT(id) DO UPDATE SET payment_date=excluded.payment_date,gross_amount=excluded.gross_amount,deductions_total=excluded.deductions_total,net_amount=excluded.net_amount,account_id=excluded.account_id,validation_status=excluded.validation_status,updated_at=excluded.updated_at",params![salary.id,salary.period,salary.payment_date,salary.employer,salary.gross_amount,salary.deductions_total,salary.net_amount,salary.currency,salary.account_id,transaction_id,artifact_id,salary.status,timestamp]).map_err(|error|error.to_string())?;
+    transaction.execute("INSERT INTO finance_salary_receipts (id,period,payment_date,employer,gross_amount,deductions_total,net_amount,currency,account_id,transaction_id,source_artifact_id,validation_status,signed_document,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14) ON CONFLICT(id) DO UPDATE SET payment_date=excluded.payment_date,gross_amount=excluded.gross_amount,deductions_total=excluded.deductions_total,net_amount=excluded.net_amount,account_id=excluded.account_id,validation_status=excluded.validation_status,signed_document=excluded.signed_document,updated_at=excluded.updated_at",params![salary.id,salary.period,salary.payment_date,salary.employer,salary.gross_amount,salary.deductions_total,salary.net_amount,salary.currency,salary.account_id,transaction_id,artifact_id,salary.status,salary.signed_document as i32,timestamp]).map_err(|error|error.to_string())?;
     transaction
         .execute(
             "DELETE FROM finance_salary_concepts WHERE salary_receipt_id=?1",
@@ -591,7 +603,7 @@ pub fn finance_list_salaries(
             .prepare(
                 "SELECT s.id,s.period,s.payment_date,s.employer,s.gross_amount,
                         s.deductions_total,s.net_amount,s.currency,s.account_id,
-                        s.validation_status,a.reference,a.raw_text
+                        s.validation_status,s.signed_document,a.reference,a.raw_text
                  FROM finance_salary_receipts s
                  LEFT JOIN finance_source_artifacts a ON a.id=s.source_artifact_id
                  WHERE (?1 IS NULL OR s.period>=?1) AND (?2 IS NULL OR s.period<=?2)
@@ -611,8 +623,9 @@ pub fn finance_list_salaries(
                     currency: row.get(7)?,
                     account_id: row.get(8)?,
                     status: row.get(9)?,
-                    source_reference: row.get(10)?,
-                    raw_extraction: row.get(11)?,
+                    signed_document: row.get::<_, i32>(10)? != 0,
+                    source_reference: row.get(11)?,
+                    raw_extraction: row.get(12)?,
                     concepts: Vec::new(),
                 })
             })
@@ -1650,6 +1663,7 @@ mod tests {
             currency: "ARS".into(),
             account_id: "account".into(),
             status: "confirmed".into(),
+            signed_document: false,
             source_reference: Some("telegram:salary.jpg".into()),
             raw_extraction: Some("recibo".into()),
             concepts: vec![SalaryConcept {
@@ -1668,6 +1682,28 @@ mod tests {
     }
 
     #[test]
+    fn signed_pdf_salary_accepts_authoritative_net_with_payroll_adjustments() {
+        let salary = SalaryReceipt {
+            id: "salary-signed-pdf".into(),
+            period: "2026-08".into(),
+            payment_date: "2026-08-31".into(),
+            employer: "Empresa SA".into(),
+            gross_amount: "7000000".into(),
+            deductions_total: "374656.53".into(),
+            net_amount: "6500000".into(),
+            currency: "ARS".into(),
+            account_id: "account".into(),
+            status: "confirmed".into(),
+            signed_document: true,
+            source_reference: Some("telegram:recibo-firmado.pdf".into()),
+            raw_extraction: Some("Adelanto de aguinaldo. Firmado digitalmente.".into()),
+            concepts: vec![],
+        };
+
+        validate_salary_receipt(&salary).expect("a signed PDF is authoritative");
+    }
+
+    #[test]
     fn salary_rejects_invalid_concept_types() {
         let salary = SalaryReceipt {
             id: "salary-2026-08".into(),
@@ -1680,6 +1716,7 @@ mod tests {
             currency: "ARS".into(),
             account_id: "account".into(),
             status: "confirmed".into(),
+            signed_document: false,
             source_reference: None,
             raw_extraction: None,
             concepts: vec![SalaryConcept {
@@ -1709,6 +1746,7 @@ mod tests {
                 currency: "ARS".into(),
                 account_id: "account".into(),
                 status: "confirmed".into(),
+                signed_document: false,
                 source_reference: None,
                 raw_extraction: None,
                 concepts: Vec::new(),

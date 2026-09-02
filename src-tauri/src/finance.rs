@@ -66,9 +66,7 @@ pub struct FinanceAccount {
     pub name: String,
     pub account_type: String,
     pub currency: String,
-    pub opening_balance: String,
     pub active: bool,
-    pub current_balance: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -125,14 +123,6 @@ pub struct FinanceDashboard {
     pub savings: Vec<FinanceSavingsReserve>,
     pub savings_movements: Vec<FinanceSavingsMovement>,
     pub merchants: Vec<FinanceMerchant>,
-    pub balance_history: Vec<FinanceMonthlyBalance>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FinanceMonthlyBalance {
-    pub month: String,
-    pub by_currency: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -182,6 +172,30 @@ pub struct FinanceSavingsMovement {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FinanceSavingsExchange {
+    pub id: String,
+    pub reserve_id: String,
+    pub source_account_id: String,
+    pub source_amount: String,
+    pub source_currency: String,
+    pub savings_amount: String,
+    pub savings_currency: String,
+    pub effective_date: String,
+    pub description: String,
+    pub actor_user_id: Option<i64>,
+    pub source_reference: Option<String>,
+    pub raw_source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceSavedSavingsExchange {
+    pub movement: FinanceSavingsMovement,
+    pub transaction: FinanceTransaction,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveAccountPayload {
     pub context: FinanceContext,
     pub account: FinanceAccount,
@@ -209,6 +223,12 @@ pub struct SaveSavingsReservePayload {
 pub struct SaveSavingsMovementPayload {
     pub context: FinanceContext,
     pub movement: FinanceSavingsMovement,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSavingsExchangePayload {
+    pub context: FinanceContext,
+    pub exchange: FinanceSavingsExchange,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -744,7 +764,6 @@ pub fn finance_get_dashboard(
         savings: finance_list_savings_inner(&connection)?,
         savings_movements: finance_list_savings_movements_inner(&connection, &month)?,
         merchants: finance_list_merchants_inner(&connection)?,
-        balance_history: finance_balance_history(&connection)?,
     })
 }
 
@@ -859,61 +878,6 @@ fn finance_history_start_period(end_period: &str) -> Result<String, String> {
     ))
 }
 
-fn finance_balance_history(connection: &Connection) -> Result<Vec<FinanceMonthlyBalance>, String> {
-    let mut balances: BTreeMap<String, i128> = BTreeMap::new();
-    let mut accounts = connection
-        .prepare("SELECT currency,opening_balance FROM finance_accounts WHERE active=1")
-        .map_err(|error| error.to_string())?;
-    for row in accounts
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| error.to_string())?
-    {
-        let (currency, amount) = row.map_err(|error| error.to_string())?;
-        *balances.entry(currency).or_default() += parse_cents(&amount).unwrap_or_default();
-    }
-    let mut statement=connection.prepare("SELECT substr(effective_date,1,7),transaction_type,currency,amount FROM finance_transactions WHERE deleted_at IS NULL AND status='confirmed' ORDER BY effective_date,created_at").map_err(|error|error.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?;
-    let mut snapshots: BTreeMap<String, BTreeMap<String, i128>> = BTreeMap::new();
-    for row in rows {
-        let (month, kind, currency, amount) = row.map_err(|error| error.to_string())?;
-        let cents = parse_cents(&amount).unwrap_or_default();
-        let delta = match kind.as_str() {
-            "income" => cents,
-            "expense" => -cents,
-            "adjustment" => cents,
-            _ => 0,
-        };
-        *balances.entry(currency).or_default() += delta;
-        snapshots.insert(month, balances.clone());
-    }
-    Ok(snapshots
-        .into_iter()
-        .rev()
-        .take(12)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|(month, values)| FinanceMonthlyBalance {
-            month,
-            by_currency: values
-                .into_iter()
-                .map(|(currency, value)| (currency, format_cents(value)))
-                .collect(),
-        })
-        .collect())
-}
-
 #[tauri::command]
 pub fn finance_save_savings_reserve(
     app: tauri::AppHandle,
@@ -998,6 +962,111 @@ pub fn finance_save_savings_movement(
     Ok(movement.clone())
 }
 
+#[tauri::command]
+pub fn finance_save_savings_exchange(
+    app: tauri::AppHandle,
+    payload: SaveSavingsExchangePayload,
+) -> FinanceCommandResult<FinanceSavedSavingsExchange> {
+    let exchange = &payload.exchange;
+    if exchange.id.trim().is_empty()
+        || exchange.reserve_id.trim().is_empty()
+        || exchange.source_account_id.trim().is_empty()
+        || exchange.description.trim().is_empty()
+        || !valid_amount(&exchange.source_amount)
+        || !valid_amount(&exchange.savings_amount)
+        || exchange.effective_date.len() < 10
+        || !matches!(exchange.source_currency.as_str(), "ARS" | "USD")
+        || !matches!(exchange.savings_currency.as_str(), "ARS" | "USD")
+        || exchange.source_currency == exchange.savings_currency
+    {
+        return Err(
+            "La compra para ahorro requiere importes, monedas, fecha y cuentas vÃ¡lidos.".into(),
+        );
+    }
+    let connection = validate_context(&payload.context, &app)?;
+    let reserve_currency: String = connection
+        .query_row(
+            "SELECT currency FROM finance_savings_reserves WHERE id = ?1 AND active = 1",
+            [&exchange.reserve_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "La reserva no existe o estÃ¡ inactiva.".to_string())?;
+    if reserve_currency != exchange.savings_currency {
+        return Err("La moneda acreditada no coincide con la reserva.".into());
+    }
+    let source_account_currency: String = connection
+        .query_row(
+            "SELECT currency FROM finance_accounts WHERE id = ?1 AND active = 1 AND account_type <> 'savings_reserve'",
+            [&exchange.source_account_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "La cuenta de origen no existe, estÃ¡ inactiva o no es una cuenta de pago.".to_string())?;
+    if source_account_currency != exchange.source_currency {
+        return Err("La moneda de salida no coincide con la cuenta de origen.".into());
+    }
+
+    let timestamp = now();
+    let movement_id = format!("savings-exchange:{}", exchange.id);
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let source_artifact_id = exchange
+        .source_reference
+        .as_deref()
+        .filter(|reference| !reference.trim().is_empty())
+        .map(|_| format!("savings-exchange-source:{}", exchange.id));
+    if let (Some(artifact_id), Some(reference)) = (
+        source_artifact_id.as_deref(),
+        exchange.source_reference.as_deref(),
+    ) {
+        transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,created_at) VALUES(?1,'telegram',?2,?3,?4) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text", params![artifact_id, reference, exchange.raw_source, timestamp]).map_err(|error| error.to_string())?;
+    }
+    transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,category_id,description,source,status,actor_user_id,source_artifact_id,created_at,updated_at) VALUES (?1,'expense',?2,?3,?4,?5,NULL,NULL,?6,'savings_exchange','confirmed',?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,account_id=excluded.account_id,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,source_artifact_id=excluded.source_artifact_id,updated_at=excluded.updated_at", params![exchange.id, exchange.source_amount, exchange.source_currency, exchange.effective_date, exchange.source_account_id, exchange.description, exchange.actor_user_id, source_artifact_id, timestamp]).map_err(|error| error.to_string())?;
+    transaction.execute("INSERT INTO finance_savings_movements (id,reserve_id,account_id,movement_type,amount,currency,effective_date,description,reason,source,status,actor_user_id,linked_transaction_id,created_at,updated_at) VALUES (?1,?2,NULL,'contribution',?3,?4,?5,?6,NULL,'savings_exchange','confirmed',?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET reserve_id=excluded.reserve_id,amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,linked_transaction_id=excluded.linked_transaction_id,updated_at=excluded.updated_at", params![movement_id, exchange.reserve_id, exchange.savings_amount, exchange.savings_currency, exchange.effective_date, exchange.description, exchange.actor_user_id, exchange.id, timestamp]).map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    drop(connection);
+    sync_context(&payload.context, &app)?;
+    Ok(FinanceSavedSavingsExchange {
+        movement: FinanceSavingsMovement {
+            id: movement_id,
+            reserve_id: exchange.reserve_id.clone(),
+            account_id: None,
+            movement_type: "contribution".into(),
+            amount: exchange.savings_amount.clone(),
+            currency: exchange.savings_currency.clone(),
+            effective_date: exchange.effective_date.clone(),
+            description: exchange.description.clone(),
+            reason: None,
+            source: "savings_exchange".into(),
+            status: "confirmed".into(),
+            actor_user_id: exchange.actor_user_id,
+            linked_transaction_id: Some(exchange.id.clone()),
+        },
+        transaction: FinanceTransaction {
+            id: exchange.id.clone(),
+            transaction_type: "expense".into(),
+            amount: exchange.source_amount.clone(),
+            currency: exchange.source_currency.clone(),
+            effective_date: exchange.effective_date.clone(),
+            account_id: exchange.source_account_id.clone(),
+            destination_account_id: None,
+            category_id: None,
+            description: exchange.description.clone(),
+            source: "savings_exchange".into(),
+            status: "confirmed".into(),
+            actor_user_id: exchange.actor_user_id,
+            source_artifact_id,
+            merchant_id: None,
+            operation_fingerprint: None,
+            installment_id: None,
+            source_reference: exchange.source_reference.clone(),
+            raw_source: exchange.raw_source.clone(),
+            created_at: None,
+            updated_at: None,
+        },
+    })
+}
+
 fn validate_savings_movement(movement: &FinanceSavingsMovement) -> Result<(), String> {
     if !valid_amount(&movement.amount)
         || movement.effective_date.len() < 10
@@ -1054,14 +1123,13 @@ pub fn finance_save_account(
     payload: SaveAccountPayload,
 ) -> FinanceCommandResult<FinanceAccount> {
     if payload.account.name.trim().is_empty()
-        || !valid_amount(&payload.account.opening_balance)
         || !matches!(payload.account.currency.as_str(), "ARS" | "USD")
     {
-        return Err("La cuenta requiere nombre y saldo válido.".into());
+        return Err("La cuenta requiere nombre y moneda válidos.".into());
     }
     let connection = validate_context(&payload.context, &app)?;
     let timestamp = now();
-    connection.execute("INSERT INTO finance_accounts (id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7) ON CONFLICT(id) DO UPDATE SET name=excluded.name, account_type=excluded.account_type, currency=excluded.currency, opening_balance=excluded.opening_balance, active=excluded.active, updated_at=excluded.updated_at", params![payload.account.id, payload.account.name.trim(), payload.account.account_type, payload.account.currency, payload.account.opening_balance, payload.account.active as i32, timestamp]).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO finance_accounts (id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES (?1,?2,?3,?4,'0',?5,?6,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name, account_type=excluded.account_type, currency=excluded.currency, active=excluded.active, updated_at=excluded.updated_at", params![payload.account.id, payload.account.name.trim(), payload.account.account_type, payload.account.currency, payload.account.active as i32, timestamp]).map_err(|e| e.to_string())?;
     drop(connection);
     sync_context(&payload.context, &app)?;
     Ok(payload.account)
@@ -1189,6 +1257,8 @@ fn clear_finance_data(connection: &mut Connection) -> Result<(), String> {
              DELETE FROM finance_accounts;",
         )
         .map_err(|error| error.to_string())?;
+    crate::database::ensure_default_finance_categories(&transaction)
+        .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -1280,72 +1350,20 @@ pub fn finance_save_transaction(
 }
 
 fn finance_list_accounts_inner(connection: &Connection) -> Result<Vec<FinanceAccount>, String> {
-    let current_month: String = connection
-        .query_row("SELECT strftime('%Y-%m', 'now', 'localtime')", [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| error.to_string())?;
-    finance_list_accounts_for_month_inner(connection, &current_month)
-}
-
-fn finance_list_accounts_for_month_inner(
-    connection: &Connection,
-    current_month: &str,
-) -> Result<Vec<FinanceAccount>, String> {
-    let mut statement = connection.prepare("SELECT id,name,account_type,currency,opening_balance,active FROM finance_accounts ORDER BY name").map_err(|e| e.to_string())?;
+    let mut statement = connection.prepare("SELECT id,name,account_type,currency,active FROM finance_accounts WHERE account_type <> 'savings_reserve' ORDER BY name").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([], |row| {
-            let id: String = row.get(0)?;
-            let opening_balance: String = row.get(4)?;
             Ok(FinanceAccount {
-                id,
+                id: row.get(0)?,
                 name: row.get(1)?,
                 account_type: row.get(2)?,
                 currency: row.get(3)?,
-                opening_balance: opening_balance.clone(),
-                active: row.get::<_, i32>(5)? != 0,
-                current_balance: opening_balance,
+                active: row.get::<_, i32>(4)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;
-    let mut accounts = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    for account in &mut accounts {
-        let mut balance = parse_cents(&account.opening_balance).unwrap_or_default();
-        let mut movements = connection.prepare("SELECT transaction_type, amount, destination_account_id, account_id FROM finance_transactions WHERE deleted_at IS NULL AND status = 'confirmed' AND substr(effective_date, 1, 7) = ?2 AND (account_id = ?1 OR destination_account_id = ?1)").map_err(|e| e.to_string())?;
-        let movement_rows = movements
-            .query_map(params![&account.id, current_month], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-        for movement in movement_rows {
-            let (kind, amount, destination, source) = movement.map_err(|e| e.to_string())?;
-            let amount = parse_cents(&amount).unwrap_or_default();
-            if kind == "income"
-                || (kind == "adjustment" && source == account.id)
-                || (kind == "transfer"
-                    && destination.as_deref() == Some(account.id.as_str())
-                    && source != account.id)
-            {
-                balance += amount;
-            }
-            if kind == "expense"
-                || (kind == "transfer"
-                    && source == account.id
-                    && destination.as_deref() != Some(account.id.as_str()))
-            {
-                balance -= amount;
-            }
-        }
-        account.current_balance = format_cents(balance);
-    }
-    Ok(accounts)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 fn finance_list_savings_inner(
@@ -1451,10 +1469,9 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_savings_movement, clear_finance_data, finance_dev_query,
-        finance_list_accounts_for_month_inner, format_cents, parse_cents, seed_finance_demo_data,
-        valid_amount, validate_finance_dev_sql, validate_savings_movement, FinanceCommandError,
-        FinanceSavingsMovement, FINANCE_DEV_TABLES,
+        apply_savings_movement, clear_finance_data, finance_dev_query, finance_list_accounts_inner,
+        format_cents, parse_cents, seed_finance_demo_data, valid_amount, validate_finance_dev_sql,
+        validate_savings_movement, FinanceCommandError, FinanceSavingsMovement, FINANCE_DEV_TABLES,
     };
     use rusqlite::{params, Connection};
 
@@ -1475,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn account_current_balance_ignores_confirmed_historical_movements() {
+    fn payment_accounts_are_references_and_hide_internal_savings_ledgers() {
         let connection = Connection::open_in_memory().expect("in-memory database");
         crate::database::migrate(&connection).expect("finance migrations");
         connection.execute("INSERT INTO finance_accounts(id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES('account','Digital','bank','ARS','100.00',1,'now','now')", []).expect("account fixture");
@@ -1487,10 +1504,23 @@ mod tests {
             connection.execute("INSERT INTO finance_transactions(id,transaction_type,amount,currency,effective_date,account_id,description,source,status,created_at,updated_at) VALUES(?1,?2,?3,'ARS',?4,'account','Prueba','manual','confirmed','now','now')", params![id, kind, amount, date]).expect("transaction fixture");
         }
 
-        let accounts = finance_list_accounts_for_month_inner(&connection, "2026-08")
-            .expect("account balances");
+        connection.execute("INSERT INTO finance_accounts(id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES('savings:reserve','Reserva','savings_reserve','ARS','0',1,'now','now')", []).expect("savings ledger fixture");
 
-        assert_eq!(accounts[0].current_balance, "250.00");
+        let accounts =
+            finance_list_accounts_inner(&connection).expect("payment account references");
+
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "account");
+        assert_eq!(
+            serde_json::to_value(&accounts[0]).expect("serialize account reference"),
+            serde_json::json!({
+                "id": "account",
+                "name": "Digital",
+                "accountType": "bank",
+                "currency": "ARS",
+                "active": true
+            })
+        );
     }
 
     #[test]
@@ -1569,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn clears_every_finance_table_without_removing_migrations() {
+    fn clears_finance_data_and_restores_default_categories_without_removing_migrations() {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         crate::database::migrate(&connection).expect("finance migrations");
         connection
@@ -1589,7 +1619,6 @@ mod tests {
 
         for table in [
             "finance_accounts",
-            "finance_categories",
             "finance_transactions",
             "finance_source_artifacts",
             "finance_purchases",
@@ -1605,6 +1634,16 @@ mod tests {
                 .expect("finance table count");
             assert_eq!(count, 0, "{table} should be empty");
         }
+        let categories: Vec<String> = connection
+            .prepare("SELECT name FROM finance_categories ORDER BY name")
+            .expect("default category query")
+            .query_map([], |row| row.get(0))
+            .expect("default category rows")
+            .collect::<Result<_, _>>()
+            .expect("default categories");
+        assert_eq!(categories.len(), 10);
+        assert!(categories.iter().any(|name| name == "Alimentación"));
+        assert!(categories.iter().any(|name| name == "Otros"));
         let migration_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM notia_schema_migrations", [], |row| {
                 row.get(0)

@@ -201,6 +201,7 @@ pub fn run() {
             finance::finance_clear_all_data,
             finance::finance_save_savings_reserve,
             finance::finance_save_savings_movement,
+            finance::finance_save_savings_exchange,
             finance::finance_link_savings_account,
             finance_records::finance_save_purchase,
             finance_records::finance_list_purchases,

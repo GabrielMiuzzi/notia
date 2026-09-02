@@ -1,3 +1,5 @@
+import type { TelegramDocument, TelegramPhoto } from '../telegram/telegramRuntime'
+
 export interface TelegramPeer {
   chatId: number
   userId: number
@@ -24,6 +26,16 @@ export const DEFAULT_TELEGRAM_PREFERENCES: TelegramPreferences = {
 }
 
 const TELEGRAM_UPDATE_CHECKPOINT_PREFIX = 'notia:telegram-update-checkpoint:v1:'
+const TELEGRAM_PENDING_AGENT_REQUESTS_PREFIX = 'notia:telegram-pending-agent-requests:v1:'
+const TELEGRAM_STORED_REQUEST_LIMIT = 11
+
+export type TelegramAgentRequestScope = 'finance' | 'library'
+export interface TelegramPendingAgentRequest {
+  text: string
+  actorUserId: number
+  scope: TelegramAgentRequestScope
+  attachment: { kind: 'photo'; value: TelegramPhoto } | { kind: 'pdf'; value: TelegramDocument } | null
+}
 
 export interface TelegramUpdateCheckpoint {
   updateOffset: number
@@ -108,5 +120,80 @@ export function saveTelegramUpdateCheckpoint(scopeId: string, preferences: Teleg
     window.localStorage.setItem(`${TELEGRAM_UPDATE_CHECKPOINT_PREFIX}${scopeId}`, JSON.stringify(checkpoint))
   } catch {
     // The library config remains the fallback if WebView storage is unavailable.
+  }
+}
+
+function normalizePendingAttachment(value: unknown): TelegramPendingAgentRequest['attachment'] | undefined {
+  if (value === null) return null
+  if (!value || typeof value !== 'object') return undefined
+  const candidate = value as { kind?: unknown; value?: Record<string, unknown> }
+  const attachment = candidate.value
+  if (!attachment || typeof attachment.fileId !== 'string' || !attachment.fileId.trim()) return undefined
+  const fileId = attachment.fileId.trim().slice(0, 512)
+  const fileSize = Number.isSafeInteger(attachment.fileSize) && (attachment.fileSize as number) >= 0
+    ? attachment.fileSize as number
+    : undefined
+  if (candidate.kind === 'photo') {
+    if (!Number.isSafeInteger(attachment.width) || !Number.isSafeInteger(attachment.height)) return undefined
+    return {
+      kind: 'photo',
+      value: { fileId, fileSize, width: attachment.width as number, height: attachment.height as number },
+    }
+  }
+  if (candidate.kind === 'pdf') {
+    return {
+      kind: 'pdf',
+      value: {
+        fileId,
+        fileSize,
+        fileName: typeof attachment.fileName === 'string' ? attachment.fileName.slice(0, 255) : undefined,
+        mimeType: typeof attachment.mimeType === 'string' ? attachment.mimeType.slice(0, 120) : undefined,
+      },
+    }
+  }
+  return undefined
+}
+
+export function normalizeTelegramPendingAgentRequests(value: unknown): TelegramPendingAgentRequest[] {
+  if (!Array.isArray(value)) return []
+  const requests: TelegramPendingAgentRequest[] = []
+  for (const entry of value.slice(0, TELEGRAM_STORED_REQUEST_LIMIT)) {
+    if (!entry || typeof entry !== 'object') continue
+    const candidate = entry as Partial<TelegramPendingAgentRequest>
+    const attachment = normalizePendingAttachment(candidate.attachment)
+    if (attachment === undefined
+      || typeof candidate.text !== 'string'
+      || !Number.isSafeInteger(candidate.actorUserId)
+      || (candidate.scope !== 'finance' && candidate.scope !== 'library')) continue
+    requests.push({
+      text: candidate.text.slice(0, 50_000),
+      actorUserId: candidate.actorUserId as number,
+      scope: candidate.scope,
+      attachment,
+    })
+  }
+  return requests
+}
+
+export function loadTelegramPendingAgentRequests(scopeId: string): TelegramPendingAgentRequest[] {
+  if (typeof window === 'undefined' || !scopeId.trim()) return []
+  try {
+    const raw = window.localStorage.getItem(`${TELEGRAM_PENDING_AGENT_REQUESTS_PREFIX}${scopeId}`)
+    return raw ? normalizeTelegramPendingAgentRequests(JSON.parse(raw)) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveTelegramPendingAgentRequests(scopeId: string, requests: TelegramPendingAgentRequest[]): boolean {
+  if (typeof window === 'undefined' || !scopeId.trim()) return false
+  try {
+    const key = `${TELEGRAM_PENDING_AGENT_REQUESTS_PREFIX}${scopeId}`
+    const normalized = normalizeTelegramPendingAgentRequests(requests)
+    if (normalized.length === 0) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, JSON.stringify(normalized))
+    return true
+  } catch {
+    return false
   }
 }

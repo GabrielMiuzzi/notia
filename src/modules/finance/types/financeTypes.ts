@@ -23,9 +23,7 @@ export interface FinanceAccount {
   name: string;
   accountType: string;
   currency: FinanceCurrency;
-  openingBalance: string;
   active: boolean;
-  currentBalance: string;
 }
 
 export interface FinanceCategory {
@@ -150,6 +148,7 @@ export interface FinanceSalaryReceipt {
   currency: FinanceCurrency;
   accountId: string;
   status: Exclude<FinanceTransactionStatus, "discarded">;
+  signedDocument?: boolean;
   sourceReference?: string | null;
   rawExtraction?: string | null;
   concepts: FinanceSalaryConcept[];
@@ -273,7 +272,6 @@ export interface FinanceDashboard {
   savings: FinanceSavingsReserve[];
   savingsMovements: FinanceSavingsMovement[];
   merchants: FinanceMerchant[];
-  balanceHistory: Array<{ month: string; byCurrency: Record<string, string> }>;
 }
 
 export interface FinanceMerchant {
@@ -308,6 +306,26 @@ export interface FinanceSavingsMovement {
   status: FinanceTransactionStatus;
   actorUserId?: number | null;
   linkedTransactionId?: string | null;
+}
+
+export interface FinanceSavingsExchange {
+  id: string;
+  reserveId: string;
+  sourceAccountId: string;
+  sourceAmount: string;
+  sourceCurrency: FinanceCurrency;
+  savingsAmount: string;
+  savingsCurrency: FinanceCurrency;
+  effectiveDate: string;
+  description: string;
+  actorUserId?: number | null;
+  sourceReference?: string | null;
+  rawSource?: string | null;
+}
+
+export interface FinanceSavedSavingsExchange {
+  movement: FinanceSavingsMovement;
+  transaction: FinanceTransaction;
 }
 
 export interface FinanceContext {

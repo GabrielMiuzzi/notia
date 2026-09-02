@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramFinanceRequest, parseTelegramConfirmationDecision, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
+import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramFinanceRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
 describe('Telegram finance scope', () => {
+  it('rejects a salary success message without a persisted salary proof', () => {
+    expect(isUnverifiedTelegramSalarySuccess('Listo. Registré el recibo de sueldo de Banco.', null)).toBe(true)
+    expect(isUnverifiedTelegramSalarySuccess('No pude registrar el recibo.', null)).toBe(false)
+    expect(isUnverifiedTelegramSalarySuccess('Listo. Registré el recibo de sueldo de Banco.', {
+      id: 'salary', period: '2026-08', paymentDate: '2026-08-11', employer: 'Banco', grossAmount: '100',
+      deductionsTotal: '10', netAmount: '90', currency: 'ARS', accountId: 'account', status: 'confirmed', concepts: [],
+    })).toBe(false)
+  })
+
   it('detects financial requests', () => {
     expect(isTelegramFinanceRequest('¿Cuál es mi saldo en ARS?')).toBe(true)
     expect(isTelegramFinanceRequest('Registrar un aporte de ahorro')).toBe(true)

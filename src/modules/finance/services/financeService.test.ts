@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { clearAllFinanceData, extractFinanceDocument, getFinanceDashboard, listFinanceCreditCardStatements, listFinanceNetWorthHistory, saveFinanceCreditCardStatement, saveFinanceInstallmentPlan, saveFinancePurchase, saveFinanceSalary } from './financeService'
+import { clearAllFinanceData, extractFinanceDocument, getFinanceDashboard, listFinanceCreditCardStatements, listFinanceNetWorthHistory, saveFinanceCreditCardStatement, saveFinanceInstallmentPlan, saveFinancePurchase, saveFinanceSalary, saveVerifiedFinanceSalary } from './financeService'
 import type { NotiaLibrary } from '../../../types/notia'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -59,6 +59,27 @@ describe('financeService', () => {
     expect(invoke).toHaveBeenNthCalledWith(1, 'finance_save_salary', { payload: { context, salary } })
     expect(invoke).toHaveBeenNthCalledWith(2, 'finance_save_installment_plan', { payload: { context, plan } })
     expect(invoke).toHaveBeenNthCalledWith(3, 'finance_list_net_worth_history', { context })
+  })
+
+  it('reports salary success only after an independent read confirms the persisted receipt', async () => {
+    const library: NotiaLibrary = { id: 'library-1', name: 'Personal', path: 'C:/personal' }
+    const salary = { id: 'salary', period: '2026-08', paymentDate: '2026-08-29', employer: 'Notia', grossAmount: '100', deductionsTotal: '10', netAmount: '90', currency: 'ARS' as const, accountId: 'account', status: 'confirmed' as const, sourceReference: 'telegram:file', rawExtraction: null, concepts: [] }
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(salary)
+      .mockResolvedValueOnce([{ salary, grossChange: '0', netChange: '0', deductionsChange: '0' }])
+
+    await expect(saveVerifiedFinanceSalary(library, salary)).resolves.toEqual(salary)
+    expect(invoke).toHaveBeenNthCalledWith(2, 'finance_list_salaries', {
+      payload: { context: { libraryPath: library.path, androidDirectoryUri: undefined }, from: salary.period, to: salary.period },
+    })
+  })
+
+  it('rejects a salary success when the receipt is absent from the verification read', async () => {
+    const library: NotiaLibrary = { id: 'library-1', name: 'Personal', path: 'C:/personal' }
+    const salary = { id: 'salary', period: '2026-08', paymentDate: '2026-08-29', employer: 'Notia', grossAmount: '100', deductionsTotal: '10', netAmount: '90', currency: 'ARS' as const, accountId: 'account', status: 'confirmed' as const, concepts: [] }
+    vi.mocked(invoke).mockResolvedValueOnce(salary).mockResolvedValueOnce([])
+
+    await expect(saveVerifiedFinanceSalary(library, salary)).rejects.toMatchObject({ code: 'storage' })
   })
 
   it('uses typed commands for saving and listing complete credit-card statements', async () => {

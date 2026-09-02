@@ -1,14 +1,16 @@
 import { useEffect, useRef } from 'react'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
-import { loadTelegramUpdateCheckpoint, mergeTelegramUpdateCheckpoint, rememberTelegramUpdate, saveTelegramUpdateCheckpoint } from '../../../services/preferences/telegramSettingsStorage'
+import { loadTelegramPendingAgentRequests, loadTelegramUpdateCheckpoint, mergeTelegramUpdateCheckpoint, rememberTelegramUpdate, saveTelegramPendingAgentRequests, saveTelegramUpdateCheckpoint, type TelegramAgentRequestScope, type TelegramPendingAgentRequest } from '../../../services/preferences/telegramSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
 import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRuntime'
 import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
 import { loadSelectedAgentPromptFileName } from '../../../services/ai/agentPromptRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
-import { answerTelegramCallback, downloadTelegramPhoto, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramDocument, type TelegramPhoto, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
+import { verifyFinanceSalaryPersistence } from '../../../modules/finance/services/financeService'
+import type { FinanceSalaryReceipt } from '../../../modules/finance/types/financeTypes'
+import { answerTelegramCallback, downloadTelegramPhoto, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
 import { formatTelegramMessage } from '../../../services/telegram/telegramMessageFormatter'
 import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
@@ -24,13 +26,8 @@ interface Params {
 }
 
 interface PendingInput { resolve: (value: string) => void; reject: (error: Error) => void }
-type TelegramAgentScope = 'finance' | 'library'
-interface TelegramAgentRequest {
-  text: string
-  actorUserId: number
-  scope: TelegramAgentScope
-  attachment: { kind: 'photo'; value: TelegramPhoto } | { kind: 'pdf'; value: TelegramDocument } | null
-}
+type TelegramAgentScope = TelegramAgentRequestScope
+type TelegramAgentRequest = TelegramPendingAgentRequest
 
 export const TELEGRAM_CONFIRMATION_TIMEOUT_MS = 2 * 60 * 1_000
 export const TELEGRAM_PENDING_REQUEST_LIMIT = 10
@@ -113,6 +110,10 @@ export function parseTelegramConfirmationDecision(value: string): boolean | null
   return null
 }
 
+export function isUnverifiedTelegramSalarySuccess(answer: string, savedSalary: FinanceSalaryReceipt | null): boolean {
+  return !savedSalary && /^Listo\. Registré el recibo de sueldo\b/i.test(answer.trim())
+}
+
 /** Resolves a typed 1-based reply against the same choices shown as Telegram buttons. */
 export function resolveTelegramChoiceReply(value: string, choices: readonly string[]): string {
   const match = /^(\d+)\s*[.)]?$/.exec(value.trim())
@@ -131,6 +132,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
   const historyRef = useRef<StoredChatMessage[]>([])
   const busyRef = useRef(false)
   const pendingRequestsRef = useRef<TelegramAgentRequest[]>([])
+  const activeRequestRef = useRef<TelegramAgentRequest | null>(null)
   const drainingRequestsRef = useRef(false)
   const pendingFinanceSourceReferenceRef = useRef<string | null>(null)
   const pendingInputRef = useRef<PendingInput | null>(null)
@@ -151,6 +153,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     confirmationRef.current.clear()
     conversationScopeRef.current = null
     pendingRequestsRef.current = []
+    activeRequestRef.current = null
     drainingRequestsRef.current = false
     pendingFinanceSourceReferenceRef.current = null
   }, [libraryId])
@@ -161,7 +164,19 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const token = telegramToken
     const authorizedChatId = authorizedChatIdValue
     const checkpointScope = `${activeLibrary.id}:${token.split(':', 1)[0] ?? 'bot'}:${authorizedChatId}`
+    pendingRequestsRef.current = loadTelegramPendingAgentRequests(checkpointScope)
+    activeRequestRef.current = null
     let cancelled = false
+    const persistAgentRequests = () => {
+      const requests = activeRequestRef.current
+        ? [activeRequestRef.current, ...pendingRequestsRef.current]
+        : pendingRequestsRef.current
+      if (!saveTelegramPendingAgentRequests(checkpointScope, requests)) {
+        notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram queue persistence failed', {
+          pendingRequests: requests.length,
+        }, 'error')
+      }
+    }
     const updateTelegram = (next: TelegramPreferences) => {
       currentRef.current = { ...currentRef.current, telegram: next }
       currentRef.current.onTelegramChange(next)
@@ -227,6 +242,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       const requestStartedAt = performance.now()
       let lastImageProgressAt = 0
       let phase = 'preparing'
+      let savedSalary: FinanceSalaryReceipt | null = null
       try {
         let text = request.text
         let image: AiImageAttachment | null = null
@@ -237,7 +253,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             const downloaded = await extractTelegramPdf(state.telegram.botToken, request.attachment.value)
             financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId, 'pdf')
             pendingFinanceSourceReferenceRef.current = financeSourceReference
-            text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente.`
+            text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente. Para un recibo de sueldo usa signedDocument=true solo si el contenido indica firma digital, electrónica o manuscrita; en ese caso conserva el neto impreso aunque difiera de bruto menos descuentos.`
           } else {
           const downloadStartedAt = performance.now()
           notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image processing started', {
@@ -271,8 +287,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           onFinancePurchaseSaved: (sourceReference) => {
             if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
           },
-          onFinanceSalarySaved: (sourceReference) => {
+          onFinanceSalarySaved: (sourceReference, salary) => {
             if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
+            if (salary) savedSalary = salary
           },
           onFinanceCreditCardStatementSaved: (sourceReference) => {
             if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
@@ -317,6 +334,12 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             })
           },
         })
+        if (savedSalary) {
+          phase = 'verifying-salary-persistence'
+          await verifyFinanceSalaryPersistence(state.library, savedSalary)
+        } else if (isUnverifiedTelegramSalarySuccess(answer, savedSalary)) {
+          throw new Error('Telegram recibió una respuesta de éxito salarial sin una persistencia verificable.')
+        }
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram answer ready', {
           durationMs: Math.round(performance.now() - requestStartedAt),
           answerChars: answer.length,
@@ -353,7 +376,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           durationMs: Math.round(performance.now() - requestStartedAt),
           error: message,
         }, 'error')
-        await sendTelegramMessage(token, authorizedChatId, message)
+        try {
+          await sendTelegramMessage(token, authorizedChatId, message)
+        } catch (sendError) {
+          notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram error message failed', {
+            error: describeTelegramAgentError(sendError, 'No se pudo enviar el error a Telegram.'),
+          }, 'error')
+        }
       } finally { busyRef.current = false }
     }
 
@@ -364,7 +393,18 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         while (!cancelled) {
           const request = pendingRequestsRef.current.shift()
           if (!request) return
-          await runAgent(request)
+          activeRequestRef.current = request
+          persistAgentRequests()
+          try {
+            await runAgent(request)
+          } catch (error) {
+            notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram queue request failed unexpectedly', {
+              error: describeTelegramAgentError(error),
+            }, 'error')
+          } finally {
+            activeRequestRef.current = null
+            persistAgentRequests()
+          }
         }
       } finally {
         drainingRequestsRef.current = false
@@ -374,6 +414,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const enqueueAgentRequest = (request: TelegramAgentRequest): number | null => {
       const queuedAhead = enqueueTelegramAgentRequest(pendingRequestsRef.current, request)
       if (queuedAhead === null) return null
+      persistAgentRequests()
       const requestsAhead = queuedAhead + (busyRef.current ? 1 : 0)
       void drainAgentRequests()
       return requestsAhead
@@ -504,10 +545,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         } catch { await new Promise((resolve) => window.setTimeout(resolve, 3000)) }
       }
     }
+    void drainAgentRequests()
     void loop()
     return () => {
       cancelled = true
-      pendingRequestsRef.current = []
     }
   }, [authorizedChatIdValue, authorizedUserId, libraryId, telegramEnabled, telegramToken])
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeTelegramUpdateCheckpoint, normalizeTelegramPreferences, rememberTelegramUpdate } from './telegramSettingsStorage'
+import { mergeTelegramUpdateCheckpoint, normalizeTelegramPendingAgentRequests, normalizeTelegramPreferences, rememberTelegramUpdate } from './telegramSettingsStorage'
 
 describe('normalizeTelegramPreferences', () => {
   it('rejects malformed peers and offsets', () => {
@@ -31,5 +31,16 @@ describe('normalizeTelegramPreferences', () => {
       updateOffset: 20,
       processedUpdateIds: [],
     }).updateOffset).toBe(40)
+  })
+
+  it('keeps only valid bounded Telegram agent requests for durable recovery', () => {
+    const requests = normalizeTelegramPendingAgentRequests([
+      { text: 'Recibo', actorUserId: 20, scope: 'finance', attachment: { kind: 'pdf', value: { fileId: 'pdf-1', fileName: 'sueldo.pdf', mimeType: 'application/pdf' } } },
+      { text: 'Foto', actorUserId: 20, scope: 'finance', attachment: { kind: 'photo', value: { fileId: 'photo-1', width: 1200, height: 1600 } } },
+      { text: 'Inválido', actorUserId: '20', scope: 'finance', attachment: null },
+    ])
+
+    expect(requests).toHaveLength(2)
+    expect(requests.map((request) => request.attachment?.value.fileId)).toEqual(['pdf-1', 'photo-1'])
   })
 })

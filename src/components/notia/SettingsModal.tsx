@@ -362,7 +362,7 @@ export function SettingsModal({
     try {
       await clearAllFinanceData(activeLibrary)
       notifyFinanceDataChanged()
-      setFinanceClearStatus({ tone: 'success', message: 'Se eliminaron todos los datos financieros de esta biblioteca.' })
+      setFinanceClearStatus({ tone: 'success', message: 'Se eliminaron los datos financieros y se restauraron las categorías iniciales.' })
     } catch (error) {
       setFinanceClearStatus({
         tone: 'error',
@@ -829,7 +829,7 @@ export function SettingsModal({
               <div className="notia-settings-card-label">Datos financieros de la biblioteca activa</div>
               <div className="notia-settings-card-value">{activeLibrary?.name ?? 'Sin biblioteca activa'}</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Elimina cuentas, categorías, movimientos, tickets, productos y precios, sueldos, ahorro, cuotas, inversiones y sus archivos de extracción registrados. Esta acción no se puede deshacer.
+                Elimina cuentas, categorías personalizadas, movimientos, tickets, productos y precios, sueldos, ahorro, cuotas, inversiones y sus archivos de extracción registrados. Al finalizar, restaura las diez categorías de gasto iniciales. Esta acción no se puede deshacer.
               </div>
               <div className="notia-settings-actions">
                 <NotiaButton
@@ -976,7 +976,7 @@ export function SettingsModal({
       <ConfirmationDialogModal
         open={isFinanceDeleteConfirmationOpen}
         title="Eliminar datos financieros"
-        message={`Se eliminarán definitivamente todos los datos financieros de ${activeLibrary?.name ?? 'la biblioteca activa'}. Esta acción no se puede deshacer.`}
+        message={`Se eliminarán definitivamente los datos financieros de ${activeLibrary?.name ?? 'la biblioteca activa'} y se restaurarán las diez categorías iniciales. Esta acción no se puede deshacer.`}
         confirmLabel="Eliminar definitivamente"
         cancelLabel="Cancelar"
         tone="danger"

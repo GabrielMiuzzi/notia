@@ -211,7 +211,8 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               )}
             </article>
             <article className="finance-card finance-accounts-card">
-              <h2>Cuentas</h2>
+              <h2>Cuentas de pago</h2>
+              <p className="finance-muted">Identifican de dónde entró o salió el dinero; no llevan saldo.</p>
               {data.accounts.length === 0 ? (
                 <p className="finance-muted">Creá una cuenta para comenzar.</p>
               ) : (
@@ -222,14 +223,8 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                       <li key={account.id}>
                         <span>
                           {account.name}
-                          <small>{account.accountType}</small>
+                          <small>{account.accountType} · {account.currency}</small>
                         </span>
-                        <strong>
-                          {formatAmount(
-                            account.currentBalance,
-                            account.currency,
-                          )}
-                        </strong>
                         <span className="finance-row-actions">
                           <button type="button" onClick={() => setEditingAccount(account)}>Editar</button>
                           <button type="button" onClick={async () => { if (window.confirm(`¿Desactivar ${account.name}?`)) { await deleteFinanceAccount(library, account.id); await refresh(); } }}>Desactivar</button>
@@ -303,13 +298,12 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
             )}
             {filteredTransactions.length > transactionPageSize && <nav className="finance-pagination" aria-label="Páginas de movimientos"><button type="button" disabled={transactionPage === 0} onClick={() => setTransactionPage((page) => Math.max(0, page - 1))}>Anterior</button><span>Página {transactionPage + 1} de {Math.ceil(filteredTransactions.length / transactionPageSize)}</span><button type="button" disabled={(transactionPage + 1) * transactionPageSize >= filteredTransactions.length} onClick={() => setTransactionPage((page) => page + 1)}>Siguiente</button></nav>}
           </section>
-          <section className="finance-card" aria-labelledby="finance-balance-history"><h2 id="finance-balance-history">Evolución mensual de saldos</h2>{data.balanceHistory.length ? <div className="finance-balance-chart">{data.balanceHistory.map((snapshot) => <div key={snapshot.month}><span>{snapshot.month}</span>{Object.entries(snapshot.byCurrency).map(([currency, value]) => <strong key={currency}>{currency} {value}</strong>)}</div>)}</div> : <p className="finance-muted">Todavía no hay meses suficientes para mostrar evolución.</p>}</section>
         </>
       )}
       {data && (
         <section className="finance-card">
           <div className="finance-section-heading">
-            <h2>Ahorro</h2>
+            <h2>Ahorro con saldo</h2>
             <button type="button" onClick={() => setIsSavingsFormOpen(true)}>
               <Plus size={18} /> Nueva reserva
             </button>
@@ -657,7 +651,6 @@ function FinanceAccountForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [accountType, setAccountType] = useState(initial?.accountType ?? "cash");
   const [currency, setCurrency] = useState<"ARS" | "USD">(initial?.currency ?? "ARS");
-  const [openingBalance, setOpeningBalance] = useState(initial?.openingBalance ?? "0");
   const [active, setActive] = useState(initial?.active ?? true);
   const [saving, setSaving] = useState(false);
   async function submit(event: FormEvent) {
@@ -670,8 +663,6 @@ function FinanceAccountForm({
         name: name.trim(),
         accountType,
         currency,
-        openingBalance,
-        currentBalance: initial?.currentBalance ?? openingBalance,
         active,
       });
     } finally {
@@ -700,7 +691,7 @@ function FinanceAccountForm({
             <option value="bank">Cuenta bancaria</option>
             <option value="wallet">Billetera</option>
             <option value="credit_card">Tarjeta de crédito</option>
-            <option value="savings">Ahorro</option>
+            {initial?.accountType === "savings" && <option value="savings">Ahorro (cuenta anterior)</option>}
           </select>
         </label>
         <label>
@@ -714,15 +705,6 @@ function FinanceAccountForm({
             <option value="ARS">ARS</option>
             <option value="USD">USD</option>
           </select>
-        </label>
-        <label>
-          Saldo inicial
-          <input
-            required
-            inputMode="decimal"
-            value={openingBalance}
-            onChange={(event) => setOpeningBalance(event.target.value)}
-          />
         </label>
         {initial && <label><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Cuenta activa</label>}
         <div className="finance-form-actions">

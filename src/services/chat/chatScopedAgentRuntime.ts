@@ -1,4 +1,5 @@
 import type { NotiaLibrary } from '../../types/notia'
+import type { FinanceSalaryReceipt } from '../../modules/finance/types/financeTypes'
 import type { AiNativeToolCall, AiNativeToolDefinition } from '../ai/aiRuntime'
 import { appendAgentRule, DEFAULT_AGENT_PROMPT, isInternalAgentCorrection, isLikelyPersonalMemory, loadAgentMemories, loadAgentPrompt, loadAgentRules, resolveAgentRulesContent, DEFAULT_AGENT_RULES, writeAgentMemories } from '../ai/agentPromptRuntime'
 import {
@@ -28,7 +29,7 @@ export interface ChatAgentRuntimeOptions {
   actorUserId?: number
   financeSourceReference?: string | null
   onFinancePurchaseSaved?: (sourceReference: string) => void
-  onFinanceSalarySaved?: (sourceReference: string) => void
+  onFinanceSalarySaved?: (sourceReference: string, salary?: FinanceSalaryReceipt) => void
   onFinanceCreditCardStatementSaved?: (sourceReference: string) => void
   requestClarification: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestConfirmation: (question: string, signal: AbortSignal) => Promise<boolean>
@@ -133,6 +134,7 @@ const FINANCE_TOOL_NAMES = new Set([
   'get_finance_dashboard',
   'create_finance_transaction',
   'create_finance_savings_movement',
+  'create_finance_savings_exchange',
   'list_finance_accounts',
   'list_finance_categories',
   'list_finance_movements',
@@ -485,6 +487,15 @@ export function buildChatAgentTools(
       },
       {
         type: 'function', function: {
+          name: 'create_finance_savings_exchange',
+          description: 'Registra una compra de moneda para ahorro en una única operación: guarda la salida como gasto desde la cuenta de pago y acredita la moneda comprada en la reserva. Usala cuando el usuario indique ambos importes y monedas, por ejemplo comprar USD con ARS para una reserva. Antes consulta get_finance_dashboard para resolver reserva y cuenta por nombre; no pidas IDs al usuario.',
+          parameters: { type: 'object', required: ['reserve', 'sourceAccount', 'sourceAmount', 'sourceCurrency', 'savingsAmount', 'savingsCurrency'], properties: {
+            reserve: { type: 'string', description: 'Nombre o ID de la reserva de ahorro existente.' }, sourceAccount: { type: 'string', description: 'Nombre o ID de la cuenta de pago de donde sale el dinero.' }, sourceAmount: { type: 'string', description: 'Importe exacto que sale de la cuenta de pago.' }, sourceCurrency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda que sale de la cuenta.' }, savingsAmount: { type: 'string', description: 'Importe exacto que se acredita en la reserva.' }, savingsCurrency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda que se acredita en la reserva; debe diferir de la moneda de salida.' }, effectiveDate: { type: 'string', description: 'Fecha YYYY-MM-DD; si se dijo este mes sin día, usa hoy.' }, description: { type: 'string', description: 'Descripción breve de la compra para ahorro.' }, confidence: { type: 'number', description: 'Entre 0 y 1; Telegram confirma automáticamente cuando los datos son claros.' }, sourceReference: { type: 'string', description: 'Referencia opaca de Telegram si existe.' }, rawSource: { type: 'string', description: 'Texto original del usuario si existe.' },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
           name: 'create_finance_transaction',
           description: autoConfirmFinanceMutations
             ? 'Crea y confirma inmediatamente un ingreso, gasto, transferencia o ajuste de Telegram usando IDs obtenidos de las herramientas financieras. Usala solo cuando importe, moneda, fecha, cuenta, categoría y descripción sean inequívocos. Nunca pidas confirmación: el usuario revisará y editará luego en Finanzas.'
@@ -568,9 +579,9 @@ export function buildChatAgentTools(
         type: 'function', function: {
           name: 'create_finance_salary',
           description: autoConfirmFinanceMutations
-            ? 'Guarda y confirma automáticamente un recibo de sueldo recibido por Telegram: persiste el recibo, sus conceptos y el ingreso por el neto en la cuenta elegida. No usa categorías. Solo pregunta si la cuenta de cobro no puede inferirse razonablemente.'
+            ? 'Guarda y confirma automáticamente un recibo de sueldo recibido por Telegram: persiste el recibo, sus conceptos y el ingreso por el neto en la cuenta elegida. En un PDF firmado, el neto impreso es autoritativo aunque no coincida con bruto menos descuentos por adelantos, ajustes u otros conceptos de liquidación. No usa categorías. Solo pregunta si la cuenta de cobro no puede inferirse razonablemente.'
             : 'Guarda un recibo de sueldo extraído de una imagen, sus conceptos y el ingreso por el neto. Usala solo cuando período, fecha de cobro, empleador, bruto, descuentos, neto, moneda y cuenta estén definidos; solicita confirmación visible antes de persistir.',
-          parameters: { type: 'object', required: ['accountId', 'period', 'paymentDate', 'employer', 'grossAmount', 'deductionsTotal', 'netAmount', 'currency', 'concepts'], properties: {
+          parameters: { type: 'object', required: ['accountId', 'period', 'paymentDate', 'employer', 'grossAmount', 'deductionsTotal', 'netAmount', 'currency', 'concepts', ...(autoConfirmFinanceMutations ? ['signedDocument'] : [])], properties: {
             accountId: { type: 'string', description: 'ID o nombre exacto de la cuenta real que recibió el sueldo.' },
             period: { type: 'string', description: 'Período liquidado en formato YYYY-MM.' },
             paymentDate: { type: 'string', description: 'Fecha efectiva de cobro en formato YYYY-MM-DD. No uses la fecha de carga si el recibo muestra otra.' },
@@ -579,6 +590,7 @@ export function buildChatAgentTools(
             deductionsTotal: { type: 'string', description: 'Total de descuentos exacto como texto.' },
             netAmount: { type: 'string', description: 'Neto cobrado exacto como texto; este importe crea el ingreso.' },
             currency: { type: 'string', enum: ['ARS', 'USD'] },
+            signedDocument: { type: 'boolean', description: 'true únicamente si la fuente es PDF y el recibo indica una firma digital, electrónica o manuscrita; false si no hay evidencia de firma.' },
             concepts: { type: 'array', maxItems: 200, description: 'Conceptos legibles del recibo, sin inventar. earning para haberes y deduction para descuentos.', items: { type: 'object', required: ['name', 'conceptType', 'amount'], properties: { name: { type: 'string' }, conceptType: { type: 'string', enum: ['earning', 'deduction'] }, amount: { type: 'string', description: 'Importe exacto y positivo del concepto.' } } } },
             rawExtraction: { type: 'string', description: 'Resumen estructurado de los campos leídos para auditoría.' },
             sourceReference: { type: 'string', description: 'Referencia opaca a la imagen original; Telegram la aporta automáticamente.' },
@@ -826,6 +838,7 @@ export function buildChatAgentSystemPrompt(
       autoConfirmTelegramFinance
         ? 'Para cargas financieras de Telegram esta política específica reemplaza la confirmación general: en gastos y tickets busca una categoría compatible y créala automáticamente si no existe; recibos de sueldo y resúmenes de tarjeta no requieren buscar categorías. No propongas ni pidas confirmación. Cuando cuenta, importes y fecha sean suficientemente claros, registra y confirma la operación de inmediato para que el usuario pueda revisarla y editarla luego en Finanzas.'
         : 'Busca categorías existentes. Si no hay ninguna adecuada, podes proponer una nueva relacionada con el hecho y crearla solo con create_finance_category, que exige confirmación individual visible. Ante varias coincidencias solicita aclaración.',
+      'Cuando el usuario compre una moneda para acreditarla en una reserva de ahorro, usa create_finance_savings_exchange. Resuelve reserva y cuenta por nombre con get_finance_dashboard; nunca pidas IDs internos. Esta operación guarda la salida en la moneda de origen y el aporte en la moneda de la reserva de forma atómica.',
       autoConfirmTelegramFinance
         ? 'Si recibes una imagen, clasifícala primero como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Para un ticket usa create_finance_purchase. Para un recibo de sueldo usa create_finance_salary. Para un resumen extrae emisor, tarjeta, período, cierre, vencimiento, moneda, saldos y todas las líneas; resuelve una cuenta de tipo credit_card y usa create_finance_credit_card_statement. En un resumen registra consumos/cargos, nunca el total a pagar como gasto adicional y nunca inventes la cuenta bancaria del pago. Guarda automáticamente: no finalices con un resumen y responde solo después de recibir ok:true.'
         : 'Si recibes una imagen, clasifícala como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Orden obligatorio: usa create_finance_purchase para tickets, create_finance_salary para recibos y create_finance_credit_card_statement para resúmenes después de resolver la cuenta de tarjeta. El total del resumen no es otro gasto y el pago posterior es una transferencia separada. No afirmes que se guardó sin ejecutar la herramienta correspondiente.',
@@ -1322,16 +1335,20 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         ].filter((field): field is string => Boolean(field))
         return { ok: false, error: 'invalid-finance-salary', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
       }
-      const { getFinanceDashboard, saveFinanceSalary } = await import('../../modules/finance/services/financeService')
+      const { getFinanceDashboard, saveVerifiedFinanceSalary } = await import('../../modules/finance/services/financeService')
       const dashboard = await getFinanceDashboard(options.library, paymentDate.slice(0, 7))
       const normalizedAccount = accountValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedAccount))
       if (!account || account.currency !== currency) return { ok: false, error: 'finance-salary-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta listada con la misma moneda del recibo.' }
       const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
       if (!reference) return { ok: false, error: 'finance-salary-source-required' }
+      const signedDocument = args.signedDocument === true
+      if (signedDocument && !reference.toLocaleLowerCase('es').endsWith('.pdf')) {
+        return { ok: false, error: 'finance-salary-signed-pdf-required', invalidFields: ['signedDocument'], instruction: 'Usa signedDocument=true solamente cuando la evidencia original sea un PDF firmado.' }
+      }
       const salary: import('../../modules/finance/types/financeTypes').FinanceSalaryReceipt = {
         id: crypto.randomUUID(), period, paymentDate, employer, grossAmount, deductionsTotal, netAmount,
-        currency, accountId: account.id, status: 'confirmed', sourceReference: reference,
+        currency, accountId: account.id, status: 'confirmed', signedDocument, sourceReference: reference,
         rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null,
         concepts,
       }
@@ -1339,10 +1356,10 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const accepted = autoConfirm || await options.requestConfirmation(`Guardar recibo de sueldo de ${employer}, período ${period}, neto ${netAmount} ${currency}, en ${account.name}.`, signal)
       if (!accepted) return { ok: true, changed: false, declined: true }
       try {
-        const saved = await saveFinanceSalary(options.library, salary)
+        const saved = await saveVerifiedFinanceSalary(options.library, salary)
         financeMutationExecuted = true
         financeSalaryExecuted = true
-        options.onFinanceSalarySaved?.(reference)
+        options.onFinanceSalarySaved?.(reference, saved)
         return { ok: true, changed: true, salary: saved, accountName: account.name }
       } catch (error) {
         const message = typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
@@ -1531,6 +1548,38 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       financeMutationExecuted = true
       return { ok: true, changed: true, transaction: confirmed }
     }
+    if (name === 'create_finance_savings_exchange') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const reserveReference = typeof args.reserve === 'string' ? args.reserve.trim() : ''
+      const sourceAccountReference = typeof args.sourceAccount === 'string' ? args.sourceAccount.trim() : ''
+      const sourceAmount = normalizeFinanceDecimal(args.sourceAmount)
+      const savingsAmount = normalizeFinanceDecimal(args.savingsAmount)
+      const sourceCurrency = args.sourceCurrency === 'ARS' || args.sourceCurrency === 'USD' ? args.sourceCurrency : null
+      const savingsCurrency = args.savingsCurrency === 'ARS' || args.savingsCurrency === 'USD' ? args.savingsCurrency : null
+      const effectiveDate = typeof args.effectiveDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.effectiveDate.trim()) ? args.effectiveDate.trim() : new Date().toISOString().slice(0, 10)
+      const description = typeof args.description === 'string' && args.description.trim() ? args.description.trim() : 'Compra de moneda para ahorro'
+      if (!reserveReference || !sourceAccountReference || !sourceAmount || !savingsAmount || !sourceCurrency || !savingsCurrency || sourceCurrency === savingsCurrency) return { ok: false, error: 'invalid-finance-savings-exchange', requiresClarification: true }
+      const { getFinanceDashboard, saveFinanceSavingsExchange } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7))
+      const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const reserveMatches = dashboard.savings.filter((candidate) => candidate.active && (candidate.id === reserveReference || normalizeEntityName(candidate.name) === normalizeEntityName(reserveReference)))
+      const accountMatches = dashboard.accounts.filter((candidate) => candidate.active && (candidate.id === sourceAccountReference || normalizeEntityName(candidate.name) === normalizeEntityName(sourceAccountReference)))
+      if (reserveMatches.length !== 1) return { ok: false, error: reserveMatches.length === 0 ? 'finance-savings-reserve-not-found' : 'finance-savings-reserve-ambiguous', requiresClarification: true }
+      if (accountMatches.length !== 1) return { ok: false, error: accountMatches.length === 0 ? 'finance-account-not-found' : 'finance-account-ambiguous', requiresClarification: true }
+      const reserve = reserveMatches[0]
+      const sourceAccount = accountMatches[0]
+      if (reserve.currency !== savingsCurrency || sourceAccount.currency !== sourceCurrency) return { ok: false, error: 'finance-savings-exchange-currency-mismatch', requiresClarification: true }
+      const confidence = typeof args.confidence === 'number' ? args.confidence : 0
+      if (options.responseFormat !== 'telegram-html' && confidence < 0.95) {
+        const accepted = await options.requestConfirmation(`Confirmar compra de ${savingsAmount} ${savingsCurrency} para ${reserve.name} con ${sourceAmount} ${sourceCurrency} desde ${sourceAccount.name}.`, signal)
+        if (!accepted) return { ok: true, changed: false, declined: true }
+      }
+      const saved = await saveFinanceSavingsExchange(options.library, {
+        id: crypto.randomUUID(), reserveId: reserve.id, sourceAccountId: sourceAccount.id, sourceAmount, sourceCurrency, savingsAmount, savingsCurrency, effectiveDate, description, actorUserId: options.actorUserId, sourceReference: typeof args.sourceReference === 'string' ? args.sourceReference : null, rawSource: typeof args.rawSource === 'string' ? args.rawSource : null,
+      })
+      financeMutationExecuted = true
+      return { ok: true, changed: true, autoConfirmed: options.responseFormat === 'telegram-html' || confidence >= 0.95, reserve: reserve.name, sourceAccount: sourceAccount.name, movement: saved.movement, transaction: saved.transaction }
+    }
     if (name === 'create_finance_savings_movement') {
       if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
       const reserveId = typeof args.reserveId === 'string' ? args.reserveId.trim() : ''
@@ -1541,8 +1590,16 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const effectiveDate = typeof args.effectiveDate === 'string' ? args.effectiveDate.trim() : ''
       const reason = typeof args.reason === 'string' ? args.reason.trim() : ''
       if (!reserveId || !accountId || !currency || !/^-?\d+(\.\d+)?$/.test(amount) || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || !['contribution', 'withdrawal', 'return', 'loss', 'adjustment'].includes(movementType) || (movementType === 'withdrawal' && !reason)) return { ok: false, error: 'invalid-finance-savings-movement', requiresClarification: true }
-      const movement: import('../../modules/finance/types/financeTypes').FinanceSavingsMovement = { id: crypto.randomUUID(), reserveId, accountId, movementType: movementType as import('../../modules/finance/types/financeTypes').FinanceSavingsMovementType, amount, currency, effectiveDate, description: typeof args.description === 'string' ? args.description.trim() : movementType, reason: reason || null, source: 'chat', status: 'pending', actorUserId: options.actorUserId }
-      const { saveFinanceSavingsMovement } = await import('../../modules/finance/services/financeService')
+      const { getFinanceDashboard, saveFinanceSavingsMovement } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7))
+      const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
+      const reserveMatches = dashboard.savings.filter((candidate) => candidate.active && (candidate.id === reserveId || normalizeEntityName(candidate.name) === normalizeEntityName(reserveId)))
+      const accountMatches = dashboard.accounts.filter((candidate) => candidate.active && (candidate.id === accountId || normalizeEntityName(candidate.name) === normalizeEntityName(accountId)))
+      if (reserveMatches.length !== 1 || accountMatches.length !== 1) return { ok: false, error: reserveMatches.length !== 1 ? 'finance-savings-reserve-not-found-or-ambiguous' : 'finance-account-not-found-or-ambiguous', requiresClarification: true }
+      const reserve = reserveMatches[0]
+      const account = accountMatches[0]
+      if (reserve.currency !== currency || account.currency !== currency) return { ok: false, error: 'finance-savings-movement-currency-mismatch', requiresClarification: true }
+      const movement: import('../../modules/finance/types/financeTypes').FinanceSavingsMovement = { id: crypto.randomUUID(), reserveId: reserve.id, accountId: account.id, movementType: movementType as import('../../modules/finance/types/financeTypes').FinanceSavingsMovementType, amount, currency, effectiveDate, description: typeof args.description === 'string' ? args.description.trim() : movementType, reason: reason || null, source: 'chat', status: 'pending', actorUserId: options.actorUserId }
       const saved = await saveFinanceSavingsMovement(options.library, movement)
       financeMutationExecuted = true
       const confidence = typeof args.confidence === 'number' ? args.confidence : 0
