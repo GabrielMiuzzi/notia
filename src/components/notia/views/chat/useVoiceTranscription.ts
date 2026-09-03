@@ -80,6 +80,26 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
 
   useEffect(() => {
     let current = true
+    if (!qwen3Asr.enabled) {
+      setIsModelReady(false)
+      return () => { current = false }
+    }
+
+    void prepareSpeechModel(qwen3Asr).then(() => {
+      if (!current) return
+      setIsModelReady(true)
+      setModelPreparationError(null)
+    }).catch((error: unknown) => {
+      if (!current) return
+      setIsModelReady(false)
+      setModelPreparationError(error instanceof Error ? error.message : 'No se pudo preparar Qwen3-ASR.')
+    })
+
+    return () => { current = false }
+  }, [qwen3Asr])
+
+  useEffect(() => {
+    let current = true
     void Promise.allSettled([
       getSpeechCapabilities(),
       probeSpeechAudioInput(),
