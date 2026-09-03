@@ -18,6 +18,8 @@ describe('Telegram finance scope', () => {
     expect(isTelegramFinanceRequest('Gasté 4000$ en nafta')).toBe(true)
     expect(isTelegramFinanceRequest('Cargue $5000 de nafta, anotalo en mis finanzas')).toBe(true)
     expect(isTelegramFinanceRequest('Digital, crea una nueva categoria llamada transporte.')).toBe(true)
+    expect(isTelegramFinanceRequest('cual es la ultima cotizacion del dolar?')).toBe(true)
+    expect(isTelegramFinanceRequest('como esta el IPC interanual?')).toBe(true)
   })
 
   it('keeps general library requests outside finance scope', () => {
