@@ -93,6 +93,12 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
   const latestSalaries = [...salaries]
     .sort((left, right) => right.salary.period.localeCompare(left.salary.period))
     .slice(0, 6);
+  const cardMovements = cardStatements
+    .flatMap((statement) => statement.items
+      .filter((item) => Boolean(item.transactionId) && ["purchase", "fee", "interest", "tax"].includes(item.itemType))
+      .map((item) => ({ statement, item })))
+    .sort((left, right) => right.item.purchaseDate.localeCompare(left.item.purchaseDate))
+    .slice(0, 50);
 
   return (
     <section className="finance-records" aria-labelledby="finance-records-title">
@@ -124,6 +130,12 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
         <article className="finance-card">
           <h3>Últimos sueldos</h3>
           {latestSalaries.length ? <ul className="finance-category-list">{latestSalaries.map(({ salary }) => <li key={salary.id}><span>{salary.period} · {salary.employer}<small>Cobrado el {salary.paymentDate}</small></span><strong>Neto {formatSalaryNet(salary.netAmount, salary.currency)}</strong></li>)}</ul> : <p className="finance-muted">Sin recibos registrados.</p>}
+        </article>
+      </div>
+      <div className="finance-grid">
+        <article className="finance-card">
+          <h3>Movimientos de tarjetas</h3>
+          {cardMovements.length ? <ul className="finance-category-list">{cardMovements.map(({ statement, item }) => <li key={item.transactionId}><span>{item.description}<small>{statement.issuer}{statement.cardLastFour ? ` · •••• ${statement.cardLastFour}` : ""} · {statement.period} · {item.purchaseDate} · {item.itemType}</small></span><strong>{item.currency} {item.amount}</strong></li>)}</ul> : <p className="finance-muted">Sin movimientos creados desde resúmenes.</p>}
         </article>
       </div>
       <div className="finance-grid">

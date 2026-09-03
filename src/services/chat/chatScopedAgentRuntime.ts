@@ -610,7 +610,7 @@ export function buildChatAgentTools(
             period: { type: 'string', description: 'Período del resumen en formato YYYY-MM.' },
             closingDate: { type: 'string', description: 'Fecha de cierre YYYY-MM-DD.' },
             dueDate: { type: 'string', description: 'Fecha de vencimiento YYYY-MM-DD.' },
-            currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Genera una llamada independiente por cada moneda del resumen.' },
+            currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda de este bloque. Si el resumen tiene ARS y USD, genera una llamada independiente por cada moneda, con sus propios totales y líneas.' },
             previousBalance: { type: 'string' }, paymentsAmount: { type: 'string' }, creditsAmount: { type: 'string' }, purchasesAmount: { type: 'string' }, feesAmount: { type: 'string' }, interestAmount: { type: 'string' }, taxesAmount: { type: 'string' }, totalDue: { type: 'string' }, minimumPayment: { type: 'string' },
             items: { type: 'array', minItems: 1, maxItems: 300, description: 'Todas las líneas legibles. Incluye totales agregados impresos como una línea cuando no exista su desglose. Usa importes positivos.', items: { type: 'object', required: ['purchaseDate', 'description', 'amount', 'itemType'], properties: { purchaseDate: { type: 'string', description: 'Fecha YYYY-MM-DD.' }, description: { type: 'string' }, amount: { type: 'string' }, itemType: { type: 'string', enum: ['purchase', 'fee', 'interest', 'tax', 'payment', 'credit'] }, installmentNumber: { type: 'integer' }, installmentCount: { type: 'integer' } } } },
             rawExtraction: { type: 'string' }, sourceReference: { type: 'string' },
@@ -1404,20 +1404,38 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         ? null
         : normalizeFinanceDecimal(args.minimumPayment)
       const rawItems = Array.isArray(args.items) ? args.items.slice(0, 500) : []
-      const items: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatementItem[] = rawItems.flatMap((value) => {
+      let items: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatementItem[] = rawItems.flatMap((value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return []
         const item = value as Record<string, unknown>
         const purchaseDate = typeof item.purchaseDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.purchaseDate.trim()) ? item.purchaseDate.trim() : ''
         const description = typeof item.description === 'string' ? item.description.trim().replace(/\s+/g, ' ') : ''
         const amount = normalizeFinanceDecimal(item.amount)
+        const itemCurrency = item.currency === 'ARS' || item.currency === 'USD' ? item.currency : currency
         const itemType = ['purchase', 'fee', 'interest', 'tax', 'payment', 'credit'].includes(String(item.itemType))
           ? item.itemType as import('../../modules/finance/types/financeTypes').FinanceCreditCardStatementItemType
           : null
         const installmentNumber = typeof item.installmentNumber === 'number' && Number.isInteger(item.installmentNumber) ? item.installmentNumber : null
         const installmentCount = typeof item.installmentCount === 'number' && Number.isInteger(item.installmentCount) ? item.installmentCount : null
-        if (!purchaseDate || !description || !amount || !itemType || !currency) return []
-        return [{ id: crypto.randomUUID(), purchaseDate, description, amount, currency, itemType, installmentNumber, installmentCount, transactionId: null }]
+        if (!purchaseDate || !description || !amount || !itemCurrency || !itemType || !currency || itemCurrency !== currency) return []
+        return [{ id: crypto.randomUUID(), purchaseDate, description, amount, currency: itemCurrency!, itemType, installmentNumber, installmentCount, transactionId: null }]
       })
+      const aggregateFields: Array<[keyof typeof amountFields, import('../../modules/finance/types/financeTypes').FinanceCreditCardStatementItemType, string]> = [
+        ['paymentsAmount', 'payment', 'Pagos informados sin desglose'],
+        ['creditsAmount', 'credit', 'Créditos informados sin desglose'],
+        ['purchasesAmount', 'purchase', 'Consumos informados sin desglose'],
+        ['feesAmount', 'fee', 'Cargos informados sin desglose'],
+        ['interestAmount', 'interest', 'Intereses informados sin desglose'],
+        ['taxesAmount', 'tax', 'Impuestos informados sin desglose'],
+      ]
+      const parsedItemCount = items.length
+      for (const [field, itemType, description] of aggregateFields) {
+        const expected = amountFields[field]
+        if (!expected || expected === '0' || items.some((item) => item.itemType === itemType)) continue
+        items = [...items, {
+          id: crypto.randomUUID(), purchaseDate: closingDate, description, amount: expected,
+          currency: currency!, itemType, installmentNumber: null, installmentCount: null, transactionId: null,
+        }]
+      }
       const invalidFields = [
         !accountValue ? 'accountId' : null,
         !issuer || issuer.length > 200 ? 'issuer' : null,
@@ -1427,7 +1445,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         !currency ? 'currency' : null,
         ...Object.entries(amountFields).filter(([, value]) => !value).map(([field]) => field),
         args.minimumPayment !== null && args.minimumPayment !== undefined && args.minimumPayment !== '' && !minimumPayment ? 'minimumPayment' : null,
-        rawItems.length === 0 || items.length !== rawItems.length ? 'items' : null,
+        rawItems.length === 0 || parsedItemCount === 0 ? 'items' : null,
       ].filter((field): field is string => Boolean(field))
       if (invalidFields.length > 0) {
         return { ok: false, error: 'invalid-finance-credit-card-statement', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
@@ -1436,13 +1454,13 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const dashboard = await getFinanceDashboard(options.library, period)
       const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || normalizeEntityName(candidate.name) === normalizeEntityName(accountValue)))
-      if (!account || account.accountType !== 'credit_card' || account.currency !== currency) {
-        return { ok: false, error: 'finance-credit-card-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta activa de tipo credit_card con la misma moneda del resumen.' }
+      if (!account || account.accountType !== 'credit_card') {
+        return { ok: false, error: 'finance-credit-card-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta activa de tipo credit_card; la tarjeta puede tener líneas ARS y USD.' }
       }
       const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
       if (!reference) return { ok: false, error: 'finance-credit-card-statement-source-required' }
       const statement: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatement = {
-        id: crypto.randomUUID(), accountId: account.id, issuer, cardLastFour, period, closingDate, dueDate, currency,
+        id: crypto.randomUUID(), accountId: account.id, issuer, cardLastFour, period, closingDate, dueDate, currency: currency!,
         previousBalance: amountFields.previousBalance!, paymentsAmount: amountFields.paymentsAmount!, creditsAmount: amountFields.creditsAmount!,
         purchasesAmount: amountFields.purchasesAmount!, feesAmount: amountFields.feesAmount!, interestAmount: amountFields.interestAmount!,
         taxesAmount: amountFields.taxesAmount!, totalDue: amountFields.totalDue!, minimumPayment, status: 'confirmed', sourceReference: reference,

@@ -16,6 +16,7 @@ import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLong
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
 import type { AiImageAttachment } from '../../../services/ai/aiRuntime'
 import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from '../../../services/runtime/notiaLogger'
+import { renderTelegramPdfPages } from '../../../services/telegram/telegramPdfRenderer'
 
 interface Params {
   library: NotiaLibrary | null
@@ -253,7 +254,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             const downloaded = await extractTelegramPdf(state.telegram.botToken, request.attachment.value)
             financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId, 'pdf')
             pendingFinanceSourceReferenceRef.current = financeSourceReference
+            if (!downloaded.extractedContent.trim()) {
+              const pages = await renderTelegramPdfPages(downloaded.base64 ?? '')
+              image = { name: downloaded.fileName, mimeType: 'image/jpeg', base64: pages[0], additionalBase64: pages.slice(1) }
+              text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}, renderizado como ${pages.length} imagen(es). Analiza visualmente todas las páginas y clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro. Extrae todos los campos legibles y usa la herramienta financiera correspondiente.]`
+            } else {
             text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente. Para un recibo de sueldo usa signedDocument=true solo si el contenido indica firma digital, electrónica o manuscrita; en ese caso conserva el neto impreso aunque difiera de bruto menos descuentos.`
+            }
           } else {
           const downloadStartedAt = performance.now()
           notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image processing started', {

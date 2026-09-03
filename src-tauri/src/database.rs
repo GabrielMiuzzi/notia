@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+pub const CURRENT_SCHEMA_VERSION: i64 = 14;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -511,6 +511,16 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
         transaction.execute_batch(
             "ALTER TABLE finance_salary_receipts ADD COLUMN signed_document INTEGER NOT NULL DEFAULT 0;
              INSERT INTO notia_schema_migrations (version) VALUES (13);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 14 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "DROP INDEX IF EXISTS idx_finance_transactions_source_artifact;
+             CREATE INDEX IF NOT EXISTS idx_finance_transactions_source_artifact
+                ON finance_transactions(source_artifact_id) WHERE source_artifact_id IS NOT NULL;
+             INSERT INTO notia_schema_migrations (version) VALUES (14);",
         )?;
         transaction.commit()?;
     }

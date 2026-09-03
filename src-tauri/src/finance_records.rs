@@ -882,14 +882,11 @@ pub fn finance_save_credit_card_statement(
         )
         .optional()
         .map_err(|error| error.to_string())?;
-    let Some((account_type, account_currency)) = account else {
+    let Some((account_type, _account_currency)) = account else {
         return Err("La cuenta de tarjeta no existe o está inactiva.".into());
     };
     if account_type != "credit_card" {
         return Err("El resumen debe asociarse a una cuenta de tipo tarjeta de crédito.".into());
-    }
-    if account_currency != statement.currency {
-        return Err("La moneda del resumen debe coincidir con la moneda de la tarjeta.".into());
     }
     let duplicate: Option<String> = connection
         .query_row(
@@ -904,7 +901,7 @@ pub fn finance_save_credit_card_statement(
     }
 
     let timestamp = now();
-    let artifact_id = format!("card-statement:{}", statement.id);
+    let artifact_candidate_id = format!("card-statement:{}", statement.id);
     let content_hash = format!(
         "card-statement:{}:{}:{}",
         statement.account_id, statement.period, statement.currency
@@ -919,10 +916,17 @@ pub fn finance_save_credit_card_statement(
         params![category_id, timestamp],
     ).map_err(|error| error.to_string())?;
     transaction.execute(
-        "INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,content_hash,created_at)
+        "INSERT OR IGNORE INTO finance_source_artifacts(id,source_type,reference,raw_text,content_hash,created_at)
          VALUES(?1,'credit_card_statement',?2,?3,?4,?5)",
-        params![artifact_id, statement.source_reference, statement.raw_extraction, content_hash, timestamp],
+        params![artifact_candidate_id, statement.source_reference, statement.raw_extraction, content_hash, timestamp],
     ).map_err(|error| error.to_string())?;
+    let artifact_id: String = transaction
+        .query_row(
+            "SELECT id FROM finance_source_artifacts WHERE content_hash=?1",
+            [&content_hash],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             "INSERT INTO finance_credit_card_statements(

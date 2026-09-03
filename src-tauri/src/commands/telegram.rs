@@ -68,6 +68,7 @@ pub struct TelegramDownloadedDocument {
     file_name: String,
     mime_type: String,
     extracted_content: String,
+    base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,25 +166,27 @@ pub async fn extract_telegram_pdf(
         .unwrap_or_else(|| format!("telegram-{}.pdf", payload.document.file_id));
     let extracted_content = match crate::services::telegram_service::extract_pdf_text(&bytes) {
         Ok(text) => text,
-        Err(local_error) => {
-            let raw_result = crate::services::finance_extraction::extract_document_bytes(
-                &file_name,
-                "application/pdf",
-                bytes,
-            )
-            .await
-            .map_err(|cloud_error| format!(
-                "No se pudo leer el PDF localmente ({local_error}) ni con el extractor documental ({cloud_error})."
-            ))?;
-            serde_json::to_string(&raw_result)
-                .map_err(|_| "No se pudo serializar el contenido extraído del PDF.".to_string())?
+        Err(_local_error) => {
+            return Ok(TelegramDownloadedDocument {
+                file_id: payload.document.file_id,
+                file_name,
+                mime_type: "application/pdf".to_string(),
+                extracted_content: String::new(),
+                base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            });
         }
     };
+    let needs_visual_fallback = extracted_content.is_empty();
     Ok(TelegramDownloadedDocument {
         file_id: payload.document.file_id,
         file_name,
         mime_type: "application/pdf".to_string(),
         extracted_content,
+        base64: if needs_visual_fallback {
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        } else {
+            String::new()
+        },
     })
 }
 

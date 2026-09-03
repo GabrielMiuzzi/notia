@@ -61,6 +61,14 @@ export interface AiImageAttachment {
   name: string
   mimeType: string
   base64: string
+  additionalBase64?: string[]
+}
+
+function imageAttachmentBase64(image: AiImageAttachment | null | undefined): string[] {
+  if (!image) return []
+  return [image.base64, ...(image.additionalBase64 ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean)
 }
 
 interface AiMessagePayload {
@@ -855,9 +863,7 @@ function buildConversationMessages(input: StreamAiChatReplyInput): AiMessagePayl
       input.files ?? [],
       input.selectedContextMode,
     ),
-    images: input.image?.base64.trim()
-      ? [input.image.base64.trim()]
-      : undefined,
+    images: imageAttachmentBase64(input.image),
   }
 
   return [systemMessage, ...historyMessages, userMessage]
@@ -1457,7 +1463,7 @@ export async function runNativeToolAgent(
     {
       role: 'user',
       content: input.prompt.trim(),
-      images: input.image?.base64.trim() ? [input.image.base64.trim()] : undefined,
+      images: imageAttachmentBase64(input.image),
     },
   ]
 
@@ -1466,8 +1472,8 @@ export async function runNativeToolAgent(
     diagnosticLog('agent started', {
       model,
       runtime: getRuntimeDevice(),
-      hasImage: Boolean(input.image?.base64.trim()),
-      imageBytesApprox: input.image?.base64 ? Math.floor(input.image.base64.length * 0.75) : 0,
+      hasImage: imageAttachmentBase64(input.image).length > 0,
+      imageBytesApprox: imageAttachmentBase64(input.image).reduce((total, value) => total + Math.floor(value.length * 0.75), 0),
       toolCount: input.tools.length,
       maxRounds,
       toolCallTimeoutSeconds,
@@ -1671,6 +1677,10 @@ export async function runNativeToolAgent(
             && typeof (result as { diagnosticReason?: unknown }).diagnosticReason === 'string'
             ? (result as { diagnosticReason: string }).diagnosticReason
             : undefined,
+          message: typeof result === 'object' && result !== null && 'message' in result
+            && typeof (result as { message?: unknown }).message === 'string'
+            ? (result as { message: string }).message.slice(0, 500)
+            : undefined,
         })
         messages.push({
           role: 'tool',
@@ -1678,7 +1688,10 @@ export async function runNativeToolAgent(
           content: JSON.stringify(result),
         })
         const terminalAnswer = input.resolveToolResultAnswer?.(call, result)?.trim() ?? ''
-        if (terminalAnswer) {
+        const retryableValidation = typeof result === 'object' && result !== null
+          && 'ok' in result && (result as { ok?: unknown }).ok === false
+          && 'code' in result && (result as { code?: unknown }).code === 'validation'
+        if (terminalAnswer && !retryableValidation) {
           options.onMessageDelta?.(terminalAnswer)
           diagnosticLog('agent completed from terminal tool result', {
             rounds: roundNumber,
@@ -1689,7 +1702,8 @@ export async function runNativeToolAgent(
           return terminalAnswer
         }
       }
-      if (acceptedToolCalls.some((call) => ['create_finance_purchase', 'create_finance_salary', 'create_finance_credit_card_statement'].includes(call.function.name))) {
+      if (acceptedToolCalls.some((call) => ['create_finance_purchase', 'create_finance_salary', 'create_finance_credit_card_statement'].includes(call.function.name))
+        && !messages.some((message) => message.role === 'tool' && message.content.includes('"code":"validation"'))) {
         for (const message of messages) message.images = undefined
         diagnosticLog('image removed after structured finance document attempt', { round: roundNumber })
       }

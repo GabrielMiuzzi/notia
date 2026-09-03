@@ -14,6 +14,7 @@ import {
   saveFinanceTransaction,
   saveFinanceSavingsReserve,
   saveFinanceSavingsMovement,
+  listFinanceSalaries,
   linkFinanceSavingsAccount,
   deleteFinanceAccount,
   deleteFinanceCategory,
@@ -26,6 +27,7 @@ import type {
   FinanceTransaction,
   FinanceSavingsMovement,
   FinanceSavingsReserve,
+  FinanceSalaryReceipt,
 } from "../types/financeTypes";
 import { financeErrorMessage } from "../engines/financeError";
 import {
@@ -36,6 +38,7 @@ import { formatDebtToIncomeRatio } from "../engines/debtRatio";
 import { FinanceRecordsPanel } from "./FinanceRecordsPanel";
 import { DollarQuotesCards } from "./DollarQuotesCards";
 import { subscribeToFinanceDataChanges } from "../services/financeDataEvents";
+import { getDollarQuotes } from "../services/dollarQuotesService";
 
 interface FinanceDashboardProps {
   library: NotiaLibrary;
@@ -63,6 +66,45 @@ function formatTotals(totals: Record<string, string>) {
         .join(" · ");
 }
 
+function formatSavingsToIncomeRatio(
+  reserves: FinanceSavingsReserve[],
+  savingsMovements: FinanceSavingsMovement[],
+  transactions: FinanceTransaction[],
+  salary: FinanceSalaryReceipt | null,
+  dollarRate: number | null,
+): string {
+  if (!salary) return "—";
+  const salaryAmount = Number(salary.netAmount);
+  if (!Number.isFinite(salaryAmount) || salaryAmount <= 0) return "—";
+  const latestExchange = transactions
+    .filter((transaction) => transaction.status === "confirmed" && transaction.source === "savings_exchange")
+    .sort((left, right) => right.effectiveDate.localeCompare(left.effectiveDate))[0];
+  const latestExchangeMovement = savingsMovements
+    .filter((movement) => movement.status === "confirmed" && movement.source === "savings_exchange")
+    .sort((left, right) => right.effectiveDate.localeCompare(left.effectiveDate))[0];
+  let savingsAmount = 0;
+  if (latestExchange) {
+    savingsAmount = salary.currency === latestExchange.currency
+      ? Number(latestExchange.amount)
+      : latestExchangeMovement && salary.currency === latestExchangeMovement.currency
+        ? Number(latestExchangeMovement.amount)
+        : dollarRate && dollarRate > 0
+          ? salary.currency === "ARS" ? Number(latestExchange.amount) : Number(latestExchange.amount) / dollarRate
+          : 0;
+  } else {
+    for (const reserve of reserves) {
+      const balance = Number(reserve.balance);
+      if (!Number.isFinite(balance)) continue;
+      savingsAmount += reserve.currency === salary.currency
+        ? balance
+        : dollarRate && dollarRate > 0
+          ? salary.currency === "ARS" ? balance * dollarRate : balance / dollarRate
+          : 0;
+    }
+  }
+  return `${((savingsAmount / salaryAmount) * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 })}%`;
+}
+
 export function FinanceDashboard({ library }: FinanceDashboardProps) {
   const [month, setMonth] = useState(currentMonth);
   const [data, setData] = useState<DashboardData | null>(null);
@@ -79,6 +121,8 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   const [editingCategory, setEditingCategory] = useState<FinanceCategory | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<FinanceTransaction | null>(null);
   const [transactionPage, setTransactionPage] = useState(0);
+  const [latestSalary, setLatestSalary] = useState<FinanceSalaryReceipt | null>(null);
+  const [dollarRate, setDollarRate] = useState<number | null>(null);
 
   const moveMonth = (offset: number) => {
     const [year, monthNumber] = month.split("-").map(Number);
@@ -103,6 +147,19 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   useEffect(() => subscribeToFinanceDataChanges(() => {
     void refresh();
   }), [refresh]);
+  useEffect(() => {
+    let active = true;
+    void listFinanceSalaries(library).then((salaries) => {
+      if (!active) return;
+      const latest = [...salaries]
+        .sort((left, right) => `${right.salary.period}-${right.salary.paymentDate}`.localeCompare(`${left.salary.period}-${left.salary.paymentDate}`))[0]?.salary ?? null;
+      setLatestSalary(latest);
+    }).catch(() => undefined);
+    void getDollarQuotes().then((quotes) => {
+      if (active) setDollarRate(quotes.find((quote) => quote.kind === "oficial")?.sell ?? null);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [library]);
 
   const filteredTransactions = useMemo(() => data?.transactions ?? [], [data]);
 
@@ -136,6 +193,19 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   }, [savingsMovements]);
   const transactionPageSize = 50;
   const visibleTransactions = filteredTransactions.slice(transactionPage * transactionPageSize, (transactionPage + 1) * transactionPageSize);
+  const debtRatioSummary = useMemo(() => {
+    if (!data) return { value: "—", period: month };
+    const selectedValue = formatDebtToIncomeRatio(data.debtByCurrency, data.salaryByCurrency);
+    if (selectedValue !== "—") return { value: selectedValue, period: month };
+    const fallback = [...data.debtRatioHistory]
+      .sort((left, right) => right.period.localeCompare(left.period))
+      .map((point) => ({
+        value: formatDebtToIncomeRatio(point.debtByCurrency, point.salaryByCurrency),
+        period: point.period,
+      }))
+      .find((point) => point.value !== "—");
+    return fallback ?? { value: "—", period: month };
+  }, [data, month]);
   useEffect(() => setTransactionPage(0), [month]);
 
   async function submitTransaction(transaction: FinanceTransaction) {
@@ -237,12 +307,13 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
           </section>
           <section className="finance-metrics" aria-label="Totales del mes">
             <article>
-              <span>Ingresos</span>
-              <strong>{formatTotals(data.incomeByCurrency)}</strong>
-            </article>
-            <article>
               <span>Gastos</span>
               <strong>{formatTotals(data.expenseByCurrency)}</strong>
+            </article>
+            <article>
+              <span>Ahorro / sueldo</span>
+              <strong>{formatSavingsToIncomeRatio(data.savings, data.savingsMovements, data.transactions, latestSalary, dollarRate)}</strong>
+              <small className="finance-muted">Saldo de ahorro respecto del sueldo en la misma moneda.</small>
             </article>
             <article>
               <span>Resultado neto</span>
@@ -250,8 +321,12 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
             </article>
             <article>
               <span>Deuda / sueldo</span>
-              <strong>{formatDebtToIncomeRatio(data.debtByCurrency, data.salaryByCurrency)}</strong>
-              <small className="finance-muted">Tarjetas y deudas registradas contra el sueldo del mes.</small>
+              <strong>{debtRatioSummary.value}</strong>
+              <small className="finance-muted">
+                {debtRatioSummary.period === month
+                  ? "Tarjetas y deudas registradas contra el sueldo del mes."
+                  : `Último período con datos: ${debtRatioSummary.period}.`}
+              </small>
             </article>
           </section>
           {data.transactions.some((transaction) => transaction.status === "pending") && <section className="finance-card finance-pending" role="status"><h2>Cargas pendientes</h2><p>{data.transactions.filter((transaction) => transaction.status === "pending").length} operaciones esperan revisión.</p></section>}

@@ -15,6 +15,7 @@ export interface TelegramDownloadedPhoto {
 }
 export interface TelegramDownloadedDocument {
   fileId: string; fileName: string; mimeType: string; extractedContent: string
+  base64?: string
 }
 export interface TelegramUpdate {
   updateId: number; chatId: number; user: TelegramIdentity; messageId?: number; text?: string
