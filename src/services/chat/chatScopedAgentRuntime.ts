@@ -132,6 +132,9 @@ export const CHAT_AGENT_SINGLE_CALL_TOOL_NAMES = [
 const FINANCE_TOOL_NAMES = new Set([
   'request_user_clarification',
   'get_finance_dashboard',
+  'get_finance_dollar_quotes',
+  'get_finance_inflation_indices',
+  'get_finance_historical_dollar_quotes',
   'create_finance_transaction',
   'create_finance_savings_movement',
   'create_finance_savings_exchange',
@@ -147,6 +150,9 @@ const FINANCE_TOOL_NAMES = new Set([
   'list_finance_credit_card_statements',
   'list_finance_salaries',
   'list_finance_purchases',
+  'list_finance_price_history',
+  'get_finance_net_worth',
+  'list_finance_net_worth_history',
 ])
 
 /** Accepts canonical, numeric and common ARS/USD locale forms from tool-calling models. */
@@ -487,6 +493,27 @@ export function buildChatAgentTools(
       },
       {
         type: 'function', function: {
+          name: 'get_finance_dollar_quotes',
+          description: 'Consulta las cotizaciones actuales de dólar oficial, blue y tarjeta desde DolarApi. Usala para preguntas sobre valores actuales y aclara siempre la fecha de actualización.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'get_finance_inflation_indices',
+          description: 'Consulta los índices de inflación mensual e interanual publicados por ArgentinaDatos. Usala para preguntas sobre IPC y aclara que son datos de una fuente externa.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'get_finance_historical_dollar_quotes',
+          description: 'Consulta el historial diario de compra y venta del dólar oficial publicado por ArgentinaDatos. Puede aceptar desde y hasta en formato YYYY-MM-DD para limitar la respuesta.',
+          parameters: { type: 'object', properties: { from: { type: 'string', description: 'Fecha inicial YYYY-MM-DD, opcional.' }, to: { type: 'string', description: 'Fecha final YYYY-MM-DD, opcional.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
           name: 'create_finance_savings_exchange',
           description: 'Registra una compra de moneda para ahorro en una única operación: guarda la salida como gasto desde la cuenta de pago y acredita la moneda comprada en la reserva. Usala cuando el usuario indique ambos importes y monedas, por ejemplo comprar USD con ARS para una reserva. Antes consulta get_finance_dashboard para resolver reserva y cuenta por nombre; no pidas IDs al usuario.',
           parameters: { type: 'object', required: ['reserve', 'sourceAccount', 'sourceAmount', 'sourceCurrency', 'savingsAmount', 'savingsCurrency'], properties: {
@@ -636,6 +663,27 @@ export function buildChatAgentTools(
           name: 'list_finance_purchases',
           description: 'Consulta compras confirmadas y pendientes por fecha, incluidos tickets y lineas cuando existan. Es solo lectura: no extrae ni modifica archivos.',
           parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_price_history',
+          description: 'Consulta el historial de precios observados en tickets, con producto, comercio, fecha, moneda, precio unitario y total. Es solo lectura.',
+          parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' }, merchantId: { type: 'string' }, productId: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'get_finance_net_worth',
+          description: 'Consulta el patrimonio neto por moneda y tipo de activo/deuda a una fecha. Usala para preguntas sobre patrimonio actual o histórico puntual.',
+          parameters: { type: 'object', required: ['asOf'], properties: { asOf: { type: 'string', description: 'Fecha de corte YYYY-MM-DD.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_net_worth_history',
+          description: 'Consulta toda la evolución histórica de patrimonio neto por fecha y moneda. Es solo lectura.',
+          parameters: { type: 'object', properties: {} },
         },
       },
     )
@@ -832,6 +880,8 @@ export function buildChatAgentSystemPrompt(
     const autoConfirmTelegramFinance = responseFormat === 'telegram-html'
     base.push(
       'Estas en Finanzas. Usa exclusivamente las herramientas financieras; no uses SQL ni modifiques saldos directamente.',
+      'Para cotizaciones actuales usa get_finance_dollar_quotes (DolarApi). Para IPC mensual o interanual usa get_finance_inflation_indices (ArgentinaDatos), y para el historial del dolar oficial usa get_finance_historical_dollar_quotes (ArgentinaDatos). Informa siempre la fuente y la fecha disponible; si una consulta externa falla, dilo explicitamente.',
+      'Para preguntas sobre precios historicos usa list_finance_price_history. Para patrimonio usa get_finance_net_worth o list_finance_net_worth_history. Para recibos, tickets y resumenes usa sus herramientas list_* y aplica filtros cuando el usuario indique un periodo. No afirmes que consultaste todos los registros si una herramienta devuelve un resultado truncado.',
       'No recibiste documentos de la biblioteca como contexto. Consulta solamente los datos mínimos necesarios mediante herramientas tipadas.',
       `La fecha actual para registrar operaciones sin fecha indicada es ${new Date().toISOString().slice(0, 10)}. Usa esa fecha solo cuando el usuario no indique otra.`,
       'Antes de registrar cualquier movimiento lista las cuentas. Si el usuario no indicó una cuenta inequívoca, llama request_user_clarification y espera; esto es obligatorio también en Telegram.',
@@ -1162,6 +1212,25 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const month = typeof args.month === 'string' && /^\d{4}-\d{2}$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
       const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
       return getFinanceDashboard(options.library, month)
+    }
+    if (name === 'get_finance_dollar_quotes') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const { getDollarQuotes } = await import('../../modules/finance/services/dollarQuotesService')
+      return { source: 'DolarApi', quotes: await getDollarQuotes() }
+    }
+    if (name === 'get_finance_inflation_indices') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const { getArgentinaInflationIndices } = await import('../../modules/finance/services/argentinaInflationService')
+      return { source: 'ArgentinaDatos', ...(await getArgentinaInflationIndices()) }
+    }
+    if (name === 'get_finance_historical_dollar_quotes') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const from = typeof args.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.from) ? args.from : undefined
+      const to = typeof args.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.to) ? args.to : undefined
+      if (from && to && from > to) return { ok: false, error: 'invalid-finance-date-range', requiresClarification: true }
+      const { getOfficialHistoricalDollarQuotes } = await import('../../modules/finance/services/argentinaDollarHistoryService')
+      const quotes = await getOfficialHistoricalDollarQuotes()
+      return { source: 'ArgentinaDatos', quotes: quotes.filter((quote) => (!from || quote.date >= from) && (!to || quote.date <= to)) }
     }
     if (name === 'list_finance_accounts' || name === 'list_finance_categories' || name === 'list_finance_movements') {
       if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
@@ -1517,6 +1586,29 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       if (name === 'list_finance_salaries') return { salaries: await service.listFinanceSalaries(options.library, filters) }
       if (name === 'list_finance_credit_card_statements') return { statements: await service.listFinanceCreditCardStatements(options.library, filters) }
       return { purchases: await service.listFinancePurchases(options.library, filters) }
+    }
+    if (name === 'list_finance_price_history') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const filters = {
+        from: typeof args.from === 'string' ? args.from : undefined,
+        to: typeof args.to === 'string' ? args.to : undefined,
+        merchantId: typeof args.merchantId === 'string' ? args.merchantId : undefined,
+        productId: typeof args.productId === 'string' ? args.productId : undefined,
+      }
+      const { listFinancePriceHistory } = await import('../../modules/finance/services/financeService')
+      return { observations: await listFinancePriceHistory(options.library, filters) }
+    }
+    if (name === 'get_finance_net_worth') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const asOf = typeof args.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.asOf) ? args.asOf : ''
+      if (!asOf) return { ok: false, error: 'invalid-finance-date', requiresClarification: true }
+      const { getFinanceNetWorth } = await import('../../modules/finance/services/financeService')
+      return getFinanceNetWorth(options.library, asOf)
+    }
+    if (name === 'list_finance_net_worth_history') {
+      if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }
+      const { listFinanceNetWorthHistory } = await import('../../modules/finance/services/financeService')
+      return { history: await listFinanceNetWorthHistory(options.library) }
     }
     if (name === 'create_finance_transaction') {
       if (options.scope !== 'finance') return { ok: false, error: 'finance-scope-required' }

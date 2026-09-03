@@ -1,5 +1,7 @@
 # Notia
 
+En el chat de **Finanzas**, la IA puede consultar los datos financieros locales y fuentes de mercado mediante herramientas tipadas. Puede obtener cotizaciones actuales de dólar oficial, blue y tarjeta desde DolarApi; IPC mensual e interanual y el historial del dólar oficial desde ArgentinaDatos; además de movimientos, cuentas, tickets, precios históricos, sueldos, resúmenes de tarjeta y patrimonio. Las respuestas que usan fuentes externas indican su origen y pueden fallar si no hay conexión.
+
 ## Dictado offline en el chat
 
 El contacto autorizado de Telegram también puede enviar una nota de voz OGG/Opus de hasta 15 minutos y 20 MB. Notia la descarga, la decodifica y carga bajo demanda el modelo offline necesario para transcribirla. La decodificación admite los modos SILK, CELT e híbrido usados por Telegram, incluso en notas de voz rápidas. Primero responde **Solicitud transcripción recibida y en proceso.**, mostrando la transcripción en negrita, y después procesa ese texto como una consulta normal del agente. El audio no se envía al proveedor de IA; Telegram sí interviene necesariamente en su transporte y descarga.

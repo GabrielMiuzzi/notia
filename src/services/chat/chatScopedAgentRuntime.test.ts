@@ -239,6 +239,9 @@ describe('chatScopedAgentRuntime', () => {
     const names = financeTools.map((tool) => tool.function.name)
     expect(names).toEqual(expect.arrayContaining([
       'get_finance_dashboard',
+      'get_finance_dollar_quotes',
+      'get_finance_inflation_indices',
+      'get_finance_historical_dollar_quotes',
       'create_finance_transaction',
       'create_finance_savings_exchange',
       'update_finance_transaction_status',
@@ -250,6 +253,9 @@ describe('chatScopedAgentRuntime', () => {
       'list_finance_salaries',
       'list_finance_credit_card_statements',
       'list_finance_purchases',
+      'list_finance_price_history',
+      'get_finance_net_worth',
+      'list_finance_net_worth_history',
     ]))
     expect(names).not.toContain('add_agent_rule')
     expect(names).not.toContain('add_agent_memory')
@@ -257,6 +263,11 @@ describe('chatScopedAgentRuntime', () => {
     expect(names).not.toContain('create_task_ticket')
     const prompt = buildChatAgentSystemPrompt('finance', 'Base')
     expect(prompt).toContain('herramientas financieras')
+    expect(prompt).toContain('get_finance_dollar_quotes')
+    expect(prompt).toContain('get_finance_inflation_indices')
+    expect(prompt).toContain('get_finance_historical_dollar_quotes')
+    expect(prompt).toContain('list_finance_price_history')
+    expect(prompt).toContain('get_finance_net_worth')
     expect(prompt).toContain('no indicó una cuenta inequívoca')
     expect(prompt).toContain('Orden obligatorio')
     expect(prompt).toContain('create_finance_category')

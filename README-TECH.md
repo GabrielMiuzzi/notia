@@ -5,6 +5,12 @@
 
 ---
 
+### Tools de consulta financiera del agente
+
+El scope `finance` expone consultas tipadas adicionales a traves de `chatScopedAgentRuntime.ts`: `get_finance_dollar_quotes` usa `https://dolarapi.com/v1/dolares`; `get_finance_inflation_indices` usa los endpoints mensual e interanual de ArgentinaDatos; y `get_finance_historical_dollar_quotes` usa `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`. Las tres respuestas conservan la fuente y los servicios aplican validacion de payload y timeout de 10 segundos. Las consultas locales `list_finance_price_history`, `get_finance_net_worth` y `list_finance_net_worth_history` delegan en los comandos Tauri existentes, respetando el scope de la biblioteca activa.
+
+El agente debe elegir estas tools para preguntas de mercado, IPC, historial de cotizaciones, precios observados o patrimonio; no debe inventar valores ni presentar datos externos como si fueran persistidos en la biblioteca. Los endpoints externos son solo lectura y requieren conectividad.
+
 ## 1. Documentación General
 
 ### 1.1 Descripción Técnica del Servicio
