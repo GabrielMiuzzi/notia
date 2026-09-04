@@ -8,6 +8,8 @@ import { improveMeetingTranscript } from '../../../services/ai/aiRuntime'
 import { extractSpeakerNames, replaceSpeakerName } from '../../../services/speech/speechTranscript'
 import { clearMeetingTranscriptContext, setMeetingTranscriptContext } from '../../../services/meeting/meetingTranscriptContext'
 
+const MEETING_MAX_DURATION_SECONDS = 12 * 60 * 60
+
 function formatElapsed(milliseconds: number): string {
   const totalSeconds = Math.floor(milliseconds / 1_000)
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0')
@@ -32,6 +34,7 @@ function MeetingViewComponent() {
   const voice = useVoiceTranscription({
     draft: transcript,
     setDraft: setTranscript,
+    maxDurationSeconds: MEETING_MAX_DURATION_SECONDS,
     captureSystemAudio: true,
     onCompleted: handleCompleted,
   })

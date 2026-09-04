@@ -19,6 +19,15 @@ mod windows {
         pub segments: Vec<DiarizationSegment>,
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct SpeakerEmbedding {
+        pub speaker: i32,
+        pub vector: Vec<f32>,
+    }
+
+    const MIN_EMBEDDING_SAMPLES: usize = 16_000;
+    const MAX_EMBEDDING_SAMPLES: usize = 16_000 * 60;
+
     pub fn process(
         runtime_path: &Path,
         model: &ResolvedDiarizationModel,
@@ -134,6 +143,252 @@ mod windows {
                 .collect::<Result<Vec<_>, _>>()?;
         let _reported_speaker_count = speaker_count;
         Ok(stabilize_speakers(segments))
+    }
+
+    pub struct SpeakerEmbeddingExtractor {
+        extractor: EmbeddingExtractorGuard,
+        api: EmbeddingApi,
+        dimension: usize,
+    }
+
+    impl SpeakerEmbeddingExtractor {
+        pub fn new(runtime_path: &Path, model: &ResolvedDiarizationModel) -> Result<Self, String> {
+            if !(1..=8).contains(&model.num_threads) {
+                return Err("El extractor de embeddings excede los limites permitidos.".to_string());
+            }
+            let api = unsafe { EmbeddingApi::load(runtime_path) }?;
+            let model_path = path_string(&model.embedding, "embedding")?;
+            let provider = CString::new("cpu").map_err(|_| "Provider invalido.".to_string())?;
+            let config = EmbeddingExtractorConfig {
+                model: model_path.as_ptr(),
+                num_threads: model.num_threads,
+                debug: 0,
+                provider: provider.as_ptr(),
+            };
+            let extractor = NonNull::new(unsafe { (api.create)(&config) } as *mut c_void)
+                .ok_or_else(|| {
+                    "sherpa-onnx no pudo crear el extractor de embeddings.".to_string()
+                })?;
+            let extractor_guard = EmbeddingExtractorGuard {
+                value: extractor,
+                destroy: api.destroy,
+            };
+            let dimension = checked_count(
+                unsafe { (api.dimension)(extractor_guard.value.as_ptr()) },
+                4_096,
+                "dimensiones de embedding",
+            )?;
+            if dimension == 0 {
+                return Err("sherpa-onnx devolvio una dimension de embedding invalida.".to_string());
+            }
+            Ok(Self {
+                extractor: extractor_guard,
+                api,
+                dimension,
+            })
+        }
+
+        pub fn extract(
+            &self,
+            samples: &[f32],
+            diarization: &DiarizationResult,
+        ) -> Result<Vec<SpeakerEmbedding>, String> {
+            let speakers = diarization
+                .segments
+                .iter()
+                .map(|segment| segment.speaker)
+                .collect::<BTreeSet<_>>();
+            let mut embeddings = Vec::with_capacity(speakers.len());
+            for speaker in speakers {
+                if let Some(vector) = self.extract_for_speaker(samples, diarization, speaker)? {
+                    embeddings.push(SpeakerEmbedding { speaker, vector });
+                }
+            }
+            Ok(embeddings)
+        }
+
+        fn extract_for_speaker(
+            &self,
+            samples: &[f32],
+            diarization: &DiarizationResult,
+            speaker: i32,
+        ) -> Result<Option<Vec<f32>>, String> {
+            let stream =
+                NonNull::new(
+                    unsafe { (self.api.create_stream)(self.extractor.value.as_ptr()) }
+                        as *mut c_void,
+                )
+                .ok_or_else(|| "sherpa-onnx no pudo crear el stream de embedding.".to_string())?;
+            let stream_guard = EmbeddingStreamGuard {
+                value: stream,
+                destroy: self.api.destroy_stream,
+            };
+            let mut accepted_samples = 0_usize;
+            for segment in diarization
+                .segments
+                .iter()
+                .filter(|segment| segment.speaker == speaker)
+            {
+                let Some((start, end)) = sample_bounds(segment, samples.len()) else {
+                    continue;
+                };
+                let remaining = MAX_EMBEDDING_SAMPLES.saturating_sub(accepted_samples);
+                let count = (end - start).min(remaining);
+                if count == 0 {
+                    break;
+                }
+                unsafe {
+                    (self.api.accept_waveform)(
+                        stream_guard.value.as_ptr(),
+                        16_000,
+                        samples[start..start + count].as_ptr(),
+                        count as i32,
+                    );
+                }
+                accepted_samples += count;
+            }
+            if accepted_samples < MIN_EMBEDDING_SAMPLES {
+                return Ok(None);
+            }
+            unsafe { (self.api.input_finished)(stream_guard.value.as_ptr()) };
+            if unsafe {
+                (self.api.is_ready)(self.extractor.value.as_ptr(), stream_guard.value.as_ptr())
+            } == 0
+            {
+                return Ok(None);
+            }
+            let embedding = NonNull::new(unsafe {
+                (self.api.compute)(self.extractor.value.as_ptr(), stream_guard.value.as_ptr())
+                    as *mut f32
+            })
+            .ok_or_else(|| "sherpa-onnx no pudo calcular el embedding.".to_string())?;
+            let vector =
+                unsafe { std::slice::from_raw_parts(embedding.as_ptr(), self.dimension).to_vec() };
+            unsafe { (self.api.destroy_embedding)(embedding.as_ptr()) };
+            if !vector.iter().all(|value| value.is_finite())
+                || vector.iter().map(|value| value * value).sum::<f32>() <= f32::EPSILON
+            {
+                return Err("sherpa-onnx devolvio un embedding invalido.".to_string());
+            }
+            Ok(Some(vector))
+        }
+    }
+
+    fn sample_bounds(segment: &DiarizationSegment, sample_count: usize) -> Option<(usize, usize)> {
+        if !segment.start_seconds.is_finite()
+            || !segment.end_seconds.is_finite()
+            || segment.start_seconds < 0.0
+            || segment.end_seconds <= segment.start_seconds
+        {
+            return None;
+        }
+        let start = (f64::from(segment.start_seconds) * 16_000.0)
+            .floor()
+            .clamp(0.0, sample_count as f64) as usize;
+        let end = (f64::from(segment.end_seconds) * 16_000.0)
+            .ceil()
+            .clamp(0.0, sample_count as f64) as usize;
+        (end > start).then_some((start, end))
+    }
+
+    struct EmbeddingApi {
+        _library: crate::services::sherpa_runtime::LoadedSherpaLibrary,
+        create: CreateEmbeddingExtractor,
+        destroy: Destroy,
+        dimension: EmbeddingDimension,
+        create_stream: CreateEmbeddingStream,
+        destroy_stream: Destroy,
+        accept_waveform: AcceptWaveform,
+        input_finished: InputFinished,
+        is_ready: IsEmbeddingReady,
+        compute: ComputeEmbedding,
+        destroy_embedding: DestroyEmbedding,
+    }
+
+    impl EmbeddingApi {
+        unsafe fn load(runtime_path: &Path) -> Result<Self, String> {
+            let library = unsafe {
+                crate::services::sherpa_runtime::LoadedSherpaLibrary::load(runtime_path)
+            }?;
+            macro_rules! symbol {
+                ($name:literal, $type:ty) => {{
+                    let symbol: libloading::Symbol<'_, $type> = unsafe { library.get($name) }
+                        .map_err(|error| format!("Falta un simbolo de embedding: {error}"))?;
+                    *symbol
+                }};
+            }
+            Ok(Self {
+                create: symbol!(
+                    b"SherpaOnnxCreateSpeakerEmbeddingExtractor\0",
+                    CreateEmbeddingExtractor
+                ),
+                destroy: symbol!(b"SherpaOnnxDestroySpeakerEmbeddingExtractor\0", Destroy),
+                dimension: symbol!(
+                    b"SherpaOnnxSpeakerEmbeddingExtractorDim\0",
+                    EmbeddingDimension
+                ),
+                create_stream: symbol!(
+                    b"SherpaOnnxSpeakerEmbeddingExtractorCreateStream\0",
+                    CreateEmbeddingStream
+                ),
+                destroy_stream: symbol!(b"SherpaOnnxDestroyOnlineStream\0", Destroy),
+                accept_waveform: symbol!(b"SherpaOnnxOnlineStreamAcceptWaveform\0", AcceptWaveform),
+                input_finished: symbol!(b"SherpaOnnxOnlineStreamInputFinished\0", InputFinished),
+                is_ready: symbol!(
+                    b"SherpaOnnxSpeakerEmbeddingExtractorIsReady\0",
+                    IsEmbeddingReady
+                ),
+                compute: symbol!(
+                    b"SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding\0",
+                    ComputeEmbedding
+                ),
+                destroy_embedding: symbol!(
+                    b"SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding\0",
+                    DestroyEmbedding
+                ),
+                _library: library,
+            })
+        }
+    }
+
+    struct EmbeddingExtractorGuard {
+        value: NonNull<c_void>,
+        destroy: Destroy,
+    }
+
+    impl Drop for EmbeddingExtractorGuard {
+        fn drop(&mut self) {
+            unsafe { (self.destroy)(self.value.as_ptr()) };
+        }
+    }
+
+    struct EmbeddingStreamGuard {
+        value: NonNull<c_void>,
+        destroy: Destroy,
+    }
+
+    impl Drop for EmbeddingStreamGuard {
+        fn drop(&mut self) {
+            unsafe { (self.destroy)(self.value.as_ptr()) };
+        }
+    }
+
+    type CreateEmbeddingExtractor =
+        unsafe extern "C" fn(*const EmbeddingExtractorConfig) -> *const c_void;
+    type EmbeddingDimension = unsafe extern "C" fn(*const c_void) -> i32;
+    type CreateEmbeddingStream = unsafe extern "C" fn(*const c_void) -> *const c_void;
+    type AcceptWaveform = unsafe extern "C" fn(*const c_void, i32, *const f32, i32);
+    type InputFinished = unsafe extern "C" fn(*const c_void);
+    type IsEmbeddingReady = unsafe extern "C" fn(*const c_void, *const c_void) -> i32;
+    type ComputeEmbedding = unsafe extern "C" fn(*const c_void, *const c_void) -> *const f32;
+    type DestroyEmbedding = unsafe extern "C" fn(*const f32);
+
+    #[repr(C)]
+    struct EmbeddingExtractorConfig {
+        model: *const c_char,
+        num_threads: i32,
+        debug: i32,
+        provider: *const c_char,
     }
 
     fn stabilize_speakers(mut segments: Vec<DiarizationSegment>) -> DiarizationResult {
@@ -409,4 +664,6 @@ mod windows {
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub use windows::{process, DiarizationResult, DiarizationSegment};
+pub use windows::{
+    process, DiarizationResult, DiarizationSegment, SpeakerEmbedding, SpeakerEmbeddingExtractor,
+};

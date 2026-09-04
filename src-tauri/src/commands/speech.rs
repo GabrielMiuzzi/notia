@@ -168,6 +168,7 @@ pub async fn start_speech_session(
                 worker_session_id,
                 model,
                 diarization_model,
+                payload.max_duration_seconds,
                 capture_system_audio,
             )
         })

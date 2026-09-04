@@ -11,7 +11,11 @@ use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 use tauri::{AppHandle, Emitter, Manager};
 
-pub const MAX_SPEECH_SESSION_SECONDS: u32 = 900;
+pub const MAX_SPEECH_SESSION_SECONDS: u32 = 12 * 60 * 60;
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const DIARIZATION_CHUNK_SAMPLES: usize = 16_000 * 15 * 60;
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const GLOBAL_SPEAKER_MATCH_THRESHOLD: f32 = 0.72;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub(crate) type PreloadedRecognizer =
     Arc<StdMutex<Option<crate::services::qwen3_asr_service::Qwen3AsrRecognizer>>>;
@@ -184,6 +188,7 @@ pub fn start_platform_session(
     session_id: String,
     model: crate::services::qwen3_asr_service::Qwen3AsrModelConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
+    max_duration_seconds: u32,
     capture_system_audio: bool,
 ) -> Result<(), String> {
     let mut slot = state
@@ -212,6 +217,7 @@ pub fn start_platform_session(
     let callback_confirmed = Arc::clone(&confirmed_text);
     let worker = crate::services::speech_worker::SpeechWorker::start_with_recycler(
         buffer,
+        max_duration_seconds,
         move || {
             if let Some(recognizer) = recognizer_cache
                 .lock()
@@ -294,6 +300,8 @@ pub fn start_platform_session(
     _state: &SpeechRuntimeState,
     _session_id: String,
     _diarization_enabled: bool,
+    _max_duration_seconds: u32,
+    _capture_system_audio: bool,
 ) -> Result<(), String> {
     Err("La captura de voz todavia no esta integrada en esta plataforma.".to_string())
 }
@@ -449,7 +457,7 @@ fn handle_worker_event(
                 },
             );
         }
-        SpeechWorkerEvent::Finished { update, samples } => {
+        SpeechWorkerEvent::Finished { update, audio } => {
             let text = match confirmed_text.lock() {
                 Ok(mut confirmed) => {
                     append_text(&mut confirmed, &update.text);
@@ -461,25 +469,17 @@ fn handle_worker_event(
                 Some(model) => match diarization_runtime_path
                     .ok_or_else(|| "No se encontró el runtime de diarización.".to_string())
                     .and_then(|runtime_path| {
-                        crate::services::sherpa_diarization::process(runtime_path, model, &samples)
+                        diarize_recorded_audio(app, runtime_path, model, &audio)
                     }) {
-                    Ok(result) => match transcribe_diarized_turns(app, &samples, &result) {
-                        Ok(transcript) => transcript,
-                        Err(message) => {
-                            log::warn!(
-                                "[notia:speech] turn-aligned ASR failed; using proportional alignment: {message}"
-                            );
-                            build_diarized_transcript(&text, &result)
-                        }
-                    },
+                    Ok(transcript) => transcript,
                     Err(message) => {
                         log::warn!(
                             "[notia:speech] diarization failed; preserving ASR transcript: {message}"
                         );
-                        transcript_without_diarization(&text, elapsed_ms(started_at))
+                        transcript_without_diarization(&text, audio.duration_ms())
                     }
                 },
-                None => transcript_without_diarization(&text, elapsed_ms(started_at)),
+                None => transcript_without_diarization(&text, audio.duration_ms()),
             };
             let _ = app.emit(
                 "speech://segments",
@@ -500,6 +500,264 @@ fn handle_worker_event(
             set_runtime_phase(app, SpeechPhase::Idle);
         }
     }
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn diarize_recorded_audio(
+    app: &AppHandle,
+    runtime_path: &std::path::Path,
+    model: &crate::services::speech_model_repository::ResolvedDiarizationModel,
+    audio: &crate::services::speech_worker::RecordedAudio,
+) -> Result<DiarizedTranscriptDto, String> {
+    let embedding_extractor =
+        match crate::services::sherpa_diarization::SpeakerEmbeddingExtractor::new(
+            runtime_path,
+            model,
+        ) {
+            Ok(extractor) => Some(extractor),
+            Err(message) => {
+                log::warn!(
+                "[notia:speech] speaker embedding matching unavailable; keeping window-local speakers: {message}"
+            );
+                None
+            }
+        };
+    let mut speaker_registry = GlobalSpeakerRegistry::new();
+    let mut transcript = DiarizedTranscriptDto {
+        text: String::new(),
+        segments: Vec::new(),
+        speaker_count: 0,
+    };
+    let mut chunk_index = 0_usize;
+    let mut chunk_start_ms = 0_u64;
+    audio.for_each_chunk(DIARIZATION_CHUNK_SAMPLES, |samples| {
+        let diarization =
+            crate::services::sherpa_diarization::process(runtime_path, model, samples)?;
+        let embeddings = match embedding_extractor.as_ref() {
+            Some(extractor) => match extractor.extract(samples, &diarization) {
+                Ok(embeddings) => embeddings,
+                Err(message) => {
+                    log::warn!(
+                        "[notia:speech] speaker embeddings failed for diarization window; keeping unmatched speakers local: {message}"
+                    );
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
+        };
+        let speaker_mapping = speaker_registry.remap_chunk(&diarization, &embeddings);
+        let chunk = transcribe_diarized_turns(app, samples, &diarization)?;
+        append_diarized_chunk(
+            &mut transcript,
+            chunk,
+            chunk_start_ms,
+            chunk_index,
+            &speaker_mapping,
+            speaker_registry.len() as u32,
+        );
+        chunk_index = chunk_index.saturating_add(1);
+        chunk_start_ms = chunk_start_ms.saturating_add(
+            (samples.len() as u64)
+                .saturating_mul(1_000)
+                .checked_div(16_000)
+                .unwrap_or(0),
+        );
+        Ok(())
+    })?;
+    if transcript.segments.is_empty() {
+        return Err("La diarización no produjo segmentos de voz.".to_string());
+    }
+    Ok(transcript)
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct GlobalSpeakerRegistry {
+    profiles: Vec<GlobalSpeakerProfile>,
+    observed_speakers: std::collections::BTreeSet<String>,
+    next_speaker_index: usize,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct GlobalSpeakerProfile {
+    id: String,
+    centroid: Vec<f32>,
+    observations: usize,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl GlobalSpeakerRegistry {
+    fn new() -> Self {
+        Self {
+            profiles: Vec::new(),
+            observed_speakers: std::collections::BTreeSet::new(),
+            next_speaker_index: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.observed_speakers.len()
+    }
+
+    fn remap_chunk(
+        &mut self,
+        diarization: &crate::services::sherpa_diarization::DiarizationResult,
+        embeddings: &[crate::services::sherpa_diarization::SpeakerEmbedding],
+    ) -> std::collections::BTreeMap<String, String> {
+        let local_speakers = diarization
+            .segments
+            .iter()
+            .map(|segment| format!("speaker-{}", segment.speaker + 1))
+            .collect::<std::collections::BTreeSet<_>>();
+        let embedding_by_speaker = embeddings
+            .iter()
+            .map(|embedding| {
+                (
+                    format!("speaker-{}", embedding.speaker + 1),
+                    embedding.vector.as_slice(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut candidates = Vec::new();
+        for (local_speaker, embedding) in &embedding_by_speaker {
+            for (profile_index, profile) in self.profiles.iter().enumerate() {
+                if let Some(score) = cosine_similarity(embedding, &profile.centroid) {
+                    candidates.push((score, local_speaker.as_str(), profile_index));
+                }
+            }
+        }
+        candidates.sort_by(|left, right| {
+            right
+                .0
+                .partial_cmp(&left.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut mapping = std::collections::BTreeMap::new();
+        let mut claimed_profiles = std::collections::BTreeSet::new();
+        for (score, local_speaker, profile_index) in candidates {
+            if score < GLOBAL_SPEAKER_MATCH_THRESHOLD
+                || mapping.contains_key(local_speaker)
+                || !claimed_profiles.insert(profile_index)
+            {
+                continue;
+            }
+            let global_speaker = self.profiles[profile_index].id.clone();
+            mapping.insert(local_speaker.to_string(), global_speaker);
+            self.observed_speakers
+                .insert(self.profiles[profile_index].id.clone());
+            self.update_profile(profile_index, embedding_by_speaker[local_speaker]);
+        }
+
+        for local_speaker in local_speakers {
+            if mapping.contains_key(&local_speaker) {
+                continue;
+            }
+            let global_speaker = self.allocate_speaker_id();
+            if let Some(embedding) = embedding_by_speaker.get(&local_speaker) {
+                self.profiles.push(GlobalSpeakerProfile {
+                    id: global_speaker.clone(),
+                    centroid: normalize_embedding(embedding),
+                    observations: 1,
+                });
+            } else {
+                // A very short turn may not yield an embedding. Keep a unique
+                // ID for this occurrence without poisoning the match registry.
+            }
+            mapping.insert(local_speaker, global_speaker);
+        }
+        mapping
+    }
+
+    fn allocate_speaker_id(&mut self) -> String {
+        let id = global_speaker_id(self.next_speaker_index);
+        self.next_speaker_index = self.next_speaker_index.saturating_add(1);
+        self.observed_speakers.insert(id.clone());
+        id
+    }
+
+    fn update_profile(&mut self, profile_index: usize, embedding: &[f32]) {
+        let profile = &mut self.profiles[profile_index];
+        if profile.centroid.len() != embedding.len() {
+            return;
+        }
+        let previous_weight = profile.observations as f32;
+        for (centroid, value) in profile.centroid.iter_mut().zip(embedding) {
+            *centroid = (*centroid * previous_weight + *value) / (previous_weight + 1.0);
+        }
+        profile.centroid = normalize_embedding(&profile.centroid);
+        profile.observations = profile.observations.saturating_add(1);
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn global_speaker_id(profile_index: usize) -> String {
+    format!("speaker-{}", profile_index + 1)
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn normalize_embedding(embedding: &[f32]) -> Vec<f32> {
+    let norm = embedding
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    if norm <= f32::EPSILON || !norm.is_finite() {
+        return embedding.to_vec();
+    }
+    embedding.iter().map(|value| value / norm).collect()
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.len() != right.len() || left.is_empty() {
+        return None;
+    }
+    let left_norm = left.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let right_norm = right.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if !left_norm.is_finite()
+        || !right_norm.is_finite()
+        || left_norm <= f32::EPSILON
+        || right_norm <= f32::EPSILON
+    {
+        return None;
+    }
+    Some(
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            / (left_norm * right_norm),
+    )
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn append_diarized_chunk(
+    target: &mut DiarizedTranscriptDto,
+    mut chunk: DiarizedTranscriptDto,
+    chunk_start_ms: u64,
+    chunk_index: usize,
+    speaker_mapping: &std::collections::BTreeMap<String, String>,
+    speaker_count: u32,
+) {
+    if !target.text.is_empty() && !chunk.text.is_empty() {
+        target.text.push(' ');
+    }
+    target.text.push_str(&chunk.text);
+    target.speaker_count = speaker_count;
+    for segment in &mut chunk.segments {
+        segment.id = format!("segment-{}", target.segments.len() + 1);
+        segment.start_ms = segment.start_ms.saturating_add(chunk_start_ms);
+        segment.end_ms = segment.end_ms.saturating_add(chunk_start_ms);
+        if let Some(speaker_id) = &segment.speaker_id {
+            segment.speaker_id = Some(
+                speaker_mapping
+                    .get(speaker_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("chunk-{chunk_index}-{speaker_id}")),
+            );
+        }
+    }
+    target.segments.extend(chunk.segments);
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -639,53 +897,6 @@ fn transcript_without_diarization(text: &str, elapsed_ms: u64) -> DiarizedTransc
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-fn build_diarized_transcript(
-    text: &str,
-    diarization: &crate::services::sherpa_diarization::DiarizationResult,
-) -> DiarizedTranscriptDto {
-    let words = text.split_whitespace().collect::<Vec<_>>();
-    let diarization_segments = merge_adjacent_speaker_segments(&diarization.segments);
-    let total_duration = diarization_segments
-        .iter()
-        .map(|segment| (segment.end_seconds - segment.start_seconds).max(0.0))
-        .sum::<f32>();
-    let mut word_offset = 0_usize;
-    let mut elapsed_duration = 0.0_f32;
-    let mut segments = Vec::with_capacity(diarization_segments.len());
-    for (index, segment) in diarization_segments.iter().enumerate() {
-        let remaining = words.len().saturating_sub(word_offset);
-        let duration = (segment.end_seconds - segment.start_seconds).max(0.0);
-        elapsed_duration += duration;
-        let word_count = if index + 1 == diarization_segments.len() {
-            remaining
-        } else if total_duration > 0.0 {
-            let ideal_boundary =
-                (elapsed_duration / total_duration * words.len() as f32).round() as usize;
-            let boundary =
-                nearest_sentence_boundary(&words, word_offset, ideal_boundary).min(words.len());
-            boundary.saturating_sub(word_offset).min(remaining)
-        } else {
-            0
-        };
-        let segment_text = words[word_offset..word_offset + word_count].join(" ");
-        word_offset += word_count;
-        segments.push(SpeechTranscriptSegmentDto {
-            id: format!("segment-{}", index + 1),
-            start_ms: seconds_to_ms(segment.start_seconds),
-            end_ms: seconds_to_ms(segment.end_seconds),
-            speaker_id: Some(format!("speaker-{}", segment.speaker + 1)),
-            text: segment_text,
-            is_final: true,
-        });
-    }
-    DiarizedTranscriptDto {
-        text: text.trim().to_string(),
-        segments,
-        speaker_count: diarization.speaker_count,
-    }
-}
-
-#[cfg(any(target_os = "windows", target_os = "android"))]
 fn transcribe_diarized_turns(
     app: &AppHandle,
     samples: &[f32],
@@ -797,6 +1008,7 @@ fn merge_adjacent_speaker_segments(
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
+#[cfg(test)]
 fn nearest_sentence_boundary(words: &[&str], minimum: usize, ideal: usize) -> usize {
     const MAX_BOUNDARY_SHIFT_WORDS: usize = 12;
     let lower = ideal
@@ -939,11 +1151,17 @@ pub fn not_integrated_error() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    use super::GlobalSpeakerRegistry;
     use super::{
         append_text, commit_external_update, current_capabilities, nearest_sentence_boundary,
         unconfirmed_suffix, validate_start_input, SpeechPhase, MAX_SPEECH_SESSION_SECONDS,
     };
     use crate::dto::speech::SpeechModelStatusDto;
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    use crate::services::sherpa_diarization::{
+        DiarizationResult, DiarizationSegment, SpeakerEmbedding,
+    };
     use crate::services::speech_worker::RecognitionUpdate;
 
     #[test]
@@ -962,6 +1180,73 @@ mod tests {
         assert!(validate_start_input("", 10).is_err());
         assert!(validate_start_input("es", 0).is_err());
         assert!(validate_start_input("es", MAX_SPEECH_SESSION_SECONDS + 1).is_err());
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    #[test]
+    fn global_speaker_registry_matches_local_ids_across_windows() {
+        let mut registry = GlobalSpeakerRegistry::new();
+        let first_window = DiarizationResult {
+            speaker_count: 2,
+            segments: vec![
+                DiarizationSegment {
+                    start_seconds: 0.0,
+                    end_seconds: 3.0,
+                    speaker: 0,
+                },
+                DiarizationSegment {
+                    start_seconds: 3.0,
+                    end_seconds: 6.0,
+                    speaker: 1,
+                },
+            ],
+        };
+        let first_mapping = registry.remap_chunk(
+            &first_window,
+            &[
+                SpeakerEmbedding {
+                    speaker: 0,
+                    vector: vec![1.0, 0.0],
+                },
+                SpeakerEmbedding {
+                    speaker: 1,
+                    vector: vec![0.0, 1.0],
+                },
+            ],
+        );
+        let second_window = DiarizationResult {
+            speaker_count: 2,
+            segments: vec![
+                DiarizationSegment {
+                    start_seconds: 0.0,
+                    end_seconds: 3.0,
+                    speaker: 8,
+                },
+                DiarizationSegment {
+                    start_seconds: 3.0,
+                    end_seconds: 6.0,
+                    speaker: 4,
+                },
+            ],
+        };
+        let second_mapping = registry.remap_chunk(
+            &second_window,
+            &[
+                SpeakerEmbedding {
+                    speaker: 8,
+                    vector: vec![0.02, 0.99],
+                },
+                SpeakerEmbedding {
+                    speaker: 4,
+                    vector: vec![0.98, 0.04],
+                },
+            ],
+        );
+
+        assert_eq!(registry.len(), 2);
+        assert_eq!(first_mapping["speaker-1"], second_mapping["speaker-5"]);
+        assert_eq!(first_mapping["speaker-2"], second_mapping["speaker-9"]);
+        assert_ne!(second_mapping["speaker-5"], second_mapping["speaker-9"]);
     }
 
     #[test]

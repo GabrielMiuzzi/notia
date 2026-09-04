@@ -32,6 +32,7 @@ interface UseVoiceTranscriptionInput {
   setDraft: (value: string) => void
   pauseDetectionMs?: number | null
   continuousSession?: boolean
+  maxDurationSeconds?: number
   onCompleted?: (text: string) => void
   captureSystemAudio?: boolean
 }
@@ -50,7 +51,7 @@ export function stabilizePartialTranscript(previous: string, next: string): stri
   return nextWords > previousWords ? normalizedNext : normalizedPrevious
 }
 
-export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
+export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, maxDurationSeconds = 900, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
   const qwen3Asr = useAppSelector(selectQwen3AsrSettings)
   const [capabilities, setCapabilities] = useState<SpeechCapabilities | null>(null)
   const [audioInput, setAudioInput] = useState<SpeechAudioInputStatus | null>(null)
@@ -338,7 +339,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
         model: qwen3Asr.model,
         device: qwen3Asr.device,
         diarizationEnabled: !continuousSession,
-        maxDurationSeconds: 900,
+        maxDurationSeconds,
         captureSystemAudio,
       })
       sessionIdRef.current = result.sessionId
@@ -355,7 +356,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
       setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
-  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, qwen3Asr])
+  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, maxDurationSeconds, qwen3Asr])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current
