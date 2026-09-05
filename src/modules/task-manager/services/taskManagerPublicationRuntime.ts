@@ -94,3 +94,10 @@ export async function openTaskManagerPublication(): Promise<void> {
 export async function stopTaskManagerPublication(): Promise<void> {
   await invoke('stop_task_manager_publication')
 }
+
+export async function notifyTaskManagerPublicationChanged(vaultPath: string): Promise<void> {
+  if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    return
+  }
+  await invoke('notify_task_manager_publication_changed', { vaultPath })
+}

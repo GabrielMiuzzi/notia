@@ -268,6 +268,7 @@ pub fn run() {
             task_manager_publication::revoke_task_manager_publication_device,
             task_manager_publication::open_task_manager_publication,
             task_manager_publication::stop_task_manager_publication,
+            task_manager_publication::notify_task_manager_publication_changed,
         ])
         .plugin(mobile_ai_bridge::init())
         .plugin(mobile_directory_picker::init())

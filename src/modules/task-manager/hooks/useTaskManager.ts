@@ -1,4 +1,5 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
@@ -52,7 +53,8 @@ import {
 } from '../services/vaultRuntime'
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import { readTaskManagerVaultCache, writeTaskManagerVaultCache } from '../services/taskManagerVaultCache'
-import { subscribeTaskManagerMutations } from '../services/taskManagerMutationEvents'
+import { dispatchTaskManagerMutation, subscribeTaskManagerMutations } from '../services/taskManagerMutationEvents'
+import { notifyTaskManagerPublicationChanged } from '../services/taskManagerPublicationRuntime'
 
 interface TaskDialogState {
   open: boolean
@@ -518,10 +520,56 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
   useEffect(() => subscribeTaskManagerMutations((vaultPath) => {
     if (settings.activeVaultPath === vaultPath) {
-      setSettings(loadTaskManagerSettings())
+      if (!window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+        setSettings(loadTaskManagerSettings())
+      }
       void reload()
     }
   }), [reload, settings.activeVaultPath])
+
+  useEffect(() => {
+    const vaultPath = settings.activeVaultPath
+    if (!vaultPath || typeof window === 'undefined') {
+      return undefined
+    }
+
+    if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+      const publicationPath = window.location.pathname.replace(/\/app\/?$/, '').replace(/\/+$/, '')
+      const events = new EventSource(`${publicationPath}/events`)
+      const onChanged = () => dispatchTaskManagerMutation(vaultPath)
+      events.addEventListener('changed', onChanged)
+      return () => {
+        events.removeEventListener('changed', onChanged)
+        events.close()
+      }
+    }
+
+    let disposed = false
+    let unlisten: UnlistenFn | undefined
+    void listen<unknown>('task-manager-publication-changed', (event) => {
+      const payload = event.payload
+      if (!payload || typeof payload !== 'object' || !('vaultPath' in payload)) {
+        return
+      }
+      const changedVaultPath = payload.vaultPath
+      if (typeof changedVaultPath === 'string' && changedVaultPath === vaultPath) {
+        dispatchTaskManagerMutation(vaultPath)
+      }
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening()
+        return
+      }
+      unlisten = stopListening
+    }).catch((error: unknown) => {
+      console.warn('[task-manager] publication event listener unavailable', error)
+    })
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [settings.activeVaultPath])
 
   const setActiveVaultPath = useCallback(async (vault: TaskManagerVaultRef | null) => {
     if (!vault?.path) {
@@ -749,6 +797,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
             })
           }
 
+          await notifyTaskManagerPublicationChanged(settings.activeVaultPath as string)
+
           if (deviationHours > 0) {
             updateSettings((previousSettings) => ({
               ...previousSettings,
@@ -782,6 +832,11 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     setIsSyncing(true)
     try {
       await runner()
+      try {
+        await notifyTaskManagerPublicationChanged(settings.activeVaultPath)
+      } catch (publicationError) {
+        console.warn('[task-manager] publication change notification failed', publicationError)
+      }
       if ((options?.syncStrategy ?? 'full') === 'full') {
         try {
           await syncTaskIndexesAndMetadata(
@@ -1416,6 +1471,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
             })
           }
 
+          await notifyTaskManagerPublicationChanged(settings.activeVaultPath)
+
           const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
           applySnapshotState(nextSnapshot)
         } catch (runtimeError) {
@@ -1496,6 +1553,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       })
     }
 
+    await notifyTaskManagerPublicationChanged(settings.activeVaultPath)
+
     const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
     applySnapshotState(nextSnapshot)
   }, [applySnapshotState, settings.activeVaultPath, settings.pomodoro.durations, settings.pomodoro.selectedTaskPath, snapshot.tasks, updateSettings])
@@ -1519,6 +1578,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     const nextEntries = await readPomodoroEntries(settings.activeVaultPath)
+    await notifyTaskManagerPublicationChanged(settings.activeVaultPath)
     setSnapshot((previousSnapshot) => ({
       ...previousSnapshot,
       pomodoroEntries: nextEntries,

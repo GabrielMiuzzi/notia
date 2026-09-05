@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
 };
 
 #[cfg(target_os = "windows")]
@@ -19,7 +19,7 @@ use std::fs;
 #[cfg(target_os = "windows")]
 use std::io::{Read, Write};
 #[cfg(target_os = "windows")]
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "windows")]
 const MAX_HTTP_REQUEST_BYTES: usize = 2 * 1024 * 1024;
@@ -117,6 +117,10 @@ struct PublicationRuntime {
     approved_devices: HashSet<String>,
     pending_devices: HashMap<String, String>,
     #[cfg(target_os = "windows")]
+    change_subscribers: Vec<mpsc::Sender<()>>,
+    #[cfg(target_os = "windows")]
+    app_handle: Option<tauri::AppHandle>,
+    #[cfg(target_os = "windows")]
     assets: Option<Arc<tauri::AssetResolver<tauri::Wry>>>,
 }
 
@@ -175,6 +179,8 @@ pub fn publish_task_manager_boards(
                     });
             guard.pending_devices.clear();
             guard.authenticated_sessions.clear();
+            guard.change_subscribers.clear();
+            guard.app_handle = Some(app.clone());
             let should_start = !guard.server_started;
             guard.server_started = true;
             should_start
@@ -321,6 +327,32 @@ pub fn stop_task_manager_publication(
             .map_err(|_| "No se pudo detener la publicación.")?;
         guard.payload = None;
         guard.authenticated_sessions.clear();
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn notify_task_manager_publication_changed(
+    state: tauri::State<'_, TaskManagerPublicationState>,
+    vault_path: String,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (state, vault_path);
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let is_published_vault = state
+            .inner
+            .lock()
+            .map_err(|_| "No se pudo notificar el cambio de Task Manager.")?
+            .payload
+            .as_ref()
+            .is_some_and(|publication| publication.vault_path == vault_path);
+        if is_published_vault {
+            notify_publication_changed(&state.inner, &vault_path);
+        }
         Ok(())
     }
 }
@@ -533,6 +565,10 @@ fn serve_request<S: Read + Write>(mut stream: S, runtime: Arc<Mutex<PublicationR
         serve_publication_ai_stream(&mut stream, http_body(&request), &publication);
         return;
     }
+    if authenticated && method == "GET" && path == format!("{base}/events") {
+        serve_publication_events(&mut stream, &runtime, &publication.vault_path);
+        return;
+    }
     let response = if method == "GET" && (path == base || path == format!("{base}/")) {
         serve_login_page()
     } else if method == "POST" && path == format!("{base}/device") {
@@ -569,7 +605,7 @@ fn serve_request<S: Read + Write>(mut stream: S, runtime: Arc<Mutex<PublicationR
             }),
         )
     } else if method == "POST" && path == format!("{base}/invoke") {
-        serve_invoke(http_body(&request), &publication)
+        serve_invoke(http_body(&request), &runtime, &publication)
     } else if method == "GET" && path.starts_with(&format!("{base}/assets/")) {
         serve_asset(
             assets.as_ref(),
@@ -879,7 +915,11 @@ fn request_session_token(request: &[u8]) -> Option<&str> {
 }
 
 #[cfg(target_os = "windows")]
-fn serve_invoke(body: &[u8], publication: &TaskManagerPublicationPayload) -> Vec<u8> {
+fn serve_invoke(
+    body: &[u8],
+    runtime: &Arc<Mutex<PublicationRuntime>>,
+    publication: &TaskManagerPublicationPayload,
+) -> Vec<u8> {
     let request: Value = match serde_json::from_slice(body) {
         Ok(request) => request,
         Err(_) => return json_error("Solicitud inválida."),
@@ -902,11 +942,87 @@ fn serve_invoke(body: &[u8], publication: &TaskManagerPublicationPayload) -> Vec
         return json_error("La URL solo puede acceder a los tableros publicados.");
     }
     match crate::filesystem::commands::execute_desktop_filesystem_command(command, payload) {
-        Ok(result) => json_response(
-            "200 OK",
-            serde_json::json!({ "result": filter_publication_result(command, result, publication) }),
-        ),
+        Ok(result) => {
+            if is_mutating_publication_command(command) {
+                notify_publication_changed(runtime, &publication.vault_path);
+            }
+            json_response(
+                "200 OK",
+                serde_json::json!({ "result": filter_publication_result(command, result, publication) }),
+            )
+        }
         Err(error) => json_error(&error),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_mutating_publication_command(command: &str) -> bool {
+    matches!(
+        command,
+        "write_library_file" | "create_library_entry" | "library_entry_operation"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn notify_publication_changed(runtime: &Arc<Mutex<PublicationRuntime>>, vault_path: &str) {
+    let app_handle = match runtime.lock() {
+        Ok(mut guard) => {
+            guard
+                .change_subscribers
+                .retain(|sender| sender.send(()).is_ok());
+            guard.app_handle.clone()
+        }
+        Err(_) => return,
+    };
+    if let Some(app_handle) = app_handle {
+        let _ = app_handle.emit(
+            "task-manager-publication-changed",
+            serde_json::json!({ "vaultPath": vault_path }),
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn serve_publication_events<S: Write>(
+    stream: &mut S,
+    runtime: &Arc<Mutex<PublicationRuntime>>,
+    vault_path: &str,
+) {
+    let (sender, receiver) = mpsc::channel();
+    if let Ok(mut guard) = runtime.lock() {
+        guard.change_subscribers.push(sender);
+    } else {
+        return;
+    }
+    let headers = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: text/event-stream; charset=utf-8\r\n",
+        "Cache-Control: no-cache\r\n",
+        "Connection: keep-alive\r\n\r\n"
+    );
+    if stream.write_all(headers.as_bytes()).is_err() {
+        return;
+    }
+    let initial = serde_json::json!({ "vaultPath": vault_path });
+    if writeln!(stream, ": connected\ndata: {}\n", initial).is_err() || stream.flush().is_err() {
+        return;
+    }
+    loop {
+        match receiver.recv_timeout(std::time::Duration::from_secs(25)) {
+            Ok(()) => {
+                if writeln!(stream, "event: changed\ndata: {}\n", initial).is_err()
+                    || stream.flush().is_err()
+                {
+                    return;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if writeln!(stream, ": keep-alive\n").is_err() || stream.flush().is_err() {
+                    return;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
     }
 }
 
