@@ -17,14 +17,45 @@ function whenIdle(callback: () => void, delayMs = 2000): void {
     }
   }
 
-  if (typeof requestIdleCallback === 'function') {
-    const idleId = requestIdleCallback(runCallback, { timeout: delayMs })
-    window.addEventListener('beforeunload', () => cancelIdleCallback(idleId), { once: true })
-    return
-  }
+  let idleId: number | null = null
+  let delayId: number | null = null
+  const scheduleIdle = () => {
+    if (typeof requestIdleCallback === 'function') {
+      idleId = requestIdleCallback((deadline) => {
+        idleId = null
+        // A timeout callback can have no idle budget left. Let the browser
+        // paint and try again instead of parsing a large editor chunk in the
+        // same frame as user interaction.
+        if (deadline.timeRemaining() <= 0) {
+          delayId = window.setTimeout(() => {
+            delayId = null
+            scheduleIdle()
+          }, 100)
+          return
+        }
+        runCallback()
+      }, { timeout: delayMs })
+      return
+    }
 
-  const timeoutId = window.setTimeout(runCallback, delayMs)
-  window.addEventListener('beforeunload', () => window.clearTimeout(timeoutId), { once: true })
+    runCallback()
+  }
+  delayId = window.setTimeout(() => {
+    delayId = null
+    scheduleIdle()
+  }, Math.max(0, delayMs))
+
+  const cancel = () => {
+    if (delayId !== null) {
+      window.clearTimeout(delayId)
+      delayId = null
+    }
+    if (idleId !== null && typeof cancelIdleCallback === 'function') {
+      cancelIdleCallback(idleId)
+      idleId = null
+    }
+  }
+  window.addEventListener('beforeunload', cancel, { once: true })
 }
 
 /**

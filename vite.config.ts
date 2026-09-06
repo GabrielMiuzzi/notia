@@ -49,6 +49,14 @@ export default defineConfig(() => ({
   },
   build: {
     chunkSizeWarningLimit: 600,
+    modulePreload: {
+      // Heavy editor dependencies must stay lazy. Vite otherwise emits
+      // modulepreload links for dynamic-import dependencies in index.html,
+      // making WebView2 parse Milkdown/Mermaid before a document is opened.
+      resolveDependencies: (_filename: string, dependencies: string[]) => dependencies.filter((dependency) => {
+        return !/(?:vendor-(?:milkdown|mermaid|katex|cytoscape|monaco)-)/.test(dependency)
+      }),
+    },
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
@@ -58,15 +66,14 @@ export default defineConfig(() => ({
         manualChunks(id: string | undefined) {
           if (!id) return undefined
           if (id.includes('node_modules/@mui/material')) return 'vendor-mui'
-          if (id.includes('node_modules/@milkdown/')) return 'vendor-milkdown'
-          if (id.includes('node_modules/mermaid/')) return 'vendor-mermaid'
+          if (id.includes('node_modules/lucide-react/')) return 'vendor-lucide'
+          if (id.includes('node_modules/@iconify-json/')) return 'vendor-iconify-packs'
           if (id.includes('node_modules/@monaco-editor/') || id.includes('node_modules/monaco-editor/')) {
             return 'vendor-monaco'
           }
-          if (id.includes('node_modules/katex/')) return 'vendor-katex'
-          if (id.includes('node_modules/cytoscape/')) return 'vendor-cytoscape'
-          if (id.includes('node_modules/lucide-react/')) return 'vendor-lucide'
-          if (id.includes('node_modules/@iconify-json/')) return 'vendor-iconify-packs'
+          // Keep editor/rendering engines in their lazy view chunks. Assigning
+          // them to shared manual chunks makes Rollup import them from main
+          // through the preload helper, defeating React.lazy on WebView2.
           return undefined
         },
       },
