@@ -1,7 +1,9 @@
 import { memo, Suspense, useCallback, lazy } from 'react'
 import { isTextFileDocument, type OpenFileDocument } from '../../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
+import { shouldUseLargeMarkdownView } from '../../../engines/markdown/markdownEditorLimits'
 import { ImageView } from './ImageView'
+import { LargeMarkdownView } from './LargeMarkdownView'
 import { TextView } from './TextView'
 
 const MarkdownView = lazy(async () => {
@@ -68,6 +70,10 @@ function FileViewHostComponent({
   }
 
   if (document.viewKind === 'markdown') {
+    if (shouldUseLargeMarkdownView(document.source)) {
+      return <LargeMarkdownView source={document.source} onSourceChange={onTextSourceChange} />
+    }
+
     return (
       <Suspense fallback={<FileViewFallback />}>
         <MarkdownView

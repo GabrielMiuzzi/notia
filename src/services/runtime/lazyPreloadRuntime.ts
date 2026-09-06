@@ -4,9 +4,9 @@ type LazyComponentFactory = () => Promise<unknown>
 
 const preloadedModules = new Set<string>()
 
-function whenIdle(callback: () => void, delayMs = 2000): void {
+function whenIdle(callback: () => void, delayMs = 2000): () => void {
   if (typeof window === 'undefined') {
-    return
+    return () => {}
   }
 
   const runCallback = () => {
@@ -19,10 +19,18 @@ function whenIdle(callback: () => void, delayMs = 2000): void {
 
   let idleId: number | null = null
   let delayId: number | null = null
+  let isCancelled = false
   const scheduleIdle = () => {
+    if (isCancelled) {
+      return
+    }
+
     if (typeof requestIdleCallback === 'function') {
       idleId = requestIdleCallback((deadline) => {
         idleId = null
+        if (isCancelled) {
+          return
+        }
         // A timeout callback can have no idle budget left. Let the browser
         // paint and try again instead of parsing a large editor chunk in the
         // same frame as user interaction.
@@ -46,6 +54,7 @@ function whenIdle(callback: () => void, delayMs = 2000): void {
   }, Math.max(0, delayMs))
 
   const cancel = () => {
+    isCancelled = true
     if (delayId !== null) {
       window.clearTimeout(delayId)
       delayId = null
@@ -54,8 +63,10 @@ function whenIdle(callback: () => void, delayMs = 2000): void {
       cancelIdleCallback(idleId)
       idleId = null
     }
+    window.removeEventListener('beforeunload', cancel)
   }
   window.addEventListener('beforeunload', cancel, { once: true })
+  return cancel
 }
 
 /**
@@ -66,17 +77,17 @@ export function preloadLazyComponent(
   moduleKey: string,
   factory: LazyComponentFactory,
   options?: { forceOnAndroid?: boolean; delayMs?: number },
-): void {
+): () => void {
   if (preloadedModules.has(moduleKey)) {
-    return
+    return () => {}
   }
 
   const isAndroid = getRuntimeDevice() === 'Android'
   if (isAndroid && !options?.forceOnAndroid) {
-    return
+    return () => {}
   }
 
-  whenIdle(() => {
+  return whenIdle(() => {
     if (preloadedModules.has(moduleKey)) {
       return
     }
@@ -95,13 +106,14 @@ export function preloadLazyComponent(
 export function preloadLazyComponentSequence(
   entries: Array<{ key: string; factory: LazyComponentFactory }>,
   options?: { forceOnAndroid?: boolean; delayMs?: number; gapMs?: number },
-): void {
+): () => void {
   const isAndroid = getRuntimeDevice() === 'Android'
   if (isAndroid && !options?.forceOnAndroid) {
-    return
+    return () => {}
   }
 
-  whenIdle(() => {
+  const timerIds: number[] = []
+  const cancelIdle = whenIdle(() => {
     const pending = entries.filter((entry) => !preloadedModules.has(entry.key))
     if (pending.length === 0) {
       return
@@ -109,7 +121,7 @@ export function preloadLazyComponentSequence(
 
     const gapMs = options?.gapMs ?? 300
     pending.forEach((entry, index) => {
-      window.setTimeout(() => {
+      timerIds.push(window.setTimeout(() => {
         if (preloadedModules.has(entry.key)) {
           return
         }
@@ -118,9 +130,15 @@ export function preloadLazyComponentSequence(
         void entry.factory().catch((error) => {
           console.warn(`[lazyPreloadRuntime] Failed to preload ${entry.key}:`, error)
         })
-      }, index * gapMs)
+      }, index * gapMs))
     })
   }, options?.delayMs)
+
+  return () => {
+    cancelIdle()
+    timerIds.forEach((timerId) => window.clearTimeout(timerId))
+    timerIds.length = 0
+  }
 }
 
 export function isLazyComponentPreloaded(moduleKey: string): boolean {

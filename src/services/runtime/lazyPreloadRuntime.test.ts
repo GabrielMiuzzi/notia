@@ -29,6 +29,7 @@ describe('lazyPreloadRuntime', () => {
       setTimeout,
       clearTimeout,
       addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
     }
     Object.defineProperty(globalThis, 'window', { configurable: true, value: browserWindow })
     Object.defineProperty(globalThis, 'navigator', {
@@ -61,5 +62,41 @@ describe('lazyPreloadRuntime', () => {
     idleCallbacks[0]?.({ timeRemaining: () => 50 })
     await vi.runAllTimersAsync()
     expect(factory).toHaveBeenCalledOnce()
+  })
+
+  it('cancels a pending preload before it reaches the idle callback', async () => {
+    vi.useFakeTimers()
+    const idleCallbacks: Array<(deadline: { timeRemaining: () => number }) => void> = []
+    const browserWindow = {
+      __NOTIA_PUBLISHED_TASK_MANAGER__: true,
+      setTimeout,
+      clearTimeout,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: browserWindow })
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { userAgent: '', platform: 'win32' },
+    })
+    Object.defineProperty(globalThis, 'requestIdleCallback', {
+      configurable: true,
+      value: (callback: (deadline: { timeRemaining: () => number }) => void) => {
+        idleCallbacks.push(callback)
+        return idleCallbacks.length
+      },
+    })
+    Object.defineProperty(globalThis, 'cancelIdleCallback', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    const factory = vi.fn(async () => undefined)
+    const cancel = preloadLazyComponent('lazy-preload-cancel-regression', factory, { delayMs: 150 })
+    cancel()
+
+    await vi.advanceTimersByTimeAsync(200)
+    expect(idleCallbacks).toHaveLength(0)
+    expect(factory).not.toHaveBeenCalled()
   })
 })

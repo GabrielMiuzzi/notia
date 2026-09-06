@@ -1,4 +1,7 @@
 import { useEffect } from 'react'
+import { useAppSelector } from '../../../store/hooks'
+import { selectActiveDocument } from '../../../features/documents/documentsSelectors'
+import { shouldUseLargeMarkdownView } from '../../../engines/markdown/markdownEditorLimits'
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import { preloadLazyComponent, preloadLazyComponentSequence } from '../../../services/runtime/lazyPreloadRuntime'
 
@@ -9,19 +12,25 @@ import { preloadLazyComponent, preloadLazyComponentSequence } from '../../../ser
  * by default to avoid consuming memory and mobile data unnecessarily.
  */
 export function useLazyPreloadOnIdle() {
+  const activeDocument = useAppSelector(selectActiveDocument)
+  const shouldSkipMarkdownPreload =
+    activeDocument?.viewKind === 'markdown' && shouldUseLargeMarkdownView(activeDocument.source)
+
   useEffect(() => {
     const isAndroid = getRuntimeDevice() === 'Android'
     if (isAndroid) {
       return
     }
 
+    // A large document uses the lightweight text route. Cancel the pending
+    // Milkdown preload so it cannot compete with that first paint.
     // Preload the most common editors first, then the rest.
-    preloadLazyComponentSequence(
+    const cancelEditorPreload = preloadLazyComponentSequence(
       [
-        {
+        ...(shouldSkipMarkdownPreload ? [] : [{
           key: 'MarkdownView',
           factory: () => import('../views/MarkdownView'),
-        },
+        }]),
         {
           key: 'MermaidView',
           factory: () => import('../views/mermaid/MermaidView'),
@@ -31,15 +40,20 @@ export function useLazyPreloadOnIdle() {
     )
 
     // Workspace-level heavy views are loaded later and only if idle allows it.
-    preloadLazyComponent(
+    const cancelGraphPreload = preloadLazyComponent(
       'GraphView',
       () => import('../views/GraphView'),
       { delayMs: 3500 },
     )
-    preloadLazyComponent(
+    const cancelTaskManagerPreload = preloadLazyComponent(
       'TaskManagerApp',
       () => import('../../../modules/task-manager/components/TaskManagerApp'),
       { delayMs: 4500 },
     )
-  }, [])
+    return () => {
+      cancelEditorPreload()
+      cancelGraphPreload()
+      cancelTaskManagerPreload()
+    }
+  }, [shouldSkipMarkdownPreload])
 }
