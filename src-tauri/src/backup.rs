@@ -2,9 +2,20 @@ use serde::Deserialize;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
+
+#[cfg(target_os = "windows")]
+const BACKUP_FILE_PREFIX: &str = "notia-backup-";
+#[cfg(target_os = "windows")]
+const TEMP_FILE_PREFIX: &str = ".notia-backup-";
+#[cfg(target_os = "windows")]
+const MAX_BACKUP_AGE_SECS: u64 = 2 * 24 * 60 * 60;
+#[cfg(target_os = "windows")]
+const STALE_TEMP_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+#[cfg(target_os = "windows")]
+const MAX_BACKUP_COUNT: usize = 48;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +81,7 @@ fn create_backup(payload: BackupPayload) -> Result<BackupResult, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "Reloj del sistema inválido.")?
         .as_secs();
+    prune_backups(&destination, timestamp);
     let final_path = destination.join(format!("notia-backup-{timestamp}.zip"));
     let temp_path = destination.join(format!(".notia-backup-{timestamp}.tmp"));
     let result = (|| {
@@ -82,8 +94,8 @@ fn create_backup(payload: BackupPayload) -> Result<BackupResult, String> {
         Ok::<(), String>(())
     })();
     let _ = fs::remove_file(&temp_path);
-    result?;
     prune_backups(&destination, timestamp);
+    result?;
     Ok(BackupResult {
         ok: true,
         error: None,
@@ -125,17 +137,28 @@ fn add_directory(zip: &mut ZipWriter<File>, root: &Path, current: &Path) -> Resu
 
 #[cfg(target_os = "windows")]
 fn prune_backups(destination: &Path, now: u64) {
-    let max_age = Duration::from_secs(2 * 24 * 60 * 60).as_secs();
     let mut backups = Vec::new();
     if let Ok(entries) = fs::read_dir(destination) {
         for entry in entries.flatten() {
             let path = entry.path();
+            let file_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if is_backup_temp(file_name) {
+                let modified_timestamp = entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                    .map(|age| age.as_secs());
+                if is_stale_backup_temp(modified_timestamp, now) {
+                    let _ = fs::remove_file(path);
+                }
+                continue;
+            }
             if path.extension().and_then(|v| v.to_str()) != Some("zip")
-                || !path
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or_default()
-                    .starts_with("notia-backup-")
+                || !file_name.starts_with(BACKUP_FILE_PREFIX)
             {
                 continue;
             }
@@ -149,10 +172,44 @@ fn prune_backups(destination: &Path, now: u64) {
     backups.sort_by_key(|item| std::cmp::Reverse(item.0));
     let mut retained = 0usize;
     for (created, path) in backups {
-        if now.saturating_sub(created) > max_age || retained >= 48 {
+        if now.saturating_sub(created) > MAX_BACKUP_AGE_SECS || retained >= MAX_BACKUP_COUNT {
             let _ = fs::remove_file(path);
         } else {
             retained += 1;
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_backup_temp(file_name: &str) -> bool {
+    file_name.starts_with(TEMP_FILE_PREFIX) && file_name.ends_with(".tmp")
+}
+
+#[cfg(target_os = "windows")]
+fn is_stale_backup_temp(modified_timestamp: Option<u64>, now: u64) -> bool {
+    modified_timestamp
+        .map(|modified| now.saturating_sub(modified) > STALE_TEMP_MAX_AGE_SECS)
+        .unwrap_or(false)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::{
+        is_backup_temp, is_stale_backup_temp, MAX_BACKUP_AGE_SECS, STALE_TEMP_MAX_AGE_SECS,
+    };
+
+    #[test]
+    fn recognizes_only_notia_backup_temporary_files() {
+        assert!(is_backup_temp(".notia-backup-123.tmp"));
+        assert!(!is_backup_temp("notia-backup-123.zip"));
+        assert!(!is_backup_temp(".other-backup-123.tmp"));
+    }
+
+    #[test]
+    fn temporary_files_expire_before_regular_backups() {
+        assert!(STALE_TEMP_MAX_AGE_SECS < MAX_BACKUP_AGE_SECS);
+        assert!(is_stale_backup_temp(Some(0), STALE_TEMP_MAX_AGE_SECS + 1));
+        assert!(!is_stale_backup_temp(Some(1), STALE_TEMP_MAX_AGE_SECS + 1));
+        assert!(!is_stale_backup_temp(None, STALE_TEMP_MAX_AGE_SECS + 1));
     }
 }
