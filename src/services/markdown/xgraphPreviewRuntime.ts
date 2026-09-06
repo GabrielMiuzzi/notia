@@ -1,14 +1,13 @@
 import { createXGraphDocument } from '../../engines/markdown/xgraphEngine'
+import jsxGraphRuntimeUrl from '../../../node_modules/jsxgraph/distrib/jsxgraphcore.js?url'
+import jsxGraphStylesheetUrl from '../../../node_modules/jsxgraph/distrib/jsxgraph.css?url'
 
 export function observeXGraphPreviews(root: HTMLElement): () => void {
   const mounted = new Map<HTMLElement, () => void>()
   const mount = (host: HTMLElement) => {
     let disposed = false
     const timer = window.setTimeout(() => {
-      void Promise.all([
-        import('../../../node_modules/jsxgraph/distrib/jsxgraphcore.js?raw'),
-        import('../../../node_modules/jsxgraph/distrib/jsxgraph.css?raw'),
-      ]).then(([runtime, stylesheet]) => {
+      void Promise.resolve().then(() => {
         if (disposed || !host.isConnected) return
         const frame = document.createElement('iframe')
         frame.title = 'Visualizador JSXGraph'
@@ -16,7 +15,9 @@ export function observeXGraphPreviews(root: HTMLElement): () => void {
         frame.setAttribute('sandbox', 'allow-scripts')
         frame.setAttribute('referrerpolicy', 'no-referrer')
         frame.srcdoc = createXGraphDocument(
-          decodeURIComponent(host.dataset.xgraphCode ?? ''), runtime.default, stylesheet.default,
+          decodeURIComponent(host.dataset.xgraphCode ?? ''),
+          new URL(jsxGraphRuntimeUrl, document.baseURI).href,
+          new URL(jsxGraphStylesheetUrl, document.baseURI).href,
           crypto.randomUUID().replaceAll('-', ''),
         )
         host.replaceChildren(frame)

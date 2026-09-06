@@ -32,4 +32,13 @@ describe('XGraph Markdown preview', () => {
     expect(html).toContain("document.getElementById('error-message').textContent")
     expect(html).toContain("new Function('board', 'JXG', 'BOARDID'")
   })
+
+  it('loads packaged runtime assets without copying the large runtime into srcdoc', () => {
+    const html = createXGraphDocument('board.create(\'point\', [0, 0]);', '/assets/jsxgraph.js', '/assets/jsxgraph.css', 'testnonce')
+
+    expect(html).toContain('<script nonce="testnonce" src="/assets/jsxgraph.js"></script>')
+    expect(html).toContain('<link rel="stylesheet" href="/assets/jsxgraph.css">')
+    expect(html).toContain("script-src 'nonce-testnonce' 'unsafe-eval' /assets/jsxgraph.js")
+    expect(html.match(/<script nonce="testnonce">/g)).toHaveLength(1)
+  })
 })
