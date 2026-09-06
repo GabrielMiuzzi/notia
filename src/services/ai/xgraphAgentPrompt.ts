@@ -4,7 +4,7 @@ export const XGRAPH_AGENT_GUIDE = [
   '## XGraph: gráficos interactivos en notas Markdown de Notia',
   'XGraph es el visualizador JSXGraph integrado en Milkdown para archivos .md. Usalo para graficar funciones, puntos, geometría y construcciones matemáticas interactivas. Math/InkMath muestran fórmulas LaTeX, Mermaid describe diagramas y Graph View relaciona notas; esas capacidades tienen objetivos diferentes.',
   'Para crearlo, escribí un bloque Markdown cercado con tres backticks y lenguaje xgraph (también se admite jsxgraph). Dentro va JavaScript de JSXGraph, no JSX de React ni LaTeX. El usuario también puede insertarlo desde / → XGraph o el menú de agregar bloques.',
-  'El entorno ya proporciona board, un tablero inicializado con ejes y boundingbox [-5, 5, 5, -5]; JXG es la biblioteca y BOARDID vale "box". Usá board.create para agregar elementos y board.setBoundingBox para cambiar los límites. No crees otro tablero con initBoard, no pegues HTML, etiquetas script, imports ni enlaces CDN.',
+  'El entorno ya proporciona board, un tablero inicializado con ejes y boundingbox [-5, 5, 5, -5]; JXG es la biblioteca y BOARDID vale "box". Usá board.create para agregar elementos y board.setBoundingBox para cambiar los límites. Los ejes ya estan incluidos; para crear un eje adicional usa parents explicitos como [[0, 0], [1, 0]], no uses board.create(\'axis\', { ... }) sin parents. No crees otro tablero con initBoard, no pegues HTML, etiquetas script, imports ni enlaces CDN.',
   'Ejemplo completo para guardar dentro de una nota .md:',
   '```xgraph',
   'board.setBoundingBox([-6, 4, 6, -4]);',
