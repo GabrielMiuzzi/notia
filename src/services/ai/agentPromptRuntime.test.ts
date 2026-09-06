@@ -18,6 +18,7 @@ describe('agentPromptRuntime', () => {
   it('identifies and removes leaked internal validator corrections', () => {
     const leaked = 'No afirmes ni prometas que el movimiento fue registrado: ninguna mutación financiera se ejecutó.'
     expect(isInternalAgentCorrection(leaked)).toBe(true)
+    expect(isInternalAgentCorrection('La respuesta anuncia una accion pendiente pero no solicita herramientas.')).toBe(true)
     const migrated = migrateMisclassifiedRules(`<!-- NOTIA_IA_RULES_START -->\n- ${leaked}\n- Responde breve.\n<!-- NOTIA_IA_RULES_END -->`)
     expect(migrated.rules).not.toContain(leaked)
     expect(migrated.rules).toContain('Responde breve.')
@@ -27,6 +28,7 @@ describe('agentPromptRuntime', () => {
     expect(DEFAULT_AGENT_PROMPT).toContain('# Agente IA de Notia')
     expect(DEFAULT_AGENT_PROMPT).toContain('# Principios fundamentales')
     expect(DEFAULT_AGENT_PROMPT).toContain('# Mapa de modulos de Notia')
+    expect(DEFAULT_AGENT_PROMPT).toContain('XGraph muestra graficos JSXGraph interactivos')
     expect(DEFAULT_AGENT_PROMPT).toContain('## Finanzas')
     expect(DEFAULT_AGENT_PROMPT).toContain('nunca lo reemplaces por un documento Markdown')
     expect(DEFAULT_AGENT_PROMPT).toContain('# Objetivo general')

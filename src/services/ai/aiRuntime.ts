@@ -6,6 +6,7 @@ import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import { normalizeAiSettingsInput } from '../preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { notiaLog } from '../runtime/notiaLogger'
+import { hasPendingAgentAction } from '../../engines/ai/pendingAgentActionEngine'
 
 const AI_REQUEST_TIMEOUT_MS = 15_000
 const AI_TOOL_AGENT_TIMEOUT_MS = 600_000
@@ -1479,6 +1480,7 @@ export async function runNativeToolAgent(
       toolCallTimeoutSeconds,
     })
     let requiresNativeToolRound = false
+    let consecutivePendingActions = 0
     for (let round = 0; round < maxRounds; round += 1) {
       const roundNumber = round + 1
       const roundStartedAt = performance.now()
@@ -1599,9 +1601,22 @@ export async function runNativeToolAgent(
         if (!answer) {
           throw new Error('La IA no devolvio contenido ni solicito herramientas.')
         }
-        const correctionPrompt = input.validateFinalAnswer?.(answer) ?? null
+        const pendingAction = input.tools.length > 0 && hasPendingAgentAction(answer)
+        if (pendingAction) {
+          consecutivePendingActions += 1
+          if (consecutivePendingActions > 2) {
+            throw new Error('El modelo anunció acciones pero no logró ejecutarlas. Revisá los resultados de las herramientas antes de reintentar; la última acción anunciada no está confirmada.')
+          }
+        } else {
+          consecutivePendingActions = 0
+        }
+        const correctionPrompt = pendingAction
+          ? 'La respuesta anuncia una accion pendiente pero no solicita herramientas. No termines con una promesa: continua ahora mediante las herramientas disponibles y sus confirmaciones, respetando el pedido y el scope autorizado. Reutiliza las lecturas previas; no repitas cambios ya aplicados. Si falta un dato, usa la herramienta de aclaracion. Si la accion fue rechazada, fallo o no esta disponible, explica ese resultado sin reintentar la mutacion ni prometer ejecutarla.'
+          : input.validateFinalAnswer?.(answer) ?? null
         if (correctionPrompt) {
-          options.onThinkingDelta?.('Verificando que la respuesta separe correctamente los resultados…\n')
+          options.onThinkingDelta?.(pendingAction
+            ? 'La acción anunciada sigue pendiente. Continuando con las herramientas…\n'
+            : 'Verificando la respuesta antes de finalizar…\n')
           messages.push({
             role: 'system',
             content: [
@@ -1622,6 +1637,7 @@ export async function runNativeToolAgent(
         return answer
       }
 
+      consecutivePendingActions = 0
       const singleCallToolNames = new Set(input.singleCallToolNames ?? [])
       let acceptedSingleCall = false
       const acceptedToolCalls = effectiveToolCalls.filter((call) => {

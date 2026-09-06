@@ -1,5 +1,28 @@
 # Notia
 
+Si el agente anuncia una acción —por ejemplo, «Ahora insertaré este gráfico»— y no llama a una herramienta, Notia le pide continuar dentro de la misma operación. Conserva las confirmaciones de escritura. Tras dos intentos de corrección sin ejecución, muestra un error; una promesa no confirma que el archivo haya cambiado. Esta recuperación reconoce anuncios explícitos de acción y no garantiza que cualquier modelo complete todos los pedidos.
+
+Si el modo desarrollo reinicia repetidamente con mensajes `File ... .gradle/... changed. Rebuilding application`, reiniciá una vez `npm run dev:tauri:windows` para que lea `src-tauri/.taurignore`. Ese archivo excluye las cachés y salidas de Gradle tanto del proyecto Android como de los ejemplos de dependencias en `vendor/`, que VS Code también puede importar automáticamente. Los warnings de funciones Rust sin uso no son la causa.
+
+## XGraph en notas Markdown
+
+Si el código falla, una franja indica que el gráfico puede estar incompleto y conserva visible la parte construida. **Ver detalle del error** permite desplegar el mensaje técnico con toque o teclado. Corregí el código para actualizar el gráfico y retirar el aviso.
+
+El agente de IA conoce XGraph y puede ayudarte a crear o corregir sus bloques. Por ejemplo: «Agregá en esta nota un gráfico XGraph de seno con un control de amplitud». Usa las herramientas y confirmaciones disponibles en el contexto actual. Esta guía llega también a agentes con prompts personalizados o bibliotecas existentes, sin sobrescribir sus instrucciones. El gráfico se visualiza al abrir la nota en Milkdown.
+
+En una nota `.md`, abrí el menú de bloques de Milkdown (con `/` o el botón de agregar bloque) y elegí **XGraph**. Escribí JavaScript de JSXGraph: `board` es un tablero ya inicializado, con ejes y límites de −5 a 5. La vista previa se actualiza al editar. **Hide** oculta el código y deja el gráfico; **Edit** vuelve a mostrarlo, igual que Math. Ambos controles admiten toque.
+
+También podés escribir el bloque directamente:
+
+```xgraph
+board.create('point', [1, 2], { name: 'A' });
+board.create('functiongraph', [(x) => Math.sin(x)]);
+```
+
+Se admite también el lenguaje `jsxgraph`. El código queda guardado en el `.md`; los movimientos interactivos del gráfico y el estado de Hide/Edit son temporales. Para cambiar la escala usá `board.setBoundingBox([-10, 10, 10, -10])`. `JXG` y `BOARDID` también están disponibles; no hace falta pegar HTML ni importar scripts. Ver los ejemplos de la [documentación de JSXGraph](https://jsxgraph.org/home/start/gettingstarted/).
+
+Funciona sin conexión. Cada gráfico se ejecuta aislado de Notia y no puede usar sus archivos, APIs ni realizar peticiones de red. Los errores aparecen en el visualizador; corregí el código para reintentar. El límite es de 100.000 caracteres por bloque. Evitá bucles infinitos o construcciones enormes: el aislamiento no impone un presupuesto de CPU. La exportación a PDF/Word conserva estos bloques como código, sin capturar el gráfico interactivo.
+
 En el chat de **Finanzas**, la IA puede consultar los datos financieros locales y fuentes de mercado mediante herramientas tipadas. Puede obtener cotizaciones actuales de dólar oficial, blue y tarjeta desde DolarApi; IPC mensual e interanual y el historial del dólar oficial desde ArgentinaDatos; además de movimientos, cuentas, tickets, precios históricos, sueldos, resúmenes de tarjeta y patrimonio. Las respuestas que usan fuentes externas indican su origen y pueden fallar si no hay conexión.
 
 ## Dictado offline en el chat

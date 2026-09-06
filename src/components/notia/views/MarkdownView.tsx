@@ -44,6 +44,9 @@ import {
 } from './markdown/WikiLinkSuggestionMenu'
 import { createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
 import { useMarkdownZoom } from './markdown/useMarkdownZoom'
+import { createXGraphPlaceholder, isXGraphLanguage } from '../../../engines/markdown/xgraphEngine'
+import { observeXGraphPreviews } from '../../../services/markdown/xgraphPreviewRuntime'
+import './markdown/xgraph.css'
 import { quickHash } from '../../../modules/mermaid/engines/mermaidEngine'
 import { mountInlineMermaidPreview, unmountInlineMermaidPreview } from '../../../modules/mermaid/services/mermaidPreviewRuntime'
 import { createInkMathApp, type InkMathHostBridge } from '../../../modules/inkmath/platform/inkmathPlatform'
@@ -366,6 +369,18 @@ function MarkdownViewInner({
         [Crepe.Feature.BlockEdit]: {
           buildMenu: (builder) => {
             const advancedGroup = builder.getGroup('advanced')
+            advancedGroup.addItem('xgraph', {
+              label: 'XGraph',
+              icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M4 16l5-8 5 5 6-9"/></svg>',
+              onRun: (ctx) => {
+                const commands = ctx.get(commandsCtx)
+                commands.call(clearTextInCurrentBlockCommand.key)
+                commands.call(setBlockTypeCommand.key, {
+                  nodeType: codeBlockSchema.type(ctx),
+                  attrs: { language: 'xgraph' },
+                })
+              },
+            })
             advancedGroup.addItem('mermaid', {
               label: 'Mermaid',
               icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
@@ -385,6 +400,7 @@ function MarkdownViewInner({
     })
 
     let isMounted = true
+    const cleanupXGraphPreviews = observeXGraphPreviews(rootRef.current)
     const inlineHosts = new Set<HTMLElement>()
     const inkMathApp = createMarkdownInkMathApp(() => documentPathRef.current)
 
@@ -481,6 +497,7 @@ function MarkdownViewInner({
         ...prev,
         renderPreview: (language, content, applyPreview) => {
           const lowerLang = language.toLowerCase().trim()
+          if (isXGraphLanguage(lowerLang)) return createXGraphPlaceholder(content)
           // Activar preview Mermaid en tres casos:
           // 1. Lenguaje explícitamente "mermaid"
           // 2. Lenguaje vacío (bloques sin especificar lenguaje)
@@ -606,6 +623,7 @@ function MarkdownViewInner({
       crepeRef.current = null
       setWikiLinkMenuState(null)
       codeBlockObserver.disconnect()
+      cleanupXGraphPreviews()
       cleanupInlinePreviews()
       clearDocumentRefs()
       void crepe.destroy()

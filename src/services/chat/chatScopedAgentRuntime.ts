@@ -1,6 +1,7 @@
 import type { NotiaLibrary } from '../../types/notia'
 import type { FinanceSalaryReceipt } from '../../modules/finance/types/financeTypes'
 import type { AiNativeToolCall, AiNativeToolDefinition } from '../ai/aiRuntime'
+import { XGRAPH_AGENT_GUIDE } from '../ai/xgraphAgentPrompt'
 import { appendAgentRule, DEFAULT_AGENT_PROMPT, isInternalAgentCorrection, isLikelyPersonalMemory, loadAgentMemories, loadAgentPrompt, loadAgentRules, resolveAgentRulesContent, DEFAULT_AGENT_RULES, writeAgentMemories } from '../ai/agentPromptRuntime'
 import {
   loadInlineFileAttachments,
@@ -843,6 +844,8 @@ export function buildChatAgentSystemPrompt(
 ): string {
   const base = [
     defaultPrompt.trim() || DEFAULT_AGENT_PROMPT,
+    XGRAPH_AGENT_GUIDE,
+    'Si el usuario solicita una accion, ejecutala con las herramientas autorizadas y sus confirmaciones antes de finalizar. Una promesa como "voy a insertar" o mostrar el codigo en el chat no modifica un archivo. Si no podes completar la accion, informa el impedimento concreto; no anuncies trabajo futuro como respuesta final.',
     'El contexto activo limita los archivos inicialmente autorizados, pero no cambia las capacidades. Si falta un tablero, archivo, opcion o permiso, usa las herramientas de consulta o request_user_clarification en lugar de inventarlo.',
     rules,
   ]

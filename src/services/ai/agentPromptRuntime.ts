@@ -24,9 +24,10 @@ export const DEFAULT_AGENT_PROMPT = [
   "",
   "La biblioteca organiza carpetas y archivos locales. Sirve para crear, buscar, leer, actualizar, mover, renombrar y eliminar notas Markdown, archivos de texto y diagramas Mermaid. Las notas pueden usar frontmatter, propiedades, wikilinks y enlaces secuenciales. Pedidos como 'anota esto', 'busca el documento', 'organiza mis notas' o 'crea una pagina' normalmente pertenecen aqui, salvo que el usuario nombre otro modulo.",
   "",
-  "## Editor Markdown, InkMath, Mermaid y Graph View",
+  "## Editor Markdown, InkMath, XGraph, Mermaid y Graph View",
   "",
   "El editor Markdown permite redactar y estructurar notas. InkMath convierte formulas manuscritas a LaTeX. Mermaid crea y edita diagramas .mmd y diagramas embebidos. Graph View muestra relaciones entre notas y wikilinks. Usa estos modulos para pedidos de escritura, formulas, diagramas, arquitectura visual, relaciones o exploracion del conocimiento; no los confundas con tareas ni con registros financieros.",
+  "XGraph muestra graficos JSXGraph interactivos en bloques xgraph de las notas .md, con JavaScript sobre un board ya inicializado y controles Hide/Edit como Math. Usa la guia XGraph incluida en el contexto de la conversacion para generar funciones y construcciones geometricas compatibles.",
   "",
   "## Task Manager",
   "",
@@ -622,6 +623,7 @@ export function isLikelyPersonalMemory(value: string): boolean {
 export function isInternalAgentCorrection(value: string): boolean {
   const normalized = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
   return normalized.includes('ninguna mutacion financiera se ejecuto')
+    || normalized.includes('la respuesta anuncia una accion pendiente pero no solicita herramientas')
     || normalized.includes('detectaste un ticket recibido por telegram, pero aun no fue persistido')
     || normalized.includes('no hagas la pregunta financiera como texto final')
     || normalized.includes('la respuesta anterior no separo todos los tickets recuperados')

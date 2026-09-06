@@ -1,5 +1,121 @@
 # README-TECH.md — Notia
 
+## Continuación de acciones anunciadas por el agente
+
+`runNativeToolAgent` valida también si una respuesta sin tool calls anuncia una acción pendiente. `pendingAgentActionEngine` detecta en la prosa anuncios explícitos en primera persona como «voy a analizar» o «ahora insertaré», excluyendo código cercado, código inline y citas Markdown. Se aplica cuando el turno tiene herramientas, antes de aceptar la respuesta final y junto con los validadores existentes de cada scope. Es una heurística acotada, no un clasificador universal de intenciones.
+
+Ante una promesa, el runtime añade una corrección interna de sistema y fuerza la siguiente ronda por `run_desktop_ai_tool_chat` con el catálogo nativo, incluso si la promesa provino de la ronda de texto en streaming posterior a una lectura. Android conserva su transporte y recibe la misma validación. La corrección exige respetar el scope y las confirmaciones, reutilizar lecturas y no repetir mutaciones aplicadas o rechazadas. No se convierte el código del mensaje en una escritura automática. `isInternalAgentCorrection` impide guardar esta instrucción como regla aprendida.
+
+Se permiten dos correcciones consecutivas por promesas sin tool calls; una tercera produce un error visible indicando que la última acción no está confirmada. Una ronda con herramientas reinicia ese contador; siguen vigentes los límites globales de rondas y timeout. Los resultados terminales tipados de escritura, error o cancelación conservan su salida directa. El streaming y sus listeners se mantienen; un borrador ya emitido puede contener la promesa mientras se continúa la ejecución, pero no se acepta como resultado terminal. El mapa de responsabilidades no cambia: detección pura en `engines/ai`, orquestación y transporte en `aiRuntime`, políticas de scope en `chatScopedAgentRuntime`.
+
+Pruebas: detector con anuncios, citas, ejemplos y resultados terminales; integración con bridge Tauri simulado para lectura → promesa en streaming → inserción nativa, agotamiento de correcciones y cancelación sin reintento. No se usan modelos, red ni archivos de biblioteca reales.
+
+```mermaid
+flowchart TD
+    Answer[Respuesta del modelo sin tool calls] --> Check{Anuncia acción pendiente}
+    Check -->|No| Scope[Validación del scope]
+    Check -->|Sí| Limit{Quedan correcciones}
+    Limit -->|Sí| Native[Ronda con herramientas y confirmaciones]
+    Limit -->|No| Error[Error visible]
+    Scope --> Final[Respuesta final o corrección]
+    Native --> Answer
+```
+
+```mermaid
+flowchart LR
+    Chat[notiaChatRuntime] --> Runtime[aiRuntime]
+    Runtime --> Detector[pendingAgentActionEngine]
+    Runtime --> Tauri[Bridge Tauri desktop]
+    Runtime --> Scope[Herramientas y validadores del scope]
+```
+
+```mermaid
+sequenceDiagram
+    participant R as Runtime común
+    participant M as Modelo
+    participant T as Herramienta autorizada
+    R->>M: Contexto de lectura
+    M-->>R: Ahora insertaré el gráfico
+    R->>M: Corrección interna y catálogo nativo
+    M-->>R: insert_active_markdown_document
+    R->>T: Ejecutar con confirmación existente
+    T-->>R: Resultado confirmado o cancelación
+    R-->>R: Finalizar con resultado verificable
+```
+
+El watcher de desarrollo de Tauri usa `src-tauri/.taurignore` para excluir `.gradle/`, `.kotlin/`, `.cxx/` y `.externalNativeBuild/` a cualquier profundidad, y las carpetas `build/` dentro de `gen/android/` y `vendor/`. Gradle modifica locks, índices y salidas durante sus tareas; observar esos archivos puede provocar reinicios continuos del desktop aun cuando Cargo no recompila código. La importación Java/Gradle de VS Code también procesa `vendor/llama.cpp/examples/llama.android/`: limitar las reglas a `gen/android/` no basta. Las fuentes Kotlin/Java/C++/Rust, `AndroidManifest.xml` y scripts Gradle permanecen observados. Vite ya excluye `src-tauri/**`; este ajuste corresponde al watcher nativo, no al HMR de React. Reiniciar el proceso `tauri dev` después de cambiar estas reglas. Se utiliza el mecanismo oficial [.taurignore de Tauri](https://v2.tauri.app/develop/#reacting-to-source-code-changes).
+
+Regresión: `node --test scripts/tauri-watcher.test.mjs` comprueba las rutas del incidente (incluidos los ejemplos vendorizados) y que las fuentes/configuración no queden excluidas. La validación en Windows con Tauri CLI 2.10.1 reprodujo los reinicios por `vendor/llama.cpp/examples/llama.android/.gradle/`; tras ampliar las reglas, el PID de Notia se mantuvo estable durante más de un minuto mientras Gradle continuaba escribiendo en esa caché. Actualizar únicamente la fecha de modificación de `tauri.windows.dev.conf.json` provocó el reinicio esperado, confirmando que la recarga de configuración continúa activa. La prueba de regresión y su lint aprobaron.
+
+## XGraph: JSXGraph en Milkdown
+
+Los errores del iframe ocupan una franja en el flujo Flex encima del tablero, sin superposición. El tablero conserva el espacio restante y recorta sus elementos al contenedor para que las etiquetas JSXGraph no se dibujen sobre el aviso. La franja anuncia el fallo con `role="alert"`, advierte que la construcción puede estar incompleta y ofrece el detalle técnico mediante `details/summary`, con objetivo de 48 px y foco visible. Su altura máxima es la mitad del iframe, con scroll para mensajes largos; el contenido se asigna con `textContent`. Editar el código reconstruye el iframe y descarta el aviso anterior. Se conserva el ResizeObserver propio de JSXGraph para adaptar el tablero al espacio disponible.
+
+La presentación del error se verificó en Chromium a 1100×850, 390×600 y 720×360: conserva el gráfico parcial, no superpone el aviso, admite detalle por toque/Enter, mantiene al menos la mitad del espacio para el tablero ante mensajes largos y elimina el error al corregir el código. También se comprobó que HTML dentro del mensaje se muestra como texto. Build frontend, 258 pruebas y lint de los archivos afectados aprobados; sigue pendiente la comprobación en tableta Android física.
+
+`MarkdownView` agrega XGraph al grupo avanzado y delega los bloques `xgraph`/`jsxgraph` a `xgraphEngine`. Se conserva el nodo `code_block`, su serialización Markdown y el toggle nativo Hide/Edit usado por Math. No cambia ningún DTO ni comando Tauri. La exportación estática conserva el código.
+
+El agente recibe `XGRAPH_AGENT_GUIDE` (`services/ai/xgraphAgentPrompt.ts`) al construir el prompt común en `buildChatAgentSystemPrompt`, después del prompt elegido y antes de las reglas y restricciones del scope. Incluye sintaxis `xgraph`/`jsxgraph`, variables disponibles, ejemplos de puntos, funciones y slider, Hide/Edit, persistencia, aislamiento y límites reales. El límite de fuente se toma del motor puro. El mapa de módulos de `DEFAULT_AGENT_PROMPT` también identifica XGraph. La guía se agrega en memoria en cada conversación, incluso con `default.md` antiguo, agentes personalizados y scopes publicados: no requiere migrar ni reescribir `.agent/promps/*.md`. No agrega tools, permisos ni un motor conversacional; Telegram mantiene HTML en sus respuestas y usa Markdown únicamente como contenido de archivos. Las pruebas de composición cubren los cinco scopes con un prompt personalizado y el formato Telegram.
+
+`xgraphEngine` reconoce lenguajes sin distinguir mayúsculas, limita la fuente a 100.000 caracteres y genera un placeholder con código URI-encoded. `xgraphPreviewRuntime` observa exclusivamente la raíz del editor, espera visibilidad con margen de 200 px y difiere 300 ms el montaje para cancelar renders obsoletos al escribir. Al eliminar/reemplazar el bloque o cerrar el editor desconecta observadores, cancela temporizadores y elimina el iframe; las importaciones compartidas pendientes comprueban vigencia antes de mutar DOM.
+
+Milkdown sanitiza los placeholders. El adaptador monta después un iframe con `sandbox="allow-scripts"`, sin `allow-same-origin`, con origen opaco y CSP propia (`default-src 'none'`, `connect-src 'none'`, scripts con nonce y evaluación interna). El JavaScript de la nota se pasa como string JSON con `<` escapado a una función dentro de ese iframe, nunca se evalúa en la aplicación. El contrato ofrece `board`, `JXG` y `BOARDID = 'box'`. Los errores se muestran mediante `textContent`, sin registrar contenido privado. No habilitar Tauri, navegación superior, ventanas emergentes, formularios ni red en este sandbox.
+
+La dependencia directa `jsxgraph@1.13.2` (MIT o LGPL-3.0-or-later) implementa geometría interactiva sin dependencias runtime adicionales; se utiliza bajo MIT. Su distribución oficial se importa como texto en chunks lazy para ejecutar exclusivamente dentro del sandbox y funcionar offline en Chromium/WebView de Windows y Android. El chunk añade aproximadamente 1.024 kB (260 kB gzip), cargados solo ante gráficos visibles. No se modifican archivos de la dependencia. Referencia: [JSXGraph Getting Started](https://jsxgraph.org/home/start/gettingstarted/).
+
+Los controles propios y de navegación del tablero tienen objetivos de 48 px; el iframe tiene ancho fluido y altura entre 280 y 520 px basada en `dvh`. El paneo requiere dos dedos para evitar apropiarse del gesto normal de scroll. Hide/Edit no reconstruye el tablero. Los cambios del tablero no se escriben en el `.md`: únicamente persiste la fuente. El límite de caracteres no limita la CPU de JavaScript arbitrario; grandes construcciones y bucles infinitos siguen siendo una limitación. Queda pendiente medir memoria, tiempos y gestos sobre tableta Android física de gama media.
+
+```mermaid
+flowchart TD
+    Request[Pedido de gráfico a la IA] --> Guide[Prompt común con guía XGraph y scope]
+    Guide --> Tools[Herramienta de escritura autorizada y confirmación]
+    Tools --> Code
+    Code[Editar bloque XGraph] --> Limit{Fuente dentro del límite}
+    Limit -->|No| Error[Error visible]
+    Limit -->|Sí| Placeholder[Placeholder sanitizado]
+    Placeholder --> Visible[Esperar visibilidad y 300 ms]
+    Visible --> Sandbox[Ejecutar JSXGraph aislado]
+    Sandbox --> Preview[Gráfico o error visible]
+    Preview --> Toggle[Hide / Edit de Milkdown]
+```
+
+```mermaid
+flowchart LR
+    Agent[createChatScopedAgent] --> Prompt[buildChatAgentSystemPrompt]
+    Prompt --> Guide[XGRAPH_AGENT_GUIDE]
+    Guide --> xgraphEngine
+    MarkdownView --> xgraphEngine
+    MarkdownView --> xgraphPreviewRuntime
+    xgraphPreviewRuntime --> xgraphEngine
+    xgraphPreviewRuntime --> Iframe[iframe de origen opaco]
+    Iframe --> JSXGraph[Distribución local de JSXGraph]
+```
+
+```mermaid
+sequenceDiagram
+    participant U as Usuario
+    participant A as Agente común
+    participant M as Milkdown
+    participant R as xgraphPreviewRuntime
+    participant F as iframe JSXGraph
+    U->>A: Pedir gráfico en una nota autorizada
+    A->>A: Cargar prompt elegido, guía XGraph y restricciones
+    A-->>U: Solicitar escritura mediante herramientas del scope
+    U->>M: Insertar XGraph y editar código
+    M->>M: Serializar code_block y sanitizar placeholder
+    R->>R: Detectar visibilidad y diferir montaje
+    R->>F: Crear documento aislado con runtime local
+    F-->>U: Gráfico interactivo o error
+    U->>M: Hide / Edit
+    M-->>U: Alternar visibilidad del código
+    M->>R: Eliminar bloque o cerrar nota
+    R->>F: Destruir iframe
+```
+
+Evaluación de cohesión, arquitectura y calidad para esta extensión: motor puro y adaptador de DOM separados, dependencia dirigida desde la vista y sin ciclos nuevos. No agrega estado Redux ni lógica al backend. Las pruebas del motor cubren contrato de lenguaje, preservación del código, límites e inyección de etiquetas. El montaje requiere validación de navegador; el iframe impide acceso al host pero no es una cuota de CPU ni memoria. La construcción del HTML permanece centralizada para revisar su frontera de seguridad.
+
+Validación de esta incorporación: build frontend y 233 pruebas aprobadas; lint de los archivos afectados aprobado. Chromium con `MarkdownView` real verificó render, Hide/Edit, edición/serialización, errores, bloqueo de acceso al documento padre, desmontaje y toque a 390 px de ancho. El lint global conserva 24 errores y 9 advertencias ajenos a XGraph. Android arm64 compiló la biblioteca nativa de depuración; el empaquetado falló al crear el symlink de `libnotia_lib.so` por falta de privilegios de Windows. El script `build:android:debug` falla antes en su invocación de `npx.cmd`; se verificó invocando directamente el CLI JavaScript de Tauri. No se instaló la app ni se verificó en dispositivo físico.
+
 > Documentación técnica orientada a ingenieros de software.  
 > Stack: React 19 + TypeScript 5.9 + Vite 7 + Redux Toolkit + MUI v7 + Tauri v2 (Rust 2021).
 

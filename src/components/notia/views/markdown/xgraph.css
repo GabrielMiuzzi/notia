@@ -1,0 +1,4 @@
+.notia-xgraph-host { width: 100%; min-width: 0; min-height: 280px; }
+.notia-xgraph-frame { display: block; width: 100%; height: clamp(280px, 55dvh, 520px); border: 0; border-radius: 8px; }
+.milkdown-code-block:has(.notia-xgraph-host) .preview-toggle-button { min-width: 48px; min-height: 48px; }
+.milkdown-code-block:has(.notia-xgraph-host) .preview-toggle-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }

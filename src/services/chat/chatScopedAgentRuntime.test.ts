@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { XGRAPH_AGENT_GUIDE } from '../ai/xgraphAgentPrompt'
 import {
   buildChatAgentSystemPrompt,
   buildChatAgentTools,
@@ -17,6 +18,25 @@ import {
 } from './chatScopedAgentRuntime'
 
 describe('chatScopedAgentRuntime', () => {
+  it.each(['library', 'document', 'graph', 'task-manager', 'finance'] as const)(
+    'supplies XGraph instructions to %s even with a preexisting custom prompt', (scope) => {
+      const customPrompt = 'Mi agente personalizado anterior a XGraph.'
+      const prompt = buildChatAgentSystemPrompt(scope, customPrompt)
+      expect(prompt).toContain(customPrompt)
+      expect(prompt).toContain(XGRAPH_AGENT_GUIDE)
+      expect(prompt).toContain('```xgraph\nboard.setBoundingBox')
+      expect(prompt).toContain('Conocer XGraph no amplía los permisos del scope')
+      expect(buildChatAgentTools(scope).some((tool) => /xgraph/i.test(tool.function.name))).toBe(false)
+    },
+  )
+
+  it('keeps Telegram response formatting while teaching XGraph file syntax', () => {
+    const prompt = buildChatAgentSystemPrompt('library', 'Agente existente.', null, 'telegram-html')
+    expect(prompt).toContain(XGRAPH_AGENT_GUIDE)
+    expect(prompt).toContain('No uses Markdown ni sus marcadores')
+    expect(prompt).toContain('el contenido de un archivo .md sí debe usar el bloque xgraph')
+  })
+
   it('removes global agent knowledge tools from published Task Manager sessions', () => {
     const names = buildChatAgentTools('task-manager', false, true).map((tool) => tool.function.name)
     expect(names).toContain('change_task_state')
