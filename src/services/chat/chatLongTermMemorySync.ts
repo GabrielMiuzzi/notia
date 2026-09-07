@@ -2,6 +2,7 @@ import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import { generateAiLongTermMemories, organizeAiAgentKnowledge } from '../ai/aiRuntime'
 import type { StoredChatMessage } from './chatDocumentStorage'
 import { loadAgentIaRules, loadAgentMemories, writeAgentIaRules, writeAgentMemories } from '../ai/agentPromptRuntime'
+import { notiaLog } from '../runtime/notiaLogger'
 
 export function scheduleAgentKnowledgeOrganization(
   library: NotiaLibrary,
@@ -15,7 +16,9 @@ export function scheduleAgentKnowledgeOrganization(
         writeAgentMemories(library, organized.memories),
       ])
     })
-    .catch((error) => console.warn('[notia] could not reorganize agent knowledge in background', error))
+    .catch((error) => notiaLog('chat-memory', 'could not reorganize agent knowledge in background', {
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error'))
 }
 import type { NotiaLibrary } from '../../types/notia'
 
@@ -52,6 +55,8 @@ export function scheduleLongTermMemoriesForTurn(
   input: PersistLongTermMemoriesForTurnInput,
 ): void {
   void persistLongTermMemoriesForTurn(input).catch((error) => {
-    console.warn('[notia] could not persist long term memories', error)
+    notiaLog('chat-memory', 'could not persist long term memories', {
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error')
   })
 }

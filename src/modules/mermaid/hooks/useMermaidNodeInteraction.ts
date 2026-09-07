@@ -345,6 +345,12 @@ export function useMermaidNodeInteraction(
 ): UseMermaidNodeInteractionReturn {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const isConnectingRef = useRef(false)
+  const [isConnecting, setIsConnecting] = useState(false)
+
+  const setConnectionActive = (active: boolean): void => {
+    isConnectingRef.current = active
+    setIsConnecting(active)
+  }
   const connectionRef = useRef<ConnectionState | null>(null)
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoveredNodeIdRef = useRef<string | null>(null)
@@ -427,7 +433,7 @@ export function useMermaidNodeInteraction(
     if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !isConnectingRef.current) return
-      isConnectingRef.current = false
+      setConnectionActive(false)
       connectionRef.current = null
       const svg = svgRef.current
       if (svg) clearConnectionLine(svg)
@@ -512,13 +518,13 @@ export function useMermaidNodeInteraction(
         try {
           anchorEl.setPointerCapture(e.pointerId)
           capturedAnchorRef.current = anchorEl
-        } catch (_) {}
+        } catch { /* El puntero ya puede haberse liberado. */ }
 
         // Cursor feedback
         const wrapper = wrapperRef.current
         if (wrapper) wrapper.classList.add('is-connecting')
 
-        isConnectingRef.current = true
+        setConnectionActive(true)
         connectionRef.current = {
           fromNodeId: nodeId,
           fromSide: side,
@@ -547,7 +553,7 @@ export function useMermaidNodeInteraction(
       const target = document.elementFromPoint(e.clientX, e.clientY) as Element | null
       if (!target) {
         // Soltar en el vacío → cancelar
-        isConnectingRef.current = false
+        setConnectionActive(false)
         connectionRef.current = null
         const svg = svgRef.current
         if (svg) clearConnectionLine(svg)
@@ -555,7 +561,7 @@ export function useMermaidNodeInteraction(
         if (wrapper) wrapper.classList.remove('is-connecting')
         try {
           capturedAnchorRef.current?.releasePointerCapture(e.pointerId)
-        } catch (_) {}
+        } catch { /* El puntero ya puede haberse liberado. */ }
         capturedAnchorRef.current = null
         return
       }
@@ -571,14 +577,14 @@ export function useMermaidNodeInteraction(
         }
       }
 
-      isConnectingRef.current = false
+      setConnectionActive(false)
       connectionRef.current = null
       const svg = svgRef.current
       if (svg) clearConnectionLine(svg)
 
       try {
         capturedAnchorRef.current?.releasePointerCapture(e.pointerId)
-      } catch (_) {}
+      } catch { /* El puntero ya puede haberse liberado. */ }
       capturedAnchorRef.current = null
 
       const wrapper = wrapperRef.current
@@ -587,13 +593,13 @@ export function useMermaidNodeInteraction(
 
     const onPointerCancel = (e: PointerEvent) => {
       if (!isConnectingRef.current) return
-      isConnectingRef.current = false
+      setConnectionActive(false)
       connectionRef.current = null
       const svg = svgRef.current
       if (svg) clearConnectionLine(svg)
       try {
         capturedAnchorRef.current?.releasePointerCapture(e.pointerId)
-      } catch (_) {}
+      } catch { /* El puntero ya puede haberse liberado. */ }
       capturedAnchorRef.current = null
       const wrapper = wrapperRef.current
       if (wrapper) wrapper.classList.remove('is-connecting')
@@ -647,6 +653,6 @@ export function useMermaidNodeInteraction(
 
   return {
     hoveredNodeId,
-    isConnecting: isConnectingRef.current,
+    isConnecting,
   }
 }

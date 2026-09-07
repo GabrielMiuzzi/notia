@@ -170,8 +170,6 @@ export async function prepareSpeechModel(preferences: Qwen3AsrPreferences): Prom
   try {
     await preparation
     preparedModelKey = key
-  } catch (error) {
-    throw error
   } finally {
     if (pendingModelPreparation === preparation) {
       pendingModelPreparation = null

@@ -27,6 +27,7 @@ test('Tauri ignore rules cover Gradle artifacts in the app and vendored Android 
       'gen/android/build.gradle.kts',
       'gen/android/app/src/main/AndroidManifest.xml',
       'gen/android/app/src/main/java/com/gabriel/notia/LibraryDatabasePlugin.kt',
+      'gen/android/app/src/main/java/com/gabriel/notia/AiBridgePlugin.kt',
       'vendor/llama.cpp/examples/llama.android/build.gradle.kts',
       'vendor/llama.cpp/examples/llama.android/lib/src/main/cpp/llama-android.cpp',
       'vendor/llama.cpp/src/llama.cpp',

@@ -1,5 +1,5 @@
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
-import { notiaLog } from './notiaLogger'
+import { notiaLog, redactDiagnosticData, redactDiagnosticText } from './notiaLogger'
 
 const PERFORMANCE_BASELINE_STORAGE_KEY = 'notia.perfBaseline.enabled'
 const PERFORMANCE_BASELINE_MAX_ENTRIES = 400
@@ -134,9 +134,7 @@ function recordEntry(entry: NotiaPerformanceMeasurementEntry): void {
     entries.splice(0, entries.length - PERFORMANCE_BASELINE_MAX_ENTRIES)
   }
 
-  if (entry.status === 'error') {
-    console.error(buildConsoleSummary(entry), entry)
-  }
+  if (entry.status === 'error') console.error(buildConsoleSummary(entry))
 
   if (entry.status === 'error') {
     const data: Record<string, unknown> = {
@@ -144,11 +142,9 @@ function recordEntry(entry: NotiaPerformanceMeasurementEntry): void {
       status: entry.status,
       device: entry.device,
     }
-    if (entry.meta) {
-      Object.assign(data, entry.meta)
-    }
+    if (entry.meta) Object.assign(data, redactDiagnosticData(entry.meta))
     if (entry.errorMessage) {
-      data.errorMessage = entry.errorMessage
+      data.errorMessage = redactDiagnosticText(entry.errorMessage)
     }
     notiaLog('perf', entry.name, data, 'error')
   }
@@ -213,6 +209,11 @@ export function startPerformanceMeasurement(
     const startedAtMs = performance.timeOrigin + startedAt
     const endedAtMs = performance.timeOrigin + endedAt
 
+    const normalizedMeta = normalizeMeta({
+      ...meta,
+      ...nextMeta,
+    })
+    const normalizedErrorMessage = normalizeErrorMessage(error)
     recordEntry({
       id: measurementId,
       name,
@@ -221,11 +222,8 @@ export function startPerformanceMeasurement(
       endedAtMs: roundMilliseconds(endedAtMs),
       durationMs: roundMilliseconds(endedAt - startedAt),
       status,
-      meta: normalizeMeta({
-        ...meta,
-        ...nextMeta,
-      }),
-      errorMessage: normalizeErrorMessage(error),
+      meta: normalizedMeta ? redactDiagnosticData(normalizedMeta) : undefined,
+      errorMessage: normalizedErrorMessage ? redactDiagnosticText(normalizedErrorMessage) : undefined,
     })
   }
 

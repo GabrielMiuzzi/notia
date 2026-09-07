@@ -128,6 +128,11 @@ fn window_control(_window: tauri::Window, payload: WindowControlPayload) {
 }
 
 #[tauri::command]
+fn exit_application(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn start_window_dragging(window: tauri::Window) {
     let _ = window.start_dragging();
@@ -220,6 +225,8 @@ pub fn run() {
             commands::ai::run_desktop_ai_tool_chat,
             commands::ai::run_desktop_ai_chat_streaming,
             commands::ai::list_desktop_ai_models,
+            commands::ai::inspect_desktop_ai_model,
+            commands::ai::run_desktop_ai_web_search,
             commands::speech::get_speech_capabilities,
             commands::speech::prepare_speech_model,
             commands::speech::get_speech_model_status,
@@ -238,6 +245,7 @@ pub fn run() {
             commands::telegram::check_telegram_bot,
             commands::telegram::poll_telegram_updates,
             commands::telegram::send_telegram_message,
+            commands::telegram::edit_telegram_message,
             commands::telegram::transcribe_telegram_audio,
             commands::telegram::download_telegram_photo,
             commands::telegram::extract_telegram_pdf,
@@ -245,6 +253,9 @@ pub fn run() {
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
             mobile_ai_bridge::run_android_ai_chat_streaming,
+            mobile_ai_bridge::cancel_android_ai_chat_streaming,
+            mobile_ai_bridge::run_android_ai_tool_chat,
+            mobile_ai_bridge::run_android_ai_web_search,
             mobile_ai_bridge::list_android_ai_models,
             mobile_directory_picker::pick_android_directory_tree,
             mobile_directory_picker::read_android_library_tree,
@@ -258,6 +269,7 @@ pub fn run() {
             commands::bluetooth::coldpass_bluetooth_disconnect,
             notia_log,
             window_control,
+            exit_application,
             start_window_dragging,
             start_window_dragging_with_restore,
             task_manager_publication::publish_task_manager_boards,

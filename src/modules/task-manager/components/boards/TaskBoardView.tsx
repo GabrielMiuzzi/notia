@@ -327,7 +327,7 @@ export function TaskBoardView({
     setTaskDropTarget(null)
     setPinnedTaskDropTarget(null)
     await onApplyTaskArrangement(updates)
-  }, [draggedTaskPath, onApplyTaskArrangement, pinnedTaskDropTarget, taskDropTarget, topLevelTasks])
+  }, [draggedTaskPath, onApplyTaskArrangement, topLevelTasks])
 
   const handleSubtaskDrop = useCallback(async (targetParentTask: TaskItem, targetIndex: number) => {
     if (!draggedSubtaskPath) {

@@ -107,6 +107,7 @@ export function useMermaidInlineResize(storageKey: string) {
   }, [])
 
   const endResize = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
+    void _event
     if (!isResizingRef.current) return
     isResizingRef.current = false
 

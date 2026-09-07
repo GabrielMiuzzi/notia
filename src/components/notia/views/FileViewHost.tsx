@@ -1,6 +1,7 @@
 import { memo, Suspense, useCallback, lazy } from 'react'
 import { isTextFileDocument, type OpenFileDocument } from '../../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
+import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../../types/views/markdownSelection'
 import { shouldUseLargeMarkdownView } from '../../../engines/markdown/markdownEditorLimits'
 import { ImageView } from './ImageView'
 import { LargeMarkdownView } from './LargeMarkdownView'
@@ -32,6 +33,8 @@ interface FileViewHostProps {
   onTextSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  onSelectionChange: (selection: MarkdownSelectionContext | null) => void
+  externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
   markdownZoom: number
   onMarkdownZoomChange: (zoom: number) => void
@@ -42,6 +45,8 @@ function FileViewHostComponent({
   onTextSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
+  onSelectionChange,
+  externalSourceUpdate,
   theme,
   markdownZoom,
   onMarkdownZoomChange,
@@ -83,6 +88,8 @@ function FileViewHostComponent({
           onSourceChange={onTextSourceChange}
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
+          onSelectionChange={onSelectionChange}
+          externalSourceUpdate={externalSourceUpdate}
           theme={theme}
           zoom={markdownZoom}
           onZoomChange={onMarkdownZoomChange}

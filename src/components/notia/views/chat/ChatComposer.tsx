@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, FileImage, Files, Info, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, FileImage, FileText, Files, Info, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
@@ -163,7 +163,7 @@ function ChatComposerComponent({
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/*"
+        accept="*/*"
         className="notia-chat-image-input"
         onChange={(event) => {
           const inputElement = event.currentTarget
@@ -172,10 +172,10 @@ function ChatComposerComponent({
             return
           }
 
-          const { onImageSelected } = window as unknown as {
-            onImageSelected?: (file: File) => Promise<void>
+          const { onChatFileSelected } = window as unknown as {
+            onChatFileSelected?: (file: File) => Promise<void>
           }
-          void onImageSelected?.(nextFile).finally(() => {
+          void onChatFileSelected?.(nextFile).finally(() => {
             inputElement.value = ''
           })
         }}
@@ -195,11 +195,11 @@ function ChatComposerComponent({
         >
           {selectedImageAttachment ? (
             <div className="notia-chat-attachment-pill">
-              <FileImage size={14} />
+              {selectedImageAttachment.kind === 'image' ? <FileImage size={14} /> : <FileText size={14} />}
               <span>{selectedImageAttachment.name}</span>
               <button
                 type="button"
-                aria-label="Quitar imagen"
+                aria-label={selectedImageAttachment.kind === 'image' ? 'Quitar imagen' : 'Quitar archivo'}
                 onClick={onRemoveImage}
               >
                 <X size={12} />
@@ -351,8 +351,8 @@ function ChatComposerComponent({
               ref={triggerRef}
               size="icon"
               variant="secondary"
-              title="Adjuntar contexto"
-              aria-label="Adjuntar contexto"
+              title="Adjuntar archivo"
+              aria-label="Adjuntar archivo"
               onClick={onToggleAttachmentMenu}
               disabled={!library || isSubmitting || !isAiAvailable}
             >
@@ -380,8 +380,8 @@ function ChatComposerComponent({
                   className="notia-chat-attachment-menu-item"
                   onClick={onSelectImage}
                 >
-                  <FileImage size={15} />
-                  <span>Seleccionar imagen</span>
+                  <FileText size={15} />
+                  <span>Seleccionar archivo</span>
                 </button>
                 <button
                   type="button"

@@ -41,6 +41,7 @@ export function useTextDocumentAutosave(
   actions: UseTextDocumentAutosaveActions,
 ): UseTextDocumentAutosaveReturn {
   const openTabs = useAppSelector(selectOpenTabs)
+  const { persistTextDocumentSource } = actions
   const pendingTextSaveByPathRef = useRef<Map<string, PendingTextSaveJob>>(new Map())
 
   const clearPendingTextSaveByPath = useCallback((path: string) => {
@@ -121,7 +122,7 @@ export function useTextDocumentAutosave(
         }
 
         pendingTextSaveByPathRef.current.delete(targetPath)
-        void actions.persistTextDocumentSource(targetPath, targetSource)
+        void persistTextDocumentSource(targetPath, targetSource)
       }, resolveTextAutosaveDebounceMs(tab.document))
 
       pendingTextSaveByPathRef.current.set(targetPath, {
@@ -129,7 +130,7 @@ export function useTextDocumentAutosave(
         timeoutId,
       })
     }
-  }, [openTabs, actions.persistTextDocumentSource])
+  }, [openTabs, persistTextDocumentSource])
 
   // Cleanup on unmount
   useEffect(() => {

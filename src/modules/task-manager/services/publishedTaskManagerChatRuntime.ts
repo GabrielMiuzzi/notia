@@ -20,6 +20,7 @@ export async function runPublishedTaskManagerChatReply(input: PublishedTaskManag
   const agent = await createChatScopedAgent({
     scope: 'task-manager',
     publishedScope: true,
+    persistencePolicy: 'published-no-memory',
     aiPreferences: input.aiPreferences,
     library: input.library,
     scopePaths: input.scopePaths,
@@ -42,6 +43,7 @@ export async function runPublishedTaskManagerChatReply(input: PublishedTaskManag
     agent,
     prompt: input.prompt,
     previousMessages: input.previousMessages,
+    intentContext: {},
     streamFinalResponse: true,
     diagnosticModule: 'published-task-manager-chat',
   }, {

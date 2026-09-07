@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import {
+  getSessionAiApiKey,
   normalizeAiSettingsInput,
   saveAiPreferences,
   type AiPreferences,
@@ -93,7 +94,6 @@ export function useLibraryConfigSync({
     initialConfigRef.current = null
 
     void (async () => {
-      console.warn('[NotiaMenu] Loading library config for:', activeLibrary.path)
       const config = await readLibraryConfig(activeLibrary.path, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       })
@@ -103,7 +103,6 @@ export function useLibraryConfigSync({
       }
 
       if (config) {
-      console.warn('[NotiaMenu] Found existing library config')
         if (config.panelDesplegable?.refreshIntervalMs !== undefined) {
           setExplorerRefreshIntervalMs(config.panelDesplegable.refreshIntervalMs)
         }
@@ -111,12 +110,17 @@ export function useLibraryConfigSync({
           setInkMathPreferences(config.inkMath)
         }
         if (config.ia) {
-          setAiPreferences(config.ia)
+          // AI credentials are provider/session state, never library state.
+          // Keep the active in-memory credential while loading portable
+          // library preferences such as model and thinking settings.
+          setAiPreferences({
+            ...config.ia,
+            apiKey: getSessionAiApiKey(),
+          })
         }
         setTelegramPreferences(normalizeTelegramPreferences(config.telegram))
         initialConfigRef.current = config
       } else {
-        console.warn('[NotiaMenu] No existing config found')
         initialConfigRef.current = {
           version: 1,
           panelDesplegable: {
@@ -129,7 +133,6 @@ export function useLibraryConfigSync({
       }
 
       libraryConfigLoadedRef.current = true
-      console.warn('[NotiaMenu] Library config loading complete')
     })()
 
     return () => {
@@ -137,7 +140,7 @@ export function useLibraryConfigSync({
       libraryConfigLoadedRef.current = false
       initialConfigRef.current = null
     }
-  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, isLibraryReady])
+  }, [activeLibrary, isLibraryReady, setAiPreferences, setExplorerRefreshIntervalMs, setInkMathPreferences, setTelegramPreferences])
 
   useEffect(() => {
     if (!activeLibrary) {
@@ -145,7 +148,6 @@ export function useLibraryConfigSync({
     }
 
     if (!libraryConfigLoadedRef.current) {
-      console.warn('[NotiaMenu] Skipping save - config not loaded yet')
       return
     }
 
@@ -163,7 +165,6 @@ export function useLibraryConfigSync({
       const initialJson = JSON.stringify(initialConfigRef.current)
       const currentJson = JSON.stringify(config)
       if (initialJson === currentJson) {
-        console.warn('[NotiaMenu] Skipping save - matches initial config')
         return
       }
     }
@@ -175,12 +176,9 @@ export function useLibraryConfigSync({
     }
 
     libraryConfigTimeoutRef.current = window.setTimeout(() => {
-      console.warn('[NotiaMenu] Saving library config')
-
       void writeLibraryConfig(activeLibraryPathRef.current!, config, {
         androidDirectoryUri: activeLibrary.androidTreeUri,
       }).then((result) => {
-        console.warn('[NotiaMenu] Save result:', result)
         if (result.ok) {
           initialConfigRef.current = config
         }
@@ -193,7 +191,7 @@ export function useLibraryConfigSync({
         libraryConfigTimeoutRef.current = null
       }
     }
-  }, [activeLibrary?.path, activeLibrary?.androidTreeUri, aiPreferences, explorerRefreshIntervalMs, inkMathPreferences, telegramPreferences])
+  }, [activeLibrary, aiPreferences, explorerRefreshIntervalMs, inkMathPreferences, telegramPreferences])
 
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)

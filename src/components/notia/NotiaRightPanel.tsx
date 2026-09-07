@@ -3,12 +3,14 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsRightChatPanelOpen, selectIsRightPanelChatMounted } from '../../features/ui/uiSelectors'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
+import { selectActiveDocument } from '../../features/documents/documentsSelectors'
 import { selectAiSettings } from '../../features/preferences/preferencesSelectors'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { MeetingEphemeralChat } from './views/chat/MeetingEphemeralChat'
 import type { ChatFileContextMode } from '../../services/chat/chatAttachmentRuntime'
 import type { ChatAgentScope } from '../../services/chat/chatScopedAgentRuntime'
+import type { MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import {
   clampRightPanelWidth,
   loadRightPanelWidth,
@@ -32,6 +34,8 @@ interface NotiaRightPanelProps {
   rightPanelTransientSelectedPaths: string[]
   onRightPanelTransientSelectedPathsChange: (paths: string[]) => void
   isAndroidRuntime: boolean
+  markdownSelection: MarkdownSelectionContext | null
+  onActiveMarkdownDocumentChanged: (documentPath: string, source: string) => void | Promise<void>
 }
 
 function NotiaRightPanelComponent({
@@ -51,11 +55,14 @@ function NotiaRightPanelComponent({
   rightPanelTransientSelectedPaths,
   onRightPanelTransientSelectedPathsChange,
   isAndroidRuntime,
+  markdownSelection,
+  onActiveMarkdownDocumentChanged,
 }: NotiaRightPanelProps) {
   const handleChatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const isRightPanelChatMounted = useAppSelector(selectIsRightPanelChatMounted)
   const activeLibrary = useAppSelector(selectActiveLibrary)
+  const activeDocument = useAppSelector(selectActiveDocument)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const [panelWidth, setPanelWidth] = useState(() => loadRightPanelWidth(window.innerWidth))
   const [isResizing, setIsResizing] = useState(false)
@@ -167,6 +174,9 @@ function NotiaRightPanelComponent({
               historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
               onChatCreated={chatCallbacks.onChatCreated}
               onChatDeleted={chatCallbacks.onChatDeleted}
+              markdownSelection={markdownSelection}
+              activeMarkdownSource={activeDocument?.viewKind === 'markdown' ? activeDocument.source : null}
+              onActiveMarkdownDocumentChanged={onActiveMarkdownDocumentChanged}
             />
           )
         ) : (

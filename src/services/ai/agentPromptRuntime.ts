@@ -2,6 +2,7 @@ import type { NotiaLibrary } from '../../types/notia'
 import { readTextFile, writeTextFile } from '../files/filesystemEngine'
 import { createLibraryEntry } from '../libraries/libraryRuntime'
 import { readLibraryDirectory } from '../libraries/libraryRuntime'
+import { resolveLongTermMemoryFilePath } from '../chat/chatLibraryStructure'
 
 export const DEFAULT_AGENT_PROMPT = [
   "# Agente IA de Notia",
@@ -569,6 +570,8 @@ const MEMORY_DIRECTORY_NAME = 'memory'
 const SKILLS_DIRECTORY_NAME = 'skills'
 const MEMORY_RULES_FILE_NAME = 'rules.md'
 const MEMORY_FILE_NAME = 'memory.md'
+const LEGACY_MEMORY_BACKUP_FILE_NAME = 'LongTermMemory.legacy.v1.backup.md'
+const MEMORY_VERSION_MARKER = '<!-- NOTIA_AGENT_MEMORY_VERSION:1 -->'
 const DEFAULT_PROMPT_FILE_NAME = 'default.md'
 const AGENT_SELECTION_STORAGE_KEY = 'notia:agent-prompt-selection:v1'
 const RULES_START = '<!-- NOTIA_DEFAULT_RULES_START -->'
@@ -810,12 +813,16 @@ export async function writeAgentIaRules(library: NotiaLibrary, rules: string[]):
 
 export async function loadAgentMemories(library: NotiaLibrary): Promise<string[]> {
   await ensureAgentPromptFile(library)
+  await migrateLegacyAgentMemory(library)
   const result = await readTextFile(
     joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_FILE_NAME),
     { androidDirectoryUri: library.androidTreeUri },
   )
   if (!result.ok) return []
-  return result.content.split('\n').map((line) => line.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean)
+  return result.content
+    .split('\n')
+    .map((line) => line.replace(/^\s*[-*]\s*/, '').trim())
+    .filter((line) => Boolean(line) && !line.startsWith('<!--'))
 }
 
 export async function writeAgentMemories(library: NotiaLibrary, memories: string[]): Promise<void> {
@@ -825,10 +832,71 @@ export async function writeAgentMemories(library: NotiaLibrary, memories: string
     .slice(0, 100)
   const result = await writeTextFile(
     joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_FILE_NAME),
-    unique.map((memory) => `- ${memory}`).join('\n'),
+    [MEMORY_VERSION_MARKER, '', ...unique.map((memory) => `- ${memory}`), ''].join('\n'),
     { androidDirectoryUri: library.androidTreeUri },
   )
   if (!result.ok) throw new Error(result.error || 'No se pudo guardar la memoria del agente.')
+}
+
+function parseMemoryItems(content: string): string[] {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*+]\s+/, '').trim())
+    .filter((line) => Boolean(line) && !line.startsWith('#') && !line.startsWith('<!--'))
+}
+
+/**
+ * Migrates the old chat memory once, keeping a local recovery copy inside the
+ * active .agent/memory directory. The legacy file is intentionally read-only
+ * after migration so two active memory sources cannot diverge.
+ */
+export async function migrateLegacyAgentMemory(library: NotiaLibrary): Promise<{ migrated: boolean; memories: number }> {
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  const legacy = await readTextFile(resolveLongTermMemoryFilePath(library.path), options)
+  if (!legacy.ok) return { migrated: false, memories: 0 }
+
+  const legacyMemories = parseMemoryItems(legacy.content)
+  if (legacyMemories.length === 0) return { migrated: false, memories: 0 }
+
+  const memoryDirectoryPath = resolveAgentMemoryDirectoryPath(library.path)
+  const backupPath = joinLibraryPath(memoryDirectoryPath, LEGACY_MEMORY_BACKUP_FILE_NAME)
+  const existingBackup = await readTextFile(backupPath, options)
+  if (existingBackup.ok) return { migrated: false, memories: 0 }
+  if (!existingBackup.ok) {
+    await createLibraryEntry(memoryDirectoryPath, LEGACY_MEMORY_BACKUP_FILE_NAME, 'note', options)
+    const backupResult = await writeTextFile(
+      backupPath,
+      `${MEMORY_VERSION_MARKER}\n<!-- Source: chat/LongTermMemory.md -->\n\n${legacy.content}`,
+      options,
+    )
+    if (!backupResult.ok) throw new Error(backupResult.error || 'No se pudo crear el backup de la memoria legacy.')
+  }
+
+  const memoryPath = joinLibraryPath(memoryDirectoryPath, MEMORY_FILE_NAME)
+  const current = await readTextFile(memoryPath, options)
+  const currentMemories = current.ok ? parseMemoryItems(current.content) : []
+  const merged = Array.from(new Map([...currentMemories, ...legacyMemories]
+    .map((memory) => [memory.toLowerCase(), memory] as const)).values()).slice(0, 100)
+  const nextContent = [MEMORY_VERSION_MARKER, '', ...merged.map((memory) => `- ${memory}`), ''].join('\n')
+  if (!current.ok || current.content !== nextContent) {
+    const result = await writeTextFile(memoryPath, nextContent, options)
+    if (!result.ok) throw new Error(result.error || 'No se pudo migrar la memoria legacy.')
+  }
+  return { migrated: true, memories: legacyMemories.length }
+}
+
+/** Restores the immutable migration backup explicitly, never during normal reads. */
+export async function recoverLegacyAgentMemory(library: NotiaLibrary): Promise<number> {
+  await ensureAgentPromptFile(library)
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  const backup = await readTextFile(
+    joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), LEGACY_MEMORY_BACKUP_FILE_NAME),
+    options,
+  )
+  if (!backup.ok) return 0
+  const memories = parseMemoryItems(backup.content)
+  await writeAgentMemories(library, memories)
+  return memories.length
 }
 
 export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<string> {

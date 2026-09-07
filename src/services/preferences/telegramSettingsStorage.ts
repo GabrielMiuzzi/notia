@@ -1,4 +1,5 @@
 import type { TelegramDocument, TelegramPhoto } from '../telegram/telegramRuntime'
+import type { AgentPlanStepStatus } from '../../types/ai/agentContracts'
 
 export interface TelegramPeer {
   chatId: number
@@ -30,11 +31,20 @@ const TELEGRAM_PENDING_AGENT_REQUESTS_PREFIX = 'notia:telegram-pending-agent-req
 const TELEGRAM_STORED_REQUEST_LIMIT = 11
 
 export type TelegramAgentRequestScope = 'finance' | 'library'
+export interface TelegramPersistedPlan {
+  steps: Array<{ id: string; status: AgentPlanStepStatus }>
+}
+export type TelegramPendingAgentRequestStatus = 'queued' | 'active' | 'interrupted'
 export interface TelegramPendingAgentRequest {
   text: string
   actorUserId: number
   scope: TelegramAgentRequestScope
   attachment: { kind: 'photo'; value: TelegramPhoto } | { kind: 'pdf'; value: TelegramDocument } | null
+  requestId?: string
+  progressMessageId?: number
+  progressMessageRetryCount?: number
+  plan?: TelegramPersistedPlan
+  status?: TelegramPendingAgentRequestStatus
 }
 
 export interface TelegramUpdateCheckpoint {
@@ -154,6 +164,22 @@ function normalizePendingAttachment(value: unknown): TelegramPendingAgentRequest
   return undefined
 }
 
+const TELEGRAM_PLAN_STATUSES = new Set<AgentPlanStepStatus>([
+  'pending', 'in-progress', 'blocked', 'completed', 'failed', 'skipped', 'cancelled',
+])
+
+function normalizePendingPlan(value: unknown): TelegramPersistedPlan | undefined {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as { steps?: unknown }).steps)) return undefined
+  const steps = (value as { steps: unknown[] }).steps.slice(0, 20).flatMap((step) => {
+    if (!step || typeof step !== 'object') return []
+    const candidate = step as { id?: unknown; status?: unknown }
+    if (typeof candidate.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(candidate.id)) return []
+    if (typeof candidate.status !== 'string' || !TELEGRAM_PLAN_STATUSES.has(candidate.status as AgentPlanStepStatus)) return []
+    return [{ id: candidate.id, status: candidate.status as AgentPlanStepStatus }]
+  })
+  return steps.length > 0 ? { steps } : undefined
+}
+
 export function normalizeTelegramPendingAgentRequests(value: unknown): TelegramPendingAgentRequest[] {
   if (!Array.isArray(value)) return []
   const requests: TelegramPendingAgentRequest[] = []
@@ -162,14 +188,38 @@ export function normalizeTelegramPendingAgentRequests(value: unknown): TelegramP
     const candidate = entry as Partial<TelegramPendingAgentRequest>
     const attachment = normalizePendingAttachment(candidate.attachment)
     if (attachment === undefined
-      || typeof candidate.text !== 'string'
+      || (candidate.text !== undefined && typeof candidate.text !== 'string')
       || !Number.isSafeInteger(candidate.actorUserId)
       || (candidate.scope !== 'finance' && candidate.scope !== 'library')) continue
+    const requestId = typeof candidate.requestId === 'string'
+      && /^[A-Za-z0-9_-]{1,64}$/.test(candidate.requestId)
+      ? candidate.requestId
+      : undefined
+    const progressMessageId = Number.isSafeInteger(candidate.progressMessageId)
+      && (candidate.progressMessageId as number) > 0
+      ? candidate.progressMessageId as number
+      : undefined
+    const progressMessageRetryCount = Number.isSafeInteger(candidate.progressMessageRetryCount)
+      && (candidate.progressMessageRetryCount as number) >= 0
+      ? Math.min(3, candidate.progressMessageRetryCount as number)
+      : 0
+    const plan = normalizePendingPlan(candidate.plan)
+    const status = candidate.status === 'active' || candidate.status === 'interrupted'
+      ? candidate.status
+      : 'queued'
     requests.push({
-      text: candidate.text.slice(0, 50_000),
+      // Text is retained only by the in-memory queue. Durable recovery keeps
+      // the request envelope but never writes the original prompt or private
+      // user content to localStorage.
+      text: typeof candidate.text === 'string' ? candidate.text.slice(0, 50_000) : '',
       actorUserId: candidate.actorUserId as number,
       scope: candidate.scope,
       attachment,
+      ...(requestId ? { requestId } : {}),
+      ...(progressMessageId ? { progressMessageId } : {}),
+      progressMessageRetryCount,
+      ...(plan ? { plan } : {}),
+      status,
     })
   }
   return requests
@@ -179,7 +229,11 @@ export function loadTelegramPendingAgentRequests(scopeId: string): TelegramPendi
   if (typeof window === 'undefined' || !scopeId.trim()) return []
   try {
     const raw = window.localStorage.getItem(`${TELEGRAM_PENDING_AGENT_REQUESTS_PREFIX}${scopeId}`)
-    return raw ? normalizeTelegramPendingAgentRequests(JSON.parse(raw)) : []
+    return raw
+      ? normalizeTelegramPendingAgentRequests(JSON.parse(raw)).map((request) => request.status === 'active'
+        ? { ...request, status: 'interrupted' }
+        : request)
+      : []
   } catch {
     return []
   }
@@ -190,8 +244,13 @@ export function saveTelegramPendingAgentRequests(scopeId: string, requests: Tele
   try {
     const key = `${TELEGRAM_PENDING_AGENT_REQUESTS_PREFIX}${scopeId}`
     const normalized = normalizeTelegramPendingAgentRequests(requests)
-    if (normalized.length === 0) window.localStorage.removeItem(key)
-    else window.localStorage.setItem(key, JSON.stringify(normalized))
+    const durableMetadata = normalized.map((request) => {
+      const metadata = { ...request }
+      Reflect.deleteProperty(metadata, 'text')
+      return metadata
+    })
+    if (durableMetadata.length === 0) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, JSON.stringify(durableMetadata))
     return true
   } catch {
     return false

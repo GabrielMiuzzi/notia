@@ -20,7 +20,7 @@ export const MermaidExportMenu = memo(function MermaidExportMenu({ result, theme
       svg = svg.replace('<svg', `<svg xmlns:xlink="http://www.w3.org/1999/xlink"`)
     }
     // Fix self-closing tags
-    svg = svg.replace(/<br>/g, '<br/>').replace(/<img([^\/>]*)>/g, '<img$1 />')
+    svg = svg.replace(/<br>/g, '<br/>').replace(/<img([^/>]*)>/g, '<img$1 />')
 
     const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
     const url = URL.createObjectURL(blob)

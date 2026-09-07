@@ -119,6 +119,18 @@ Validación de esta incorporación: build frontend y 233 pruebas aprobadas; lint
 > Documentación técnica orientada a ingenieros de software.  
 > Stack: React 19 + TypeScript 5.9 + Vite 7 + Redux Toolkit + MUI v7 + Tauri v2 (Rust 2021).
 
+### Estado actual del runtime de IA
+
+Las ediciones del documento activo cuentan con `propose_document_edit` y `apply_document_edit` para separar preview de escritura. Los aliases `replace_active_markdown_document` e `insert_active_markdown_document` también calculan un `MutationPreview` con hunk acotado, revisan la hash de la fuente dirty antes y después de la confirmación, registran un `operationId` idempotente y notifican al editor mediante `onActiveMarkdownDocumentChanged`. `undo_ai_operation` usa un journal en memoria y rechaza restaurar si el documento cambió después; el journal no persiste contenido privado ni habilita restauración ciega.
+
+El catálogo común incorpora `search_library_exact`, `get_document_metadata` y `find_document_references`. Las búsquedas devuelven únicamente coincidencias, rutas, líneas y metadata autorizada; la búsqueda exacta no incorpora el cuerpo completo al resultado. `validateDocumentEdit` rechaza fences, fórmulas, enlaces estructurales rotos y cambios de frontmatter en una mutación de cuerpo.
+
+Meeting construye el agente con `ephemeral-no-memory`, por lo que no carga ni persiste memoria global. Los planes visibles se guardan como metadata mínima y acotada por biblioteca para poder reconstruir el TO-DO visual tras una reapertura controlada. El feedback admite `progressMode`, `showPlan`, `showReasoningSummary` y `editProgressMessage`; Telegram descarta eventos obsoletos por request/timestamp, informa la posición de cola y nunca transmite thinking crudo.
+
+La clasificación de intención (`engines/ai/agentIntentEngine.ts`) decide únicamente si el siguiente flujo debe responder, leer, buscar, aclarar, proponer/aplicar una edición, crear, organizar o ejecutar; nunca concede permisos ni escribe. Las solicitudes compuestas reciben una instrucción para crear un plan general con dependencias, riesgo y herramienta prevista. El motor de diff separa cambios en hunks con anchors estables y el runtime expone aliases para selección/bloque, movimiento de bloques, actualización de frontmatter, creación desde plantilla, patch multi-hunk y `verify_operation`. La memoria activa es `.agent/memory/memory.md`; `chat/LongTermMemory.md` se conserva solo para compatibilidad y ya no es fuente de lectura/escritura activa. Las requests durables de Telegram eliminan el prompt original antes de serializar metadata; el scheduler del cache de enlaces difiere rebuilds mientras la aplicación está oculta y los retoma al volver al frente.
+
+El listado de modelos, la inspección de capacidades, health y las rondas desktop pasan por comandos Tauri; el WebView no usa `/api/tags`, `/api/show` ni `/api/chat` de Ollama. Android tiene comandos versionados para rondas con tools y búsqueda web (`toolChat` y `webSearch` del plugin), y `AiBridgePlugin.kt` versionado para health, modelos, chat, streaming NDJSON, tools, búsqueda y cancelación; la validación Gradle/dispositivo sigue pendiente de plataforma. La búsqueda web nunca recibe snapshot, historial, memoria, rutas o contenido de archivos y bloquea secretos, credenciales, PII y datos sensibles antes del adapter. La configuración portable de biblioteca, Redux y localStorage conservan la configuración de IA sin API key; la credencial queda en memoria de sesión hasta la frontera nativa. El almacenamiento seguro nativo persistente entre reinicios sigue pendiente. El catálogo de tickets admite filtros por estado, prioridad, grupo, fechas, tags y texto de metadata, y persiste dependencias/checklist como campos controlados del frontmatter.
+
 ---
 
 ### Tools de consulta financiera del agente
@@ -227,7 +239,7 @@ npm run dev:android
 
 8. **Plataforma condicional**: uso de `#[cfg(...)]` en Rust y `getRuntimeDevice()` en TypeScript para proveer stubs en plataformas no soportadas, nunca dejando un command sin implementación.
 
-9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos Tauri tipados; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa.
+9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos Tauri tipados; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa. La pestaña especial `__workspace_calendar__` monta `CalendarView`, que consulta en paralelo `https://api.argentinadatos.com/v1/feriados/{año}` y `https://api.argentinadatos.com/v1/feriados-bancarios/{año}`, valida sus respuestas y diferencia ambos tipos en la grilla mensual.
 
 ### Contratos financieros Tauri
 
@@ -522,8 +534,10 @@ Flujo completo de lectura, renderizado, edición, autosave y persistencia de un 
 1. **Apertura**: el usuario hace clic en un archivo `.md` en `FileTree` → `useDocumentOpener` verifica si ya está abierto (evita duplicados) → dispatch `documentsSlice.actions.openDocument({ path, title })`.
 2. **Lectura**: `useDocumentPersist` o `MarkdownView` invoca `filesystemEngine.readTextFile(path)` → `invoke('read_library_file')` → Rust `filesystem::commands::read_library_file` → `desktop::read_library_file` (o `android_saf::read_library_file`) → lectura con `fs::read_to_string` → retorna `{ ok: true, content }`.
 3. **Renderizado**: el contenido se inyecta en el editor **Milkdown Crepe** (`MarkdownView.tsx`). Se parsea frontmatter vía `frontmatterEngine.ts` y se muestra en `MarkdownPropertiesPanel`.
+
+La selección del editor se transforma en `MarkdownSelectionContext` mediante `selectionEngine.ts`. El contexto incluye posiciones, texto y cada bloque superior seleccionado con su tipo. `NotiaMenu` lo comparte con el chat lateral; en el scope `document`, `createChatScopedAgent` lo incorpora al prompt y expone `read_active_markdown_document`, `replace_active_markdown_document` e `insert_active_markdown_document`. La selección es opcional: el agente relee la fuente actual, puede resolver `targetText` contra cualquier bloque referenciado del archivo (incluidos referencias como «punto a»), reemplazarlo o insertar contenido antes/después de él, y conserva el resto del archivo sin permiso adicional para la lectura y con confirmación visible antes de guardar. Si no se indica un objetivo para una inserción inequívoca, la agrega al final. Tras escribir, el cambio actualiza la pestaña abierta y `MarkdownView` aplica el nuevo cuerpo sin remount ni reapertura; el resultado de la mutación es terminal para evitar lecturas repetidas.
 4. **Wikilinks**: durante la edición, el plugin `wikiLinkPlugin.ts` detecta patrones `[[...]]` y muestra el menú de sugerencias `WikiLinkSuggestionMenu.tsx` con notas existentes.
-5. **Autosave**: `useTextDocumentAutosave.ts` establece un debounce (tipicamente ~1s de inactividad) tras el cual invoca `filesystemEngine.writeTextFile(path, content)`.
+5. **Autosave**: `useTextDocumentAutosave.ts` establece un debounce (tipicamente ~1s de inactividad) tras el cual invoca `filesystemEngine.writeTextFile(path, content)`. `useTabManager.persistDirtyTextDocuments` ejecuta un flush inmediato antes de cerrar una pestaña, mover/renombrar entradas, cambiar de libreria o cerrar/salir de la aplicacion; una escritura fallida mantiene la pestaña abierta y su contenido en memoria para reintentar.
 6. **Persistencia**: `invoke('write_library_file')` → Rust `filesystem::commands::write_library_file` → valida path no vacío → `desktop::write_library_file` (o SAF) → `fs::write` → retorna `{ ok: true }`.
 7. **Indicadores**: el slice `documentsSlice` actualiza el flag `isSaving` / `saveError` para mostrar el indicador visual en la pestaña.
 
@@ -536,6 +550,7 @@ Flujo completo de lectura, renderizado, edición, autosave y persistencia de un 
 - **Frontend**: `MarkdownView.tsx`, `useDocumentPersist.ts`, `useTextDocumentAutosave.ts`, `wikiLinkPlugin.ts`, `frontmatterEngine.ts`, `filesystemEngine.ts`.
 - **Redux**: `documentsSlice` (tabs, activeTab, saving states).
 - **Backend**: `read_library_file`, `write_library_file`.
+- Los adjuntos del compositor se procesan en `chatImageAttachment.ts`: las imÃ¡genes se envÃ­an como una pÃ¡gina, los PDF pasan por `pdfDocumentRenderer.ts` —que extrae texto y renderiza hasta 24 pÃ¡ginas como JPEG— y los archivos de texto se agregan como contexto delimitado. Todo viaja por el runtime comÃºn de IA; el agente transcribe los PDF en orden y puede insertar el resultado con las herramientas de Markdown activo. Un PDF mayor se rechaza antes de iniciar la conversaciÃ³n para no producir una inserciÃ³n parcial.
 
 ---
 
@@ -593,21 +608,26 @@ Construcción y visualización de un grafo de conocimiento donde los nodos son a
 ### 2.5 AI Chat
 
 #### Descripción
-Sistema de chat con modelos de lenguaje locales (Ollama). Incluye health check con caché, streaming de respuestas en desktop y Android, listado de todos los modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
+Sistema de chat con Ollama local o Cloud según la configuración. Incluye health check con caché, streaming de respuestas en desktop y Android, listado de modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
 Todos los chats de la aplicación —vista principal, panel lateral, Meeting, Telegram y cualquier superficie futura— entran obligatoriamente por `notiaChatRuntime.ts`. Esta fachada ejecuta siempre `runNativeToolAgent` con el agente construido por `chatScopedAgentRuntime.ts`, el mismo prompt editable seleccionado para la biblioteca, configuración de modelo y thinking, límites de rondas, validación y serialización de mutaciones. La selección persistida por `agentPromptRuntime` es global a la biblioteca y también la leen Meeting y Telegram. El transporte envía los schemas autorizados para el scope en `tools` a `/api/chat`, procesa `message.tool_calls`, valida y ejecuta cada llamada localmente, agrega resultados con rol `tool` y repite hasta obtener una respuesta final. Los scopes de conocimiento conservan el catálogo general con límites de contexto; Finanzas reduce explícitamente el catálogo a herramientas financieras y aclaración para evitar capacidades ajenas y reducir el payload de inferencia. La persistencia tampoco forma parte del runtime: el chat principal y los paneles contextuales guardan documentos, Telegram conserva solo una ventana en memoria y Meeting descarta el hilo al desmontarse sin crear archivos. Las escrituras se serializan, requieren confirmación individual salvo la política explícita de auto-carga financiera de Telegram, y las solicitudes compuestas usan un plan aprobado antes de ejecutar. La capacidad informada por `/api/show` se presenta como ayuda en el selector, pero no bloquea preventivamente la ejecución porque algunos modelos de Ollama Cloud omiten esos metadatos; `/api/chat` es la autoridad final y devuelve un error si la variante rechaza herramientas.
 
-El modo charla reutiliza el mismo `ChatWorkspaceView` en todas las ubicaciones. `useVoiceTranscription` abre una única sesión nativa de Sherpa-ONNX para toda la llamada y, cuando recibe texto parcial, rearma un temporizador de silencio; al vencer llama `consume_speech_turn`, extrae únicamente el turno confirmado y lo envía al agente sin destruir la captura ni depender del estado asíncrono del textarea. La sesión se pausa durante la respuesta y se reanuda sobre el mismo stream al terminar el TTS; además, el VAD conserva 250 ms de audio previo al inicio detectado para no recortar fonemas iniciales. `qwen3_tts_service` carga mediante una C ABI el runtime fijado `qwen3-tts.cpp`, mantiene residente Qwen3-TTS 0.6B CustomVoice Q4_K_M y ejecuta la inferencia fuera del hilo UI. En Windows, el build GPU incluye `ggml-cuda.dll`; el servicio libera el motor anterior al cambiar modelo o dispositivo, solicita explícitamente CPU/CUDA y rechaza la carga si el backend activo no coincide. `synthesize_qwen3_tts_speech` devuelve WAV al adaptador TypeScript, que divide respuestas largas, solapa la preparación del fragmento siguiente con la reproducción actual y libera cada Object URL. Después de cada respuesta —incluidas aclaraciones, planes y confirmaciones— la síntesis termina antes de reanudar el micrófono para evitar realimentación. `qwen3TtsSettingsStorage` migra la activación, velocidad, pausa y saludo legados, reemplazando voces incompatibles por `serena`; no existe servidor HTTP ni dependencia de Python. Los GGUF no se versionan: el instalador valida tamaño y SHA-256, y el runtime se empaqueta como DLL en Windows o `.so` arm64 en Android.
+El contexto de los chats persistentes se materializa además en `workspaceAiSnapshotRuntime.ts`. `useWorkspaceAiSnapshot` captura vista, scope, biblioteca, documento activo, buffer dirty actual, hash de revisión estable, selección y metadata de pestañas; nunca incluye el árbol completo ni el contenido de pestañas no autorizadas. El snapshot se invalida al cambiar cualquiera de sus dependencias y `createChatScopedAgent` lo usa como respaldo para ruta, fuente y selección del documento activo. La fuente dirty se conserva solo para el scope documento y se utiliza para localizar y editar el buffer que el usuario realmente está viendo.
 
-Los chats no incluyen modo llamada ni lectura automática de respuestas. Qwen3-TTS permanece disponible como runtime local para otras superficies de la aplicación, y Qwen3-ASR/STT permite grabar o adjuntar audio para transcribirlo en el compositor.
+El agente dispone además de `get_workspace_context`, `get_active_document_outline` y `read_active_document_range`. La primera devuelve únicamente metadata estructural y capabilities; las otras dos leen, respectivamente, encabezados o una ventana acotada por sección, bloque, líneas o selección. El engine detecta referencias ambiguas, devuelve alternativas con líneas sin seleccionar una por conveniencia y limita la salida para no cargar documentos completos innecesariamente.
+
+La tool `search_web` es una capacidad separada del transporte conversacional. Antes de cada llamada, `webSearchRuntime.ts` normaliza y bloquea consultas que contengan secretos, credenciales, PII evidente, rutas privadas, datos financieros/médicos o contexto explícitamente privado; la aprobación del usuario no puede desactivar ese filtro. El adapter solo recibe la consulta pública y `maxResults`: en desktop invoca `run_desktop_ai_web_search`, que valida que el endpoint sea Ollama Cloud, mantiene la API key en el header nativo y no la registra; en Android usa el endpoint HTTPS de Ollama Cloud. La query nunca se construye con historial, memoria, snapshot, archivos ni argumentos de otras tools. Las respuestas se acotan a título, URL HTTP(S), fuente, snippet y `verificationScore`; el score es `0` cuando Ollama no entrega verificación independiente, y la coincidencia entre fuentes continúa siendo heurística. Las instrucciones encontradas en páginas se tratan como contenido no confiable y no pueden cambiar scope ni autorizar mutaciones.
+
+Los chats no incluyen modo llamada ni lectura automática de respuestas. `useVoiceTranscription` y los runtimes ASR/STT permiten grabar o adjuntar audio para convertirlo en texto dentro del compositor; Qwen3-TTS permanece separado para las superficies que lo necesiten. No debe interpretarse como una sesión conversacional continua ni como autorización para enviar audio o respuestas automáticamente.
 
 En escritorio, el agente mantiene native tool calling para la ronda que decide y ejecuta herramientas. Después de recibir resultados, la ronda de respuesta natural se solicita mediante el stream NDJSON de Ollama, propagando sus deltas al mismo callback del runtime compartido; así la UI y la voz pueden comenzar antes de que termine toda la respuesta.
 
 La síntesis de respuestas largas conserva fragmentos acotados para limitar memoria, pero todas las inferencias usan la misma voz e instrucción explícita de español natural. El backend reduce la variabilidad del muestreo (`temperature 0.15`, `top_p 0.85`, `top_k 20`) para evitar cambios de timbre o prosodia entre fragmentos. En Windows, `ensure_loaded_with_acceleration` selecciona automáticamente CUDA si el runtime incluye `ggml-cuda.dll` y encuentra `cublas64_13.dll`. La cadena carga explícitamente `ggml-base`, `ggml-cpu`, `ggml-cuda` y `ggml` antes del runtime para registrar el backend dinámico. Después valida que el backend activo contenga `CUDA` y lo registra en logs; si una instalación que cumple los prerrequisitos no logra activarlo, devuelve el error exacto en lugar de degradarse silenciosamente a CPU. Android y equipos sin runtime CUDA continúan en CPU. El frontend aplica una corrección de reproducción de `1.12x` sobre la velocidad elegida, limitada al rango admitido, porque el tempo base del modelo CustomVoice resulta perceptiblemente lento; el backend no vuelve a aplicar esa velocidad.
 
-`ChatWorkspaceView` implementa el chat lateral persistente para archivos Markdown, Task Manager y Graph View. Los tres contextos comparten el mismo ciclo de creación, selección, hidratación, envío y renderizado; solo cambian el scope del agente y el contexto autorizado. La asociación con el archivo de chat se guarda mediante claves estables (`document:<ruta>`, `task-manager:<scope>` y `graph-view:right-panel`). Meeting usa una UI deliberadamente efímera, pero llama a la misma fachada `notiaChatRuntime.ts`, construye el mismo agente `library` y agrega la transcripción actual dentro de la consulta; no posee una ruta de inferencia alternativa.
+`ChatWorkspaceView` implementa el chat lateral persistente para archivos Markdown, Task Manager y Graph View. Los tres contextos comparten el mismo ciclo de creación, selección, hidratación, envío y renderizado; solo cambian el scope del agente y el contexto autorizado. `ChatMarkdownMessage` conserva el parser Markdown seguro de la interfaz y renderiza expresiones inline, bloques `$$...$$`, `\[...\]` y fences `latex`/`math`/`tex` con KaTeX, manteniendo el texto original si la fórmula no es válida. Cada fórmula se muestra dentro de un marco y ofrece un botón accesible con ícono de ojo para alternar temporalmente al código LaTeX original. La asociación con el archivo de chat se guarda mediante claves estables (`document:<ruta>`, `task-manager:<scope>` y `graph-view:right-panel`). Meeting usa una UI deliberadamente efímera, pero llama a la misma fachada `notiaChatRuntime.ts`, construye el mismo agente `library` y agrega la transcripción actual dentro de la consulta; no posee una ruta de inferencia alternativa. La instancia recibe `persistencePolicy: 'ephemeral-no-memory'`, `readOnly: true` y un `WorkspaceAiSnapshot` de vista `meeting`, por lo que no carga/escribe memoria global ni ejecuta mutaciones de biblioteca desde ese panel.
 
 - Task Manager no adjunta todos los tickets: el corpus del agente se deriva del panel activo (`task-manager:panel:<id>`), por lo que un tablero no puede recuperar tareas de otros tableros ni de `finished`/`cancelled`. Los paneles Completadas y Canceladas exponen únicamente su carpeta y Pomodoro no expone tickets. Dentro de ese alcance, `search_task_context` recupera fragmentos RAG agrupados por ticket con `ticketId`, ruta y título; `read_task_tickets` abre los IDs identificados y `read_all_task_tickets` recorre el corpus permitido para inventarios, conteos y resúmenes exhaustivos. Esta última informa total, cantidad devuelta y truncamiento. Para cada padre recuperado o leído, `extractTaskChildTitles` interpreta exclusivamente el campo `childs` del frontmatter y `resolveTaskChildDocuments` resuelve los wikilinks contra archivos de `subTasks/` del mismo tablero. El runtime expande esa relación recursivamente y agrega fragmentos de las hijas en RAG o su contenido completo en la lectura directa; nunca cruza a otro tablero aunque exista una subtarea con el mismo nombre. Los límites globales de caracteres y el alcance del panel continúan aplicándose. `selectDiverseAgentFragments` prioriza el mejor fragmento de cada ruta antes de repetir un archivo, evitando que historiales con muchas menciones desplacen otros tickets relevantes. Los resúmenes por persona deben relevar cada ticket de manera independiente, considerar atribuciones explícitas en metadatos y cuerpo, admitir múltiples responsables y separar personas, equipos, menciones incidentales y asignaciones ambiguas; el conteo se basa en rutas únicas. Para detalles, el agente debe leer todos los IDs únicos y renderizar una sección por ruta, incluidas las subtareas expandidas.
+- `search_library_documents` conserva una búsqueda de metadata —nombre, título, ruta, tipo, tags y valores/claves de frontmatter— sin devolver el cuerpo; en scope documento solo inspecciona metadata del archivo activo. `search_library_context` añade offsets de caracteres y líneas inicial/final a cada fragmento RAG, además de score y ruta, para que el agente pueda citar evidencia concreta sin releer documentos completos.
 - Las mutaciones del agente se exponen mediante `create_task_ticket`, `replace_task_content`, `add_task_comment`, `add_task_subtask`, `move_task_group`, `change_task_state` y `change_task_priority`. `get_task_manager_options` devuelve el tablero y sus grupos, estados y prioridades válidos para evitar valores inventados. El prompt exige buscar primero el ticket y usar `request_user_clarification` ante cualquier dato faltante, definición imprecisa o coincidencia múltiple; la aclaración solo completa la intención y nunca cuenta como autorización. Cuando `search_task_tickets` devuelve varias coincidencias, el runtime conserva sus IDs, exige que `request_user_clarification.choices` represente cada alternativa por título o ruta y bloquea cualquier herramienta de escritura sobre esos IDs hasta que el usuario seleccione una; una búsqueda posterior invalida esa resolución. `ChatWorkspaceView` conserva pregunta y choices en `pendingAgentQuestion`, y `ChatThread` reutiliza la tarjeta inline para renderizar cada opción como botón táctil; las preguntas abiertas sin choices continúan usando el compositor. Cada herramienta de escritura construye después una descripción concreta —incluida una vista previa del contenido— y llama a `requestConfirmation`. Esa espera también se implementa como una promesa ligada al `AbortSignal` y usa la misma tarjeta con botones **Confirmar** y **Cancelar**, sin abrir el motor global de modales; cancelar la respuesta rechaza cualquier espera pendiente. Solo una aceptación ejecuta `taskManagerAgentMutationService`, el permiso no se reutiliza ni agrupa llamadas y cualquier parámetro modificado exige confirmación nueva. El adaptador valida estados, prioridades, longitud, existencia del ticket y pertenencia del grupo al tablero; conserva el frontmatter al reemplazar el cuerpo, usa los servicios CRUD existentes, sincroniza índices y relaciones `parent`/`childs`, y emite `dispatchTaskManagerMutation` para refrescar la vista montada. La creación solo está habilitada en un tablero activo, no en Pomodoro, Completadas o Canceladas.
 - `agentPromptRuntime` inicializa `.agent/promps/default.md` al cargar cada librería y enumera los archivos `.md` hermanos como agentes disponibles. `DEFAULT_AGENT_PROMPT` contiene el prompt general completo de Notia, incluido un mapa operativo de Biblioteca, Markdown/InkMath/Mermaid/Graph, Task Manager, Finanzas, Meeting/voz/Telegram, ColdPass y Configuraciones para interpretar pedidos ambiguos sin inventar capacidades; una migración reemplaza únicamente el prompt corto legado cuando coincide exactamente, preservando cualquier personalización. El árbol y su firma permiten explícitamente `.agent`, mientras `is_hidden_entry_name` sigue excluyendo esa carpeta de búsquedas globales y lecturas Markdown masivas; las demás entradas ocultas tampoco se muestran. Si `default.md` no existe o solo contiene espacios, escribe `DEFAULT_AGENT_PROMPT`; los demás archivos se conservan sin modificaciones. `ChatWorkspaceView` muestra el selector en el chat lateral, refresca la lista al recuperar foco y persiste el nombre elegido por ID de librería en `notia:agent-prompt-selection:v1`. `createChatScopedAgent` lee el archivo seleccionado en cada envío y cae a `default.md` si desapareció o no puede leerse. Las restricciones específicas de Task Manager, Graph View o documento se agregan después del prompt editable y no se almacenan en esos archivos.
 - `request_user_clarification` admite respuestas abiertas: `createChatScopedAgent` espera `requestClarification(question, signal)`, `ChatWorkspaceView` conserva el resolver pendiente y presenta la pregunta en `ChatThread`, y el próximo envío del compositor resuelve esa promesa para continuar la misma ronda de `runNativeToolAgent`. El `AbortSignal` rechaza la espera al cancelar, evitando que quede una ejecución suspendida.
@@ -616,6 +636,7 @@ La síntesis de respuestas largas conserva fragmentos acotados para limitar memo
 - Graph View usa selección explícita como contexto autorizado; sin selección emplea búsqueda por título, ruta o carpeta, o RAG. El texto puntuado por el RAG combina `relativePath`, nombre y fragmento, de modo que una consulta por carpeta recupera los documentos contenidos aunque el término no aparezca dentro del archivo.
 - `runNativeToolAgent` informa estados de progreso mediante `onThinkingDelta` antes de cada inferencia y ejecución de herramienta. El ciclo completo tiene un presupuesto de 600 segundos y cada request desktop de tool calling usa el mismo límite en `run_ollama_tool_chat`; el chat convencional conserva su límite de 180 segundos. El agente general mantiene 6 rondas por defecto, mientras Task Manager solicita 64 —con un techo defensivo global de 80— para soportar planes compuestos de hasta 20 mutaciones sin desactivar la protección contra bucles. `singleCallToolNames` serializa únicamente el plan y las herramientas de escritura: si el modelo agrupa mutaciones, solo se ejecuta la primera y las demás reciben `mutation-must-run-independently`. Las búsquedas y lecturas del mismo lote sí se ejecutan, evitando que el modelo repita eternamente la primera búsqueda descartada; el prompt le pide resolver todos los títulos en una sola llamada de `search_task_tickets`. Así cada check representa exactamente una escritura confirmada y aplicada.
 - En un documento, únicamente el archivo activo está autorizado inicialmente. `request_file_read_permission` muestra una confirmación antes de habilitar otros IDs dentro de esa ejecución.
+- En el chat lateral de un documento, un adjunto de imagen, PDF o texto permanece en el mensaje que recibe `runNativeToolAgent`; el PDF aporta todas sus páginas renderizadas y el texto extraído como contexto auxiliar, mientras el texto se delimita dentro del prompt. Si el pedido es insertarlo, el prompt del scope documento exige transcribirlo en el mismo orden, conservar texto como Markdown y escribir cada fórmula como bloque `$$...$$`; `insert_active_markdown_document` muestra la vista previa y persiste solo ese contenido, y `onActiveMarkdownDocumentChanged` refresca el editor abierto.
 - Los IDs entregados al modelo son opacos y se revalidan contra el catálogo y el vault activos antes de cada lectura.
 
 ```mermaid
@@ -674,18 +695,19 @@ En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habil
 | Command | Tipo | Payload | Response | Notas |
 |---|---|---|---|---|
 | `check_desktop_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Usa `listAiModels` para resolver el modelo por defecto. |
-| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, messages[] }` | `{ answer?, error? }` | `think` admite `false`, `true` o `low/medium/high` según el modelo. Reserva para respuesta completa; el chat principal usa fetch NDJSON directo. |
+| `run_desktop_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, messages[] }` | `{ answer?, error? }` | API auxiliar de respuesta completa; las conversaciones pasan por `notiaChatRuntime` y no usan fetch directo desde el WebView. |
 | `run_desktop_ai_tool_chat` | Async | `{ ollamaUrl, apiKey?, model, think, messages[], tools[] }` | Respuesta de `/api/chat` con `message.tool_calls` | Ejecuta cada ronda del agente mediante Rust/reqwest y evita restricciones CORS del WebView. |
 | `list_desktop_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
 | `run_desktop_ai_chat_streaming` | Async | `{ requestId, ollamaUrl, apiKey?, model, think, messages[] }` | eventos `notia-ai-chat-stream` | Transporte principal desktop. Rust consume NDJSON incrementalmente y emite eventos `thinking`, `delta` y `done`; evita el buffering del WebView. |
+| `run_desktop_ai_web_search` | Async | `{ ollamaUrl, apiKey?, query, maxResults? }` | `{ results[] }` | Solo acepta Ollama Cloud y una query pública ya sanitizada; la API key viaja como header nativo y nunca forma parte de la query, URL, eventos o logs. |
 | `check_android_ai_health` | Async | `{ ollamaUrl, apiKey? }` | `{ ok, message, defaultModel? }` | Resuelve modelo por defecto con todos los modelos. |
-| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` | Respuesta completa via bridge (legacy). |
+| `run_android_ai_chat` | Async | `{ ollamaUrl, apiKey?, model, think, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | `{ answer?, error? }` | API auxiliar legacy; el runtime conversacional común usa las variantes nativas con tools/streaming. |
 | `run_android_ai_chat_streaming` | Async | `{ ollamaUrl, apiKey?, model, think, prompt, previousMessages[], longTermMemories[], files[], image?, selectedContextMode }` | eventos `notia-ai-chat-stream` | Streaming NDJSON real desde el bridge Kotlin. |
 | `list_android_ai_models` | Async | `{ ollamaUrl, apiKey? }` | `{ models[] }` | Todos los modelos de `/api/tags`. |
 
 | Evento Tauri | Dirección | Payload | Descripción |
 |---|---|---|---|
-| `notia-ai-chat-stream` | Backend → Frontend | `{ requestId, type: "delta" | "done" | "error", payload }` | Deltas de streaming Android; `done` incluye `answer` completo; `error` incluye `message`. |
+| `notia-ai-chat-stream` | Backend/plugin → Frontend | `{ requestId, type: "thinking" | "delta" | "done" | "error", payload }` | Streaming Android incremental; `thinking`/`delta` incluyen `delta`, `done` incluye `answer` completo y `error` incluye `message`. Los listeners se cancelan con `cancel_android_ai_chat_streaming`. |
 
 #### Ejemplo JSON — Request `check_desktop_ai_health`
 
@@ -789,13 +811,13 @@ En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habil
 
 #### Validaciones
 - URL vacía rechazada en `normalizeAiSettingsInput()`.
-- Health check cacheado: 10s por combinación `ollamaUrl + selectedModel + apiKey`; `invalidateAiHealthCache()` lo invalida manualmente (Settings al verificar).
+- Health check cacheado: 10s por combinación de URL, modelo seleccionado y presencia de credencial; la API key nunca forma parte de la clave, logs, eventos o mensajes.
 - Timeout de health check: 15s (`AI_REQUEST_TIMEOUT_MS`).
 - Timeout de chat: 180s (`AI_CHAT_TIMEOUT_MS`).
 - Límite de contexto: 30k caracteres (`MAX_CONTEXT_CHARS`).
 - Límite de archivos en modo **Referencia**: 50 archivos / 6.000 caracteres.
-- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`) en el prompt; 200 memorias persistidas en `LongTermMemory.md`.
-- Cancelación: `AbortController` en desktop (fetch directo), `abortSignal` en bridge Android.
+- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`) en el prompt; 100 memorias persistidas en `.agent/memory/memory.md`. `LongTermMemory.md` solo puede leerse durante la migración y se conserva en un backup versionado.
+- Cancelación: `AbortController`/eventos Tauri en desktop y `abortSignal` en el bridge Android. La única excepción de transporte HTTP desde WebView es el adapter separado del servidor publicado.
 
 #### Arquitectura del Chat
 
@@ -804,7 +826,7 @@ flowchart LR
     A[ChatWorkspaceView] --> B[useChatState]
     A --> C[useChatSubmitMessage]
     C --> D[aiRuntime]
-    D --> E[Ollama /api/chat]
+    D --> E[Tauri AI bridge]
     C --> F[chatDocumentStorage]
     F --> G[.md append o rewrite]
     A --> H[ChatHistoryPanel]
@@ -814,37 +836,37 @@ flowchart LR
 
 #### Pasos del proceso (Desktop)
 
-1. **Health check**: `aiRuntime.checkAiHealth(prefs)` → intenta `invoke('check_desktop_ai_health')` → Rust `commands::ai::check_desktop_ai_health` → `services::ai_service::check_ollama_health()` → HTTP GET `/api/tags` con reqwest (timeout 15s) → retorna estado y modelo por defecto usando `listAiModels`.
+1. **Health check**: `aiRuntime.checkAiHealth(prefs)` → `invoke('check_desktop_ai_health')` → Rust `commands::ai::check_desktop_ai_health` → `services::ai_service::check_ollama_health()` → HTTP GET `/api/tags` con reqwest (timeout 15s).
    - El resultado se cachea por 10s; `invalidateAiHealthCache()` limpia la caché antes de verificar manualmente en Settings.
-2. **Resolución de modelo activo**: `useChatState` llama `resolveActiveModel(prefs)` → `listAiModels(prefs)` con caché de 30s → devuelve el modelo seleccionado si está disponible, o el primer modelo disponible.
-3. **Listado de modelos**: `aiRuntime.listAiModels(prefs)` devuelve todos los modelos de `/api/tags` (bridge o fetch directo). `listAiMultimodalModels` sigue existiendo para flujos que requieren visión.
-4. **Chat streaming (desktop)**:
-   - Construye mensajes: system (con memoria LTM) + historial + user (con contexto de archivos si aplica).
-   - Hace **fetch directo** a `/api/chat` con `stream: true` y `AbortController`, parseando NDJSON línea por línea y llamando `onMessageDelta` por cada chunk.
-   - Si se cancela, se aborta la petición y el contenido parcial permanece visible.
+2. **Resolución de modelo activo**: `resolveActiveModel(prefs)` respeta una selección explícita; si falta, usa `list_desktop_ai_models` con caché y devuelve el primer modelo disponible.
+3. **Listado e inspección**: `aiRuntime.listAiModels(prefs)` usa `list_desktop_ai_models`; la visión usa `inspect_desktop_ai_model`. No hay fallback WebView a Ollama.
+4. **Chat y agente (desktop)**:
+   - Construye mensajes: system (con memoria activa) + historial + user (con contexto de archivos si aplica).
+   - Cada ronda de tools usa `run_desktop_ai_tool_chat`; el cierre conversacional usa `run_desktop_ai_chat_streaming` y eventos Tauri.
+   - La publicación es un adapter separado y puede usar su endpoint de streaming publicado; no habilita acceso directo del WebView a Ollama.
+   - Si se cancela, se aborta la operación nativa y el contenido parcial permanece visible.
 5. **Persistencia incremental**:
    - Tras cada respuesta, `ChatWorkspaceView` intenta `appendChatMessages(document, messages)`.
    - Si el título no cambió y el cuerpo del `.md` termina con un marker válido (`user` o `assistant`), se escriben solo los mensajes nuevos al final.
    - Si el título cambió o el formato no es seguro, fallback a `saveChatDocument` (re-escritura completa).
 6. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
-7. **Memoria LTM**: tras cada intercambio, `generateAiLongTermMemories()` envía el contexto reciente al modelo con instrucciones estrictas de devolver solo un JSON array de strings. Parsea con fallback a líneas si el JSON es inválido. Almacena en el documento de chat (`chatDocumentStorage`) y en `.notia/chat/LongTermMemory.md`.
+7. **Memoria activa**: la extracción y reorganización usan `.agent/memory/memory.md` bajo `persistencePolicy: 'persistent'`; Meeting y publicación no la cargan ni escriben. `LongTermMemory.md` solo se conserva como compatibilidad legacy.
 
 #### Pasos del proceso (Android)
 
-1. Los comandos `check_android_ai_health`, `run_android_ai_chat`, `list_android_ai_models` y `run_android_ai_chat_streaming` son manejados por `mobile_ai_bridge.rs` y el plugin Kotlin `AiBridgePlugin.kt`.
-2. **Health y modelos**: se invoca el command Tauri correspondiente. Si el bridge no existe o está desactualizado, el frontend cae en fallback a fetch directo para health y modelos.
-3. **Streaming de chat**:
-   - El frontend invoca `run_android_ai_chat_streaming` con un `requestId` único.
-   - Se suscribe al evento Tauri `notia-ai-chat-stream`.
-   - El plugin Kotlin conecta a `/api/chat` con `stream: true`, lee NDJSON línea a línea con OkHttp y emite eventos Tauri (`delta`, `done`, `error`).
-   - El frontend acumula deltas y actualiza la UI en tiempo real.
-   - La cancelación se señaliza con un `abortSignal` compartido; al cancelar, el frontend también deja de escuchar eventos para ese `requestId`.
+1. Los comandos de health, modelos, chat y tool chat son manejados por `mobile_ai_bridge.rs` y el contrato versionado del plugin Kotlin `AiBridgePlugin.kt`.
+2. **Health y modelos**: se invoca el command Tauri correspondiente; no existe fallback frontend directo a Ollama.
+3. **Chat y tools**:
+   - El frontend invoca `run_android_ai_chat_streaming` o `run_android_ai_tool_chat` con un `requestId`/timeout único; al cancelar llama `cancel_android_ai_chat_streaming`, que desconecta la conexión HTTP activa del plugin.
+   - El plugin Kotlin conecta a `/api/chat`, lee NDJSON y emite eventos Tauri (`delta`, `thinking`, `done`, `error`) cuando corresponde.
+   - La búsqueda web usa `run_android_ai_web_search` y el método versionado `webSearch`; nunca recibe contenido privado.
+   - La cancelación se señaliza con un `abortSignal` compartido y el bridge deja de entregar eventos de la request cancelada.
 
 #### Comportamiento ante errores
 - Ollama no responde: mensaje amigable en español ("No se pudo conectar con Ollama.").
 - Modelo no disponible: error indicando que no hay modelos disponibles. En el chat se muestra un mensaje con botón **"Configurar IA"** que abre Settings → IA.
 - Modelo no admite imágenes: error claro pidiendo seleccionar un modelo con visión en Settings → IA.
-- Bridge no disponible: fallback silencioso a fetch directo en desktop; en Android, error pidiendo recompilar si falta el plugin.
+- Bridge no disponible: error accionable indicando que debe habilitarse/recompilarse el adapter nativo; no se hace fallback directo a Ollama desde el WebView.
 - Stream interrumpido: `AbortController` cancela la petición; el contenido parcial permanece visible. En Android el bridge aborta el request nativo.
 - Append fallido: fallback silencioso a re-escritura completa del `.md`.
 
@@ -1100,6 +1122,7 @@ Gestión de ventana nativa (minimizar, maximizar, fullscreen, cerrar) y arrastre
 | Command | Tipo | Payload | Response |
 |---|---|---|---|
 | `window_control` | Síncrono | `{ action: string }` | `void` |
+| `exit_application` | Síncrono | — | `void` |
 | `start_window_dragging` | Síncrono | — | `void` |
 | `start_window_dragging_with_restore` | Síncrono | — | `void` |
 
@@ -1500,6 +1523,8 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 - Los grupos del Task Manager también forman parte del contrato del agente: `get_task_manager_options` lee exclusivamente `settings.groups` del tablero activo, la misma fuente que renderiza la UI, y no convierte valores históricos del campo `equipo` en grupos visibles. `create_task_group` exige nombre y color hexadecimal explícitos, y `delete_task_group` consulta el snapshot completo antes de escribir. La eliminación se rechaza si existe cualquier ticket asignado al grupo, incluso finalizado o cancelado, y nunca reasigna, mueve ni cancela tickets. Ambas mutaciones requieren confirmación individual en la tarjeta inline.
 
 - Las solicitudes compuestas de Task Manager usan `set_task_execution_plan` antes de mutar. La tarjeta exige una aprobación explícita o permite **Sugerir cambios** mediante el compositor; la sugerencia vuelve al modelo como resultado de herramienta y obliga a presentar una nueva versión. El runtime asigna IDs estables a los pasos, bloquea toda escritura mientras el plan no esté aprobado, exige `planStepId` mientras exista un plan activo, impide ejecutarlos fuera de orden y publica `pending | in-progress | completed | blocked` hacia la tarjeta inline. Solo una mutación confirmada y aplicada marca su paso como completado; un rechazo o una excepción lo bloquea.
+
+- Fuera de Task Manager, `set_agent_execution_plan` ofrece el mismo flujo para operaciones compuestas de documentos o biblioteca. Las mutaciones activas de Markdown y las escrituras de biblioteca validan el `planStepId`, actualizan el TO-DO después de la confirmación real y detienen los pasos posteriores ante rechazo o error. En Telegram, el mensaje editable muestra solo `Paso N` y su estado; nunca reproduce la etiqueta, ruta o ID que generó el modelo.
 
 ## 3. Diagramas Mermaid
 
@@ -2321,19 +2346,21 @@ flowchart TD
     Start([Usuario envía mensaje]) --> SaveUser["chatDocumentStorage<br/>guardar mensaje usuario"]
     SaveUser --> BuildCtx["aiRuntime.ts<br/>buildConversationMessages()<br/>system + history + user + files"]
     BuildCtx --> Bridge{"¿Bridge desktop<br/>disponible?"}
-    Bridge -->|Sí| Invoke["invoke('run_desktop_ai_chat')"]
-    Bridge -->|No| Fetch["fetch POST /api/chat<br/>stream:true NDJSON"]
-    Invoke --> RustCmd["commands::ai.rs<br/>→ ai_service.rs"]
+    Bridge -->|Desktop| ToolInvoke["invoke('run_desktop_ai_tool_chat')"]
+    Bridge -->|Android| AndroidBridge["invoke('run_android_ai_tool_chat')"]
+    ToolInvoke --> RustCmd["commands::ai.rs<br/>→ ai_service.rs"]
+    AndroidBridge --> MobileCmd["mobile_ai_bridge.rs<br/>→ plugin Kotlin"]
     RustCmd --> HTTP["reqwest HTTP Ollama"]
-    HTTP --> Answer["Respuesta completa"]
-    Fetch --> Stream["Parse NDJSON<br/>línea por línea"]
+    MobileCmd --> HTTP
+    HTTP --> ToolResult["Validar resultado de tool"]
+    ToolResult --> Stream["Ronda final por streaming nativo"]
     Stream --> Delta["onMessageDelta(delta)"]
     Delta --> Render["ChatMarkdownMessage.tsx"]
     Answer --> Render
     Render --> SaveAsst["chatDocumentStorage<br/>guardar respuesta"]
     SaveAsst --> GenTitle["generateAiChatTitle()"]
     GenTitle --> GenMem["generateAiLongTermMemories()"]
-    GenMem --> PersistMem["Persistir memorias<br/>en chat document"]
+    GenMem --> PersistMem["Persistir memorias<br/>según la política del chat"]
     PersistMem --> End([Fin])
 ```
 
@@ -2367,7 +2394,7 @@ graph LR
     AIRuntime --> ChatDocStore
     AIRuntime --> AISettings
     AIRuntime -->|invoke| AICmd
-    AIRuntime -->|fetch| Ollama["Ollama API"]
+    AIRuntime -->|invoke / bridge| Ollama["Ollama API"]
     AICmd --> AIService
     MobileAI --> Ollama
 ```
@@ -2389,7 +2416,7 @@ sequenceDiagram
     ChatUI->>ChatDoc: Guardar mensaje usuario
     ChatUI->>AIRuntime: streamAiChatReply(settings, messages, files?)
     AIRuntime->>AIRuntime: buildConversationMessages(system+history+user)
-    AIRuntime->>Tauri: invoke('run_desktop_ai_chat', {payload})
+    AIRuntime->>Tauri: invoke('run_desktop_ai_tool_chat', {payload})
     Tauri->>RustCmd: Deserializar
     RustCmd->>RustSvc: Delegar a ai_service
     RustSvc->>Ollama: POST /api/chat (reqwest, stream)
@@ -2885,7 +2912,7 @@ graph TB
 |---|---|---|---|
 | `notia:libraries` | `libraryStorage` | JSON | Lista de librerías configuradas |
 | `notia:active-library-id` | `libraryStorage` | string | ID de la librería activa |
-| `notia:ai-settings:v1` | `aiSettingsStorage` | JSON | Configuración de IA (URL, modelo, API key) |
+| `notia:ai-settings:v1` | `aiSettingsStorage` | JSON | Configuración de IA (URL y modelo; la API key se redacciona) |
 | `notia:theme` | `themeStorage` | string | `light` \| `dark` |
 | `notia:inkmath-settings:v1` | `inkMathSettingsStorage` | JSON | Preferencias del reconocimiento InkMath |
 | `notia:explorer-refresh-interval-ms` | `explorerPanelStorage` | string | Intervalo de polling en Android |
@@ -2917,8 +2944,8 @@ graph TB
 - **Preload inteligente para escritorio (4.2)**: `useLazyPreloadOnIdle.ts` (usado en `App.tsx`) precarga los chunks de los editores más comunes durante los momentos de inactividad (`requestIdleCallback` / `setTimeout` fallback), respetando el retraso configurado antes de solicitar tiempo ocioso y reintentando si el callback no tiene presupuesto. En Android la precarga se omite por defecto para conservar memoria y datos móviles.
 - **Dynamic imports existentes verificados (4.3/4.4/4.5)**: `mermaidEngine.ts` ya importa `mermaid` de forma dinámica; `@milkdown/crepe` y sus plugins viven exclusivamente dentro del chunk `MarkdownView`; `@monaco-editor/react` y `monaco-editor` solo se cargan dentro del chunk `MermaidView`.
 - **Exportación Markdown bajo demanda**: `markdownExportEngine.ts` carga dinámicamente `marked`, `docx`, `html2canvas`, `jspdf` y KaTeX únicamente al exportar. PDF pagina el documento renderizado; Google Docs genera un `.docx` y conserva visualmente las fórmulas renderizadas.
-- **Bundle splitting y precarga selectiva (5.1/5.6)**: `vite.config.ts` reserva chunks manuales para UI compartida (`vendor-mui`, `vendor-lucide`, `vendor-monaco` y `vendor-iconify-packs`). Milkdown, Mermaid y Cytoscape permanecen en los chunks de sus vistas para que no entren al bundle inicial; KaTeX conserva el chunk compartido que necesita el chat. `modulePreload.resolveDependencies` evita que Vite anuncie motores pesados desde `index.html`. Los motores se cargan bajo demanda al abrir la vista correspondiente.
-- **Protección de documentos Markdown grandes**: FileViewHost evita montar Milkdown cuando la fuente supera 1.000.000 de caracteres. Muestra una vista previa acotada y ofrece edición de texto bajo demanda; la precarga pendiente de MarkdownView se cancela durante esa ruta para mantener libre el hilo principal.
+- **Bundle splitting y precarga selectiva (5.1/5.6)**: `vite.config.ts` reserva chunks manuales para UI compartida (`vendor-mui`, `vendor-lucide`, `vendor-monaco` y `vendor-iconify-packs`). Milkdown, Mermaid, KaTeX y Cytoscape permanecen en los chunks de sus vistas para que no entren al bundle inicial; `modulePreload.resolveDependencies` evita que Vite los anuncie desde `index.html`. Los motores pesados se cargan bajo demanda al abrir la vista correspondiente.
+- **Protección de documentos Markdown grandes**: `FileViewHost` evita montar Milkdown cuando la fuente supera 1.000.000 de caracteres. Muestra una vista previa acotada y ofrece edición de texto bajo demanda; la precarga pendiente de `MarkdownView` se cancela durante esa ruta para mantener libre el hilo principal.
 - **Dynamic imports de dependencias grandes (5.5)**: los icon packs de Mermaid (`@iconify-json/*`) se cargan de forma dinámica desde `MermaidIconsMenu`.
 - **Perfil de compilación release optimizado (6.1)**: `src-tauri/Cargo.toml` configura `lto = true`, `codegen-units = 1`, `strip = true` y `panic = "abort"` para reducir tamaño y mejorar rendimiento en Android. `overflow-checks` se mantiene habilitado por seguridad.
 - **Logging y SAF optimizados (6.2/6.3)**: Android release usa log level `Info`. Se agregó throttle de 200 ms a `refresh_root_tree_cache` y una cache LRU de 500 entradas en `AndroidDirectoryPickerState` para resoluciones de paths SAF sin JNI repetido.
@@ -3271,7 +3298,7 @@ Para convenciones de código, arquitectura, naming, reglas de estado, manejo de 
 
 ## Integración con la bandeja del sistema de Windows
 
-En Windows, `src-tauri/src/windows_tray.rs` configura un icono de bandeja y convierte el cierre de la ventana principal en una operación de ocultamiento. El módulo se compila exclusivamente bajo `cfg(target_os = "windows")`; Android, macOS y Linux conservan el cierre normal. El menú nativo permite **Abrir Notia** o **Salir**, y un doble clic izquierdo también restaura la ventana. La salida explícita usa `AppHandle::exit(0)`, por lo que no vuelve a atravesar la interceptación de cierre.
+En Windows, `src-tauri/src/windows_tray.rs` configura un icono de bandeja y convierte el cierre de la ventana principal en una operación de ocultamiento. El módulo se compila exclusivamente bajo `cfg(target_os = "windows")`; Android, macOS y Linux conservan el cierre normal. El menú nativo permite **Abrir Notia** o **Salir**, y un doble clic izquierdo también restaura la ventana. Antes de la salida explícita, la bandeja emite `notia:request-app-exit`; `NotiaMenu` persiste los documentos de texto modificados y luego invoca `exit_application` para finalizar el proceso.
 
 ```mermaid
 flowchart TD
@@ -3281,7 +3308,8 @@ flowchart TD
     Tray[Icono de bandeja] --> Open[Abrir Notia o doble clic]
     Open --> Show[Mostrar, restaurar y enfocar]
     Tray --> Exit[Salir]
-    Exit --> Stop[Finalizar el proceso]
+    Exit --> Flush[Flush de documentos modificados]
+    Flush --> Stop[Finalizar el proceso]
 ```
 
 ```mermaid
@@ -3304,10 +3332,13 @@ sequenceDiagram
     User->>Tray: Abrir Notia
     Tray->>Window: show + unminimize + set_focus
     User->>Tray: Salir
-    Tray->>App: exit(0)
+    Tray->>Window: notia:request-app-exit
+    Window->>Window: persistir documentos modificados
+    Window->>App: invoke exit_application
+    App->>App: exit(0)
 ```
 
-No se exponen comandos, DTOs ni datos persistidos nuevos. Si el icono configurado no está disponible, el arranque devuelve un error visible; los fallos al mostrar, enfocar u ocultar la ventana se registran sin contenido privado.
+Se expone el comando `exit_application` únicamente para completar la salida después del flush frontend; no recibe contenido de archivos. Si el icono configurado no está disponible, el arranque devuelve un error visible; los fallos al mostrar, enfocar u ocultar la ventana se registran sin contenido privado.
 
 ## Dictado offline del chat
 
@@ -3477,11 +3508,13 @@ Las cuentas de pago son referencias de procedencia o destino y no exponen ni cal
 
 `telegramMessageFormatter.ts` convierte Markdown común a HTML limitado antes de `send_telegram_message`: encabezados a `<b>`, listas a viñetas, negrita/cursiva/código a sus etiquetas admitidas y enlaces seguros a `<a>`. El formateador escapa HTML arbitrario y preserva únicamente el subconjunto autorizado. El backend mantiene `parseMode = HTML` como único modo aceptado.
 
+El feedback operativo de Telegram usa eventos tipados del runtime común, separados de `onThinkingDelta`. `telegramProgressRuntime.ts` reduce esos eventos a fases y etiquetas humanas seguras, aplica deduplicación y limita las actualizaciones intermedias a una por cada dos segundos. El bridge crea un único mensaje de estado editable por request y conserva las preguntas de aclaración y confirmación en mensajes independientes para no romper sus botones. Telegram recibe únicamente el estado observable —por ejemplo, leyendo, organizando pasos, ejecutando o verificando— y nunca el thinking crudo, prompts, argumentos de tools, rutas ni contenido privado.
+
 `parseLegacyXmlToolCalls` es una recuperación defensiva para modelos que ignoran el esquema nativo de Ollama y emiten llamadas como `<read/librarydocument>`. Solo acepta nombres que puedan resolverse contra el catálogo de herramientas disponible, normaliza argumentos conocidos y continúa el loop del agente. No habilita herramientas nuevas ni interpreta XML procedente de documentos como autorización.
 
 Los updates `voice` y `audio` se normalizan como `{ fileId, duration, mimeType?, fileSize? }` únicamente después del control de identidad. `transcribe_telegram_audio` repite en Rust los límites de 15 minutos y 20 MB, llama `getFile`, valida la ruta devuelta, descarga con timeout y decodifica OGG/Opus mediante `ogg` + `ropus`, ambos sin FFmpeg ni FFI adicional. El PCM mono a 16 kHz se procesa con el mismo `Qwen3AsrRecognizer` local y luego se devuelve a la caché residente.
 
-Los updates `photo` se normalizan como `{ fileId, fileSize?, width, height }`; `download_telegram_photo` valida el identificador, dimensiones, ruta remota y límite de 4 MB tanto antes como después de descargar. Antes de procesar, el bridge guarda sincrónicamente en `localStorage`, bajo un scope de biblioteca, bot y chat, tanto el checkpoint de updates como la cola ordenada con texto, actor y metadatos de cada adjunto. La solicitud activa permanece en ese registro hasta que termina; si el WebView se reinicia, vuelve a la cabeza de la cola y la deduplicación financiera evita repetir una mutación ya confirmada. El comando devuelve JPEG en Base64 al bridge, que lo adjunta a la misma llamada de `notiaChatRuntime` y fuerza el scope `finance`. El bridge conserva solamente los metadatos de hasta diez fotos pendientes y descarga cada imagen al iniciar su turno, evitando retener en memoria un álbum entero en Base64. Un fallo al enviar el mensaje de error se registra pero no interrumpe el drenaje de las solicitudes restantes. Conserva la referencia del ticket activo durante las aclaraciones de cuenta y la libera únicamente cuando `create_finance_purchase` confirma su persistencia. La herramienta `create_finance_purchase` recibe un esquema estricto de comercio, cuenta, importes y líneas; acepta importes canónicos, numéricos y formatos localizados comunes, deriva el subtotal exacto desde las líneas y devuelve campos inválidos concretos. La validación admite impuestos adicionados al subtotal o informados como ya incluidos —caso habitual en comprobantes argentinos— sin perder el importe fiscal extraído. Las excepciones de una native tool se convierten en resultados `ok:false` con código seguro para que el agente pueda corregir o informar el fallo sin terminar toda la conversación. Después del primer intento estructurado, el runtime elimina el Base64 de las rondas correctivas porque los argumentos completos ya permanecen en el historial de tool calling. Telegram emite progreso por etapa y limita los reintentos visibles mediante un intervalo. La huella SHA-256 del ticket evita registrar por segunda vez un comprobante ya confirmado. El modelo configurado debe aceptar adjuntos de imagen y tool calling; si no puede leer la foto, el agente debe pedir una imagen más legible o informar que no es un ticket, nunca inventar productos.
+Los updates `photo` se normalizan como `{ fileId, fileSize?, width, height }`; `download_telegram_photo` valida el identificador, dimensiones, ruta remota y límite de 4 MB tanto antes como después de descargar. Antes de procesar, el bridge guarda sincrónicamente en `localStorage`, bajo un scope de biblioteca, bot y chat, el checkpoint de updates y un sobre de recuperación de la cola; el texto original se elimina antes de serializar y solo queda en memoria durante la sesión. La solicitud activa permanece en ese registro hasta que termina; si el WebView se reinicia, vuelve a la cabeza de la cola como interrumpida y solo `/reanudar` permite continuar, sin repetir una mutación desconocida. El comando devuelve JPEG en Base64 al bridge, que lo adjunta a la misma llamada de `notiaChatRuntime` y fuerza el scope `finance`. El bridge conserva solamente los metadatos de hasta diez fotos pendientes y descarga cada imagen al iniciar su turno, evitando retener en memoria un álbum entero en Base64. Un fallo al enviar el mensaje de error se registra pero no interrumpe el drenaje de las solicitudes restantes. Conserva la referencia del ticket activo durante las aclaraciones de cuenta y la libera únicamente cuando `create_finance_purchase` confirma su persistencia. La herramienta `create_finance_purchase` recibe un esquema estricto de comercio, cuenta, importes y líneas; acepta importes canónicos, numéricos y formatos localizados comunes, deriva el subtotal exacto desde las líneas y devuelve campos inválidos concretos. La validación admite impuestos adicionados al subtotal o informados como ya incluidos —caso habitual en comprobantes argentinos— sin perder el importe fiscal extraído. Las excepciones de una native tool se convierten en resultados `ok:false` con código seguro para que el agente pueda corregir o informar el fallo sin terminar toda la conversación. Después del primer intento estructurado, el runtime elimina el Base64 de las rondas correctivas porque los argumentos completos ya permanecen en el historial de tool calling. Telegram emite progreso por etapa y limita los reintentos visibles mediante un intervalo. La huella SHA-256 del ticket evita registrar por segunda vez un comprobante ya confirmado. El modelo configurado debe aceptar adjuntos de imagen y tool calling; si no puede leer la foto, el agente debe pedir una imagen más legible o informar que no es un ticket, nunca inventar productos.
 
 Algunos modelos devuelven XML heredado en lugar del `tool_calls` nativo. `parseLegacyXmlToolCalls` recupera también el envoltorio `<tool_call><name>…</name><arguments>…</arguments></tool_call>` y normaliza nombres que omiten guiones bajos —por ejemplo `listfinanceaccounts`— exclusivamente si coinciden de forma exacta con una herramienta disponible. El XML se convierte en una llamada nativa antes de llegar al bridge y nunca se muestra como respuesta al usuario.
 
@@ -3497,10 +3530,36 @@ Comandos Tauri:
 |---|---|---|
 | `check_telegram_bot` | `{ token }` | Identidad del bot |
 | `poll_telegram_updates` | `{ token, offset }` | Updates normalizados |
-| `send_telegram_message` | `{ token, chatId, text, buttons[], parseMode? }` | `void` |
+| `send_telegram_message` | `{ token, chatId, text, buttons[], parseMode? }` | `messageId: number` |
+| `edit_telegram_message` | `{ token, chatId, messageId, text, buttons[], parseMode? }` | `void` |
 | `transcribe_telegram_audio` | `{ token, audio: { fileId, duration, mimeType?, fileSize? } }` | Transcripción UTF-8 |
 | `download_telegram_photo` | `{ token, photo: { fileId, fileSize?, width, height } }` | `{ fileId, mimeType: "image/jpeg", base64 }` |
 | `answer_telegram_callback` | `{ token, callbackQueryId }` | `void` |
+
+Ejemplos de contrato para el estado editable (el token se representa como un placeholder y nunca se registra):
+
+```json
+{
+  "token": "<telegram-bot-token>",
+  "chatId": 123456,
+  "text": "<b>Leyendo la información necesaria</b>",
+  "buttons": [],
+  "parseMode": "HTML"
+}
+```
+
+`send_telegram_message` devuelve un `messageId` numérico, que se utiliza luego así:
+
+```json
+{
+  "token": "<telegram-bot-token>",
+  "chatId": 123456,
+  "messageId": 987,
+  "text": "<b>Listo</b>",
+  "buttons": [],
+  "parseMode": "HTML"
+}
+```
 
 ```mermaid
 flowchart TD
@@ -3571,4 +3630,29 @@ La recepción usa `offset = update_id + 1` para evitar duplicados y limita los u
 
 ## Backups automáticos en Windows
 
-La sección **Configuraciones → Backups** solo se muestra en Windows. La carpeta elegida se persiste como preferencia local; mientras Notia está ejecutándose, la biblioteca activa se comprime en un ZIP inmediatamente al activar la configuración y luego cada hora. El hook `useWindowsBackups` coordina el intervalo y el comando Tauri `create_windows_library_backup` realiza el I/O en un hilo bloqueante. El backend valida las rutas, impide guardar dentro de la biblioteca, escribe de forma temporal y elimina copias de más de 48 horas o que excedan las 48 más recientes. Los errores no interrumpen la aplicación ni se registran con contenido de la biblioteca.
+La sección **Configuraciones → Backups** solo se muestra en Windows. La carpeta elegida se persiste como preferencia local; mientras Notia está ejecutándose, la biblioteca activa se comprime en un ZIP inmediatamente al activar la configuración y luego cada hora. El hook `useWindowsBackups` coordina el intervalo y evita repetir la misma combinación de biblioteca y destino antes de que transcurra ese intervalo, incluso si React reejecuta el efecto. El comando Tauri `create_windows_library_backup` realiza el I/O en un hilo bloqueante. El backend valida las rutas, impide guardar dentro de la biblioteca, escribe de forma temporal, elimina temporales huérfanos de más de 24 horas y elimina copias ZIP de más de 48 horas o que excedan las 48 más recientes. Los errores no interrumpen la aplicación ni se registran con contenido de la biblioteca.
+## Sincronización de Task Manager publicado
+
+La publicación LAN mantiene un canal SSE por sesión autenticada. Cada mutación de filesystem realizada desde un navegador notifica a todos los navegadores conectados y emite `task-manager-publication-changed` al host Tauri; `useTaskManager` usa ambas señales para recargar el snapshot compartido y actualizar inmediatamente todas las vistas.
+
+## Seguridad de IA publicada y diagnósticos
+
+El Task Manager publicado recibe únicamente el alias opaco `published-vault`; la ruta local real se conserva en Rust y solo se traduce dentro del adaptador autorizado. Las respuestas de filesystem vuelven a exponer rutas con el alias, por lo que el navegador, el chat publicado y los mensajes de IA no reciben la ubicación real del vault. El bootstrap tampoco entrega la URL del proveedor ni la API key.
+
+Los diagnósticos pasan por `notiaLogger`, que redacta campos sensibles, secretos conocidos, JWT, emails y rutas privadas antes de escribirlos en consola o reenviarlos al backend nativo. Los errores del adapter web se clasifican en credencial rechazada, rate limit, timeout, respuesta inválida o proveedor no disponible sin propagar el detalle remoto.
+
+## Guía breve de soporte del agente
+
+- **Conflicto de revisión:** la operación se detiene, conserva el archivo del usuario y hay que releerlo para generar un preview nuevo; nunca se sobreescribe automáticamente.
+- **Proveedor web no disponible:** verificar Ollama Cloud, la credencial y el límite del proveedor. La consulta original no se reintenta si fue bloqueada por privacidad.
+- **Aclaración pendiente:** responder las opciones mostradas o cancelar. La solicitud local persistida incluye validación contra scope, documento y revisión; si cambió alguno, debe descartarse y solicitarse una nueva lectura.
+- **Rollback:** usar `undo_ai_operation` solo si la revisión actual coincide con la revisión posterior registrada; ante conflicto se informa el estado parcial y se requiere un nuevo preview.
+### Tools documentales de productividad
+
+El runtime común expone `extract_document_facts` para devolver candidatos explícitos de tareas, fechas, decisiones, personas y riesgos con ruta/línea de evidencia. `materialize_document_facts` permite llevar esa extracción a un destino Markdown elegido por el usuario —nuevo o existente— mediante preview, confirmación, revisión exacta e undo; no crea tickets por inferencia.
+
+`update_document_tags` modifica tags de frontmatter con `add`, `remove` o `replace`. `update_document_wikilink` agrega o quita un wikilink exacto entre dos documentos autorizados con el mismo ciclo de preview/confirmación/revisión/undo. `find_document_references` permite inspeccionar backlinks antes de mutar. Las tres capacidades están excluidas de Finance y del scope publicado.
+
+### Política de autoaplicación de cambios de bajo riesgo
+
+La preferencia `notia:ai-auto-apply-low-risk:v1` se guarda por biblioteca y está desactivada por defecto. Si el usuario la activa, `ChatWorkspaceView` solo acepta automáticamente un preview de un único documento cuyo riesgo tipado sea `low`, con hunks concretos y acción `apply-all`; el preview y la validación de revisión siguen existiendo. Renombrados, borrados, operaciones multiarchivo, Task Manager y Finanzas no entran en esta excepción y mantienen confirmación visible.

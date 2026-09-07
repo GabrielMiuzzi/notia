@@ -1,71 +1,89 @@
 package com.gabriel.notia
 
 import android.app.Activity
-import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import app.tauri.plugin.Invoke
 import java.io.File
 
 @TauriPlugin
 class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
+    private val temporaryDatabases = mutableMapOf<String, File>()
+
     @Command
-    fun initializeDatabase(invoke: Invoke) {
-        val libraryUri = invoke.parseArgs(InitializeDatabaseArgs::class.java).libraryUri
+    fun initializeDatabase(invoke: Invoke) = prepare(invoke)
+
+    @Command
+    fun prepareDatabase(invoke: Invoke) = prepare(invoke)
+
+    @Command
+    fun syncDatabase(invoke: Invoke) {
+        val libraryUri = invoke.parseArgs(DatabaseArgs::class.java).libraryUri
         try {
-            val databaseUri = initializeDatabaseFile(libraryUri)
-            invoke.resolve(JSObject().put("ok", true).put("databasePath", databaseUri.toString()).put("schemaVersion", 1))
-        } catch (error: Exception) {
-            invoke.resolve(JSObject().put("ok", false).put("error", "No se pudo inicializar la base SQLite Android."))
+            val temporary = temporaryDatabases[libraryUri] ?: error("La copia temporal no está preparada")
+            val databaseUri = databaseUri(libraryUri)
+            activity.contentResolver.openOutputStream(databaseUri, "wt")?.use { output ->
+                temporary.inputStream().use { input -> input.copyTo(output) }
+            } ?: error("No se pudo abrir notia.db para escritura")
+            invoke.resolve(success(temporary))
+        } catch (_: SecurityException) {
+            invoke.resolve(failure("El permiso de la carpeta fue revocado. Volvé a seleccionar la biblioteca."))
+        } catch (_: Exception) {
+            invoke.resolve(failure("No se pudo sincronizar la base SQLite con la biblioteca."))
         }
     }
 
-    private fun initializeDatabaseFile(libraryUriValue: String): Uri {
+    private fun prepare(invoke: Invoke) {
+        val libraryUri = invoke.parseArgs(DatabaseArgs::class.java).libraryUri
+        try {
+            val existing = temporaryDatabases[libraryUri]
+            val temporary = if (existing?.isFile == true) existing else {
+                val created = File.createTempFile("notia-db-", ".db", activity.cacheDir)
+                val databaseUri = databaseUri(libraryUri)
+                activity.contentResolver.openInputStream(databaseUri)?.use { input ->
+                    created.outputStream().use { output -> input.copyTo(output) }
+                }
+                temporaryDatabases[libraryUri] = created
+                created
+            }
+            invoke.resolve(success(temporary))
+        } catch (_: SecurityException) {
+            invoke.resolve(failure("El permiso de la carpeta fue revocado. Volvé a seleccionar la biblioteca."))
+        } catch (_: Exception) {
+            invoke.resolve(failure("No se pudo preparar la base SQLite Android."))
+        }
+    }
+
+    private fun databaseUri(libraryUriValue: String): Uri {
         val libraryUri = Uri.parse(libraryUriValue)
         val resolver = activity.contentResolver
         val notiaDirectory = findChild(libraryUri, ".notia")
             ?: DocumentsContract.createDocument(resolver, libraryUri, DocumentsContract.Document.MIME_TYPE_DIR, ".notia")
             ?: error("No se pudo crear .notia")
-        val databaseUri = findChild(notiaDirectory, "notia.db")
+        return findChild(notiaDirectory, "notia.db")
             ?: DocumentsContract.createDocument(resolver, notiaDirectory, "application/octet-stream", "notia.db")
             ?: error("No se pudo crear notia.db")
-
-        val temporaryDatabase = File.createTempFile("notia-db-", ".db", activity.cacheDir)
-        try {
-            resolver.openInputStream(databaseUri)?.use { input -> temporaryDatabase.outputStream().use(input::copyTo) }
-            val database = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(temporaryDatabase, null)
-            database.execSQL("PRAGMA foreign_keys = ON")
-            database.execSQL("CREATE TABLE IF NOT EXISTS notia_schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
-            database.execSQL("INSERT OR IGNORE INTO notia_schema_migrations (version) VALUES (1)")
-            database.close()
-            resolver.openOutputStream(databaseUri, "wt")?.use { output ->
-                temporaryDatabase.inputStream().use { input -> input.copyTo(output) }
-            }
-                ?: error("No se pudo guardar notia.db")
-            return databaseUri
-        } finally {
-            temporaryDatabase.delete()
-        }
     }
 
     private fun findChild(parentUri: Uri, name: String): Uri? {
         val resolver = activity.contentResolver
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, DocumentsContract.getDocumentId(parentUri))
-        resolver.query(childrenUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                if (cursor.getString(nameIndex) == name) {
-                    return DocumentsContract.buildDocumentUriUsingTree(parentUri, cursor.getString(idIndex))
-                }
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, DocumentsContract.getDocumentId(parentUri))
+        resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor ->
+            val id = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val displayName = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            while (cursor.moveToNext()) if (cursor.getString(displayName) == name) {
+                return DocumentsContract.buildDocumentUriUsingTree(parentUri, cursor.getString(id))
             }
         }
         return null
     }
+
+    private fun success(file: File) = JSObject().put("ok", true).put("databasePath", file.absolutePath)
+    private fun failure(message: String) = JSObject().put("ok", false).put("error", message)
 }
 
-private data class InitializeDatabaseArgs(val libraryUri: String)
+private data class DatabaseArgs(val libraryUri: String)

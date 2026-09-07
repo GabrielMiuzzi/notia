@@ -431,10 +431,12 @@ export function invalidateMermaidCacheByPattern(pattern: RegExp): void {
 
 // ── Stubs para compatibilidad con useMermaidEditor ──────────
 export function parseMermaidSource(_source: string): MermaidDiagram {
+  void _source
   return { nodes: [], edges: [] }
 }
 
 export function serializeMermaidDiagram(_diagram: MermaidDiagram): string {
+  void _diagram
   return ''
 }
 
@@ -542,7 +544,7 @@ export function updateNodeLabelInCode(code: string, nodeId: string, newLabel: st
 
       // Legacy bracket shapes: id["text"], id((text)), id{text}, id[/text/], id[\text\], etc.
       const legacyRe = new RegExp(
-        `^(\\s*${esc(nodeId)})(\\[["']?[^\]]*["']?\\]|\\(\\([^\\)]*\\)\\)|\\{[^}]*\\}|\\[[^\]]*\\]|\\[\\\\[^\\]]*\\\\\\]|\\[/[^/]*/\\]|\\[\\\\[^\\]]*/\\]|\\[^\s]*\\([^\\)]*\\)).*$`,
+        String.raw`^(\s*${esc(nodeId)})(\[\["']?[^]]*["']?\]|\(\([^)]*\)\)|\{[^}]*\}|\[[^]]*\]|\[\\[^]]*\\\]|\[/[^/]*/\]|\[\\[^]]*/\]|\[[^\s]*\([^)]*\)\)).*$`,
       )
       const legacyMatch = line.match(legacyRe)
       if (legacyMatch) {

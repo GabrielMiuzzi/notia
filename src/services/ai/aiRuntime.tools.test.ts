@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { parseLegacyXmlToolCalls, parseNativeToolCalls } from './aiRuntime'
+import { AI_CONTEXT_BUDGET, parseLegacyXmlToolCalls, parseNativeToolCalls } from './aiRuntime'
+
+describe('AI_CONTEXT_BUDGET', () => {
+  it('publishes bounded context limits for every runtime consumer', () => {
+    expect(AI_CONTEXT_BUDGET).toEqual({
+      maxMemoryItems: 50,
+      maxContextChars: 30_000,
+      maxIndexContextFiles: 50,
+      maxIndexContextChars: 6_000,
+    })
+  })
+})
 
 describe('parseNativeToolCalls', () => {
   it('accepts native object arguments', () => {
@@ -59,6 +70,48 @@ describe('parseNativeToolCalls', () => {
 
     expect(parseLegacyXmlToolCalls('<list_categories>\n</list_categories>', tools)).toEqual([{
       function: { name: 'list_finance_categories', arguments: {} },
+    }])
+  })
+
+  it('recovers Qwen tool calls emitted as a Markdown code block', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'replace_active_markdown_document', description: 'replace', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls(
+      '```tool_call\nreplace_active_markdown_document\n{"content":"# Actualizado"}\n```',
+      tools,
+    )).toEqual([{
+      function: { name: 'replace_active_markdown_document', arguments: { content: '# Actualizado' } },
+    }])
+  })
+
+  it('recovers Qwen tool calls with a JSON body inside tool_call tags', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'read_active_markdown_document', description: 'read', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls(
+      '<tool_call>\nread_active_markdown_document\n{}\n</tool_call>',
+      tools,
+    )).toEqual([{
+      function: { name: 'read_active_markdown_document', arguments: {} },
+    }])
+  })
+
+  it('recovers the standard Qwen JSON tool_call wrapper', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'read_active_markdown_document', description: 'read', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls(
+      '<tool_call>{"name":"read_active_markdown_document","arguments":{}}</tool_call>',
+      tools,
+    )).toEqual([{
+      function: { name: 'read_active_markdown_document', arguments: {} },
     }])
   })
 })

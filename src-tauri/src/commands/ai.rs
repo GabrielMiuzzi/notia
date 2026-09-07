@@ -3,7 +3,10 @@ use tauri::Emitter;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::services::ai_service::AiHttpSettings;
-use crate::services::ai_service::{AiChatMessage, AiChatResult, AiHealthResult, AiModelListResult};
+use crate::services::ai_service::{
+    AiChatMessage, AiChatResult, AiHealthResult, AiModelDetailsResult, AiModelListResult,
+    AiWebSearchResponse,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +80,30 @@ pub struct ListDesktopAiModelsPayload {
     ollama_url: String,
     #[serde(default)]
     api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectDesktopAiModelPayload {
+    ollama_url: String,
+    #[serde(default)]
+    api_key: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunDesktopAiWebSearchPayload {
+    ollama_url: String,
+    #[serde(default)]
+    api_key: String,
+    query: String,
+    #[serde(default = "default_web_search_max_results")]
+    max_results: u32,
+}
+
+fn default_web_search_max_results() -> u32 {
+    5
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -241,5 +268,160 @@ pub async fn list_desktop_ai_models(
         } = payload;
         let _ = (ollama_url, api_key);
         Err("El listado AI de desktop no esta disponible en esta plataforma.".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn inspect_desktop_ai_model(
+    payload: InspectDesktopAiModelPayload,
+) -> Result<AiModelDetailsResult, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let settings = build_ai_settings(payload.ollama_url, payload.api_key);
+        return crate::services::ai_service::inspect_ollama_model(&settings, &payload.model).await;
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = payload;
+        Err("La inspeccion AI de desktop no esta disponible en esta plataforma.".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn run_desktop_ai_web_search(
+    payload: RunDesktopAiWebSearchPayload,
+) -> Result<AiWebSearchResponse, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let settings = build_ai_settings(payload.ollama_url, payload.api_key);
+        return crate::services::ai_service::search_ollama_web(
+            &settings,
+            &payload.query,
+            payload.max_results,
+        )
+        .await;
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = payload;
+        Err("La busqueda web nativa de desktop no esta disponible en esta plataforma.".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CheckDesktopAiHealthPayload, DesktopAiStreamEvent, DesktopAiStreamEventPayload,
+        InspectDesktopAiModelPayload, ListDesktopAiModelsPayload, RunDesktopAiChatPayload,
+        RunDesktopAiChatStreamingPayload, RunDesktopAiToolChatPayload,
+        RunDesktopAiWebSearchPayload,
+    };
+
+    #[test]
+    fn desktop_chat_fixture_accepts_camel_case_transport_fields() {
+        let payload: RunDesktopAiChatStreamingPayload = serde_json::from_value(serde_json::json!({
+            "requestId": "request-1",
+            "ollamaUrl": "https://ollama.com",
+            "apiKey": "fixture-key",
+            "model": "qwen3:test",
+            "think": "medium",
+            "messages": [],
+        }))
+        .expect("streaming payload should deserialize");
+
+        assert_eq!(payload.request_id, "request-1");
+        assert_eq!(payload.ollama_url, "https://ollama.com");
+        assert_eq!(payload.api_key, "fixture-key");
+    }
+
+    #[test]
+    fn desktop_health_and_model_fixtures_accept_shared_fields() {
+        let health: CheckDesktopAiHealthPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+        }))
+        .expect("health payload should deserialize");
+        let models: ListDesktopAiModelsPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+        }))
+        .expect("models payload should deserialize");
+        let inspect: InspectDesktopAiModelPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+            "model": "qwen3:test",
+        }))
+        .expect("inspect payload should deserialize");
+        let chat: RunDesktopAiChatPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+            "model": "qwen3:test",
+            "messages": [],
+        }))
+        .expect("chat payload should deserialize");
+
+        assert!(health.api_key.is_empty());
+        assert!(models.api_key.is_empty());
+        assert_eq!(inspect.model, "qwen3:test");
+        assert_eq!(chat.model, "qwen3:test");
+    }
+
+    #[test]
+    fn desktop_tool_fixture_keeps_optional_timeout_and_json_fields() {
+        let payload: RunDesktopAiToolChatPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+            "model": "qwen3:test",
+            "messages": [{"role": "user", "content": "hola"}],
+            "tools": [],
+            "timeoutSeconds": 90,
+        }))
+        .expect("tool payload should deserialize");
+
+        assert_eq!(payload.timeout_seconds, Some(90));
+        assert!(payload.messages.is_array());
+        assert!(payload.tools.is_array());
+    }
+
+    #[test]
+    fn desktop_web_search_fixture_defaults_and_clamps_at_service_boundary() {
+        let payload: RunDesktopAiWebSearchPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+            "query": "public Rust release notes",
+        }))
+        .expect("web search payload should deserialize");
+
+        assert_eq!(payload.max_results, 5);
+        assert_eq!(payload.query, "public Rust release notes");
+    }
+
+    #[test]
+    fn desktop_stream_events_keep_camel_case_and_discriminated_payloads() {
+        let events = [
+            DesktopAiStreamEvent::Thinking {
+                delta: "pensando".to_string(),
+            },
+            DesktopAiStreamEvent::Delta {
+                delta: "respuesta".to_string(),
+            },
+            DesktopAiStreamEvent::Done {
+                answer: "final".to_string(),
+            },
+        ];
+
+        let serialized: Vec<serde_json::Value> = events
+            .into_iter()
+            .map(|event| {
+                serde_json::to_value(DesktopAiStreamEventPayload {
+                    request_id: "request-1".to_string(),
+                    event,
+                })
+                .expect("stream event should serialize")
+            })
+            .collect();
+
+        assert_eq!(serialized[0]["requestId"], "request-1");
+        assert_eq!(serialized[0]["type"], "thinking");
+        assert_eq!(serialized[0]["payload"]["delta"], "pensando");
+        assert_eq!(serialized[1]["type"], "delta");
+        assert_eq!(serialized[2]["type"], "done");
+        assert_eq!(serialized[2]["payload"]["answer"], "final");
     }
 }

@@ -28,6 +28,14 @@ export function toTaskFrontmatter(value: unknown): TaskFrontmatter | null {
   if (typeof value.childs === 'string') frontmatter.childs = value.childs
   if (Array.isArray(value.tags) && value.tags.every((item) => typeof item === 'string')) frontmatter.tags = value.tags
   if (typeof value.tags === 'string') frontmatter.tags = value.tags
+  if (Array.isArray(value.dependencies) && value.dependencies.every((item) => typeof item === 'string')) frontmatter.dependencies = value.dependencies
+  if (typeof value.dependencies === 'string') frontmatter.dependencies = value.dependencies
+  if (Array.isArray(value.checklist) && value.checklist.every((item) => typeof item === 'string')) frontmatter.checklist = value.checklist
+  if (typeof value.checklist === 'string') frontmatter.checklist = value.checklist
+  if (Array.isArray(value.relatedDocuments) && value.relatedDocuments.every((item) => typeof item === 'string')) frontmatter.relatedDocuments = value.relatedDocuments
+  if (typeof value.relatedDocuments === 'string') frontmatter.relatedDocuments = value.relatedDocuments
+  if (Array.isArray(value.relatedTasks) && value.relatedTasks.every((item) => typeof item === 'string')) frontmatter.relatedTasks = value.relatedTasks
+  if (typeof value.relatedTasks === 'string') frontmatter.relatedTasks = value.relatedTasks
   if (typeof value.order === 'number' || typeof value.order === 'string') frontmatter.order = value.order
 
   return frontmatter

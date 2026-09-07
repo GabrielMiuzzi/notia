@@ -11,7 +11,8 @@ interface UseFileTreeActionsParams {
   activeLibrary: { path: string; androidTreeUri?: string } | null
   resolveActiveLibraryAndroidDirectoryUri: (pathValue?: string | null) => string | undefined
   notifyLibraryTreeChanged: (pathHint?: string) => void
-  closeTabsByPath: (path: string) => void
+  persistDirtyTextDocuments: () => Promise<boolean>
+  closeTabsByPath: (path: string) => Promise<boolean>
   renameOpenTabPath: (oldPath: string, newPath: string, newName: string) => void
 }
 
@@ -19,6 +20,7 @@ export function useFileTreeActions({
   activeLibrary,
   resolveActiveLibraryAndroidDirectoryUri,
   notifyLibraryTreeChanged,
+  persistDirtyTextDocuments,
   closeTabsByPath,
   renameOpenTabPath,
 }: UseFileTreeActionsParams) {
@@ -56,6 +58,8 @@ export function useFileTreeActions({
   }, [dispatch])
 
   const handleRenameSubmit = useCallback(async (path: string, name: string) => {
+    if (!(await persistDirtyTextDocuments())) { return }
+
     const result = await performLibraryEntryOperation({
       action: 'rename', targetPath: path, newName: name,
     }, { androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(path) })
@@ -70,12 +74,12 @@ export function useFileTreeActions({
       if (hasExactOpenTab) {
         renameOpenTabPath(path, joinParentPath(getParentDirectory(path), path, name), name)
       } else {
-        closeTabsByPath(path)
+        await closeTabsByPath(path)
       }
     }
     dispatch(setRenamingPath(null))
     notifyLibraryTreeChanged(path)
-  }, [closeTabsByPath, dispatch, notifyLibraryTreeChanged, renameOpenTabPath, resolveActiveLibraryAndroidDirectoryUri])
+  }, [closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments, renameOpenTabPath, resolveActiveLibraryAndroidDirectoryUri])
 
   const handleMoveNode = useCallback((sourcePath: string, targetDirectoryPath: string) => {
     if (!activeLibrary) { return }
@@ -88,6 +92,8 @@ export function useFileTreeActions({
     const currentParentPath = normalizePath(getParentDirectory(normalizedSourcePath))
     if (currentParentPath === normalizedTargetDirectoryPath) { return }
     void (async () => {
+      if (!(await persistDirtyTextDocuments())) { return }
+
       const moveResult = await performLibraryEntryOperation({
         action: 'paste', sourcePath: normalizedSourcePath, targetDirectoryPath: normalizedTargetDirectoryPath, mode: 'move',
       }, {
@@ -98,10 +104,10 @@ export function useFileTreeActions({
         dispatch(setDialogState({ type: 'info', title: 'No se pudo mover', message: moveResult.error ?? 'No se pudo mover el elemento.' }))
         return
       }
-      closeTabsByPath(normalizedSourcePath)
+      await closeTabsByPath(normalizedSourcePath)
       notifyLibraryTreeChanged(normalizedTargetDirectoryPath)
     })()
-  }, [activeLibrary, closeTabsByPath, dispatch, notifyLibraryTreeChanged, resolveActiveLibraryAndroidDirectoryUri])
+  }, [activeLibrary, closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments, resolveActiveLibraryAndroidDirectoryUri])
 
   const handleCancelRename = useCallback(() => { dispatch(setRenamingPath(null)) }, [dispatch])
 

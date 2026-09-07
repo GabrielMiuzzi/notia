@@ -1,7 +1,7 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime, WindowEvent,
+    AppHandle, Emitter, Manager, Runtime, WindowEvent,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -26,6 +26,18 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+fn request_application_exit<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        log::warn!("[notia:tray] main window not found while requesting exit");
+        app.exit(0);
+        return;
+    };
+
+    if let Err(error) = window.emit("notia:request-app-exit", ()) {
+        log::error!("[notia:tray] failed to request frontend exit: {error}");
+    }
+}
+
 pub fn configure(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder
         .setup(|app| {
@@ -45,7 +57,7 @@ pub fn configure(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     OPEN_MENU_ID => show_main_window(app),
-                    EXIT_MENU_ID => app.exit(0),
+                    EXIT_MENU_ID => request_application_exit(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

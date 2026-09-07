@@ -34,7 +34,15 @@ export const sendTelegramMessage = (
   text: string,
   buttons: TelegramButton[] = [],
   parseMode?: 'HTML',
-) => invoke<void>('send_telegram_message', { payload: { token, chatId, text, buttons, parseMode } })
+) => invoke<number>('send_telegram_message', { payload: { token, chatId, text, buttons, parseMode } })
+export const editTelegramMessage = (
+  token: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+  buttons: TelegramButton[] = [],
+  parseMode?: 'HTML',
+) => invoke<void>('edit_telegram_message', { payload: { token, chatId, messageId, text, buttons, parseMode } })
 export const answerTelegramCallback = (token: string, callbackQueryId: string) =>
   invoke<void>('answer_telegram_callback', { payload: { token, callbackQueryId } })
 export const transcribeTelegramAudio = (token: string, audio: TelegramAudio) =>

@@ -3,17 +3,19 @@ import type { TaskManagerChatContext } from '../../../modules/task-manager/types
 import type { ChatFileContextMode } from '../../../services/chat/chatAttachmentRuntime'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
 import type { ChatAgentScope } from '../../../services/chat/chatScopedAgentRuntime'
+import type { MarkdownSelectionContext } from '../../../types/views/markdownSelection'
 
 const EMPTY_CONTEXT_PATHS: string[] = []
 
 interface UseRightPanelChatContextParams {
   activeDocument: OpenFileDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'documents'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
   taskManagerActivePanelId: string
   taskManagerChatContext: TaskManagerChatContext | null
+  markdownSelection: MarkdownSelectionContext | null
 }
 
 export function resolveRightPanelPreferredContextMode(
@@ -77,9 +79,10 @@ export function resolveRightPanelContextScopeKey(
 }
 
 function buildRightPanelChatContextLabel(
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'documents',
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents',
   activeDocument: OpenFileDocument | null,
   taskManagerPanelId: string,
+  markdownSelection: MarkdownSelectionContext | null,
 ): string {
   if (activeWorkspaceView === 'task-manager') {
     if (taskManagerPanelId === '__finished__') {
@@ -122,7 +125,10 @@ function buildRightPanelChatContextLabel(
   }
 
   if (activeDocument.viewKind === 'markdown') {
-    return `Contexto activo: archivo Markdown ${activeDocument.name}`
+    const selectionLabel = markdownSelection && markdownSelection.blocks.length > 0
+      ? ` · selección: ${markdownSelection.blocks.length} bloque(s)`
+      : ''
+    return `Contexto activo: archivo Markdown ${activeDocument.name}${selectionLabel}`
   }
 
   if (activeDocument.viewKind === 'image') {
@@ -140,11 +146,12 @@ export function useRightPanelChatContext({
   graphChatHasExplicitSelection,
   taskManagerActivePanelId,
   taskManagerChatContext,
+  markdownSelection,
 }: UseRightPanelChatContextParams) {
   const agentScope = resolveRightPanelAgentScope(activeWorkspaceView, activeDocument)
   const rightPanelChatContextLabel = useMemo(
-    () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId),
-    [activeDocument, activeWorkspaceView, taskManagerActivePanelId],
+    () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId, markdownSelection),
+    [activeDocument, activeWorkspaceView, markdownSelection, taskManagerActivePanelId],
   )
 
   const rightPanelChatContextKey = useMemo(() => {

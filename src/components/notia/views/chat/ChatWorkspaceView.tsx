@@ -18,8 +18,8 @@ import {
   deleteChatDraftFile,
   createChatDraftFile,
 } from '../../../../services/chat/chatSessionStorage'
-import { clearLongTermMemories } from '../../../../services/chat/chatDocumentStorage'
-import { readImageFileAsAttachment } from './chatImageAttachment'
+import { writeAgentMemories } from '../../../../services/ai/agentPromptRuntime'
+import { readChatFileAsAttachment } from './chatImageAttachment'
 import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
 import { useChatAttachmentMenu } from './useChatAttachmentMenu'
@@ -32,6 +32,23 @@ import {
 } from '../../../../services/ai/agentPromptRuntime'
 import type { ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
 import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview } from '../../../../types/ai/agentContracts'
+import { cancelPendingAgentPlanSteps, loadAgentExecutionPlan, resumeBlockedAgentPlan, retryFailedAgentPlan, saveAgentPlan } from '../../../../services/ai/agentPlanPersistence'
+import {
+  buildClarificationResumePrompt,
+  canResumeClarification,
+  clearClarificationRequest,
+  loadClarificationRequest,
+  saveClarificationRequest,
+  type PersistedClarificationRequest,
+} from '../../../../services/ai/clarificationPersistence'
+import { useWorkspaceAiSnapshot } from '../../hooks/useWorkspaceAiSnapshot'
+import { loadAutoApplyLowRiskPreference, shouldAutoApplyLowRiskPreview } from '../../../../services/ai/aiAutoApplyPreference'
+import { listAiOperationHistory, type AiOperationHistoryEntry } from '../../../../services/ai/aiOperationHistory'
+import { getAiOperation } from '../../../../services/ai/aiOperationJournal'
+import { getMultiDocumentOperation } from '../../../../services/ai/aiMultiDocumentJournal'
+import { getMultiDocumentPatchOperation } from '../../../../services/ai/aiMultiDocumentPatchJournal'
+import type { AiOperationHistoryDiff } from './ChatThread'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
@@ -40,6 +57,11 @@ const DEFAULT_SUGGESTIONS = [
   'Conecta ideas relacionadas',
   'Dame proximos pasos concretos',
 ]
+
+function isNaturalUndoRequest(value: string): boolean {
+  const normalized = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  return /\b(undo|deshace|deshacer|deshacelo|volve atras|volver atras|reverti|revertir|revertelo)\b/.test(normalized)
+}
 
 export function ChatWorkspaceViewComponent({
   agentCorpusPaths = EMPTY_CONTEXT_PATHS,
@@ -66,6 +88,9 @@ export function ChatWorkspaceViewComponent({
   historyHydrationMode = 'full',
   onChatCreated,
   onChatDeleted,
+  markdownSelection = null,
+  activeMarkdownSource = null,
+  onActiveMarkdownDocumentChanged,
 }: ChatWorkspaceViewProps) {
   const mountTimerRef = useRef(
     notiaTimer('chat', 'ChatWorkspaceView mount', {
@@ -107,11 +132,32 @@ export function ChatWorkspaceViewComponent({
   } | null>(null)
   const [pendingAgentAnswer, setPendingAgentAnswer] = useState<string | null>(null)
   const [pendingAgentConfirmation, setPendingAgentConfirmation] = useState<string | null>(null)
-  const [agentExecutionPlan, setAgentExecutionPlan] = useState<TaskExecutionStep[]>([])
+  const [pendingAgentPreview, setPendingAgentPreview] = useState<MutationPreview | null>(null)
+  const [pendingAgentHunkIds, setPendingAgentHunkIds] = useState<string[]>([])
+  const [agentExecutionPlan, setAgentExecutionPlan] = useState<TaskExecutionStep[]>(() => library ? loadAgentExecutionPlan(library.id) : [])
   const [awaitingAgentExecutionPlanApproval, setAwaitingAgentExecutionPlanApproval] = useState(false)
+  const [lastAppliedOperationId, setLastAppliedOperationId] = useState<string | null>(null)
+  const [aiOperationHistory, setAiOperationHistory] = useState<AiOperationHistoryEntry[]>(() => listAiOperationHistory())
+  const [aiOperationDiff, setAiOperationDiff] = useState<AiOperationHistoryDiff | null>(null)
   const clarificationResolverRef = useRef<((answer: string) => void) | null>(null)
-  const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null)
-  const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string }) => void) | null>(null)
+  const rehydratedClarificationRef = useRef<PersistedClarificationRequest | null>(null)
+  const confirmationResolverRef = useRef<((decision: AgentConfirmationDecision) => void) | null>(null)
+  const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string; steps?: TaskExecutionStep[] }) => void) | null>(null)
+  const planHydrationPendingRef = useRef(false)
+  const activeLibraryId = library?.id
+
+  useEffect(() => {
+    planHydrationPendingRef.current = true
+    setAgentExecutionPlan(activeLibraryId ? loadAgentExecutionPlan(activeLibraryId) : [])
+  }, [activeLibraryId])
+
+  useEffect(() => {
+    if (planHydrationPendingRef.current) {
+      planHydrationPendingRef.current = false
+      return
+    }
+    if (library) saveAgentPlan(library.id, agentExecutionPlan)
+  }, [agentExecutionPlan, library])
 
   useEffect(() => {
     if (!library) {
@@ -229,6 +275,48 @@ export function ChatWorkspaceViewComponent({
   const resolvedSelectedLibraryFileOptions = hidesAttachedFileContext ? [] : selectedLibraryFileOptions
   const resolvedEffectiveContextPaths = hidesAttachedFileContext ? EMPTY_CONTEXT_PATHS : effectiveSelectedContextPaths
   const resolvedSelectedLibraryFileSummary = hidesAttachedFileContext ? [] : selectedLibraryFileSummary
+  const workspaceSnapshot = useWorkspaceAiSnapshot({
+    scope: agentScope,
+    activeMarkdownSource,
+    markdownSelection,
+  })
+  const activeDocumentPath = workspaceSnapshot?.activeDocument?.path ?? null
+
+  useEffect(() => {
+    setAiOperationHistory(listAiOperationHistory())
+    setAiOperationDiff(null)
+  }, [activeDocumentPath, activeLibraryId])
+
+  useEffect(() => {
+    if (!library) {
+      rehydratedClarificationRef.current = null
+      return
+    }
+
+    const persisted = loadClarificationRequest(library.id)
+    const context = {
+      libraryId: library.id,
+      scope: agentScope ?? 'library',
+      documentPath: workspaceSnapshot?.activeDocument?.path ?? null,
+      revision: workspaceSnapshot?.activeDocumentRevision ?? null,
+    }
+    // Wait for the active tab to hydrate before deciding that a document-scoped
+    // clarification is stale; otherwise a WebView restart could erase it during
+    // the transient `activeDocument === null` render.
+    if (persisted?.documentPath && !context.documentPath) return
+    if (!persisted || !canResumeClarification(persisted, context)) {
+      if (persisted) clearClarificationRequest(library.id)
+      rehydratedClarificationRef.current = null
+      if (!clarificationResolverRef.current) setPendingAgentQuestion(null)
+      return
+    }
+
+    rehydratedClarificationRef.current = persisted
+    if (!clarificationResolverRef.current) {
+      setPendingAgentQuestion({ question: persisted.question, choices: persisted.choices })
+      setPendingAgentAnswer(null)
+    }
+  }, [agentScope, library, workspaceSnapshot?.activeDocument?.path, workspaceSnapshot?.activeDocumentRevision])
 
   useEffect(() => {
     if (!hidesAttachedFileContext) {
@@ -320,6 +408,7 @@ export function ChatWorkspaceViewComponent({
         const handleAbort = () => {
           clarificationResolverRef.current = null
           setPendingAgentQuestion(null)
+          if (library) clearClarificationRequest(library.id)
           reject(new Error('Se canceló la aclaración solicitada por el agente.'))
         }
         signal.addEventListener('abort', handleAbort, { once: true })
@@ -327,31 +416,74 @@ export function ChatWorkspaceViewComponent({
           signal.removeEventListener('abort', handleAbort)
           clarificationResolverRef.current = null
           setPendingAgentQuestion(null)
+          if (library) clearClarificationRequest(library.id)
           resolve(answer)
         }
+        rehydratedClarificationRef.current = null
         setPendingAgentAnswer(null)
         setPendingAgentQuestion({ question, choices })
+        if (library) {
+          saveClarificationRequest({
+            version: 1,
+            requestId: `clarification-${Date.now()}`,
+            libraryId: library.id,
+            question,
+            choices,
+            scope: agentScope ?? 'library',
+            documentPath: workspaceSnapshot?.activeDocument?.path ?? null,
+            revision: workspaceSnapshot?.activeDocumentRevision ?? null,
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 15 * 60_000,
+          })
+        }
         setStreamingThinking('')
         setStreamingAssistantMessage('')
       }),
-      requestAgentConfirmation: (question, signal) => new Promise<boolean>((resolve, reject) => {
+      requestAgentConfirmation: (question, signal, preview) => new Promise<boolean | AgentConfirmationDecision>((resolve, reject) => {
+        const autoApplyPreview = preview
+        if (library && autoApplyPreview && shouldAutoApplyLowRiskPreview(autoApplyPreview, loadAutoApplyLowRiskPreference(library.id))) {
+          resolve({ accepted: true, hunkIds: autoApplyPreview.hunks.map((hunk) => hunk.id) })
+          return
+        }
         const handleAbort = () => {
           confirmationResolverRef.current = null
           setPendingAgentConfirmation(null)
+          setPendingAgentPreview(null)
+          setPendingAgentHunkIds([])
           reject(new Error('Se canceló la confirmación solicitada por el agente.'))
         }
         signal.addEventListener('abort', handleAbort, { once: true })
-        confirmationResolverRef.current = (accepted) => {
+        confirmationResolverRef.current = (decision) => {
           signal.removeEventListener('abort', handleAbort)
           confirmationResolverRef.current = null
           setPendingAgentConfirmation(null)
-          resolve(accepted)
+          setPendingAgentPreview(null)
+          setPendingAgentHunkIds([])
+          window.setTimeout(() => chatThreadRef.current?.focus(), 0)
+          resolve(preview ? decision : decision.accepted)
         }
         setPendingAgentConfirmation(question)
+        setPendingAgentPreview(preview ?? null)
+        setPendingAgentHunkIds(preview?.hunks.filter((hunk) => hunk.status !== 'rejected').map((hunk) => hunk.id) ?? [])
         setStreamingThinking('')
         setStreamingAssistantMessage('')
       }),
+      agentExecutionPlan,
       onAgentExecutionPlanChange: setAgentExecutionPlan,
+      onAgentProgress: (event: AgentProgressEvent) => {
+        if (event.type === 'phase-changed' && event.phase === 'preparing') {
+          setLastAppliedOperationId(null)
+          return
+        }
+        if (agentScope !== 'document' || event.type !== 'tool-completed' || !event.ok || !event.changed || !event.operationId) return
+        if (event.toolName === 'undo_ai_operation') {
+          setLastAppliedOperationId(null)
+          setAiOperationHistory(listAiOperationHistory())
+          return
+        }
+        setLastAppliedOperationId(event.operationId)
+        setAiOperationHistory(listAiOperationHistory())
+      },
       requestAgentExecutionPlanApproval: (_steps, signal) => new Promise((resolve, reject) => {
         const handleAbort = () => {
           planApprovalResolverRef.current = null
@@ -386,6 +518,10 @@ export function ChatWorkspaceViewComponent({
       persistTransientContext,
       hasTransientContext,
       onChatCreated,
+      markdownSelection,
+      activeMarkdownSource,
+      workspaceSnapshot,
+      onActiveMarkdownDocumentChanged,
     },
     {
       draft,
@@ -407,6 +543,46 @@ export function ChatWorkspaceViewComponent({
       setDialogMessage,
     },
   )
+
+  const submitComposerMessage = (message: string): Promise<void> => {
+    const operationId = lastAppliedOperationId && isNaturalUndoRequest(message)
+      ? lastAppliedOperationId
+      : undefined
+    if (operationId) setLastAppliedOperationId(null)
+    return submitMessage(message, undefined, operationId)
+  }
+
+  const consumeRehydratedClarification = (answer: string): string | null => {
+    const request = rehydratedClarificationRef.current
+    if (!request) return null
+    rehydratedClarificationRef.current = null
+    clearClarificationRequest(request.libraryId)
+    return buildClarificationResumePrompt(request, answer)
+  }
+
+  const handleResumeAgentExecutionPlan = () => {
+    if (isSubmitting || agentExecutionPlan.length === 0) return
+    const resumed = resumeBlockedAgentPlan(agentExecutionPlan)
+    const nextPlan = resumed?.steps ?? agentExecutionPlan
+    if (resumed) setAgentExecutionPlan(nextPlan)
+    void submitMessage('Continuá con el TO-DO aprobado.', resumed ? nextPlan : undefined)
+  }
+
+  const handleRetryAgentExecutionPlan = () => {
+    if (isSubmitting) return
+    const retry = retryFailedAgentPlan(agentExecutionPlan)
+    if (!retry) return
+    setAgentExecutionPlan(retry.steps)
+    void submitMessage(`Reintentá únicamente el paso fallido "${retry.stepId}" y continuá con el TO-DO aprobado.`, retry.steps)
+  }
+
+  const handleCancelAgentExecutionPlan = () => {
+    if (isSubmitting) {
+      cancelActiveReply()
+    }
+    setAwaitingAgentExecutionPlanApproval(false)
+    setAgentExecutionPlan((current) => cancelPendingAgentPlanSteps(current))
+  }
 
   const handleCreateChat = async (payload: CreateChatModalSubmitPayload) => {
     if (!library || isCreateChatSubmitting) {
@@ -479,8 +655,8 @@ export function ChatWorkspaceViewComponent({
     }
 
     const accepted = await confirm({
-      title: 'Borrar LongTermMemory',
-      message: 'Se va a vaciar LongTermMemory.md por completo. Una vez hecho, no hay vuelta atras. ¿Querés continuar?',
+      title: 'Borrar memoria persistente',
+      message: 'Se va a vaciar la memoria persistente del agente. Una vez hecho, no hay vuelta atrás. ¿Querés continuar?',
       confirmLabel: 'Borrar memoria',
       cancelLabel: 'Cancelar',
       tone: 'danger',
@@ -493,13 +669,13 @@ export function ChatWorkspaceViewComponent({
     setIsClearingLongTermMemory(true)
 
     try {
-      await clearLongTermMemories(library)
+      await writeAgentMemories(library, [])
       setIsChatToolsModalOpen(false)
     } catch (error) {
       setDialogMessage(
         error instanceof Error && error.message.trim()
           ? error.message
-          : 'No se pudo vaciar LongTermMemory.md.',
+          : 'No se pudo vaciar la memoria persistente del agente.',
       )
     } finally {
       setIsClearingLongTermMemory(false)
@@ -507,17 +683,17 @@ export function ChatWorkspaceViewComponent({
   }
 
   useEffect(() => {
-    const key = 'onImageSelected'
+    const key = 'onChatFileSelected'
     const windowProxy = window as unknown as { [key]?: (file: File) => Promise<void> }
     windowProxy[key] = async (file: File) => {
       try {
-        const attachment = await readImageFileAsAttachment(file)
+        const attachment = await readChatFileAsAttachment(file)
         setSelectedImageAttachment(attachment)
       } catch (error) {
         setDialogMessage(
           error instanceof Error && error.message.trim()
             ? error.message
-            : 'No se pudo cargar la imagen seleccionada.',
+            : 'No se pudo cargar el archivo seleccionado.',
         )
       }
     }
@@ -536,6 +712,36 @@ export function ChatWorkspaceViewComponent({
       return
     }
     setIsAttachmentMenuOpen((current) => !current)
+  }
+
+  const handleViewAiOperationDiff = (operationId: string): void => {
+    const markdownOperation = getAiOperation(operationId)
+    if (markdownOperation) {
+      setAiOperationDiff({
+        operationId,
+        summary: markdownOperation.summary,
+        files: [{
+          path: markdownOperation.documentPath,
+          previousSource: markdownOperation.previousSource,
+          nextSource: markdownOperation.nextSource,
+        }],
+      })
+      return
+    }
+
+    const multiDocumentOperation = getMultiDocumentOperation(operationId)
+    if (multiDocumentOperation) {
+      setAiOperationDiff({ operationId, summary: multiDocumentOperation.summary, files: multiDocumentOperation.files })
+      return
+    }
+
+    const multiDocumentPatchOperation = getMultiDocumentPatchOperation(operationId)
+    if (multiDocumentPatchOperation) {
+      setAiOperationDiff({ operationId, summary: multiDocumentPatchOperation.summary, files: multiDocumentPatchOperation.files })
+      return
+    }
+
+    setDialogMessage('El diff detallado ya no está disponible en esta sesión, pero el historial conserva su metadata.')
   }
 
   const lastAssistantMessage = pendingAgentConfirmation
@@ -620,9 +826,11 @@ export function ChatWorkspaceViewComponent({
               pendingAgentQuestion={pendingAgentQuestion}
               pendingAgentAnswer={pendingAgentAnswer}
               pendingAgentConfirmation={pendingAgentConfirmation}
+              pendingAgentPreview={pendingAgentPreview}
+              pendingAgentHunkIds={pendingAgentHunkIds}
               agentExecutionPlan={agentExecutionPlan}
               awaitingAgentExecutionPlanApproval={awaitingAgentExecutionPlanApproval}
-              onApproveAgentExecutionPlan={() => planApprovalResolverRef.current?.({ approved: true })}
+              onApproveAgentExecutionPlan={(steps) => planApprovalResolverRef.current?.({ approved: true, steps })}
               onSuggestAgentExecutionPlanChanges={() => {
                 const planResolver = planApprovalResolverRef.current
                 if (!planResolver) return
@@ -634,11 +842,52 @@ export function ChatWorkspaceViewComponent({
                   planResolver({ approved: false, suggestion })
                 }
               }}
-              onConfirmAgentAction={() => confirmationResolverRef.current?.(true)}
-              onDeclineAgentAction={() => confirmationResolverRef.current?.(false)}
+              onResumeAgentExecutionPlan={handleResumeAgentExecutionPlan}
+              onRetryAgentExecutionPlan={handleRetryAgentExecutionPlan}
+              onCancelAgentExecutionPlan={handleCancelAgentExecutionPlan}
+              lastAppliedOperationId={lastAppliedOperationId}
+              aiOperationHistory={activeDocumentPath
+                ? aiOperationHistory.filter((entry) => entry.documentPath === activeDocumentPath)
+                : []}
+              aiOperationDiff={aiOperationDiff}
+              onViewAiOperationDiff={handleViewAiOperationDiff}
+              onCloseAiOperationDiff={() => setAiOperationDiff(null)}
+              onUndoAiOperation={(operationId) => {
+                if (isSubmitting) return
+                setLastAppliedOperationId(null)
+                void submitMessage('VolvÃ© atrÃ¡s el cambio de IA seleccionado.', undefined, operationId)
+              }}
+              onUndoLastAiOperation={() => {
+                if (!lastAppliedOperationId || isSubmitting) return
+                const operationId = lastAppliedOperationId
+                setLastAppliedOperationId(null)
+                void submitMessage('Volvé atrás el último cambio de IA.', undefined, operationId)
+              }}
+              onConfirmAgentAction={() => confirmationResolverRef.current?.({ accepted: true, hunkIds: pendingAgentHunkIds })}
+              onDeclineAgentAction={() => confirmationResolverRef.current?.({ accepted: false })}
+              onEditAgentProposal={() => {
+                confirmationResolverRef.current?.({ accepted: false })
+                setDialogMessage('La propuesta se canceló. Indicame qué querés cambiar y preparo un nuevo preview.')
+              }}
+              onToggleAgentHunk={(hunkId) => {
+                setPendingAgentHunkIds((current) => current.includes(hunkId)
+                  ? current.filter((id) => id !== hunkId)
+                  : [...current, hunkId])
+              }}
               onSelectAgentClarificationOption={(choice) => {
                 const resolver = clarificationResolverRef.current
-                if (!resolver) return
+                if (!resolver) {
+                  const resumePrompt = consumeRehydratedClarification(choice)
+                  if (!resumePrompt) {
+                    setPendingAgentQuestion(null)
+                    setPendingAgentAnswer('Cancelada')
+                    return
+                  }
+                  setPendingAgentAnswer(choice)
+                  setPendingAgentQuestion(null)
+                  void submitMessage(resumePrompt)
+                  return
+                }
                 setPendingAgentAnswer(choice)
                 setPendingAgentQuestion(null)
                 resolver(choice)
@@ -681,27 +930,37 @@ export function ChatWorkspaceViewComponent({
                 setIsAttachmentMenuOpen(false)
                 setIsLibraryFilesModalOpen(true)
               }}
-              onSubmit={() => {
-                const clarificationResolver = clarificationResolverRef.current
-                if (clarificationResolver) {
+                onSubmit={() => {
+                  const clarificationResolver = clarificationResolverRef.current
+                  if (clarificationResolver) {
                   const answer = draft.trim()
                   if (!answer) return
                   setPendingAgentAnswer(answer)
                   setDraft('')
-                  clarificationResolver(answer)
-                  return
-                }
-                setPendingAgentAnswer(null)
-                void submitMessage(draft)
+                    clarificationResolver(answer)
+                    return
+                  }
+                  if (rehydratedClarificationRef.current) {
+                    const answer = draft.trim()
+                    if (!answer) return
+                    const resumePrompt = consumeRehydratedClarification(answer)
+                    setPendingAgentAnswer(answer)
+                    setPendingAgentQuestion(null)
+                    setDraft('')
+                    if (resumePrompt) void submitMessage(resumePrompt)
+                    return
+                  }
+                  setPendingAgentAnswer(null)
+                  void submitComposerMessage(draft)
               }}
               onSubmitText={(text) => {
                 const normalizedVoiceAnswer = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
                 if (confirmationResolverRef.current && /^(si|confirmo|acepto|confirmar)\b/.test(normalizedVoiceAnswer)) {
-                  confirmationResolverRef.current(true)
+                  confirmationResolverRef.current({ accepted: true, hunkIds: pendingAgentHunkIds })
                   return Promise.resolve()
                 }
                 if (confirmationResolverRef.current && /^(no|cancelo|rechazo|cancelar)\b/.test(normalizedVoiceAnswer)) {
-                  confirmationResolverRef.current(false)
+                  confirmationResolverRef.current({ accepted: false })
                   return Promise.resolve()
                 }
                 if (planApprovalResolverRef.current && awaitingAgentExecutionPlanApproval && /^(si|apruebo|acepto|confirmo)\b/.test(normalizedVoiceAnswer)) {
@@ -715,8 +974,14 @@ export function ChatWorkspaceViewComponent({
                   clarificationResolver(text)
                   return Promise.resolve()
                 }
+                if (rehydratedClarificationRef.current) {
+                  const resumePrompt = consumeRehydratedClarification(text)
+                  setPendingAgentAnswer(text)
+                  setPendingAgentQuestion(null)
+                  return resumePrompt ? submitMessage(resumePrompt) : Promise.resolve()
+                }
                 setPendingAgentAnswer(null)
-                return submitMessage(text)
+                return submitComposerMessage(text)
               }}
               lastAssistantMessage={lastAssistantMessage}
               onCancel={cancelActiveReply}
@@ -760,8 +1025,8 @@ export function ChatWorkspaceViewComponent({
         <AppDialogModal
           open={isChatToolsModalOpen}
           title="Memoria del chat"
-          message="Administrá la memoria persistente compartida entre chats. Si borrás LongTermMemory, se vacía el archivo y la IA deja de usar esas memorias hasta que vuelvas a completarlo."
-          confirmLabel={isClearingLongTermMemory ? 'Borrando...' : 'Borrar LongTermMemory'}
+          message="Administrá la memoria persistente compartida entre chats. Si la borrás, la IA deja de usar esas memorias hasta que vuelvas a completarla."
+          confirmLabel={isClearingLongTermMemory ? 'Borrando...' : 'Borrar memoria'}
           cancelLabel="Cerrar"
           onConfirm={() => {
             void handleClearLongTermMemory()
@@ -833,6 +1098,28 @@ function arePreviousChatArraysEqual(
       && chat.filePath === candidate.filePath
       && chat.title === candidate.title
   })
+}
+
+function areMarkdownSelectionsEqual(
+  left: ChatWorkspaceViewProps['markdownSelection'],
+  right: ChatWorkspaceViewProps['markdownSelection'],
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.documentPath === right.documentPath
+    && left.from === right.from
+    && left.to === right.to
+    && left.selectedText === right.selectedText
+    && left.blocks.length === right.blocks.length
+    && left.blocks.every((block, index) => {
+      const other = right.blocks[index]
+      return Boolean(other)
+        && block.index === other.index
+        && block.type === other.type
+        && block.text === other.text
+        && block.from === other.from
+        && block.to === other.to
+    })
 }
 
 function areChatWorkspaceViewPropsEqual(
@@ -932,6 +1219,18 @@ function areChatWorkspaceViewPropsEqual(
   }
 
   if (previous.onChatDeleted !== next.onChatDeleted) {
+    return false
+  }
+
+  if (previous.onActiveMarkdownDocumentChanged !== next.onActiveMarkdownDocumentChanged) {
+    return false
+  }
+
+  if (!areMarkdownSelectionsEqual(previous.markdownSelection, next.markdownSelection)) {
+    return false
+  }
+
+  if (previous.activeMarkdownSource !== next.activeMarkdownSource) {
     return false
   }
 

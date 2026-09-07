@@ -5,6 +5,8 @@ import {
   createTask,
   loadTaskManagerSnapshot,
   moveTaskByState,
+  readTaskMarkdownSource,
+  writeTaskMarkdownSource,
   syncTaskIndexesAndMetadata,
   updateTaskBody,
   updateTaskFrontmatter,
@@ -20,6 +22,11 @@ export type TaskManagerAgentMutation =
   | { kind: 'move-group'; taskPath: string; group: string }
   | { kind: 'change-state'; taskPath: string; state: TaskState }
   | { kind: 'change-priority'; taskPath: string; priority: TaskPriority }
+  | { kind: 'update-fields'; taskPath: string; fields: Record<string, unknown> }
+  | { kind: 'bulk-update'; taskPaths: string[]; fields: Record<string, unknown> }
+  | { kind: 'duplicate'; taskPath: string; title: string }
+  | { kind: 'archive'; taskPath: string }
+  | { kind: 'restore'; taskPath: string }
   | { kind: 'create-group'; board: string; name: string; color: string }
   | { kind: 'delete-group'; board: string; name: string }
 
@@ -192,6 +199,56 @@ export async function executeTaskManagerAgentMutation(
       ))
     }
     affectedBoard = mutation.board
+  } else if (mutation.kind === 'bulk-update') {
+    const tasks = mutation.taskPaths.map((taskPath) => findTask(snapshot.tasks, taskPath))
+    if (tasks.length === 0 || tasks.length > 50) throw new Error('La actualización masiva debe incluir entre 1 y 50 tickets.')
+    const originalSources = await Promise.all(tasks.map(async (task) => ({
+      path: task.filePath,
+      content: await readTaskMarkdownSource(vaultPath, task.filePath),
+    })))
+    const appliedTasks: typeof tasks = []
+    try {
+      for (const task of tasks) {
+        await updateTaskFrontmatter(vaultPath, task.filePath, mutation.fields)
+        appliedTasks.push(task)
+        affectedBoard = affectedBoard ?? task.board
+      }
+    } catch (error) {
+      const rollbackErrors: string[] = []
+      for (const source of originalSources) {
+        try {
+          await writeTaskMarkdownSource(vaultPath, source.path, source.content)
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError instanceof Error ? rollbackError.message : 'error desconocido')
+        }
+      }
+      const reason = error instanceof Error ? error.message : 'error desconocido'
+      throw new Error(rollbackErrors.length > 0
+        ? `La actualizacion masiva fallo (${reason}) y el rollback quedo incompleto en ${rollbackErrors.length} ticket(s).`
+        : `La actualizacion masiva fallo (${reason}); se revirtieron ${appliedTasks.length} ticket(s).`)
+    }
+  } else if (mutation.kind === 'duplicate') {
+    const sourceTask = findTask(snapshot.tasks, mutation.taskPath)
+    const title = requireText(mutation.title, 'El titulo', 180)
+    const sourceContent = await readTaskMarkdownSource(vaultPath, sourceTask.filePath)
+    const formData: TaskFormData = {
+      title,
+      detail: sourceTask.detail,
+      state: sourceTask.state,
+      endDate: sourceTask.endDate,
+      dynamicEndDate: sourceTask.dynamicEndDate,
+      board: sourceTask.board,
+      group: sourceTask.group,
+      priority: sourceTask.priority || 'Media',
+      estimatedHours: sourceTask.estimatedHours,
+      parentTaskName: sourceTask.parentTaskName,
+    }
+    const duplicatedPath = await createTask(vaultPath, formData, snapshot.tasks)
+    const body = sourceContent.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n([\s\S]*)$/)?.[1] ?? ''
+    if (body.trim()) {
+      await updateTaskBody(vaultPath, duplicatedPath, (current) => replaceMarkdownBody(current, body))
+    }
+    affectedBoard = sourceTask.board
   } else {
     const task = findTask(snapshot.tasks, mutation.taskPath)
     affectedBoard = task.board
@@ -228,6 +285,12 @@ export async function executeTaskManagerAgentMutation(
       })
     } else if (mutation.kind === 'change-state') {
       await moveTaskByState(vaultPath, task, mutation.state, new Set(snapshot.tasks.map((item) => item.filePath)))
+    } else if (mutation.kind === 'update-fields') {
+      await updateTaskFrontmatter(vaultPath, task.filePath, mutation.fields)
+    } else if (mutation.kind === 'archive') {
+      await moveTaskByState(vaultPath, task, 'Finalizada', new Set(snapshot.tasks.map((item) => item.filePath)))
+    } else if (mutation.kind === 'restore') {
+      await moveTaskByState(vaultPath, task, 'Pendiente', new Set(snapshot.tasks.map((item) => item.filePath)))
     } else {
       await updateTaskFrontmatter(vaultPath, task.filePath, { prioridad: mutation.priority })
     }

@@ -1,6 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import { loadThemePreference, saveThemePreference, type NotiaTheme } from '../../services/preferences/themeStorage'
-import { loadAiPreferences, saveAiPreferences, type AiPreferences } from '../../services/preferences/aiSettingsStorage'
+import { loadAiPreferences, type AiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { loadInkMathPreferences, saveInkMathPreferences, type InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '../../services/preferences/explorerPanelStorage'
 import type { PreferencesState } from './preferencesTypes'
@@ -36,8 +36,9 @@ const preferencesSlice = createSlice({
       saveThemePreference(next)
     },
     setAiSettings(state, action: PayloadAction<AiPreferences>) {
-      state.aiSettings = action.payload
-      saveAiPreferences(action.payload)
+      // Keep provider credentials out of Redux. The boundary callback persists
+      // the session-only credential before dispatching this redacted action.
+      state.aiSettings = { ...action.payload, apiKey: '' }
     },
     setInkMathPreferences(state, action: PayloadAction<InkMathPreferences>) {
       state.inkMathPreferences = action.payload

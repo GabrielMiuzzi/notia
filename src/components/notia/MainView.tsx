@@ -7,6 +7,7 @@ import { NotiaButton } from '../common/NotiaButton'
 import { MAX_MARKDOWN_ZOOM, MIN_MARKDOWN_ZOOM } from './views/markdown/useMarkdownZoom'
 import { MarkdownExportModal } from './MarkdownExportModal'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
+import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 
 const DEFAULT_MARKDOWN_ZOOM = 1
 
@@ -16,6 +17,8 @@ interface MainViewProps {
   onTextDocumentChange: (nextSource: string) => void
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  onSelectionChange: (selection: MarkdownSelectionContext | null) => void
+  externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
 }
 
@@ -37,6 +40,8 @@ function MainViewComponent({
   onTextDocumentChange,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
+  onSelectionChange,
+  externalSourceUpdate,
   theme,
 }: MainViewProps) {
   const [markdownZoom, setMarkdownZoom] = useState(DEFAULT_MARKDOWN_ZOOM)
@@ -185,6 +190,8 @@ function MainViewComponent({
           onTextSourceChange={onTextDocumentChange}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
+          onSelectionChange={onSelectionChange}
+          externalSourceUpdate={externalSourceUpdate}
           theme={theme}
           markdownZoom={markdownZoom}
           onMarkdownZoomChange={setMarkdownZoom}

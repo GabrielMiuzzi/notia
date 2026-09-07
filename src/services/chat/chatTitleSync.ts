@@ -2,6 +2,7 @@ import { generateAiChatTitle } from '../ai/aiRuntime'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../types/notia'
 import { saveChatDocument, type StoredChatDocument } from './chatDocumentStorage'
+import { notiaLog } from '../runtime/notiaLogger'
 
 interface PersistAiChatTitleInput {
   library: NotiaLibrary
@@ -43,6 +44,8 @@ export function scheduleAiChatTitle(
       }
     })
     .catch((error) => {
-      console.warn('[notia] could not persist ai chat title', error)
+      notiaLog('chat-title', 'could not persist ai chat title', {
+        error: error instanceof Error ? error.message : String(error),
+      }, 'error')
     })
 }

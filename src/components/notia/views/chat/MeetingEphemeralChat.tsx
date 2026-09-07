@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from 'react'
 import { Bot, Send, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
-import { loadLibraryFileOptions } from '../../../../services/chat/chatAttachmentRuntime'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
-import { runNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
-import { createChatScopedAgent } from '../../../../services/chat/chatScopedAgentRuntime'
-import { loadSelectedAgentPromptFileName } from '../../../../services/ai/agentPromptRuntime'
+import { runMeetingEphemeralChatReply } from '../../../../services/chat/meetingEphemeralChatRuntime'
+import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
 import {
   getMeetingTranscriptContext,
   subscribeMeetingTranscriptContext,
@@ -13,8 +11,6 @@ import {
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
-import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatLongTermMemorySync'
-import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 
 interface MeetingEphemeralChatProps {
   aiPreferences: AiPreferences
@@ -32,11 +28,21 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
   const [draft, setDraft] = useState('')
   const [streamingMessage, setStreamingMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [executionPlan, setExecutionPlan] = useState<TaskExecutionStep[]>([])
   const [error, setError] = useState<string | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
 
-  useEffect(() => () => abortControllerRef.current?.abort(), [])
+  useEffect(() => {
+    const cancelOnVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') abortControllerRef.current?.abort()
+    }
+    document.addEventListener('visibilitychange', cancelOnVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', cancelOnVisibilityChange)
+      abortControllerRef.current?.abort()
+    }
+  }, [])
   useEffect(() => {
     const thread = threadRef.current
     if (thread) thread.scrollTop = thread.scrollHeight
@@ -61,59 +67,22 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
     setMessages((current) => [...current, userMessage])
     setDraft('')
     setStreamingMessage('')
+    setExecutionPlan([])
     setError(null)
     setIsSubmitting(true)
 
     try {
-      const files = await loadLibraryFileOptions(library)
-      const agent = await createChatScopedAgent({
-        scope: 'library',
+      const answer = await runMeetingEphemeralChatReply({
         aiPreferences,
         library,
-        scopePaths: files.map((file) => file.path),
-        promptFileName: loadSelectedAgentPromptFileName(library.id),
-        requestClarification: async (prompt, signal) => {
-          if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
-          return window.prompt(prompt)?.trim() ?? ''
-        },
-        requestConfirmation: async (prompt, signal) => {
-          if (signal.aborted) return false
-          return window.confirm(prompt)
-        },
-        requestExecutionPlanApproval: async (steps, signal) => ({
-          approved: !signal.aborted && window.confirm(
-            `Aprobar este plan de ejecución:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
-          ),
-        }),
-      })
-      const answer = await runNotiaChatReply(aiPreferences, {
-        agent,
-        prompt: [
-          'Usá la siguiente transcripción actual de Meeting como contexto para responder la consulta.',
-          'Si la respuesta no surge de ella ni de una herramienta autorizada, indicá que no está disponible.',
-          '',
-          'TRANSCRIPCIÓN ACTUAL:',
-          transcript.trim(),
-          '',
-          'CONSULTA:',
-          question,
-        ].join('\n'),
+        transcript,
+        prompt: question,
         previousMessages,
-      }, {
-          abortSignal: controller.signal,
-          onMessageDelta: (delta) => setStreamingMessage((current) => current + delta),
+        signal: controller.signal,
+        onExecutionPlanChange: setExecutionPlan,
+        onMessageDelta: (delta) => setStreamingMessage((current) => current + delta),
       })
       setMessages((current) => [...current, { role: 'assistant', content: answer }])
-      void loadAgentMemories(library).then((existingLongTermMemories) => {
-        scheduleLongTermMemoriesForTurn({
-          library,
-          aiPreferences,
-          prompt: question,
-          assistantReply: answer,
-          previousMessages,
-          existingLongTermMemories,
-        })
-      })
       onLibraryChanged()
     } catch (submitError) {
       if (!controller.signal.aborted) {
@@ -186,6 +155,17 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
                 </article>
               ) : null}
             </section>
+
+            {executionPlan.length > 0 ? (
+              <ol className="notia-published-chat-plan" aria-label="Plan efimero de Meeting">
+                {executionPlan.map((step) => (
+                  <li key={step.id} data-status={step.status}>
+                    <span>{step.label}</span>
+                    <small>{step.status}{step.risk ? ` · riesgo ${step.risk}` : ''}</small>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
 
             {error ? <div className="notia-meeting-chat-error" role="alert">{error}</div> : null}
             <form className="notia-chat-composer" onSubmit={handleSubmit}>

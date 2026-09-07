@@ -1,4 +1,7 @@
-import type { ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 
 interface ChatMarkdownMessageProps {
   source: string
@@ -10,6 +13,7 @@ type MarkdownBlockType =
   | 'unordered-list'
   | 'ordered-list'
   | 'code'
+  | 'math'
   | 'blockquote'
   | 'table'
   | 'horizontal-rule'
@@ -34,6 +38,12 @@ interface ParsedBlock {
   rows?: MarkdownTableRow[]
 }
 
+interface InlineMathMatch {
+  expression: string
+  length: number
+  displayMode: boolean
+}
+
 interface MarkdownListItem {
   content: string
   children: MarkdownListItem[]
@@ -48,6 +58,133 @@ function isSafeHref(href: string): boolean {
 function sanitizeUrl(href: string): string {
   const trimmed = href.trim()
   return isSafeHref(trimmed) ? trimmed : '#'
+}
+
+function renderLatexToHtml(expression: string, displayMode: boolean): string | null {
+  try {
+    return katex.renderToString(expression.trim(), {
+      displayMode,
+      throwOnError: false,
+      strict: false,
+      output: 'htmlAndMathml',
+    })
+  } catch {
+    return null
+  }
+}
+
+function ChatMath({ expression, displayMode }: { expression: string; displayMode: boolean }) {
+  const [showSource, setShowSource] = useState(false)
+  const html = useMemo(
+    () => renderLatexToHtml(expression, displayMode),
+    [displayMode, expression],
+  )
+  const className = `notia-chat-markdown-math-shell${displayMode ? ' notia-chat-markdown-math-shell--display' : ''}`
+  const sourceLabel = showSource ? 'Ocultar fórmula LaTeX' : 'Mostrar fórmula LaTeX'
+  const MathShell = displayMode ? 'div' : 'span'
+
+  const content = showSource ? (
+    displayMode ? (
+      <pre className="notia-chat-markdown-math-source" aria-label="Fórmula LaTeX">
+        <code>{expression}</code>
+      </pre>
+    ) : (
+      <code className="notia-chat-markdown-math-source" aria-label="Fórmula LaTeX">
+        {expression}
+      </code>
+    )
+  ) : html ? (
+    <span className="notia-chat-markdown-math-rendered" dangerouslySetInnerHTML={{ __html: html }} />
+  ) : (
+    <code className="notia-chat-markdown-math-fallback">{expression}</code>
+  )
+
+  return (
+    <MathShell className={className} data-latex={expression}>
+      <span className="notia-chat-markdown-math-content">{content}</span>
+      <button
+        type="button"
+        className="notia-chat-markdown-math-toggle"
+        aria-label={sourceLabel}
+        aria-pressed={showSource}
+        title={sourceLabel}
+        onClick={() => setShowSource((current) => !current)}
+      >
+        {showSource ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+      </button>
+    </MathShell>
+  )
+}
+
+function matchInlineMath(text: string): InlineMathMatch | null {
+  if (text.startsWith('$$')) {
+    const closingIndex = text.indexOf('$$', 2)
+    if (closingIndex > 2) {
+      return {
+        expression: text.slice(2, closingIndex),
+        length: closingIndex + 2,
+        displayMode: true,
+      }
+    }
+  }
+
+  for (const [opening, closing, displayMode] of [
+    ['\\(', '\\)', false],
+    ['\\[', '\\]', true],
+  ] as const) {
+    if (!text.startsWith(opening)) continue
+    const closingIndex = text.indexOf(closing, opening.length)
+    if (closingIndex > opening.length) {
+      return {
+        expression: text.slice(opening.length, closingIndex),
+        length: closingIndex + closing.length,
+        displayMode,
+      }
+    }
+  }
+
+  const inlineDollarMatch = text.match(/^\$((?:\\.|[^$\n])+?)\$/)
+  if (inlineDollarMatch) {
+    return {
+      expression: inlineDollarMatch[1],
+      length: inlineDollarMatch[0].length,
+      displayMode: false,
+    }
+  }
+
+  return null
+}
+
+function parseDisplayMathBlock(
+  lines: string[],
+  startIndex: number,
+): { block: ParsedBlock; nextIndex: number } | null {
+  const firstLine = lines[startIndex]?.trim() ?? ''
+  const delimiter = firstLine === '$$' ? '$$' : firstLine === '\\[' ? '\\]' : null
+  if (!delimiter) {
+    const sameLineMatch = firstLine.match(/^\$\$([\s\S]+)\$\$$/)
+    if (!sameLineMatch) return null
+    return {
+      block: { type: 'math', content: sameLineMatch[1] },
+      nextIndex: startIndex + 1,
+    }
+  }
+
+  const mathLines: string[] = []
+  let index = startIndex + 1
+  while (index < lines.length) {
+    const line = lines[index] ?? ''
+    if (line.trim() === delimiter) {
+      return {
+        block: { type: 'math', content: mathLines.join('\n') },
+        nextIndex: index + 1,
+      }
+    }
+    mathLines.push(line)
+    index += 1
+  }
+
+  return null
 }
 
 function renderInlineMarkdown(text: string): ReactNode[] {
@@ -120,12 +257,29 @@ function renderInlineMarkdown(text: string): ReactNode[] {
       continue
     }
 
+    const mathMatch = matchInlineMath(remaining)
+    if (mathMatch) {
+      nodes.push(
+        <ChatMath
+          key={`inline-${key}`}
+          expression={mathMatch.expression}
+          displayMode={mathMatch.displayMode}
+        />,
+      )
+      index += mathMatch.length
+      key += 1
+      continue
+    }
+
     const nextTokenIndexes = [
       remaining.indexOf('['),
       remaining.indexOf('**'),
       remaining.indexOf('*'),
       remaining.indexOf('`'),
       remaining.indexOf('<'),
+      remaining.indexOf('$'),
+      remaining.indexOf('\\('),
+      remaining.indexOf('\\['),
     ].filter((candidate) => candidate >= 0)
 
     const nextIndex = nextTokenIndexes.length > 0 ? Math.min(...nextTokenIndexes) : -1
@@ -326,11 +480,19 @@ function parseMarkdownBlocks(source: string): ParsedBlock[] {
       if (index < lines.length) {
         index += 1
       }
-      blocks.push({
-        type: 'code',
-        language,
-        content: codeLines.join('\n'),
-      })
+      const codeContent = codeLines.join('\n')
+      blocks.push(
+        ['latex', 'math', 'tex'].includes(language.toLowerCase())
+          ? { type: 'math', content: codeContent }
+          : { type: 'code', language, content: codeContent },
+      )
+      continue
+    }
+
+    const mathBlock = parseDisplayMathBlock(lines, index)
+    if (mathBlock) {
+      blocks.push(mathBlock.block)
+      index = mathBlock.nextIndex
       continue
     }
 
@@ -477,6 +639,16 @@ export function ChatMarkdownMessage({ source }: ChatMarkdownMessageProps) {
               ) : null}
               <code>{block.content ?? ''}</code>
             </pre>
+          )
+        }
+
+        if (block.type === 'math') {
+          return (
+            <ChatMath
+              key={`block-${index}`}
+              expression={block.content ?? ''}
+              displayMode
+            />
           )
         }
 

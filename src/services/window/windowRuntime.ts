@@ -10,6 +10,16 @@ export async function controlWindow(action: NotiaWindowAction): Promise<void> {
   }
 }
 
+export async function exitApplication(): Promise<boolean> {
+  try {
+    await invoke('exit_application')
+    return true
+  } catch {
+    // Keep the application usable if the native exit command is unavailable.
+    return false
+  }
+}
+
 export async function startWindowDragging(): Promise<void> {
   try {
     await invoke('start_window_dragging')

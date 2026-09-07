@@ -2,7 +2,7 @@ import { parseFrontmatterDocument, serializeFrontmatterDocument, type Frontmatte
 import type { NotiaLibrary } from '../../types/notia'
 import { fromStoredLibraryPath, toStoredLibraryPath } from '../libraries/libraryPathMapping'
 import { readLibraryFileContent, writeLibraryFileContent } from '../libraries/libraryDocumentRuntime'
-import { resolveLongTermMemoryFilePath } from './chatLibraryStructure'
+import { loadAgentMemories, writeAgentMemories } from '../ai/agentPromptRuntime'
 
 export interface StoredChatMessage {
   role: 'user' | 'assistant'
@@ -22,17 +22,6 @@ export interface StoredChatDocument {
 
 const CHAT_MESSAGE_MARKER_PREFIX = '<!-- NOTIA_CHAT_MESSAGE role:'
 const CHAT_MESSAGE_MARKER_SUFFIX = ' -->'
-
-function parseMarkdownListItem(line: string): string | null {
-  const trimmedLine = line.trim()
-  const match = /^[-*+]\s+(.+)$/.exec(trimmedLine)
-  if (!match) {
-    return null
-  }
-
-  const content = match[1]?.trim()
-  return content || null
-}
 
 function clampContextMemoryMessageCount(value: unknown): number {
   const numericValue = Number(value)
@@ -301,20 +290,9 @@ export async function appendChatMessages(
   return { appended: true }
 }
 
+/** @deprecated Use the .agent/memory/memory.md adapter through agentPromptRuntime. */
 export async function loadLongTermMemories(library: NotiaLibrary): Promise<string[]> {
-  const filePath = resolveLongTermMemoryFilePath(library.path)
-  const result = await readLibraryFileContent(filePath, {
-    androidDirectoryUri: library.androidTreeUri,
-  })
-  if (!result.ok) {
-    throw new Error(result.error ?? 'No se pudo leer LongTermMemory.md.')
-  }
-
-  return result.content
-    .split(/\r?\n/)
-    .map((line) => parseMarkdownListItem(line))
-    .filter(Boolean)
-    .map((line) => line as string)
+  return loadAgentMemories(library)
 }
 
 function dedupeLongTermMemories(memories: string[]): string[] {
@@ -342,30 +320,10 @@ function dedupeLongTermMemories(memories: string[]): string[] {
 export async function appendLongTermMemories(library: NotiaLibrary, incomingMemories: string[]): Promise<string[]> {
   const currentMemories = await loadLongTermMemories(library)
   const mergedMemories = dedupeLongTermMemories([...currentMemories, ...incomingMemories]).slice(0, 200)
-  const filePath = resolveLongTermMemoryFilePath(library.path)
-  const nextContent = [
-    '# Long Term Memory',
-    '',
-    ...mergedMemories.map((memory) => `- ${memory}`),
-    '',
-  ].join('\n')
-
-  const result = await writeLibraryFileContent(filePath, nextContent, {
-    androidDirectoryUri: library.androidTreeUri,
-  })
-  if (!result.ok) {
-    throw new Error(result.error ?? 'No se pudo guardar LongTermMemory.md.')
-  }
-
+  await writeAgentMemories(library, mergedMemories)
   return mergedMemories
 }
 
 export async function clearLongTermMemories(library: NotiaLibrary): Promise<void> {
-  const filePath = resolveLongTermMemoryFilePath(library.path)
-  const result = await writeLibraryFileContent(filePath, '# Long Term Memory\n\n', {
-    androidDirectoryUri: library.androidTreeUri,
-  })
-  if (!result.ok) {
-    throw new Error(result.error ?? 'No se pudo vaciar LongTermMemory.md.')
-  }
+  await writeAgentMemories(library, [])
 }

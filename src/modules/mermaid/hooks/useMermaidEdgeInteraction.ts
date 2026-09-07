@@ -237,6 +237,7 @@ export function useMermaidEdgeInteraction(
     }
 
     const onPointerMove = (_e: PointerEvent) => {
+      void _e
       isDraggingRef.current = true
     }
 
@@ -306,10 +307,11 @@ export function useMermaidEdgeInteraction(
       el.removeEventListener('pointerup', onPointerUp)
       document.removeEventListener('keydown', onKey)
     }
-  }, [svgContainerRef, deselectAll, selectEdge])
+  }, [enabled, svgContainerRef, deselectAll, selectEdge])
 
   // Re-apply selection after SVG re-render
   useEffect(() => {
+    if (!enabled) return
     const container = svgContainerRef.current
     if (!container) return
 
@@ -343,7 +345,7 @@ export function useMermaidEdgeInteraction(
 
     observer.observe(container, { childList: true, subtree: true })
     return () => observer.disconnect()
-  }, [svgContainerRef])
+  }, [enabled, svgContainerRef])
 
   return { selectedEdge, deselectAll }
 }

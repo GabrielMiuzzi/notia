@@ -34,6 +34,18 @@ pub struct TelegramSendPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TelegramEditPayload {
+    token: String,
+    chat_id: i64,
+    message_id: i64,
+    text: String,
+    #[serde(default)]
+    buttons: Vec<TelegramButton>,
+    parse_mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TelegramTranscribePayload {
     token: String,
     audio: crate::services::telegram_service::TelegramAudio,
@@ -93,10 +105,27 @@ pub async fn poll_telegram_updates(
 }
 
 #[tauri::command]
-pub async fn send_telegram_message(payload: TelegramSendPayload) -> Result<(), String> {
+pub async fn send_telegram_message(payload: TelegramSendPayload) -> Result<i64, String> {
     crate::services::telegram_service::send_message(
         &payload.token,
         payload.chat_id,
+        &payload.text,
+        payload
+            .buttons
+            .into_iter()
+            .map(|button| (button.label, button.data))
+            .collect(),
+        payload.parse_mode.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn edit_telegram_message(payload: TelegramEditPayload) -> Result<(), String> {
+    crate::services::telegram_service::edit_message(
+        &payload.token,
+        payload.chat_id,
+        payload.message_id,
         &payload.text,
         payload
             .buttons

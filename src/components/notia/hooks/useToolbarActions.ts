@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useAppDispatch } from '../../../store/hooks'
 import { store } from '../../../store/index'
 import { toggleSidebar, setActiveHeaderAction, setSearchMenuOpen } from '../../../features/ui/uiSlice'
-import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
+import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
 
 interface UseToolbarActionsParams {
   activeLibrary: { path: string } | null
@@ -56,6 +56,11 @@ export function useToolbarActions({
     if (actionId === 'finance') {
       if (!specialTabs.finance) { dispatch(activateSpecialTab('finance')) }
       dispatch(setActiveTabPath(FINANCE_WORKSPACE_TAB_PATH))
+      return
+    }
+    if (actionId === 'calendar') {
+      if (!specialTabs.calendar) { dispatch(activateSpecialTab('calendar')) }
+      dispatch(setActiveTabPath(CALENDAR_WORKSPACE_TAB_PATH))
     }
   }, [dispatch])
 

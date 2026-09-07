@@ -2414,6 +2414,36 @@
 }
 
 .notia-finance-view { min-width: 0; overflow: hidden; padding: 0; }
+.calendar-view { min-width: 0; overflow: auto; padding: clamp(20px, 4vw, 48px); color: var(--color-body-text); background: var(--color-main-bg); }
+.calendar-view__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; max-width: 960px; width: 100%; margin: 0 auto 24px; }
+.calendar-view__eyebrow { color: var(--color-accent-text); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.calendar-view h1 { margin: 4px 0 5px; color: var(--color-heading-text); font-size: clamp(1.6rem, 4vw, 2.2rem); }
+.calendar-view__header p { margin: 0; color: var(--color-muted-text); }
+.calendar-view__refresh { min-height: 44px; white-space: nowrap; }
+.calendar-card { max-width: 960px; width: 100%; margin: 0 auto; padding: clamp(14px, 3vw, 28px); box-sizing: border-box; border: 1px solid var(--color-border-soft); border-radius: 14px; background: color-mix(in srgb, var(--color-card-bg) 94%, transparent); box-shadow: 0 12px 30px color-mix(in srgb, var(--color-menu-shadow) 45%, transparent); }
+.calendar-card__toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.calendar-card__toolbar h2 { margin: 0; color: var(--color-heading-text); font-size: clamp(1.1rem, 3vw, 1.45rem); text-transform: capitalize; }
+.calendar-card__toolbar h2 span { color: var(--color-muted-text); font-weight: 400; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.calendar-grid--weekdays { color: var(--color-muted-text); font-size: 11px; font-weight: 700; text-align: center; text-transform: uppercase; }
+.calendar-grid--days { margin-top: 8px; }
+.calendar-day { min-height: clamp(66px, 10vw, 108px); padding: 9px; box-sizing: border-box; border: 1px solid var(--color-border-soft); border-radius: 8px; background: color-mix(in srgb, var(--color-main-bg) 70%, var(--color-card-bg)); color: var(--color-body-text); }
+.calendar-day > span { display: block; font-size: 14px; font-weight: 700; }
+.calendar-day small { display: block; margin-top: 9px; font-size: 10px; font-weight: 700; line-height: 1.2; }
+.calendar-day--today { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; }
+.calendar-day--national { border-color: color-mix(in srgb, #c47bff 65%, var(--color-border-soft)); background: color-mix(in srgb, #c47bff 18%, var(--color-card-bg)); color: var(--color-heading-text); }
+.calendar-day--national small { color: #a653d1; }
+.calendar-day--bank { border-color: color-mix(in srgb, #38c6aa 65%, var(--color-border-soft)); background: color-mix(in srgb, #38c6aa 17%, var(--color-card-bg)); color: var(--color-heading-text); }
+.calendar-day--bank small { color: #168c77; }
+.calendar-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 20px; color: var(--color-muted-text); font-size: 12px; }
+.calendar-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.calendar-dot { width: 9px; height: 9px; border-radius: 50%; }
+.calendar-dot--national { background: #c47bff; }.calendar-dot--bank { background: #38c6aa; }
+.calendar-message { margin: 0 0 12px; padding: 10px 12px; border-radius: 7px; color: var(--color-alert-text); background: color-mix(in srgb, var(--color-alert-text) 12%, var(--color-card-bg)); }
+.calendar-source { max-width: 960px; margin: 14px auto 0; color: var(--color-muted-text); font-size: 11px; text-align: right; }
+.calendar-spin { animation: calendar-spin 900ms linear infinite; }
+@keyframes calendar-spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) { .calendar-view__header { flex-direction: column; }.calendar-view__refresh { align-self: stretch; }.calendar-day { min-height: 58px; padding: 6px; }.calendar-day small { margin-top: 6px; font-size: 9px; }.calendar-grid { gap: 4px; } }
 
 .finance-view-shell { display: flex; min-height: 0; height: 100%; flex-direction: column; }
 .finance-view-shell > [role="tabpanel"] { min-height: 0; flex: 1; overflow: auto; }
@@ -3940,8 +3970,163 @@
   box-sizing: border-box;
 }
 
+/* The inline LaTeX tooltip contains its own ProseMirror editor. It must not
+   inherit the document editor's viewport-sized canvas. */
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit {
+  width: fit-content;
+  max-width: min(90vw, 660px);
+  box-sizing: border-box;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .ProseMirror {
+  width: fit-content;
+  min-width: 0;
+  max-width: min(560px, max(180px, calc(90vw - 100px)));
+  min-height: 0;
+  max-height: 40vh;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .container {
+  align-items: center;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .container > button {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .container > .notia-inkmath-inline-button {
+  display: inline-flex;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--crepe-color-on-surface-variant);
+  cursor: pointer;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .notia-inkmath-inline-button:hover,
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .notia-inkmath-inline-button:focus-visible {
+  background: var(--crepe-color-hover);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .notia-inkmath-inline-button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .notia-inkmath-inline-button .inkmath-icon-render-host,
+.notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .notia-inkmath-inline-button svg {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+}
+
+.notia-chat-agent-operation-history {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  margin-top: 12px;
+  padding: 8px 10px;
+}
+
+.notia-chat-agent-operation-history summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notia-chat-agent-operation-history ul {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.notia-chat-agent-operation-history li {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.notia-chat-agent-operation-history li > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notia-chat-agent-operation-history small {
+  color: var(--color-subtle-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-agent-operation-diff {
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  max-height: min(60dvh, 520px);
+  overflow: auto;
+  padding: 10px;
+}
+
+.notia-chat-agent-operation-diff-columns {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 6px;
+}
+
+.notia-chat-agent-operation-diff pre {
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-border-soft);
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 720px) {
+  .notia-chat-agent-operation-diff-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (pointer: coarse) {
+  .notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .container > button,
+  .notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .container > .notia-inkmath-inline-button {
+    min-width: 48px;
+    min-height: 48px;
+  }
+
+  .notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .container > .notia-inkmath-inline-button {
+    width: 48px;
+    height: 48px;
+  }
+
+  .notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .ProseMirror {
+    max-width: max(0px, calc(94vw - 130px));
+  }
+}
+
 .notia-markdown-editor-root .milkdown .milkdown-block-handle {
   z-index: 9;
+  flex-direction: column;
 }
 
 .notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg {
@@ -5063,6 +5248,95 @@
   letter-spacing: 0.04em;
 }
 
+.notia-chat-diff-preview {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.notia-chat-diff-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-heading-text);
+}
+
+.notia-chat-diff-sheet-header button {
+  flex: 0 0 auto;
+}
+
+.notia-chat-diff-summary {
+  display: grid;
+  gap: 3px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-chat-diff-summary span {
+  color: var(--color-subtle-text);
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-diff-hunks {
+  display: grid;
+  gap: 8px;
+  max-height: min(46vh, 420px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.notia-chat-diff-hunk {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-main-bg) 68%, transparent);
+  cursor: pointer;
+}
+
+.notia-chat-diff-hunk.is-selected {
+  border-color: var(--color-active-border);
+}
+
+.notia-chat-diff-hunk-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-heading-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notia-chat-diff-hunk-header input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-active-border);
+}
+
+.notia-chat-diff-hunk pre {
+  max-height: 150px;
+  margin: 0;
+  padding: 7px 9px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.notia-chat-diff-hunk-old {
+  color: var(--color-error-text);
+  background: color-mix(in srgb, var(--color-error-bg, #7f1d1d) 12%, transparent);
+}
+
+.notia-chat-diff-hunk-new {
+  color: var(--color-success-text, var(--color-active-border));
+  background: color-mix(in srgb, var(--color-active-item-bg) 42%, transparent);
+}
+
 .notia-chat-agent-plan {
   border: 1px solid var(--color-border-strong);
   border-left: 2px solid var(--color-active-border);
@@ -5070,6 +5344,51 @@
   background: color-mix(in srgb, var(--color-card-bg) 97%, var(--color-accent-bg));
   padding: 12px 14px;
   gap: 9px;
+}
+
+.notia-chat-agent-operation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-soft);
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+@media (pointer: coarse) {
+  .notia-chat-diff-preview {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 30;
+    max-height: min(88dvh, 760px);
+    padding: 18px max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    overflow: auto;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 18px 18px 0 0;
+    background: var(--color-card-bg);
+    box-shadow: 0 -18px 46px color-mix(in srgb, var(--color-menu-shadow) 52%, transparent);
+  }
+
+  .notia-chat-diff-preview::before {
+    content: '';
+    width: 42px;
+    height: 4px;
+    margin: -8px auto 2px;
+    border-radius: 999px;
+    background: var(--color-border-strong);
+  }
+
+  .notia-chat-diff-hunks {
+    max-height: 46dvh;
+  }
+
+  .notia-chat-agent-confirmation-actions button,
+  .notia-chat-agent-operation-actions button {
+    min-height: 48px;
+  }
 }
 
 .notia-chat-agent-plan-list {
@@ -5120,6 +5439,73 @@
   color: var(--color-error-text);
 }
 
+.notia-chat-agent-plan-editor {
+  display: grid;
+  gap: 10px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.notia-chat-agent-plan-editor-step {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 4px;
+}
+
+.notia-chat-agent-plan-editor-step legend {
+  padding: 0 4px;
+  color: var(--color-heading-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notia-chat-agent-plan-editor-step label {
+  display: grid;
+  gap: 4px;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.notia-chat-agent-plan-editor-step input,
+.notia-chat-agent-plan-editor-step textarea,
+.notia-chat-agent-plan-editor-step select {
+  width: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 3px;
+  background: var(--color-main-bg);
+  color: var(--color-body-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.notia-chat-agent-plan-editor-step textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.notia-chat-agent-plan-editor-step input:focus-visible,
+.notia-chat-agent-plan-editor-step textarea:focus-visible,
+.notia-chat-agent-plan-editor-step select:focus-visible {
+  border-color: var(--color-focus-ring);
+  outline: 2px solid color-mix(in srgb, var(--color-focus-ring) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.notia-chat-agent-plan-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.45fr);
+  gap: 8px;
+}
+
 @keyframes notia-chat-agent-plan-spin {
   to { transform: rotate(360deg); }
 }
@@ -5167,6 +5553,11 @@
   border-color: var(--color-focus-ring);
   outline: 2px solid color-mix(in srgb, var(--color-focus-ring) 55%, transparent);
   outline-offset: 1px;
+}
+
+.notia-chat-agent-confirmation-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .notia-chat-agent-confirmation-button.is-primary {
@@ -5278,6 +5669,117 @@
   padding: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.notia-chat-markdown-math-shell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 3px 38px 3px 7px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-card-bg) 88%, var(--color-accent-bg) 12%);
+  vertical-align: middle;
+}
+
+.notia-chat-markdown-math-shell--display {
+  display: flex;
+  margin: 0 0 10px;
+  padding: 7px 46px 7px 12px;
+  overflow: hidden;
+}
+
+.notia-chat-markdown-math-content {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.notia-chat-markdown-math-shell--display .katex-display {
+  margin: 0;
+  padding: 4px 0;
+}
+
+.notia-chat-markdown-math-rendered {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.notia-chat-markdown-math-shell--display .notia-chat-markdown-math-rendered {
+  display: block;
+}
+
+.notia-chat-markdown-math-shell:not(.notia-chat-markdown-math-shell--display) .katex {
+  white-space: normal;
+}
+
+.notia-chat-markdown-math-toggle {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-icon-muted);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.notia-chat-markdown-math-toggle:hover,
+.notia-chat-markdown-math-toggle[aria-pressed='true'] {
+  border-color: var(--color-border-soft);
+  background: var(--color-hover-surface);
+  color: var(--color-icon-chat);
+}
+
+.notia-chat-markdown-math-toggle:focus-visible {
+  outline: 2px solid var(--color-active-border);
+  outline-offset: 2px;
+}
+
+.notia-chat-markdown-math-source {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-markdown-math-source,
+.notia-chat-markdown-math-source code,
+.notia-chat-markdown-math-fallback {
+  padding: 0;
+  background: transparent;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.9em;
+}
+
+@media (pointer: coarse) {
+  .notia-chat-markdown-math-toggle {
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+  }
+
+  .notia-chat-markdown-math-shell {
+    padding-right: 56px;
+  }
+
+  .notia-chat-markdown-math-shell--display {
+    padding-right: 60px;
+  }
 }
 
 .notia-chat-markdown blockquote {
@@ -5957,4 +6459,28 @@
   opacity: 0.8;
   max-width: 100%;
   word-break: break-word;
+}
+.notia-settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.notia-settings-checkbox-row input {
+  min-width: 20px;
+  min-height: 20px;
+}
+
+.notia-settings-hint {
+  margin: 2px 0 8px;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.notia-settings-select {
+  min-width: 150px;
+  padding: 6px 8px;
 }

@@ -25,6 +25,7 @@ use tauri::{Emitter, Manager};
 const MAX_HTTP_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const PASSWORD_HASH_ITERATIONS: u32 = 210_000;
 const TASK_MANAGER_PUBLICATION_PATH: &str = "/task-manager";
+const PUBLISHED_VAULT_ALIAS: &str = "published-vault";
 #[cfg(target_os = "windows")]
 const PUBLICATION_CERTIFICATE_VERSION: &str = "2";
 
@@ -566,7 +567,7 @@ fn serve_request<S: Read + Write>(mut stream: S, runtime: Arc<Mutex<PublicationR
         return;
     }
     if authenticated && method == "GET" && path == format!("{base}/events") {
-        serve_publication_events(&mut stream, &runtime, &publication.vault_path);
+        serve_publication_events(&mut stream, &runtime, PUBLISHED_VAULT_ALIAS);
         return;
     }
     let response = if method == "GET" && (path == base || path == format!("{base}/")) {
@@ -589,21 +590,7 @@ fn serve_request<S: Read + Write>(mut stream: S, runtime: Arc<Mutex<PublicationR
     } else if method == "GET" && path == format!("{base}/app") {
         serve_publication_index(assets.as_ref())
     } else if method == "GET" && path == format!("{base}/bootstrap") {
-        json_response(
-            "200 OK",
-            serde_json::json!({
-                "vaultPath": publication.vault_path,
-                "theme": publication.theme,
-                "settings": publication.settings,
-                "aiPreferences": {
-                    "ollamaUrl": "https://127.0.0.1:1",
-                    "apiKey": "",
-                    "selectedModel": publication.ai_preferences.selected_model,
-                    "thinkingEnabled": publication.ai_preferences.thinking_enabled,
-                    "thinkingLevel": publication.ai_preferences.thinking_level,
-                }
-            }),
-        )
+        json_response("200 OK", build_publication_bootstrap(&publication))
     } else if method == "POST" && path == format!("{base}/invoke") {
         serve_invoke(http_body(&request), &runtime, &publication)
     } else if method == "GET" && path.starts_with(&format!("{base}/assets/")) {
@@ -615,6 +602,22 @@ fn serve_request<S: Read + Write>(mut stream: S, runtime: Arc<Mutex<PublicationR
         text_response("404 Not Found", "No existe.")
     };
     let _ = stream.write_all(&response);
+}
+
+#[cfg(target_os = "windows")]
+fn build_publication_bootstrap(publication: &TaskManagerPublicationPayload) -> Value {
+    serde_json::json!({
+        "vaultPath": PUBLISHED_VAULT_ALIAS,
+        "theme": publication.theme,
+        "settings": publication.settings,
+        "aiPreferences": {
+            "ollamaUrl": "https://127.0.0.1:1",
+            "apiKey": "",
+            "selectedModel": publication.ai_preferences.selected_model,
+            "thinkingEnabled": publication.ai_preferences.thinking_enabled,
+            "thinkingLevel": publication.ai_preferences.thinking_level,
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -927,11 +930,17 @@ fn serve_invoke(
     let Some(command) = request.get("command").and_then(Value::as_str) else {
         return json_error("Operación inválida.");
     };
-    let payload = request
+    let mut payload = request
         .get("args")
         .and_then(|args| args.get("payload"))
         .cloned()
         .unwrap_or(Value::Null);
+    if !matches!(
+        command,
+        "list_desktop_ai_models" | "run_desktop_ai_tool_chat"
+    ) {
+        internalize_publication_paths(&mut payload, publication);
+    }
     if let Some(result) = virtual_publication_result(command, &payload, publication) {
         return json_response("200 OK", serde_json::json!({ "result": result }));
     }
@@ -946,10 +955,9 @@ fn serve_invoke(
             if is_mutating_publication_command(command) {
                 notify_publication_changed(runtime, &publication.vault_path);
             }
-            json_response(
-                "200 OK",
-                serde_json::json!({ "result": filter_publication_result(command, result, publication) }),
-            )
+            let result = filter_publication_result(command, result, publication);
+            let result = publicize_publication_paths(result, publication);
+            json_response("200 OK", serde_json::json!({ "result": result }))
         }
         Err(error) => json_error(&error),
     }
@@ -1267,6 +1275,102 @@ fn filesystem_paths(payload: &Value) -> Vec<String> {
         .filter_map(|key| object.get(*key).and_then(Value::as_str))
         .map(normalize_path)
         .collect()
+}
+
+#[cfg(target_os = "windows")]
+const PUBLICATION_PATH_KEYS: &[&str] = &[
+    "vaultPath",
+    "directoryPath",
+    "filePath",
+    "path",
+    "targetPath",
+    "sourcePath",
+    "targetDirectoryPath",
+];
+
+#[cfg(target_os = "windows")]
+fn internalize_publication_paths(value: &mut Value, publication: &TaskManagerPublicationPayload) {
+    match value {
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| internalize_publication_paths(item, publication)),
+        Value::Object(object) => {
+            for (key, item) in object.iter_mut() {
+                if PUBLICATION_PATH_KEYS.contains(&key.as_str()) {
+                    if let Some(path) = item.as_str() {
+                        *item = Value::String(internalize_publication_path(path, publication));
+                    }
+                }
+                internalize_publication_paths(item, publication);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn internalize_publication_path(path: &str, publication: &TaskManagerPublicationPayload) -> String {
+    let normalized_path = path.replace('\\', "/");
+    let alias_with_separator = format!("{PUBLISHED_VAULT_ALIAS}/");
+    if normalized_path.eq_ignore_ascii_case(PUBLISHED_VAULT_ALIAS) {
+        return publication.vault_path.clone();
+    }
+    if normalized_path
+        .get(..alias_with_separator.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&alias_with_separator))
+    {
+        return format!(
+            "{}/{}",
+            publication.vault_path.trim_end_matches(['/', '\\']),
+            &normalized_path[alias_with_separator.len()..]
+        );
+    }
+    path.to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn publicize_publication_paths(
+    mut value: Value,
+    publication: &TaskManagerPublicationPayload,
+) -> Value {
+    match &mut value {
+        Value::Array(items) => items.iter_mut().for_each(|item| {
+            let replacement = publicize_publication_paths(item.take(), publication);
+            *item = replacement;
+        }),
+        Value::Object(object) => {
+            for (key, item) in object.iter_mut() {
+                if PUBLICATION_PATH_KEYS.contains(&key.as_str()) {
+                    if let Some(path) = item.as_str() {
+                        *item = Value::String(publicize_publication_path(path, publication));
+                    }
+                }
+                let replacement = publicize_publication_paths(item.take(), publication);
+                *item = replacement;
+            }
+        }
+        _ => {}
+    }
+    value
+}
+
+#[cfg(target_os = "windows")]
+fn publicize_publication_path(path: &str, publication: &TaskManagerPublicationPayload) -> String {
+    let candidate = path.replace('\\', "/");
+    let vault = publication.vault_path.replace('\\', "/");
+    let vault = vault.trim_end_matches('/');
+    if candidate.eq_ignore_ascii_case(vault) {
+        return PUBLISHED_VAULT_ALIAS.to_string();
+    }
+    if candidate.len() > vault.len()
+        && candidate.as_bytes().get(vault.len()) == Some(&b'/')
+        && candidate
+            .get(..vault.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(vault))
+    {
+        return format!("{PUBLISHED_VAULT_ALIAS}/{}", &candidate[vault.len() + 1..]);
+    }
+    path.to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -1657,6 +1761,50 @@ mod tests {
     }
 
     #[test]
+    fn publication_paths_use_an_opaque_alias_in_browser_results() {
+        let publication = publication();
+        assert_eq!(
+            internalize_publication_path("published-vault/task-mannager/equipo.md", &publication),
+            "C:/Vault/task-mannager/equipo.md"
+        );
+        assert_eq!(
+            publicize_publication_path("C:/Vault/task-mannager/equipo.md", &publication),
+            "published-vault/task-mannager/equipo.md"
+        );
+
+        let result = publicize_publication_paths(
+            serde_json::json!({
+                "path": "C:/Vault/task-mannager/equipo.md",
+                "content": "No se debe tocar C:/Vault dentro del contenido."
+            }),
+            &publication,
+        );
+        assert_eq!(result["path"], "published-vault/task-mannager/equipo.md");
+        assert_eq!(
+            result["content"],
+            "No se debe tocar C:/Vault dentro del contenido."
+        );
+    }
+
+    #[test]
+    fn publication_bootstrap_contains_no_host_path_or_ai_credential() {
+        let mut publication = publication();
+        publication.ai_preferences.api_key = "secret-api-key".to_string();
+
+        let bootstrap = build_publication_bootstrap(&publication);
+        let serialized = serde_json::to_string(&bootstrap).expect("bootstrap json");
+
+        assert_eq!(bootstrap["vaultPath"], PUBLISHED_VAULT_ALIAS);
+        assert!(!serialized.contains("C:/Vault"));
+        assert!(!serialized.contains("secret-api-key"));
+        assert_eq!(bootstrap["aiPreferences"]["apiKey"], "");
+        assert_eq!(
+            bootstrap["aiPreferences"]["ollamaUrl"],
+            "https://127.0.0.1:1"
+        );
+    }
+
+    #[test]
     fn authorizes_selected_task_and_rejects_private_task() {
         let published = authorize_command(
             "write_library_file",
@@ -1671,6 +1819,62 @@ mod tests {
 
         assert!(published);
         assert!(!private);
+    }
+
+    #[test]
+    fn applies_route_authorization_to_every_published_filesystem_command() {
+        let publication = publication();
+        let cases = [
+            (
+                "read_library_tree",
+                serde_json::json!({ "directoryPath": "C:/Vault/task-mannager" }),
+            ),
+            (
+                "read_markdown_files",
+                serde_json::json!({ "directoryPath": "C:/Vault/task-mannager" }),
+            ),
+            (
+                "read_library_file",
+                serde_json::json!({ "filePath": "C:/Vault/task-mannager/equipo/ticket.md" }),
+            ),
+            (
+                "write_library_file",
+                serde_json::json!({ "filePath": "C:/Vault/task-mannager/equipo/ticket.md" }),
+            ),
+            (
+                "path_exists",
+                serde_json::json!({ "path": "C:/Vault/task-mannager/equipo" }),
+            ),
+            (
+                "is_directory_path",
+                serde_json::json!({ "path": "C:/Vault/task-mannager/equipo" }),
+            ),
+            (
+                "create_library_entry",
+                serde_json::json!({ "directoryPath": "C:/Vault/task-mannager/equipo" }),
+            ),
+            (
+                "library_entry_operation",
+                serde_json::json!({ "targetPath": "C:/Vault/task-mannager/equipo/ticket.md" }),
+            ),
+        ];
+
+        for (command, payload) in cases {
+            assert!(
+                authorize_command(command, &payload, &publication),
+                "{command}"
+            );
+        }
+        assert!(!authorize_command(
+            "write_library_file",
+            &serde_json::json!({ "filePath": "C:/Vault/task-mannager/privado/ticket.md" }),
+            &publication,
+        ));
+        assert!(!authorize_command(
+            "read_library_file",
+            &serde_json::json!({ "filePath": "C:/Vault/otro/privado.md" }),
+            &publication,
+        ));
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 
 const CHAT_ROOT_DIRECTORY_NAME = 'chat'
 const CHAT_HISTORY_DIRECTORY_NAME = 'chats'
+// Legacy path kept only for migration/compatibility; active agent memory lives in .agent/memory/memory.md.
 const LONG_TERM_MEMORY_FILE_NAME = 'LongTermMemory.md'
 
 export function joinChatPath(basePath: string, childName: string): string {
@@ -58,14 +59,6 @@ async function ensureFolder(parentDirectoryPath: string, folderName: string, lib
   void result
 }
 
-async function ensureMarkdownFile(parentDirectoryPath: string, fileName: string, library: NotiaLibrary): Promise<void> {
-  const result = await createLibraryEntry(parentDirectoryPath, fileName, 'note', {
-    androidDirectoryUri: library.androidTreeUri,
-  })
-  // Same as ensureFolder — "already exists" is benign.
-  void result
-}
-
 export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise<void> {
   // Optimisation: on Android, use readLibraryDirectory (shallow, ls-style)
   // instead of readLibraryTree (full recursive traversal) to check if the
@@ -100,9 +93,6 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
       }
 
       if (chatChildren) {
-        const hasLongTermMemory = chatChildren.some(
-          (n) => n.type === 'file' && n.name === LONG_TERM_MEMORY_FILE_NAME,
-        )
         const hasChatsDir = chatChildren.some(
           (n) => n.type === 'folder' && n.name === CHAT_HISTORY_DIRECTORY_NAME,
         )
@@ -110,9 +100,6 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
         const chatDirectoryPath = resolveChatRootDirectoryPath(library.path)
         // Create missing children in parallel since they're independent
         const pendingCreations: Promise<void>[] = []
-        if (!hasLongTermMemory) {
-          pendingCreations.push(ensureMarkdownFile(chatDirectoryPath, LONG_TERM_MEMORY_FILE_NAME, library))
-        }
         if (!hasChatsDir) {
           pendingCreations.push(ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library))
         }
@@ -131,7 +118,6 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
   await ensureFolder(library.path, CHAT_ROOT_DIRECTORY_NAME, library)
   const chatDirectoryPath = resolveChatRootDirectoryPath(library.path)
   await Promise.allSettled([
-    ensureMarkdownFile(chatDirectoryPath, LONG_TERM_MEMORY_FILE_NAME, library),
     ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library),
   ])
 }

@@ -17,6 +17,12 @@ struct TelegramResponse<T> {
     description: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TelegramSentMessage {
+    #[serde(rename = "message_id")]
+    message_id: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelegramIdentity {
@@ -229,7 +235,7 @@ pub async fn send_message(
     text: &str,
     buttons: Vec<(String, String)>,
     parse_mode: Option<&str>,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let text: String = text.chars().take(MAX_MESSAGE_CHARS).collect();
     let keyboard: Vec<Vec<serde_json::Value>> = buttons
         .into_iter()
@@ -254,6 +260,53 @@ pub async fn send_message(
         .send()
         .await
         .map_err(|_| "No se pudo enviar el mensaje a Telegram.".to_string())?;
+    decode::<TelegramSentMessage>(response)
+        .await
+        .map(|message| message.message_id)
+}
+
+pub async fn edit_message(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    text: &str,
+    buttons: Vec<(String, String)>,
+    parse_mode: Option<&str>,
+) -> Result<(), String> {
+    if chat_id == 0 {
+        return Err("El identificador del chat de Telegram no es valido.".to_string());
+    }
+    if message_id <= 0 {
+        return Err("El identificador del mensaje de Telegram no es valido.".to_string());
+    }
+    let text: String = text.chars().take(MAX_MESSAGE_CHARS).collect();
+    if text.trim().is_empty() {
+        return Err("El mensaje de Telegram no puede estar vacio.".to_string());
+    }
+    let keyboard: Vec<Vec<serde_json::Value>> = buttons
+        .into_iter()
+        .map(|(label, data)| vec![serde_json::json!({ "text": label, "callback_data": data })])
+        .collect();
+    let mut body =
+        serde_json::json!({ "chat_id": chat_id, "message_id": message_id, "text": text });
+    if !keyboard.is_empty() {
+        body["reply_markup"] = serde_json::json!({ "inline_keyboard": keyboard });
+    }
+    if let Some(parse_mode) = parse_mode {
+        if parse_mode != "HTML" {
+            return Err("El formato del mensaje de Telegram no es valido.".to_string());
+        }
+        body["parse_mode"] = serde_json::Value::String(parse_mode.to_string());
+    }
+    let response = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(endpoint(token, "editMessageText")?)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "No se pudo actualizar el mensaje de Telegram.".to_string())?;
     decode::<serde_json::Value>(response).await.map(|_| ())
 }
 
@@ -502,7 +555,9 @@ pub async fn answer_callback(token: &str, callback_query_id: &str) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoint, TelegramAudio, TelegramDocument, TelegramPhoto};
+    use super::{
+        edit_message, endpoint, send_message, TelegramAudio, TelegramDocument, TelegramPhoto,
+    };
 
     #[test]
     fn endpoint_rejects_tokens_with_url_characters() {
@@ -516,6 +571,13 @@ mod tests {
             endpoint("123456:ABC_def-9", "getMe").unwrap(),
             "https://api.telegram.org/bot123456:ABC_def-9/getMe"
         );
+    }
+
+    #[test]
+    fn telegram_send_response_exposes_message_id() {
+        let message: super::TelegramSentMessage =
+            serde_json::from_str(r#"{"message_id":42}"#).expect("deserialize sent message");
+        assert_eq!(message.message_id, 42);
     }
 
     #[test]
@@ -554,5 +616,30 @@ mod tests {
         assert_eq!(value["fileId"], "doc-1");
         assert_eq!(value["fileName"], "sueldo.pdf");
         assert_eq!(value["mimeType"], "application/pdf");
+    }
+
+    #[test]
+    fn telegram_message_validation_fails_before_network_requests() {
+        futures::executor::block_on(async {
+            assert!(edit_message("fixture-token", 0, 10, "estado", vec![], None)
+                .await
+                .is_err());
+            assert!(edit_message("fixture-token", 42, 0, "estado", vec![], None)
+                .await
+                .is_err());
+            assert!(edit_message("fixture-token", 42, 10, "   ", vec![], None)
+                .await
+                .is_err());
+            assert!(
+                edit_message("fixture-token", 42, 10, "estado", vec![], Some("Markdown"))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                send_message("fixture-token", 42, "estado", vec![], Some("Markdown"))
+                    .await
+                    .is_err()
+            );
+        });
     }
 }

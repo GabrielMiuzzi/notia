@@ -47,6 +47,7 @@ type InkMathModalOptions = {
 	inkColor?: string;
 	serviceUrl?: string;
 	initialOcrDebounceMs?: number;
+	initialLatex?: string;
 	onAccept?: (latex: string) => void;
 	recognizeLatex?: (imageBase64: string, abortSignal: AbortSignal) => Promise<string>;
 };
@@ -139,7 +140,7 @@ export class InkMathModal extends Modal {
 		this.recognizeLatex = options.recognizeLatex;
 		this.serviceUrl = normalizeServiceUrl(options.serviceUrl ?? "");
 		this.ocrDebounceMs = clampOcrDebounceMs(options.initialOcrDebounceMs ?? 1000);
-		this.currentLatex = "";
+		this.currentLatex = options.initialLatex?.trim() ?? "";
 		this.sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
 	}
 

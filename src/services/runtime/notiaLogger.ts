@@ -1,6 +1,43 @@
 export type NotiaLogLevel = 'info' | 'warn' | 'error' | 'perf'
 export const TELEGRAM_AI_DIAGNOSTIC_MODULE = 'telegram-ai'
 
+const SENSITIVE_KEY_PATTERN = /(?:api.?key|access.?token|auth(?:orization)?|password|passwd|secret|cookie|private.?key|prompt|content|rawsource|base64|query)/i
+const SECRET_PATTERN = /(?:api.?key|access.?token|password|passwd|secret|cookie|authorization)\s*[:=]\s*[^\s,;}]+|bearer\s+[a-z0-9._~+/=-]{8,}|\b(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9_-]{12,}|xox[baprs]-[a-z0-9-]{12,}|akia[a-z0-9]{12,})\b|-----begin\s+(?:rsa|openssh|ec|private)\s+key-----/gi
+const JWT_PATTERN = /\bey[a-z0-9_-]{10,}\.[a-z0-9._-]{3,}\.[a-z0-9._-]{3,}\b/gi
+const PRIVATE_PATH_PATTERN = /(?:[a-z]:[\\/]|\\\\|\/(?:users|home|private|appdata|documents)(?:\/|$))[^\s,;)}\]]+/gi
+const EMAIL_PATTERN = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi
+
+export function redactDiagnosticText(value: string): string {
+  return value
+    .replace(SECRET_PATTERN, '[secret-redacted]')
+    .replace(JWT_PATTERN, '[token-redacted]')
+    .replace(PRIVATE_PATH_PATTERN, '[private-path-redacted]')
+    .replace(EMAIL_PATTERN, '[email-redacted]')
+    .slice(0, 1_000)
+}
+
+function sanitizeDiagnosticValue(value: unknown, key: string, depth = 0): unknown {
+  if (SENSITIVE_KEY_PATTERN.test(key)) return '[redacted]'
+  if (typeof value === 'string') return redactDiagnosticText(value)
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value
+  if (depth >= 3) return '[nested-data-redacted]'
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeDiagnosticValue(item, key, depth + 1))
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 30).map(([childKey, childValue]) => [
+      childKey,
+      sanitizeDiagnosticValue(childValue, childKey, depth + 1),
+    ]))
+  }
+  return '[value-redacted]'
+}
+
+export function redactDiagnosticData(data: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(data).map(([key, value]) => [
+    key,
+    sanitizeDiagnosticValue(value, key),
+  ]))
+}
+
 function formatLogTag(module: string, level: NotiaLogLevel): string {
   return level === 'perf' ? `[notia:perf:${module}]` : `[notia:${module}]`
 }
@@ -11,9 +48,12 @@ function serializeData(data: Record<string, unknown> | undefined): string {
   }
 
   try {
-    const entries = Object.entries(data)
+    const entries = Object.entries(redactDiagnosticData(data))
       .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
+      .map(([key, value]) => {
+        const sanitized = value
+        return `${key}=${typeof sanitized === 'string' ? sanitized : JSON.stringify(sanitized)}`
+      })
     return entries.length > 0 ? ` ${entries.join(' ')}` : ''
   } catch {
     return ''
@@ -37,7 +77,8 @@ export function notiaLog(
 
   const tag = formatLogTag(module, level)
   const dataSuffix = serializeData(data)
-  const logLine = `${tag} ${message}${dataSuffix}`
+  const safeMessage = redactDiagnosticText(message)
+  const logLine = `${tag} ${safeMessage}${dataSuffix}`
 
   if (level === 'error') {
     console.error(logLine)
@@ -52,7 +93,7 @@ export function notiaLog(
           payload: {
             level,
             module,
-            message,
+            message: safeMessage,
             data: dataSuffix || undefined,
           },
         }).catch(() => {

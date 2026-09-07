@@ -10,6 +10,7 @@ import {
 import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import {
   getDefaultOllamaApiUrl,
+  getSessionAiApiKey,
   normalizeAiSettingsInput,
   type AiPreferences,
 } from '../../services/preferences/aiSettingsStorage'
@@ -17,6 +18,7 @@ import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
 import { checkAiHealth, invalidateAiHealthCache, listAiModels, type AiModelOption } from '../../services/ai/aiRuntime'
+import { loadAutoApplyLowRiskPreference, saveAutoApplyLowRiskPreference } from '../../services/ai/aiAutoApplyPreference'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
@@ -83,7 +85,11 @@ export function SettingsModal({
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
-  const normalizedIncomingAiPreferences = normalizeAiSettingsInput(aiPreferences)
+  const [autoApplyLowRisk, setAutoApplyLowRisk] = useState(false)
+  const normalizedIncomingAiPreferences = {
+    ...normalizeAiSettingsInput(aiPreferences),
+    apiKey: getSessionAiApiKey(),
+  }
   const requestedSection = useAppSelector(selectSettingsActiveSection)
   const [activeSection, setActiveSection] = useState<SettingsSection>(() => {
     if (requestedSection && VALID_SETTINGS_SECTIONS.has(requestedSection)) {
@@ -91,6 +97,10 @@ export function SettingsModal({
     }
     return 'General'
   })
+
+  useEffect(() => {
+    setAutoApplyLowRisk(activeLibrary?.id ? loadAutoApplyLowRiskPreference(activeLibrary.id) : false)
+  }, [activeLibrary?.id, open])
 
   useEffect(() => {
     if (open && requestedSection && VALID_SETTINGS_SECTIONS.has(requestedSection)) {
@@ -119,6 +129,10 @@ export function SettingsModal({
   const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
   const [thinkingEnabledDraft, setThinkingEnabledDraft] = useState(normalizedIncomingAiPreferences.thinkingEnabled)
   const [thinkingLevelDraft, setThinkingLevelDraft] = useState(normalizedIncomingAiPreferences.thinkingLevel)
+  const [progressModeDraft, setProgressModeDraft] = useState(normalizedIncomingAiPreferences.progressMode)
+  const [showPlanDraft, setShowPlanDraft] = useState(normalizedIncomingAiPreferences.showPlan)
+  const [showReasoningSummaryDraft, setShowReasoningSummaryDraft] = useState(normalizedIncomingAiPreferences.showReasoningSummary)
+  const [editProgressMessageDraft, setEditProgressMessageDraft] = useState(normalizedIncomingAiPreferences.editProgressMessage)
   const [telegramTokenDraft, setTelegramTokenDraft] = useState(telegramPreferences.botToken)
   const [telegramStatus, setTelegramStatus] = useState('Todavia no se probo la conexion.')
   const [isCheckingTelegram, setIsCheckingTelegram] = useState(false)
@@ -170,6 +184,10 @@ export function SettingsModal({
     selectedModel: selectedModelDraft,
     thinkingEnabled: thinkingEnabledDraft,
     thinkingLevel: thinkingLevelDraft,
+    progressMode: progressModeDraft,
+    showPlan: showPlanDraft,
+    showReasoningSummary: showReasoningSummaryDraft,
+    editProgressMessage: editProgressMessageDraft,
   })
   const selectedModelOption = availableModels.find((model) => model.name === selectedModelDraft) ?? null
 
@@ -184,12 +202,20 @@ export function SettingsModal({
     setSelectedModelDraft(normalizedIncomingAiPreferences.selectedModel)
     setThinkingEnabledDraft(normalizedIncomingAiPreferences.thinkingEnabled)
     setThinkingLevelDraft(normalizedIncomingAiPreferences.thinkingLevel)
+    setProgressModeDraft(normalizedIncomingAiPreferences.progressMode)
+    setShowPlanDraft(normalizedIncomingAiPreferences.showPlan)
+    setShowReasoningSummaryDraft(normalizedIncomingAiPreferences.showReasoningSummary)
+    setEditProgressMessageDraft(normalizedIncomingAiPreferences.editProgressMessage)
   }, [
     normalizedIncomingAiPreferences.apiKey,
     normalizedIncomingAiPreferences.ollamaUrl,
     normalizedIncomingAiPreferences.selectedModel,
     normalizedIncomingAiPreferences.thinkingEnabled,
     normalizedIncomingAiPreferences.thinkingLevel,
+    normalizedIncomingAiPreferences.progressMode,
+    normalizedIncomingAiPreferences.showPlan,
+    normalizedIncomingAiPreferences.showReasoningSummary,
+    normalizedIncomingAiPreferences.editProgressMessage,
     open,
   ])
 
@@ -296,6 +322,10 @@ export function SettingsModal({
       selectedModel: selectedModelDraft,
       thinkingEnabled: thinkingEnabledDraft,
       thinkingLevel: thinkingLevelDraft,
+      progressMode: progressModeDraft,
+      showPlan: showPlanDraft,
+      showReasoningSummary: showReasoningSummaryDraft,
+      editProgressMessage: editProgressMessageDraft,
     })
 
     setOllamaUrlDraft(normalized.ollamaUrl)
@@ -303,13 +333,16 @@ export function SettingsModal({
     setSelectedModelDraft(normalized.selectedModel)
     setThinkingEnabledDraft(normalized.thinkingEnabled)
     setThinkingLevelDraft(normalized.thinkingLevel)
+    setProgressModeDraft(normalized.progressMode)
+    setShowPlanDraft(normalized.showPlan)
+    setShowReasoningSummaryDraft(normalized.showReasoningSummary)
+    setEditProgressMessageDraft(normalized.editProgressMessage)
     onAiPreferencesChange(normalized)
   }
 
   // Save pending changes when modal closes
   useEffect(() => {
     if (!open) {
-      console.log('[SettingsModal] Modal closing, committing changes...')
       // Commit any pending changes when closing
       commitAiPreferences()
     }
@@ -646,6 +679,64 @@ export function SettingsModal({
                     )}
                   </div>
                 ) : null}
+                <div className="notia-ai-thinking-settings">
+                  <div className="notia-settings-card-label">Feedback del agente</div>
+                  <label className="notia-settings-checkbox-row">
+                    <span>Detalle del progreso</span>
+                    <select
+                      className="notia-settings-select"
+                      value={progressModeDraft}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        if (value !== 'minimal' && value !== 'standard' && value !== 'detailed' && value !== 'off') return
+                        setProgressModeDraft(value)
+                        onAiPreferencesChange({ ...normalizedAiPreferences, progressMode: value })
+                      }}
+                    >
+                      <option value="minimal">Mínimo</option>
+                      <option value="standard">Estándar</option>
+                      <option value="detailed">Detallado</option>
+                      <option value="off">Desactivado</option>
+                    </select>
+                  </label>
+                  <label className="notia-settings-checkbox-row">
+                    <span>Mostrar TO-DO</span>
+                    <input type="checkbox" checked={showPlanDraft} onChange={(event) => {
+                      setShowPlanDraft(event.target.checked)
+                      onAiPreferencesChange({ ...normalizedAiPreferences, showPlan: event.target.checked })
+                    }} />
+                  </label>
+                  <label className="notia-settings-checkbox-row">
+                    <span>Mostrar resumen del enfoque</span>
+                    <input type="checkbox" checked={showReasoningSummaryDraft} onChange={(event) => {
+                      setShowReasoningSummaryDraft(event.target.checked)
+                      onAiPreferencesChange({ ...normalizedAiPreferences, showReasoningSummary: event.target.checked })
+                    }} />
+                  </label>
+                  <label className="notia-settings-checkbox-row">
+                    <span>Editar un único mensaje de progreso</span>
+                    <input type="checkbox" checked={editProgressMessageDraft} onChange={(event) => {
+                      setEditProgressMessageDraft(event.target.checked)
+                      onAiPreferencesChange({ ...normalizedAiPreferences, editProgressMessage: event.target.checked })
+                    }} />
+                  </label>
+                  <label className="notia-settings-checkbox-row">
+                    <span>Aplicar automáticamente cambios de riesgo bajo</span>
+                    <input
+                      type="checkbox"
+                      checked={autoApplyLowRisk}
+                      disabled={!activeLibrary}
+                      onChange={(event) => {
+                        const enabled = event.target.checked
+                        setAutoApplyLowRisk(enabled)
+                        if (activeLibrary) saveAutoApplyLowRiskPreference(activeLibrary.id, enabled)
+                      }}
+                    />
+                  </label>
+                  <p className="notia-settings-hint">
+                    Solo omite la confirmación de previews de riesgo bajo en esta biblioteca. Renombrados, borrados, cambios multiarchivo, tareas y finanzas siempre vuelven a pedir confirmación.
+                  </p>
+                </div>
                 {modelsErrorMessage ? (
                   <div className="notia-settings-status notia-settings-status--error">
                     {modelsErrorMessage}
@@ -660,6 +751,9 @@ export function SettingsModal({
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Se envía como header `Authorization: Bearer ...`
                 </div>
+                <p className="notia-settings-hint">
+                  Se conserva solo durante esta sesión y no se guarda en Redux, localStorage ni la configuración portable de la biblioteca.
+                </p>
                 <div className="notia-settings-input-wrap">
                   <input
                     className="notia-settings-input"

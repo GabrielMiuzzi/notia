@@ -44,4 +44,28 @@ describe('ChatMarkdownMessage', () => {
     expect(markup).toContain('En curso: analizar rechazos')
     expect(markup).toContain('<h3>2. Otro ticket</h3>')
   })
+
+  it('renders display and inline LaTeX with KaTeX', () => {
+    const source = [
+      'El resultado es $x^2$.',
+      '',
+      '$$',
+      '\\left[\\begin{array}{cc}1 & 2 \\\\ 3 & 4\\end{array}\\right]',
+      '$$',
+      '',
+      '```latex',
+      '\\frac{a}{b}',
+      '```',
+    ].join('\n')
+
+    const markup = renderToStaticMarkup(createElement(ChatMarkdownMessage, { source }))
+
+    expect(markup).toContain('class="notia-chat-markdown-math-shell"')
+    expect(markup).toContain('class="notia-chat-markdown-math-shell notia-chat-markdown-math-shell--display"')
+    expect(markup).toContain('class="katex"')
+    expect(markup).toContain('data-latex="x^2"')
+    expect(markup).toContain('aria-label="Mostrar fórmula LaTeX"')
+    expect(markup).toContain('data-latex="\\left[\\begin{array}{cc}1 &amp; 2 \\\\ 3 &amp; 4\\end{array}\\right]"')
+    expect(markup).toContain('data-latex="\\frac{a}{b}"')
+  })
 })

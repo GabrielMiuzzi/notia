@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { shallowEqual } from 'react-redux'
 import {
   EXPLORER_HEADER_ACTIONS,
@@ -6,7 +7,7 @@ import {
   TITLEBAR_RIGHT_ACTIONS,
   TOP_TOOLBAR_ACTIONS,
 } from '../../constants/notiaMenu'
-import { controlWindow } from '../../services/window/windowRuntime'
+import { controlWindow, exitApplication } from '../../services/window/windowRuntime'
 import { NotiaActionsContext } from '../../context/notiaActions/NotiaActionsContext'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { NotiaSidebar } from './NotiaSidebar'
@@ -43,8 +44,10 @@ import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/lib
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 import { notiaTimer } from '../../services/runtime/notiaLogger'
+import { saveAiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { useWindowsBackups } from './hooks/useWindowsBackups'
 import { useTaskManagerPublicationAutostart } from '../../modules/task-manager/hooks/useTaskManagerPublicationAutostart'
+import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 
 // --- Pure helper function ---
 
@@ -85,7 +88,11 @@ function NotiaMenuComponent() {
 
   const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
+  const [markdownSelection, setMarkdownSelection] = useState<MarkdownSelectionContext | null>(null)
+  const [markdownExternalUpdate, setMarkdownExternalUpdate] = useState<MarkdownDocumentUpdate | null>(null)
+  const markdownExternalUpdateRevisionRef = useRef(0)
   const closeColdPassTabRef = useRef<() => void>(() => {})
+  const isExitingApplicationRef = useRef(false)
 
   const {
     coldPassSession,
@@ -137,9 +144,14 @@ function NotiaMenuComponent() {
 
   // --- Stable callback refs for circular dependencies between hooks ---
   const persistTextDocumentSourceRef = useRef<((targetPath: string, targetSource: string) => Promise<boolean>) | null>(null)
+  const persistDirtyTextDocumentsRef = useRef<(() => Promise<boolean>) | null>(null)
   const bumpLibraryIndexRevisionRef = useRef<() => void>(() => {})
+  const persistDirtyTextDocumentsForTransition = useCallback(
+    () => persistDirtyTextDocumentsRef.current?.() ?? Promise.resolve(true),
+    [],
+  )
 
-  const { clearPendingTextSaveByPath, clearAllPendingTextSaves } = useTextDocumentAutosave({
+  const { clearPendingTextSaveByPath } = useTextDocumentAutosave({
     persistTextDocumentSource: useCallback(
       (targetPath: string, targetSource: string) => persistTextDocumentSourceRef.current?.(targetPath, targetSource) ?? Promise.resolve(true),
       [],
@@ -162,7 +174,7 @@ function NotiaMenuComponent() {
     bumpLibraryIndexRevision,
   } = useLibraryTreeSync({
     activeLibraryId,
-    clearAllPendingTextSaves,
+    persistDirtyTextDocuments: persistDirtyTextDocumentsForTransition,
     resetTabsAndClearDrawioControllers: resetTabsActionCallback,
   })
 
@@ -180,11 +192,53 @@ function NotiaMenuComponent() {
     resetColdPassSession,
     activeLibraryPath: activeLibraryPath,
   })
+  const { persistDirtyTextDocuments } = tabManager
 
   // Wire up the persistTextDocumentSource ref so autosave uses the tab manager version
   useEffect(() => {
     persistTextDocumentSourceRef.current = tabManager.persistTextDocumentSource
   }, [tabManager.persistTextDocumentSource])
+
+  useEffect(() => {
+    persistDirtyTextDocumentsRef.current = tabManager.persistDirtyTextDocuments
+  }, [tabManager.persistDirtyTextDocuments])
+
+  useEffect(() => {
+    let isMounted = true
+    let unlisten: (() => void) | null = null
+
+    void listen('notia:request-app-exit', () => {
+      if (isExitingApplicationRef.current) { return }
+      isExitingApplicationRef.current = true
+      void (async () => {
+        if (await persistDirtyTextDocuments()) {
+          if (await exitApplication()) { return }
+        }
+        isExitingApplicationRef.current = false
+      })()
+    }).then((cleanup) => {
+      if (!isMounted) {
+        cleanup()
+        return
+      }
+      unlisten = cleanup
+    }).catch((error: unknown) => {
+      console.error('[notia] failed to subscribe to application exit request', error)
+    })
+
+    return () => {
+      isMounted = false
+      unlisten?.()
+    }
+  }, [persistDirtyTextDocuments])
+
+  const handleSelectLibrary = useCallback((libraryId: string) => {
+    void (async () => {
+      if (await persistDirtyTextDocuments()) {
+        dispatch(setSelectedLibraryId(libraryId))
+      }
+    })()
+  }, [dispatch, persistDirtyTextDocuments])
 
   useEffect(() => {
     closeColdPassTabRef.current = () => { void tabManager.closeTabByPath(COLDPASS_WORKSPACE_TAB_PATH) }
@@ -222,6 +276,7 @@ function NotiaMenuComponent() {
     activeLibrary: activeLibraryForToolbar,
     resolveActiveLibraryAndroidDirectoryUri,
     notifyLibraryTreeChanged,
+    persistDirtyTextDocuments,
     closeTabsByPath: tabManager.closeTabsByPath,
     renameOpenTabPath: tabManager.renameOpenTabPath,
   })
@@ -231,6 +286,7 @@ function NotiaMenuComponent() {
     handleLibraryRemoved,
   } = useLibraryManagerActions({
     closeTabsByPath: tabManager.closeTabsByPath,
+    persistDirtyTextDocuments,
   })
 
   // --- Mounting hooks ---
@@ -249,7 +305,6 @@ function NotiaMenuComponent() {
   const handleSidebarToggle = useCallback(() => { dispatch(toggleSidebar()) }, [dispatch])
   const handleRightChatPanelToggle = useCallback(() => { dispatch(toggleRightChatPanel()) }, [dispatch])
   const handleCloseSearchMenu = useCallback(() => { dispatch(closeSearchMenu()) }, [dispatch])
-  const handleSelectLibrary = useCallback((libraryId: string) => { dispatch(setSelectedLibraryId(libraryId)) }, [dispatch])
   const handleThemeToggle = useCallback(() => { dispatch(toggleTheme()) }, [dispatch])
 
   useEffect(() => {
@@ -257,7 +312,10 @@ function NotiaMenuComponent() {
   }, [activeWorkspaceView, dispatch])
 
   const handleAiPreferencesChange = useCallback<(value: Parameters<typeof setAiSettings>[0]) => void>(
-    (next) => dispatch(setAiSettings(next)),
+    (next) => {
+      saveAiPreferences(next)
+      dispatch(setAiSettings({ ...next, apiKey: '' }))
+    },
     [dispatch],
   )
   const handleExplorerRefreshIntervalMsChange = useCallback<(value: number) => void>(
@@ -300,7 +358,24 @@ function NotiaMenuComponent() {
 
   useLibraryLinkCacheAutoRebuild()
 
-  const handleWindowAction = useCallback((action: NotiaWindowAction) => { void controlWindow(action) }, [])
+  const handleWindowAction = useCallback((action: NotiaWindowAction) => {
+    if (action !== 'close') {
+      void controlWindow(action)
+      return
+    }
+
+    if (isExitingApplicationRef.current) { return }
+    isExitingApplicationRef.current = true
+    void (async () => {
+      try {
+        if (await persistDirtyTextDocuments()) {
+          await controlWindow(action)
+        }
+      } finally {
+        isExitingApplicationRef.current = false
+      }
+    })()
+  }, [persistDirtyTextDocuments])
   const handleOpenLibraryManager = useCallback(() => { dispatch(setLibraryManagerOpen(true)) }, [dispatch])
   const handleOpenSettings = useCallback(() => { dispatch(setSettingsOpen(true)) }, [dispatch])
   const handleChatWorkspaceTreeChanged = useCallback((pathHint?: string) => {
@@ -314,7 +389,18 @@ function NotiaMenuComponent() {
     handleCycleToNextTab,
     handleActivateTab,
     handleTextDocumentChange,
+    handleExternalTextDocumentChange,
   } = tabManager
+
+  const handleActiveMarkdownDocumentChanged = useCallback((documentPath: string, source: string) => {
+    handleExternalTextDocumentChange(documentPath, source)
+    markdownExternalUpdateRevisionRef.current += 1
+    setMarkdownExternalUpdate({
+      documentPath,
+      source,
+      revision: markdownExternalUpdateRevisionRef.current,
+    })
+  }, [handleExternalTextDocumentChange])
 
   // --- Derived values ---
 
@@ -362,6 +448,7 @@ function NotiaMenuComponent() {
     graphChatHasExplicitSelection: graphChatSelectedPaths.length > 0,
     taskManagerActivePanelId,
     taskManagerChatContext,
+    markdownSelection,
   })
 
   // --- NotiaActions context value ---
@@ -466,6 +553,8 @@ function NotiaMenuComponent() {
             setTaskManagerActivePanelId={setTaskManagerActivePanelId}
             setTaskManagerChatContext={setTaskManagerChatContext}
             isImportingVault={isImportingVault}
+            onMarkdownSelectionChange={setMarkdownSelection}
+            markdownExternalUpdate={markdownExternalUpdate}
           />
           <NotiaRightPanel
             isMeetingContext={activeWorkspaceView === 'meeting'}
@@ -484,6 +573,8 @@ function NotiaMenuComponent() {
             rightPanelTransientSelectedPaths={graphChatSelectedPaths}
             onRightPanelTransientSelectedPathsChange={setGraphChatSelectedPaths}
             isAndroidRuntime={isAndroidRuntime}
+            markdownSelection={markdownSelection}
+            onActiveMarkdownDocumentChanged={handleActiveMarkdownDocumentChanged}
           />
         </div>
       <NotiaModals

@@ -19,6 +19,7 @@ import {
   COLDPASS_WORKSPACE_TAB_PATH,
   MEETING_WORKSPACE_TAB_PATH,
   FINANCE_WORKSPACE_TAB_PATH,
+  CALENDAR_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import {
   invalidateLibrarySearchGraphIndex,
@@ -31,6 +32,7 @@ import {
   type OpenFileDocument,
   type NotiaDocumentSaveStatus,
 } from '../../../types/views/fileDocument'
+import { getDirtyOpenTextDocumentPaths } from '../../../engines/documents/documentSaveEngine'
 
 interface OpenDocumentTab {
   document: OpenFileDocument
@@ -50,6 +52,7 @@ interface OpenWorkspaceSpecialTabs {
   coldPass: boolean
   meeting: boolean
   finance: boolean
+  calendar: boolean
 }
 
 function getDisplayBaseName(value: string): string {
@@ -103,6 +106,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.coldPass) { tabs.push({ path: COLDPASS_WORKSPACE_TAB_PATH, title: 'ColdPass' }) }
   if (specialTabs.meeting) { tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' }) }
   if (specialTabs.finance) { tabs.push({ path: FINANCE_WORKSPACE_TAB_PATH, title: 'Finanzas' }) }
+  if (specialTabs.calendar) { tabs.push({ path: CALENDAR_WORKSPACE_TAB_PATH, title: 'Calendario' }) }
 
   return tabs
 }
@@ -183,18 +187,22 @@ export function useTabManager({
   )
 
   const persistOpenTabBeforeClose = useCallback(
-    async (tab: OpenDocumentTab): Promise<boolean> => {
-      const tabPath = tab.document.path
+    async (tabPath: string): Promise<boolean> => {
       clearPendingTextSaveByPath(tabPath)
 
-      if (isTextFileDocument(tab.document)) {
-        if (tab.document.source === tab.latestSavedSource) { return true }
-        return persistTextDocumentSource(tabPath, tab.document.source)
-      }
+      while (true) {
+        const tab = store.getState().documents.openTabs.find((item) => item.document.path === tabPath)
+        if (!tab) { return true }
+        if (!isTextFileDocument(tab.document) || tab.document.source === tab.latestSavedSource) {
+          return true
+        }
 
-      return true
+        if (!(await persistTextDocumentSource(tabPath, tab.document.source))) {
+          return false
+        }
+      }
     },
-    [activeLibraryPath, bumpLibraryIndexRevision, clearPendingTextSaveByPath, dispatch, persistTextDocumentSource, resolveActiveLibraryAndroidDirectoryUri],
+    [clearPendingTextSaveByPath, persistTextDocumentSource],
   )
 
   const closeTabByPath = useCallback(async (tabPath: string) => {
@@ -205,6 +213,7 @@ export function useTabManager({
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
       || tabPath === MEETING_WORKSPACE_TAB_PATH
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
+      || tabPath === CALENDAR_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = store.getState().documents.specialTabs
       if (
@@ -214,6 +223,7 @@ export function useTabManager({
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !currentSpecialTabs.coldPass)
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !currentSpecialTabs.meeting)
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !currentSpecialTabs.finance)
+        || (tabPath === CALENDAR_WORKSPACE_TAB_PATH && !currentSpecialTabs.calendar)
       ) { return }
 
       const currentTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, currentSpecialTabs)
@@ -227,6 +237,7 @@ export function useTabManager({
         coldPass: tabPath === COLDPASS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.coldPass,
         meeting: tabPath === MEETING_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.meeting,
         finance: tabPath === FINANCE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.finance,
+        calendar: tabPath === CALENDAR_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.calendar,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)
       const currentActiveTabPath = selectActiveTabPath(store.getState())
@@ -251,7 +262,7 @@ export function useTabManager({
 
     const tabToClose = store.getState().documents.openTabs.find((tab) => tab.document.path === tabPath)
     if (!tabToClose) { return }
-    const canClose = await persistOpenTabBeforeClose(tabToClose)
+    const canClose = await persistOpenTabBeforeClose(tabPath)
     if (!canClose) { return }
 
     const currentTabs = store.getState().documents.openTabs
@@ -298,10 +309,31 @@ export function useTabManager({
     dispatch(setActiveTabPath(currentTabs[nextIndex].path))
   }, [dispatch])
 
-  const closeTabsByPath = useCallback((path: string) => {
+  const persistDirtyTextDocuments = useCallback(async (): Promise<boolean> => {
+    const dirtyTabPaths = getDirtyOpenTextDocumentPaths(store.getState().documents.openTabs)
+
+    for (const tabPath of dirtyTabPaths) {
+      const didPersist = await persistOpenTabBeforeClose(tabPath)
+      if (!didPersist) { return false }
+    }
+
+    return true
+  }, [persistOpenTabBeforeClose])
+
+  const closeTabsByPath = useCallback(async (path: string): Promise<boolean> => {
+    const tabsToClose = store.getState().documents.openTabs
+      .filter((tab) => isSameOrNestedPath(path, tab.document.path))
+
+    if (tabsToClose.length === 0) { return true }
+
+    for (const tab of tabsToClose) {
+      const didPersist = await persistOpenTabBeforeClose(tab.document.path)
+      if (!didPersist) { return false }
+    }
+
     const currentTabs = store.getState().documents.openTabs
     const remainingDocumentTabs = currentTabs.filter((tab) => !isSameOrNestedPath(path, tab.document.path))
-    if (remainingDocumentTabs.length === currentTabs.length) { return }
+    if (remainingDocumentTabs.length === currentTabs.length) { return true }
     for (const tab of currentTabs) {
       if (isSameOrNestedPath(path, tab.document.path)) {
         clearPendingTextSaveByPath(tab.document.path)
@@ -317,7 +349,8 @@ export function useTabManager({
           : null
     dispatch(setOpenTabs(remainingDocumentTabs))
     dispatch(setActiveTabPath(nextActiveTabPath))
-  }, [clearPendingTextSaveByPath, dispatch])
+    return true
+  }, [clearPendingTextSaveByPath, dispatch, persistOpenTabBeforeClose])
 
   const renameOpenTabPath = useCallback((path: string, nextPath: string, name: string) => {
     clearPendingTextSaveByPath(path)
@@ -338,6 +371,7 @@ export function useTabManager({
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
       || tabPath === MEETING_WORKSPACE_TAB_PATH
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
+      || tabPath === CALENDAR_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = store.getState().documents.specialTabs
       if (
@@ -347,6 +381,7 @@ export function useTabManager({
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !specialTabs.coldPass)
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !specialTabs.meeting)
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !specialTabs.finance)
+        || (tabPath === CALENDAR_WORKSPACE_TAB_PATH && !specialTabs.calendar)
       ) { return }
       dispatch(setActiveTabPath(tabPath))
       return
@@ -360,6 +395,14 @@ export function useTabManager({
     if (!targetPath) { return }
     dispatch(updateTabSource({ path: targetPath, source: nextSource }))
   }, [dispatch])
+
+  const handleExternalTextDocumentChange = useCallback((targetPath: string, nextSource: string) => {
+    const currentTab = store.getState().documents.openTabs.find((tab) => tab.document.path === targetPath)
+    if (!currentTab || !isTextFileDocument(currentTab.document)) { return }
+    clearPendingTextSaveByPath(targetPath)
+    dispatch(updateTabSource({ path: targetPath, source: nextSource }))
+    dispatch(updateTabSavedSource({ path: targetPath, source: nextSource }))
+  }, [clearPendingTextSaveByPath, dispatch])
 
   const resetTabs = useCallback(() => {
     dispatch(resetTabsAction())
@@ -377,7 +420,9 @@ export function useTabManager({
     openDocumentInTab,
     handleActivateTab,
     handleTextDocumentChange,
+    handleExternalTextDocumentChange,
     persistTextDocumentSource,
+    persistDirtyTextDocuments,
     resetTabs,
   }
 }

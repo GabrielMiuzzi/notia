@@ -31,6 +31,7 @@ export const MermaidEdgeToolbar = memo(function MermaidEdgeToolbar({
   const typeBtnRef = useRef<HTMLButtonElement>(null)
   const colorBtnRef = useRef<HTMLButtonElement>(null)
   const textBtnRef = useRef<HTMLButtonElement>(null)
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
 
   const getAnchorRect = useCallback((menu: OpenMenu): DOMRect => {
     const btn =
@@ -43,6 +44,10 @@ export const MermaidEdgeToolbar = memo(function MermaidEdgeToolbar({
             : null
     return btn?.getBoundingClientRect() ?? new DOMRect(x, y, 0, 0)
   }, [x, y])
+
+  useEffect(() => {
+    setAnchorRect(openMenu ? getAnchorRect(openMenu) : null)
+  }, [getAnchorRect, openMenu])
 
   const toggleMenu = useCallback(
     (menu: OpenMenu) => {
@@ -139,17 +144,17 @@ export const MermaidEdgeToolbar = memo(function MermaidEdgeToolbar({
 
       <MermaidEdgeTypeMenu
         visible={openMenu === 'type'}
-        anchorRect={getAnchorRect('type')}
+        anchorRect={anchorRect ?? new DOMRect(x, y, 0, 0)}
         onSelect={handleSelectType}
       />
       <MermaidEdgeColorMenu
         visible={openMenu === 'color'}
-        anchorRect={getAnchorRect('color')}
+        anchorRect={anchorRect ?? new DOMRect(x, y, 0, 0)}
         onSelect={handleSelectColor}
       />
       <MermaidEdgeLabelEditor
         visible={openMenu === 'label'}
-        anchorRect={getAnchorRect('label')}
+        anchorRect={anchorRect ?? new DOMRect(x, y, 0, 0)}
         label={currentLabel}
         onConfirm={handleConfirmLabel}
         onCancel={handleCancelLabel}

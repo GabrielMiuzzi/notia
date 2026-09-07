@@ -97,9 +97,12 @@ export const MermaidShapesMenu = memo(function MermaidShapesMenu({
   const [position, setPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
 
   const onShapeSelectRef = useRef(onShapeSelect)
-  onShapeSelectRef.current = onShapeSelect
   const onShapeDragStartRef = useRef(onShapeDragStart)
-  onShapeDragStartRef.current = onShapeDragStart
+
+  useEffect(() => {
+    onShapeSelectRef.current = onShapeSelect
+    onShapeDragStartRef.current = onShapeDragStart
+  }, [onShapeDragStart, onShapeSelect])
 
   const dragRef = useRef<{
     alias: string

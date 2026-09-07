@@ -65,7 +65,7 @@ export function useLibraryGraphData({
     return buildGraphFileStructureSignature(treeNodes)
   }, [enabled, treeNodes, flatFileList])
 
-  const graphTreeNodes = useMemo(() => treeNodes, [graphFileStructureSignature])
+  const graphTreeNodes = useMemo(() => treeNodes, [treeNodes])
 
   const graphStructureCacheKey =
     enabled && (libraryPath || rootPath) && graphFileStructureSignature

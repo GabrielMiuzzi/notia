@@ -105,14 +105,39 @@ pub(crate) fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<Mark
 }
 
 pub(crate) fn write_library_file(file_path: &str, content: &str) -> WriteLibraryFileResult {
-    match fs::write(file_path, content) {
+    let target = Path::new(file_path);
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document");
+    let temporary_path = parent.join(format!(".{}.notia-tmp-{}", file_name, std::process::id()));
+
+    let result = (|| -> std::io::Result<()> {
+        let mut temporary_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        use std::io::Write;
+        temporary_file.write_all(content.as_bytes())?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        fs::rename(&temporary_path, target)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+
+    match result {
         Ok(()) => WriteLibraryFileResult {
             ok: true,
             error: None,
         },
         Err(_) => WriteLibraryFileResult {
             ok: false,
-            error: Some("Could not write file.".to_string()),
+            error: Some("Could not write file atomically.".to_string()),
         },
     }
 }

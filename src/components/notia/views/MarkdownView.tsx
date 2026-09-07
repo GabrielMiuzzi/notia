@@ -3,7 +3,7 @@ import { useAppSelector } from '../../../store/hooks'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
-import { TextSelection } from '@milkdown/kit/prose/state'
+import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { replaceAll } from '@milkdown/kit/utils'
 import { gfm } from '@milkdown/preset-gfm'
@@ -37,6 +37,8 @@ import {
   writeLibraryFileContent,
 } from '../../../services/libraries/libraryDocumentRuntime'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
+import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../../types/views/markdownSelection'
+import { buildMarkdownSelectionContext } from '../../../engines/markdown/selectionEngine'
 import { MarkdownPropertiesPanel } from './MarkdownPropertiesPanel'
 import {
   WikiLinkSuggestionMenu,
@@ -51,6 +53,7 @@ import { quickHash } from '../../../modules/mermaid/engines/mermaidEngine'
 import { mountInlineMermaidPreview, unmountInlineMermaidPreview } from '../../../modules/mermaid/services/mermaidPreviewRuntime'
 import { createInkMathApp, type InkMathHostBridge } from '../../../modules/inkmath/platform/inkmathPlatform'
 import { InkMathModal } from '../../../modules/inkmath/view/InkMathModal'
+import { setCompatibleIcon } from '../../../modules/inkmath/view/iconFallback'
 import { recognizeInkMathWithAi } from '../../../services/ai/aiRuntime'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/nord.css'
@@ -60,6 +63,8 @@ const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
 const MATH_CODE_BLOCK_LANGUAGES = new Set(['latex', 'math', 'tex'])
 const OCR_BUTTON_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+const INLINE_LATEX_TOOLTIP_SELECTOR = '.milkdown-latex-inline-edit'
+const INLINE_LATEX_BUTTON_SELECTOR = '[data-notia-inkmath-inline-button]'
 
 interface MarkdownViewProps {
   source: string
@@ -67,6 +72,8 @@ interface MarkdownViewProps {
   onSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  onSelectionChange: (selection: MarkdownSelectionContext | null) => void
+  externalSourceUpdate: MarkdownDocumentUpdate | null
   theme?: string
   zoom: number
   onZoomChange: (zoom: number) => void
@@ -262,12 +269,62 @@ function findCodeBlockPosition(editorView: EditorView, codeBlockElement: HTMLEle
   return null
 }
 
+function readInlineLatexTarget(
+  editorView: EditorView,
+  tooltipContainer: HTMLElement,
+): { position: number; latex: string; editorElement: HTMLElement | null } | null {
+  const selection = editorView.state.selection
+  if (!(selection instanceof NodeSelection) || selection.node.type.name !== 'math_inline') {
+    return null
+  }
+
+  const editorElement = tooltipContainer.querySelector<HTMLElement>('.ProseMirror')
+  const domLatex = editorElement?.textContent
+  const latex = domLatex && domLatex.length > 0
+    ? domLatex
+    : String(selection.node.attrs.value ?? '')
+
+  return {
+    position: selection.from,
+    latex,
+    editorElement,
+  }
+}
+
+function replaceInlineLatexEditorText(editorElement: HTMLElement, latex: string): void {
+  editorElement.focus()
+  const selection = window.getSelection()
+  if (selection) {
+    const range = document.createRange()
+    range.selectNodeContents(editorElement)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  let usedNativeEditing = false
+  try {
+    usedNativeEditing = document.execCommand('insertText', false, latex)
+  } catch {
+    usedNativeEditing = false
+  }
+
+  if (usedNativeEditing && editorElement.textContent === latex) {
+    return
+  }
+
+  const paragraph = editorElement.querySelector<HTMLElement>('p') ?? editorElement
+  paragraph.textContent = latex
+  editorElement.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 function MarkdownViewInner({
   source,
   documentPath,
   onSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
+  onSelectionChange,
+  externalSourceUpdate,
   zoom,
   onZoomChange,
 }: MarkdownViewProps) {
@@ -275,6 +332,7 @@ function MarkdownViewInner({
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
 
   const [wikiLinkMenuState, setWikiLinkMenuState] = useState<WikiLinkSuggestionMenuState | null>(null)
+  const [isEditorReady, setIsEditorReady] = useState(false)
 
   const rootRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -294,6 +352,8 @@ function MarkdownViewInner({
   const wikiLinkMenuStateRef = useRef<WikiLinkSuggestionMenuState | null>(null)
   const isWikiLinkMenuOpenRef = useRef(false)
   const onOpenLinkedFileRef = useRef(onOpenLinkedFile)
+  const onSelectionChangeRef = useRef(onSelectionChange)
+  const selectionCleanupRef = useRef<(() => void) | null>(null)
   const mermaidPreviewBlockIndexRef = useRef(0)
 
   useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange)
@@ -347,6 +407,10 @@ function MarkdownViewInner({
   useEffect(() => {
     onOpenLinkedFileRef.current = onOpenLinkedFile
   }, [onOpenLinkedFile])
+
+  useEffect(() => {
+    onSelectionChangeRef.current = onSelectionChange
+  }, [onSelectionChange])
 
   useEffect(() => {
     wikiLinkMenuStateRef.current = wikiLinkMenuState
@@ -470,7 +534,85 @@ function MarkdownViewInner({
       })
     }
 
-    const codeBlockObserver = new MutationObserver(addMathOcrButtons)
+    const addInlineLatexInkMathButtons = () => {
+      rootRef.current?.querySelectorAll<HTMLElement>(`${INLINE_LATEX_TOOLTIP_SELECTOR} .container`).forEach((tooltipContainer) => {
+        if (tooltipContainer.querySelector(INLINE_LATEX_BUTTON_SELECTOR)) {
+          return
+        }
+
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'notia-inkmath-inline-button'
+        button.setAttribute('data-notia-inkmath-inline-button', 'true')
+        button.setAttribute('aria-label', 'Abrir InkMath para editar LaTeX')
+        button.title = 'Abrir InkMath para editar LaTeX'
+        setCompatibleIcon(button, 'sigma', 'Σ')
+        button.addEventListener('pointerdown', (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        })
+        button.addEventListener('click', (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+
+          const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+          const target = readInlineLatexTarget(editorView, tooltipContainer)
+          if (!target) {
+            return
+          }
+
+          new InkMathModal(inkMathApp, {
+            initialLatex: target.latex,
+            initialOcrDebounceMs: inkMathPreferencesRef.current.debounceMs,
+            recognizeLatex: (imageBase64, abortSignal) => recognizeInkMathWithAi(aiPreferencesRef.current, {
+              name: 'inkmath-formula.png',
+              mimeType: 'image/png',
+              base64: imageBase64.replace(/^data:image\/png;base64,/, '').trim(),
+            }, abortSignal),
+            onAccept: (latex) => {
+              if (!isMounted) {
+                return
+              }
+
+              const nextLatex = latex.trim()
+              const currentNode = editorView.state.doc.nodeAt(target.position)
+              if (!nextLatex || !currentNode || currentNode.type.name !== 'math_inline') {
+                return
+              }
+
+              if (target.editorElement?.isConnected) {
+                replaceInlineLatexEditorText(target.editorElement, nextLatex)
+              }
+
+              editorView.dispatch(
+                editorView.state.tr
+                  .setNodeAttribute(target.position, 'value', nextLatex)
+                  .scrollIntoView(),
+              )
+
+              // Milkdown may recreate the nested editor after the outer node
+              // changes. Sync it once more so its confirm button cannot write
+              // the previous value back into the math node.
+              window.requestAnimationFrame(() => {
+                const currentEditor = rootRef.current?.querySelector<HTMLElement>(
+                  `${INLINE_LATEX_TOOLTIP_SELECTOR}[data-show="true"] .ProseMirror`,
+                )
+                if (currentEditor) {
+                  replaceInlineLatexEditorText(currentEditor, nextLatex)
+                }
+                editorView.focus()
+              })
+            },
+          }).open()
+        })
+        tooltipContainer.append(button)
+      })
+    }
+
+    const codeBlockObserver = new MutationObserver(() => {
+      addMathOcrButtons()
+      addInlineLatexInkMathButtons()
+    })
     codeBlockObserver.observe(rootRef.current, { childList: true, characterData: true, subtree: true })
 
     const cleanupInlinePreviews = () => {
@@ -614,7 +756,28 @@ function MarkdownViewInner({
       }
 
       isReadyRef.current = true
+      setIsEditorReady(true)
       addMathOcrButtons()
+      addInlineLatexInkMathButtons()
+      const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+      const notifySelectionChange = () => {
+        onSelectionChangeRef.current(buildMarkdownSelectionContext(editorView.state, documentPathRef.current))
+      }
+      editorView.dom.addEventListener('keyup', notifySelectionChange)
+      editorView.dom.addEventListener('mouseup', notifySelectionChange)
+      editorView.dom.addEventListener('touchend', notifySelectionChange)
+      document.addEventListener('selectionchange', notifySelectionChange)
+      selectionCleanupRef.current = () => {
+        editorView.dom.removeEventListener('keyup', notifySelectionChange)
+        editorView.dom.removeEventListener('mouseup', notifySelectionChange)
+        editorView.dom.removeEventListener('touchend', notifySelectionChange)
+        document.removeEventListener('selectionchange', notifySelectionChange)
+      }
+      notifySelectionChange()
+      onSelectionChangeRef.current(buildMarkdownSelectionContext(
+        crepe.editor.action((ctx) => ctx.get(editorViewCtx)).state,
+        documentPathRef.current,
+      ))
     })
 
     return () => {
@@ -622,10 +785,13 @@ function MarkdownViewInner({
       isReadyRef.current = false
       crepeRef.current = null
       setWikiLinkMenuState(null)
+      onSelectionChangeRef.current(null)
       codeBlockObserver.disconnect()
       cleanupXGraphPreviews()
       cleanupInlinePreviews()
       clearDocumentRefs()
+      selectionCleanupRef.current?.()
+      selectionCleanupRef.current = null
       void crepe.destroy()
     }
   }, [])
@@ -635,6 +801,29 @@ function MarkdownViewInner({
     mermaidPreviewBlockIndexRef.current = 0
   }, [source])
 
+
+  useEffect(() => {
+    const crepe = crepeRef.current
+    if (!crepe || !isReadyRef.current || !isEditorReady || !externalSourceUpdate) {
+      return
+    }
+
+    if (externalSourceUpdate.documentPath !== documentPath) {
+      return
+    }
+
+    const nextDocument = parseFrontmatterDocument(externalSourceUpdate.source)
+    isApplyingExternalUpdateRef.current = true
+    crepe.editor.action(replaceAll(nextDocument.body, true))
+    isApplyingExternalUpdateRef.current = false
+    latestComposedSourceRef.current = externalSourceUpdate.source
+    latestBodyRef.current = nextDocument.body
+    frontmatterRef.current = nextDocument.frontmatter
+    hasFrontmatterRef.current = nextDocument.hasFrontmatter
+
+    const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+    onSelectionChangeRef.current(buildMarkdownSelectionContext(editorView.state, documentPath))
+  }, [documentPath, externalSourceUpdate, isEditorReady])
 
   useEffect(() => {
     const crepe = crepeRef.current

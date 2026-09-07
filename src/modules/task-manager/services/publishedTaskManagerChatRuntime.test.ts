@@ -39,6 +39,7 @@ describe('runPublishedTaskManagerChatReply', () => {
     expect(mocks.createChatScopedAgent).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'task-manager',
       publishedScope: true,
+      persistencePolicy: 'published-no-memory',
       scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
     }))
     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({

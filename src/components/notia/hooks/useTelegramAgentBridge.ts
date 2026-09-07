@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
-import type { TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
-import { loadTelegramPendingAgentRequests, loadTelegramUpdateCheckpoint, mergeTelegramUpdateCheckpoint, rememberTelegramUpdate, saveTelegramPendingAgentRequests, saveTelegramUpdateCheckpoint, type TelegramAgentRequestScope, type TelegramPendingAgentRequest } from '../../../services/preferences/telegramSettingsStorage'
+import type { TelegramPendingAgentRequestStatus, TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
+import { loadTelegramPendingAgentRequests, loadTelegramUpdateCheckpoint, mergeTelegramUpdateCheckpoint, rememberTelegramUpdate, saveTelegramPendingAgentRequests, saveTelegramUpdateCheckpoint, type TelegramAgentRequestScope, type TelegramPendingAgentRequest, type TelegramPersistedPlan } from '../../../services/preferences/telegramSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
 import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRuntime'
 import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
@@ -10,13 +10,15 @@ import type { StoredChatMessage } from '../../../services/chat/chatDocumentStora
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
 import { verifyFinanceSalaryPersistence } from '../../../modules/finance/services/financeService'
 import type { FinanceSalaryReceipt } from '../../../modules/finance/types/financeTypes'
-import { answerTelegramCallback, downloadTelegramPhoto, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
+import { answerTelegramCallback, downloadTelegramPhoto, editTelegramMessage, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
 import { formatTelegramMessage } from '../../../services/telegram/telegramMessageFormatter'
 import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
 import type { AiImageAttachment } from '../../../services/ai/aiRuntime'
+import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
 import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from '../../../services/runtime/notiaLogger'
 import { renderTelegramPdfPages } from '../../../services/telegram/telegramPdfRenderer'
+import { buildTelegramProgressMessage, createTelegramProgressState, isCriticalTelegramProgressEvent, reduceTelegramProgress, shouldPublishTelegramProgress } from '../../../services/telegram/telegramProgressRuntime'
 
 interface Params {
   library: NotiaLibrary | null
@@ -35,6 +37,25 @@ export const TELEGRAM_PENDING_REQUEST_LIMIT = 10
 export const TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS = 90_000
 export const TELEGRAM_IMAGE_AI_MAX_ROUNDS = 12
 export const TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS = 12_000
+export const TELEGRAM_RECOVERY_COMMAND = '/reanudar'
+export const TELEGRAM_MAX_PROGRESS_MESSAGE_RETRIES = 3
+
+function createTelegramAgentRequestId(): string {
+  return crypto.randomUUID().replaceAll('-', '').slice(0, 24)
+}
+
+function withTelegramRequestStatus(
+  request: TelegramAgentRequest,
+  status: TelegramPendingAgentRequestStatus,
+): TelegramAgentRequest {
+  return { ...request, status }
+}
+
+function plansMatch(left: TelegramPersistedPlan | undefined, right: TelegramPersistedPlan | undefined): boolean {
+  if (!left || !right) return left === right
+  return left.steps.length === right.steps.length
+    && left.steps.every((step, index) => step.id === right.steps[index]?.id && step.status === right.steps[index]?.status)
+}
 
 export function buildTelegramImageRoundMessage(round: number): string | null {
   if (round === 2) return 'Documento leído. Estoy consultando los datos financieros necesarios…'
@@ -48,22 +69,34 @@ export function buildTelegramFinanceSourceReference(fileId: string, extension = 
 }
 
 export function describeTelegramAgentError(error: unknown, fallback = 'No se pudo completar la consulta.'): string {
-  if (error instanceof Error && error.message.trim()) return error.message.trim()
-  if (typeof error === 'string' && error.trim()) return error.trim()
+  const redactSensitiveErrorDetails = (value: string): string => value
+    .replace(/bearer\s+[a-z0-9._~+/=-]{8,}/gi, 'Bearer [oculto]')
+    .replace(/\b(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9_-]{12,}|xox[baprs]-[a-z0-9-]{12,}|akia[a-z0-9]{12,})\b/gi, '[secreto oculto]')
+    .replace(/(api[_ -]?key|access[_ -]?token|password|passwd|secret|cookie)\s*[:=]\s*[^\s,;}]+/gi, '$1=[oculto]')
+    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, 'https://[credenciales-ocultas]@')
+    .replace(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|private|appdata|documents)[\\/])[^\s"']+/gi, '[ruta privada]')
+
+  const safe = (value: string): string => redactSensitiveErrorDetails(value).slice(0, 500)
+  if (error instanceof Error && error.message.trim()) return safe(error.message.trim())
+  if (typeof error === 'string' && error.trim()) return safe(error.trim())
   if (typeof error === 'object' && error !== null) {
     const errorPayload = error as Record<string, unknown>
     for (const key of ['message', 'error'] as const) {
       const value = errorPayload[key]
-      if (typeof value === 'string' && value.trim()) return value.trim()
-    }
-    try {
-      const serialized = JSON.stringify(error)
-      if (serialized && serialized !== '{}') return serialized.slice(0, 500)
-    } catch {
-      // Preserve the safe generic error when the native payload is not serializable.
+      if (typeof value === 'string' && value.trim()) return safe(value.trim())
     }
   }
   return fallback
+}
+
+/**
+ * Telegram must receive an actionable prompt without receiving a diff, tool
+ * arguments, private paths or document fragments. The actual preview remains
+ * available in the desktop UI; the channel only carries the decision needed.
+ */
+export function sanitizeTelegramConfirmationQuestion(_question: string): string {
+  void _question
+  return 'ConfirmaciÃ³n requerida: la IA preparÃ³ una operaciÃ³n autorizada. RevisÃ¡ el cambio en Notia y respondÃ© Confirmar o Cancelar.'
 }
 
 /** Adds an update without losing its order; the active request is tracked separately. */
@@ -72,6 +105,16 @@ export function enqueueTelegramAgentRequest<T>(queue: T[], request: T, limit = T
   const queuedAhead = queue.length
   queue.push(request)
   return queuedAhead
+}
+
+export function preserveInterruptedTelegramRequest(
+  interruptedRequests: readonly TelegramAgentRequest[],
+  activeRequest: TelegramAgentRequest,
+): TelegramAgentRequest[] {
+  if (interruptedRequests.some((request) => request.requestId === activeRequest.requestId)) {
+    return [...interruptedRequests]
+  }
+  return [...interruptedRequests, withTelegramRequestStatus(activeRequest, 'interrupted')]
 }
 
 export function isTelegramFinanceRequest(value: string): boolean {
@@ -133,11 +176,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
   const historyRef = useRef<StoredChatMessage[]>([])
   const busyRef = useRef(false)
   const pendingRequestsRef = useRef<TelegramAgentRequest[]>([])
+  const interruptedRequestsRef = useRef<TelegramAgentRequest[]>([])
   const activeRequestRef = useRef<TelegramAgentRequest | null>(null)
   const drainingRequestsRef = useRef(false)
   const pendingFinanceSourceReferenceRef = useRef<string | null>(null)
   const pendingInputRef = useRef<PendingInput | null>(null)
   const confirmationRef = useRef<Map<string, (accepted: boolean) => void>>(new Map())
+  const progressPublisherRef = useRef<((event: AgentProgressEvent) => void) | null>(null)
   const choicesRef = useRef<string[]>([])
   const conversationScopeRef = useRef<TelegramAgentScope | null>(null)
   const libraryId = library?.id
@@ -154,7 +199,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     confirmationRef.current.clear()
     conversationScopeRef.current = null
     pendingRequestsRef.current = []
+    interruptedRequestsRef.current = []
     activeRequestRef.current = null
+    progressPublisherRef.current = null
     drainingRequestsRef.current = false
     pendingFinanceSourceReferenceRef.current = null
   }, [libraryId])
@@ -165,18 +212,45 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const token = telegramToken
     const authorizedChatId = authorizedChatIdValue
     const checkpointScope = `${activeLibrary.id}:${token.split(':', 1)[0] ?? 'bot'}:${authorizedChatId}`
-    pendingRequestsRef.current = loadTelegramPendingAgentRequests(checkpointScope)
+    const storedRequests = loadTelegramPendingAgentRequests(checkpointScope)
+      .map((request) => request.requestId ? request : { ...request, requestId: createTelegramAgentRequestId() })
+    interruptedRequestsRef.current = storedRequests.filter((request) => request.status === 'interrupted')
+    pendingRequestsRef.current = storedRequests
+      .filter((request) => request.status !== 'interrupted')
+      .map((request) => withTelegramRequestStatus(request, 'queued'))
     activeRequestRef.current = null
     let cancelled = false
+    let activeAbortController: AbortController | null = null
     const persistAgentRequests = () => {
       const requests = activeRequestRef.current
-        ? [activeRequestRef.current, ...pendingRequestsRef.current]
-        : pendingRequestsRef.current
+        ? [activeRequestRef.current, ...interruptedRequestsRef.current, ...pendingRequestsRef.current]
+        : [...interruptedRequestsRef.current, ...pendingRequestsRef.current]
       if (!saveTelegramPendingAgentRequests(checkpointScope, requests)) {
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram queue persistence failed', {
           pendingRequests: requests.length,
         }, 'error')
       }
+    }
+    const interruptActiveRequest = () => {
+      activeAbortController?.abort()
+      activeAbortController = null
+      const activeRequest = activeRequestRef.current
+      if (!activeRequest) return
+      interruptedRequestsRef.current = preserveInterruptedTelegramRequest(interruptedRequestsRef.current, activeRequest)
+      activeRequestRef.current = null
+      persistAgentRequests()
+    }
+    const cancelOnVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') interruptActiveRequest()
+    }
+    document.addEventListener('visibilitychange', cancelOnVisibilityChange)
+    if (interruptedRequestsRef.current.length > 0) {
+      const count = interruptedRequestsRef.current.length
+      void sendTelegramMessage(
+        token,
+        authorizedChatId,
+        `${count === 1 ? 'Tengo una solicitud' : `Tengo ${count} solicitudes`} interrumpida${count === 1 ? '' : 's'} con estado desconocido. Escribi ${TELEGRAM_RECOVERY_COMMAND} si queres reanudarla${count === 1 ? '' : 's'}; no la voy a repetir automaticamente.`,
+      )
     }
     const updateTelegram = (next: TelegramPreferences) => {
       currentRef.current = { ...currentRef.current, telegram: next }
@@ -196,6 +270,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
 
     const waitForText = (question: string, choices: string[], signal: AbortSignal): Promise<string> => {
       choicesRef.current = choices
+      progressPublisherRef.current?.({ type: 'clarification-required', clarificationId: null })
       void sendTelegramMessage(
         token,
         authorizedChatId,
@@ -206,13 +281,22 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       return new Promise((resolve, reject) => {
         const abort = () => reject(new Error('Operacion cancelada.'))
         signal.addEventListener('abort', abort, { once: true })
-        pendingInputRef.current = { resolve: (answer) => { signal.removeEventListener('abort', abort); pendingInputRef.current = null; resolve(answer) }, reject }
+        pendingInputRef.current = {
+          resolve: (answer) => {
+            signal.removeEventListener('abort', abort)
+            pendingInputRef.current = null
+            progressPublisherRef.current?.({ type: 'phase-changed', phase: 'executing', round: null })
+            resolve(answer)
+          },
+          reject,
+        }
       })
     }
 
     const confirm = (question: string, signal: AbortSignal): Promise<boolean> => {
       const id = crypto.randomUUID().slice(0, 8)
-      void sendTelegramMessage(token, authorizedChatId, `Confirmacion requerida:\n${question}`, [
+      progressPublisherRef.current?.({ type: 'confirmation-required', operationId: null })
+      void sendTelegramMessage(token, authorizedChatId, sanitizeTelegramConfirmationQuestion(question), [
         { label: 'Confirmar', data: `confirm:${id}:yes` }, { label: 'Cancelar', data: `confirm:${id}:no` },
       ])
       return new Promise((resolve, reject) => {
@@ -231,6 +315,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           window.clearTimeout(timeoutId)
           signal.removeEventListener('abort', abort)
           confirmationRef.current.delete(id)
+          progressPublisherRef.current?.({ type: 'phase-changed', phase: 'executing', round: null })
           resolve(accepted)
         })
       })
@@ -239,29 +324,130 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const runAgent = async (request: TelegramAgentRequest) => {
       const state = currentRef.current
       if (!state.library) return
+      const abortController = new AbortController()
+      activeAbortController = abortController
       busyRef.current = true
       const requestStartedAt = performance.now()
-      let lastImageProgressAt = 0
       let phase = 'preparing'
       let savedSalary: FinanceSalaryReceipt | null = null
+      let progressState = createTelegramProgressState(pendingRequestsRef.current.length)
+      let progressMessageId: number | null = request.progressMessageId ?? null
+      let progressMessageRetryCount = request.progressMessageRetryCount ?? 0
+      let progressPublishingDisabled = progressMessageRetryCount >= TELEGRAM_MAX_PROGRESS_MESSAGE_RETRIES
+      let terminalProgressFallbackSent = false
+      let lastProgressPublishedAt: number | null = null
+      let lastProgressMessage: string | null = null
+      let progressRequestId: string | null = null
+      let lastProgressTimestamp = 0
+      let progressUpdateQueue: Promise<void> = Promise.resolve()
+      const publishProgress = (event: AgentProgressEvent): void => {
+        if (event.requestId) {
+          if (progressRequestId && progressRequestId !== event.requestId) return
+          progressRequestId = event.requestId
+        }
+        if (event.timestamp !== undefined) {
+          if (event.timestamp < lastProgressTimestamp) return
+          lastProgressTimestamp = event.timestamp
+        }
+        progressState = reduceTelegramProgress(progressState, event)
+        const persistedPlan: TelegramPersistedPlan | undefined = progressState.plan
+          ? { steps: progressState.plan.steps.map((step) => ({ id: step.id, status: step.status })) }
+          : undefined
+        const activeRequest = activeRequestRef.current
+        if (activeRequest && activeRequest.requestId === request.requestId && !plansMatch(activeRequest.plan, persistedPlan)) {
+          activeRequestRef.current = {
+            ...activeRequest,
+            ...(persistedPlan ? { plan: persistedPlan } : { plan: undefined }),
+          }
+          persistAgentRequests()
+        }
+        const now = performance.now()
+        const critical = isCriticalTelegramProgressEvent(event)
+        const message = buildTelegramProgressMessage(progressState, state.aiPreferences)
+        if (!message) return
+        if (progressPublishingDisabled && (!critical || terminalProgressFallbackSent)) return
+        if (message === lastProgressMessage) return
+        if (!shouldPublishTelegramProgress(lastProgressPublishedAt, now, critical)) return
+        lastProgressPublishedAt = now
+        lastProgressMessage = message
+        progressUpdateQueue = progressUpdateQueue.then(async () => {
+          if (progressPublishingDisabled) {
+            terminalProgressFallbackSent = true
+            progressMessageId = await sendTelegramMessage(token, authorizedChatId, message, [], 'HTML')
+          } else if (progressMessageId === null || !state.aiPreferences.editProgressMessage) {
+            progressMessageId = await sendTelegramMessage(token, authorizedChatId, message, [], 'HTML')
+            progressMessageRetryCount = 0
+          } else {
+            await editTelegramMessage(token, authorizedChatId, progressMessageId, message, [], 'HTML')
+            progressMessageRetryCount = 0
+          }
+          const activeRequest = activeRequestRef.current
+          if (activeRequest && activeRequest.requestId === request.requestId) {
+            activeRequestRef.current = {
+              ...activeRequest,
+              progressMessageId: progressMessageId ?? undefined,
+              progressMessageRetryCount,
+            }
+            persistAgentRequests()
+          }
+        }).catch((error) => {
+          progressMessageRetryCount += 1
+          progressMessageId = null
+          progressPublishingDisabled = progressMessageRetryCount >= TELEGRAM_MAX_PROGRESS_MESSAGE_RETRIES
+          lastProgressMessage = null
+          const activeRequest = activeRequestRef.current
+          if (activeRequest && activeRequest.requestId === request.requestId) {
+            activeRequestRef.current = {
+              ...activeRequest,
+              progressMessageId: undefined,
+              progressMessageRetryCount,
+            }
+            persistAgentRequests()
+          }
+          notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram progress update failed', {
+            error: describeTelegramAgentError(error, 'No se pudo actualizar el progreso.'),
+          }, 'error')
+        })
+      }
+      progressPublisherRef.current = publishProgress
+      publishProgress({ type: 'request-received' })
+      if (request.plan) {
+        progressState = {
+          ...progressState,
+          phase: 'planning',
+          reasoningSummary: 'Estoy retomando el TO-DO previamente registrado.',
+          plan: {
+            steps: request.plan.steps.map((step) => ({
+              id: step.id,
+              status: step.status,
+              label: 'continuando una tarea autorizada',
+            })),
+          },
+        }
+        publishProgress({ type: 'phase-changed', phase: 'planning', round: null })
+      }
       try {
         let text = request.text
         let image: AiImageAttachment | null = null
         let financeSourceReference = pendingFinanceSourceReferenceRef.current
         if (request.attachment) {
           phase = request.attachment.kind === 'photo' ? 'downloading-image' : 'extracting-pdf'
+          publishProgress({ type: 'phase-changed', phase: 'preparing', round: null })
           if (request.attachment.kind === 'pdf') {
+            publishProgress({ type: 'multimodal-stage', stage: 'extracting' })
             const downloaded = await extractTelegramPdf(state.telegram.botToken, request.attachment.value)
             financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId, 'pdf')
             pendingFinanceSourceReferenceRef.current = financeSourceReference
             if (!downloaded.extractedContent.trim()) {
               const pages = await renderTelegramPdfPages(downloaded.base64 ?? '')
-              image = { name: downloaded.fileName, mimeType: 'image/jpeg', base64: pages[0], additionalBase64: pages.slice(1) }
+            image = { name: downloaded.fileName, mimeType: 'image/jpeg', base64: pages[0], additionalBase64: pages.slice(1) }
               text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}, renderizado como ${pages.length} imagen(es). Analiza visualmente todas las páginas y clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro. Extrae todos los campos legibles y usa la herramienta financiera correspondiente.]`
             } else {
             text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente. Para un recibo de sueldo usa signedDocument=true solo si el contenido indica firma digital, electrónica o manuscrita; en ese caso conserva el neto impreso aunque difiera de bruto menos descuentos.`
             }
+            publishProgress({ type: 'phase-changed', phase: 'reading', round: null })
           } else {
+          publishProgress({ type: 'multimodal-stage', stage: 'analyzing-image' })
           const downloadStartedAt = performance.now()
           notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'image processing started', {
             scope: request.scope,
@@ -282,6 +468,8 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           }
         }
         phase = 'building-agent'
+        publishProgress({ type: 'multimodal-stage', stage: 'building-context' })
+        publishProgress({ type: 'phase-changed', phase: 'preparing', round: null })
         const agentBuildStartedAt = performance.now()
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent context build started', undefined, 'info')
         const files = await loadLibraryFileOptions(state.library)
@@ -317,32 +505,23 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         }, 'info')
         phase = 'running-ollama'
         const answer = await runNotiaChatReply(state.aiPreferences, {
+          requestId: request.requestId,
           agent,
           prompt: text,
           image,
           previousMessages: historyRef.current,
+          intentContext: {},
           toolCallTimeoutMs: TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS,
           streamFinalResponse: false,
           maxRounds: request.attachment ? TELEGRAM_IMAGE_AI_MAX_ROUNDS : undefined,
           diagnosticModule: request.attachment ? TELEGRAM_AI_DIAGNOSTIC_MODULE : undefined,
         }, {
-          onAgentRoundStart: (round) => {
-            if (!request.attachment) return
-            const progressMessage = buildTelegramImageRoundMessage(round)
-            if (!progressMessage) return
-            const now = performance.now()
-            if (round > 4 && now - lastImageProgressAt < TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS) return
-            lastImageProgressAt = now
-            void sendTelegramMessage(token, authorizedChatId, progressMessage).catch((error) => {
-              notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram progress message failed', {
-                round,
-                error: error instanceof Error ? error.message : String(error),
-              }, 'error')
-            })
-          },
+          abortSignal: abortController.signal,
+          onAgentProgress: publishProgress,
         })
         if (savedSalary) {
           phase = 'verifying-salary-persistence'
+          publishProgress({ type: 'verification-started', operationId: null })
           await verifyFinanceSalaryPersistence(state.library, savedSalary)
         } else if (isUnverifiedTelegramSalarySuccess(answer, savedSalary)) {
           throw new Error('Telegram recibió una respuesta de éxito salarial sin una persistencia verificable.')
@@ -369,13 +548,25 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           })
         })
         phase = 'sending-response'
+        publishProgress({ type: 'phase-changed', phase: 'responding', round: null })
+        await progressUpdateQueue
         await sendTelegramMessage(token, authorizedChatId, formatTelegramMessage(answer), [], 'HTML')
+        publishProgress({ type: 'completed', rounds: 0 })
+        await progressUpdateQueue
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram answer sent', {
           durationMs: Math.round(performance.now() - requestStartedAt),
         }, 'info')
         state.onLibraryChanged()
       } catch (error) {
+        if (abortController.signal.aborted) {
+          notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram request interrupted during cleanup', {
+            requestId: request.requestId,
+          }, 'info')
+          return
+        }
         const message = describeTelegramAgentError(error)
+        publishProgress({ type: 'failed', code: 'internal' })
+        await progressUpdateQueue
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent request failed', {
           phase,
           scope: request.scope,
@@ -390,7 +581,11 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             error: describeTelegramAgentError(sendError, 'No se pudo enviar el error a Telegram.'),
           }, 'error')
         }
-      } finally { busyRef.current = false }
+      } finally {
+        if (progressPublisherRef.current === publishProgress) progressPublisherRef.current = null
+        if (activeAbortController === abortController) activeAbortController = null
+        busyRef.current = false
+      }
     }
 
     const drainAgentRequests = async () => {
@@ -400,10 +595,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         while (!cancelled) {
           const request = pendingRequestsRef.current.shift()
           if (!request) return
-          activeRequestRef.current = request
+          activeRequestRef.current = withTelegramRequestStatus(request, 'active')
           persistAgentRequests()
           try {
-            await runAgent(request)
+            await runAgent(activeRequestRef.current)
           } catch (error) {
             notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram queue request failed unexpectedly', {
               error: describeTelegramAgentError(error),
@@ -419,7 +614,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     }
 
     const enqueueAgentRequest = (request: TelegramAgentRequest): number | null => {
-      const queuedAhead = enqueueTelegramAgentRequest(pendingRequestsRef.current, request)
+      const queuedAhead = enqueueTelegramAgentRequest(
+        pendingRequestsRef.current,
+        withTelegramRequestStatus({ requestId: createTelegramAgentRequestId(), ...request }, 'queued'),
+      )
       if (queuedAhead === null) return null
       persistAgentRequests()
       const requestsAhead = queuedAhead + (busyRef.current ? 1 : 0)
@@ -463,6 +661,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       let text = update.text?.trim()
       if (!text && update.audio) {
         try {
+          progressPublisherRef.current?.({ type: 'multimodal-stage', stage: 'transcribing' })
           const transcription = (await transcribeTelegramAudio(state.telegram.botToken, update.audio)).trim()
           text = `${transcription}\n\n[Origen: audio de Telegram fileId=${update.audio.fileId}; conservar esta referencia si se crea una operación financiera.]`
         } catch (error) {
@@ -484,6 +683,27 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       }
       if (!text && !update.photo && !update.document) return
       const plainText = text ?? ''
+      if (!update.photo && !update.document && plainText.toLocaleLowerCase('es') === TELEGRAM_RECOVERY_COMMAND) {
+        if (interruptedRequestsRef.current.length === 0) {
+          await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No hay solicitudes interrumpidas para reanudar.')
+          return
+        }
+        const recoveredRequests = interruptedRequestsRef.current.splice(0)
+          .map((request) => withTelegramRequestStatus(request, 'queued'))
+        const recoverableRequests = recoveredRequests.filter((request) => request.text.trim() || request.attachment)
+        const requestsRequiringResend = recoveredRequests.length - recoverableRequests.length
+        pendingRequestsRef.current.push(...recoverableRequests)
+        persistAgentRequests()
+        const recoveryMessage = recoverableRequests.length > 0
+          ? `${recoverableRequests.length === 1 ? 'Solicitud' : 'Solicitudes'} marcada${recoverableRequests.length === 1 ? '' : 's'} para reanudar. La ejecucion requiere este comando explicito.`
+          : 'No hay solicitudes con contenido recuperable.'
+        const resendMessage = requestsRequiringResend > 0
+          ? ` ${requestsRequiringResend === 1 ? 'Una solicitud de texto' : `${requestsRequiringResend} solicitudes de texto`} requiere que la reenvies: no guardo el texto original para proteger tu privacidad.`
+          : ''
+        await sendTelegramMessage(state.telegram.botToken, peer.chatId, `${recoveryMessage}${resendMessage}`)
+        void drainAgentRequests()
+        return
+      }
       if (!update.photo && !update.document && confirmationRef.current.size === 1) {
         const decision = parseTelegramConfirmationDecision(plainText)
         if (decision !== null) {
@@ -556,6 +776,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     void loop()
     return () => {
       cancelled = true
+      document.removeEventListener('visibilitychange', cancelOnVisibilityChange)
+      interruptActiveRequest()
+      persistAgentRequests()
     }
   }, [authorizedChatIdValue, authorizedUserId, libraryId, telegramEnabled, telegramToken])
 }

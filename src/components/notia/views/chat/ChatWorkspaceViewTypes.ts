@@ -9,6 +9,8 @@ import type {
   ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
 import type { ChatAgentScope, TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import type { MarkdownSelectionContext } from '../../../../types/views/markdownSelection'
+import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview, WorkspaceAiSnapshot } from '../../../../types/ai/agentContracts'
 
 export interface ChatWorkspaceViewProps {
   agentCorpusPaths?: string[]
@@ -39,12 +41,20 @@ export interface ChatWorkspaceViewProps {
   historyHydrationMode?: 'full' | 'minimal'
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
+  markdownSelection?: MarkdownSelectionContext | null
+  activeMarkdownSource?: string | null
+  onActiveMarkdownDocumentChanged?: (documentPath: string, source: string) => void | Promise<void>
 }
 
 export interface SelectedImageAttachment {
   name: string
   mimeType: string
   base64: string
+  additionalBase64?: string[]
+  kind: 'image' | 'pdf' | 'text'
+  extractedText?: string
+  textContent?: string
+  pageCount?: number
 }
 
 export interface AttachmentMenuPosition {
@@ -133,12 +143,14 @@ export interface UseChatSubmitMessageDependencies {
   agentScope: ChatAgentScope | null
   agentPromptFileName: string
   requestAgentClarification: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
-  requestAgentConfirmation: (question: string, signal: AbortSignal) => Promise<boolean>
+  requestAgentConfirmation: (question: string, signal: AbortSignal, preview?: MutationPreview) => Promise<boolean | AgentConfirmationDecision>
+  agentExecutionPlan: TaskExecutionStep[]
   onAgentExecutionPlanChange: (steps: TaskExecutionStep[]) => void
+  onAgentProgress?: (event: AgentProgressEvent) => void
   requestAgentExecutionPlanApproval: (
     steps: TaskExecutionStep[],
     signal: AbortSignal,
-  ) => Promise<{ approved: boolean; suggestion?: string }>
+  ) => Promise<{ approved: boolean; suggestion?: string; steps?: TaskExecutionStep[] }>
   library: NotiaLibrary | null
   aiPreferences: AiPreferences
   activeChatDocument: StoredChatDocument | null
@@ -153,6 +165,10 @@ export interface UseChatSubmitMessageDependencies {
   preferredContextScopeKey: string | null
   persistTransientContext: boolean
   hasTransientContext: boolean
+  markdownSelection: MarkdownSelectionContext | null
+  activeMarkdownSource: string | null
+  workspaceSnapshot: WorkspaceAiSnapshot | null
+  onActiveMarkdownDocumentChanged?: (documentPath: string, source: string) => void | Promise<void>
   onChatCreated?: (filePath: string) => void | Promise<void>
 }
 
@@ -180,7 +196,7 @@ export type UseChatSubmitMessage = (
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
 ) => {
-  submitMessage: (rawMessage: string) => Promise<void>
+  submitMessage: (rawMessage: string, executionPlanOverride?: TaskExecutionStep[]) => Promise<void>
   cancelActiveReply: () => void
 }
 

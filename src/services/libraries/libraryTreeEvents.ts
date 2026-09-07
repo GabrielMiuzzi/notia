@@ -117,7 +117,7 @@ export function dispatchLibraryTreeChanged(detail: LibraryTreeChangedDetail): vo
   pendingTreeChangeDetails.push(detail)
   notiaLog('treeEvents', isDesktop ? 'event enqueued (desktop)' : 'event enqueued', {
     queueSize: pendingTreeChangeDetails.length,
-    pathHint: detail.pathHint,
+    hasPathHint: Boolean(detail.pathHint?.trim()),
   })
   if (pendingTreeChangeDetails.length > MAX_PENDING_TREE_EVENTS) {
     flushPendingLibraryTreeChangedEvents()

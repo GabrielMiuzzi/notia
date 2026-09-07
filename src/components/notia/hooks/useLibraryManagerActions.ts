@@ -7,16 +7,20 @@ import { useConfirmationEngine } from '../../../context/confirmation/useConfirma
 import type { NotiaLibrary } from '../../../types/notia'
 
 interface UseLibraryManagerActionsParams {
-  closeTabsByPath: (path: string) => void
+  closeTabsByPath: (path: string) => Promise<boolean>
+  persistDirtyTextDocuments: () => Promise<boolean>
 }
 
 export function useLibraryManagerActions({
   closeTabsByPath,
+  persistDirtyTextDocuments,
 }: UseLibraryManagerActionsParams) {
   const dispatch = useAppDispatch()
   const { confirm } = useConfirmationEngine()
 
-  const handleLibraryAdded = useCallback((library: NotiaLibrary) => {
+  const handleLibraryAdded = useCallback(async (library: NotiaLibrary) => {
+    if (!(await persistDirtyTextDocuments())) { return }
+
     const existingLibrary = store.getState().library.libraries.find((item) => {
       // On Android, the path may be a display name shared by multiple folders,
       // so we also compare androidTreeUri when available.
@@ -39,7 +43,7 @@ export function useLibraryManagerActions({
     dispatch(addLibrary(library))
     dispatch(setSelectedLibraryId(library.id))
     dispatch(setLibraryManagerOpen(false))
-  }, [dispatch])
+  }, [dispatch, persistDirtyTextDocuments])
 
   const handleLibraryRemoved = useCallback(async (library: NotiaLibrary) => {
     const shouldRemove = await confirm({
@@ -48,7 +52,7 @@ export function useLibraryManagerActions({
       confirmLabel: 'Quitar', cancelLabel: 'Cancelar', tone: 'danger',
     })
     if (!shouldRemove) { return }
-    closeTabsByPath(library.path)
+    if (!(await closeTabsByPath(library.path))) { return }
     dispatch(removeLibraryById(library.id))
   }, [closeTabsByPath, confirm, dispatch])
 

@@ -11,10 +11,12 @@ import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
 import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
+import { CalendarView } from './views/CalendarView'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
+import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 
 const GraphView = lazy(async () => {
   const module = await import('./views/GraphView')
@@ -40,6 +42,8 @@ interface NotiaWorkspaceProps {
   setTaskManagerActivePanelId: (id: string) => void
   setTaskManagerChatContext: (ctx: TaskManagerChatContext | null) => void
   isImportingVault: boolean
+  onMarkdownSelectionChange: (selection: MarkdownSelectionContext | null) => void
+  markdownExternalUpdate: MarkdownDocumentUpdate | null
 }
 
 function WorkspaceFallback({ label }: { label: string }) {
@@ -70,6 +74,8 @@ function NotiaWorkspaceComponent({
   setTaskManagerActivePanelId,
   setTaskManagerChatContext,
   isImportingVault,
+  onMarkdownSelectionChange,
+  markdownExternalUpdate,
 }: NotiaWorkspaceProps) {
   const handleOpenFileFromView = useNotiaAction('openFileFromView')
   const handleChatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
@@ -205,11 +211,17 @@ function NotiaWorkspaceComponent({
     return <FinanceView library={activeLibrary} />
   }
 
+  if (activeWorkspaceView === 'calendar') {
+    return <CalendarView />
+  }
+
   return (
     <MainView
       activeDocument={activeDocument}
       saveStatus={saveStatus}
       onTextDocumentChange={handleTextDocumentChange}
+      onSelectionChange={onMarkdownSelectionChange}
+      externalSourceUpdate={markdownExternalUpdate}
       markdownWikiLinkTargets={markdownWikiLinkTargets}
       onOpenLinkedFile={handleOpenFileFromView}
       theme={appTheme}

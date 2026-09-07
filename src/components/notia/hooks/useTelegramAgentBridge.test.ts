@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramFinanceRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
+import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramFinanceRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, sanitizeTelegramConfirmationQuestion, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
 describe('Telegram finance scope', () => {
   it('rejects a salary success message without a persisted salary proof', () => {
@@ -65,6 +65,12 @@ describe('Telegram finance scope', () => {
     expect(enqueueTelegramAgentRequest(queue, 'ticket-extra')).toBeNull()
   })
 
+  it('preserves an active request exactly once when the channel is interrupted', () => {
+    const request = { requestId: 'request-1', text: 'Continuar', actorUserId: 20, scope: 'library' as const, attachment: null, status: 'active' as const }
+    expect(preserveInterruptedTelegramRequest([], request)).toEqual([{ ...request, status: 'interrupted' }])
+    expect(preserveInterruptedTelegramRequest([{ ...request, status: 'interrupted' }], request)).toHaveLength(1)
+  })
+
   it('keeps the original Telegram reference available across the account clarification', () => {
     expect(buildTelegramFinanceSourceReference('AgACAgQAAxkBAAIB')).toBe('telegram:telegram-AgACAgQAAxkBAAIB.jpg')
     expect(buildTelegramFinanceSourceReference('doc-1', 'pdf')).toBe('telegram:telegram-doc-1.pdf')
@@ -73,5 +79,24 @@ describe('Telegram finance scope', () => {
   it('preserves structured native errors from PDF extraction', () => {
     expect(describeTelegramAgentError({ message: 'LlamaCloud rechazó el documento (HTTP 401).' })).toBe('LlamaCloud rechazó el documento (HTTP 401).')
     expect(describeTelegramAgentError({ error: 'Configurá LLAMA_CLOUD_API_KEY.' })).toBe('Configurá LLAMA_CLOUD_API_KEY.')
+  })
+
+  it('redacts secrets and private paths from channel-facing errors', () => {
+    const message = describeTelegramAgentError(new Error('Bearer sk-test-secret-value en C:\\Users\\gabmi\\Documents\\nota.md'))
+    expect(message).toContain('Bearer [oculto]')
+    expect(message).toContain('[ruta privada]')
+    expect(message).not.toContain('sk-test-secret-value')
+    expect(message).not.toContain('C:\\Users\\gabmi')
+  })
+
+  it('does not send diffs or tool arguments with Telegram confirmations', () => {
+    const message = sanitizeTelegramConfirmationQuestion(
+      'Vista previa: reemplazar "secreto del documento" en C:\\Users\\gabmi\\Documents\\nota.md. operationId=op-1\n- API key: sk-secret\n+ contenido privado',
+    )
+    expect(message).toContain('ConfirmaciÃ³n requerida')
+    expect(message).not.toContain('secreto del documento')
+    expect(message).not.toContain('sk-secret')
+    expect(message).not.toContain('operationId')
+    expect(message).not.toContain('C:\\Users\\gabmi')
   })
 })

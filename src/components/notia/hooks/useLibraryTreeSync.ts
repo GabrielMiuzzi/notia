@@ -180,7 +180,7 @@ function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
 
 interface UseLibraryTreeSyncParams {
   activeLibraryId: string | null
-  clearAllPendingTextSaves: () => void
+  persistDirtyTextDocuments: () => Promise<boolean>
   resetTabsAndClearDrawioControllers: () => void
 }
 
@@ -195,7 +195,7 @@ export interface UseLibraryTreeSyncActions {
 
 export function useLibraryTreeSync({
   activeLibraryId,
-  clearAllPendingTextSaves,
+  persistDirtyTextDocuments,
   resetTabsAndClearDrawioControllers,
 }: UseLibraryTreeSyncParams): UseLibraryTreeSyncActions {
   // These selectors are ONLY consumed by tree sync logic
@@ -371,6 +371,7 @@ export function useLibraryTreeSync({
   }, [
     activeLibrary?.path,
     explorerRefreshIntervalMs,
+    isAndroidRuntime,
     probeActiveLibraryTreeChanges,
     shouldRefreshActiveLibraryTree,
   ])
@@ -468,8 +469,12 @@ export function useLibraryTreeSync({
 
   // Library load effect
   useEffect(() => {
+    // A library change can happen from outside the sidebar callback (for
+    // example, after restoring state). Persist before resetting the tree so
+    // the autosave debounce cannot discard the current editor contents.
+    void persistDirtyTextDocuments()
+
     if (!activeLibrary) {
-      clearAllPendingTextSaves()
       store.dispatch(setTreeNodes([]))
       treeNodesLibraryIdRef.current = null
       store.dispatch(setPendingCreation(null))
@@ -487,7 +492,6 @@ export function useLibraryTreeSync({
       return
     }
 
-    clearAllPendingTextSaves()
     lastKnownTreeSignatureRef.current = ''
     lastAutomaticTreeProbeAtRef.current = 0
     isTreeRefreshInFlightRef.current = false
@@ -581,7 +585,7 @@ export function useLibraryTreeSync({
       isCurrent = false
       libraryLoadMeasurement.cancel({ stage: 'cleanup' })
     }
-  }, [activeLibrary, clearAllPendingTextSaves, commitTreeNodesSnapshot])
+  }, [activeLibrary, commitTreeNodesSnapshot, explorerRefreshIntervalMs, isAndroidRuntime, persistDirtyTextDocuments])
 
   // Library ID reset effect
   useEffect(() => {
@@ -605,7 +609,7 @@ export function useLibraryTreeSync({
       window.clearTimeout(libraryTreeRefreshTimerRef.current)
       libraryTreeRefreshTimerRef.current = null
     }
-  }, [activeLibraryId, clearAllPendingTextSaves, resetTabsAndClearDrawioControllers])
+  }, [activeLibraryId, resetTabsAndClearDrawioControllers])
 
   // Selection sync effect
   useEffect(() => {

@@ -116,7 +116,7 @@ export function useLibrarySession() {
     return () => {
       isCancelled = true
     }
-  }, [])
+  }, [libraries])
 
   useEffect(() => {
     if (!activeLibraryId) {

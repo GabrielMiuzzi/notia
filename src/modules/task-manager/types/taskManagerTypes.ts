@@ -31,6 +31,10 @@ export interface TaskFrontmatter {
   parent?: string
   childs?: string[] | string
   tags?: string[] | string
+  dependencies?: string[] | string
+  checklist?: string[] | string
+  relatedDocuments?: string[] | string
+  relatedTasks?: string[] | string
   order?: number | string
 }
 

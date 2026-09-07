@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { appendChatMessages, loadChatDocument, saveChatDocument, type StoredChatDocument } from '../../../../services/chat/chatDocumentStorage'
 import { buildChatMemoryWindow, resolvePersistedChatTitle } from '../../../../services/chat/chatConversationRuntime'
 import { createChatDraftFile } from '../../../../services/chat/chatSessionStorage'
@@ -9,20 +9,22 @@ import {
   type CancelableAiReplyHandle,
 } from '../../../../services/ai/aiRuntime'
 import { startNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
-import { createChatScopedAgent } from '../../../../services/chat/chatScopedAgentRuntime'
-import { loadLongTermMemories } from '../../../../services/chat/chatDocumentStorage'
+import { createChatScopedAgent, type TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
+import { buildChatAttachmentPrompt } from './chatImageAttachment'
 import type {
   UseChatSubmitMessageDependencies,
   UseChatSubmitMessageState,
 } from './ChatWorkspaceViewTypes'
+import type { AgentProgressEvent } from '../../../../types/ai/agentContracts'
 
 export function useChatSubmitMessage(
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
 ): {
-  submitMessage: (rawMessage: string) => Promise<void>
+  submitMessage: (rawMessage: string, executionPlanOverride?: TaskExecutionStep[], undoOperationId?: string) => Promise<void>
   cancelActiveReply: () => void
 } {
   const {
@@ -31,7 +33,9 @@ export function useChatSubmitMessage(
     agentPromptFileName,
     requestAgentClarification,
     requestAgentConfirmation,
+    agentExecutionPlan,
     onAgentExecutionPlanChange,
+    onAgentProgress,
     requestAgentExecutionPlanApproval,
     library,
     aiPreferences,
@@ -47,6 +51,10 @@ export function useChatSubmitMessage(
     preferredContextScopeKey,
     persistTransientContext,
     hasTransientContext,
+    markdownSelection,
+    activeMarkdownSource,
+    workspaceSnapshot,
+    onActiveMarkdownDocumentChanged,
     onChatCreated,
   } = deps
 
@@ -71,13 +79,33 @@ export function useChatSubmitMessage(
   } = state
 
   const activeReplyRef = useRef<CancelableAiReplyHandle | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    const cancelOnPageHide = () => {
+      activeReplyRef.current?.abort()
+      activeReplyRef.current = null
+    }
+    const cancelOnVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') cancelOnPageHide()
+    }
+    window.addEventListener('pagehide', cancelOnPageHide)
+    document.addEventListener('visibilitychange', cancelOnVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', cancelOnPageHide)
+      document.removeEventListener('visibilitychange', cancelOnVisibilityChange)
+      mountedRef.current = false
+      cancelOnPageHide()
+    }
+  }, [])
 
   function cancelActiveReply(): void {
     activeReplyRef.current?.abort()
     activeReplyRef.current = null
   }
 
-  const submitMessage = async (rawMessage: string) => {
+  const submitMessage = async (rawMessage: string, executionPlanOverride?: TaskExecutionStep[], undoOperationId?: string) => {
     const trimmedMessage = rawMessage.trim()
     if (!trimmedMessage || isSubmitting || !library) {
       return
@@ -92,6 +120,7 @@ export function useChatSubmitMessage(
     })
 
     const healthResult = await checkAiHealth(aiPreferences)
+    if (!mountedRef.current) return
     if (!healthResult.ok) {
       submitMeasurement.error(new Error(healthResult.message || 'No se pudo conectar con la IA.'), {
         stage: 'health_check',
@@ -106,10 +135,13 @@ export function useChatSubmitMessage(
     if (!targetChatDocument || !targetChatFilePath) {
       try {
         const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
+        if (!mountedRef.current) return
         setPendingAutoCreatedChatFilePath(filePath)
         setSelectedChatFilePath(filePath)
         await onChatCreated?.(filePath)
+        if (!mountedRef.current) return
         const createdDocument = await loadChatDocument(filePath, 'Chat', library)
+        if (!mountedRef.current) return
         const shouldDisableLongTermMemoryForAutoCreatedIndexChat =
           effectiveSelectedContextMode === 'index'
           && effectiveSelectedContextPaths.length > 0
@@ -136,6 +168,7 @@ export function useChatSubmitMessage(
           || preparedDocument.selectedContextFiles.join('\n') !== createdDocument.selectedContextFiles.join('\n')
         ) {
           await saveChatDocument(filePath, preparedDocument, library)
+          if (!mountedRef.current) return
         }
 
         targetChatDocument = preparedDocument
@@ -166,7 +199,8 @@ export function useChatSubmitMessage(
 
     if (targetChatDocument.longTermMemoryEnabled) {
       try {
-        longTermMemories = await loadLongTermMemories(library)
+        longTermMemories = await loadAgentMemories(library)
+        if (!mountedRef.current) return
       } catch (error) {
         submitMeasurement.error(error, {
           stage: 'load_long_term_memory',
@@ -174,7 +208,7 @@ export function useChatSubmitMessage(
         setDialogMessage(
           error instanceof Error && error.message.trim()
             ? error.message
-            : 'No se pudo leer LongTermMemory.md.',
+            : 'No se pudo leer la memoria persistente del agente.',
         )
         return
       }
@@ -220,9 +254,16 @@ export function useChatSubmitMessage(
         onMessageDelta: (delta: string) => {
           setStreamingAssistantMessage((current) => current + delta)
         },
+        onAgentProgress: (event: AgentProgressEvent) => {
+          onAgentProgress?.(event)
+        },
       }
       const effectiveAgentScope = agentScope ?? 'library'
-      onAgentExecutionPlanChange([])
+      const resumablePlan = (executionPlanOverride ?? agentExecutionPlan)
+        .filter((step) => step.status === 'pending' || step.status === 'in-progress')
+        .map((step) => ({ ...step, status: step.status === 'in-progress' ? 'pending' as const : step.status }))
+      const isContinuationRequest = /\b(contin(?:u[aá]a|uar|uemos)|reanuda|retoma|siguiente paso|segu[ií])\b/i.test(trimmedMessage)
+      if (!isContinuationRequest || resumablePlan.length === 0) onAgentExecutionPlanChange([])
       const agent = await createChatScopedAgent({
           scope: effectiveAgentScope,
           aiPreferences,
@@ -232,22 +273,39 @@ export function useChatSubmitMessage(
           scopePaths: agentCorpusPaths,
           taskManagerScopeKey: effectiveAgentScope === 'task-manager' ? preferredContextScopeKey : null,
           activeDocumentPath: effectiveAgentScope === 'document' ? agentCorpusPaths[0] ?? null : null,
+          activeMarkdownSource: effectiveAgentScope === 'document' ? activeMarkdownSource : null,
+          getActiveMarkdownSource: effectiveAgentScope === 'document'
+            ? () => activeMarkdownSource
+            : undefined,
+          markdownSelection: effectiveAgentScope === 'document' ? markdownSelection : null,
+          workspaceSnapshot,
           explicitlySelectedPaths: effectiveAgentScope === 'graph' && effectiveSelectedContextMode === 'direct'
             ? effectiveSelectedContextPaths
             : [],
           requestConfirmation: requestAgentConfirmation,
+          initialExecutionPlan: isContinuationRequest && resumablePlan.length > 0 ? resumablePlan : undefined,
+          initialExecutionPlanApproved: isContinuationRequest && resumablePlan.length > 0,
+          undoOperationId,
+          onActiveMarkdownDocumentChanged,
           onExecutionPlanChange: onAgentExecutionPlanChange,
           requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
         })
       const replyHandle: CancelableAiReplyHandle = startNotiaChatReply(aiPreferences, {
             agent,
-            prompt: trimmedMessage,
+            prompt: buildChatAttachmentPrompt(trimmedMessage, selectedImageAttachment),
             image: selectedImageAttachment,
             previousMessages: chatMemory,
             longTermMemories,
+            intentContext: {
+              hasActiveDocument: Boolean(effectiveAgentScope === 'document' && agentCorpusPaths[0]),
+              hasSelection: Boolean(effectiveAgentScope === 'document' && markdownSelection?.selectedText.trim()),
+              hasConversationHistory: previousMessages.length > 0,
+              hasLastAppliedOperation: Boolean(undoOperationId),
+            },
           }, streamCallbacks)
       activeReplyRef.current = replyHandle
       const streamedAnswer = await replyHandle.promise
+      if (!mountedRef.current) return
       activeReplyRef.current = null
       aiReplyMeasurement.success({
         responseLength: streamedAnswer.length,
@@ -290,6 +348,7 @@ export function useChatSubmitMessage(
           },
           {
             onPersisted: (title) => {
+              if (!mountedRef.current) return
               setActiveChatDocument((current) => (
                 current?.messages === persistedDocument.messages
                   ? { ...current, title }
@@ -310,6 +369,7 @@ export function useChatSubmitMessage(
       }
 
       if (persistedDocument.longTermMemoryEnabled) {
+        if (!mountedRef.current) return
         scheduleLongTermMemoriesForTurn({
           library,
           aiPreferences,
@@ -338,6 +398,7 @@ export function useChatSubmitMessage(
       })
     } catch (error) {
       activeReplyRef.current = null
+      if (!mountedRef.current) return
       aiReplyMeasurement.error(error)
       submitMeasurement.error(error, {
         stage: 'stream_or_persist',
@@ -358,7 +419,7 @@ export function useChatSubmitMessage(
           : 'No se pudo completar la consulta con la IA.',
       )
     } finally {
-      setIsSubmitting(false)
+      if (mountedRef.current) setIsSubmitting(false)
     }
   }
 

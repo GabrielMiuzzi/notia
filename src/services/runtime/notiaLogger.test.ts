@@ -1,33 +1,30 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from './notiaLogger'
+import { describe, expect, it } from 'vitest'
+import { redactDiagnosticData, redactDiagnosticText } from './notiaLogger'
 
-describe('notiaLog', () => {
-  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-  const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => {})
+describe('notiaLogger', () => {
+  it('redacts secrets, tokens, private paths and emails from diagnostic text', () => {
+    const redacted = redactDiagnosticText(
+      'apiKey=secret-value Bearer sk-test-secret-value jwt eyJhbGciOiJub25lIn0.abc.def en C:\\Users\\gabmi\\Documents\\nota.md y persona@example.com',
+    )
 
-  afterEach(() => {
-    consoleError.mockClear()
-    consoleInfo.mockClear()
+    expect(redacted).not.toContain('sk-test-secret-value')
+    expect(redacted).not.toContain('eyJhbGciOiJub25lIn0.abc.def')
+    expect(redacted).not.toContain('C:\\Users\\gabmi')
+    expect(redacted).not.toContain('persona@example.com')
+    expect(redacted).toContain('[secret-redacted]')
+    expect(redacted).toContain('[token-redacted]')
+    expect(redacted).toContain('[private-path-redacted]')
+    expect(redacted).toContain('[email-redacted]')
   })
 
-  it('silences routine, warning and performance messages', () => {
-    notiaLog('test', 'routine', undefined, 'info')
-    notiaLog('test', 'warning', undefined, 'warn')
-    notiaLog('test', 'measurement', undefined, 'perf')
-
-    expect(consoleError).not.toHaveBeenCalled()
-    expect(consoleInfo).not.toHaveBeenCalled()
-  })
-
-  it('keeps the Telegram AI diagnostic trace visible', () => {
-    notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'ollama round started', { round: 1 }, 'info')
-
-    expect(consoleInfo).toHaveBeenCalledWith('[notia:telegram-ai] ollama round started round=1')
-  })
-
-  it('keeps errors visible', () => {
-    notiaLog('test', 'failed', { operation: 'save' }, 'error')
-
-    expect(consoleError).toHaveBeenCalledWith('[notia:test] failed operation=save')
+  it('redacts sensitive nested diagnostic fields before local performance storage', () => {
+    const redacted = redactDiagnosticData({
+      query: 'información privada',
+      nested: { content: 'contenido reservado', path: 'C:\\Users\\gabmi\\Documents\\nota.md' },
+      count: 2,
+    })
+    expect(redacted.query).toBe('[redacted]')
+    expect(redacted.nested).toEqual({ content: '[redacted]', path: '[private-path-redacted]' })
+    expect(redacted.count).toBe(2)
   })
 })

@@ -72,8 +72,8 @@ export function CreateChatModal({
             }}
           />
           <div>
-            <strong>LongTermMemory</strong>
-            <span>Permite usar la memoria persistente del archivo `LongTermMemory.md`.</span>
+            <strong>Memoria persistente</strong>
+            <span>Permite usar la memoria persistente del agente en este chat.</span>
           </div>
         </label>
 

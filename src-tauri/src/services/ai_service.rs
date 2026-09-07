@@ -39,6 +39,28 @@ pub struct AiModelListResult {
     pub models: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelDetailsResult {
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AiWebSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub source_name: String,
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AiWebSearchResponse {
+    pub results: Vec<AiWebSearchResult>,
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use futures::StreamExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -50,6 +72,9 @@ use std::time::Duration;
 const HEALTH_TIMEOUT_SECS: u64 = 15;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const CHAT_TIMEOUT_SECS: u64 = 180;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const WEB_SEARCH_TIMEOUT_SECS: u64 = 30;
+const MAX_WEB_SEARCH_QUERY_CHARS: usize = 240;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
@@ -63,6 +88,28 @@ struct OllamaTagsResponse {
 struct OllamaModelDescriptor {
     name: Option<String>,
     model: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Deserialize)]
+struct OllamaWebSearchResponse {
+    #[serde(default)]
+    results: Vec<OllamaWebSearchItem>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Deserialize)]
+struct OllamaWebSearchItem {
+    title: Option<String>,
+    url: Option<String>,
+    content: Option<String>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -135,6 +182,181 @@ fn build_endpoint(base_url: &str, path: &str) -> Result<Url, String> {
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn build_web_search_endpoint(base_url: &str) -> Result<Url, String> {
+    let endpoint = build_endpoint(base_url, "/api/web_search")?;
+    let is_ollama_cloud = matches!(endpoint.host_str(), Some("ollama.com" | "www.ollama.com"))
+        && endpoint.port().is_none();
+    if !is_ollama_cloud {
+        return Err("La busqueda web de Ollama requiere Ollama Cloud.".to_string());
+    }
+    Ok(endpoint)
+}
+
+pub(crate) fn contains_sensitive_web_query_data(query: &str) -> bool {
+    let normalized = query.trim();
+    if normalized.is_empty()
+        || normalized.chars().count() > MAX_WEB_SEARCH_QUERY_CHARS
+        || normalized.chars().any(char::is_control)
+        || normalized.contains('%')
+    {
+        return true;
+    }
+    let lower = normalized.to_lowercase();
+    let sensitive_markers = [
+        "bearer ",
+        "authorization:",
+        "api_key=",
+        "api-key=",
+        "api key:",
+        "api key=",
+        "access_token=",
+        "access token:",
+        "access token=",
+        "password:",
+        "password=",
+        "secret:",
+        "secret=",
+        "cookie:",
+        "cookie=",
+        "password=",
+        "-----begin ",
+        "sk-",
+        "ghp_",
+        "gho_",
+        "xoxb-",
+        "akia",
+        "\"password\"",
+        "\"secret\"",
+        "mi nombre es ",
+        "me llamo ",
+        "mi correo ",
+        "mi email ",
+        "mi trabajo ",
+        "mi sueldo ",
+        "expediente legal",
+        "calendario privado",
+        "mi telefono ",
+        "mi teléfono ",
+        "mi domicilio ",
+        "mi direccion ",
+        "mi dirección ",
+        "historia clinica",
+        "historia clínica",
+        "tarjeta de credito",
+        "tarjeta de crédito",
+        "cuenta bancaria",
+    ];
+    if sensitive_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return true;
+    }
+    if lower.contains("@")
+        || lower.contains("/users/")
+        || lower.contains("\\users\\")
+        || lower.contains("/home/")
+        || lower.contains("\\documents\\")
+    {
+        return true;
+    }
+    if normalized.split_whitespace().any(|token| {
+        token
+            .trim_matches(|character: char| !character.is_ascii_digit() && character != '.')
+            .parse::<std::net::Ipv4Addr>()
+            .map(|address| address.is_private())
+            .unwrap_or(false)
+    }) {
+        return true;
+    }
+    let digit_count = normalized.chars().filter(char::is_ascii_digit).count();
+    digit_count >= 9 && normalized.chars().any(char::is_whitespace)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn search_ollama_web(
+    settings: &AiHttpSettings,
+    query: &str,
+    max_results: u32,
+) -> Result<AiWebSearchResponse, String> {
+    if settings.api_key.trim().is_empty() {
+        return Err("La busqueda web de Ollama requiere una API key configurada.".to_string());
+    }
+    if contains_sensitive_web_query_data(query) {
+        return Err(
+            "La busqueda web fue bloqueada porque la consulta no es publica y segura.".to_string(),
+        );
+    }
+    let normalized_query = query.trim();
+    let bounded_results = max_results.clamp(1, 10);
+    let client = build_client(WEB_SEARCH_TIMEOUT_SECS)?;
+    let endpoint = build_web_search_endpoint(&settings.ollama_url)?;
+    let response = with_auth(
+        client
+            .post(endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({
+                "query": normalized_query,
+                "max_results": bounded_results,
+            })),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| {
+        describe_request_error(error, "No se pudo completar la busqueda web de Ollama.")
+    })?;
+
+    if !response.status().is_success() {
+        return Err("Ollama no pudo completar la busqueda web.".to_string());
+    }
+
+    let payload = response
+        .json::<OllamaWebSearchResponse>()
+        .await
+        .map_err(|error| {
+            describe_request_error(
+                error,
+                "La respuesta de busqueda web no se pudo interpretar.",
+            )
+        })?;
+    let results = payload
+        .results
+        .into_iter()
+        .filter_map(|item| {
+            let title = item.title?.trim().to_string();
+            let url = item.url?.trim().to_string();
+            let snippet = item
+                .content
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .take(2_000)
+                .collect::<String>();
+            let parsed_url = Url::parse(&url).ok()?;
+            if title.is_empty()
+                || snippet.is_empty()
+                || !matches!(parsed_url.scheme(), "http" | "https")
+            {
+                return None;
+            }
+            let source_name = parsed_url.host_str()?.to_string();
+            Some(AiWebSearchResult {
+                title,
+                url,
+                snippet,
+                source_name,
+                published_at: None,
+            })
+        })
+        .take(bounded_results as usize)
+        .collect();
+
+    Ok(AiWebSearchResponse { results })
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -281,6 +503,43 @@ pub async fn list_ollama_models(settings: &AiHttpSettings) -> Result<AiModelList
 
     Ok(AiModelListResult {
         models: available_models,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn inspect_ollama_model(
+    settings: &AiHttpSettings,
+    model: &str,
+) -> Result<AiModelDetailsResult, String> {
+    let normalized_model = model.trim();
+    if normalized_model.is_empty() || normalized_model.chars().count() > 200 {
+        return Err("El modelo de IA no es valido.".to_string());
+    }
+
+    let endpoint = build_endpoint(&settings.ollama_url, "/api/show")?;
+    let client = build_client(HEALTH_TIMEOUT_SECS)?;
+    let response = with_auth(
+        client
+            .post(endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({ "model": normalized_model })),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| describe_request_error(error, "No se pudo consultar el modelo de IA."))?;
+
+    if !response.status().is_success() {
+        return Err("Ollama no pudo consultar las capacidades del modelo.".to_string());
+    }
+
+    let payload = response
+        .json::<OllamaShowResponse>()
+        .await
+        .map_err(|_| "Ollama devolvio capacidades de modelo invalidas.".to_string())?;
+    Ok(AiModelDetailsResult {
+        capabilities: payload.capabilities,
     })
 }
 
@@ -524,5 +783,52 @@ mod stream_tests {
                 ("content", "Respuesta".to_string()),
             ]
         );
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod web_search_tests {
+    use super::{build_web_search_endpoint, contains_sensitive_web_query_data};
+
+    #[test]
+    fn accepts_only_ollama_cloud_for_web_search() {
+        assert_eq!(
+            build_web_search_endpoint("https://ollama.com").expect("cloud endpoint"),
+            "https://ollama.com/api/web_search"
+                .parse()
+                .expect("valid URL")
+        );
+        assert!(build_web_search_endpoint("http://localhost:11434").is_err());
+        assert!(build_web_search_endpoint("https://ollama.com:443").is_err());
+    }
+
+    #[test]
+    fn blocks_sensitive_queries_without_transforming_them() {
+        assert!(contains_sensitive_web_query_data(
+            "Authorization: Bearer secret-value"
+        ));
+        assert!(contains_sensitive_web_query_data("API key: secret-value"));
+        assert!(contains_sensitive_web_query_data(
+            "mi correo es persona@example.com"
+        ));
+        for query in [
+            "Cookie: session=private-value",
+            "payload %7B%22password%22%3A%22secret%22%7D",
+            "mi trabajo es una empresa privada",
+            "mi sueldo es 2500000",
+            "mi expediente legal es privado",
+            "calendario privado: reunion el viernes",
+            "C:\\Users\\gabmi\\Documents\\nota.md",
+            "10.0.0.20 novedades de red",
+            "mi nombre es Ana Perez",
+        ] {
+            assert!(
+                contains_sensitive_web_query_data(query),
+                "query should be blocked: {query}"
+            );
+        }
+        assert!(!contains_sensitive_web_query_data(
+            "novedades públicas de Rust"
+        ));
     }
 }

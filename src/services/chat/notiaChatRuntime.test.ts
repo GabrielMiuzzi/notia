@@ -71,4 +71,26 @@ describe('notiaChatRuntime', () => {
       diagnosticModule: 'telegram-ai',
     }), {})
   })
+
+  it('forwards request correlation and continuity context through the common facade', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('seguimos')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: true, thinkingLevel: 'medium' as const,
+    }
+    const agent = { systemPrompt: 'Prompt', tools: [], executeTool: vi.fn() }
+
+    await runNotiaChatReply(preferences, {
+      requestId: 'request-1',
+      agent,
+      prompt: 'Hacelo mas corto',
+      previousMessages: [{ role: 'assistant', content: 'Respuesta anterior' }],
+      intentContext: { hasConversationHistory: true, hasActiveDocument: true },
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      requestId: 'request-1',
+      systemPrompt: expect.stringContaining('objetivo'),
+    }), {})
+  })
 })

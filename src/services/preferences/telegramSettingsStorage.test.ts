@@ -1,7 +1,19 @@
-import { describe, expect, it } from 'vitest'
-import { mergeTelegramUpdateCheckpoint, normalizeTelegramPendingAgentRequests, normalizeTelegramPreferences, rememberTelegramUpdate } from './telegramSettingsStorage'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { loadTelegramPendingAgentRequests, mergeTelegramUpdateCheckpoint, normalizeTelegramPendingAgentRequests, normalizeTelegramPreferences, rememberTelegramUpdate, saveTelegramPendingAgentRequests } from './telegramSettingsStorage'
 
 describe('normalizeTelegramPreferences', () => {
+  const values = new Map<string, string>()
+  const localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value) },
+    removeItem: (key: string) => { values.delete(key) },
+  }
+
+  beforeEach(() => {
+    values.clear()
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage } })
+  })
+
   it('rejects malformed peers and offsets', () => {
     expect(normalizeTelegramPreferences({ enabled: true, botToken: ' token ', authorizedPeer: { chatId: '1' }, updateOffset: -1 })).toEqual({
       enabled: true, botToken: 'token', authorizedPeer: null, pendingPeer: null, updateOffset: 0, processedUpdateIds: [],
@@ -42,5 +54,75 @@ describe('normalizeTelegramPreferences', () => {
 
     expect(requests).toHaveLength(2)
     expect(requests.map((request) => request.attachment?.value.fileId)).toEqual(['pdf-1', 'photo-1'])
+  })
+
+  it('normalizes progress recovery metadata without accepting unsafe values', () => {
+    const requests = normalizeTelegramPendingAgentRequests([
+      {
+        text: 'Continuar', actorUserId: 20, scope: 'library', requestId: 'request-1',
+        progressMessageId: 42, progressMessageRetryCount: 99, status: 'active', attachment: null,
+      },
+      {
+        text: 'Ignorar', actorUserId: 20, scope: 'library', requestId: 'not valid',
+        progressMessageId: -1, progressMessageRetryCount: -3, status: 'unknown', attachment: null,
+      },
+    ])
+
+    expect(requests).toEqual([
+      {
+        text: 'Continuar', actorUserId: 20, scope: 'library', attachment: null,
+        requestId: 'request-1', progressMessageId: 42, progressMessageRetryCount: 3, status: 'active',
+      },
+      {
+        text: 'Ignorar', actorUserId: 20, scope: 'library', attachment: null,
+        progressMessageRetryCount: 0, status: 'queued',
+      },
+    ])
+  })
+
+  it('turns an active persisted request into an explicit interrupted request on reload', () => {
+    expect(saveTelegramPendingAgentRequests('scope-1', [{
+      text: 'Continuar', actorUserId: 20, scope: 'library', attachment: null,
+      requestId: 'request-1', status: 'active',
+    }])).toBe(true)
+    expect(loadTelegramPendingAgentRequests('scope-1')).toMatchObject([
+      { requestId: 'request-1', status: 'interrupted', text: '' },
+    ])
+  })
+
+  it('never persists the original Telegram prompt for durable recovery', () => {
+    saveTelegramPendingAgentRequests('scope-private', [{
+      text: 'Mi sueldo es 123456 y vivo en una direccion privada.',
+      actorUserId: 20,
+      scope: 'finance',
+      attachment: null,
+      requestId: 'request-private',
+      status: 'interrupted',
+    }])
+
+    const stored = values.get('notia:telegram-pending-agent-requests:v1:scope-private') ?? ''
+    expect(stored).not.toContain('Mi sueldo')
+    expect(stored).not.toContain('123456')
+    expect(loadTelegramPendingAgentRequests('scope-private')[0]?.text).toBe('')
+  })
+
+  it('persists only bounded plan ids and statuses for Telegram recovery', () => {
+    const requests = normalizeTelegramPendingAgentRequests([{
+      text: 'Continuar', actorUserId: 20, scope: 'library', attachment: null,
+      plan: {
+        steps: [
+          { id: 'read', status: 'completed' },
+          { id: 'apply', status: 'pending' },
+          { id: 'C:/private/cliente.md', status: 'pending' },
+        ],
+      },
+    }])
+
+    expect(requests[0]?.plan).toEqual({
+      steps: [
+        { id: 'read', status: 'completed' },
+        { id: 'apply', status: 'pending' },
+      ],
+    })
   })
 })
