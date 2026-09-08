@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react'
 import {
   getSessionAiApiKey,
   normalizeAiSettingsInput,
-  saveAiPreferences,
   type AiPreferences,
 } from '../../../services/preferences/aiSettingsStorage'
 import {
@@ -110,24 +109,37 @@ export function useLibraryConfigSync({
           setInkMathPreferences(config.inkMath)
         }
         if (config.ia) {
-          // AI credentials are provider/session state, never library state.
-          // Keep the active in-memory credential while loading portable
-          // library preferences such as model and thinking settings.
           setAiPreferences({
             ...config.ia,
-            apiKey: getSessionAiApiKey(),
+            apiKey: config.ia.apiKey,
+          })
+        } else {
+          // Each library owns its Ollama credential. Do not leak the key from
+          // the previously active library when this one has none.
+          setAiPreferences({
+            ...fallbackPreferencesRef.current.aiPreferences,
+            apiKey: '',
           })
         }
         setTelegramPreferences(normalizeTelegramPreferences(config.telegram))
         initialConfigRef.current = config
       } else {
+        // A library without a config file also starts without a credential.
+        // This prevents a previous library's key from being written here.
+        setAiPreferences({
+          ...fallbackPreferencesRef.current.aiPreferences,
+          apiKey: '',
+        })
         initialConfigRef.current = {
           version: 1,
           panelDesplegable: {
             refreshIntervalMs: fallbackPreferencesRef.current.explorerRefreshIntervalMs,
           },
           inkMath: fallbackPreferencesRef.current.inkMathPreferences,
-          ia: fallbackPreferencesRef.current.aiPreferences,
+          ia: {
+            ...fallbackPreferencesRef.current.aiPreferences,
+            apiKey: '',
+          },
           telegram: fallbackPreferencesRef.current.telegramPreferences,
         }
       }
@@ -157,7 +169,10 @@ export function useLibraryConfigSync({
         refreshIntervalMs: explorerRefreshIntervalMs,
       },
       inkMath: inkMathPreferences,
-      ia: aiPreferences,
+      ia: {
+        ...aiPreferences,
+        apiKey: getSessionAiApiKey(),
+      },
       telegram: telegramPreferences,
     }
 
@@ -214,7 +229,4 @@ export function useLibraryConfigSync({
     setAiPreferences(normalizedPreferences)
   }, [aiPreferences, setAiPreferences])
 
-  useEffect(() => {
-    saveAiPreferences(aiPreferences)
-  }, [aiPreferences])
 }

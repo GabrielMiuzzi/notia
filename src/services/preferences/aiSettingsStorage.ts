@@ -9,9 +9,9 @@ const LEGACY_AI_DEFAULT_URLS = new Set([
   'http://localhost:9991/api',
 ])
 
-// The credential is intentionally session-only in the WebView. Durable
-// preferences may be portable/backed up, so they must never become a secret
-// store. Native adapters receive this value only when a request is sent.
+// localStorage keeps only non-secret preferences. The active credential is
+// held in memory here and the library config synchronizer persists it for the
+// active library. Native adapters receive it only when a request is sent.
 let sessionApiKey = ''
 
 export type AiProgressMode = 'minimal' | 'standard' | 'detailed' | 'off'

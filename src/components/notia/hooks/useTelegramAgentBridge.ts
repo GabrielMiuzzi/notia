@@ -96,7 +96,7 @@ export function describeTelegramAgentError(error: unknown, fallback = 'No se pud
  */
 export function sanitizeTelegramConfirmationQuestion(_question: string): string {
   void _question
-  return 'ConfirmaciÃ³n requerida: la IA preparÃ³ una operaciÃ³n autorizada. RevisÃ¡ el cambio en Notia y respondÃ© Confirmar o Cancelar.'
+  return 'Confirmación requerida: la IA preparó una operación autorizada. Revisá el cambio en Notia y respondé Confirmar o Cancelar.'
 }
 
 /** Adds an update without losing its order; the active request is tracked separately. */
@@ -279,7 +279,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         'HTML',
       )
       return new Promise((resolve, reject) => {
-        const abort = () => reject(new Error('Operacion cancelada.'))
+        const abort = () => reject(new Error('Operación cancelada.'))
         signal.addEventListener('abort', abort, { once: true })
         pendingInputRef.current = {
           resolve: (answer) => {
@@ -303,12 +303,12 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const timeoutId = window.setTimeout(() => {
           confirmationRef.current.delete(id)
           resolve(false)
-          void sendTelegramMessage(token, authorizedChatId, 'La confirmacion vencio despues de 2 minutos. No se aplicaron cambios.')
+          void sendTelegramMessage(token, authorizedChatId, 'La confirmación venció después de 2 minutos. No se aplicaron cambios.')
         }, TELEGRAM_CONFIRMATION_TIMEOUT_MS)
         const abort = () => {
           window.clearTimeout(timeoutId)
           confirmationRef.current.delete(id)
-          reject(new Error('Operacion cancelada.'))
+          reject(new Error('Operación cancelada.'))
         }
         signal.addEventListener('abort', abort, { once: true })
         confirmationRef.current.set(id, (accepted) => {
@@ -493,7 +493,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           requestConfirmation: confirm,
           requestExecutionPlanApproval: async (steps, signal) => ({
             approved: await confirm(
-              `Aprobar este plan de ejecucion:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
+              `Aprobar este plan de ejecución:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
               signal,
             ),
           }),
@@ -649,7 +649,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const resolveConfirmation = confirmationRef.current.get(id)
         if (resolveConfirmation) {
           resolveConfirmation(decision === 'yes')
-          await sendTelegramMessage(state.telegram.botToken, peer.chatId, decision === 'yes' ? 'Confirmacion recibida. Aplicando el cambio...' : 'Operacion cancelada.')
+          await sendTelegramMessage(state.telegram.botToken, peer.chatId, decision === 'yes' ? 'Confirmación recibida. Aplicando el cambio…' : 'Operación cancelada.')
         }
         return
       }
@@ -695,10 +695,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         pendingRequestsRef.current.push(...recoverableRequests)
         persistAgentRequests()
         const recoveryMessage = recoverableRequests.length > 0
-          ? `${recoverableRequests.length === 1 ? 'Solicitud' : 'Solicitudes'} marcada${recoverableRequests.length === 1 ? '' : 's'} para reanudar. La ejecucion requiere este comando explicito.`
+          ? `${recoverableRequests.length === 1 ? 'Solicitud' : 'Solicitudes'} marcada${recoverableRequests.length === 1 ? '' : 's'} para reanudar. La ejecución requiere este comando explícito.`
           : 'No hay solicitudes con contenido recuperable.'
         const resendMessage = requestsRequiringResend > 0
-          ? ` ${requestsRequiringResend === 1 ? 'Una solicitud de texto' : `${requestsRequiringResend} solicitudes de texto`} requiere que la reenvies: no guardo el texto original para proteger tu privacidad.`
+          ? ` ${requestsRequiringResend === 1 ? 'Una solicitud de texto' : `${requestsRequiringResend} solicitudes de texto`} requiere que la reenvíes: no guardo el texto original para proteger tu privacidad.`
           : ''
         await sendTelegramMessage(state.telegram.botToken, peer.chatId, `${recoveryMessage}${resendMessage}`)
         void drainAgentRequests()
@@ -709,7 +709,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         if (decision !== null) {
           const resolveConfirmation = confirmationRef.current.values().next().value
           resolveConfirmation?.(decision)
-          await sendTelegramMessage(state.telegram.botToken, peer.chatId, decision ? 'Confirmacion recibida. Aplicando el cambio...' : 'Operacion cancelada.')
+          await sendTelegramMessage(state.telegram.botToken, peer.chatId, decision ? 'Confirmación recibida. Aplicando el cambio…' : 'Operación cancelada.')
           return
         }
       }
@@ -736,7 +736,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       }
       const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, scope, attachment })
       if (requestsAhead === null) {
-        await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar mas de 10 solicitudes pendientes. Espera a que termine alguna e intenta nuevamente.')
+        await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar más de 10 solicitudes pendientes. Esperá a que termine alguna e intentá nuevamente.')
         return
       }
       if (!update.audio) {
@@ -745,10 +745,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           peer.chatId,
           attachment
             ? requestsAhead > 0
-              ? `Documento recibido. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
+              ? `Documento recibido. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
               : 'Documento recibido y en proceso.'
             : requestsAhead > 0
-              ? `Solicitud recibida. Quedo en cola despues de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
+              ? `Solicitud recibida. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
               : 'Solicitud recibida y en proceso.',
         )
       }

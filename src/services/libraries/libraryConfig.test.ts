@@ -17,7 +17,7 @@ const aiPreferences = {
   thinkingLevel: 'medium' as const,
 }
 
-describe('libraryConfig credential boundary', () => {
+describe('libraryConfig AI preferences', () => {
   beforeEach(() => {
     vi.mocked(readTextFile).mockReset()
     vi.mocked(writeTextFile).mockReset().mockResolvedValue({ ok: true })
@@ -25,7 +25,7 @@ describe('libraryConfig credential boundary', () => {
     vi.mocked(createDirectory).mockReset().mockResolvedValue({ ok: true })
   })
 
-  it('does not hydrate an API key from portable library configuration', async () => {
+  it('hydrates an API key from the library configuration', async () => {
     vi.mocked(readTextFile).mockResolvedValue({
       ok: true,
       content: JSON.stringify({ version: 1, ia: aiPreferences }),
@@ -33,16 +33,14 @@ describe('libraryConfig credential boundary', () => {
 
     const config = await readLibraryConfig('library')
 
-    expect(config?.ia).toMatchObject({ selectedModel: 'qwen3' })
-    expect(config?.ia?.apiKey).toBe('')
+    expect(config?.ia).toMatchObject(aiPreferences)
   })
 
-  it('redacts an API key before writing the library configuration', async () => {
+  it('writes the API key to the library configuration', async () => {
     await writeLibraryConfig('library', { version: 1, ia: aiPreferences })
 
     const content = vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]
     expect(typeof content).toBe('string')
-    expect(JSON.parse(content as string).ia.apiKey).toBe('')
-    expect(content).not.toContain(aiPreferences.apiKey)
+    expect(JSON.parse(content as string).ia).toMatchObject(aiPreferences)
   })
 })

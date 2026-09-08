@@ -36,8 +36,8 @@ const preferencesSlice = createSlice({
       saveThemePreference(next)
     },
     setAiSettings(state, action: PayloadAction<AiPreferences>) {
-      // Keep provider credentials out of Redux. The boundary callback persists
-      // the session-only credential before dispatching this redacted action.
+      // Keep provider credentials out of Redux. The boundary callback updates
+      // credential storage before dispatching this redacted action.
       state.aiSettings = { ...action.payload, apiKey: '' }
     },
     setInkMathPreferences(state, action: PayloadAction<InkMathPreferences>) {

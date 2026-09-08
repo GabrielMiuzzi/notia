@@ -93,7 +93,7 @@ describe('Telegram finance scope', () => {
     const message = sanitizeTelegramConfirmationQuestion(
       'Vista previa: reemplazar "secreto del documento" en C:\\Users\\gabmi\\Documents\\nota.md. operationId=op-1\n- API key: sk-secret\n+ contenido privado',
     )
-    expect(message).toContain('ConfirmaciÃ³n requerida')
+    expect(message).toContain('Confirmación requerida')
     expect(message).not.toContain('secreto del documento')
     expect(message).not.toContain('sk-secret')
     expect(message).not.toContain('operationId')

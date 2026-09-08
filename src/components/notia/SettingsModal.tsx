@@ -752,7 +752,7 @@ export function SettingsModal({
                   Se envía como header `Authorization: Bearer ...`
                 </div>
                 <p className="notia-settings-hint">
-                  Se conserva solo durante esta sesión y no se guarda en Redux, localStorage ni la configuración portable de la biblioteca.
+                  Se guarda en `.notia/notiaConfig.json` de la biblioteca activa. No se guarda en Redux ni en localStorage; no compartas ese archivo.
                 </p>
                 <div className="notia-settings-input-wrap">
                   <input

@@ -28,16 +28,6 @@ const DEFAULT_LIBRARY_CONFIG: NotiaLibraryConfig = {
   },
 }
 
-/**
- * API credentials are session/provider configuration, not library content.
- * Library config is portable and can be synced or backed up, so it must never
- * become a second secret store.
- */
-function sanitizeAiPreferencesForLibraryConfig(value: AiPreferences | undefined): AiPreferences | undefined {
-  if (!value) return undefined
-  return { ...value, apiKey: '' }
-}
-
 function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
   if (!value || typeof value !== 'object') {
     return DEFAULT_LIBRARY_CONFIG
@@ -48,7 +38,7 @@ function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
     version: typeof candidate.version === 'number' ? candidate.version : 1,
     panelDesplegable: candidate.panelDesplegable ?? DEFAULT_LIBRARY_CONFIG.panelDesplegable,
     inkMath: candidate.inkMath,
-    ia: sanitizeAiPreferencesForLibraryConfig(candidate.ia),
+    ia: candidate.ia,
     telegram: candidate.telegram ? normalizeTelegramPreferences(candidate.telegram) : undefined,
   }
 }
@@ -111,11 +101,7 @@ export async function writeLibraryConfig(
       }
     }
     
-    const safeConfig: NotiaLibraryConfig = {
-      ...config,
-      ia: sanitizeAiPreferencesForLibraryConfig(config.ia),
-    }
-    const content = JSON.stringify(safeConfig, null, 2)
+    const content = JSON.stringify(config, null, 2)
     const result = await writeTextFile(configPath, content, options)
     
     return result

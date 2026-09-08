@@ -59,9 +59,9 @@ const TOOL_LABELS: Record<string, string> = {
   link_ticket_document: 'vinculando el ticket con el documento',
   extract_document_facts: 'extrayendo datos explícitos del documento',
   update_document_tags: 'actualizando los tags del documento',
-  materialize_document_facts: 'preparando una nota con la extraccion',
+  materialize_document_facts: 'preparando una nota con la extracción',
   update_document_wikilink: 'actualizando un wikilink autorizado',
-  get_active_document_outline: 'ubicando la secciÃ³n del documento',
+  get_active_document_outline: 'ubicando la sección del documento',
   read_active_document_range: 'leyendo la parte necesaria del documento',
   request_file_read_permission: 'solicitando permiso para leer un archivo',
 }
@@ -96,16 +96,16 @@ function safeReasoningSummary(phase: AgentProgressPhase): string {
   switch (phase) {
     case 'preparing': return 'Estoy preparando el contexto autorizado.'
     case 'planning': return 'Estoy organizando los pasos necesarios.'
-    case 'reading': return 'Estoy leyendo solo la informacion necesaria.'
-    case 'searching': return 'Estoy consultando fuentes publicas.'
+    case 'reading': return 'Estoy leyendo solo la información necesaria.'
+    case 'searching': return 'Estoy consultando fuentes públicas.'
     case 'responding': return 'Estoy redactando una respuesta clara.'
-    case 'executing': return 'Estoy ejecutando la operacion autorizada.'
-    case 'waiting-clarification': return 'Necesito una aclaracion antes de continuar.'
-    case 'waiting-confirmation': return 'Necesito tu confirmacion antes de aplicar cambios.'
+    case 'executing': return 'Estoy ejecutando la operación autorizada.'
+    case 'waiting-clarification': return 'Necesito una aclaración antes de continuar.'
+    case 'waiting-confirmation': return 'Necesito tu confirmación antes de aplicar cambios.'
     case 'verifying': return 'Estoy verificando el resultado real.'
-    case 'completed': return 'La operacion termino correctamente.'
-    case 'cancelled': return 'La operacion fue cancelada.'
-    case 'failed': return 'La operacion no pudo completarse.'
+    case 'completed': return 'La operación terminó correctamente.'
+    case 'cancelled': return 'La operación fue cancelada.'
+    case 'failed': return 'La operación no pudo completarse.'
   }
 }
 
@@ -241,7 +241,7 @@ export function buildTelegramProgressMessage(
   if (preferences.showPlan !== false && progressMode !== 'minimal' && state.plan) {
     lines.push(`<b>TO-DO (${state.plan.steps.length} pasos)</b>`)
     state.plan.steps.forEach((step, index) => {
-      lines.push(`â€¢ ${planStepIcon(step.status)} Paso ${index + 1}: ${PLAN_STEP_LABELS[step.status]} — ${step.label}`)
+      lines.push(`• ${planStepIcon(step.status)} Paso ${index + 1}: ${PLAN_STEP_LABELS[step.status]} — ${step.label}`)
     })
   }
   if (state.queuePosition !== null && state.phase === 'preparing') {
