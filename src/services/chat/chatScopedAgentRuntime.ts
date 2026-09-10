@@ -2075,7 +2075,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     const uniquePaths = [...new Set(paths.map((path) => path.trim()).filter(Boolean))]
     for (const path of uniquePaths) {
       invalidateLibrarySearchGraphIndex(options.library.path, path)
-      dispatchLibraryTreeChanged({ vaultPath: options.library.path, pathHint: path })
+      dispatchLibraryTreeChanged({ vaultPath: options.library.path, pathHint: path, source: 'internal' })
     }
   }
   const allOptions: ChatLibraryFileOption[] = options.publishedScope

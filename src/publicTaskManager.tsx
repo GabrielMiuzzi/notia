@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
 import { ConfirmationEngineProvider } from './context/confirmation/ConfirmationEngine'
 import { PublishedTaskManagerShell, type PublishedTaskManagerBootstrap } from './modules/task-manager/components/PublishedTaskManagerShell'
+import {
+  initializeTaskManagerPublicationClient,
+  invokePublishedTaskManagerMutation,
+  isTaskManagerPublicationMutationCommand,
+} from './modules/task-manager/services/taskManagerPublicationClient'
 import { store } from './store/index'
 import './index.css'
 import './styles/notia.css'
@@ -14,6 +19,7 @@ declare global {
       transformCallback: () => number
       unregisterCallback: () => void
     }
+    __NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__?: boolean
   }
 }
 
@@ -23,6 +29,9 @@ window.__NOTIA_PUBLISHED_TASK_MANAGER__ = true
 
 window.__TAURI_INTERNALS__ = {
   invoke: async (command, args = {}) => {
+    if (isTaskManagerPublicationMutationCommand(command)) {
+      return invokePublishedTaskManagerMutation(command, args)
+    }
     const response = await fetch(`${publicationPath}/invoke`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -42,7 +51,14 @@ async function bootstrap(): Promise<void> {
   const response = await fetch(`${publicationPath}/bootstrap`, { cache: 'no-store' })
   if (!response.ok) throw new Error('La publicación no está disponible.')
   const bootstrapData = await response.json() as PublishedTaskManagerBootstrap
+  window.__NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__ = bootstrapData.taskRootAtVault === true
   window.localStorage.setItem('task-manager:settings:v1', JSON.stringify(bootstrapData.settings))
+  initializeTaskManagerPublicationClient(publicationPath, {
+    publicationEpoch: bootstrapData.publicationEpoch,
+    revision: bootstrapData.revision,
+    sequence: bootstrapData.sequence,
+    settings: bootstrapData.settings,
+  })
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <Provider store={store}>

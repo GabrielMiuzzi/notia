@@ -1,8 +1,13 @@
+#[cfg(target_os = "android")]
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "android")]
 use crate::mobile_directory_picker;
+#[cfg(target_os = "android")]
 use crate::notia_timer::NotiaTimer;
 
+#[cfg(target_os = "android")]
+use super::types::{content_revision, FilesystemConflict};
 use super::types::{
     IsDirectoryPathResult, OperationResult, PathExistsResult, ReadLibraryFileResult,
     WriteLibraryFileResult,
@@ -266,6 +271,7 @@ pub(crate) fn read_library_file(
         None if has_android_resolution_context(root_tree_uri, file_path) => {
             return Some(ReadLibraryFileResult {
                 ok: false,
+                revision: None,
                 content: String::new(),
                 error: Some("Could not resolve Android file.".to_string()),
             })
@@ -277,11 +283,13 @@ pub(crate) fn read_library_file(
         match mobile_directory_picker::read_android_content_text(state, &content_uri) {
             Ok(content) => ReadLibraryFileResult {
                 ok: true,
+                revision: Some(content_revision(&content)),
                 content,
                 error: None,
             },
             Err(_) => ReadLibraryFileResult {
                 ok: false,
+                revision: None,
                 content: String::new(),
                 error: Some("Could not read file.".to_string()),
             },
@@ -303,6 +311,7 @@ pub(crate) fn write_library_file(
     state: &AndroidDirectoryPickerState,
     file_path: &str,
     content: &str,
+    expected_revision: Option<&str>,
     root_tree_uri: Option<&str>,
 ) -> Option<WriteLibraryFileResult> {
     let _timer = NotiaTimer::new("saf.write_library_file").with_meta(format!("path={}", file_path));
@@ -313,20 +322,41 @@ pub(crate) fn write_library_file(
             return Some(WriteLibraryFileResult {
                 ok: false,
                 error: Some("Could not resolve Android file.".to_string()),
+                conflict: None,
             })
         }
         None => return None,
     };
+
+    if let Some(expected_revision) = expected_revision {
+        let current_revision =
+            mobile_directory_picker::read_android_content_text(state, &content_uri)
+                .ok()
+                .map(|current| content_revision(&current));
+        if current_revision.as_deref() != Some(expected_revision) {
+            return Some(WriteLibraryFileResult {
+                ok: false,
+                error: Some("CONFLICT: el archivo cambió desde la última lectura.".to_string()),
+                conflict: Some(FilesystemConflict {
+                    kind: "revision",
+                    expected_revision: expected_revision.to_string(),
+                    current_revision,
+                }),
+            });
+        }
+    }
 
     Some(
         match mobile_directory_picker::write_android_content_text(state, &content_uri, content) {
             Ok(()) => WriteLibraryFileResult {
                 ok: true,
                 error: None,
+                conflict: None,
             },
             Err(_) => WriteLibraryFileResult {
                 ok: false,
                 error: Some("Could not write file.".to_string()),
+                conflict: None,
             },
         },
     )
@@ -337,6 +367,7 @@ pub(crate) fn write_library_file<T>(
     _state: &T,
     _file_path: &str,
     _content: &str,
+    _expected_revision: Option<&str>,
     _root_tree_uri: Option<&str>,
 ) -> Option<WriteLibraryFileResult> {
     None

@@ -45,6 +45,13 @@
   min-width: 0;
 }
 
+.tareas-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .tareas-root,
 .tareas-root * {
   box-sizing: border-box;

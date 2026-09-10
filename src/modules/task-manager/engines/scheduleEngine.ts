@@ -19,9 +19,19 @@ export function buildRebalancedEndDates(
   }
 
   const sortedTasks = [...tasks].sort((left, right) => left.order - right.order)
-  const firstStartDate = options.startAt ?? parseTaskDate(sortedTasks[0].startDate) ?? new Date()
   const activityHoursPerDay = normalizeActivityHoursPerDay(options.activityHoursPerDay)
   const calendarHourScale = DAY_HOURS / activityHoursPerDay
+  const firstTask = sortedTasks[0]
+  const firstEstimatedHours = Number.isFinite(firstTask.estimatedHours) && firstTask.estimatedHours > 0
+    ? firstTask.estimatedHours
+    : 0
+  const firstDurationMs = firstEstimatedHours * calendarHourScale * HOUR_MS
+  const persistedEndDate = parseTaskDate(firstTask.endDate)
+  const firstStartDate = options.startAt
+    ?? parseTaskDate(firstTask.startDate)
+    ?? (persistedEndDate && firstDurationMs > 0
+      ? new Date(persistedEndDate.getTime() - firstDurationMs)
+      : new Date())
   let cursor = firstStartDate.getTime()
 
   const updates: Array<{ taskPath: string; endDate: string }> = []

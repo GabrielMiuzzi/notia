@@ -256,6 +256,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 - **Resúmenes por persona**: cuando se solicita una vista completa por responsables, el agente inspecciona todos los tickets del panel, releva las atribuciones explícitas tanto de los metadatos como de los detalles y evita agrupar el trabajo de distintas personas bajo el primer nombre encontrado.
 - **Búsqueda de personas**: los resultados relevantes se diversifican entre archivos para que un historial con muchas menciones no desplace otros tickets coincidentes. La cantidad informada corresponde a rutas de tickets únicas, no a comentarios o estados dentro de un mismo archivo.
 - **Panel adaptable**: el borde izquierdo del chat lateral permite ajustar su ancho con arrastre o teclado y conserva la medida elegida entre sesiones.
+- **Colaboración en tiempo real**: la publicación LAN permite configurar entre 1 y 64 sesiones autenticadas y conexiones WebSocket concurrentes (64 por defecto). Las mutaciones del host y de las URL publicadas se distribuyen en ambas direcciones con revisión, reintento idempotente y detección de conflictos; una edición que quedó vieja pide recargar y no pisa el cambio de otra persona. Si se corta la red, la URL reconecta y recupera eventos por cursor o solicita un snapshot nuevo; al ocultar la pestaña pausa socket y reintentos y resincroniza al volver. Revocar un dispositivo cierra solo sus conexiones activas.
 
 ---
 
@@ -359,7 +360,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Cuándo usarlo** | Cuando necesitás organizar proyectos, seguimiento de actividades o gestión personal de tareas de forma visual o tabular. |
 | **Pasos para consumir** | 1. En el Icon Rail, seleccionar **"Task Manager"**. 2. Hacer clic en **"Nuevo tablero"** e ingresar un nombre (ej. "Proyecto Alpha"). 3. Agregar tareas al tablero. 4. Para cada tarea, definir estado, prioridad, subtareas y comentarios. 5. Cambiar entre vista Kanban y vista Tabla según prefieras. 6. Al completar o cancelar una tarea, ésta se archiva automáticamente en la carpeta correspondiente. |
 | **Entradas esperadas** | Nombre del tablero (string). Tarea: título (string, obligatorio), descripción, prioridad (alta/media/baja), estado (pendiente/en progreso/completada/cancelada), subtareas (lista de wikilinks), comentarios (lista). |
-| **Salidas / Resultado** | Cada tarea se guarda como un archivo `.md` individual con metadatos YAML (frontmatter) dentro de la carpeta `task-mannager/<tablero>/` en tu librería. Los metadatos del tablero (nombres, colores, horas de actividad) se guardan en `localStorage`. |
+| **Salidas / Resultado** | Cada tarea se guarda como un archivo `.md` individual con metadatos YAML (frontmatter) dentro de la carpeta `task-mannager/<tablero>/` en tu librería. Los metadatos compartidos del tablero (nombres, colores, horas de actividad) se guardan en `.notia-task-manager.json`; `localStorage` conserva solo preferencias de presentación. |
 | **Errores comunes** | **"No se pudo guardar la tarea"**: error de escritura en el filesystem. Solución: verificar permisos de la carpeta de la librería. **"No se encuentra el tablero"**: la carpeta del tablero fue renombrada o eliminada fuera de Notia. Solución: refrescar el Explorador. |
 
 ### Pomodoro
@@ -372,6 +373,32 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Entradas esperadas** | Ninguna entrada manual. El temporizador se controla con botones de inicio, pausa y reset. |
 | **Salidas / Resultado** | Registro de sesión completada con timestamp en `task-mannager/PomodoroLog.md`. Estadísticas: total de sesiones, tiempo acumulado, distribución por día. |
 | **Errores comunes** | **"El temporizador no avanza"**: la pestaña o ventana está inactiva y el navegador limita los timers. Solución: mantener la ventana visible o usar la app en modo ventana maximizada. |
+
+### Publicar Task Manager en la red local
+
+Desde **Configuraciones → Publicar**, el anfitrión elige los tableros, define una contraseña y comparte la URL HTTPS `/task-manager`. Cada navegador nuevo se registra con un identificador local, espera la aprobación del anfitrión e inicia sesión con la contraseña. Una vez autenticado, puede editar tareas desde la misma interfaz: las mutaciones viajan por WebSocket seguro y los cambios confirmados aparecen en el anfitrión y en los demás navegadores autorizados.
+
+Los ajustes de sincronización requieren reiniciar el proceso de escritorio con el código actualizado y recargar las páginas publicadas. La corrección de movimientos y ediciones consecutivos está registrada en `tasks.md`; su validación visual multiusuario sigue pendiente y no debe darse por certificada únicamente por las pruebas unitarias.
+
+La capacidad está configurada entre 1 y 64 sesiones autenticadas y conexiones WebSocket simultáneas (64 por defecto). Si se alcanza el límite, el nuevo ingreso recibe un mensaje para reintentar; las sesiones existentes continúan activas. Si la red se corta, el navegador reconecta y recupera eventos pendientes; si ya no están disponibles, descarga un snapshot nuevo. Una edición Markdown que parta de una revisión vieja muestra conflicto y conserva el texto escrito, sin sobrescribir el cambio remoto. Revocar un dispositivo cierra sus conexiones, y detener o republicar finaliza la sesión colaborativa.
+
+Para integraciones o diagnóstico, el flujo HTTP usa `POST /task-manager/device` con `{ "deviceId", "deviceName" }`, `POST /task-manager/login` con el header `X-Notia-Device-Id` y `{ "password" }`, y `GET /task-manager/bootstrap` con la cookie de sesión. Las mutaciones no deben enviarse a `/invoke`: el canal colaborativo es `wss://<host>/task-manager/ws`, con mensajes JSON como:
+
+```json
+{
+  "type": "mutate",
+  "protocolVersion": 1,
+  "messageId": "mensaje-opaco",
+  "operationId": "operacion-opaca",
+  "baseRevision": 12,
+  "command": "write_library_file",
+  "args": { "payload": { "filePath": "published-vault/task-mannager/board/task.md", "content": "..." } }
+}
+```
+
+El servidor responde con un `ack` y distribuye un evento `changed` con `publicationEpoch`, `sequence`, `revision` y `messageId`. Las rutas locales, credenciales, contenido no autorizado y preferencias privadas no forman parte del protocolo.
+
+`GET /task-manager/status` requiere la misma cookie autenticada y devuelve solo métricas agregadas del host para diagnóstico; nunca expone rutas locales, credenciales ni contenido de tareas.
 
 ### Búsqueda de Archivos
 

@@ -9,6 +9,8 @@ export const TASK_INDEX_BASENAME = 'taskIndex'
 export const FINISHED_TASK_INDEX_BASENAME = 'taskIndexFinished'
 export const CANCELLED_TASK_INDEX_BASENAME = 'taskIndexCancelled'
 export const POMODORO_LOG_BASENAME = 'pomodoro'
+export const TASK_MANAGER_SHARED_METADATA_FILE = '.notia-task-manager.json'
+export const TASK_MANAGER_MUTATION_JOURNAL_FILE = '.notia-task-manager-journal.json'
 
 export const INDEX_TAG = 'index'
 export const TASK_TAG = 'task'

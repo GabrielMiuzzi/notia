@@ -1,4 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
+import { invokeTaskManagerPublicationMutation } from './taskManagerPublicationClient'
+import { enqueueTaskManagerMutation, type TaskManagerMutationContext } from './taskManagerMutationCoordinator'
+import {
+  beginTaskManagerMutationJournal,
+  completeTaskManagerMutationJournal,
+  recordTaskManagerMutationJournalChangedPaths,
+} from './taskManagerMutationJournal'
+import { resolveTaskManagerMutationJournalPath } from './taskManagerService'
 import type { Board, Group, TaskItem, TaskManagerSettings } from '../types/taskManagerTypes'
 import type { PublishedTaskManagerDevice } from '../../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
@@ -15,10 +23,53 @@ export interface TaskManagerPublicationPayload {
   theme: 'dark' | 'light'
   passwordHash: string
   approvedDevices: PublishedTaskManagerDevice[]
+  maxClients: number
   port: number
   aiPreferences: AiPreferences
   settings: TaskManagerSettings
   boards: PublishedTaskManagerBoard[]
+}
+
+export interface TaskManagerPublicationStatusSnapshot {
+  active: boolean
+  authenticatedSessions: number
+  websocketSessions: number
+  maxAuthenticatedSessions: number
+  maxWebsocketSessions: number
+  publicationEpoch: string
+  revision: number
+  sequence: number
+  lastOperationId: string | null
+  lastActorId: string | null
+  websocketFramesReceived: number
+  websocketFramesSent: number
+  websocketBytesReceived: number
+  websocketBytesSent: number
+  droppedEvents: number
+  resyncRequired: number
+  conflicts: number
+  mutationsApplied: number
+  mutationErrors: number
+  aiStreamCancellations: number
+  lastChangeAtUnixMs: number | null
+  mutationLatencySamples: number
+  mutationLatencyLastMs: number | null
+  mutationLatencyP95Ms: number | null
+  recoveryRequired: boolean
+}
+
+export interface TaskManagerPublicationCursor {
+  publicationEpoch: string
+  sequence: number
+  revision: number
+}
+
+export interface TaskManagerPublicationBatchOptions {
+  vaultPath?: string
+  scopes?: string[]
+  changedPaths?: string[]
+  /** Runs before the batch releases remote mutations after a local failure. */
+  onFailure?: (error: unknown, context: TaskManagerMutationContext) => Promise<void>
 }
 
 export function buildTaskManagerPublicationPayload(
@@ -32,6 +83,7 @@ export function buildTaskManagerPublicationPayload(
   aiPreferences: AiPreferences,
   approvedDevices: PublishedTaskManagerDevice[] = [],
   port = 52471,
+  maxClients = 64,
 ): TaskManagerPublicationPayload {
   const allowedBoardNames = new Set(publishedBoardNames.map((name) => name.trim().toLowerCase()))
   const isPublishedBoard = (boardName: string | undefined): boolean => allowedBoardNames.has(boardName?.trim().toLowerCase() ?? 'default')
@@ -40,6 +92,7 @@ export function buildTaskManagerPublicationPayload(
     theme,
     passwordHash,
     approvedDevices,
+    maxClients: Math.min(64, Math.max(1, Math.trunc(maxClients))),
     port,
     aiPreferences,
     settings: {
@@ -83,6 +136,15 @@ export async function hashTaskManagerPublicationPassword(password: string): Prom
 export async function getTaskManagerPublicationUrl(): Promise<string> {
   return invoke<string>('get_task_manager_publication_url')
 }
+export async function getTaskManagerPublicationStatus(): Promise<TaskManagerPublicationStatusSnapshot> {
+  return invoke<TaskManagerPublicationStatusSnapshot>('get_task_manager_publication_status')
+}
+export async function setTaskManagerPublicationRecovery(required: boolean): Promise<void> {
+  if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    return
+  }
+  await invoke('set_task_manager_publication_recovery', { required })
+}
 export async function listPendingTaskManagerPublicationDevices(): Promise<PublishedTaskManagerDevice[]> { return invoke('list_pending_task_manager_publication_devices') }
 export async function approveTaskManagerPublicationDevice(deviceId: string): Promise<PublishedTaskManagerDevice> { return invoke('approve_task_manager_publication_device', { deviceId }) }
 export async function revokeTaskManagerPublicationDevice(deviceId: string): Promise<void> { await invoke('revoke_task_manager_publication_device', { deviceId }) }
@@ -95,9 +157,166 @@ export async function stopTaskManagerPublication(): Promise<void> {
   await invoke('stop_task_manager_publication')
 }
 
-export async function notifyTaskManagerPublicationChanged(vaultPath: string): Promise<void> {
+export async function notifyTaskManagerPublicationChanged(
+  vaultPath: string,
+  settings?: TaskManagerSettings,
+  changedPaths: string[] = [],
+  context?: Pick<TaskManagerMutationContext, 'actorId' | 'operationId'>,
+): Promise<TaskManagerPublicationCursor | null> {
   if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    return null
+  }
+  return invoke<TaskManagerPublicationCursor | null>('notify_task_manager_publication_changed', {
+    vaultPath,
+    settings,
+    changedPaths,
+    operationId: context?.operationId,
+    actorId: context?.actorId,
+  })
+}
+
+export async function syncTaskManagerPublicationSettings(
+  vaultPath: string,
+  settings: TaskManagerSettings,
+  context?: Pick<TaskManagerMutationContext, 'actorId' | 'operationId'>,
+): Promise<void> {
+  const sharedSettings = {
+    boards: settings.boards,
+    groups: settings.groups,
+  }
+
+  if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    await invokeTaskManagerPublicationMutation({
+      command: 'update_task_manager_publication_settings',
+      args: { settings: sharedSettings },
+    }, context?.operationId)
     return
   }
-  await invoke('notify_task_manager_publication_changed', { vaultPath })
+
+  await notifyTaskManagerPublicationChanged(vaultPath, settings, [], context)
+}
+
+export async function beginTaskManagerPublicationBatch(): Promise<boolean> {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  if (!('__TAURI_INTERNALS__' in window)) {
+    return false
+  }
+  if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    await invokeTaskManagerPublicationMutation({ command: 'begin_task_manager_publication_batch', args: {} })
+    return true
+  }
+  return invoke<boolean>('begin_task_manager_publication_batch')
+}
+
+export async function endTaskManagerPublicationBatch(): Promise<TaskManagerPublicationCursor | null> {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  if (!('__TAURI_INTERNALS__' in window)) {
+    return null
+  }
+  if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    await invokeTaskManagerPublicationMutation({ command: 'end_task_manager_publication_batch', args: {} })
+    // The WebSocket client applies the ACK cursor; result is {ok, changed},
+    // unlike the native command's cursor DTO.
+    return null
+  }
+  return invoke<TaskManagerPublicationCursor | null>('end_task_manager_publication_batch')
+}
+
+export async function withTaskManagerPublicationBatch<T>(
+  runner: (context: TaskManagerMutationContext) => Promise<T>,
+  after?: (result: T, context: TaskManagerMutationContext) => Promise<void>,
+  options?: TaskManagerPublicationBatchOptions,
+): Promise<T> {
+  return enqueueTaskManagerMutation(async (context) => {
+    const shouldJournal = Boolean(options?.vaultPath)
+      && !(typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true)
+    const journalPath = shouldJournal && options?.vaultPath
+      ? await resolveTaskManagerMutationJournalPath(options.vaultPath)
+      : undefined
+    let journalActive = false
+    let publicationBatchActive = false
+    try {
+      if (journalPath) {
+        await beginTaskManagerMutationJournal(
+          journalPath,
+          context.operationId,
+          options?.scopes ?? ['task-manager'],
+        )
+        journalActive = true
+      }
+      publicationBatchActive = await beginTaskManagerPublicationBatch()
+      const result = await runner(context)
+      if (journalPath && journalActive && options?.changedPaths) {
+        try {
+          await recordTaskManagerMutationJournalChangedPaths(
+            journalPath,
+            context.operationId,
+            options.changedPaths,
+          )
+        } catch (journalError) {
+          console.warn('[task-manager] no se pudo registrar el alcance del lote', journalError)
+        }
+      }
+      if (after) {
+        await after(result, context)
+      }
+      if (publicationBatchActive) {
+        await endTaskManagerPublicationBatch()
+        publicationBatchActive = false
+      }
+      if (journalPath && journalActive) {
+        await completeTaskManagerMutationJournal(journalPath, context.operationId, 'committed')
+        journalActive = false
+        try {
+          await setTaskManagerPublicationRecovery(false)
+        } catch (recoveryError) {
+          console.warn('[task-manager] no se pudo confirmar el estado verificado del lote', recoveryError)
+        }
+      }
+      return result
+    } catch (error) {
+      if (journalActive) {
+        try {
+          await setTaskManagerPublicationRecovery(true)
+        } catch (recoveryError) {
+          console.warn('[task-manager] no se pudo marcar la recuperaciÃ³n del batch', recoveryError)
+        }
+      }
+      if (options?.onFailure) {
+        try {
+          await options.onFailure(error, context)
+        } catch (recoveryError) {
+          console.warn('[task-manager] no se pudo reconciliar un lote parcial de publicacion', recoveryError)
+          if (journalActive) {
+            try {
+              await setTaskManagerPublicationRecovery(true)
+            } catch (setRecoveryError) {
+              console.warn('[task-manager] no se pudo mantener la recuperacion activa', setRecoveryError)
+            }
+          }
+        }
+      }
+      throw error
+    } finally {
+      if (publicationBatchActive) {
+        try {
+          await endTaskManagerPublicationBatch()
+          publicationBatchActive = false
+        } catch (batchError) {
+          console.warn('[task-manager] no se pudo cerrar el lote de publicaciÃ³n', batchError)
+          if (journalActive) {
+            try {
+              await setTaskManagerPublicationRecovery(true)
+            } catch (recoveryError) {
+              console.warn('[task-manager] no se pudo marcar la recuperaciÃ³n del lote', recoveryError)
+            }
+          }
+        }
+      }
+    }
+  })
 }

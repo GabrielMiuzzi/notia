@@ -254,6 +254,12 @@ function TaskManagerAppComponent({
     manager.setActiveTab(POMODORO_TAB_ID)
   }, [manager])
 
+  const handleReloadPublicationConflict = useCallback(() => {
+    void manager.reloadPublicationConflict().catch((runtimeError: unknown) => {
+      manager.setError(runtimeError instanceof Error ? runtimeError.message : 'No se pudo recargar el estado compartido.')
+    })
+  }, [manager])
+
   return (
     <ThemeProvider theme={theme}>
       <div className={`tareas-root${embedded ? ' is-embedded' : ''}`}>
@@ -303,6 +309,28 @@ function TaskManagerAppComponent({
             ) : null}
           </div>
         </div>
+
+        {manager.publicationConflict ? (
+          <Alert
+            severity="warning"
+            variant="outlined"
+            sx={{ m: 1.5, mb: 0, alignItems: 'center' }}
+            action={(
+              <div className="tareas-conflict-actions">
+                <NotiaButton onClick={handleReloadPublicationConflict}>Recargar estado</NotiaButton>
+                <NotiaButton variant="primary" onClick={manager.clearPublicationConflict}>Reintentar</NotiaButton>
+                <NotiaButton onClick={manager.clearPublicationConflict}>Cancelar</NotiaButton>
+              </div>
+            )}
+          >
+            <strong>Conflicto de colaboración.</strong>{' '}
+            La operación {manager.publicationConflict.operationId.slice(0, 8)} necesita una revisión actualizada
+            (esperada {manager.publicationConflict.expectedRevision ?? '—'}, actual {manager.publicationConflict.currentRevision ?? '—'}).
+            {manager.publicationConflict.actorId ? ` Cambio concurrente de ${manager.publicationConflict.actorId.slice(0, 8)}.` : ''}
+            {manager.publicationConflict.conflictingOperationId ? ` Operación ${manager.publicationConflict.conflictingOperationId.slice(0, 8)}.` : ''}
+            El formulario queda abierto para reintentar.
+          </Alert>
+        ) : null}
 
         <div className="tareas-tabs">
           {manager.settings.boards.map((board) => (

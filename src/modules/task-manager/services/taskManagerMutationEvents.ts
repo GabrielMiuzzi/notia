@@ -1,4 +1,10 @@
-type TaskManagerMutationListener = (vaultPath: string) => void
+export interface TaskManagerMutationEvent {
+  vaultPath: string
+  changedPaths: string[]
+  forceFullReload?: boolean
+}
+
+type TaskManagerMutationListener = (event: TaskManagerMutationEvent) => void
 
 const listeners = new Set<TaskManagerMutationListener>()
 
@@ -7,8 +13,13 @@ export function subscribeTaskManagerMutations(listener: TaskManagerMutationListe
   return () => listeners.delete(listener)
 }
 
-export function dispatchTaskManagerMutation(vaultPath: string): void {
+export function dispatchTaskManagerMutation(
+  vaultPath: string,
+  changedPaths: string[] = [],
+  options?: { forceFullReload?: boolean },
+): void {
+  const event = { vaultPath, changedPaths, forceFullReload: options?.forceFullReload }
   for (const listener of listeners) {
-    listener(vaultPath)
+    listener(event)
   }
 }

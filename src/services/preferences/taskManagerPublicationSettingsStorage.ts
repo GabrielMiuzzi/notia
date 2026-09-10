@@ -5,6 +5,7 @@ export interface TaskManagerPublicationPreferences {
   passwordHash: string | null
   approvedDevices: PublishedTaskManagerDevice[]
   port: number
+  maxClients: number
 }
 
 export interface PublishedTaskManagerDevice { id: string, name: string }
@@ -14,6 +15,7 @@ export const DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES: TaskManagerPublicatio
   passwordHash: null,
   approvedDevices: [],
   port: 52471,
+  maxClients: 64,
 }
 
 function normalizeBoardNames(value: unknown): string[] {
@@ -27,7 +29,7 @@ function normalizeBoardNames(value: unknown): string[] {
 
 export function normalizeTaskManagerPublicationPreferences(value: unknown): TaskManagerPublicationPreferences {
   if (!value || typeof value !== 'object') return DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES
-  const input = value as { publishedBoardNames?: unknown, passwordHash?: unknown, approvedDevices?: unknown, port?: unknown }
+  const input = value as { publishedBoardNames?: unknown, passwordHash?: unknown, approvedDevices?: unknown, port?: unknown, maxClients?: unknown }
   const passwordHash = typeof input.passwordHash === 'string' && input.passwordHash.startsWith('$notia-pbkdf2-sha256$')
     ? input.passwordHash
     : null
@@ -41,7 +43,16 @@ export function normalizeTaskManagerPublicationPreferences(value: unknown): Task
     })
     : []
   const port = typeof input.port === 'number' && Number.isInteger(input.port) && input.port >= 1024 && input.port <= 65535 ? input.port : 52471
-  return { publishedBoardNames: normalizeBoardNames(input.publishedBoardNames), passwordHash, approvedDevices: Array.from(new Map(approvedDevices.map((device) => [device.id, device])).values()), port }
+  const maxClients = typeof input.maxClients === 'number' && Number.isInteger(input.maxClients) && input.maxClients >= 1 && input.maxClients <= 64
+    ? input.maxClients
+    : 64
+  return {
+    publishedBoardNames: normalizeBoardNames(input.publishedBoardNames),
+    passwordHash,
+    approvedDevices: Array.from(new Map(approvedDevices.map((device) => [device.id, device])).values()),
+    port,
+    maxClients,
+  }
 }
 
 export function loadTaskManagerPublicationPreferences(): TaskManagerPublicationPreferences {

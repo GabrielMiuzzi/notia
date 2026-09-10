@@ -11,6 +11,7 @@ describe('normalizeTaskManagerPublicationPreferences', () => {
       publishedBoardNames: ['equipo'],
       passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash',
       approvedDevices: [],
+      maxClients: 64,
       port: 52471,
     })
   })
@@ -20,5 +21,11 @@ describe('normalizeTaskManagerPublicationPreferences', () => {
       publishedBoardNames: [],
       passwordHash: 'mi-contraseña',
     }).passwordHash).toBeNull()
+  })
+
+  it('bounds the configurable number of simultaneous clients', () => {
+    expect(normalizeTaskManagerPublicationPreferences({ maxClients: 120 }).maxClients).toBe(64)
+    expect(normalizeTaskManagerPublicationPreferences({ maxClients: 0 }).maxClients).toBe(64)
+    expect(normalizeTaskManagerPublicationPreferences({ maxClients: 3 }).maxClients).toBe(3)
   })
 })

@@ -222,7 +222,7 @@ export function TaskDialog({
           Cancelar
         </NotiaButton>
         <NotiaButton variant="primary" onClick={() => void handleSubmit()} disabled={!form.title.trim() || isSubmitting}>
-          Guardar
+          {isSubmitting ? 'Guardando…' : 'Guardar'}
         </NotiaButton>
       </div>
     </TaskManagerModal>

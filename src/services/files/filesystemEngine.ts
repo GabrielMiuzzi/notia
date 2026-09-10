@@ -8,10 +8,18 @@ import { sortFilesystemTreeNodesWithPageLinks } from '../../engines/tree/pageLin
 export interface FilesystemOperationResult {
   ok: boolean
   error?: string
+  conflict?: FilesystemConflict
+}
+
+export interface FilesystemConflict {
+  kind: 'revision'
+  expectedRevision: string
+  currentRevision?: string | null
 }
 
 export interface FilesystemReadTextResult extends FilesystemOperationResult {
   content: string
+  revision?: string
 }
 
 export interface FilesystemMarkdownDocument {
@@ -76,6 +84,7 @@ interface CreateLibraryEntryOptions {
 
 export interface AndroidFilesystemOptions {
   androidDirectoryUri?: string
+  expectedRevision?: string
 }
 
 interface FilesystemEntryOperationOptions {
@@ -89,6 +98,10 @@ const ANDROID_PICK_DIRECTORY_COMMANDS = [
 
 function normalizePath(pathValue: string): string {
   return normalizeFilesystemPath(pathValue)
+}
+
+function isTaskManagerPublicationMutationError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'TaskManagerPublicationMutationError'
 }
 
 function updateHashWithString(currentHash: number, value: string): number {
@@ -685,12 +698,20 @@ export async function writeTextFile(
 
   try {
     const result = await invoke<FilesystemOperationResult>('write_library_file', {
-      payload: { filePath: normalizedPath, content, directoryUri: options?.androidDirectoryUri },
+      payload: {
+        filePath: normalizedPath,
+        content,
+        directoryUri: options?.androidDirectoryUri,
+        expectedRevision: options?.expectedRevision,
+      },
     })
     timer.success({ ok: result.ok })
     return result
   } catch (error) {
     timer.error(error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'Could not write file.' }
   }
 }
@@ -715,7 +736,10 @@ export async function createLibraryEntry(
         kind,
       },
     })
-  } catch {
+  } catch (error) {
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'Could not create entry.' }
   }
 }
@@ -738,7 +762,10 @@ export async function createFile(
         directoryUri: options?.androidDirectoryUri,
       },
     })
-  } catch {
+  } catch (error) {
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'Could not create file.' }
   }
 }
@@ -805,7 +832,10 @@ export async function performLibraryEntryOperation(
         directoryUri: options?.androidDirectoryUri,
       },
     })
-  } catch {
+  } catch (error) {
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'Could not perform operation.' }
   }
 }

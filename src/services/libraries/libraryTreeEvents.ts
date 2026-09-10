@@ -7,6 +7,7 @@ export const LIBRARY_TREE_CHANGED_EVENT = 'notia:library-tree-changed'
 export interface LibraryTreeChangedDetail {
   vaultPath?: string
   pathHint?: string
+  source?: 'external' | 'internal'
 }
 
 function normalizeOptionalPath(pathValue: string | undefined): string | undefined {
@@ -21,7 +22,7 @@ const TREE_EVENT_BATCH_MS = 160
 const MAX_PENDING_TREE_EVENTS = 50
 
 let pendingDispatchTimerId: number | null = null
-const pendingTreeChangeDetails: Array<{ vaultPath?: string; pathHint?: string }> = []
+const pendingTreeChangeDetails: LibraryTreeChangedDetail[] = []
 let lastFlushTimestamp = 0
 
 function resolveSharedPath(paths: string[]): string | undefined {
@@ -64,6 +65,7 @@ function emitLibraryTreeChanged(detail: LibraryTreeChangedDetail): void {
     detail: {
       vaultPath: normalizeOptionalPath(detail.vaultPath),
       pathHint: normalizeOptionalPath(detail.pathHint),
+      source: detail.source,
     },
   }))
 }
@@ -83,7 +85,7 @@ function flushPendingLibraryTreeChangedEvents(): void {
   notiaLog('treeEvents', 'flushing events', {
     eventCount: queuedDetails.length,
   })
-  const groups = new Map<string, Array<{ vaultPath?: string; pathHint?: string }>>()
+  const groups = new Map<string, LibraryTreeChangedDetail[]>()
 
   for (const detail of queuedDetails) {
     const normalizedVaultPath = normalizeOptionalPath(detail.vaultPath)
@@ -104,6 +106,7 @@ function flushPendingLibraryTreeChangedEvents(): void {
     emitLibraryTreeChanged({
       vaultPath: groupKey === '__no_vault__' ? undefined : groupKey,
       pathHint: pathHints.length > 0 ? resolveSharedPath(pathHints) : undefined,
+      source: details.every((detail) => detail.source === 'internal') ? 'internal' : 'external',
     })
   }
 }

@@ -316,6 +316,8 @@ Carga y mantenimiento del árbol de archivos de la librería activa. En **deskto
 "a3f7b2c1"
 ```
 
+La URL prioriza la interfaz IPv4 de la ruta local y, si no existe una ruta de salida detectable, usa la primera interfaz IPv4 utilizable del host; no depende de que haya Internet para que otros dispositivos de la LAN puedan conectarse.
+
 #### Entradas
 - `directoryPath: string` — path absoluto de la librería (normalizado por `normalizeFilesystemPath`).
 - `androidDirectoryUri?: string` — URI de árbol SAF (solo Android).
@@ -990,10 +992,15 @@ Gestor de credenciales cifradas. El cifrado ocurre 100% en el frontend (Web Cryp
 ### 2.7 Task Manager
 
 #### Descripción
-Sistema completo de gestión de tareas con tableros, dos vistas (Kanban y tabla), y temporizador Pomodoro. La persistencia no usa un archivo JSON centralizado; cada tarea vive como un archivo Markdown individual con frontmatter YAML dentro de una estructura de carpetas bajo `task-mannager/` (o `task-manager/` como fallback). Los metadatos de tableros (nombres, colores, horas de actividad) se guardan en `localStorage` vía `taskManagerStorage.ts`.
+Sistema completo de gestión de tareas con tableros, dos vistas (Kanban y tabla), y temporizador Pomodoro. La persistencia no usa un archivo JSON centralizado para las tareas: cada una vive como un archivo Markdown individual con frontmatter YAML dentro de una estructura de carpetas bajo `task-mannager/` (o `task-manager/` como fallback). Los metadatos compartidos de tableros y grupos se guardan en `.notia-task-manager.json` con `version: 1`; `localStorage` vía `taskManagerStorage.ts` conserva la caché y las preferencias de presentación.
 
 #### Endpoints
-Task Manager utiliza los commands genéricos de filesystem (`read_library_tree`, `read_library_file`, `write_library_file`, `library_entry_operation`, `create_library_entry`) para leer/escribir archivos y carpetas. En Windows, la publicación LAN agrega `hash_task_manager_publication_password`, `publish_task_manager_boards`, `get_task_manager_publication_url`, `list_pending_task_manager_publication_devices`, `approve_task_manager_publication_device`, `revoke_task_manager_publication_device`, `open_task_manager_publication` y `stop_task_manager_publication`. El servidor escucha el puerto fijo configurado en `0.0.0.0` y publica una URL HTTPS con la IP privada y la ruta estable `/task-manager`; exige autenticación antes de entregar la entrada Vite que monta `TaskManagerApp`. La entrada pública pasa `canManageBoards: false`, por lo que no renderiza Nuevo tablero, Editar tablero ni Eliminar tablero; la instancia embebida de Notia mantiene esas acciones. Su barra superior abre `PublishedTaskManagerChat`, un hilo efímero que pasa exclusivamente por `runNotiaChatReply`/`runNativeToolAgent`. El host ejecuta `list_desktop_ai_models` y `run_desktop_ai_tool_chat` con su configuración de Ollama, sin entregar URL ni API key al navegador. La ronda final usa `/task-manager/ai/stream`: el servidor retransmite `thinking`, `delta`, `done` y `error` como NDJSON sobre HTTP chunked y el mismo runtime actualiza incrementalmente el razonamiento y el Markdown visible. `createChatScopedAgent` recibe `publishedScope: true`, usa el prompt/reglas integrados sin leer `.agent`, omite memorias globales y restringe el catálogo a herramientas de documentos y Task Manager; el corpus es la unión de rutas de tickets de todos los tableros publicados. Cada I/O vuelve a atravesar la autorización Rust por ruta, de modo que manipular el cliente no permite cruzar a otro tablero ni a otra zona de la biblioteca. El historial publicado se descarta al cerrar o recargar la página. `TaskBoardView` implementa una alternativa táctil al drag HTML: una pulsación de 350 ms sobre un ticket inicia un Pointer Event capturado, muestra el destino en el orden/grupo bajo el dedo y, al soltar, llama al mismo `onApplyTaskArrangement` que el arrastre de mouse; un desplazamiento de más de 10 px antes de la pulsación prolongada cancela el gesto para evitar movimientos accidentales. `useTaskManagerPublicationAutostart` vuelve a crear la publicación una vez por inicio cuando la biblioteca activa y las preferencias persistidas incluyen contraseña hash y al menos un tablero existente; la URL actual se consulta al abrir Configuraciones. La contraseña cruda solo cruza el IPC para generar un hash PBKDF2-HMAC-SHA256 con salt y 210.000 iteraciones; `taskManagerPublicationSettingsStorage.ts` persiste exclusivamente el hash versionado y los identificadores/nombres de dispositivos autorizados. Un navegador registra un identificador local antes del login: los no autorizados quedan en `pending_devices`, la UI los consulta cada dos segundos y aprueba explícitamente el host. La revocación elimina el identificador persistido, invalida sus cookies de sesión en runtime y el siguiente request vuelve a exigir autorización. Si el usuario marca **Recordar contraseña en este dispositivo**, la página de login cifra la contraseña con AES-GCM mediante una clave Web Crypto no exportable, la conserva junto al ciphertext en IndexedDB de ese origen y la rellena solo en ese navegador. El certificado TLS autofirmado y su clave privada se conservan en los datos de aplicación locales de Notia, para que los dispositivos que lo acepten no deban hacerlo otra vez después de reiniciar. Al validar el login, el servidor emite una cookie de sesión `Secure`, `HttpOnly` y `SameSite=Strict`; bootstrap, assets y comandos HTTPS rechazan solicitudes sin una sesión válida. El bridge traduce solamente los comandos de filesystem necesarios y valida cada ruta contra los tableros seleccionados; las lecturas recursivas también filtran los documentos por tablero antes de responder. Los paneles Completadas y Canceladas aplican nuevamente la lista publicada sobre el campo `tablero`, por lo que no muestran tickets archivados de tableros privados.
+
+La colaboración persistente usa `wss://<host>/task-manager/ws`. El cliente envía `hello`/`mutate` y recibe `welcome`, `ack`, `changed`, `resync-required` y eventos terminales; cada publicación mantiene su `publicationEpoch`, `sequence` y `revision`. El servidor limita frames a 2 MiB, mantiene una cola por cliente, aplica rate limiting por IP y sesión, y expone en Configuraciones muestras de latencia de mutaciones con p95 aproximado. El host persiste hasta 128 muestras agregadas, sin contenido sensible, en `task-manager:publication-telemetry:v1`; la medición extremo a extremo sigue requiriendo la prueba LAN documentada más abajo. Una cancelación mediante `AbortSignal` antes del envío termina como `failed` sin tocar el vault; después del envío termina como `unknown`, conserva el `operationId` y no reintenta automáticamente.
+
+Las operaciones multiarchivo iniciadas por la UI local o el agente se registran en `.notia-task-manager-journal.json` con un `operationId`, estado `pending | committed | rolled-back` y scopes lógicos acotados; nunca se guardan rutas absolutas ni contenido de tareas. Al abrir el workspace se inspeccionan las entradas pendientes y se deja la recuperación explícita al usuario/operador: no se reejecuta una escritura automáticamente ni se presenta como confirmada una operación cuyo resultado quedó indeterminado. El host conserva además hasta 128 muestras agregadas de métricas en `localStorage` bajo `task-manager:publication-telemetry:v1`; incluyen sesiones, bytes, errores, resyncs, conflictos, cancelaciones y latencias, pero no actores, operation IDs, rutas ni contenido.
+
+Task Manager utiliza un adapter tipado para las mutaciones publicadas (`TaskManagerPublicationMutationRequest`) y conserva los commands de filesystem (`read_library_tree`, `read_library_file`, `write_library_file`, `library_entry_operation`, `create_library_entry`) como implementación compatible de la inicialización y de las operaciones locales. Las mutaciones remotas pasan por la unión cerrada de DTOs Rust del WebSocket; la capa compatible solo traduce la operación al transporte y no crea un segundo caso de uso. En Windows, la publicación LAN agrega `hash_task_manager_publication_password`, `publish_task_manager_boards`, `get_task_manager_publication_url`, `list_pending_task_manager_publication_devices`, `approve_task_manager_publication_device`, `revoke_task_manager_publication_device`, `open_task_manager_publication` y `stop_task_manager_publication`. El servidor escucha el puerto fijo configurado en `0.0.0.0` y publica una URL HTTPS con la IP privada y la ruta estable `/task-manager`; exige autenticación antes de entregar la entrada Vite que monta `TaskManagerApp`. La entrada pública pasa `canManageBoards: false`, por lo que no renderiza Nuevo tablero, Editar tablero ni Eliminar tablero; la instancia embebida de Notia mantiene esas acciones. Su barra superior abre `PublishedTaskManagerChat`, un hilo efímero que pasa exclusivamente por `runNotiaChatReply`/`runNativeToolAgent`. El host ejecuta `list_desktop_ai_models` y `run_desktop_ai_tool_chat` con su configuración de Ollama, sin entregar URL ni API key al navegador. La ronda final usa `/task-manager/ai/stream`: el servidor retransmite `thinking`, `delta`, `done` y `error` como NDJSON sobre HTTP chunked y el mismo runtime actualiza incrementalmente el razonamiento y el Markdown visible. `createChatScopedAgent` recibe `publishedScope: true`, usa el prompt/reglas integrados sin leer `.agent`, omite memorias globales y restringe el catálogo a herramientas de documentos y Task Manager; el corpus es la unión de rutas de tickets de todos los tableros publicados. Cada I/O vuelve a atravesar la autorización Rust por ruta, de modo que manipular el cliente no permite cruzar a otro tablero ni a otra zona de la biblioteca. El historial publicado se descarta al cerrar o recargar la página. `TaskBoardView` implementa una alternativa táctil al drag HTML: una pulsación de 350 ms sobre un ticket inicia un Pointer Event capturado, muestra el destino en el orden/grupo bajo el dedo y, al soltar, llama al mismo `onApplyTaskArrangement` que el arrastre de mouse; un desplazamiento de más de 10 px antes de la pulsación prolongada cancela el gesto para evitar movimientos accidentales. `useTaskManagerPublicationAutostart` vuelve a crear la publicación una vez por inicio cuando la biblioteca activa y las preferencias persistidas incluyen contraseña hash y al menos un tablero existente; la URL actual se consulta al abrir Configuraciones. La contraseña cruda solo cruza el IPC para generar un hash PBKDF2-HMAC-SHA256 con salt y 210.000 iteraciones; `taskManagerPublicationSettingsStorage.ts` persiste exclusivamente el hash versionado y los identificadores/nombres de dispositivos autorizados. Un navegador registra un identificador local antes del login: los no autorizados quedan en `pending_devices`, la UI los consulta cada dos segundos y aprueba explícitamente el host. La revocación elimina el identificador persistido, invalida sus cookies de sesión en runtime y el siguiente request vuelve a exigir autorización. Si el usuario marca **Recordar contraseña en este dispositivo**, la página de login cifra la contraseña con AES-GCM mediante una clave Web Crypto no exportable, la conserva junto al ciphertext en IndexedDB de ese origen y la rellena solo en ese navegador. El certificado TLS autofirmado y su clave privada se conservan en los datos de aplicación locales de Notia, para que los dispositivos que lo acepten no deban hacerlo otra vez después de reiniciar. Al validar el login, el servidor emite una cookie de sesión `Secure`, `HttpOnly` y `SameSite=Strict`; bootstrap, assets y comandos HTTPS rechazan solicitudes sin una sesión válida. El bridge traduce solamente los comandos de filesystem necesarios y valida cada ruta contra los tableros seleccionados; las lecturas recursivas también filtran los documentos por tablero antes de responder. Los paneles Completadas y Canceladas aplican nuevamente la lista publicada sobre el campo `tablero`, por lo que no muestran tickets archivados de tableros privados.
 
 #### Entradas
 - Librería activa (`NotiaLibrary`) con `path` y `androidTreeUri`.
@@ -1004,7 +1011,7 @@ Task Manager utiliza los commands genéricos de filesystem (`read_library_tree`,
 - Archivos `.md` individuales con YAML frontmatter (`tarea`, `estado`, `tablero`, `equipo`, `prioridad`, `parent`, `childs`, `tags`, `fechaFin`, `horasEstimadas`, etc.) persistidos en el filesystem.
 - Archivo `task-mannager/PomodoroLog.md` con registro histórico de sesiones Pomodoro.
 - Archivos de índice (`TaskIndex.md`, `FinishedTaskIndex.md`, `CancelledTaskIndex.md`) que listan las tareas de cada tablero.
-- Estado UI en componentes locales (`useState`) y `taskManagerStorage.ts` para metadatos de tableros.
+- Estado UI en componentes locales (`useState`), metadata compartida en `.notia-task-manager.json` y caché/preferencias locales en `taskManagerStorage.ts`.
 - URL LAN temporal y editable para los tableros seleccionados en `taskManagerPublicationSettingsStorage.ts`; deja de responder al cambiar la selección o cerrar Notia. Requiere que el Firewall de Windows permita Notia en redes privadas.
 
 #### Pasos del proceso
@@ -3633,7 +3640,126 @@ La recepción usa `offset = update_id + 1` para evitar duplicados y limita los u
 La sección **Configuraciones → Backups** solo se muestra en Windows. La carpeta elegida se persiste como preferencia local; mientras Notia está ejecutándose, la biblioteca activa se comprime en un ZIP inmediatamente al activar la configuración y luego cada hora. El hook `useWindowsBackups` coordina el intervalo y evita repetir la misma combinación de biblioteca y destino antes de que transcurra ese intervalo, incluso si React reejecuta el efecto. El comando Tauri `create_windows_library_backup` realiza el I/O en un hilo bloqueante. El backend valida las rutas, impide guardar dentro de la biblioteca, escribe de forma temporal, elimina temporales huérfanos de más de 24 horas y elimina copias ZIP de más de 48 horas o que excedan las 48 más recientes. Los errores no interrumpen la aplicación ni se registran con contenido de la biblioteca.
 ## Sincronización de Task Manager publicado
 
-La publicación LAN mantiene un canal SSE por sesión autenticada. Cada mutación de filesystem realizada desde un navegador notifica a todos los navegadores conectados y emite `task-manager-publication-changed` al host Tauri; `useTaskManager` usa ambas señales para recargar el snapshot compartido y actualizar inmediatamente todas las vistas.
+La publicación LAN mantiene una conexión WebSocket sobre TLS en `/task-manager/ws` por sesión autenticada. HTTP se conserva para registro de dispositivo, login, bootstrap, assets, lecturas y el stream de IA; las mutaciones colaborativas (`write_library_file`, `append_task_comment`, `create_library_entry`, `library_entry_operation` y `update_task_manager_publication_settings`) viajan como mensajes `mutate` y reciben un `ack` con `operationId`, `sequence`, `revision`, `changed` y `changedPaths` seguros. `append_task_comment` lee y escribe dentro del lock de mutaciones para conservar comentarios concurrentes. Las operaciones compuestas usan `begin_task_manager_publication_batch` y `end_task_manager_publication_batch`; sus rutas se acumulan y se emite una sola revisión al cerrar el batch.
+
+El servidor asigna una `publicationEpoch` nueva al republicar, serializa las mutaciones con un lock de dominio, deduplica reintentos por sesión y `operationId`, mantiene un historial acotado de 256 cambios y cierra las conexiones lentas cuando su cola acotada se llena. Cuando el host inicia una operación local agrupada, `begin_task_manager_publication_batch` activa una barrera; las mutaciones remotas esperan hasta 30 segundos y reciben `outcome: unknown`/`retryable` si la operación local no termina. Mientras una mutación remota espera ese lock, el servidor sigue leyendo controles del mismo WebSocket: un frame `cancel` coincidente responde `cancelled: true` y evita tocar el filesystem; si la escritura ya comenzó, la cancelación conserva el resultado incierto (`unknown`) y no promete rollback. El propietario de batch es global: un segundo batch remoto no puede entrelazarse con el primero y el host tampoco puede comenzar mientras exista uno remoto. El handshake exige `hello` con `protocolVersion`, cookie de sesión, origen HTTPS esperado y `lastSequence`; responde `welcome` con cursor y replay, o `resync-required` cuando el historial ya no alcanza. Cada cambio emite `changed` a todos los clientes WebSocket y `task-manager-publication-changed` a la instancia host de Notia. El frame WebSocket puede incluir `changedPaths` con un máximo de 32 aliases lógicos y un `actorId` corto derivado del dispositivo; nunca contiene rutas absolutas.
+
+La capacidad operativa se configura con `maxClients` entre 1 y 64 (64 por defecto) para sesiones autenticadas y WebSockets, además de 128 conexiones TCP simultáneas. El login que supera el límite recibe `429 Too Many Requests` con `Retry-After: 30`; no se borran sesiones existentes. Revocar un dispositivo envía `access-revoked`, cierra únicamente sus WebSockets y cancela sus streams HTTP de IA mediante un token asociado al dispositivo, liberando también el upstream de Ollama. Detener o republicar envía un evento terminal (`publication-stopped` o `publication-reconfigured`), cancela los streams activos y limpia las sesiones. El comando Tauri `get_task_manager_publication_status` expone al host únicamente `active`, cantidades de sesiones/WebSockets, sus límites, `revision`, `sequence`, bytes y frames enviados/recibidos, errores de mutación, cancelaciones de streams de IA, resyncs, conflictos, mutaciones aplicadas, eventos descartados y la marca de tiempo del último cambio, para observar capacidad sin filtrar rutas o credenciales.
+
+El mismo estado expone `recoveryRequired` cuando una operación local o del agente deja cambios parciales, no puede cerrar su journal o no logra revalidar el snapshot. También expone la `publicationEpoch`, el último `operationId` y el `actorId` corto para correlacionar diagnósticos sin revelar secretos. Configuraciones muestra un aviso accionable; el host vuelve a cargar el snapshot completo y publica el estado observable, pero nunca reejecuta una mutación automáticamente. El indicador solo se limpia después de una operación verificada o de un rollback confirmado.
+
+`taskManagerPublicationClient.ts` mantiene el cursor, reconecta con backoff, reenvía una operación pendiente usando el mismo `operationId` y transforma los eventos en invalidaciones del snapshot. Las invalidaciones recibidas por WebSocket fuerzan en el cliente publicado una reconciliación completa y coalescida, necesaria para que un movimiento o reordenamiento multiarchivo no deje una vista intermedia; el watcher del host conserva la lectura incremental cuando el hint es seguro. El bridge publicado mantiene HTTP para lecturas y usa WebSocket exclusivamente para mutaciones. Las lecturas de archivos incluyen una revisión SHA-256 opaca; una escritura con `expectedRevision` obsoleta devuelve `CONFLICT` y nunca reemplaza el contenido concurrente. Los settings compartidos se sanitizan para no persistir `activeVaultPath` del host y se distribuyen junto con el evento. Boards, colores, horas y grupos se migran/guardan en `.notia-task-manager.json` dentro del workspace del Task Manager con `version: 1`; `localStorage` queda como cache y preferencias de presentación. La escritura de esa metadata se serializa por vault; el bridge genérico de filesystem no puede leerla ni modificarla y la mutación dedicada de settings la actualiza de forma controlada en el host.
+
+En el host, `useTaskManager` también consume el evento `notia:library-tree-changed` del watcher desktop para reconciliar ediciones hechas fuera de Notia. Compara el snapshot antes de notificar, evita duplicar las escrituras propias que ya publicaron una revisión y limita la relectura incremental al workspace real de Task Manager; si la revisión cambió, una posterior escritura con precondición devuelve un conflicto recuperable. Los reloads disparados por el watcher son de solo lectura: la sincronización de índices se ejecuta al inicializar el workspace o después de una mutación, no dentro de cada reload, para evitar ciclos de escritura-evento-reload. La reconciliación ingresa en el mismo coordinador FIFO que las mutaciones de UI y del agente, para que el watcher no ejecute I/O concurrente con un lote local o remoto.
+
+La barra superior de la URL muestra `conectando`, `sincronizando`, `sin conexión`, `conflicto`, `sincronizado`, `pausado en segundo plano` y los estados terminales de acceso revocado, publicación detenida o reconfigurada. Los estados terminales detienen la reconexión y ofrecen volver al login; una caída transitoria conserva las mutaciones pendientes para reintentarlas con el mismo `operationId`. Al pasar la pestaña a background se cierran socket y timers de retry; al regresar se descarga bootstrap antes de abrir una nueva sesión.
+
+El contrato mínimo del WebSocket es JSON de texto y `protocolVersion: 1`. El cliente comienza cada conexión con un cursor; el servidor devuelve `welcome` y, si conserva el rango solicitado, incluye el replay de `changed`. Si el cursor pertenece a otra época o quedó fuera del historial de 256 eventos, entrega `resync-required`; el cliente descarga `/bootstrap`, actualiza el cursor y recién entonces vuelve a enviar mutaciones. La cola por conexión tiene 64 eventos; un cliente lento se retira para proteger la memoria del host.
+
+```json
+{
+  "type": "hello",
+  "protocolVersion": 1,
+  "messageId": "mensaje-opaco",
+  "publicationEpoch": "epoca-opaca",
+  "lastSequence": 12
+}
+```
+
+```json
+{
+  "type": "changed",
+  "protocolVersion": 1,
+  "publicationEpoch": "epoca-opaca",
+  "sequence": 13,
+  "revision": 13,
+  "changedPaths": ["published-vault/task-mannager/equipo/demo.md"],
+  "messageId": "evento-opaco",
+  "settings": { "boards": [], "groups": [] }
+}
+```
+
+Si el cliente cancela una mutación después de enviarla, envía un frame `cancel`. Mientras la mutación espera el lock, el servidor responde `cancelled: true` y no escribe; si ya comenzó, responde `unknown` y el cliente no reintenta automáticamente.
+
+```json
+{
+  "type": "cancel",
+  "protocolVersion": 1,
+  "messageId": "cancelacion-opaca",
+  "operationId": "operacion-opaca"
+}
+```
+
+Las mutaciones aceptadas se serializan con `mutation_lock`, se ejecutan mediante `execute_publication_invoke` y se reconocen por `ack`. `/task-manager/invoke` rechaza mutaciones con `426 WEBSOCKET_REQUIRED`, de modo que no existe un segundo camino HTTP para escribir. Toda mutación WebSocket exige que `baseRevision` siga vigente; si dos clientes editan contenido, grupos/tableros o cualquier otra entidad sobre revisiones distintas, el segundo recibe un conflicto estructurado con revisión esperada/actual, `actorId` y la operación concurrente cuando está disponible, y no pisa el snapshot confirmado. La deduplicación se indexa por sesión y `operationId`; al republicar se limpia el caché junto con la nueva `publicationEpoch`. El cliente reenvía la misma operación cuando vence el timeout o se corta el socket, por lo que una respuesta perdida no duplica una escritura ya confirmada.
+
+```mermaid
+sequenceDiagram
+    participant H as Host Notia
+    participant S as PublicationRuntime
+    participant A as Cliente A
+    participant B as Cliente B
+    A->>S: hello(epoch, lastSequence)
+    S-->>A: welcome + replay/resync-required
+    A->>S: mutate(operationId, baseRevision)
+    S->>S: validar + serializar + persistir
+    S-->>A: ack(operationId, revision)
+    S-->>A: changed(sequence, revision)
+    S-->>B: changed(sequence, revision)
+    S-->>H: task-manager-publication-changed
+    H->>S: nueva mutación local notificada
+```
+
+La capacidad de clientes se configura desde **Configuraciones → Publicar** con maxClients entre 1 y 64 (64 por defecto). El límite se aplica por separado a sesiones autenticadas y WebSockets; al alcanzarlo el siguiente acceso recibe 429 con Retry-After y las conexiones existentes permanecen activas. Las operaciones compuestas usan un semáforo global de batch: host y clientes remotos no pueden entrelazar escrituras de una misma operación. El cierre publica también los cambios parciales si la operación falló; no equivale a una transacción con rollback.
+
+Cada conexión WebSocket alterna el drenaje de su cola acotada y lecturas con timeout en un único hilo propietario, evitando que un lector retenga repetidamente el mutex requerido por un escritor separado. El watcher acumula sus notificaciones dentro del batch remoto activo, sin avanzar la revisión a mitad de operación. En el navegador, begin/end devuelven `{ok, changed}`; el cursor se toma del ACK WebSocket, no del resultado de esos comandos. En React, `snapshotRef` se actualiza al aplicar snapshots, nunca desde un render que todavía puede ver el estado anterior a una transición. Ambos extremos reconcilian los eventos de publicación con una lectura completa coalescida; no se suprimen eventos del watcher mediante ventanas temporales.
+
+### Validación y diagnóstico de colaboración
+
+La validación reproducible del cliente se ejecuta con `npm test -- --run --maxWorkers=1 --no-file-parallelism`; el fake hub de `taskManagerPublicationClient.test.ts` cubre tres clientes simultáneos, cursor, ACK, conflicto, reconexión, background y convergencia. Para revisar el contrato sin levantar la aplicación se pueden ejecutar los tests focalizados de `taskManagerPublicationClient`, `taskManagerService` y `taskManagerSharedMetadata`.
+
+La prueba contra un servidor real se ejecuta con Node 24 o superior, porque usa el `WebSocket` nativo y no agrega dependencias al producto:
+
+```powershell
+$env:NOTIA_PUBLICATION_URL = 'https://192.168.1.10:52471/task-manager'
+$env:NOTIA_PUBLICATION_PASSWORD = 'contraseña-de-prueba'
+npm run test:publication:e2e -- --insecure --clients 3
+```
+
+Para una secuencia acotada de mutaciones sobre el mismo archivo, usar `--load-mutations`; espera el evento `changed` en todos los clientes antes de enviar la siguiente y reporta p50/p95/p99 y recursos del proceso del probe:
+
+```powershell
+npm run test:publication:e2e -- --insecure --clients 8 `
+  --file published-vault/task-mannager/equipo/demo.md `
+  --append-comment 'probe de carga' --load-mutations 48
+```
+
+Agregar `--status` para consultar, antes y después de la carga, `GET /task-manager/status` con la sesión autenticada. El endpoint solo expone métricas agregadas del host: sesiones y WebSockets activos, revisión/secuencia, bytes y frames, eventos descartados, resyncs, conflictos, mutaciones, errores, cancelaciones de IA, latencia de mutación y estado de recuperación. No devuelve rutas locales, credenciales ni contenido de tareas:
+
+```powershell
+npm run test:publication:e2e -- --insecure --status --clients 8 `
+  --file published-vault/task-mannager/equipo/demo.md `
+  --append-comment 'probe de carga' --load-mutations 48
+```
+
+El probe registra dispositivos nuevos (o usa `NOTIA_PUBLICATION_DEVICE_IDS`), verifica que estén aprobados, abre N WebSockets autenticados y mide bytes, resyncs y convergencia. Para probar una mutación real y el conflicto de dos actores sobre la misma revisión:
+
+```powershell
+npm run test:publication:e2e -- --insecure --clients 3 `
+  --file published-vault/task-mannager/equipo/demo.md `
+  --append-comment 'probe colaborativo'
+npm run test:publication:e2e -- --insecure --clients 3 `
+  --file published-vault/task-mannager/equipo/demo.md `
+  --append-comment 'probe conflictivo' --concurrent-conflict
+npm run test:publication:e2e -- --insecure --clients 3 `
+  --file published-vault/task-mannager/equipo/demo.md `
+  --append-comment 'probe replay' --reconnect
+```
+
+`--insecure` solo se acepta para el certificado autofirmado de una prueba LAN explícita. El probe no mide el render del navegador: esa medición requiere Chromium/Android y debe registrar por separado confirmación, render, memoria y estado del firewall.
+
+En Windows, la prueba manual debe crear un vault temporal, publicar al menos un tablero, aprobar tres dispositivos, abrir tres navegadores en la URL HTTPS, cambiar una tarea desde cada superficie y comprobar la misma `revision`/contenido en host y clientes. Luego hay que cortar la red de un cliente durante una mutación, restaurarla y comprobar replay o bootstrap; también probar límite `maxClients`, revocación, republicación y detención. El firewall debe permitir el puerto elegido únicamente en la red privada. Para medir propagación, registrar el instante de la confirmación y el instante de render en cada cliente y reportar p50/p95/p99, bytes, recargas descartadas, resyncs y memoria por cliente.
+
+La validación Android requiere `npm run build:android:debug` y una tableta física: repetir orientación vertical/horizontal, split-screen, teclado virtual, touch/pointer, botón Atrás y suspensión/reanudación. El emulador no reemplaza esta prueba de red, ciclo de vida y rendimiento.
 
 ## Seguridad de IA publicada y diagnósticos
 

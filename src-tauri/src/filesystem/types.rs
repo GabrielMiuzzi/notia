@@ -1,4 +1,9 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub(crate) fn content_revision(content: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(content.as_bytes()))
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +41,8 @@ pub struct ReadLibraryFileResult {
     pub(crate) ok: bool,
     pub(crate) content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
 }
 
@@ -45,6 +52,16 @@ pub struct WriteLibraryFileResult {
     pub(crate) ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) conflict: Option<FilesystemConflict>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesystemConflict {
+    pub(crate) kind: &'static str,
+    pub(crate) expected_revision: String,
+    pub(crate) current_revision: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +96,8 @@ pub struct ReadLibraryFilePayload {
 pub struct WriteLibraryFilePayload {
     pub(crate) file_path: String,
     pub(crate) content: String,
+    #[serde(default)]
+    pub(crate) expected_revision: Option<String>,
     #[serde(default)]
     pub(crate) directory_uri: Option<String>,
 }

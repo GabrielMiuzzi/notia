@@ -275,11 +275,15 @@ pub fn run() {
             task_manager_publication::publish_task_manager_boards,
             task_manager_publication::hash_task_manager_publication_password,
             task_manager_publication::get_task_manager_publication_url,
+            task_manager_publication::get_task_manager_publication_status,
+            task_manager_publication::set_task_manager_publication_recovery,
             task_manager_publication::list_pending_task_manager_publication_devices,
             task_manager_publication::approve_task_manager_publication_device,
             task_manager_publication::revoke_task_manager_publication_device,
             task_manager_publication::open_task_manager_publication,
             task_manager_publication::stop_task_manager_publication,
+            task_manager_publication::begin_task_manager_publication_batch,
+            task_manager_publication::end_task_manager_publication_batch,
             task_manager_publication::notify_task_manager_publication_changed,
         ])
         .plugin(mobile_ai_bridge::init())

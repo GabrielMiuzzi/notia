@@ -2,7 +2,13 @@ import { ORDER_STEP } from '../constants/taskManagerConstants'
 import type { TaskItem } from '../types/taskManagerTypes'
 
 export function reorderList<T>(items: T[], fromIndex: number, toIndex: number): T[] {
-  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+  if (
+    fromIndex < 0
+    || toIndex < 0
+    || fromIndex >= items.length
+    || toIndex >= items.length
+    || fromIndex === toIndex
+  ) {
     return items
   }
 

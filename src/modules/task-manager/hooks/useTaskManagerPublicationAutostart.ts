@@ -55,9 +55,10 @@ export function useTaskManagerPublicationAutostart({
         aiPreferences,
         preferences.approvedDevices,
         preferences.port,
+        preferences.maxClients,
       )))
       .catch((error: unknown) => {
         console.error('No se pudo restaurar la publicación de Task Manager.', error)
       })
-  }, [activeLibrary?.path, aiPreferences, preferences.approvedDevices, preferences.passwordHash, preferences.port, preferences.publishedBoardNames, theme])
+  }, [activeLibrary?.path, aiPreferences, preferences.approvedDevices, preferences.maxClients, preferences.passwordHash, preferences.port, preferences.publishedBoardNames, theme])
 }

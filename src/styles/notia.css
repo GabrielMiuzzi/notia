@@ -885,6 +885,81 @@
   text-overflow: ellipsis;
 }
 
+.notia-publication-status {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 260px;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.notia-publication-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.notia-publication-status--connected {
+  color: #50fa7b;
+}
+
+.notia-publication-status--syncing,
+.notia-publication-status--connecting,
+.notia-publication-status--paused {
+  color: #f1fa8c;
+}
+
+.notia-publication-status--offline,
+.notia-publication-status--conflict,
+.notia-publication-status--revoked,
+.notia-publication-status--stopped,
+.notia-publication-status--reconfigured {
+  color: #ff6e6e;
+}
+
+.notia-publication-terminal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 14px;
+  color: #282a36;
+  background: #f1fa8c;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.notia-publication-terminal button {
+  min-height: 36px;
+  padding: 5px 12px;
+  border: 1px solid #282a36;
+  border-radius: 7px;
+  color: #282a36;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.notia-publication-terminal button:focus-visible {
+  outline: 2px solid #282a36;
+  outline-offset: 2px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .notia-publication-terminal button {
+    min-height: 48px;
+  }
+}
+
 .notia-published-chat-toggle {
   width: 34px;
   height: 34px;

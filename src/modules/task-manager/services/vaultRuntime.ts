@@ -2,6 +2,7 @@ import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesyste
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import {
   createLibraryEntry,
+  createFile,
   getPathBaseName,
   isDirectoryPath,
   performLibraryEntryOperation,
@@ -23,6 +24,10 @@ type OperationResult = FilesystemOperationResult
 type ReadLibraryFileResult = FilesystemReadTextResult
 type WriteLibraryFileResult = FilesystemOperationResult
 type MarkdownFileDocument = FilesystemMarkdownDocument
+
+function isTaskManagerPublicationMutationError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'TaskManagerPublicationMutationError'
+}
 
 let activeTaskManagerVaultRef: TaskManagerVaultRef | null = null
 let pendingTreeChangeFlushTimerId: number | null = null
@@ -160,6 +165,7 @@ export function flushPendingTaskManagerLibraryTreeChanges(): void {
   dispatchLibraryTreeChanged({
     vaultPath: activeTaskManagerVaultRef?.path,
     pathHint: resolveSharedPathHint(pathHints),
+    source: 'internal',
   })
 }
 
@@ -286,6 +292,22 @@ export async function directoryExists(directoryPath: string): Promise<boolean> {
   }
 }
 
+export async function taskManagerPathExists(filePath: string): Promise<boolean> {
+  const normalizedPath = normalizeFilesystemPath(filePath)
+  if (!normalizedPath.trim()) {
+    return false
+  }
+
+  try {
+    return await pathExists(normalizedPath, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+    })
+  } catch (error) {
+    console.error('[task-manager] path_exists failed', error)
+    return false
+  }
+}
+
 export async function readFileContent(filePath: string): Promise<ReadLibraryFileResult> {
   const normalizedPath = normalizeFilesystemPath(filePath)
 
@@ -303,12 +325,17 @@ export async function readFileContent(filePath: string): Promise<ReadLibraryFile
   }
 }
 
-export async function writeFileContent(filePath: string, content: string): Promise<WriteLibraryFileResult> {
+export async function writeFileContent(
+  filePath: string,
+  content: string,
+  expectedRevision?: string,
+): Promise<WriteLibraryFileResult> {
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
     const result = await writeTextFile(normalizedPath, content, {
       androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+      expectedRevision,
     })
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
@@ -319,7 +346,30 @@ export async function writeFileContent(filePath: string, content: string): Promi
     return { ...result, error: 'No se pudo escribir el archivo.' }
   } catch (error) {
     console.error('[task-manager] write_library_file failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'No se pudo escribir el archivo.' }
+  }
+}
+
+export async function createFileContent(filePath: string, content: string): Promise<OperationResult> {
+  const normalizedPath = normalizeFilesystemPath(filePath)
+
+  try {
+    const result = await createFile(normalizedPath, content, {
+      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+    })
+    if (result.ok) {
+      notifyLibraryTreeChanged(normalizedPath)
+    }
+    return result
+  } catch (error) {
+    console.error('[task-manager] create_library_file failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
+    return { ok: false, error: 'No se pudo crear el archivo.' }
   }
 }
 
@@ -339,6 +389,9 @@ export async function createFolder(parentDirectoryPath: string, name: string): P
     return result
   } catch (error) {
     console.error('[task-manager] create_library_entry(folder) failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'No se pudo crear la carpeta.' }
   }
 }
@@ -359,6 +412,9 @@ export async function createMarkdownFile(parentDirectoryPath: string, fileName: 
     return result
   } catch (error) {
     console.error('[task-manager] create_library_entry(note) failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'No se pudo crear el archivo.' }
   }
 }
@@ -378,6 +434,9 @@ export async function deleteEntry(targetPath: string): Promise<OperationResult> 
     return result
   } catch (error) {
     console.error('[task-manager] library_entry_operation(delete) failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'No se pudo eliminar la entrada.' }
   }
 }
@@ -398,6 +457,9 @@ export async function renameEntry(targetPath: string, newName: string): Promise<
     return result
   } catch (error) {
     console.error('[task-manager] library_entry_operation(rename) failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'No se pudo renombrar la entrada.' }
   }
 }
@@ -422,6 +484,9 @@ export async function moveEntry(sourcePath: string, targetDirectoryPath: string)
     return result
   } catch (error) {
     console.error('[task-manager] library_entry_operation(move) failed', error)
+    if (isTaskManagerPublicationMutationError(error)) {
+      throw error
+    }
     return { ok: false, error: 'No se pudo mover la entrada.' }
   }
 }

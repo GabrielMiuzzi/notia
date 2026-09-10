@@ -230,6 +230,7 @@ pub async fn run_desktop_ai_chat_streaming(
                         event,
                     },
                 );
+                Ok(())
             },
         )
         .await?;

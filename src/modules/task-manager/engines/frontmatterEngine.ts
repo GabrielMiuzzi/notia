@@ -41,6 +41,36 @@ export function updateMarkdownFrontmatter(content: string, updates: Partial<Task
   return `${serialized}\n\n${body}`
 }
 
+export type FrontmatterRebaseResult =
+  | { ok: true; content: string }
+  | { ok: false; conflictingFields: string[] }
+
+/**
+ * Rebases explicitly compatible field changes on top of the latest source.
+ * A field changed by both authors is rejected; unrelated fields are retained.
+ */
+export function rebaseMarkdownFrontmatter(
+  baseContent: string,
+  currentContent: string,
+  updates: Record<string, unknown>,
+): FrontmatterRebaseResult {
+  const baseFrontmatter = parseMarkdownFrontmatter(baseContent).frontmatter ?? {}
+  const currentFrontmatter = parseMarkdownFrontmatter(currentContent).frontmatter ?? {}
+  const conflictingFields = Object.keys(updates).filter((field) => (
+    !frontmatterValuesEqual(baseFrontmatter[field as keyof TaskFrontmatter], currentFrontmatter[field as keyof TaskFrontmatter])
+    && !frontmatterValuesEqual(currentFrontmatter[field as keyof TaskFrontmatter], updates[field])
+  ))
+
+  if (conflictingFields.length > 0) {
+    return { ok: false, conflictingFields }
+  }
+
+  return {
+    ok: true,
+    content: updateMarkdownFrontmatter(currentContent, updates),
+  }
+}
+
 export function syncTaskTypeTags(filePath: string, content: string): string {
   const parsed = parseMarkdownFrontmatter(content)
   const currentTags = normalizeTags(parsed.frontmatter?.tags)
@@ -230,6 +260,21 @@ function normalizeTags(value: unknown): string[] {
   }
 
   return []
+}
+
+function frontmatterValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => frontmatterValuesEqual(value, right[index]))
+  }
+  if (left && right && typeof left === 'object' && typeof right === 'object') {
+    const leftRecord = left as Record<string, unknown>
+    const rightRecord = right as Record<string, unknown>
+    const keys = Object.keys(leftRecord)
+    return keys.length === Object.keys(rightRecord).length
+      && keys.every((key) => key in rightRecord && frontmatterValuesEqual(leftRecord[key], rightRecord[key]))
+  }
+  return false
 }
 
 function serializeYamlValue(value: unknown): string {

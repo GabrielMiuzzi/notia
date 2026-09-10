@@ -379,6 +379,7 @@ export function useLibraryTreeSync({
   const notifyLibraryTreeChanged = useCallback((pathHint?: string) => {
     dispatchLibraryTreeChanged({
       pathHint: pathHint ?? activeLibrary?.path,
+      source: 'internal',
     })
   }, [activeLibrary?.path])
 

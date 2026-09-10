@@ -4,6 +4,7 @@ use tauri::State;
 
 use crate::mobile_directory_picker;
 
+#[cfg(target_os = "android")]
 use super::android_saf;
 use super::desktop;
 use super::types::{
@@ -58,6 +59,7 @@ pub fn read_library_file(
     if payload.file_path.trim().is_empty() {
         return ReadLibraryFileResult {
             ok: false,
+            revision: None,
             content: String::new(),
             error: Some("Invalid file path.".to_string()),
         };
@@ -124,6 +126,7 @@ pub fn write_library_file(
         return WriteLibraryFileResult {
             ok: false,
             error: Some("Invalid file data.".to_string()),
+            conflict: None,
         };
     }
 
@@ -132,6 +135,7 @@ pub fn write_library_file(
         android_picker_state.inner(),
         &payload.file_path,
         &payload.content,
+        payload.expected_revision.as_deref(),
         payload.directory_uri.as_deref(),
     ) {
         return result;
@@ -140,7 +144,11 @@ pub fn write_library_file(
     #[cfg(not(target_os = "android"))]
     let _ = android_picker_state;
 
-    desktop::write_library_file(&payload.file_path, &payload.content)
+    desktop::write_library_file(
+        &payload.file_path,
+        &payload.content,
+        payload.expected_revision.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -397,6 +405,7 @@ pub(crate) fn execute_desktop_filesystem_command(
             serde_json::to_value(desktop::write_library_file(
                 &payload.file_path,
                 &payload.content,
+                payload.expected_revision.as_deref(),
             ))
         }
         "path_exists" => {

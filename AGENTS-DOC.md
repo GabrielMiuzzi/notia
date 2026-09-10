@@ -1,5 +1,7 @@
 # Documentación
 
+La publicación colaborativa de Task Manager vive en `src-tauri/src/task_manager_publication.rs` y `src/modules/task-manager/services/taskManagerPublicationClient.ts`. HTTPS conserva el login/bootstrap y las lecturas; `/task-manager/ws` usa un protocolo JSON versionado con `publicationEpoch`, cursor `sequence`, `revision`, `operationId`, ACK, replay, resync y eventos terminales. Las mutaciones deben pasar por la autorización de publicación, la serialización de dominio y la revisión de archivo; no agregar escrituras directas al bridge remoto ni volver a introducir SSE como transporte de colaboración.
+
 El runtime común rechaza anuncios explícitos de acciones pendientes como respuesta final cuando hay herramientas disponibles, y fuerza una ronda con native tools. Las correcciones son internas, acotadas y nunca autorizan escrituras, reemplazan confirmaciones ni se guardan como reglas o memorias. Mantener cubiertos la continuación tras streaming, el límite de reintentos y la cancelación sin repetición de mutaciones.
 
 El conocimiento operativo de XGraph se agrega al prompt conversacional común mediante `XGRAPH_AGENT_GUIDE`, sin modificar los prompts personalizados de la biblioteca. Mantener la guía sincronizada con `xgraphEngine` y `xgraphPreviewRuntime`: sintaxis Markdown, variables del tablero, controles, persistencia, permisos y límites. La guía no autoriza nuevas herramientas ni cambia el formato de respuesta de Telegram.
@@ -154,3 +156,7 @@ La documentación es un entregable obligatorio de cada cambio de código. No se 
 > **Regla:** este informe debe actualizarse con cada refactorización significativa, eliminación de deuda técnica o introducción de nuevos patrones de código.
 
 > **Regla general de sincronización:** los tres informes (cohesión vs acoplamiento, arquitectura y calidad de código) son entregables obligatorios de `README-TECH.md` y deben mantenerse actualizados con cada cambio estructural significativo (nueva capa, nuevo módulo, refactorización de dependencias o resolución de deuda técnica).
+
+### Nota de concurrencia: Task Manager publicado (2026-09-10)
+
+La conexión WebSocket tiene un único propietario para alternar envío y lectura con timeout; no volver a separar ambos usando un mutex común alrededor de una lectura bloqueante. Las notificaciones del watcher respetan el batch remoto activo y no deben descartarse mediante una ventana temporal. El resultado remoto de begin/end no es el cursor del ACK. En el hook, la referencia al snapshot confirmado no se reescribe desde renders que pueden observar una transición anterior. Las pruebas de regresión y las limitaciones de validación nativa/multiusuario están registradas en `tasks.md`; compilar los tests no equivale a ejecutarlos.

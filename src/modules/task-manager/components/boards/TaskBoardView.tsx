@@ -461,8 +461,12 @@ export function TaskBoardView({
     }
 
     setSourceDialog((previous) => previous ? { ...previous, isSaving: true } : previous)
-    await onSaveTaskSource(sourceDialog.task.filePath, sourceDialog.source)
-    setSourceDialog(null)
+    try {
+      await onSaveTaskSource(sourceDialog.task.filePath, sourceDialog.source)
+      setSourceDialog(null)
+    } catch {
+      setSourceDialog((previous) => previous ? { ...previous, isSaving: false } : previous)
+    }
   }
 
   const clearTouchDrag = useCallback(() => {

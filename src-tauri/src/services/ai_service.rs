@@ -66,6 +66,11 @@ use futures::StreamExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use reqwest::{Client, Url};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::Duration;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -668,10 +673,33 @@ pub async fn stream_ollama_chat<F>(
     model: &str,
     messages: &[AiChatMessage],
     think: &serde_json::Value,
+    on_delta: F,
+) -> Result<String, String>
+where
+    F: FnMut(AiChatStreamDelta) -> Result<(), String>,
+{
+    stream_ollama_chat_with_cancellation(
+        settings,
+        model,
+        messages,
+        think,
+        Arc::new(AtomicBool::new(false)),
+        on_delta,
+    )
+    .await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn stream_ollama_chat_with_cancellation<F>(
+    settings: &AiHttpSettings,
+    model: &str,
+    messages: &[AiChatMessage],
+    think: &serde_json::Value,
+    cancellation: Arc<AtomicBool>,
     mut on_delta: F,
 ) -> Result<String, String>
 where
-    F: FnMut(AiChatStreamDelta),
+    F: FnMut(AiChatStreamDelta) -> Result<(), String>,
 {
     let normalized_model = model.trim();
     if normalized_model.is_empty() {
@@ -708,7 +736,18 @@ where
     let mut buffer = Vec::<u8>::new();
     let mut answer = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next_chunk = Box::pin(stream.next());
+        let wait_for_cancellation = Box::pin(wait_for_cancellation(Arc::clone(&cancellation)));
+        let chunk = match futures::future::select(next_chunk, wait_for_cancellation).await {
+            futures::future::Either::Left((chunk, _)) => chunk,
+            futures::future::Either::Right((_, _)) => {
+                return Err("El stream de IA publicado fue cancelado.".to_string());
+            }
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         let chunk = chunk
             .map_err(|error| describe_request_error(error, "Se interrumpio el stream de IA."))?;
         buffer.extend_from_slice(&chunk);
@@ -730,9 +769,16 @@ where
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn wait_for_cancellation(cancellation: Arc<AtomicBool>) {
+    while !cancellation.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn process_stream_line<F>(line: &[u8], answer: &mut String, on_delta: &mut F) -> Result<(), String>
 where
-    F: FnMut(AiChatStreamDelta),
+    F: FnMut(AiChatStreamDelta) -> Result<(), String>,
 {
     let line = std::str::from_utf8(line)
         .map_err(|_| "Ollama devolvio texto UTF-8 invalido.".to_string())?
@@ -747,11 +793,11 @@ where
     }
     if let Some(message) = payload.message {
         if let Some(thinking) = message.thinking.filter(|value| !value.is_empty()) {
-            on_delta(AiChatStreamDelta::Thinking(thinking));
+            on_delta(AiChatStreamDelta::Thinking(thinking))?;
         }
         if let Some(content) = message.content.filter(|value| !value.is_empty()) {
             answer.push_str(&content);
-            on_delta(AiChatStreamDelta::Content(content));
+            on_delta(AiChatStreamDelta::Content(content))?;
         }
     }
     Ok(())
@@ -769,8 +815,14 @@ mod stream_tests {
             br#"{"message":{"thinking":"Analizando...","content":"Respuesta"}}"#,
             &mut answer,
             &mut |delta| match delta {
-                AiChatStreamDelta::Thinking(value) => deltas.push(("thinking", value)),
-                AiChatStreamDelta::Content(value) => deltas.push(("content", value)),
+                AiChatStreamDelta::Thinking(value) => {
+                    deltas.push(("thinking", value));
+                    Ok(())
+                }
+                AiChatStreamDelta::Content(value) => {
+                    deltas.push(("content", value));
+                    Ok(())
+                }
             },
         )
         .expect("el fragmento debe ser valido");
@@ -783,6 +835,18 @@ mod stream_tests {
                 ("content", "Respuesta".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn propagates_a_consumer_disconnect_from_the_delta_callback() {
+        let mut answer = String::new();
+        let result = process_stream_line(
+            br#"{"message":{"content":"Respuesta"}}"#,
+            &mut answer,
+            &mut |_delta| Err("cliente desconectado".to_string()),
+        );
+
+        assert_eq!(result, Err("cliente desconectado".to_string()));
     }
 }
 

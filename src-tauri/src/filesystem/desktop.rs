@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::notia_timer::NotiaTimer;
@@ -11,10 +12,10 @@ use super::helpers::{
     read_markdown_files_in_directory, search_library_files_in_directory,
 };
 use super::types::{
-    FileNode, IsDirectoryPathResult, MarkdownFileDocument, OperationResult, PathExistsResult,
-    ReadLibraryFileResult, ReadLibraryTreePayload, ReadMarkdownFilesPayload,
-    SearchLibraryFilesPayload, SearchLibraryFilesResult, WriteBinaryFilePayload,
-    WriteLibraryFileResult,
+    content_revision, FileNode, FilesystemConflict, IsDirectoryPathResult, MarkdownFileDocument,
+    OperationResult, PathExistsResult, ReadLibraryFileResult, ReadLibraryTreePayload,
+    ReadMarkdownFilesPayload, SearchLibraryFilesPayload, SearchLibraryFilesResult,
+    WriteBinaryFilePayload, WriteLibraryFileResult,
 };
 
 pub(crate) fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
@@ -52,11 +53,13 @@ pub(crate) fn read_library_file(file_path: &str) -> ReadLibraryFileResult {
     match fs::read_to_string(file_path) {
         Ok(content) => ReadLibraryFileResult {
             ok: true,
+            revision: Some(content_revision(&content)),
             content,
             error: None,
         },
         Err(_) => ReadLibraryFileResult {
             ok: false,
+            revision: None,
             content: String::new(),
             error: Some("Could not read file.".to_string()),
         },
@@ -82,7 +85,7 @@ pub(crate) fn search_library_files(payload: SearchLibraryFilesPayload) -> Search
         &mut matched_file_paths,
     );
 
-    matched_file_paths.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    matched_file_paths.sort_by_key(|path| path.to_lowercase());
     SearchLibraryFilesResult {
         paths: matched_file_paths,
     }
@@ -100,18 +103,38 @@ pub(crate) fn read_markdown_files(payload: ReadMarkdownFilesPayload) -> Vec<Mark
     let mut documents = Vec::new();
 
     read_markdown_files_in_directory(&directory_path, &mut visited_directories, &mut documents);
-    documents.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    documents.sort_by_key(|document| document.path.to_lowercase());
     documents
 }
 
-pub(crate) fn write_library_file(file_path: &str, content: &str) -> WriteLibraryFileResult {
+pub(crate) fn write_library_file(
+    file_path: &str,
+    content: &str,
+    expected_revision: Option<&str>,
+) -> WriteLibraryFileResult {
+    if let Some(expected_revision) = expected_revision {
+        let current_revision = fs::read_to_string(file_path)
+            .ok()
+            .map(|current| content_revision(&current));
+        if current_revision.as_deref() != Some(expected_revision) {
+            return WriteLibraryFileResult {
+                ok: false,
+                error: Some("CONFLICT: el archivo cambió desde la última lectura.".to_string()),
+                conflict: Some(FilesystemConflict {
+                    kind: "revision",
+                    expected_revision: expected_revision.to_string(),
+                    current_revision,
+                }),
+            };
+        }
+    }
     let target = Path::new(file_path);
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let file_name = target
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("document");
-    let temporary_path = parent.join(format!(".{}.notia-tmp-{}", file_name, std::process::id()));
+    let temporary_path = parent.join(format!(".{}.notia-tmp-{}", file_name, uuid::Uuid::new_v4()));
 
     let result = (|| -> std::io::Result<()> {
         let mut temporary_file = OpenOptions::new()
@@ -122,7 +145,7 @@ pub(crate) fn write_library_file(file_path: &str, content: &str) -> WriteLibrary
         temporary_file.write_all(content.as_bytes())?;
         temporary_file.sync_all()?;
         drop(temporary_file);
-        fs::rename(&temporary_path, target)?;
+        replace_file_atomically(&temporary_path, target)?;
         Ok(())
     })();
 
@@ -134,48 +157,118 @@ pub(crate) fn write_library_file(file_path: &str, content: &str) -> WriteLibrary
         Ok(()) => WriteLibraryFileResult {
             ok: true,
             error: None,
+            conflict: None,
         },
         Err(_) => WriteLibraryFileResult {
             ok: false,
             error: Some("Could not write file atomically.".to_string()),
+            conflict: None,
         },
     }
 }
 
 pub(crate) fn create_library_file(file_path: &str, content: &str) -> OperationResult {
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(file_path)
+    let target = Path::new(file_path);
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document");
+    let temporary_path = parent.join(format!(
+        ".{}.notia-create-tmp-{}",
+        file_name,
+        uuid::Uuid::new_v4()
+    ));
+
+    let result = (|| -> std::io::Result<()> {
+        let mut temporary_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        use std::io::Write;
+        temporary_file.write_all(content.as_bytes())?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        if target.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target already exists",
+            ));
+        }
+        replace_file_atomically(&temporary_path, target)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+
+    match result {
+        Ok(()) => OperationResult {
+            ok: true,
+            error: None,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OperationResult {
+            ok: false,
+            error: Some("An entry with that name already exists.".to_string()),
+        },
+        Err(_) => OperationResult {
+            ok: false,
+            error: Some("Could not create file atomically.".to_string()),
+        },
+    }
+}
+
+fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
     {
-        Ok(mut file) => {
-            use std::io::Write;
+        use std::iter;
+        use std::os::windows::ffi::OsStrExt;
+        use std::time::Duration;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
 
-            let write_result = file.write_all(content.as_bytes());
-            match write_result {
-                Ok(()) => OperationResult {
-                    ok: true,
-                    error: None,
-                },
-                Err(_) => OperationResult {
-                    ok: false,
-                    error: Some("Could not create file.".to_string()),
-                },
+        let source_wide = source
+            .as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect::<Vec<_>>();
+        let target_wide = target
+            .as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect::<Vec<_>>();
+        const ATOMIC_REPLACE_ATTEMPTS: usize = 5;
+        for attempt in 0..ATOMIC_REPLACE_ATTEMPTS {
+            // SAFETY: both buffers are owned, UTF-16 encoded, and explicitly NUL-terminated
+            // for the duration of the synchronous Windows API call.
+            let result = unsafe {
+                MoveFileExW(
+                    PCWSTR(source_wide.as_ptr()),
+                    PCWSTR(target_wide.as_ptr()),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt + 1 < ATOMIC_REPLACE_ATTEMPTS => {
+                    // Antivirus scanners, the editor and the filesystem watcher can briefly
+                    // hold the destination after a read. Keep the atomic replacement contract
+                    // and absorb only this short, transient contention window.
+                    std::thread::sleep(Duration::from_millis(25 * (attempt as u64 + 1)));
+                    let _ = error;
+                }
+                Err(error) => return Err(io::Error::other(error.to_string())),
             }
         }
-        Err(error) => {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                return OperationResult {
-                    ok: false,
-                    error: Some("An entry with that name already exists.".to_string()),
-                };
-            }
+        Err(io::Error::other("Could not replace file atomically."))
+    }
 
-            OperationResult {
-                ok: false,
-                error: Some("Could not create file.".to_string()),
-            }
-        }
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(source, target)
     }
 }
 
@@ -382,7 +475,9 @@ mod tests {
     use std::process;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{paste_entry, rename_entry};
+    use super::{
+        create_library_file, paste_entry, read_library_file, rename_entry, write_library_file,
+    };
 
     struct TestTempDir {
         path: PathBuf,
@@ -452,6 +547,71 @@ mod tests {
         );
         assert!(original_path.exists());
         assert!(duplicate_path.exists());
+    }
+
+    #[test]
+    fn write_library_file_rejects_a_stale_revision_without_overwriting() {
+        let temp_dir = TestTempDir::new();
+        let file_path = temp_dir.path().join("shared.md");
+        fs::write(&file_path, "version one").expect("failed to seed shared file");
+        let initial = read_library_file(file_path.to_str().expect("invalid utf-8 test path"));
+        let initial_revision = initial.revision.expect("revision for existing file");
+
+        fs::write(&file_path, "version two").expect("failed to simulate concurrent write");
+        let result = write_library_file(
+            file_path.to_str().expect("invalid utf-8 test path"),
+            "version three",
+            Some(&initial_revision),
+        );
+
+        assert!(!result.ok);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("CONFLICT:")));
+        let conflict = result.conflict.expect("structured file conflict");
+        assert_eq!(conflict.kind, "revision");
+        assert_eq!(conflict.expected_revision, initial_revision);
+        assert_eq!(
+            fs::read_to_string(file_path).expect("read shared file"),
+            "version two"
+        );
+    }
+
+    #[test]
+    fn write_library_file_atomically_replaces_an_existing_file() {
+        let temp_dir = TestTempDir::new();
+        let file_path = temp_dir.path().join("shared.md");
+        fs::write(&file_path, "version one").expect("failed to seed shared file");
+
+        let result = write_library_file(
+            file_path.to_str().expect("invalid utf-8 test path"),
+            "version two",
+            None,
+        );
+
+        assert!(result.ok);
+        assert_eq!(
+            fs::read_to_string(file_path).expect("read replaced file"),
+            "version two"
+        );
+    }
+
+    #[test]
+    fn create_library_file_writes_content_before_publishing_the_target() {
+        let temp_dir = TestTempDir::new();
+        let file_path = temp_dir.path().join("created.md");
+
+        let result = create_library_file(
+            file_path.to_str().expect("invalid utf-8 test path"),
+            "contenido completo",
+        );
+
+        assert!(result.ok);
+        assert_eq!(
+            fs::read_to_string(file_path).expect("read created file"),
+            "contenido completo"
+        );
     }
 
     #[test]

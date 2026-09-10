@@ -3,10 +3,12 @@ import {
   DEFAULT_BOARD_NAME,
   FINISHED_TASKS_FOLDER,
   POMODORO_LOG_BASENAME,
+  TASK_MANAGER_MUTATION_JOURNAL_FILE,
+  TASK_MANAGER_SHARED_METADATA_FILE,
   TASKS_ROOT_FOLDER,
 } from '../constants/taskManagerConstants'
 import { resolveTaskMoveTarget, resolveUniquePath } from '../engines/completionEngine'
-import { parseMarkdownFrontmatter, rebuildTaskChildLinks, syncTaskTypeTags, updateMarkdownFrontmatter } from '../engines/frontmatterEngine'
+import { parseMarkdownFrontmatter, rebuildTaskChildLinks, rebaseMarkdownFrontmatter, syncTaskTypeTags, updateMarkdownFrontmatter } from '../engines/frontmatterEngine'
 import {
   appendPomodoroLogEntry,
   deletePomodoroLogEntry,
@@ -25,7 +27,8 @@ import type {
 } from '../types/taskManagerTypes'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
 import { getBaseName, getBasenameWithoutExtension, getParentDirectory, toAbsoluteVaultPath, toRelativeVaultPath } from '../utils/path'
-import { createMarkdownFile, deleteEntry, directoryExists, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, writeFileContent } from './vaultRuntime'
+import { createMarkdownFile, deleteEntry, directoryExists, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, taskManagerPathExists, writeFileContent } from './vaultRuntime'
+import { listPendingTaskManagerMutations } from './taskManagerMutationJournal'
 
 const ALTERNATE_TASKS_ROOT_FOLDER = 'task-manager'
 const forcedTasksRootInsideVaultPaths = new Set<string>()
@@ -45,11 +48,45 @@ export interface TaskManagerSnapshot {
   pomodoroEntries: PomodoroLogEntry[]
 }
 
+const MAX_PUBLICATION_CHANGED_PATHS = 32
+
+/**
+ * Returns logical Markdown paths whose persisted source changed between two
+ * snapshots. The list is only an invalidation hint; the next snapshot remains
+ * the source of truth and the publication server applies its own scope filter.
+ */
+export function resolveTaskManagerSnapshotChangedPaths(
+  previousSnapshot: TaskManagerSnapshot,
+  nextSnapshot: TaskManagerSnapshot,
+): string[] {
+  const previousDocuments = new Map(previousSnapshot.documents.map((document) => [document.path, document.content]))
+  const nextDocuments = new Map(nextSnapshot.documents.map((document) => [document.path, document.content]))
+  const paths = new Set<string>([
+    ...previousDocuments.keys(),
+    ...nextDocuments.keys(),
+  ])
+
+  const changedPaths = Array.from(paths)
+    .filter((path) => previousDocuments.get(path) !== nextDocuments.get(path))
+    .sort((left, right) => left.localeCompare(right))
+  return changedPaths.length <= MAX_PUBLICATION_CHANGED_PATHS
+    ? changedPaths
+    : []
+}
+
 async function resolveRuntimeTasksRoot(
   vaultPath: string,
 ): Promise<{ folder: string; atVaultRoot: boolean }> {
   const normalizedVaultPath = normalizeVaultPathKey(vaultPath)
   const forceInsideVault = forcedTasksRootInsideVaultPaths.has(normalizedVaultPath)
+  if (typeof window !== 'undefined'
+    && normalizedVaultPath.toLowerCase() === 'published-vault'
+    && window.__NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__ === true) {
+    return {
+      folder: TASKS_ROOT_FOLDER,
+      atVaultRoot: true,
+    }
+  }
   const vaultBasename = getBaseName(vaultPath).trim().toLowerCase()
   if (!forceInsideVault && (vaultBasename === TASKS_ROOT_FOLDER || vaultBasename === ALTERNATE_TASKS_ROOT_FOLDER)) {
     return {
@@ -198,6 +235,15 @@ export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): P
 
   await runWorkspaceStep('ensure-pomodoro-log-file', () => ensurePomodoroLogFile(runtimeRoot))
   await runWorkspaceStep('sync-indexes-and-metadata', () => syncTaskIndexesAndMetadata(vaultPath, boardNames, boards))
+  await runWorkspaceStep('recover-pending-mutations', async () => {
+    const journalPath = await resolveTaskManagerMutationJournalPath(vaultPath)
+    const pendingMutations = await listPendingTaskManagerMutations(journalPath)
+    if (pendingMutations.length > 0) {
+      console.warn('[task-manager] hay operaciones colaborativas pendientes de recuperación', {
+        count: pendingMutations.length,
+      })
+    }
+  })
 }
 
 export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames: string[]): Promise<void> {
@@ -233,6 +279,79 @@ export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskMa
     documents: relativeDocuments,
     tasks,
     pomodoroEntries,
+  }
+}
+
+export async function resolveTaskManagerSharedMetadataPath(vaultPath: string): Promise<string> {
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
+  return runtimeRoot.toAbsolutePath(`${TASKS_ROOT_FOLDER}/${TASK_MANAGER_SHARED_METADATA_FILE}`)
+}
+
+export async function resolveTaskManagerMutationJournalPath(vaultPath: string): Promise<string> {
+  const metadataPath = await resolveTaskManagerSharedMetadataPath(vaultPath)
+  if (metadataPath.endsWith(TASK_MANAGER_SHARED_METADATA_FILE)) {
+    return `${metadataPath.slice(0, -TASK_MANAGER_SHARED_METADATA_FILE.length)}${TASK_MANAGER_MUTATION_JOURNAL_FILE}`
+  }
+  return `${metadataPath}.${TASK_MANAGER_MUTATION_JOURNAL_FILE}`
+}
+
+export async function loadTaskManagerSnapshotForChangedPaths(
+  vaultPath: string,
+  previousSnapshot: TaskManagerSnapshot,
+  changedPaths: string[],
+): Promise<TaskManagerSnapshot> {
+  const normalizedChangedPaths = Array.from(new Set(changedPaths
+    .map((path) => normalizeFilesystemPath(path).trim())
+    .filter(Boolean)))
+  if (normalizedChangedPaths.length === 0 || normalizedChangedPaths.length > MAX_PUBLICATION_CHANGED_PATHS) {
+    return loadTaskManagerSnapshot(vaultPath)
+  }
+
+  const normalizedVaultPath = normalizeFilesystemPath(vaultPath).replace(/[\\/]+$/, '')
+  const acceptsPublicationAlias = normalizedVaultPath.toLowerCase() === 'published-vault'
+  const isPathReadableFromRuntime = normalizedChangedPaths.every((path) => (
+    path === normalizedVaultPath
+    || path.startsWith(`${normalizedVaultPath}/`)
+    || (acceptsPublicationAlias && (path === 'published-vault' || path.startsWith('published-vault/')))
+  ))
+  if (!isPathReadableFromRuntime) {
+    return loadTaskManagerSnapshot(vaultPath)
+  }
+
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
+  const documentsByPath = new Map(previousSnapshot.documents.map((document) => [document.path, document.content]))
+  for (const changedPath of normalizedChangedPaths) {
+    const relativePath = changedPath.startsWith(`${normalizedVaultPath}/`)
+      ? changedPath.slice(normalizedVaultPath.length + 1)
+      : changedPath === normalizedVaultPath
+        ? ''
+        : changedPath
+    if (
+      !runtimeRoot.atVaultRoot
+      && relativePath !== runtimeRoot.folder
+      && !relativePath.startsWith(`${runtimeRoot.folder}/`)
+    ) {
+      continue
+    }
+    const canonicalPath = runtimeRoot.toCanonicalRelativePath(relativePath)
+    const result = await readFileContent(changedPath)
+    if (!result.ok) {
+      if (await taskManagerPathExists(changedPath)) {
+        return loadTaskManagerSnapshot(vaultPath)
+      }
+      documentsByPath.delete(canonicalPath)
+      continue
+    }
+    documentsByPath.set(canonicalPath, result.content)
+  }
+
+  const documents = Array.from(documentsByPath.entries())
+    .map(([path, content]) => ({ path, content }))
+    .sort((left, right) => left.path.localeCompare(right.path, 'es'))
+  return {
+    documents,
+    tasks: getTasks(documents),
+    pomodoroEntries: extractPomodoroEntries(documents),
   }
 }
 
@@ -281,7 +400,12 @@ export async function createTask(vaultPath: string, formData: TaskFormData, task
   return uniqueRelativePath
 }
 
-export async function updateTaskFrontmatter(vaultPath: string, taskPath: string, updates: Record<string, unknown>): Promise<void> {
+export async function updateTaskFrontmatter(
+  vaultPath: string,
+  taskPath: string,
+  updates: Record<string, unknown>,
+  options?: { baseContent?: string },
+): Promise<void> {
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
@@ -290,8 +414,15 @@ export async function updateTaskFrontmatter(vaultPath: string, taskPath: string,
     throw new Error(readResult.error || 'No se pudo leer la tarea.')
   }
 
-  const nextContent = updateMarkdownFrontmatter(readResult.content, updates)
-  const writeResult = await writeFileContent(absolutePath, nextContent)
+  const rebased = options?.baseContent === undefined
+    ? { ok: true as const, content: updateMarkdownFrontmatter(readResult.content, updates) }
+    : rebaseMarkdownFrontmatter(options.baseContent, readResult.content, updates)
+  if (!rebased.ok) {
+    throw new Error(`CONFLICT: campos modificados por otra persona (${rebased.conflictingFields.join(', ')}).`)
+  }
+
+  const nextContent = rebased.content
+  const writeResult = await writeFileContent(absolutePath, nextContent, readResult.revision)
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo actualizar la tarea.')
   }
@@ -418,11 +549,23 @@ export async function syncTaskIndexesAndMetadata(
     ]),
   )
 
-  await ensureFile(runtimeRoot, ROOT_TASK_INDEX_PATH, buildRootTaskIndexContent(boardNames))
-  await ensureFile(runtimeRoot, FINISHED_TASK_INDEX_PATH, buildBoardTaskIndexContent([]))
-  await ensureFile(runtimeRoot, CANCELLED_TASK_INDEX_PATH, buildBoardTaskIndexContent([]))
+  const rootTaskIndexContent = buildRootTaskIndexContent(boardNames)
+  const finishedTaskIndexContent = buildBoardTaskIndexContent([])
+  const cancelledTaskIndexContent = buildBoardTaskIndexContent([])
+  documentsByPath.set(
+    ROOT_TASK_INDEX_PATH,
+    await ensureFile(runtimeRoot, ROOT_TASK_INDEX_PATH, rootTaskIndexContent),
+  )
+  documentsByPath.set(
+    FINISHED_TASK_INDEX_PATH,
+    await ensureFile(runtimeRoot, FINISHED_TASK_INDEX_PATH, finishedTaskIndexContent),
+  )
+  documentsByPath.set(
+    CANCELLED_TASK_INDEX_PATH,
+    await ensureFile(runtimeRoot, CANCELLED_TASK_INDEX_PATH, cancelledTaskIndexContent),
+  )
 
-  await writeIfChanged(runtimeRoot, ROOT_TASK_INDEX_PATH, buildRootTaskIndexContent(boardNames), documentsByPath)
+  await writeIfChanged(runtimeRoot, ROOT_TASK_INDEX_PATH, rootTaskIndexContent, documentsByPath)
 
   for (const boardName of boardNames) {
     const boardIndexPath = getBoardTaskIndexPath(boardName)
@@ -433,8 +576,12 @@ export async function syncTaskIndexesAndMetadata(
       .filter((document) => !document.path.endsWith(`${boardName}TaskIndex.md`))
       .map((document) => getBasenameWithoutExtension(document.path))
 
-    await ensureFile(runtimeRoot, boardIndexPath, buildBoardTaskIndexContent(taskNames))
-    await writeIfChanged(runtimeRoot, boardIndexPath, buildBoardTaskIndexContent(taskNames), documentsByPath)
+    const boardIndexContent = buildBoardTaskIndexContent(taskNames)
+    documentsByPath.set(
+      boardIndexPath,
+      await ensureFile(runtimeRoot, boardIndexPath, boardIndexContent),
+    )
+    await writeIfChanged(runtimeRoot, boardIndexPath, boardIndexContent, documentsByPath)
   }
 
   const finishedTaskNames = snapshot.documents
@@ -458,7 +605,6 @@ export async function syncTaskIndexesAndMetadata(
 
     const endDateUpdates = buildRebalancedEndDates(boardTasks, {
       activityHoursPerDay: boardConfigsByName.get(boardName)?.activityHoursPerDay ?? 24,
-      startAt: new Date(),
     })
 
     for (const update of endDateUpdates) {
@@ -501,7 +647,7 @@ export async function appendPomodoroEntry(vaultPath: string, input: AppendPomodo
   }
 
   const nextContent = appendPomodoroLogEntry(readResult.content, input)
-  const writeResult = await writeFileContent(absolutePath, nextContent)
+  const writeResult = await writeFileContent(absolutePath, nextContent, readResult.revision)
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo guardar el registro de pomodoro.')
   }
@@ -537,7 +683,7 @@ export async function deletePomodoroEntry(vaultPath: string, entryId: string): P
     return false
   }
 
-  const writeResult = await writeFileContent(absolutePath, result.content)
+  const writeResult = await writeFileContent(absolutePath, result.content, readResult.revision)
   return writeResult.ok
 }
 
@@ -546,11 +692,11 @@ async function ensurePomodoroLogFile(runtimeRoot: TaskWorkspaceRuntimeRoot): Pro
   await ensureFile(runtimeRoot, logPath, '')
 }
 
-async function ensureFile(runtimeRoot: TaskWorkspaceRuntimeRoot, relativePath: string, content: string): Promise<void> {
+async function ensureFile(runtimeRoot: TaskWorkspaceRuntimeRoot, relativePath: string, content: string): Promise<string> {
   const absolutePath = runtimeRoot.toAbsolutePath(relativePath)
   const existing = await readFileContent(absolutePath)
   if (existing.ok) {
-    return
+    return existing.content
   }
 
   const createResult = await createMarkdownFile(getParentDirectory(absolutePath), getBaseName(absolutePath))
@@ -562,6 +708,7 @@ async function ensureFile(runtimeRoot: TaskWorkspaceRuntimeRoot, relativePath: s
   if (!writeResult.ok) {
     throw new Error(writeResult.error || `No se pudo escribir ${relativePath}`)
   }
+  return content
 }
 
 async function writeIfChanged(
@@ -779,13 +926,21 @@ export async function updateTaskBody(vaultPath: string, taskPath: string, conten
   }
 
   const nextContent = contentUpdater(readResult.content)
-  const writeResult = await writeFileContent(absolutePath, nextContent)
+  const writeResult = await writeFileContent(absolutePath, nextContent, readResult.revision)
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo actualizar la tarea.')
   }
 }
 
 export async function readTaskMarkdownSource(vaultPath: string, taskPath: string): Promise<string> {
+  const result = await readTaskMarkdownSourceWithRevision(vaultPath, taskPath)
+  return result.content
+}
+
+export async function readTaskMarkdownSourceWithRevision(
+  vaultPath: string,
+  taskPath: string,
+): Promise<{ content: string; revision?: string }> {
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
@@ -794,14 +949,19 @@ export async function readTaskMarkdownSource(vaultPath: string, taskPath: string
     throw new Error(readResult.error || 'No se pudo leer el markdown de la tarea.')
   }
 
-  return readResult.content
+  return { content: readResult.content, revision: readResult.revision }
 }
 
-export async function writeTaskMarkdownSource(vaultPath: string, taskPath: string, content: string): Promise<void> {
+export async function writeTaskMarkdownSource(
+  vaultPath: string,
+  taskPath: string,
+  content: string,
+  expectedRevision?: string,
+): Promise<void> {
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
-  const writeResult = await writeFileContent(absolutePath, content)
+  const writeResult = await writeFileContent(absolutePath, content, expectedRevision)
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo guardar el markdown de la tarea.')
   }

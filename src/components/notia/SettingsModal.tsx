@@ -37,7 +37,8 @@ import type { BackupPreferences } from '../../services/preferences/backupSetting
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
 import { loadTaskManagerSnapshot } from '../../modules/task-manager/services/taskManagerService'
-import { approveTaskManagerPublicationDevice, buildTaskManagerPublicationPayload, getTaskManagerPublicationUrl, hashTaskManagerPublicationPassword, listPendingTaskManagerPublicationDevices, openTaskManagerPublication, publishTaskManagerBoards, revokeTaskManagerPublicationDevice, stopTaskManagerPublication } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
+import { approveTaskManagerPublicationDevice, buildTaskManagerPublicationPayload, getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, hashTaskManagerPublicationPassword, listPendingTaskManagerPublicationDevices, openTaskManagerPublication, publishTaskManagerBoards, revokeTaskManagerPublicationDevice, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
+import { loadTaskManagerPublicationTelemetry, recordTaskManagerPublicationTelemetry } from '../../modules/task-manager/services/taskManagerPublicationTelemetry'
 
 type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
 
@@ -60,6 +61,27 @@ interface SettingsModalProps {
 
 const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
+
+function formatPublicationBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+function formatPublicationMilliseconds(milliseconds: number | null): string {
+  if (milliseconds === null || !Number.isFinite(milliseconds)) return 'sin datos'
+  return `${Math.max(0, Math.round(milliseconds))} ms`
+}
+
+function formatPublicationTimestamp(timestamp: number | null): string {
+  if (timestamp === null || !Number.isFinite(timestamp)) return 'sin cambios'
+  return new Date(timestamp).toLocaleTimeString('es-AR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
 
 export function SettingsModal({
   open,
@@ -144,6 +166,8 @@ export function SettingsModal({
   const [isPublishingBoards, setIsPublishingBoards] = useState(false)
   const [publicationPasswordDraft, setPublicationPasswordDraft] = useState('')
   const [pendingPublicationDevices, setPendingPublicationDevices] = useState<Array<{ id: string, name: string }>>([])
+  const [publicationMetrics, setPublicationMetrics] = useState<TaskManagerPublicationStatusSnapshot | null>(null)
+  const [publicationTelemetrySamples, setPublicationTelemetrySamples] = useState(() => loadTaskManagerPublicationTelemetry().samples.length)
   const [financeClearStatus, setFinanceClearStatus] = useState<{
     tone: 'idle' | 'success' | 'error'
     message: string
@@ -243,7 +267,19 @@ export function SettingsModal({
   useEffect(() => {
     if (!open || activeSection !== 'Publicar') return
     const refresh = () => void listPendingTaskManagerPublicationDevices().then(setPendingPublicationDevices).catch(() => setPendingPublicationDevices([]))
-    refresh(); const timer = window.setInterval(refresh, 2000); return () => window.clearInterval(timer)
+    const refreshStatus = () => void getTaskManagerPublicationStatus()
+      .then((status) => {
+        setPublicationMetrics(status)
+        setPublicationTelemetrySamples(recordTaskManagerPublicationTelemetry(status).samples.length)
+      })
+      .catch(() => setPublicationMetrics(null))
+    refresh()
+    refreshStatus()
+    const timer = window.setInterval(() => {
+      refresh()
+      refreshStatus()
+    }, 2000)
+    return () => window.clearInterval(timer)
   }, [activeSection, open])
 
   useEffect(() => {
@@ -453,6 +489,7 @@ export function SettingsModal({
         normalizedAiPreferences,
         taskManagerPublicationPreferences.approvedDevices,
         taskManagerPublicationPreferences.port,
+        taskManagerPublicationPreferences.maxClients,
       ))
       onTaskManagerPublicationPreferencesChange({
         ...taskManagerPublicationPreferences,
@@ -991,6 +1028,7 @@ export function SettingsModal({
                 La contraseña nunca se guarda en texto plano: Notia conserva únicamente un hash unidireccional PBKDF2-HMAC-SHA256 con salt.
               </div>
               <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Puerto fijo de publicación</span><input className="notia-settings-input" type="number" min="1024" max="65535" value={taskManagerPublicationPreferences.port} onChange={(event) => { const port = Number(event.target.value); if (Number.isInteger(port) && port >= 1024 && port <= 65535) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, port }) }} /></label>
+              <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Clientes simultáneos máximos</span><input className="notia-settings-input" type="number" min="1" max="64" value={taskManagerPublicationPreferences.maxClients} onChange={(event) => { const maxClients = Number(event.target.value); if (Number.isInteger(maxClients) && maxClients >= 1 && maxClients <= 64) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, maxClients }) }} /></label>
               <div className="notia-settings-actions">
                 <NotiaButton onClick={() => void handlePublishBoards()} disabled={isPublishingBoards || !activeLibrary || taskManagerPublicationPreferences.publishedBoardNames.length === 0 || (!publicationPasswordDraft && !taskManagerPublicationPreferences.passwordHash)}>
                   {isPublishingBoards ? 'Publicando…' : 'Publicar y actualizar'}
@@ -1000,6 +1038,20 @@ export function SettingsModal({
                 </NotiaButton>
               </div>
               {publicationUrl ? <div className="notia-settings-card-value" aria-label="URL de publicación">{publicationUrl}</div> : null}
+              {publicationMetrics ? <div className="notia-settings-status" role="status">
+                {publicationMetrics.active ? <>
+                  {publicationMetrics.recoveryRequired ? <div role="alert">La publicación requiere recuperación: quedó una operación parcial o no verificada. Revisá el workspace y ejecutá una operación del Task Manager que termine correctamente; no se reejecutará nada automáticamente.</div> : null}
+                  {publicationMetrics.websocketSessions >= publicationMetrics.maxWebsocketSessions ? <div role="alert">La publicación alcanzó su capacidad de WebSocket. Los nuevos accesos serán rechazados hasta que se desconecte alguien.</div> : null}
+                  {publicationMetrics.mutationLatencyLastMs !== null && publicationMetrics.mutationLatencyLastMs > 1000 ? <div role="alert">El filesystem está tardando más de un segundo en confirmar cambios. Revisá la carga del host antes de continuar con operaciones masivas.</div> : null}
+                  <div>Latencia de mutaciones: última {formatPublicationMilliseconds(publicationMetrics.mutationLatencyLastMs)} · p95 aproximado {formatPublicationMilliseconds(publicationMetrics.mutationLatencyP95Ms)} · muestras {publicationMetrics.mutationLatencySamples}</div>
+                  <div>Conexiones WebSocket: {publicationMetrics.websocketSessions}/{publicationMetrics.maxWebsocketSessions} · sesiones: {publicationMetrics.authenticatedSessions}/{publicationMetrics.maxAuthenticatedSessions} · revisión {publicationMetrics.revision}</div>
+                  <div>Época: {publicationMetrics.publicationEpoch.slice(0, 8) || '—'} · última operación: {publicationMetrics.lastOperationId?.slice(0, 8) || '—'} · actor: {publicationMetrics.lastActorId?.slice(0, 8) || '—'}</div>
+                  <div>Frames recibidos/enviados: {publicationMetrics.websocketFramesReceived}/{publicationMetrics.websocketFramesSent} · bytes: {formatPublicationBytes(publicationMetrics.websocketBytesReceived)}/{formatPublicationBytes(publicationMetrics.websocketBytesSent)} · errores: {publicationMetrics.mutationErrors} · streams cancelados: {publicationMetrics.aiStreamCancellations}</div>
+                  <div>Conflictos: {publicationMetrics.conflicts} · resync: {publicationMetrics.resyncRequired} · eventos descartados: {publicationMetrics.droppedEvents}</div>
+                  <div>Último cambio: {formatPublicationTimestamp(publicationMetrics.lastChangeAtUnixMs)}</div>
+                  <div>Telemetría local: {publicationTelemetrySamples} muestras acotadas (sin contenido ni secretos)</div>
+                </> : 'La publicación no está activa.'}
+              </div> : null}
               {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">Si otro equipo no puede abrirla, permití Notia en el Firewall de Windows para redes privadas.</div> : null}
               {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">La URL usa HTTPS con un certificado autofirmado: en cada equipo remoto aceptá o instalá el certificado de Notia la primera vez.</div> : null}
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivos que solicitan acceso</div>
