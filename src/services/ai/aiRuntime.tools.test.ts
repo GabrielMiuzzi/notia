@@ -114,4 +114,25 @@ describe('parseNativeToolCalls', () => {
       function: { name: 'read_active_markdown_document', arguments: {} },
     }])
   })
+
+  it('recovers Qwen tool_code function syntax with named JSON arguments', () => {
+    const tools = [{
+      type: 'function' as const,
+      function: { name: 'read_task_tickets', description: 'read', parameters: {} },
+    }]
+
+    expect(parseLegacyXmlToolCalls(
+      'tool_code\nread_task_tickets(ticketIds=["doc-20", "doc-12"])',
+      tools,
+    )).toEqual([{
+      function: { name: 'read_task_tickets', arguments: { ticketIds: ['doc-20', 'doc-12'] } },
+    }])
+
+    expect(parseLegacyXmlToolCalls(
+      '```tool_code\nread_task_tickets(ticketIds=["doc-20"])\n```',
+      tools,
+    )).toEqual([{
+      function: { name: 'read_task_tickets', arguments: { ticketIds: ['doc-20'] } },
+    }])
+  })
 })

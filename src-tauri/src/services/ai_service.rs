@@ -16,6 +16,55 @@ pub struct AiChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "tool_calls")]
+    pub tool_calls: Vec<AiToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "tool_name")]
+    pub tool_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiToolCall {
+    pub function: AiToolCallFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiToolCallFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::{AiChatMessage, AiToolCall, AiToolCallFunction};
+
+    #[test]
+    fn preserves_tool_call_metadata_when_messages_cross_the_native_boundary() {
+        let message = AiChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            images: Vec::new(),
+            tool_calls: vec![AiToolCall {
+                function: AiToolCallFunction {
+                    name: "read_task_tickets".to_string(),
+                    arguments: serde_json::json!({ "ticketIds": ["doc-20"] }),
+                },
+            }],
+            tool_name: None,
+        };
+
+        let serialized = serde_json::to_value(&message).expect("message serializes");
+        assert_eq!(
+            serialized["tool_calls"][0]["function"]["name"],
+            "read_task_tickets"
+        );
+        assert_eq!(
+            serialized["tool_calls"][0]["function"]["arguments"]["ticketIds"][0],
+            "doc-20"
+        );
+        let parsed: AiChatMessage = serde_json::from_value(serialized).expect("message parses");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].function.name, "read_task_tickets");
+    }
 }
 
 #[derive(Debug, Serialize)]

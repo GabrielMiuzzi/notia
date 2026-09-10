@@ -1475,7 +1475,107 @@ function resolveLegacyToolName(rawName: string, toolNames: Set<string>): string 
   return alias && toolNames.has(alias) ? alias : null
 }
 
-/** Recovers the XML tool-call syntax emitted by models that ignore Ollama's native schema. */
+function splitToolCodeArguments(value: string): string[] {
+  const parts: string[] = []
+  let start = 0
+  let depth = 0
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === quote) quote = null
+      continue
+    }
+    if (character === '"' || character === "'") quote = character
+    else if (character === '[' || character === '{' || character === '(') depth += 1
+    else if (character === ']' || character === '}' || character === ')') depth = Math.max(0, depth - 1)
+    else if (character === ',' && depth === 0) {
+      parts.push(value.slice(start, index).trim())
+      start = index + 1
+    }
+  }
+
+  const lastPart = value.slice(start).trim()
+  if (lastPart) parts.push(lastPart)
+  return parts
+}
+
+function parseToolCodeValue(value: string): unknown {
+  const normalized = value.trim().replace(/\s*```\s*$/, '')
+  try {
+    return JSON.parse(normalized) as unknown
+  } catch {
+    if (normalized.startsWith("'") && normalized.endsWith("'")) {
+      return normalized.slice(1, -1).replaceAll("\\'", "'")
+    }
+    return normalized
+  }
+}
+
+function parseToolCodeArguments(value: string): Record<string, unknown> | null {
+  const normalized = value.trim().replace(/\s*```\s*$/, '')
+  if (!normalized) return {}
+  const parsedObject = parseToolCodeValue(normalized)
+  if (parsedObject && typeof parsedObject === 'object' && !Array.isArray(parsedObject)) {
+    return parsedObject as Record<string, unknown>
+  }
+
+  const argumentsObject: Record<string, unknown> = {}
+  for (const part of splitToolCodeArguments(normalized)) {
+    const separator = part.search(/\s*(?:=|:)\s*/)
+    if (separator < 0) return null
+    const separatorMatch = part.slice(separator).match(/^\s*(?:=|:)\s*/)
+    const key = part.slice(0, separator).trim().replace(/^['"]|['"]$/g, '')
+    if (!separatorMatch || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null
+    argumentsObject[key] = parseToolCodeValue(part.slice(separator + separatorMatch[0].length))
+  }
+  return argumentsObject
+}
+
+function findToolCodeCalls(value: string, tools: AiNativeToolDefinition[]): AiNativeToolCall[] {
+  const toolNames = new Set(tools.map((tool) => tool.function.name))
+  const calls: AiNativeToolCall[] = []
+  const toolCodePattern = /(?:^|\r?\n)\s*(?:```)?tool_code\s*:?[ \t]*(?:\r?\n|$)([\s\S]*?)(?=(?:\r?\n|^)\s*(?:```)?tool_code\b|$)/gi
+
+  for (const marker of value.matchAll(toolCodePattern)) {
+    const source = marker[1] ?? ''
+    const invocationPattern = /\b([a-z][a-z0-9_/-]*)\s*\(/gi
+    for (const invocation of source.matchAll(invocationPattern)) {
+      const name = resolveLegacyToolName(invocation[1] ?? '', toolNames)
+      if (!name || invocation.index === undefined) continue
+      const openIndex = invocation.index + invocation[0].lastIndexOf('(')
+      let depth = 0
+      let quote: '"' | "'" | null = null
+      let escaped = false
+      let closeIndex = -1
+      for (let index = openIndex; index < source.length; index += 1) {
+        const character = source[index]
+        if (quote) {
+          if (escaped) escaped = false
+          else if (character === '\\') escaped = true
+          else if (character === quote) quote = null
+          continue
+        }
+        if (character === '"' || character === "'") quote = character
+        else if (character === '(') depth += 1
+        else if (character === ')' && --depth === 0) {
+          closeIndex = index
+          break
+        }
+      }
+      if (closeIndex < 0) continue
+      const argumentsObject = parseToolCodeArguments(source.slice(openIndex + 1, closeIndex))
+      if (argumentsObject) calls.push({ function: { name, arguments: argumentsObject } })
+    }
+  }
+  return calls
+}
+
+/** Recovers textual tool-call syntaxes emitted by models that ignore Ollama's native schema. */
 export function parseLegacyXmlToolCalls(value: string, tools: AiNativeToolDefinition[]): AiNativeToolCall[] {
   const toolNames = new Set(tools.map((tool) => tool.function.name))
   const calls: AiNativeToolCall[] = []
@@ -1559,7 +1659,11 @@ export function parseLegacyXmlToolCalls(value: string, tools: AiNativeToolDefini
     }
     calls.push({ function: { name, arguments: argumentsObject } })
   }
-  return calls
+  calls.push(...findToolCodeCalls(value, tools))
+  return calls.filter((call, index, allCalls) => allCalls.findIndex((candidate) => (
+    candidate.function.name === call.function.name
+      && JSON.stringify(candidate.function.arguments) === JSON.stringify(call.function.arguments)
+  )) === index)
 }
 
 export async function runNativeToolAgent(
@@ -1651,7 +1755,7 @@ export async function runNativeToolAgent(
       })
       const forceNativeToolRound = requiresNativeToolRound
       requiresNativeToolRound = false
-      let answerStreamed = false
+      const streamedAnswerDeltas: string[] = []
       options.onThinkingDelta?.(
         round === 0
           ? 'Analizando la consulta y eligiendo herramientas…\n'
@@ -1695,8 +1799,7 @@ export async function runNativeToolAgent(
             {
               abortSignal: controller.signal,
               onMessageDelta: (delta) => {
-                answerStreamed = true
-                options.onMessageDelta?.(delta)
+                streamedAnswerDeltas.push(delta)
               },
               thinking: normalizedPreferences.thinkingEnabled
                 ? supportsThinkingLevels(model) ? normalizedPreferences.thinkingLevel : true
@@ -1771,7 +1874,11 @@ export async function runNativeToolAgent(
           requiresNativeToolRound = true
           continue
         }
-        if (!answerStreamed) options.onMessageDelta?.(answer)
+        if (streamedAnswerDeltas.length > 0) {
+          for (const delta of streamedAnswerDeltas) options.onMessageDelta?.(delta)
+        } else {
+          options.onMessageDelta?.(answer)
+        }
         notifyProgress({ type: 'phase-changed', phase: 'responding', round: roundNumber })
         notifyProgress({ type: 'completed', rounds: roundNumber })
         diagnosticLog('agent completed', {
