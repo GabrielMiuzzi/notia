@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
-import { invokeTaskManagerPublicationMutation } from './taskManagerPublicationClient'
+import {
+  invokeTaskManagerPublicationMutation,
+  setActiveTaskManagerPublicationBatchOperation,
+} from './taskManagerPublicationClient'
 import { enqueueTaskManagerMutation, type TaskManagerMutationContext } from './taskManagerMutationCoordinator'
 import {
   beginTaskManagerMutationJournal,
@@ -70,6 +73,15 @@ export interface TaskManagerPublicationBatchOptions {
   changedPaths?: string[]
   /** Runs before the batch releases remote mutations after a local failure. */
   onFailure?: (error: unknown, context: TaskManagerMutationContext) => Promise<void>
+}
+
+let activePublishedBatchOperationId: string | null = null
+
+function createTaskManagerPublicationOperationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `published-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`
 }
 
 export function buildTaskManagerPublicationPayload(
@@ -189,14 +201,14 @@ export async function syncTaskManagerPublicationSettings(
     await invokeTaskManagerPublicationMutation({
       command: 'update_task_manager_publication_settings',
       args: { settings: sharedSettings },
-    }, context?.operationId)
+    }, context?.operationId ?? activePublishedBatchOperationId ?? undefined)
     return
   }
 
   await notifyTaskManagerPublicationChanged(vaultPath, settings, [], context)
 }
 
-export async function beginTaskManagerPublicationBatch(): Promise<boolean> {
+export async function beginTaskManagerPublicationBatch(operationId?: string): Promise<boolean> {
   if (typeof window === 'undefined') {
     return false
   }
@@ -204,13 +216,22 @@ export async function beginTaskManagerPublicationBatch(): Promise<boolean> {
     return false
   }
   if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
-    await invokeTaskManagerPublicationMutation({ command: 'begin_task_manager_publication_batch', args: {} })
+    if (activePublishedBatchOperationId) {
+      throw new Error('Ya existe una operaciÃ³n publicada agrupada en curso.')
+    }
+    const batchOperationId = operationId ?? createTaskManagerPublicationOperationId()
+    await invokeTaskManagerPublicationMutation(
+      { command: 'begin_task_manager_publication_batch', args: {} },
+      batchOperationId,
+    )
+    activePublishedBatchOperationId = batchOperationId
+    setActiveTaskManagerPublicationBatchOperation(batchOperationId)
     return true
   }
   return invoke<boolean>('begin_task_manager_publication_batch')
 }
 
-export async function endTaskManagerPublicationBatch(): Promise<TaskManagerPublicationCursor | null> {
+export async function endTaskManagerPublicationBatch(operationId?: string): Promise<TaskManagerPublicationCursor | null> {
   if (typeof window === 'undefined') {
     return null
   }
@@ -218,10 +239,21 @@ export async function endTaskManagerPublicationBatch(): Promise<TaskManagerPubli
     return null
   }
   if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
-    await invokeTaskManagerPublicationMutation({ command: 'end_task_manager_publication_batch', args: {} })
-    // The WebSocket client applies the ACK cursor; result is {ok, changed},
-    // unlike the native command's cursor DTO.
-    return null
+    const batchOperationId = activePublishedBatchOperationId ?? operationId
+    try {
+      await invokeTaskManagerPublicationMutation(
+        { command: 'end_task_manager_publication_batch', args: {} },
+        batchOperationId,
+      )
+      // The WebSocket client applies the ACK cursor; result is {ok, changed},
+      // unlike the native command's cursor DTO.
+      return null
+    } finally {
+      if (!batchOperationId || activePublishedBatchOperationId === batchOperationId) {
+        activePublishedBatchOperationId = null
+        setActiveTaskManagerPublicationBatchOperation(null)
+      }
+    }
   }
   return invoke<TaskManagerPublicationCursor | null>('end_task_manager_publication_batch')
 }
@@ -248,7 +280,7 @@ export async function withTaskManagerPublicationBatch<T>(
         )
         journalActive = true
       }
-      publicationBatchActive = await beginTaskManagerPublicationBatch()
+      publicationBatchActive = await beginTaskManagerPublicationBatch(context.operationId)
       const result = await runner(context)
       if (journalPath && journalActive && options?.changedPaths) {
         try {
@@ -265,7 +297,7 @@ export async function withTaskManagerPublicationBatch<T>(
         await after(result, context)
       }
       if (publicationBatchActive) {
-        await endTaskManagerPublicationBatch()
+        await endTaskManagerPublicationBatch(context.operationId)
         publicationBatchActive = false
       }
       if (journalPath && journalActive) {
@@ -304,7 +336,7 @@ export async function withTaskManagerPublicationBatch<T>(
     } finally {
       if (publicationBatchActive) {
         try {
-          await endTaskManagerPublicationBatch()
+          await endTaskManagerPublicationBatch(context.operationId)
           publicationBatchActive = false
         } catch (batchError) {
           console.warn('[task-manager] no se pudo cerrar el lote de publicaciÃ³n', batchError)

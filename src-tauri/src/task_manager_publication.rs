@@ -63,6 +63,8 @@ const TASK_MANAGER_SHARED_METADATA_FILE: &str = ".notia-task-manager.json";
 const PUBLICATION_CERTIFICATE_VERSION: &str = "2";
 #[cfg(target_os = "windows")]
 const PUBLICATION_HOST_MUTATION_WAIT: Duration = Duration::from_secs(30);
+#[cfg(target_os = "windows")]
+const PUBLICATION_BATCH_RECONNECT_GRACE: Duration = Duration::from_secs(20);
 
 #[cfg(target_os = "windows")]
 fn publication_client_limit(publication: &TaskManagerPublicationPayload) -> usize {
@@ -213,7 +215,11 @@ impl PublicationMutationCommand {
     }
 
     fn requires_current_revision(self) -> bool {
-        !matches!(self, Self::BeginBatch | Self::EndBatch)
+        // Filesystem writes carry a per-file expectedRevision (or use atomic
+        // create/rename semantics), so a global revision would reject safe
+        // concurrent work on unrelated tickets. Shared settings have no
+        // narrower concurrency token and retain the publication-wide check.
+        matches!(self, Self::UpdatePublicationSettings)
     }
 }
 
@@ -367,6 +373,7 @@ struct PublicationMutationBatch {
     changed_paths: Vec<String>,
     operation_id: Option<String>,
     actor_id: Option<String>,
+    activity_generation: u64,
 }
 
 #[cfg(target_os = "windows")]
@@ -377,6 +384,7 @@ impl PublicationMutationBatch {
         operation_id: Option<&str>,
         actor_id: Option<&str>,
     ) {
+        self.activity_generation = self.activity_generation.saturating_add(1);
         self.changed = true;
         for path in changed_paths {
             if !self
@@ -886,7 +894,7 @@ pub fn stop_task_manager_publication(
 }
 
 #[tauri::command]
-pub fn begin_task_manager_publication_batch(
+pub async fn begin_task_manager_publication_batch(
     state: tauri::State<'_, TaskManagerPublicationState>,
 ) -> Result<bool, String> {
     #[cfg(not(target_os = "windows"))]
@@ -896,17 +904,36 @@ pub fn begin_task_manager_publication_batch(
     }
     #[cfg(target_os = "windows")]
     {
-        let mutation_lock = state
-            .inner
-            .lock()
-            .map_err(|_| "No se pudo serializar el lote de Task Manager.".to_string())?
-            .mutation_lock
-            .clone();
-        let _mutation_guard = mutation_lock
-            .lock()
-            .map_err(|_| "No se pudo serializar el lote de Task Manager.".to_string())?;
-        let mut guard = state
-            .inner
+        let runtime = Arc::clone(&state.inner);
+        tauri::async_runtime::spawn_blocking(move || begin_host_publication_batch(&runtime))
+            .await
+            .map_err(|_| "No se pudo esperar el turno de la operación local.".to_string())?
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn begin_host_publication_batch(runtime: &Arc<Mutex<PublicationRuntime>>) -> Result<bool, String> {
+    let mutation_lock = runtime
+        .lock()
+        .map_err(|_| "No se pudo serializar el lote de Task Manager.".to_string())?
+        .mutation_lock
+        .clone();
+    let deadline = Instant::now() + PUBLICATION_HOST_MUTATION_WAIT;
+    loop {
+        if Instant::now() >= deadline {
+            return Err("Otra sesión está terminando una operación. Volvé a intentar.".to_string());
+        }
+        let mutation_guard = match mutation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(TryLockError::Poisoned(_)) => {
+                return Err("No se pudo serializar el lote de Task Manager.".to_string())
+            }
+        };
+        let mut guard = runtime
             .lock()
             .map_err(|_| "No se pudo iniciar el lote de Task Manager.")?;
         if guard.payload.is_none() {
@@ -915,12 +942,16 @@ pub fn begin_task_manager_publication_batch(
         if guard.host_mutation_active {
             return Err("Ya existe una operación local de Task Manager en curso.".to_string());
         }
-        if !guard.mutation_batches.is_empty() {
-            return Err("Ya existe una operación remota de Task Manager en curso.".to_string());
+        if guard.mutation_batches.is_empty() {
+            guard.host_mutation_active = true;
+            guard.host_mutation_batch = PublicationMutationBatch::default();
+            drop(guard);
+            drop(mutation_guard);
+            return Ok(true);
         }
-        guard.host_mutation_active = true;
-        guard.host_mutation_batch = PublicationMutationBatch::default();
-        Ok(true)
+        drop(guard);
+        drop(mutation_guard);
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1518,6 +1549,10 @@ fn serve_request<S: Read + Write + Send + 'static>(
         let _ = stream.write_all(&text_response("400 Bad Request", "Solicitud inválida."));
         return;
     };
+    if method == "GET" && path == "/favicon.ico" {
+        let _ = stream.write_all(&response("204 No Content", "image/x-icon", &[]));
+        return;
+    }
     let base = TASK_MANAGER_PUBLICATION_PATH;
     if method == "GET" && path == format!("{base}/ws") {
         if !is_websocket_upgrade(&request) {
@@ -1811,6 +1846,7 @@ fn build_publication_bootstrap(
     serde_json::json!({
         "vaultPath": PUBLISHED_VAULT_ALIAS,
         "taskRootAtVault": publication.task_root_at_vault,
+        "taskRootFolder": publication_task_root_folder(publication),
         "theme": publication.theme,
         "publicationEpoch": publication_epoch,
         "revision": revision,
@@ -1824,6 +1860,32 @@ fn build_publication_bootstrap(
             "thinkingLevel": publication.ai_preferences.thinking_level,
         }
     })
+}
+
+#[cfg(target_os = "windows")]
+fn publication_task_root_folder(publication: &TaskManagerPublicationPayload) -> String {
+    if publication.task_root_at_vault {
+        return std::path::Path::new(&publication.vault_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| {
+                name.eq_ignore_ascii_case("task-mannager")
+                    || name.eq_ignore_ascii_case("task-manager")
+            })
+            .unwrap_or("task-mannager")
+            .to_lowercase();
+    }
+
+    task_roots(publication)
+        .into_iter()
+        .find(|root| std::path::Path::new(root).is_dir())
+        .and_then(|root| {
+            std::path::Path::new(&root)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_lowercase)
+        })
+        .unwrap_or_else(|| "task-mannager".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -2331,6 +2393,10 @@ fn execute_publication_invoke_unlocked(
     if command == "begin_task_manager_publication_batch" {
         let session_id =
             session_id.ok_or_else(|| "La sesión WebSocket es obligatoria.".to_string())?;
+        let operation_id = request
+            .get("operationId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "La operación agrupada requiere operationId.".to_string())?;
         let mut guard = runtime
             .lock()
             .map_err(|_| "No se pudo iniciar la operación agrupada.".to_string())?;
@@ -2344,12 +2410,19 @@ fn execute_publication_invoke_unlocked(
         {
             return Err("Ya existe otra operación remota de Task Manager en curso.".to_string());
         }
-        if guard.mutation_batches.contains_key(session_id) {
+        if let Some(active_batch) = guard.mutation_batches.get(session_id) {
+            if active_batch.operation_id.as_deref() == Some(operation_id) {
+                return Ok((serde_json::json!({ "ok": true, "changed": false }), false));
+            }
             return Err("Ya existe una operación agrupada para esta sesión.".to_string());
         }
-        guard
-            .mutation_batches
-            .insert(session_id.to_string(), PublicationMutationBatch::default());
+        guard.mutation_batches.insert(
+            session_id.to_string(),
+            PublicationMutationBatch {
+                operation_id: Some(operation_id.to_string()),
+                ..PublicationMutationBatch::default()
+            },
+        );
         return Ok((serde_json::json!({ "ok": true, "changed": false }), false));
     }
     if command == "end_task_manager_publication_batch" {
@@ -3528,12 +3601,15 @@ where
     let command_kind = PublicationMutationCommand::parse(&command);
     let invalid_mutation_args = command_kind
         .and_then(|kind| validate_publication_mutation_args(kind, &mutation_args).err());
-    let operation_cache_key = format!("{session_id}:{operation_id}");
+    // `operation_id` correlates every command in a logical batch, so it is not
+    // unique per write. `message_id` is stable across transport retries and
+    // distinguishes begin/write/end (and multiple writes) within that batch.
+    let mutation_cache_key = publication_mutation_cache_key(session_id, &message_id);
     let rate_limited = !operation_id.is_empty()
         && !allow_publication_rate(
             runtime,
             format!("mutation:{session_id}"),
-            60,
+            240,
             Duration::from_secs(60),
         );
     let response = if command_kind.is_none() {
@@ -3617,10 +3693,15 @@ where
         if !authorized || publication.is_none() {
             return false;
         }
+        if let Ok(mut guard) = runtime.lock() {
+            if let Some(batch) = guard.mutation_batches.get_mut(session_id) {
+                batch.activity_generation = batch.activity_generation.saturating_add(1);
+            }
+        }
         let cached = runtime
             .lock()
             .ok()
-            .and_then(|guard| guard.completed_mutations.get(&operation_cache_key).cloned());
+            .and_then(|guard| guard.completed_mutations.get(&mutation_cache_key).cloned());
         if let Some(cached) = cached {
             serde_json::json!({
                 "type": "ack",
@@ -3734,7 +3815,7 @@ where
                         .unwrap_or((0, 0));
                     if let Ok(mut guard) = runtime.lock() {
                         guard.completed_mutations.insert(
-                            operation_cache_key,
+                            mutation_cache_key,
                             PublicationMutationAck {
                                 result: result.clone(),
                                 sequence,
@@ -3775,16 +3856,13 @@ where
                         .ok()
                         .map(|guard| (guard.sequence, guard.revision))
                         .unwrap_or((0, 0));
-                    if ok
-                        && matches!(
-                            command.as_str(),
-                            "begin_task_manager_publication_batch"
-                                | "end_task_manager_publication_batch"
-                        )
-                    {
+                    // Begin is idempotent against the live batch itself. It is
+                    // deliberately not cached: disconnect cleanup removes an
+                    // unfinished batch, so a reconnect must execute begin again.
+                    if ok && command == "end_task_manager_publication_batch" {
                         if let Ok(mut guard) = runtime.lock() {
                             guard.completed_mutations.insert(
-                                operation_cache_key,
+                                mutation_cache_key,
                                 PublicationMutationAck {
                                     result: result.clone(),
                                     sequence,
@@ -3847,6 +3925,11 @@ where
     socket.lock().ok().is_some_and(|mut guard| {
         send_websocket_json_recorded(&mut guard, runtime, response).is_ok()
     })
+}
+
+#[cfg(target_os = "windows")]
+fn publication_mutation_cache_key(session_id: &str, message_id: &str) -> String {
+    format!("{session_id}:{message_id}")
 }
 
 #[cfg(target_os = "windows")]
@@ -4082,6 +4165,49 @@ fn unregister_websocket_subscriber(
     subscriber_id: u64,
     session_id: &str,
 ) {
+    let abandoned_batch = runtime.lock().ok().and_then(|mut guard| {
+        guard.websocket_subscribers.remove(&subscriber_id);
+        guard
+            .mutation_batches
+            .get(session_id)
+            .map(|batch| (batch.operation_id.clone(), batch.activity_generation))
+    });
+    let Some((operation_id, activity_generation)) = abandoned_batch else {
+        return;
+    };
+    let cleanup_runtime = Arc::clone(runtime);
+    let cleanup_session_id = session_id.to_string();
+    let fallback_operation_id = operation_id.clone();
+    if std::thread::Builder::new()
+        .name("notia-publication-batch-cleanup".to_string())
+        .spawn(move || {
+            std::thread::sleep(PUBLICATION_BATCH_RECONNECT_GRACE);
+            finalize_abandoned_publication_batch(
+                &cleanup_runtime,
+                &cleanup_session_id,
+                operation_id.as_deref(),
+                activity_generation,
+            );
+        })
+        .is_err()
+    {
+        log::warn!("[notia:task-manager] no se pudo programar el cleanup de un batch remoto");
+        finalize_abandoned_publication_batch(
+            runtime,
+            session_id,
+            fallback_operation_id.as_deref(),
+            activity_generation,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn finalize_abandoned_publication_batch(
+    runtime: &Arc<Mutex<PublicationRuntime>>,
+    session_id: &str,
+    operation_id: Option<&str>,
+    activity_generation: u64,
+) {
     let mutation_lock = match runtime.lock() {
         Ok(guard) => Arc::clone(&guard.mutation_lock),
         Err(_) => return,
@@ -4090,8 +4216,13 @@ fn unregister_websocket_subscriber(
         return;
     };
     let batch = runtime.lock().ok().and_then(|mut guard| {
-        guard.websocket_subscribers.remove(&subscriber_id);
-        guard.mutation_batches.remove(session_id)
+        let unchanged = guard.mutation_batches.get(session_id).is_some_and(|batch| {
+            batch.operation_id.as_deref() == operation_id
+                && batch.activity_generation == activity_generation
+        });
+        unchanged
+            .then(|| guard.mutation_batches.remove(session_id))
+            .flatten()
     });
     let Some(batch) = batch.filter(|batch| batch.changed) else {
         return;
@@ -5809,6 +5940,7 @@ mod tests {
         let serialized = serde_json::to_string(&bootstrap).expect("bootstrap json");
 
         assert_eq!(bootstrap["vaultPath"], PUBLISHED_VAULT_ALIAS);
+        assert_eq!(bootstrap["taskRootFolder"], "task-mannager");
         assert!(!serialized.contains("C:/Vault"));
         assert!(!serialized.contains("C:/private"));
         assert!(!serialized.contains("secret-api-key"));
@@ -6956,6 +7088,118 @@ mod tests {
     }
 
     #[test]
+    fn retrying_remote_begin_is_idempotent_only_for_the_same_operation() {
+        let publication = publication();
+        let runtime = Arc::new(Mutex::new(PublicationRuntime {
+            payload: Some(publication.clone()),
+            ..PublicationRuntime::default()
+        }));
+        let begin = |operation_id: &str| {
+            execute_publication_invoke_unlocked(
+                serde_json::json!({
+                    "command": "begin_task_manager_publication_batch",
+                    "args": {},
+                    "operationId": operation_id,
+                }),
+                &runtime,
+                &publication,
+                Some("session-remote"),
+            )
+        };
+
+        assert!(begin("move-ticket-1").is_ok());
+        assert!(begin("move-ticket-1").is_ok());
+        assert_eq!(
+            begin("move-ticket-2"),
+            Err("Ya existe una operación agrupada para esta sesión.".to_string())
+        );
+
+        runtime
+            .lock()
+            .expect("disconnect cleanup")
+            .mutation_batches
+            .remove("session-remote");
+        assert!(begin("move-ticket-1").is_ok());
+    }
+
+    #[test]
+    fn host_waits_for_a_remote_batch_to_finish_instead_of_rejecting_the_action() {
+        let runtime = Arc::new(Mutex::new(PublicationRuntime {
+            payload: Some(publication()),
+            mutation_batches: HashMap::from([(
+                "session-remote".to_string(),
+                PublicationMutationBatch {
+                    operation_id: Some("guest-edit".to_string()),
+                    ..PublicationMutationBatch::default()
+                },
+            )]),
+            ..PublicationRuntime::default()
+        }));
+        let finishing_runtime = Arc::clone(&runtime);
+        let finisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            finishing_runtime
+                .lock()
+                .expect("remote batch finish")
+                .mutation_batches
+                .remove("session-remote");
+        });
+
+        assert_eq!(begin_host_publication_batch(&runtime), Ok(true));
+        finisher.join().expect("batch finisher");
+        assert!(runtime.lock().expect("host batch").host_mutation_active);
+    }
+
+    #[test]
+    fn abandoned_remote_batch_is_released_but_resumed_activity_is_preserved() {
+        let mut abandoned = PublicationMutationBatch {
+            operation_id: Some("guest-edit".to_string()),
+            ..PublicationMutationBatch::default()
+        };
+        abandoned.record(
+            vec!["published-vault/task-mannager/equipo/ticket.md".to_string()],
+            Some("guest-edit"),
+            Some("guest-device"),
+        );
+        let abandoned_generation = abandoned.activity_generation;
+        let runtime = Arc::new(Mutex::new(PublicationRuntime {
+            payload: Some(publication()),
+            mutation_batches: HashMap::from([("session-remote".to_string(), abandoned)]),
+            ..PublicationRuntime::default()
+        }));
+
+        finalize_abandoned_publication_batch(
+            &runtime,
+            "session-remote",
+            Some("guest-edit"),
+            abandoned_generation,
+        );
+        {
+            let guard = runtime.lock().expect("released batch");
+            assert!(guard.mutation_batches.is_empty());
+            assert_eq!(guard.revision, 1);
+            assert_eq!(guard.sequence, 1);
+        }
+
+        let resumed = PublicationMutationBatch {
+            operation_id: Some("guest-edit-2".to_string()),
+            activity_generation: 2,
+            ..PublicationMutationBatch::default()
+        };
+        runtime
+            .lock()
+            .expect("resumed batch insert")
+            .mutation_batches
+            .insert("session-remote".to_string(), resumed);
+        finalize_abandoned_publication_batch(&runtime, "session-remote", Some("guest-edit-2"), 1);
+        assert!(runtime
+            .lock()
+            .expect("resumed batch")
+            .mutation_batches
+            .contains_key("session-remote"));
+    }
+
+    #[test]
     fn websocket_capacity_rejects_only_the_new_subscriber() {
         let (sender, _receiver) = mpsc::sync_channel(PUBLICATION_WS_QUEUE_LIMIT);
         let mut publication = publication();
@@ -7061,6 +7305,33 @@ mod tests {
             assert_eq!(frame["messageId"], "message-1");
             assert!(!frame.to_string().contains("C:/"));
         }
+    }
+
+    #[test]
+    fn mutation_deduplication_distinguishes_commands_in_the_same_operation() {
+        let begin_key = publication_mutation_cache_key("session-1", "message-begin");
+        let write_key = publication_mutation_cache_key("session-1", "message-write");
+        let end_key = publication_mutation_cache_key("session-1", "message-end");
+
+        assert_ne!(begin_key, write_key);
+        assert_ne!(write_key, end_key);
+        assert_eq!(
+            write_key,
+            publication_mutation_cache_key("session-1", "message-write")
+        );
+        assert_ne!(
+            write_key,
+            publication_mutation_cache_key("session-2", "message-write")
+        );
+    }
+
+    #[test]
+    fn ticket_mutations_use_file_level_conflicts_instead_of_global_revision() {
+        assert!(!PublicationMutationCommand::WriteLibraryFile.requires_current_revision());
+        assert!(!PublicationMutationCommand::AppendTaskComment.requires_current_revision());
+        assert!(!PublicationMutationCommand::CreateLibraryEntry.requires_current_revision());
+        assert!(!PublicationMutationCommand::LibraryEntryOperation.requires_current_revision());
+        assert!(PublicationMutationCommand::UpdatePublicationSettings.requires_current_revision());
     }
 
     #[test]

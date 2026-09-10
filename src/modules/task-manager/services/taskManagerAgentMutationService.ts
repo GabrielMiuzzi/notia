@@ -205,7 +205,7 @@ async function executeTaskManagerAgentMutationQueued(
       await beginTaskManagerMutationJournal(journalPath, mutationContext.operationId, ['task-manager'])
       journalActive = true
     }
-    publicationBatchActive = await beginTaskManagerPublicationBatch()
+    publicationBatchActive = await beginTaskManagerPublicationBatch(mutationContext.operationId)
     const changedPaths = await executeTaskManagerAgentMutationInternal(vaultPath, mutation, mutationContext)
     if (journalPath) {
       try {
@@ -219,7 +219,7 @@ async function executeTaskManagerAgentMutationQueued(
       }
     }
     if (publicationBatchActive) {
-      await endTaskManagerPublicationBatch()
+      await endTaskManagerPublicationBatch(mutationContext.operationId)
       publicationBatchActive = false
     }
     if (journalPath) {
@@ -299,7 +299,7 @@ async function executeTaskManagerAgentMutationQueued(
   } finally {
     if (publicationBatchActive) {
       try {
-        await endTaskManagerPublicationBatch()
+        await endTaskManagerPublicationBatch(mutationContext.operationId)
         publicationBatchActive = false
       } catch (batchError) {
         console.warn('[task-manager] no se pudo cerrar el lote de publicación del agente', batchError)

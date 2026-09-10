@@ -13,6 +13,7 @@ import {
 export interface PublishedTaskManagerBootstrap {
   vaultPath: string
   taskRootAtVault?: boolean
+  taskRootFolder?: 'task-mannager' | 'task-manager'
   theme: 'dark' | 'light'
   publicationEpoch: string
   revision: number

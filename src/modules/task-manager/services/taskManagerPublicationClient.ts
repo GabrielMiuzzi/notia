@@ -137,6 +137,8 @@ export class TaskManagerPublicationMutationError extends Error {
 }
 
 interface PendingMutation {
+  messageId: string
+  operationId: string
   command: TaskManagerPublicationMutationCommand
   args: Record<string, unknown>
   resolve: (result: unknown) => void
@@ -249,6 +251,9 @@ export class TaskManagerPublicationClient {
   private terminalStatus = false
   private backgrounded = false
   private visibilityChangeHandler: (() => void) | null = null
+  private activeBatchOperationId: string | null = null
+  private batchNeedsResume = false
+  private batchResumeMessageId: string | null = null
 
   constructor(publicationPath: string, bootstrap: PublishedTaskManagerConnectionBootstrap) {
     this.publicationPath = publicationPath
@@ -279,6 +284,13 @@ export class TaskManagerPublicationClient {
     return this.status
   }
 
+  setActiveBatchOperation(operationId: string | null): void {
+    this.activeBatchOperationId = operationId
+    this.batchResumeMessageId = null
+    this.batchNeedsResume = operationId !== null
+      && (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.welcomed)
+  }
+
   invokeMutation(
     command: string,
     args: Record<string, unknown>,
@@ -299,7 +311,6 @@ export class TaskManagerPublicationClient {
       operationId.length === 0
       || operationId.length > MAX_PROTOCOL_ID_LENGTH
       || operationId.split('').some((character) => character.charCodeAt(0) < 32)
-      || this.pendingMutations.has(operationId)
     ) {
       return Promise.reject(new Error('La mutación publicada tiene un operationId inválido.'))
     }
@@ -310,7 +321,10 @@ export class TaskManagerPublicationClient {
       ))
     }
     return new Promise((resolve, reject) => {
+      const messageId = createMessageId()
       const pending: PendingMutation = {
+        messageId,
+        operationId,
         command,
         args,
         resolve,
@@ -318,16 +332,16 @@ export class TaskManagerPublicationClient {
         sent: false,
         retryCount: 0,
       }
-      this.pendingMutations.set(operationId, pending)
+      this.pendingMutations.set(messageId, pending)
       if (options?.signal) {
-      const abortHandler = () => {
-          const current = this.pendingMutations.get(operationId)
+        const abortHandler = () => {
+          const current = this.pendingMutations.get(messageId)
           if (!current) return
           if (current.sent) this.sendMutationCancellation(operationId)
           if (current.timeout !== undefined) window.clearTimeout(current.timeout)
           current.timeout = undefined
           current.abortCleanup = undefined
-          this.pendingMutations.delete(operationId)
+          this.pendingMutations.delete(messageId)
           current.reject(new TaskManagerPublicationMutationError(
             current.sent
               ? 'La mutación se canceló después de enviarse y su resultado quedó sin confirmar.'
@@ -344,7 +358,7 @@ export class TaskManagerPublicationClient {
         pending.abortCleanup = () => options.signal?.removeEventListener('abort', abortHandler)
         options.signal.addEventListener('abort', abortHandler, { once: true })
       }
-      this.armMutationTimeout(operationId)
+      this.armMutationTimeout(messageId)
       this.flushPendingMutations()
     })
   }
@@ -359,20 +373,20 @@ export class TaskManagerPublicationClient {
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer)
     this.reconnectTimer = undefined
     this.clearHandshakeTimer()
-    for (const [operationId, pending] of this.pendingMutations) {
+    for (const [messageId, pending] of this.pendingMutations) {
       if (pending.timeout !== undefined) window.clearTimeout(pending.timeout)
       pending.abortCleanup?.()
       pending.abortCleanup = undefined
       pending.reject(new TaskManagerPublicationMutationError(
         'La conexión de publicación fue cerrada antes de confirmar la mutación.',
         {
-          operationId,
+          operationId: pending.operationId,
           command: pending.command,
           retryable: false,
           outcome: pending.sent ? 'unknown' : 'failed',
         },
       ))
-      this.pendingMutations.delete(operationId)
+      this.pendingMutations.delete(messageId)
     }
     this.disconnectSocket()
   }
@@ -385,6 +399,8 @@ export class TaskManagerPublicationClient {
 
   private disconnectSocket(): void {
     const socket = this.socket
+    if (this.activeBatchOperationId) this.batchNeedsResume = true
+    this.batchResumeMessageId = null
     this.socket = null
     this.welcomed = false
     this.clearHandshakeTimer()
@@ -445,7 +461,7 @@ export class TaskManagerPublicationClient {
         this.scheduleReconnect()
         return
       }
-      for (const operationId of this.pendingMutations.keys()) this.armMutationTimeout(operationId)
+      for (const messageId of this.pendingMutations.keys()) this.armMutationTimeout(messageId)
       this.connect()
     })
   }
@@ -487,6 +503,8 @@ export class TaskManagerPublicationClient {
     })
     socket.addEventListener('close', () => {
       if (this.socket !== socket) return
+      if (this.activeBatchOperationId) this.batchNeedsResume = true
+      this.batchResumeMessageId = null
       this.socket = null
       this.welcomed = false
       this.clearHandshakeTimer()
@@ -565,16 +583,41 @@ export class TaskManagerPublicationClient {
       this.sequence = Math.max(this.sequence, message.sequence)
       this.revision = Math.max(this.revision, message.revision)
       this.setStatus(this.resyncing ? 'syncing' : 'connected')
-      if (!this.resyncing) this.flushPendingMutations()
+      if (!this.resyncing) {
+        if (this.shouldResumeActiveBatch()) this.sendBatchResume()
+        else {
+          // If the connection dropped while the batch close was in flight,
+          // retry that exact close. Reopening the batch first could resurrect
+          // an operation that the server already completed and deduplicated.
+          if (this.hasPendingActiveBatchEnd()) this.batchNeedsResume = false
+          this.flushPendingMutations()
+        }
+      }
       return
     }
 
     if (message.type === 'ack') {
       if (message.protocolVersion !== TASK_MANAGER_PUBLICATION_PROTOCOL_VERSION) return
+      const messageId = parseBoundedString(message.messageId, MAX_PROTOCOL_ID_LENGTH) ?? ''
       const operationId = parseBoundedString(message.operationId, MAX_PROTOCOL_ID_LENGTH) ?? ''
-      const pending = this.pendingMutations.get(operationId)
-      if (!pending) return
-      this.pendingMutations.delete(operationId)
+      if (messageId === this.batchResumeMessageId && operationId === this.activeBatchOperationId) {
+        this.batchResumeMessageId = null
+        if (message.ok === true) {
+          this.batchNeedsResume = false
+          if (isSafePublicationCounter(message.sequence)) this.sequence = Math.max(this.sequence, message.sequence)
+          if (isSafePublicationCounter(message.revision)) this.revision = Math.max(this.revision, message.revision)
+          this.setStatus('connected')
+          this.flushPendingMutations()
+        } else {
+          this.setStatus('offline')
+          this.disconnectSocket()
+          this.scheduleReconnect()
+        }
+        return
+      }
+      const pending = this.pendingMutations.get(messageId)
+      if (!pending || pending.operationId !== operationId) return
+      this.pendingMutations.delete(messageId)
       pending.abortCleanup?.()
       pending.abortCleanup = undefined
       if (pending.timeout !== undefined) window.clearTimeout(pending.timeout)
@@ -597,7 +640,7 @@ export class TaskManagerPublicationClient {
               publicationEpoch: typeof message.publicationEpoch === 'string' ? message.publicationEpoch : this.publicationEpoch,
               revision: isSafePublicationCounter(message.revision) ? message.revision : undefined,
               sequence: acknowledgedSequence,
-              operationId,
+              operationId: pending.operationId,
               changedPaths: parsePublicationChangedPaths(message.changedPaths),
               settings: isRecord(message.result) ? message.result.settings : undefined,
             })
@@ -620,7 +663,7 @@ export class TaskManagerPublicationClient {
           this.setStatus('conflict')
         }
         pending.reject(new TaskManagerPublicationMutationError(error, {
-          operationId,
+          operationId: pending.operationId,
           command: pending.command,
           retryable: message.retryable === true,
           outcome: message.outcome === 'unknown' ? 'unknown' : 'failed',
@@ -680,16 +723,18 @@ export class TaskManagerPublicationClient {
   }
 
   private flushPendingMutations(): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.welcomed || this.resyncing) return
-    for (const [operationId, pending] of this.pendingMutations) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.welcomed || this.resyncing || this.batchNeedsResume) return
+    for (const pending of this.pendingMutations.values()) {
       if (pending.sent) return
       try {
         pending.sent = true
         const mutation: TaskManagerMutation = {
           type: 'mutate',
           protocolVersion: TASK_MANAGER_PUBLICATION_PROTOCOL_VERSION,
-          messageId: createMessageId(),
-          operationId,
+          // messageId identifies this individual idempotent write. operationId
+          // may intentionally be shared by begin/write/end inside one batch.
+          messageId: pending.messageId,
+          operationId: pending.operationId,
           baseRevision: this.revision,
           command: pending.command,
           args: pending.args,
@@ -704,6 +749,40 @@ export class TaskManagerPublicationClient {
     }
   }
 
+  private shouldResumeActiveBatch(): boolean {
+    if (!this.activeBatchOperationId || !this.batchNeedsResume) return false
+    return !this.hasPendingActiveBatchEnd()
+  }
+
+  private hasPendingActiveBatchEnd(): boolean {
+    if (!this.activeBatchOperationId) return false
+    return Array.from(this.pendingMutations.values()).some((pending) => (
+      pending.operationId === this.activeBatchOperationId
+      && pending.command === 'end_task_manager_publication_batch'
+    ))
+  }
+
+  private sendBatchResume(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.welcomed || !this.activeBatchOperationId) return
+    const messageId = createMessageId()
+    this.batchResumeMessageId = messageId
+    this.setStatus('syncing')
+    try {
+      this.socket.send(JSON.stringify({
+        type: 'mutate',
+        protocolVersion: TASK_MANAGER_PUBLICATION_PROTOCOL_VERSION,
+        messageId,
+        operationId: this.activeBatchOperationId,
+        baseRevision: this.revision,
+        command: 'begin_task_manager_publication_batch',
+        args: {},
+      } satisfies TaskManagerMutation))
+    } catch {
+      this.disconnectSocket()
+      this.scheduleReconnect()
+    }
+  }
+
   private sendMutationCancellation(operationId: string): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.welcomed) return
     try {
@@ -715,23 +794,22 @@ export class TaskManagerPublicationClient {
       }))
     } catch {
       // The caller already received an unknown outcome. Do not retry it from
-      // the reconnect path; an explicit later retry can reuse operationId and
-      // let the server's idempotency cache recover an applied result.
+      // the reconnect path because cancellation ended ownership of this frame.
     }
   }
 
-  private retryPendingMutation(operationId: string): void {
-    const pending = this.pendingMutations.get(operationId)
+  private retryPendingMutation(messageId: string): void {
+    const pending = this.pendingMutations.get(messageId)
     if (!pending || this.stopped) return
     pending.timeout = undefined
     if (pending.retryCount >= MAX_MUTATION_RETRIES) {
-      this.pendingMutations.delete(operationId)
+      this.pendingMutations.delete(messageId)
       pending.abortCleanup?.()
       pending.abortCleanup = undefined
       pending.reject(new TaskManagerPublicationMutationError(
         'La mutación no fue confirmada después de varios intentos. Actualizá el estado antes de volver a crearla.',
         {
-          operationId,
+          operationId: pending.operationId,
           command: pending.command,
           retryable: false,
           outcome: 'unknown',
@@ -747,17 +825,17 @@ export class TaskManagerPublicationClient {
       this.setStatus('paused')
       return
     }
-    this.armMutationTimeout(operationId)
+    this.armMutationTimeout(messageId)
     this.disconnectSocket()
     this.scheduleReconnect()
   }
 
-  private armMutationTimeout(operationId: string): void {
-    const pending = this.pendingMutations.get(operationId)
+  private armMutationTimeout(messageId: string): void {
+    const pending = this.pendingMutations.get(messageId)
     if (!pending || this.backgrounded || this.stopped) return
     if (pending.timeout !== undefined) window.clearTimeout(pending.timeout)
     pending.timeout = window.setTimeout(() => {
-      this.retryPendingMutation(operationId)
+      this.retryPendingMutation(messageId)
     }, MUTATION_TIMEOUT_MS)
   }
 
@@ -822,7 +900,7 @@ export class TaskManagerPublicationClient {
           return
         }
         this.setStatus('connected')
-        for (const operationId of this.pendingMutations.keys()) this.armMutationTimeout(operationId)
+        for (const messageId of this.pendingMutations.keys()) this.armMutationTimeout(messageId)
         this.flushPendingMutations()
         return
       }
@@ -835,6 +913,12 @@ export class TaskManagerPublicationClient {
 }
 
 let activePublicationClient: TaskManagerPublicationClient | null = null
+let activePublishedBatchOperationId: string | null = null
+
+export function setActiveTaskManagerPublicationBatchOperation(operationId: string | null): void {
+  activePublishedBatchOperationId = operationId
+  activePublicationClient?.setActiveBatchOperation(operationId)
+}
 
 export function initializeTaskManagerPublicationClient(
   publicationPath: string,
@@ -842,6 +926,9 @@ export function initializeTaskManagerPublicationClient(
 ): TaskManagerPublicationClient {
   activePublicationClient?.close()
   activePublicationClient = new TaskManagerPublicationClient(publicationPath, bootstrap)
+  if (activePublishedBatchOperationId) {
+    activePublicationClient.setActiveBatchOperation(activePublishedBatchOperationId)
+  }
   return activePublicationClient
 }
 
@@ -866,7 +953,12 @@ export function invokePublishedTaskManagerMutation(
   if (!activePublicationClient) {
     return Promise.reject(new Error('La conexión WebSocket de publicación todavía no está lista.'))
   }
-  return activePublicationClient.invokeMutation(command, args, operationId, options)
+  return activePublicationClient.invokeMutation(
+    command,
+    args,
+    operationId ?? activePublishedBatchOperationId ?? undefined,
+    options,
+  )
 }
 
 export function invokeTaskManagerPublicationMutation(
@@ -874,5 +966,10 @@ export function invokeTaskManagerPublicationMutation(
   operationId?: string,
   options?: TaskManagerPublicationMutationOptions,
 ): Promise<unknown> {
-  return invokePublishedTaskManagerMutation(request.command, request.args, operationId, options)
+  return invokePublishedTaskManagerMutation(
+    request.command,
+    request.args,
+    operationId,
+    options,
+  )
 }

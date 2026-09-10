@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  initializeTaskManagerPublicationClient,
   isTaskManagerPublicationMutationCommand,
+  invokePublishedTaskManagerMutation,
+  setActiveTaskManagerPublicationBatchOperation,
   TaskManagerPublicationClient,
   TaskManagerPublicationMutationError,
 } from './taskManagerPublicationClient'
@@ -36,7 +39,15 @@ class FakeWebSocket {
   }
 
   receive(value: Record<string, unknown>): void {
-    this.emit('message', { data: JSON.stringify(value) })
+    this.emit('message', { data: JSON.stringify(this.withAcknowledgedMessageId(value)) })
+  }
+
+  private withAcknowledgedMessageId(value: Record<string, unknown>): Record<string, unknown> {
+    if (value.type !== 'ack' || typeof value.messageId === 'string') return value
+    const request = [...this.sent].reverse()
+      .map((sent) => JSON.parse(sent) as Record<string, unknown>)
+      .find((sent) => sent.type === 'mutate' && sent.operationId === value.operationId)
+    return typeof request?.messageId === 'string' ? { ...value, messageId: request.messageId } : value
   }
 
   private emit(type: string, event: { data?: unknown }): void {
@@ -132,6 +143,12 @@ class BroadcastWebSocket {
   }
 
   private receive(value: Record<string, unknown>): void {
+    if (value.type === 'ack' && typeof value.messageId !== 'string') {
+      const request = [...this.sent].reverse()
+        .map((sent) => JSON.parse(sent) as Record<string, unknown>)
+        .find((sent) => sent.type === 'mutate' && sent.operationId === value.operationId)
+      if (typeof request?.messageId === 'string') value = { ...value, messageId: request.messageId }
+    }
     this.emit('message', { data: JSON.stringify(value) })
   }
 
@@ -147,6 +164,7 @@ afterEach(() => {
   BroadcastWebSocket.instances.clear()
   BroadcastWebSocket.revision = 0
   BroadcastWebSocket.sequence = 0
+  setActiveTaskManagerPublicationBatchOperation(null)
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -253,7 +271,7 @@ describe('TaskManagerPublicationClient', () => {
     FakeWebSocket.latest?.receive({
       type: 'ack',
       protocolVersion: 1,
-      messageId: 'ack-1',
+      messageId: request.messageId,
       operationId: request.operationId,
       ok: true,
       changed: true,
@@ -304,7 +322,7 @@ describe('TaskManagerPublicationClient', () => {
     FakeWebSocket.latest?.receive({
       type: 'ack',
       protocolVersion: 1,
-      messageId: 'ack-settings-1',
+      messageId: request.messageId,
       operationId: request.operationId,
       ok: true,
       changed: true,
@@ -380,6 +398,99 @@ describe('TaskManagerPublicationClient', () => {
     socket?.receive({ type: 'ack', protocolVersion: 1, operationId: secondRequest.operationId, ok: true, result: { ok: true }, sequence: 6, revision: 6 })
     await expect(first).resolves.toEqual({ ok: true })
     await expect(second).resolves.toEqual({ ok: true })
+    client.close()
+  })
+
+  it('uses distinct idempotency message ids for commands in the same logical batch', async () => {
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', host: 'localhost:52471' },
+      setTimeout,
+      clearTimeout,
+    })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+
+    const client = new TaskManagerPublicationClient('/task-manager', {
+      publicationEpoch: 'epoch-1',
+      revision: 0,
+      sequence: 0,
+      settings,
+    })
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+    const socket = FakeWebSocket.latest
+    socket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
+
+    const operationId = 'shared-ticket-move'
+    const commands = [
+      ['begin_task_manager_publication_batch', {}],
+      ['write_library_file', { payload: { filePath: 'published-vault/a.md', content: 'uno' } }],
+      ['write_library_file', { payload: { filePath: 'published-vault/b.md', content: 'dos' } }],
+      ['end_task_manager_publication_batch', {}],
+    ] as const
+    const sentFrames: Array<Record<string, unknown>> = []
+
+    for (const [command, args] of commands) {
+      const mutation = client.invokeMutation(command, args, operationId)
+      await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+      const request = JSON.parse(socket?.sent.at(-1) ?? '{}') as Record<string, unknown>
+      sentFrames.push(request)
+      socket?.receive({
+        type: 'ack',
+        protocolVersion: 1,
+        messageId: request.messageId,
+        operationId,
+        ok: true,
+        changed: false,
+        result: { ok: true },
+        sequence: 0,
+        revision: 0,
+      })
+      await expect(mutation).resolves.toEqual({ ok: true })
+    }
+
+    expect(sentFrames.map((frame) => frame.operationId)).toEqual(Array(4).fill(operationId))
+    expect(new Set(sentFrames.map((frame) => frame.messageId)).size).toBe(4)
+    expect(sentFrames.map((frame) => frame.command)).toEqual(commands.map(([command]) => command))
+    client.close()
+  })
+
+  it('inherits the active batch operation id through the filesystem bridge used by the published URL', async () => {
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', host: 'localhost:52471' },
+      setTimeout,
+      clearTimeout,
+    })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+
+    const client = initializeTaskManagerPublicationClient('/task-manager', {
+      publicationEpoch: 'epoch-1',
+      revision: 3,
+      sequence: 3,
+      settings,
+    })
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+    const socket = FakeWebSocket.latest
+    socket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 3, sequence: 3, replay: [] })
+    setActiveTaskManagerPublicationBatchOperation('move-same-ticket-twice')
+
+    const mutation = invokePublishedTaskManagerMutation(
+      'write_library_file',
+      { payload: { filePath: 'published-vault/a.md', content: 'moved-again' } },
+    )
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+    const request = JSON.parse(socket?.sent.at(-1) ?? '{}') as Record<string, unknown>
+    expect(request.operationId).toBe('move-same-ticket-twice')
+    socket?.receive({
+      type: 'ack',
+      protocolVersion: 1,
+      messageId: request.messageId,
+      operationId: request.operationId,
+      ok: true,
+      result: { ok: true },
+      sequence: 3,
+      revision: 3,
+    })
+
+    await expect(mutation).resolves.toEqual({ ok: true })
     client.close()
   })
 
@@ -1012,8 +1123,143 @@ describe('TaskManagerPublicationClient', () => {
     await vi.runAllTicks()
     const retryRequest = JSON.parse(secondSocket?.sent[1] ?? '{}') as Record<string, unknown>
     expect(retryRequest.operationId).toBe(firstRequest.operationId)
+    expect(retryRequest.messageId).toBe(firstRequest.messageId)
     expect(retryRequest.baseRevision).toBe(4)
     secondSocket?.receive({ type: 'ack', protocolVersion: 1, operationId: retryRequest.operationId, ok: true, result: { ok: true }, sequence: 5, revision: 5 })
+
+    await expect(mutation).resolves.toEqual({ ok: true })
+    client.close()
+  })
+
+  it('resumes an active batch before retrying its write after reconnecting', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', host: 'localhost:52471' },
+      setTimeout,
+      clearTimeout,
+    })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+
+    const client = new TaskManagerPublicationClient('/task-manager', {
+      publicationEpoch: 'epoch-1',
+      revision: 4,
+      sequence: 4,
+      settings,
+    })
+    await vi.runAllTicks()
+    const firstSocket = FakeWebSocket.latest
+    firstSocket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 4, sequence: 4, replay: [] })
+    client.setActiveBatchOperation('batch-move-ticket-again')
+
+    const mutation = client.invokeMutation(
+      'write_library_file',
+      { payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'segundo movimiento' } },
+      'batch-move-ticket-again',
+    )
+    await vi.runAllTicks()
+    const firstRequest = JSON.parse(firstSocket?.sent[1] ?? '{}') as Record<string, unknown>
+    firstSocket?.close()
+
+    await vi.advanceTimersByTimeAsync(250)
+    await vi.runAllTicks()
+    const secondSocket = FakeWebSocket.latest
+    secondSocket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 4, sequence: 4, replay: [] })
+    await vi.runAllTicks()
+
+    const resumeRequest = JSON.parse(secondSocket?.sent[1] ?? '{}') as Record<string, unknown>
+    expect(resumeRequest).toMatchObject({
+      type: 'mutate',
+      command: 'begin_task_manager_publication_batch',
+      operationId: 'batch-move-ticket-again',
+    })
+    expect(resumeRequest.messageId).not.toBe(firstRequest.messageId)
+    secondSocket?.receive({
+      type: 'ack',
+      protocolVersion: 1,
+      messageId: resumeRequest.messageId,
+      operationId: resumeRequest.operationId,
+      ok: true,
+      result: { ok: true, changed: false },
+      sequence: 4,
+      revision: 4,
+    })
+    await vi.runAllTicks()
+
+    const retryRequest = JSON.parse(secondSocket?.sent[2] ?? '{}') as Record<string, unknown>
+    expect(retryRequest).toMatchObject({
+      type: 'mutate',
+      command: 'write_library_file',
+      operationId: 'batch-move-ticket-again',
+      messageId: firstRequest.messageId,
+    })
+    secondSocket?.receive({
+      type: 'ack',
+      protocolVersion: 1,
+      messageId: retryRequest.messageId,
+      operationId: retryRequest.operationId,
+      ok: true,
+      result: { ok: true },
+      sequence: 5,
+      revision: 5,
+    })
+
+    await expect(mutation).resolves.toEqual({ ok: true })
+    client.close()
+  })
+
+  it('retries a pending batch close without reopening the batch after reconnecting', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', host: 'localhost:52471' },
+      setTimeout,
+      clearTimeout,
+    })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+
+    const client = new TaskManagerPublicationClient('/task-manager', {
+      publicationEpoch: 'epoch-1',
+      revision: 5,
+      sequence: 5,
+      settings,
+    })
+    await vi.runAllTicks()
+    const firstSocket = FakeWebSocket.latest
+    firstSocket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 5, sequence: 5, replay: [] })
+    client.setActiveBatchOperation('batch-close-after-move')
+
+    const mutation = client.invokeMutation(
+      'end_task_manager_publication_batch',
+      {},
+      'batch-close-after-move',
+    )
+    await vi.runAllTicks()
+    const firstRequest = JSON.parse(firstSocket?.sent[1] ?? '{}') as Record<string, unknown>
+    firstSocket?.close()
+
+    await vi.advanceTimersByTimeAsync(250)
+    await vi.runAllTicks()
+    const secondSocket = FakeWebSocket.latest
+    secondSocket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 5, sequence: 5, replay: [] })
+    await vi.runAllTicks()
+
+    expect(secondSocket?.sent).toHaveLength(2)
+    const retriedEnd = JSON.parse(secondSocket?.sent[1] ?? '{}') as Record<string, unknown>
+    expect(retriedEnd).toMatchObject({
+      type: 'mutate',
+      command: 'end_task_manager_publication_batch',
+      operationId: 'batch-close-after-move',
+      messageId: firstRequest.messageId,
+    })
+    secondSocket?.receive({
+      type: 'ack',
+      protocolVersion: 1,
+      messageId: retriedEnd.messageId,
+      operationId: retriedEnd.operationId,
+      ok: true,
+      result: { ok: true },
+      sequence: 5,
+      revision: 5,
+    })
 
     await expect(mutation).resolves.toEqual({ ok: true })
     client.close()
@@ -1063,6 +1309,7 @@ describe('TaskManagerPublicationClient', () => {
     const retryRequest = JSON.parse(socket?.sent[2] ?? '{}') as Record<string, unknown>
     expect(fetchMock).toHaveBeenCalledWith('/task-manager/bootstrap', { cache: 'no-store' })
     expect(retryRequest.operationId).toBe(firstRequest.operationId)
+    expect(retryRequest.messageId).toBe(firstRequest.messageId)
     expect(retryRequest.baseRevision).toBe(1)
     socket?.receive({
       type: 'ack',
@@ -1078,7 +1325,7 @@ describe('TaskManagerPublicationClient', () => {
     client.close()
   })
 
-  it('converges three simultaneous clients through the bidirectional protocol', async () => {
+  it('keeps three simultaneous clients converged through a long bidirectional sequence', async () => {
     vi.stubGlobal('window', {
       location: { protocol: 'https:', host: 'localhost:52471' },
       setTimeout,
@@ -1097,31 +1344,27 @@ describe('TaskManagerPublicationClient', () => {
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
 
-    const first = clients[0]?.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/demo.md', content: 'uno' },
-    })
-    await expect(first).resolves.toEqual({ ok: true })
+    for (let revision = 1; revision <= 100; revision += 1) {
+      const actor = clients[(revision - 1) % clients.length]
+      const mutation = actor?.invokeMutation('write_library_file', {
+        payload: {
+          filePath: 'published-vault/task-mannager/equipo/demo.md',
+          content: `revisión-${revision}`,
+        },
+      })
+      await expect(mutation).resolves.toEqual({ ok: true })
+    }
 
-    const second = clients[1]?.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/demo.md', content: 'dos' },
-    })
-    await expect(second).resolves.toEqual({ ok: true })
-
-    const third = clients[0]?.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/demo.md', content: 'tres' },
-    })
-    await expect(third).resolves.toEqual({ ok: true })
-
-    expect(changes.every((clientChanges) => clientChanges.map((change) => change.revision))).toEqual(true)
+    const expectedCursor = Array.from({ length: 100 }, (_, index) => index + 1)
     expect(changes.map((clientChanges) => clientChanges.map((change) => change.revision))).toEqual([
-      [1, 2, 3],
-      [1, 2, 3],
-      [1, 2, 3],
+      expectedCursor,
+      expectedCursor,
+      expectedCursor,
     ])
     expect(changes.map((clientChanges) => clientChanges.map((change) => change.sequence))).toEqual([
-      [1, 2, 3],
-      [1, 2, 3],
-      [1, 2, 3],
+      expectedCursor,
+      expectedCursor,
+      expectedCursor,
     ])
     clients.forEach((client) => client.close())
   })

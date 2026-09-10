@@ -79,12 +79,13 @@ async function resolveRuntimeTasksRoot(
 ): Promise<{ folder: string; atVaultRoot: boolean }> {
   const normalizedVaultPath = normalizeVaultPathKey(vaultPath)
   const forceInsideVault = forcedTasksRootInsideVaultPaths.has(normalizedVaultPath)
-  if (typeof window !== 'undefined'
-    && normalizedVaultPath.toLowerCase() === 'published-vault'
-    && window.__NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__ === true) {
+  if (typeof window !== 'undefined' && normalizedVaultPath.toLowerCase() === 'published-vault') {
+    const publishedRootFolder = window.__NOTIA_PUBLISHED_TASK_ROOT_FOLDER__ === ALTERNATE_TASKS_ROOT_FOLDER
+      ? ALTERNATE_TASKS_ROOT_FOLDER
+      : TASKS_ROOT_FOLDER
     return {
-      folder: TASKS_ROOT_FOLDER,
-      atVaultRoot: true,
+      folder: publishedRootFolder,
+      atVaultRoot: window.__NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__ === true,
     }
   }
   const vaultBasename = getBaseName(vaultPath).trim().toLowerCase()
@@ -409,6 +410,20 @@ export async function updateTaskFrontmatter(
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
+  const snapshotRevision = options?.baseContent !== undefined
+    && typeof window !== 'undefined'
+    && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
+    ? await computePublishedContentRevision(options.baseContent)
+    : null
+  if (snapshotRevision && options?.baseContent !== undefined) {
+    const nextContent = updateMarkdownFrontmatter(options.baseContent, updates)
+    const writeResult = await writeFileContent(absolutePath, nextContent, snapshotRevision)
+    if (!writeResult.ok) {
+      throw new Error(writeResult.error || 'No se pudo actualizar la tarea.')
+    }
+    return
+  }
+
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
     throw new Error(readResult.error || 'No se pudo leer la tarea.')
@@ -426,6 +441,15 @@ export async function updateTaskFrontmatter(
   if (!writeResult.ok) {
     throw new Error(writeResult.error || 'No se pudo actualizar la tarea.')
   }
+}
+
+async function computePublishedContentRevision(content: string): Promise<string | null> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    return null
+  }
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content))
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `sha256:${hex}`
 }
 
 export async function moveTaskByState(vaultPath: string, task: TaskItem, nextState: string, existingRelativePaths: Set<string>): Promise<void> {

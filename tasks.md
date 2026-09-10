@@ -10,7 +10,15 @@ El backlog conserva el diagnóstico inicial y separa lo implementado de las vali
 
 - [x] Transporte WebSocket en `/task-manager/ws`, handshake autenticado por cookie/origen, `publicationEpoch`, `sequence`, `revision`, replay, `resync-required`, ACK, ping/pong y eventos terminales.
 - [x] Mutaciones remotas pasan por el mismo ejecutor de publicación; el host y el agente notifican la revisión después de persistir. Hay cola acotada, serialización, límites de sesiones/conexiones y cierre por revocación, stop o republicación.
-- [x] Cliente publicado dedicado con cursor, reconexión con backoff, reintento idempotente por `operationId`, resync de bootstrap y coalescing de reloads.
+- [x] Cliente publicado dedicado con cursor, reconexión con backoff, reintento idempotente por `messageId` estable y correlación por `operationId`, resync de bootstrap y coalescing de reloads.
+- [x] El bootstrap publica la carpeta raíz lógica de Task Manager para eliminar las sondas HTTP repetidas por cada escritura; el bridge corta cascadas tras `401` y aplica `Retry-After` tras `429`.
+- [x] El arrastre mantiene la ruta del ticket en una referencia síncrona y centraliza su limpieza, permitiendo mover consecutivamente el mismo ticket; la publicación responde el favicon sin exigir autenticación para evitar un `401` ajeno al flujo de sesión.
+- [x] Propagar un único `operationId` por cada lote guest, conservarlo durante una gracia de reconexión de 20 segundos, revalidar `begin` antes de reintentar escrituras y reenviar directamente un `end` pendiente sin revivir un lote ya cerrado.
+- [x] Hacer que el host espere asincrónicamente el cierre normal de un lote guest; las mutaciones de tickets usan revisión por archivo para permitir trabajo concurrente sobre tickets distintos, y los settings conservan revisión global.
+- [x] Calcular el orden del ticket entre sus vecinos para escribir normalmente solo el elemento movido, rebalancear únicamente la columna destino cuando sea imprescindible y cubrir movimientos consecutivos del mismo ticket.
+- [x] En la URL, escribir frontmatter directamente desde el snapshot confirmado con precondición SHA-256, eliminando la lectura HTTP por ticket; un fallo de snapshot se propaga y conserva la última vista válida en vez de vaciar el tablero.
+- [x] Mantener el drenaje de recargas activo hasta consumir también una invalidación que llegue durante la finalización de la Promise anterior; las pruebas fuerzan 100 límites de finalización, 100 lotes y 100 mutaciones alternadas entre tres clientes sin perder cursores ni cambios.
+- [x] Reintentar con backoff acotado la reconciliación completa cuando falle una lectura transitoria, sin vaciar el snapshot ni esperar otro evento; evitar además que el host reescriba metadata ya persistida por la mutación remota.
 - [x] Metadata compartida de tableros/grupos distribuida sin sincronizar preferencias de presentación como `activeTab`, `pomodoro` o la ruta local.
 - [x] Metadata compartida de tableros/grupos persistida y versionada en `.notia-task-manager.json`; `localStorage` queda como cache/preferencia y la migración conserva settings existentes.
 - [x] Revisión SHA-256 por archivo para lecturas/escrituras Markdown y protección del editor completo contra sobrescrituras por revisión obsoleta.
@@ -50,11 +58,11 @@ Permitir que N personas autorizadas y la persona que usa Notia trabajen simultá
 
 | Operación | Datos compartidos | Regla actual | Transporte publicado |
 | --- | --- | --- | --- |
-| Crear tarea o subtarea | Archivo Markdown e índices | Secuencial; cada escritura exige la revisión global confirmada | WebSocket |
+| Crear tarea o subtarea | Archivo Markdown e índices | Secuencial y atómica por ruta; no colisiona con cambios sobre otro ticket | WebSocket |
 | Editar campos, prioridad, estado u horas | Frontmatter y, si corresponde, ubicación | Rebase explícito de campos no solapados; conflicto si se editó el mismo campo | WebSocket |
 | Editar Markdown completo | Fuente completa del archivo | `expectedRevision` exacto; conserva el borrador ante conflicto | WebSocket |
 | Agregar comentario | Cuerpo Markdown | Read-modify-write con revisión; conflicto si la fuente cambió | WebSocket |
-| Mover, reordenar, archivar o restaurar | Uno o más archivos e índices | Revisión global exacta; el journal transaccional queda pendiente | WebSocket |
+| Mover, reordenar, archivar o restaurar | Uno o más archivos e índices | Batch serializado y revisión por archivo; el journal transaccional queda pendiente | WebSocket |
 | Crear, editar, borrar o reordenar grupos | Metadata compartida de settings | Revisión global exacta y sanitización contra tableros publicados | WebSocket |
 | Registro de Pomodoro y horas | `pomodoro.md` y frontmatter | Mutación compartida; las preferencias del timer en curso son locales | WebSocket |
 | Chat/stream de IA | No agrega estado colaborativo por sí mismo | Mantiene el runtime común; las herramientas que escriben usan WebSocket | HTTP streaming + WebSocket para mutaciones |
@@ -74,7 +82,7 @@ Se verificó el siguiente comportamiento en el código actual:
 - [x] Existe un protocolo WebSocket con `revision`, `sequence`, `messageId`, `operationId`, `baseRevision`, cursor de reconexión y `changedPaths` acotados a aliases lógicos; los DTOs versionados están centralizados en `taskManagerPublicationProtocol.ts`.
 - [ ] El host todavía realiza el filesystem local mediante los servicios TypeScript, fuera de un caso de uso Rust único; `runSync`, el agente y las reconciliaciones del watcher pasan por el coordinador FIFO y la barrera de lote bloquea mutaciones remotas durante sus operaciones. HTTP y WebSocket remotos comparten el ejecutor serializado; falta migrar todas las escrituras locales y el agente al coordinador de dominio único.
 - [x] `updateTaskFrontmatter`, `updateTaskBody` y `writeTaskMarkdownSource` conservan una precondición SHA-256; una edición concurrente devuelve conflicto y no pisa datos.
-- [x] El host y el cliente publicado agrupan operaciones compuestas dentro de un batch WebSocket acotado. El `begin` funciona como semáforo global: un solo host o cliente remoto puede aplicar una operación compuesta, los demás esperan o reciben un resultado incierto acotado, y el servidor emite una sola revisión al cerrar. Si la conexión cae, publica lo que ya se aplicó. El journal mínimo del agente conserva el estado de recuperación; una transacción de filesystem completo sigue fuera de alcance.
+- [x] El host y el cliente publicado agrupan operaciones compuestas dentro de un batch WebSocket acotado. El `begin` funciona como semáforo global: un solo host o cliente remoto puede aplicar una operación compuesta, los demás esperan o reciben un resultado incierto acotado, y el servidor emite una sola revisión al cerrar. Si la conexión cae, conserva el lote hasta 20 segundos para permitir una reconexión segura; sin actividad posterior, libera la barrera y publica lo que ya se aplicó. El journal mínimo del agente conserva el estado de recuperación; una transacción de filesystem completo sigue fuera de alcance.
 - [x] La capacidad de sesiones se rechaza con 429 sin limpiar las sesiones existentes.
 - [x] SSE fue reemplazado por WebSocket; los suscriptores se asocian a dispositivo, la revocación cierra sus sockets y cancela sus streams HTTP de IA mediante un token de cancelación que libera el upstream.
 - [x] El cliente expone una UI accesible para `connecting`, `offline`, `syncing`, `conflict`, `revoked` y `stopped/reconfigured`; descarta eventos duplicados y snapshots tardíos mediante generación.
@@ -117,7 +125,7 @@ Se verificó el siguiente comportamiento en el código actual:
 - [x] Hacer que cada request remoto sea una unidad serializada y emitir un único `changed` después de su resultado; las operaciones multiarchivo del comando genérico todavía requieren journal explícito.
 - [x] El serializador remoto usa un lock independiente y lo libera antes de emitir eventos; no mantiene un `MutexGuard` de runtime a través de I/O async.
 - [x] Definir el comportamiento de cancelación de mutaciones: el cliente cancela antes de enviar sin tocar el filesystem, envía un frame `cancel` si la mutación ya fue enviada y no reintenta una operación cerrada con resultado `unknown`; conserva su `operationId`. El servidor cancela una mutación mientras espera el lock, responde `cancelled: true` y no ejecuta la escritura; si la operación ya comenzó, devuelve `applied`, `failed` o `unknown`. El stream de IA publicado propaga el error de escritura al consumidor de Ollama y libera el upstream cuando el cliente se desconecta. La transacción completa del filesystem sigue pendiente.
-- [x] Deduplicar reintentos por sesión y `operationId`; el caché se limpia al cambiar `publicationEpoch`, por lo que un retry no duplica la mutación confirmada.
+- [x] Deduplicar reintentos por sesión y `messageId`, conservándolo estable durante el retry; `operationId` queda como correlación del batch para que begin, varias escrituras y end no se confundan entre sí. El caché se limpia al cambiar `publicationEpoch`, por lo que un retry no duplica la mutación confirmada.
 
 ### PUB-011 — Añadir revisión por archivo y detección de conflictos
 
@@ -337,7 +345,7 @@ Para la publicación en Windows, agregar una prueba manual con firewall de red p
 - [x] Unificar lectura acotada y envío en el propietario de cada WebSocket: el lector ya no compite con un hilo de envío por el mismo mutex.
 - [x] Interpretar correctamente el resultado remoto de begin/end (`{ok, changed}`); el cursor corresponde al ACK, no a ese resultado.
 - [x] Acumular notificaciones del watcher durante un batch remoto para no avanzar la revisión entre sus escrituras.
-- [x] Pruebas TypeScript de batches consecutivos y liberación después de fallo parcial; suite completa: 100 archivos, 509 pruebas. Lint, `tsc -b`, `npm run build`, `cargo fmt --all -- --check`, `cargo check --all-targets` y `git diff --check` aprobados.
+- [x] Pruebas TypeScript de batches consecutivos, reconexión/reanudación, orden mínimo, preservación ante error de lectura, drenaje continuo y liberación después de fallo parcial; suite completa: 103 archivos, 527 pruebas. Lint, `tsc -b`, `npm run build`, `cargo fmt --all -- --check` y `cargo check --all-targets` aprobados.
 - [!] Clippy con `-D warnings` sigue bloqueado por advertencias y lints fuera de esta corrección (módulos mobile, Bluetooth, voz y otros).
 - [ ] Ejecutar la nueva prueba Rust `idle_websocket_receives_consecutive_host_and_remote_batch_changes`: compila, pero el loader Windows falla con `STATUS_ENTRYPOINT_NOT_FOUND`. Cubre 12 notificaciones alternadas de host y batches remotos sobre un socket TCP real sin mensajes del cliente que despierten al lector.
 - [ ] Confirmar en escritorio + al menos dos navegadores movimientos y ediciones alternados repetidamente, sin recargar, junto con convergencia visual y ausencia de una tormenta de requests. Pendiente también la validación física Android; las pruebas unitarias no certifican este escenario.

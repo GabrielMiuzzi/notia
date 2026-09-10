@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { persistTaskOrder, reorderList } from './orderEngine'
+import {
+  buildMinimalTaskOrderUpdates,
+  normalizeTaskArrangementUpdates,
+  persistTaskOrder,
+  reorderList,
+  selectChangedTaskArrangementUpdates,
+} from './orderEngine'
 import type { TaskItem } from '../types/taskManagerTypes'
 
 function task(filePath: string): TaskItem {
@@ -65,5 +71,90 @@ describe('orderEngine', () => {
     expect(reorderList(source, -1, 0)).toBe(source)
     expect(reorderList(source, 0, 2)).toBe(source)
     expect(reorderList(source, 2, 0)).toBe(source)
+  })
+
+  it('keeps consecutive movements of the same ticket and skips unchanged neighbors', () => {
+    const firstState = [
+      { ...task('task-mannager/equipo/one.md'), order: 10 },
+      { ...task('task-mannager/equipo/two.md'), order: 20 },
+      { ...task('task-mannager/equipo/three.md'), order: 30 },
+    ]
+    const firstMove = normalizeTaskArrangementUpdates([
+      { taskPath: firstState[0]!.filePath, order: 20 },
+      { taskPath: firstState[1]!.filePath, order: 10 },
+      { taskPath: firstState[2]!.filePath, order: 30 },
+    ])
+    expect(selectChangedTaskArrangementUpdates(firstState, firstMove).map((update) => update.taskPath)).toEqual([
+      firstState[0]!.filePath,
+      firstState[1]!.filePath,
+    ])
+
+    const secondState = firstState.map((currentTask) => {
+      const update = firstMove.find((candidate) => candidate.taskPath === currentTask.filePath)
+      return update ? { ...currentTask, order: update.order } : currentTask
+    })
+    const secondMove = normalizeTaskArrangementUpdates([
+      { taskPath: firstState[0]!.filePath, order: 10 },
+      { taskPath: firstState[1]!.filePath, order: 20 },
+      { taskPath: firstState[2]!.filePath, order: 30 },
+    ])
+    expect(selectChangedTaskArrangementUpdates(secondState, secondMove).map((update) => update.taskPath)).toEqual([
+      firstState[0]!.filePath,
+      firstState[1]!.filePath,
+    ])
+  })
+
+  it('persists only the moved ticket when there is numeric space between its neighbors', () => {
+    const moved = { ...task('task-mannager/equipo/moved.md'), order: 80 }
+    const ordered = [
+      { ...task('task-mannager/equipo/one.md'), order: 10 },
+      moved,
+      { ...task('task-mannager/equipo/two.md'), order: 20 },
+      { ...task('task-mannager/equipo/three.md'), order: 30 },
+    ]
+
+    expect(buildMinimalTaskOrderUpdates(ordered, 1)).toEqual([
+      { taskPath: moved.filePath, order: 15 },
+    ])
+  })
+
+  it('uses zero as a valid order when moving a ticket before the first item', () => {
+    const moved = { ...task('task-mannager/equipo/moved.md'), order: 80 }
+
+    expect(buildMinimalTaskOrderUpdates([
+      moved,
+      { ...task('task-mannager/equipo/first.md'), order: 10 },
+    ], 0)).toEqual([{ taskPath: moved.filePath, order: 0 }])
+  })
+
+  it('can calculate consecutive moves of the same ticket without renumbering either column', () => {
+    const moved = { ...task('task-mannager/equipo/moved.md'), order: 10 }
+    const firstMove = buildMinimalTaskOrderUpdates([
+      { ...task('task-mannager/equipo/target-one.md'), order: 10 },
+      { ...task('task-mannager/equipo/target-two.md'), order: 20 },
+      moved,
+    ], 2)
+    const secondMove = buildMinimalTaskOrderUpdates([
+      { ...task('task-mannager/equipo/other-one.md'), order: 10 },
+      { ...moved, order: firstMove[0]!.order },
+      { ...task('task-mannager/equipo/other-two.md'), order: 20 },
+    ], 1)
+
+    expect(firstMove).toEqual([{ taskPath: moved.filePath, order: 30 }])
+    expect(secondMove).toEqual([{ taskPath: moved.filePath, order: 15 }])
+  })
+
+  it('rebalances the target column only when adjacent order values cannot be split', () => {
+    const ordered = [
+      { ...task('task-mannager/equipo/one.md'), order: 10 },
+      { ...task('task-mannager/equipo/moved.md'), order: 10 },
+      { ...task('task-mannager/equipo/two.md'), order: 10 },
+    ]
+
+    expect(buildMinimalTaskOrderUpdates(ordered, 1)).toEqual([
+      { taskPath: ordered[0]!.filePath, order: 10 },
+      { taskPath: ordered[1]!.filePath, order: 20 },
+      { taskPath: ordered[2]!.filePath, order: 30 },
+    ])
   })
 })

@@ -74,6 +74,7 @@ export function getTasks(documents: MarkdownFileDocument[]): TaskItem[] {
 
     const basename = getBasenameWithoutExtension(document.path)
     const state = normalizeTaskState(frontmatter.estado)
+    const parsedOrder = Number(frontmatter.order)
 
     tasks.push({
       filePath: document.path,
@@ -91,7 +92,7 @@ export function getTasks(documents: MarkdownFileDocument[]): TaskItem[] {
       estimatedHours: Number(frontmatter.estimacion) || 0,
       deviationHours: Number(frontmatter.desvio) || 0,
       parentTaskName: normalizeParentTaskName(frontmatter.parent ?? ''),
-      order: Number(frontmatter.order) || 999999,
+      order: Number.isFinite(parsedOrder) ? parsedOrder : 999999,
       preview: extractTaskBodyPreview(document.content),
     })
   }

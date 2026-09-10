@@ -640,25 +640,21 @@ export async function readMarkdownDocuments(
     return []
   }
 
-  try {
-    const response = await invoke<FilesystemMarkdownDocument[]>('read_markdown_files', {
-      payload: { directoryPath: normalizedDirectoryPath },
-    })
-    if (!Array.isArray(response)) {
-      return []
-    }
-
-    return response.filter((item): item is FilesystemMarkdownDocument => (
-      Boolean(item)
-      && typeof item.path === 'string'
-      && typeof item.content === 'string'
-    )).map((item) => ({
-      path: normalizePath(item.path),
-      content: item.content,
-    }))
-  } catch {
-    return []
+  const response = await invoke<FilesystemMarkdownDocument[]>('read_markdown_files', {
+    payload: { directoryPath: normalizedDirectoryPath },
+  })
+  if (!Array.isArray(response)) {
+    throw new Error('Invalid Markdown document response.')
   }
+
+  return response.filter((item): item is FilesystemMarkdownDocument => (
+    Boolean(item)
+    && typeof item.path === 'string'
+    && typeof item.content === 'string'
+  )).map((item) => ({
+    path: normalizePath(item.path),
+    content: item.content,
+  }))
 }
 
 export async function readTextFile(

@@ -1,6 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { TextField } from '@mui/material'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
+import { buildMinimalTaskOrderUpdates } from '../../engines/orderEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
 import type { Group, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
@@ -102,6 +103,20 @@ export function TaskBoardView({
   const [subtaskDropTarget, setSubtaskDropTarget] = useState<{ parentTaskPath: string; index: number } | null>(null)
   const [isTouchDragging, setIsTouchDragging] = useState(false)
   const touchDragRef = useRef<TouchDragState | null>(null)
+  const draggedTaskPathRef = useRef<string | null>(null)
+
+  const startTopLevelTaskDrag = useCallback((taskPath: string) => {
+    draggedTaskPathRef.current = taskPath
+    setDraggedTaskPath(taskPath)
+  }, [])
+
+  const clearTopLevelTaskDrag = useCallback(() => {
+    draggedTaskPathRef.current = null
+    setDraggedTaskPath(null)
+    setDraggedTaskHeight(0)
+    setTaskDropTarget(null)
+    setPinnedTaskDropTarget(null)
+  }, [])
 
   useEffect(() => {
     const currentGroupKeys = new Set(groups.map((group) => getGroupKey(group)))
@@ -271,7 +286,7 @@ export function TaskBoardView({
   const handleTopLevelTaskDrop = useCallback(async (
     targetGroupName: string,
     targetIndex: number,
-    sourceTaskPath = draggedTaskPath,
+    sourceTaskPath = draggedTaskPathRef.current,
   ) => {
     if (!sourceTaskPath) {
       return
@@ -279,8 +294,7 @@ export function TaskBoardView({
 
     const draggedTask = topLevelTasks.find((task) => task.filePath === sourceTaskPath)
     if (!draggedTask) {
-      setDraggedTaskPath(null)
-      setPinnedTaskDropTarget(null)
+      clearTopLevelTaskDrag()
       return
     }
 
@@ -292,42 +306,20 @@ export function TaskBoardView({
       ? sourceTasks
       : topLevelTasks.filter((task) => (task.group || 'Sin grupo') === targetGroupName)
 
-    const sourceWithoutDragged = sourceTasks.filter((task) => task.filePath !== draggedTask.filePath)
     const targetTasks = targetTasksInitial.filter((task) => task.filePath !== draggedTask.filePath)
     const nextTargetIndex = Math.max(0, Math.min(targetIndex, targetTasks.length))
     targetTasks.splice(nextTargetIndex, 0, draggedTask)
 
-    const updates: Array<{ taskPath: string; order: number; group?: string; parentTaskName?: string }> = []
-
-    const sourceGroupValue = sourceGroupName === 'Sin grupo' ? '' : sourceGroupName
     const targetGroupValue = actualTargetGroup
-    const sourceList = sourceGroupName === targetGroupName ? targetTasks : sourceWithoutDragged
+    const updates = buildMinimalTaskOrderUpdates(targetTasks, nextTargetIndex).map((update) => ({
+      ...update,
+      group: targetGroupValue,
+      parentTaskName: '',
+    }))
 
-    for (const [index, task] of sourceList.entries()) {
-      updates.push({
-        taskPath: task.filePath,
-        order: (index + 1) * 10,
-        group: sourceGroupValue,
-        parentTaskName: '',
-      })
-    }
-
-    if (sourceGroupName !== targetGroupName) {
-      for (const [index, task] of targetTasks.entries()) {
-        updates.push({
-          taskPath: task.filePath,
-          order: (index + 1) * 10,
-          group: targetGroupValue,
-          parentTaskName: '',
-        })
-      }
-    }
-
-    setDraggedTaskPath(null)
-    setTaskDropTarget(null)
-    setPinnedTaskDropTarget(null)
+    clearTopLevelTaskDrag()
     await onApplyTaskArrangement(updates)
-  }, [draggedTaskPath, onApplyTaskArrangement, topLevelTasks])
+  }, [clearTopLevelTaskDrag, onApplyTaskArrangement, topLevelTasks])
 
   const handleSubtaskDrop = useCallback(async (targetParentTask: TaskItem, targetIndex: number) => {
     if (!draggedSubtaskPath) {
@@ -351,33 +343,15 @@ export function TaskBoardView({
       ? sourceSubtasks
       : (subtasksByParentPath.get(targetParentTask.filePath) ?? [])
 
-    const sourceWithoutDragged = sourceSubtasks.filter((task) => task.filePath !== draggedSubtask.filePath)
     const targetSubtasks = targetSubtasksInitial.filter((task) => task.filePath !== draggedSubtask.filePath)
     const nextTargetIndex = Math.max(0, Math.min(targetIndex, targetSubtasks.length))
     targetSubtasks.splice(nextTargetIndex, 0, draggedSubtask)
 
-    const updates: Array<{ taskPath: string; order: number; group?: string; parentTaskName?: string }> = []
-    const sourceList = sourceParentTask.filePath === targetParentTask.filePath ? targetSubtasks : sourceWithoutDragged
-
-    for (const [index, subtask] of sourceList.entries()) {
-      updates.push({
-        taskPath: subtask.filePath,
-        order: (index + 1) * 10,
-        group: sourceParentTask.group,
-        parentTaskName: sourceParentTask.fileName,
-      })
-    }
-
-    if (sourceParentTask.filePath !== targetParentTask.filePath) {
-      for (const [index, subtask] of targetSubtasks.entries()) {
-        updates.push({
-          taskPath: subtask.filePath,
-          order: (index + 1) * 10,
-          group: targetParentTask.group,
-          parentTaskName: targetParentTask.fileName,
-        })
-      }
-    }
+    const updates = buildMinimalTaskOrderUpdates(targetSubtasks, nextTargetIndex).map((update) => ({
+      ...update,
+      group: targetParentTask.group,
+      parentTaskName: targetParentTask.fileName,
+    }))
 
     setDraggedSubtaskPath(null)
     setSubtaskDropTarget(null)
@@ -476,11 +450,8 @@ export function TaskBoardView({
     }
     touchDragRef.current = null
     setIsTouchDragging(false)
-    setDraggedTaskPath(null)
-    setDraggedTaskHeight(0)
-    setTaskDropTarget(null)
-    setPinnedTaskDropTarget(null)
-  }, [])
+    clearTopLevelTaskDrag()
+  }, [clearTopLevelTaskDrag])
 
   useEffect(() => () => {
     const touchDrag = touchDragRef.current
@@ -543,11 +514,11 @@ export function TaskBoardView({
       touchDrag.active = true
       touchDrag.timerId = null
       setIsTouchDragging(true)
-      setDraggedTaskPath(taskPath)
+      startTopLevelTaskDrag(taskPath)
       setDraggedTaskHeight(0)
     }, TOUCH_DRAG_DELAY_MS)
     touchDragRef.current = touchDrag
-  }, [])
+  }, [startTopLevelTaskDrag])
 
   const handleTouchPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const touchDrag = touchDragRef.current
@@ -622,7 +593,7 @@ export function TaskBoardView({
                     if (event.dataTransfer) {
                       event.dataTransfer.dropEffect = 'move'
                     }
-                    if (draggedTaskPath && !draggedSubtaskPath) {
+                    if (draggedTaskPathRef.current && !draggedSubtaskPath) {
                       const groupKey = getGroupKey(group)
                       setExpandedGroups((previous) => {
                         if (previous.has(groupKey)) {
@@ -647,7 +618,7 @@ export function TaskBoardView({
                   onDrop={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
-                    if (draggedTaskPath && !draggedSubtaskPath) {
+                    if (draggedTaskPathRef.current && !draggedSubtaskPath) {
                       void handleTopLevelTaskDrop(group.name, groupTasks.length)
                       return
                     }
@@ -681,7 +652,7 @@ export function TaskBoardView({
                       if (event.dataTransfer) {
                         event.dataTransfer.dropEffect = 'move'
                       }
-                      if (!draggedTaskPath || draggedSubtaskPath) {
+                      if (!draggedTaskPathRef.current || draggedSubtaskPath) {
                         return
                       }
 
@@ -703,7 +674,7 @@ export function TaskBoardView({
                     }}
                     onDrop={(event) => {
                       event.preventDefault()
-                      if (draggedTaskPath) {
+                      if (draggedTaskPathRef.current) {
                         void handleTopLevelTaskDrop(group.name, groupTasks.length)
                       }
                     }}
@@ -755,21 +726,16 @@ export function TaskBoardView({
                                 event.dataTransfer.setData('text/plain', task.filePath)
                               }
                               setPinnedTaskDropTarget(null)
-                              setDraggedTaskPath(task.filePath)
+                              startTopLevelTaskDrag(task.filePath)
                               setDraggedTaskHeight(event.currentTarget.getBoundingClientRect().height)
                             }}
-                            onDragEnd={() => {
-                              setDraggedTaskPath(null)
-                              setDraggedTaskHeight(0)
-                              setTaskDropTarget(null)
-                              setPinnedTaskDropTarget(null)
-                            }}
+                            onDragEnd={clearTopLevelTaskDrag}
                             onDragOver={(event) => {
                               event.preventDefault()
                               if (event.dataTransfer) {
                                 event.dataTransfer.dropEffect = 'move'
                               }
-                              if (draggedTaskPath && !draggedSubtaskPath) {
+                              if (draggedTaskPathRef.current && !draggedSubtaskPath) {
                                 if (isPointerOverPinnedTaskDropSlot(event.clientX, event.clientY)) {
                                   return
                                 }
@@ -881,7 +847,7 @@ export function TaskBoardView({
                   if (event.dataTransfer) {
                     event.dataTransfer.dropEffect = 'move'
                   }
-                  if (!draggedTaskPath || draggedSubtaskPath) {
+                  if (!draggedTaskPathRef.current || draggedSubtaskPath) {
                     return
                   }
                   const ungroupedGroup = { name: 'Sin grupo', color: '#607d8b', board: boardName }
@@ -899,7 +865,7 @@ export function TaskBoardView({
                 onDrop={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
-                  if (draggedTaskPath && !draggedSubtaskPath) {
+                  if (draggedTaskPathRef.current && !draggedSubtaskPath) {
                     void handleTopLevelTaskDrop('Sin grupo', groupedTopLevelTasks['Sin grupo'].length)
                   }
                 }}
@@ -921,7 +887,7 @@ export function TaskBoardView({
                     if (event.dataTransfer) {
                       event.dataTransfer.dropEffect = 'move'
                     }
-                    if (!draggedTaskPath || draggedSubtaskPath) {
+                    if (!draggedTaskPathRef.current || draggedSubtaskPath) {
                       return
                     }
 
@@ -943,7 +909,7 @@ export function TaskBoardView({
                   }}
                   onDrop={(event) => {
                     event.preventDefault()
-                    if (draggedTaskPath) {
+                    if (draggedTaskPathRef.current) {
                       void handleTopLevelTaskDrop('Sin grupo', groupedTopLevelTasks['Sin grupo'].length)
                     }
                   }}
@@ -996,21 +962,16 @@ export function TaskBoardView({
                               event.dataTransfer.setData('text/plain', task.filePath)
                             }
                             setPinnedTaskDropTarget(null)
-                            setDraggedTaskPath(task.filePath)
+                            startTopLevelTaskDrag(task.filePath)
                             setDraggedTaskHeight(event.currentTarget.getBoundingClientRect().height)
                           }}
-                          onDragEnd={() => {
-                            setDraggedTaskPath(null)
-                            setDraggedTaskHeight(0)
-                            setTaskDropTarget(null)
-                            setPinnedTaskDropTarget(null)
-                          }}
+                          onDragEnd={clearTopLevelTaskDrag}
                           onDragOver={(event) => {
                             event.preventDefault()
                             if (event.dataTransfer) {
                               event.dataTransfer.dropEffect = 'move'
                             }
-                            if (draggedTaskPath && !draggedSubtaskPath) {
+                            if (draggedTaskPathRef.current && !draggedSubtaskPath) {
                               if (isPointerOverPinnedTaskDropSlot(event.clientX, event.clientY)) {
                                 return
                               }

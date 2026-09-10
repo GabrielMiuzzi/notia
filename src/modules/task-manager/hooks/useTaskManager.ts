@@ -23,6 +23,10 @@ import {
   startPomodoro,
 } from '../engines/pomodoroEngine'
 import { appendTaskComment } from '../engines/taskCommentEngine'
+import {
+  normalizeTaskArrangementUpdates,
+  selectChangedTaskArrangementUpdates,
+} from '../engines/orderEngine'
 import type { Board, Group, PomodoroDurations, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 import { sanitizeFilename } from '../utils/sanitizeFilename'
@@ -83,6 +87,10 @@ import {
   type TaskManagerPublicationConflict,
 } from '../services/taskManagerPublicationClient'
 import { enqueueTaskManagerMutation, type TaskManagerMutationContext } from '../services/taskManagerMutationCoordinator'
+import {
+  drainTaskManagerReloadQueue,
+  getTaskManagerReloadRetryDelay,
+} from '../services/taskManagerReloadCoordinator'
 import {
   beginTaskManagerMutationJournal,
   completeTaskManagerMutationJournal,
@@ -325,6 +333,11 @@ function resolveCachedViewStateActiveTab(
     : boards[0]?.name ?? DEFAULT_BOARD_NAME
 }
 
+type TaskManagerReloadRequest = (
+  changedPaths?: string[],
+  options?: { notifyExternalChange?: boolean; forceFullReload?: boolean },
+) => Promise<void>
+
 export interface TaskManagerConflictDetails {
   operationId: string
   command: string
@@ -405,6 +418,11 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     changedPaths: new Set(),
     forceFullReload: false,
     notifyExternalChange: false,
+  })
+  const reloadRequestRef = useRef<TaskManagerReloadRequest>(async () => undefined)
+  const reloadRetryRef = useRef<{ timer: number | null; attempt: number }>({
+    timer: null,
+    attempt: 0,
   })
   const isAndroidRuntime = useMemo(() => getRuntimeDevice() === 'Android', [])
   const [settings, setSettings] = useState<TaskManagerSettings>(() => loadTaskManagerSettings())
@@ -629,6 +647,31 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     })
   }, [hydrateSettingsFromSnapshot])
 
+  const resetReloadRetry = useCallback(() => {
+    const retryState = reloadRetryRef.current
+    if (retryState.timer !== null) {
+      window.clearTimeout(retryState.timer)
+      retryState.timer = null
+    }
+    retryState.attempt = 0
+  }, [])
+
+  const scheduleReloadRetry = useCallback(() => {
+    const retryState = reloadRetryRef.current
+    if (retryState.timer !== null) return
+    const delay = getTaskManagerReloadRetryDelay(retryState.attempt)
+    retryState.attempt += 1
+    retryState.timer = window.setTimeout(() => {
+      retryState.timer = null
+      void reloadRequestRef.current([], { forceFullReload: true })
+    }, delay)
+  }, [])
+
+  useEffect(() => {
+    resetReloadRetry()
+    return resetReloadRetry
+  }, [resetReloadRetry, settings.activeVaultPath])
+
   const updateTaskFrontmatterCompat = useCallback(async (
     vaultPath: string,
     taskPath: string,
@@ -696,72 +739,68 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
     reloadState.generation += 1
     reloadState.pending = true
-    if (reloadState.inFlight) {
-      await reloadState.inFlight
-      return
-    }
-
-    // Accumulate watcher events before entering the FIFO so one read can cover
-    // a burst without allowing reloads to race a mutation.
-    const reloadExecution = enqueueTaskManagerMutation(async (mutationContext) => {
-      while (reloadState.pending) {
-        reloadState.pending = false
-        const generation = reloadState.generation
-        const pendingChangedPaths = Array.from(reloadState.changedPaths)
-        reloadState.changedPaths.clear()
-        const useTargetedReload = pendingChangedPaths.length > 0 && !reloadState.forceFullReload
-        const shouldNotifyExternalChange = reloadState.notifyExternalChange
-        reloadState.notifyExternalChange = false
-        reloadState.forceFullReload = false
-        if (!settings.activeVaultPath) {
-          if (generation === reloadState.generation) applySnapshotState(EMPTY_SNAPSHOT)
-          continue
-        }
-
-        try {
-          const nextSnapshot = useTargetedReload
-            ? await loadTaskManagerSnapshotForChangedPaths(
-              settings.activeVaultPath,
-              snapshotRef.current,
-              pendingChangedPaths,
-            )
-            : await loadTaskManagerSnapshot(settings.activeVaultPath)
-          if (generation === reloadState.generation) {
-            if (
-              shouldNotifyExternalChange
-              && !window.__NOTIA_PUBLISHED_TASK_MANAGER__
-              && !areTaskManagerSnapshotsEqual(snapshotRef.current, nextSnapshot)
-            ) {
-              try {
-                const publicationCursor = await notifyTaskManagerPublicationChanged(
-                  settings.activeVaultPath,
-                  loadTaskManagerSettings(),
-                  resolveTaskManagerSnapshotChangedPaths(snapshotRef.current, nextSnapshot),
-                  mutationContext,
-                )
-                setPublicationCursor(publicationCursor)
-              } catch (publicationError) {
-                console.warn('[task-manager] external change publication notification failed', publicationError)
-              }
-            }
-            applySnapshotState(nextSnapshot)
-          } else {
-            reloadState.forceFullReload = true
-            reloadState.notifyExternalChange ||= shouldNotifyExternalChange
+    await drainTaskManagerReloadQueue(reloadState, () => (
+      // Accumulate watcher events before entering the FIFO so one read can
+      // cover a burst without allowing reloads to race a mutation.
+      enqueueTaskManagerMutation(async (mutationContext) => {
+        while (reloadState.pending) {
+          reloadState.pending = false
+          const generation = reloadState.generation
+          const pendingChangedPaths = Array.from(reloadState.changedPaths)
+          reloadState.changedPaths.clear()
+          const useTargetedReload = pendingChangedPaths.length > 0 && !reloadState.forceFullReload
+          const shouldNotifyExternalChange = reloadState.notifyExternalChange
+          reloadState.notifyExternalChange = false
+          reloadState.forceFullReload = false
+          if (!settings.activeVaultPath) {
+            if (generation === reloadState.generation) applySnapshotState(EMPTY_SNAPSHOT)
+            continue
           }
-        } catch (reloadError) {
-          console.warn('[task-manager] reload failed', reloadError)
+
+          try {
+            const nextSnapshot = useTargetedReload
+              ? await loadTaskManagerSnapshotForChangedPaths(
+                settings.activeVaultPath,
+                snapshotRef.current,
+                pendingChangedPaths,
+              )
+              : await loadTaskManagerSnapshot(settings.activeVaultPath)
+            if (generation === reloadState.generation) {
+              if (
+                shouldNotifyExternalChange
+                && !window.__NOTIA_PUBLISHED_TASK_MANAGER__
+                && !areTaskManagerSnapshotsEqual(snapshotRef.current, nextSnapshot)
+              ) {
+                try {
+                  const publicationCursor = await notifyTaskManagerPublicationChanged(
+                    settings.activeVaultPath,
+                    loadTaskManagerSettings(),
+                    resolveTaskManagerSnapshotChangedPaths(snapshotRef.current, nextSnapshot),
+                    mutationContext,
+                  )
+                  setPublicationCursor(publicationCursor)
+                } catch (publicationError) {
+                  console.warn('[task-manager] external change publication notification failed', publicationError)
+                }
+              }
+              applySnapshotState(nextSnapshot)
+              resetReloadRetry()
+            } else {
+              reloadState.forceFullReload = true
+              reloadState.notifyExternalChange ||= shouldNotifyExternalChange
+            }
+          } catch (reloadError) {
+            console.warn('[task-manager] reload failed', reloadError)
+            scheduleReloadRetry()
+          }
         }
-      }
-    })
-    const reloadPromise = reloadExecution.finally(() => {
-      if (reloadState.inFlight === reloadPromise) {
-        reloadState.inFlight = null
-      }
-    })
-    reloadState.inFlight = reloadPromise
-    await reloadPromise
-  }, [applySnapshotState, settings.activeVaultPath])
+      })
+    ))
+  }, [applySnapshotState, resetReloadRetry, scheduleReloadRetry, settings.activeVaultPath])
+
+  useEffect(() => {
+    reloadRequestRef.current = reload
+  }, [reload])
 
   useEffect(() => subscribeTaskManagerMutations((event) => {
     if (settings.activeVaultPath === event.vaultPath) {
@@ -893,7 +932,6 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
             saveTaskManagerSettings(sharedSettings, { syncPublication: false })
             return sharedSettings
           })
-          persistSharedMetadata(vaultPath, nextSettings, { enqueueMutation: true })
         }
         const changedPaths = 'changedPaths' in payload && Array.isArray(payload.changedPaths)
           ? payload.changedPaths.filter((path): path is string => typeof path === 'string')
@@ -914,7 +952,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       disposed = true
       unlisten?.()
     }
-  }, [persistSharedMetadata, settings.activeVaultPath])
+  }, [settings.activeVaultPath])
 
   const recoverPartialTaskManagerPublicationBatch = useCallback(async (
     vaultPath: string,
@@ -1336,7 +1374,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         await beginTaskManagerMutationJournal(journalPath, mutationContext.operationId, ['task-manager'])
         journalActive = true
       }
-      publicationBatchActive = await beginTaskManagerPublicationBatch()
+      publicationBatchActive = await beginTaskManagerPublicationBatch(mutationContext.operationId)
       await runner()
       if (
         (options?.syncStrategy ?? 'full') === 'full'
@@ -1389,7 +1427,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       flushPendingTaskManagerLibraryTreeChanges()
       setPublicationConflict(null)
       if (publicationBatchActive) {
-        const completedCursor = await endTaskManagerPublicationBatch()
+        const completedCursor = await endTaskManagerPublicationBatch(mutationContext.operationId)
         publicationBatchActive = false
         if (completedCursor) {
           setPublicationCursor(completedCursor)
@@ -1489,7 +1527,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     } finally {
       if (publicationBatchActive) {
         try {
-          const completedCursor = await endTaskManagerPublicationBatch()
+          const completedCursor = await endTaskManagerPublicationBatch(mutationContext.operationId)
           publicationBatchActive = false
           if (completedCursor) {
             setPublicationCursor(completedCursor)
@@ -1546,7 +1584,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     try {
       await runSync(async () => {
         if (taskDialog.mode === 'create' || !taskDialog.task) {
-          await createTask(settings.activeVaultPath as string, formData, snapshot.tasks)
+          await createTask(settings.activeVaultPath as string, formData, snapshotRef.current.tasks)
           return
         }
 
@@ -1573,7 +1611,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           ? `No se pudo guardar la tarea: ${runtimeMessage}`
           : 'No se pudo guardar la tarea.')
     }
-  }, [closeTaskDialog, runSync, settings.activeVaultPath, snapshot.tasks, taskDialog.mode, taskDialog.task, updateTaskFrontmatterCompat])
+  }, [closeTaskDialog, runSync, settings.activeVaultPath, taskDialog.mode, taskDialog.task, updateTaskFrontmatterCompat])
 
   const updateTaskState = useCallback(async (task: TaskItem, nextState: string) => {
     if (!settings.activeVaultPath) {
@@ -1582,7 +1620,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
     try {
       await runSync(async () => {
-        const existingPaths = new Set(snapshot.tasks.map((item) => item.filePath))
+        const existingPaths = new Set(snapshotRef.current.tasks.map((item) => item.filePath))
         await moveTaskByState(settings.activeVaultPath as string, task, nextState, existingPaths)
       })
     } catch (runtimeError) {
@@ -1592,7 +1630,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo cambiar el estado de la tarea: ${runtimeMessage}`
         : 'No se pudo cambiar el estado de la tarea.')
     }
-  }, [runSync, settings.activeVaultPath, snapshot.tasks])
+  }, [runSync, settings.activeVaultPath])
 
   const updateTaskPriority = useCallback(async (task: TaskItem, nextPriority: TaskPriority) => {
     if (!settings.activeVaultPath) {
@@ -2057,7 +2095,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         )),
       }
       await runSync(async () => {
-        const candidateTasks = snapshot.tasks
+        const currentTasks = snapshotRef.current.tasks
+        const candidateTasks = currentTasks
           .filter((task) => task.board === board)
           .filter((task) => task.group === groupName)
           .filter((task) => task.state !== 'Finalizada' && task.state !== 'Cancelada')
@@ -2073,7 +2112,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           return !candidateParentNames.has(parentReference)
         })
 
-        const existingPaths = new Set(snapshot.tasks.map((task) => task.filePath))
+        const existingPaths = new Set(currentTasks.map((task) => task.filePath))
         for (const task of tasksToDismiss) {
           await moveTaskByState(settings.activeVaultPath as string, task, 'Cancelada', existingPaths)
         }
@@ -2093,7 +2132,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo eliminar el grupo: ${runtimeMessage}`
         : 'No se pudo eliminar el grupo.')
     }
-  }, [closeGroupDialog, runSync, settings, snapshot.tasks, updateSettings])
+  }, [closeGroupDialog, runSync, settings, updateSettings])
 
   const reorderGroupsInBoard = useCallback(async (board: string, orderedGroupNames: string[]) => {
     const normalizedBoard = board.trim().toLowerCase() || DEFAULT_BOARD_NAME
@@ -2161,14 +2200,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       return
     }
 
-    const sanitizedUpdates = updates
-      .map((update) => ({
-        taskPath: update.taskPath,
-        order: Number.isFinite(update.order) ? update.order : 999999,
-        group: typeof update.group === 'string' ? update.group : undefined,
-        parentTaskName: typeof update.parentTaskName === 'string' ? update.parentTaskName : undefined,
-      }))
-      .filter((update) => update.taskPath.trim().length > 0)
+    const sanitizedUpdates = normalizeTaskArrangementUpdates(updates)
 
     if (sanitizedUpdates.length === 0) {
       return
@@ -2176,12 +2208,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
     try {
       await runSync(async () => {
-        for (const update of sanitizedUpdates) {
+        const changedUpdates = selectChangedTaskArrangementUpdates(snapshotRef.current.tasks, sanitizedUpdates)
+        for (const update of changedUpdates) {
           await updateTaskFrontmatterCompat(settings.activeVaultPath as string, update.taskPath, {
             order: update.order,
             ...(typeof update.group === 'string' ? { equipo: update.group } : {}),
-            ...(typeof update.parentTaskName === 'string'
-              ? { parent: update.parentTaskName.trim() ? `[[${update.parentTaskName.trim()}]]` : '' }
+            ...(update.parentTaskName !== undefined
+              ? { parent: update.parentTaskName ? `[[${update.parentTaskName}]]` : '' }
               : {}),
           })
         }
