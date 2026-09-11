@@ -4,17 +4,13 @@ import { NotiaButton } from '../../../components/common/NotiaButton'
 import { ChatMarkdownMessage } from '../../../components/notia/views/chat/ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
-import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
-import type { NotiaLibrary } from '../../../types/notia'
-import { runPublishedTaskManagerChatReply } from '../services/publishedTaskManagerChatRuntime'
+import { runPublishedTaskManagerChatProxy } from '../services/publishedTaskManagerChatProxyRuntime'
 
 interface PublishedTaskManagerChatProps {
-  aiPreferences: AiPreferences
-  library: NotiaLibrary
   scopePaths: string[]
 }
 
-export function PublishedTaskManagerChat({ aiPreferences, library, scopePaths }: PublishedTaskManagerChatProps) {
+export function PublishedTaskManagerChat({ scopePaths }: PublishedTaskManagerChatProps) {
   const [messages, setMessages] = useState<StoredChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -45,9 +41,7 @@ export function PublishedTaskManagerChat({ aiPreferences, library, scopePaths }:
     setExecutionPlan([])
     setIsSubmitting(true)
     try {
-      const answer = await runPublishedTaskManagerChatReply({
-        aiPreferences,
-        library,
+      const answer = await runPublishedTaskManagerChatProxy({
         scopePaths,
         prompt,
         previousMessages,

@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Bot, PanelRightClose, PanelRightOpen } from 'lucide-react'
-import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { TaskManagerChatContext, TaskManagerSettings } from '../types/taskManagerTypes'
 import { PublishedTaskManagerChat } from './PublishedTaskManagerChat'
 import { TaskManagerApp } from './TaskManagerApp'
@@ -19,18 +18,12 @@ export interface PublishedTaskManagerBootstrap {
   revision: number
   sequence: number
   settings: TaskManagerSettings
-  aiPreferences: AiPreferences
 }
 
 export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: PublishedTaskManagerBootstrap }) {
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [chatContext, setChatContext] = useState<TaskManagerChatContext | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<TaskManagerPublicationStatus | 'uninitialized'>(() => getTaskManagerPublicationStatus())
-  const library = useMemo(() => ({
-    id: `published:${bootstrapData.vaultPath}`,
-    name: 'Tableros publicados',
-    path: bootstrapData.vaultPath,
-  }), [bootstrapData.vaultPath])
   const RightPanelIcon = isChatOpen ? PanelRightClose : PanelRightOpen
   useEffect(() => subscribeTaskManagerPublicationStatus(setConnectionStatus), [])
 
@@ -51,7 +44,7 @@ export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: Pu
           <TaskManagerApp embedded vault={{ path: bootstrapData.vaultPath }} publishedBoardNames={bootstrapData.settings.boards.map((board) => board.name)} canManageBoards={false} onPublishedChatContextChange={setChatContext} />
         </div>
         <aside className={`notia-right-panel ${isChatOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`} aria-hidden={!isChatOpen}>
-          {isChatOpen ? <PublishedTaskManagerChat aiPreferences={bootstrapData.aiPreferences} library={library} scopePaths={chatContext?.filePaths ?? []} /> : null}
+          {isChatOpen ? <PublishedTaskManagerChat scopePaths={chatContext?.filePaths ?? []} /> : null}
         </aside>
       </div>
     </div>

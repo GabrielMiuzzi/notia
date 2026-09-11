@@ -43,4 +43,22 @@ describe('libraryConfig AI preferences', () => {
     expect(typeof content).toBe('string')
     expect(JSON.parse(content as string).ia).toMatchObject(aiPreferences)
   })
+
+  it('hydrates access-user hashes from the active library configuration', async () => {
+    vi.mocked(readTextFile).mockResolvedValue({
+      ok: true,
+      content: JSON.stringify({
+        version: 1,
+        taskManagerPublication: {
+          accessUsers: [{ username: 'Ana', passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash' }],
+        },
+      }),
+    })
+
+    const config = await readLibraryConfig('library')
+
+    expect(config?.taskManagerPublication?.accessUsers).toEqual([
+      { username: 'Ana', passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash' },
+    ])
+  })
 })

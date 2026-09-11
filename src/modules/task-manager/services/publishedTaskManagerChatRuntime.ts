@@ -16,7 +16,7 @@ interface PublishedTaskManagerChatInput {
   onThinkingDelta?: (delta: string) => void
 }
 
-export async function runPublishedTaskManagerChatReply(input: PublishedTaskManagerChatInput): Promise<string> {
+export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskManagerChatInput): Promise<string> {
   const agent = await createChatScopedAgent({
     scope: 'task-manager',
     publishedScope: true,

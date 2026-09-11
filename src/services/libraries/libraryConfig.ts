@@ -3,6 +3,7 @@ import { readTextFile, writeTextFile, createDirectory, pathExists } from '../fil
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { InkMathPreferences } from '../preferences/inkMathSettingsStorage'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../preferences/telegramSettingsStorage'
+import { normalizeTaskManagerPublicationPreferences, type TaskManagerPublicationAccessUser } from '../preferences/taskManagerPublicationSettingsStorage'
 
 const NOTIA_CONFIG_DIR = '.notia'
 const NOTIA_CONFIG_FILE = 'notiaConfig.json'
@@ -15,6 +16,9 @@ export interface NotiaLibraryConfig {
   inkMath?: InkMathPreferences
   ia?: AiPreferences
   telegram?: TelegramPreferences
+  taskManagerPublication?: {
+    accessUsers: TaskManagerPublicationAccessUser[]
+  }
 }
 
 interface LibraryConfigOptions {
@@ -40,6 +44,9 @@ function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
     inkMath: candidate.inkMath,
     ia: candidate.ia,
     telegram: candidate.telegram ? normalizeTelegramPreferences(candidate.telegram) : undefined,
+    taskManagerPublication: candidate.taskManagerPublication && typeof candidate.taskManagerPublication === 'object'
+      ? { accessUsers: normalizeTaskManagerPublicationPreferences({ accessUsers: candidate.taskManagerPublication.accessUsers }).accessUsers }
+      : undefined,
   }
 }
 

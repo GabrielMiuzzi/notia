@@ -47,6 +47,7 @@ import { notiaTimer } from '../../services/runtime/notiaLogger'
 import { saveAiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { useWindowsBackups } from './hooks/useWindowsBackups'
 import { useTaskManagerPublicationAutostart } from '../../modules/task-manager/hooks/useTaskManagerPublicationAutostart'
+import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manager/hooks/useTaskManagerPublicationAiHostBridge'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 
 // --- Pure helper function ---
@@ -72,12 +73,6 @@ function NotiaMenuComponent() {
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
   useWindowsBackups(activeLibrary, backupPreferences.directoryPath)
-  useTaskManagerPublicationAutostart({
-    activeLibrary,
-    preferences: taskManagerPublicationPreferences,
-    theme,
-    aiPreferences,
-  })
 
   useEffect(() => {
     const mountTimer = notiaTimer('ui', 'NotiaMenu.mount')
@@ -329,8 +324,11 @@ function NotiaMenuComponent() {
   const handleTelegramPreferencesChange = useCallback<(value: Parameters<typeof setTelegramSettings>[0]) => void>(
     (next) => dispatch(setTelegramSettings(next)), [dispatch],
   )
+  const handleTaskManagerPublicationPreferencesChange = useCallback<(value: Parameters<typeof setTaskManagerPublicationPreferences>[0]) => void>(
+    (next) => dispatch(setTaskManagerPublicationPreferences(next)), [dispatch],
+  )
 
-  useLibraryConfigSync({
+  const isLibraryConfigReady = useLibraryConfigSync({
     activeLibrary: activeLibraryForToolbar,
     aiPreferences,
     explorerRefreshIntervalMs,
@@ -340,6 +338,21 @@ function NotiaMenuComponent() {
     setInkMathPreferences: handleInkMathPreferencesChange,
     telegramPreferences,
     setTelegramPreferences: handleTelegramPreferencesChange,
+    taskManagerPublicationPreferences,
+    setTaskManagerPublicationPreferences: handleTaskManagerPublicationPreferencesChange,
+  })
+
+  useTaskManagerPublicationAutostart({
+    activeLibrary,
+    preferences: taskManagerPublicationPreferences,
+    theme,
+    aiPreferences,
+    enabled: isLibraryConfigReady,
+  })
+
+  useTaskManagerPublicationAiHostBridge({
+    activeLibrary,
+    aiPreferences,
   })
 
   useTelegramAgentBridge({

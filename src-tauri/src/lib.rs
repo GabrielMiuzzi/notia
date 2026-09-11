@@ -274,6 +274,7 @@ pub fn run() {
             start_window_dragging_with_restore,
             task_manager_publication::publish_task_manager_boards,
             task_manager_publication::hash_task_manager_publication_password,
+            task_manager_publication::publish_task_manager_ai_stream_event,
             task_manager_publication::get_task_manager_publication_url,
             task_manager_publication::get_task_manager_publication_status,
             task_manager_publication::set_task_manager_publication_recovery,

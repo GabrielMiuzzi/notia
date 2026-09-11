@@ -12,6 +12,7 @@ import {
   getDefaultOllamaApiUrl,
   getSessionAiApiKey,
   normalizeAiSettingsInput,
+  resolveAiPreferencesForTransport,
   type AiPreferences,
 } from '../../services/preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
@@ -165,7 +166,7 @@ export function SettingsModal({
   const [publicationUrl, setPublicationUrl] = useState<string | null>(null)
   const [isPublishingBoards, setIsPublishingBoards] = useState(false)
   const [publicationPasswordDraft, setPublicationPasswordDraft] = useState('')
-  const [pendingPublicationDevices, setPendingPublicationDevices] = useState<Array<{ id: string, name: string }>>([])
+  const [pendingPublicationDevices, setPendingPublicationDevices] = useState<Array<{ id: string, name: string, username: string }>>([])
   const [publicationMetrics, setPublicationMetrics] = useState<TaskManagerPublicationStatusSnapshot | null>(null)
   const [publicationTelemetrySamples, setPublicationTelemetrySamples] = useState(() => loadTaskManagerPublicationTelemetry().samples.length)
   const [financeClearStatus, setFinanceClearStatus] = useState<{
@@ -486,10 +487,11 @@ export function SettingsModal({
         activeLibrary.path,
         appTheme,
         passwordHash,
-        normalizedAiPreferences,
+        resolveAiPreferencesForTransport(normalizedAiPreferences),
         taskManagerPublicationPreferences.approvedDevices,
         taskManagerPublicationPreferences.port,
         taskManagerPublicationPreferences.maxClients,
+        taskManagerPublicationPreferences.accessUsers,
       ))
       onTaskManagerPublicationPreferencesChange({
         ...taskManagerPublicationPreferences,
@@ -1054,34 +1056,46 @@ export function SettingsModal({
               </div> : null}
               {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">Si otro equipo no puede abrirla, permití Notia en el Firewall de Windows para redes privadas.</div> : null}
               {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">La URL usa HTTPS con un certificado autofirmado: en cada equipo remoto aceptá o instalá el certificado de Notia la primera vez.</div> : null}
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivos que solicitan acceso</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Usuarios que solicitan acceso</div>
               {pendingPublicationDevices.length === 0 ? (
                 <div className="notia-settings-card-label">No hay solicitudes pendientes.</div>
               ) : pendingPublicationDevices.map((device) => (
                 <div key={device.id} className="notia-settings-actions">
-                  <span>{device.name}</span>
+                  <span>{device.name} · Usuario: {device.username}</span>
                   <NotiaButton
                     variant="secondary"
                     onClick={() => void approveTaskManagerPublicationDevice(device.id)
                       .then((approved) => {
+                        const approvedDevice = {
+                          id: approved.id,
+                          name: approved.name,
+                          username: approved.username,
+                        }
+                        const accessUsers = approved.passwordHash
+                          ? Array.from(new Map([
+                            ...taskManagerPublicationPreferences.accessUsers,
+                            { username: approved.username, passwordHash: approved.passwordHash },
+                          ].map((user) => [user.username.toLowerCase(), user])).values())
+                          : taskManagerPublicationPreferences.accessUsers
                         onTaskManagerPublicationPreferencesChange({
                           ...taskManagerPublicationPreferences,
-                          approvedDevices: [...taskManagerPublicationPreferences.approvedDevices, approved],
+                          accessUsers,
+                          approvedDevices: [...taskManagerPublicationPreferences.approvedDevices, approvedDevice],
                         })
                         setPendingPublicationDevices((current) => current.filter((item) => item.id !== approved.id))
                       })
                       .catch((error: unknown) => setPublicationStatus(error instanceof Error ? error.message : 'No se pudo autorizar el dispositivo.'))}
                   >
-                    Aceptar dispositivo
+                    Aceptar usuario
                   </NotiaButton>
                 </div>
               ))}
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivos con acceso</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">Usuarios con acceso</div>
               {taskManagerPublicationPreferences.approvedDevices.length === 0 ? (
-                <div className="notia-settings-card-label">No hay dispositivos autorizados.</div>
+                <div className="notia-settings-card-label">No hay usuarios con acceso.</div>
               ) : taskManagerPublicationPreferences.approvedDevices.map((device) => (
                 <div key={device.id} className="notia-settings-actions">
-                  <span>{device.name}</span>
+                  <span>{device.name} · Usuario: {device.username}</span>
                   <NotiaButton
                     variant="secondary"
                     onClick={() => void revokeTaskManagerPublicationDevice(device.id)

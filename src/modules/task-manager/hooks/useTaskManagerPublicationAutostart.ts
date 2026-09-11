@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { NotiaLibrary } from '../../../types/notia'
 import type { TaskManagerPublicationPreferences } from '../../../services/preferences/taskManagerPublicationSettingsStorage'
-import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
+import { resolveAiPreferencesForTransport, type AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import { loadTaskManagerSettings } from '../services/taskManagerStorage'
 import { loadTaskManagerSnapshot } from '../services/taskManagerService'
@@ -12,6 +12,7 @@ interface UseTaskManagerPublicationAutostartInput {
   preferences: TaskManagerPublicationPreferences
   theme: 'dark' | 'light'
   aiPreferences: AiPreferences
+  enabled: boolean
 }
 
 function hasPublishedBoard(availableBoardNames: string[], configuredBoardNames: string[]): boolean {
@@ -24,11 +25,12 @@ export function useTaskManagerPublicationAutostart({
   preferences,
   theme,
   aiPreferences,
+  enabled,
 }: UseTaskManagerPublicationAutostartInput): void {
   const hasEvaluatedStartup = useRef(false)
 
   useEffect(() => {
-    if (hasEvaluatedStartup.current || !activeLibrary?.path) return
+    if (!enabled || hasEvaluatedStartup.current || !activeLibrary?.path) return
     hasEvaluatedStartup.current = true
     const passwordHash = preferences.passwordHash
 
@@ -52,13 +54,14 @@ export function useTaskManagerPublicationAutostart({
         activeLibrary.path,
         theme,
         passwordHash,
-        aiPreferences,
+        resolveAiPreferencesForTransport(aiPreferences),
         preferences.approvedDevices,
         preferences.port,
         preferences.maxClients,
+        preferences.accessUsers,
       )))
       .catch((error: unknown) => {
         console.error('No se pudo restaurar la publicación de Task Manager.', error)
       })
-  }, [activeLibrary?.path, aiPreferences, preferences.approvedDevices, preferences.maxClients, preferences.passwordHash, preferences.port, preferences.publishedBoardNames, theme])
+  }, [activeLibrary?.path, aiPreferences, enabled, preferences.accessUsers, preferences.approvedDevices, preferences.maxClients, preferences.passwordHash, preferences.port, preferences.publishedBoardNames, theme])
 }

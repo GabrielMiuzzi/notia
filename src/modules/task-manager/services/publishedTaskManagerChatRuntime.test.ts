@@ -12,7 +12,7 @@ vi.mock('../../../services/chat/notiaChatRuntime', () => ({
   runNotiaChatReply: mocks.runNotiaChatReply,
 }))
 
-import { runPublishedTaskManagerChatReply } from './publishedTaskManagerChatRuntime'
+import { runPublishedTaskManagerHostChatReply } from './publishedTaskManagerChatRuntime'
 
 describe('runPublishedTaskManagerChatReply', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -27,7 +27,7 @@ describe('runPublishedTaskManagerChatReply', () => {
       thinkingEnabled: true, thinkingLevel: 'medium' as const,
     }
 
-    await expect(runPublishedTaskManagerChatReply({
+    await expect(runPublishedTaskManagerHostChatReply({
       aiPreferences,
       library: { id: 'published', name: 'Publicada', path: 'C:/Vault' },
       scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],

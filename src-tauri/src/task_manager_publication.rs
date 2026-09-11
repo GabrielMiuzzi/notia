@@ -56,6 +56,8 @@ const PUBLICATION_LATENCY_BUCKETS_MS: [u64; 6] = [50, 100, 250, 500, 1_000, 5_00
 const PASSWORD_HASH_ITERATIONS: u32 = 210_000;
 const TASK_MANAGER_PUBLICATION_PATH: &str = "/task-manager";
 const PUBLISHED_VAULT_ALIAS: &str = "published-vault";
+#[cfg(target_os = "windows")]
+const PUBLISHED_AI_HOST_REQUEST_EVENT: &str = "notia-task-manager-publication-ai-request";
 const DEFAULT_PUBLICATION_CLIENT_LIMIT: usize = 64;
 #[cfg(target_os = "windows")]
 const TASK_MANAGER_SHARED_METADATA_FILE: &str = ".notia-task-manager.json";
@@ -113,6 +115,8 @@ pub struct TaskManagerPublicationPayload {
     password_hash: String,
     #[serde(rename = "approvedDevices", default)]
     approved_devices: Vec<PublishedDevice>,
+    #[serde(rename = "accessUsers", default)]
+    access_users: Vec<PublishedAccessUser>,
     #[serde(rename = "maxClients", default = "default_publication_client_limit")]
     max_clients: usize,
     #[serde(rename = "taskRootAtVault", default)]
@@ -143,11 +147,19 @@ struct PublishedAiPreferences {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublishedAiStreamRequest {
-    model: String,
+    prompt: String,
     #[serde(default)]
-    think: Value,
+    previous_messages: Vec<PublishedAiChatMessage>,
     #[serde(default)]
-    messages: Vec<crate::services::ai_service::AiChatMessage>,
+    scope_paths: Vec<String>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PublishedAiChatMessage {
+    role: String,
+    content: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -319,6 +331,32 @@ enum PublicationSettingsMutationShape {
 pub struct PublishedDevice {
     id: String,
     name: String,
+    #[serde(default)]
+    username: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedAccessUser {
+    username: String,
+    password_hash: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPublishedDevice {
+    name: String,
+    username: String,
+    password_hash: String,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovedPublishedDevice {
+    id: String,
+    name: String,
+    username: String,
+    password_hash: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -475,7 +513,9 @@ struct PublicationRuntime {
     server_started: bool,
     authenticated_sessions: HashMap<String, String>,
     approved_devices: HashSet<String>,
-    pending_devices: HashMap<String, String>,
+    approved_device_users: HashMap<String, String>,
+    access_users: HashMap<String, String>,
+    pending_devices: HashMap<String, PendingPublishedDevice>,
     #[cfg(target_os = "windows")]
     publication_epoch: String,
     #[cfg(target_os = "windows")]
@@ -490,6 +530,8 @@ struct PublicationRuntime {
     next_websocket_subscriber_id: u64,
     #[cfg(target_os = "windows")]
     active_ai_streams: HashMap<u64, PublicationAiStream>,
+    #[cfg(target_os = "windows")]
+    published_ai_requests: HashMap<String, mpsc::Sender<Value>>,
     #[cfg(target_os = "windows")]
     next_ai_stream_id: u64,
     #[cfg(target_os = "windows")]
@@ -526,6 +568,39 @@ pub fn hash_task_manager_publication_password(password: String) -> Result<String
     let mut salt = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut salt);
     Ok(format_password_hash(password.as_bytes(), &salt))
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn publish_task_manager_ai_stream_event(
+    state: tauri::State<'_, TaskManagerPublicationState>,
+    request_id: String,
+    event: Value,
+) -> Result<(), String> {
+    if request_id.trim().is_empty() {
+        return Err("La solicitud de IA publicada no es válida.".to_string());
+    }
+    let sender = state
+        .inner
+        .lock()
+        .map_err(|_| "No se pudo comunicar con la publicación.")?
+        .published_ai_requests
+        .get(&request_id)
+        .cloned()
+        .ok_or_else(|| "La solicitud de IA publicada ya no está disponible.".to_string())?;
+    sender
+        .send(event)
+        .map_err(|_| "El stream de IA publicado ya no está disponible.".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn publish_task_manager_ai_stream_event(
+    _state: tauri::State<'_, TaskManagerPublicationState>,
+    _request_id: String,
+    _event: Value,
+) -> Result<(), String> {
+    Err("El streaming de IA publicada solo está disponible en Windows.".to_string())
 }
 
 #[tauri::command]
@@ -589,6 +664,39 @@ pub fn publish_task_manager_boards(
                             .map(|device| device.id.clone())
                             .collect()
                     });
+            guard.approved_device_users =
+                guard
+                    .payload
+                    .as_ref()
+                    .map_or_else(HashMap::new, |publication| {
+                        publication
+                            .approved_devices
+                            .iter()
+                            .filter(|device| !device.username.trim().is_empty())
+                            .map(|device| {
+                                (
+                                    device.id.clone(),
+                                    normalize_publication_username(&device.username),
+                                )
+                            })
+                            .collect()
+                    });
+            guard.access_users = guard
+                .payload
+                .as_ref()
+                .map_or_else(HashMap::new, |publication| {
+                    publication
+                        .access_users
+                        .iter()
+                        .filter(|user| is_valid_password_hash(&user.password_hash))
+                        .map(|user| {
+                            (
+                                normalize_publication_username(&user.username),
+                                user.password_hash.clone(),
+                            )
+                        })
+                        .collect()
+                });
             guard.pending_devices.clear();
             guard.authenticated_sessions.clear();
             guard.publication_epoch = generate_session_token();
@@ -798,9 +906,10 @@ pub fn list_pending_task_manager_publication_devices(
         .map_err(|_| "No se pudo consultar los dispositivos.")?
         .pending_devices
         .iter()
-        .map(|(id, name)| PublishedDevice {
+        .map(|(id, device)| PublishedDevice {
             id: id.clone(),
-            name: name.clone(),
+            name: device.name.clone(),
+            username: device.username.clone(),
         })
         .collect())
 }
@@ -808,19 +917,29 @@ pub fn list_pending_task_manager_publication_devices(
 pub fn approve_task_manager_publication_device(
     state: tauri::State<'_, TaskManagerPublicationState>,
     device_id: String,
-) -> Result<PublishedDevice, String> {
+) -> Result<ApprovedPublishedDevice, String> {
     let mut guard = state
         .inner
         .lock()
         .map_err(|_| "No se pudo aprobar el dispositivo.")?;
-    let name = guard
+    let pending = guard
         .pending_devices
         .remove(&device_id)
         .ok_or_else(|| "El dispositivo ya no está pendiente.".to_string())?;
     guard.approved_devices.insert(device_id.clone());
-    Ok(PublishedDevice {
+    guard.approved_device_users.insert(
+        device_id.clone(),
+        normalize_publication_username(&pending.username),
+    );
+    guard.access_users.insert(
+        normalize_publication_username(&pending.username),
+        pending.password_hash.clone(),
+    );
+    Ok(ApprovedPublishedDevice {
         id: device_id,
-        name,
+        name: pending.name,
+        username: pending.username,
+        password_hash: pending.password_hash,
     })
 }
 
@@ -1564,12 +1683,8 @@ fn serve_request<S: Read + Write + Send + 'static>(
         }
         let authenticated = runtime.lock().ok().is_some_and(|guard| {
             guard.payload.is_some()
-                && request_session_token(&request).is_some_and(|session| {
-                    guard
-                        .authenticated_sessions
-                        .get(session)
-                        .is_some_and(|device_id| guard.approved_devices.contains(device_id))
-                })
+                && request_session_token(&request)
+                    .is_some_and(|session| guard.authenticated_sessions.contains_key(session))
         });
         if !authenticated {
             let _ = stream.write_all(&text_response(
@@ -1601,12 +1716,8 @@ fn serve_request<S: Read + Write + Send + 'static>(
         Some((
             guard.payload.clone()?,
             Arc::clone(guard.assets.as_ref()?),
-            request_session_token(&request).is_some_and(|session| {
-                guard
-                    .authenticated_sessions
-                    .get(session)
-                    .is_some_and(|device_id| guard.approved_devices.contains(device_id))
-            }),
+            request_session_token(&request)
+                .is_some_and(|session| guard.authenticated_sessions.contains_key(session)),
         ))
     });
     let Some((publication, assets, authenticated)) = snapshot else {
@@ -1852,13 +1963,6 @@ fn build_publication_bootstrap(
         "revision": revision,
         "sequence": sequence,
         "settings": build_publication_client_settings(publication),
-        "aiPreferences": {
-            "ollamaUrl": "https://127.0.0.1:1",
-            "apiKey": "",
-            "selectedModel": publication.ai_preferences.selected_model,
-            "thinkingEnabled": publication.ai_preferences.thinking_enabled,
-            "thinkingLevel": publication.ai_preferences.thinking_level,
-        }
     })
 }
 
@@ -1920,6 +2024,24 @@ fn validate_publication_password(password: &str) -> Result<(), String> {
         return Err("La contraseña debe tener entre 8 y 256 caracteres.".to_string());
     }
     Ok(())
+}
+
+fn validate_publication_username(username: &str) -> Result<(), String> {
+    let length = username.chars().count();
+    if !(1..=64).contains(&length) || username.trim() != username {
+        return Err("El usuario no es válido.".to_string());
+    }
+    Ok(())
+}
+
+fn normalize_publication_username(username: &str) -> String {
+    username.trim().to_lowercase()
+}
+
+fn random_salt() -> [u8; 16] {
+    let mut salt = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    salt
 }
 
 fn format_password_hash(password: &[u8], salt: &[u8]) -> String {
@@ -2043,11 +2165,13 @@ input,button{width:100%;min-height:48px;border-radius:10px;font:inherit}input{pa
 input:focus{border-color:#8be9fd;box-shadow:0 0 0 3px #8be9fd33}button{margin-top:16px;border:0;background:#bd93f9;color:#181927;font-weight:800;cursor:pointer}
 button:disabled{opacity:.65;cursor:wait}#error{min-height:20px;margin:12px 0 0;color:#ff6b7c;font-size:13px}.remember{display:flex;align-items:center;gap:9px;margin-top:14px;font-weight:500}.remember input{width:18px;min-height:18px;padding:0;accent-color:#bd93f9}
 </style></head><body><main><h1>Task Manager</h1><p>Ingresá la contraseña configurada en Notia para acceder a los tableros publicados.</p>
-<form id="login"><label>Contraseña<input id="password" type="password" minlength="8" maxlength="256" autocomplete="current-password" required autofocus></label>
+<form id="login"><label>Usuario<input id="username" type="text" minlength="1" maxlength="64" autocomplete="username" required autofocus></label>
+<label>Contraseña del usuario<input id="userPassword" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
+<label>Contraseña del tablero<input id="boardPassword" type="password" minlength="8" maxlength="256" autocomplete="current-password" required></label>
 <label class="remember"><input id="remember" type="checkbox">Recordar contraseña en este dispositivo</label>
 <button id="submit" type="submit">Acceder</button><div id="error" role="alert" aria-live="polite"></div></form></main>
 <script>
-const form=document.getElementById('login'),password=document.getElementById('password'),remember=document.getElementById('remember'),button=document.getElementById('submit'),error=document.getElementById('error');
+const form=document.getElementById('login'),username=document.getElementById('username'),userPassword=document.getElementById('userPassword'),boardPassword=document.getElementById('boardPassword'),remember=document.getElementById('remember'),button=document.getElementById('submit'),error=document.getElementById('error');
 const base=location.pathname.replace(/\/+$/,'');
 const deviceId=localStorage.getItem('notia-task-manager-device-id')||crypto.randomUUID().replaceAll('-','');localStorage.setItem('notia-task-manager-device-id',deviceId);
 const passwordDatabase='notia-task-manager-passwords',passwordKey='password',encryptionKey='encryption-key';
@@ -2060,9 +2184,10 @@ async function getEncryptionKey(database){let key=await getStoredValue(database,
 async function loadRememberedPassword(){const database=await openPasswordDatabase(),stored=await getStoredValue(database,'passwords',passwordKey);if(!stored)return null;const decrypted=await crypto.subtle.decrypt({name:'AES-GCM',iv:base64ToBytes(stored.iv)},await getEncryptionKey(database),base64ToBytes(stored.ciphertext));return new TextDecoder().decode(decrypted)}
 async function saveRememberedPassword(value){const database=await openPasswordDatabase(),iv=crypto.getRandomValues(new Uint8Array(12)),encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},await getEncryptionKey(database),new TextEncoder().encode(value));await putStoredValue(database,'passwords',passwordKey,{iv:bytesToBase64(iv),ciphertext:bytesToBase64(encrypted)})}
 async function clearRememberedPassword(){const database=await openPasswordDatabase();await deleteStoredValue(database,'passwords',passwordKey)}
-void loadRememberedPassword().then((value)=>{if(value){password.value=value;remember.checked=true}}).catch(()=>{remember.checked=false});
-form.addEventListener('submit',async(event)=>{event.preventDefault();event.stopImmediatePropagation();button.disabled=true;error.textContent='';try{const response=await fetch(base+'/login',{method:'POST',headers:{'content-type':'application/json','x-notia-device-id':deviceId},body:JSON.stringify({password:password.value})});const body=await response.json();if(!response.ok)throw new Error(body.error||'No se pudo iniciar sesion.');if(remember.checked)await saveRememberedPassword(password.value);else await clearRememberedPassword();location.assign(base+'/app');}catch(reason){error.textContent=reason instanceof Error?reason.message:'No se pudo iniciar sesion.';password.select();button.disabled=false;}},true);
-async function register(){try{const response=await fetch(base+'/device',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({deviceId,deviceName:navigator.userAgent.slice(0,80)})});const body=await response.json();if(body.approved){password.disabled=false;button.disabled=false;error.textContent='Dispositivo autorizado. Ingresá la contraseña.';return true;}password.disabled=true;button.disabled=true;error.textContent='Esperando autorización desde Notia en la PC anfitriona.';}catch{password.disabled=true;button.disabled=true;error.textContent='No se pudo confirmar la autorización con Notia.';}return false;}void (async()=>{while(!await register())await new Promise((resolve)=>setTimeout(resolve,2000));})();
+void loadRememberedPassword().then((value)=>{if(value){boardPassword.value=value;remember.checked=true}}).catch(()=>{remember.checked=false});
+let registrationStarted=false,registrationTimer=null;
+async function registerAccess(){const enteredUsername=username.value.trim(),enteredUserPassword=userPassword.value;if(!enteredUsername||enteredUserPassword.length<8)return false;try{const response=await fetch(base+'/device',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({deviceId,deviceName:navigator.userAgent.slice(0,80),username:enteredUsername,userPassword:enteredUserPassword})});const body=await response.json();return response.ok&&body.approved===true}catch{return false}}
+form.addEventListener('submit',async(event)=>{event.preventDefault();event.stopImmediatePropagation();button.disabled=true;error.textContent='';try{if(!registrationStarted){registrationStarted=true;void registerAccess();registrationTimer=window.setInterval(()=>{void registerAccess().then((approved)=>{if(approved&&registrationTimer!==null){window.clearInterval(registrationTimer);registrationTimer=null}})},2000)}const response=await fetch(base+'/login',{method:'POST',headers:{'content-type':'application/json','x-notia-device-id':deviceId},body:JSON.stringify({username:username.value.trim(),userPassword:userPassword.value,boardPassword:boardPassword.value})});const body=await response.json();if(!response.ok)throw new Error(body.error||'No se pudo iniciar sesion.');if(remember.checked)await saveRememberedPassword(boardPassword.value);else await clearRememberedPassword();location.assign(base+'/app')}catch(reason){error.textContent=reason instanceof Error?reason.message:'No se pudo iniciar sesion.';boardPassword.select();button.disabled=false}},true);
 </script></body></html>"#;
     response("200 OK", "text/html; charset=utf-8", LOGIN_HTML.as_bytes())
 }
@@ -2078,14 +2203,32 @@ fn serve_device_registration(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime
         .as_ref()
         .and_then(|value| value.get("deviceName"))
         .and_then(Value::as_str);
-    let Some((device_id, name)) = device_id.zip(name).filter(|(id, name)| {
-        id.len() >= 16
-            && id.len() <= 128
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-            && !name.trim().is_empty()
-    }) else {
+    let username = input
+        .as_ref()
+        .and_then(|value| value.get("username"))
+        .and_then(Value::as_str);
+    let user_password = input
+        .as_ref()
+        .and_then(|value| value.get("userPassword"))
+        .and_then(Value::as_str);
+    let Some((device_id, name, username, user_password)) = device_id
+        .zip(name)
+        .zip(username)
+        .zip(user_password)
+        .map(|(((device_id, name), username), user_password)| {
+            (device_id, name, username, user_password)
+        })
+        .filter(|(id, name, username, user_password)| {
+            id.len() >= 16
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                && !name.trim().is_empty()
+                && validate_publication_username(username).is_ok()
+                && validate_publication_password(user_password).is_ok()
+        })
+    else {
         return json_error("Dispositivo inválido.");
     };
     if !allow_publication_rate(
@@ -2098,9 +2241,26 @@ fn serve_device_registration(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime
             "Demasiadas solicitudes de registro para este dispositivo.",
         );
     }
+    let username = username.trim().chars().take(64).collect::<String>();
+    let username_key = normalize_publication_username(&username);
+    let password_hash = format_password_hash(user_password.as_bytes(), &random_salt());
+    let duplicate_username = runtime.lock().ok().is_some_and(|guard| {
+        (!guard.approved_devices.contains(device_id)
+            && guard.access_users.contains_key(&username_key))
+            || guard.pending_devices.iter().any(|(pending_id, pending)| {
+                pending_id != device_id
+                    && normalize_publication_username(&pending.username) == username_key
+            })
+    });
+    if duplicate_username {
+        return json_error("Ese usuario ya está registrado o tiene una solicitud pendiente.");
+    }
     let approved = runtime.lock().ok().is_some_and(|mut guard| {
         if guard.approved_devices.contains(device_id) {
-            true
+            guard
+                .approved_device_users
+                .get(device_id)
+                .is_some_and(|approved_username| approved_username == &username_key)
         } else if !guard.pending_devices.contains_key(device_id)
             && guard.pending_devices.len() >= MAX_PUBLICATION_PENDING_DEVICES
         {
@@ -2108,7 +2268,11 @@ fn serve_device_registration(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime
         } else {
             guard.pending_devices.insert(
                 device_id.to_string(),
-                name.trim().chars().take(80).collect(),
+                PendingPublishedDevice {
+                    name: name.trim().chars().take(80).collect(),
+                    username,
+                    password_hash,
+                },
             );
             false
         }
@@ -2134,20 +2298,10 @@ fn serve_login(
     runtime: &Arc<Mutex<PublicationRuntime>>,
     publication_path: &str,
 ) -> Vec<u8> {
-    let Some(device_id) = device_id.filter(|id| {
-        runtime
-            .lock()
-            .ok()
-            .is_some_and(|guard| guard.approved_devices.contains(id))
-    }) else {
-        return json_response(
-            "403 Forbidden",
-            serde_json::json!({ "error": "Esperá la autorización del dispositivo desde Notia." }),
-        );
-    };
+    let session_device_id = device_id.unwrap_or_else(generate_session_token);
     if !allow_publication_rate(
         runtime,
-        format!("login:{device_id}"),
+        format!("login:{session_device_id}"),
         10,
         Duration::from_secs(60),
     ) {
@@ -2155,25 +2309,43 @@ fn serve_login(
             "Demasiados intentos de inicio de sesión. Esperá antes de volver a intentar.",
         );
     }
-    let password = serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("password")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-    let Some(password) = password else {
-        return json_error("Ingresá la contraseña.");
+    let Some(input) = serde_json::from_slice::<Value>(body).ok() else {
+        return json_error("IngresÃ¡ las credenciales.");
     };
-    if validate_publication_password(&password).is_err() {
-        return json_error("Contraseña incorrecta.");
+    let username = input
+        .get("username")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let user_password = input
+        .get("userPassword")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let board_password = input
+        .get("boardPassword")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let Some((username, user_password, board_password)) =
+        username.zip(user_password).zip(board_password).map(
+            |((username, user_password), board_password)| (username, user_password, board_password),
+        )
+    else {
+        return json_error("IngresÃƒÂ¡ usuario y las dos contraseÃ±as.");
+    };
+    if validate_publication_username(&username).is_err()
+        || validate_publication_password(&user_password).is_err()
+        || validate_publication_password(&board_password).is_err()
+    {
+        return json_error("Credenciales incorrectas.");
     }
-    let verified = password_matches_hash(password.as_bytes(), expected_hash);
-    if !verified {
-        return json_error("Contraseña incorrecta.");
+    let username_key = normalize_publication_username(&username);
+    let credentials_match = runtime.lock().ok().is_some_and(|guard| {
+        let user_hash = guard.access_users.get(&username_key);
+        user_hash.is_some_and(|hash| password_matches_hash(user_password.as_bytes(), hash))
+    });
+    let board_password_matches = password_matches_hash(board_password.as_bytes(), expected_hash);
+    if !credentials_match || !board_password_matches {
+        return json_error("Credenciales incorrectas.");
     }
-
     let at_capacity = runtime.lock().ok().is_some_and(|guard| {
         guard.payload.as_ref().is_some_and(|publication| {
             guard.authenticated_sessions.len() >= publication_client_limit(publication)
@@ -2204,12 +2376,9 @@ fn serve_login(
         }) {
             return false;
         }
-        if !guard.approved_devices.contains(&device_id) {
-            return false;
-        }
         guard
             .authenticated_sessions
-            .insert(session.clone(), device_id);
+            .insert(session.clone(), session_device_id);
         true
     });
     if !inserted {
@@ -2285,16 +2454,6 @@ fn serve_invoke(
             }),
         );
     }
-    if let Some(command) = request.get("command").and_then(Value::as_str) {
-        let payload = request
-            .get("args")
-            .and_then(|args| args.get("payload"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        if let Some(response) = serve_publication_ai_command(command, &payload, &publication) {
-            return response;
-        }
-    }
     let command_name = request
         .get("command")
         .and_then(Value::as_str)
@@ -2310,10 +2469,7 @@ fn serve_invoke(
         };
         let current_publication = runtime.lock().ok().and_then(|guard| {
             let session_id = session_id?;
-            let device_id = guard.authenticated_sessions.get(session_id)?;
-            if !guard.approved_devices.contains(device_id) {
-                return None;
-            }
+            guard.authenticated_sessions.get(session_id)?;
             guard.payload.clone()
         });
         let Some(current_publication) = current_publication else {
@@ -2347,10 +2503,7 @@ fn current_authenticated_publication(
     session_id: &str,
 ) -> Option<TaskManagerPublicationPayload> {
     runtime.lock().ok().and_then(|guard| {
-        let device_id = guard.authenticated_sessions.get(session_id)?;
-        if !guard.approved_devices.contains(device_id) {
-            return None;
-        }
+        guard.authenticated_sessions.get(session_id)?;
         guard.payload.clone()
     })
 }
@@ -3186,8 +3339,8 @@ fn register_websocket_subscriber(
     let Some(device_id) = guard.authenticated_sessions.get(session_id).cloned() else {
         return Err("La sesión ya no está autorizada.".to_string());
     };
-    if !guard.approved_devices.contains(&device_id) || guard.payload.is_none() {
-        return Err("El dispositivo ya no tiene acceso.".to_string());
+    if guard.payload.is_none() {
+        return Err("La publicación ya no está disponible.".to_string());
     }
     let websocket_limit = guard
         .payload
@@ -3684,12 +3837,10 @@ where
             }
         };
         let publication = runtime.lock().ok().and_then(|guard| guard.payload.clone());
-        let authorized = runtime.lock().ok().is_some_and(|guard| {
-            guard
-                .authenticated_sessions
-                .get(session_id)
-                .is_some_and(|device_id| guard.approved_devices.contains(device_id))
-        });
+        let authorized = runtime
+            .lock()
+            .ok()
+            .is_some_and(|guard| guard.authenticated_sessions.contains_key(session_id));
         if !authorized || publication.is_none() {
             return false;
         }
@@ -4299,6 +4450,7 @@ fn close_publication_websocket_subscribers(
     clear_sessions: bool,
 ) {
     cancel_all_publication_ai_streams(guard);
+    cancel_published_ai_host_requests(guard);
     let payload = serde_json::json!({
         "type": message_type,
         "protocolVersion": PUBLICATION_PROTOCOL_VERSION,
@@ -4326,7 +4478,7 @@ fn register_publication_ai_stream(
 ) -> Option<(u64, Arc<AtomicBool>)> {
     let mut guard = runtime.lock().ok()?;
     let device_id = guard.authenticated_sessions.get(session_id)?.clone();
-    if !guard.approved_devices.contains(&device_id) || guard.payload.is_none() {
+    if guard.payload.is_none() {
         return None;
     }
     let stream_id = guard.next_ai_stream_id;
@@ -4350,69 +4502,76 @@ fn unregister_publication_ai_stream(runtime: &Arc<Mutex<PublicationRuntime>>, st
 }
 
 #[cfg(target_os = "windows")]
-fn serve_publication_ai_command(
-    command: &str,
-    payload: &Value,
-    publication: &TaskManagerPublicationPayload,
-) -> Option<Vec<u8>> {
-    let settings = crate::services::ai_service::AiHttpSettings {
-        ollama_url: publication.ai_preferences.ollama_url.clone(),
-        api_key: publication.ai_preferences.api_key.clone(),
-    };
-    match command {
-        "list_desktop_ai_models" => Some(
-            match tauri::async_runtime::block_on(crate::services::ai_service::list_ollama_models(
-                &settings,
-            )) {
-                Ok(result) => json_response("200 OK", serde_json::json!({ "result": result })),
-                Err(_) => json_error("No se pudo consultar los modelos de IA publicados."),
-            },
-        ),
-        "run_desktop_ai_tool_chat" => {
-            let messages = payload.get("messages").cloned().unwrap_or(Value::Null);
-            let tools = payload.get("tools").cloned().unwrap_or(Value::Null);
-            let think = payload.get("think").cloned().unwrap_or(Value::Bool(false));
-            let requested_model = payload
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let model = if publication.ai_preferences.selected_model.trim().is_empty() {
-                requested_model
-            } else {
-                publication.ai_preferences.selected_model.as_str()
-            };
-            let timeout_seconds = payload
-                .get("timeoutSeconds")
-                .and_then(Value::as_u64)
-                .unwrap_or(600);
-            if !(1..=600).contains(&timeout_seconds) {
-                return Some(json_error("El tiempo de espera de IA no es válido."));
-            }
-            Some(
-                match tauri::async_runtime::block_on(
-                    crate::services::ai_service::run_ollama_tool_chat(
-                        &settings,
-                        model,
-                        &messages,
-                        &tools,
-                        &think,
-                        timeout_seconds,
-                    ),
-                ) {
-                    Ok(result) => json_response("200 OK", serde_json::json!({ "result": result })),
-                    Err(_) => json_error("No se pudo ejecutar la operación de IA publicada."),
-                },
-            )
+fn register_published_ai_host_request(
+    runtime: &Arc<Mutex<PublicationRuntime>>,
+    request_id: &str,
+    request: &PublishedAiStreamRequest,
+    session_id: &str,
+) -> Result<mpsc::Receiver<Value>, String> {
+    let (sender, receiver) = mpsc::channel();
+    let (app_handle, vault_path) = {
+        let mut guard = runtime
+            .lock()
+            .map_err(|_| "No se pudo iniciar el chat de IA publicado.".to_string())?;
+        if !guard.authenticated_sessions.contains_key(session_id) {
+            return Err("La sesión publicada ya no está autorizada.".to_string());
         }
-        _ => None,
+        let app_handle = guard
+            .app_handle
+            .clone()
+            .ok_or_else(|| "La app host no está disponible.".to_string())?;
+        let vault_path = guard
+            .payload
+            .as_ref()
+            .map(|publication| publication.vault_path.clone())
+            .ok_or_else(|| "La publicación ya no está disponible.".to_string())?;
+        guard
+            .published_ai_requests
+            .insert(request_id.to_string(), sender);
+        (app_handle, vault_path)
+    };
+
+    let event = serde_json::json!({
+        "requestId": request_id,
+        "vaultPath": vault_path,
+        "prompt": request.prompt,
+        "previousMessages": request.previous_messages,
+        "scopePaths": request.scope_paths,
+    });
+    if let Err(error) = app_handle.emit(PUBLISHED_AI_HOST_REQUEST_EVENT, event) {
+        unregister_published_ai_host_request(runtime, request_id);
+        return Err(format!("No se pudo contactar a la app host: {error}"));
     }
+    Ok(receiver)
+}
+
+#[cfg(target_os = "windows")]
+fn unregister_published_ai_host_request(
+    runtime: &Arc<Mutex<PublicationRuntime>>,
+    request_id: &str,
+) {
+    if let Ok(mut guard) = runtime.lock() {
+        guard.published_ai_requests.remove(request_id);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn cancel_published_ai_host_requests(guard: &mut PublicationRuntime) {
+    let cancellation = serde_json::json!({
+        "type": "error",
+        "message": "La publicación ya no está disponible.",
+    });
+    for sender in guard.published_ai_requests.values() {
+        let _ = sender.send(cancellation.clone());
+    }
+    guard.published_ai_requests.clear();
 }
 
 #[cfg(target_os = "windows")]
 fn serve_publication_ai_stream<S: Write>(
     stream: &mut S,
     body: &[u8],
-    publication: &TaskManagerPublicationPayload,
+    _publication: &TaskManagerPublicationPayload,
     runtime: &Arc<Mutex<PublicationRuntime>>,
     session_id: &str,
 ) {
@@ -4431,15 +4590,6 @@ fn serve_publication_ai_stream<S: Write>(
         ));
         return;
     };
-    let model = if publication.ai_preferences.selected_model.trim().is_empty() {
-        request.model.as_str()
-    } else {
-        publication.ai_preferences.selected_model.as_str()
-    };
-    let settings = crate::services::ai_service::AiHttpSettings {
-        ollama_url: publication.ai_preferences.ollama_url.clone(),
-        api_key: publication.ai_preferences.api_key.clone(),
-    };
     let headers = concat!(
         "HTTP/1.1 200 OK\r\n",
         "Content-Type: application/x-ndjson; charset=utf-8\r\n",
@@ -4453,30 +4603,50 @@ fn serve_publication_ai_stream<S: Write>(
         return;
     }
 
+    let request_id = generate_session_token();
+    let receiver =
+        match register_published_ai_host_request(runtime, &request_id, &request, session_id) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                let event = serde_json::json!({ "type": "error", "message": error });
+                let _ = write_chunked_json_line(stream, &event);
+                let _ = stream.write_all(b"0\r\n\r\n");
+                let _ = stream.flush();
+                unregister_publication_ai_stream(runtime, stream_id);
+                return;
+            }
+        };
     let mut client_disconnected = false;
-    let result = tauri::async_runtime::block_on(
-        crate::services::ai_service::stream_ollama_chat_with_cancellation(
-            &settings,
-            model,
-            &request.messages,
-            &request.think,
-            Arc::clone(&cancellation),
-            |delta| {
-                let event = match delta {
-                    crate::services::ai_service::AiChatStreamDelta::Thinking(delta) => {
-                        serde_json::json!({ "type": "thinking", "delta": delta })
-                    }
-                    crate::services::ai_service::AiChatStreamDelta::Content(delta) => {
-                        serde_json::json!({ "type": "delta", "delta": delta })
-                    }
-                };
-                write_chunked_json_line(stream, &event).map_err(|_| {
+    let mut completed = false;
+    let mut host_error: Option<String> = None;
+    while !cancellation.load(Ordering::Acquire) {
+        match receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(event) => {
+                let event_type = event.get("type").and_then(Value::as_str);
+                if !matches!(
+                    event_type,
+                    Some("thinking" | "delta" | "plan" | "done" | "error")
+                ) {
+                    host_error = Some("La app host devolvió un evento de IA inválido.".to_string());
+                    break;
+                }
+                if write_chunked_json_line(stream, &event).is_err() {
                     client_disconnected = true;
-                    "El cliente cerró el stream de IA publicado.".to_string()
-                })
-            },
-        ),
-    );
+                    break;
+                }
+                if matches!(event_type, Some("done" | "error")) {
+                    completed = true;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                host_error = Some("La app host cerró la solicitud de IA publicada.".to_string());
+                break;
+            }
+        }
+    }
+    unregister_published_ai_host_request(runtime, &request_id);
     unregister_publication_ai_stream(runtime, stream_id);
     if cancellation.load(Ordering::Acquire) && !client_disconnected {
         if let Ok(mut guard) = runtime.lock() {
@@ -4492,14 +4662,12 @@ fn serve_publication_ai_stream<S: Write>(
         }
         return;
     }
-    let final_event = match result {
-        Ok(answer) => serde_json::json!({ "type": "done", "answer": answer }),
-        Err(_) => serde_json::json!({
-            "type": "error",
-            "message": "No se pudo completar el stream de IA publicado.",
-        }),
-    };
-    let _ = write_chunked_json_line(stream, &final_event);
+    if !completed && !client_disconnected {
+        let error = host_error
+            .unwrap_or_else(|| "La app host no respondió al chat de IA publicado.".to_string());
+        let final_event = serde_json::json!({ "type": "error", "message": error });
+        let _ = write_chunked_json_line(stream, &final_event);
+    }
     let _ = stream.write_all(b"0\r\n\r\n");
     let _ = stream.flush();
 }
@@ -5762,6 +5930,11 @@ mod tests {
             password_hash: hash_task_manager_publication_password("contraseña-segura".to_string())
                 .expect("password hash"),
             approved_devices: Vec::new(),
+            access_users: vec![PublishedAccessUser {
+                username: "usuario-prueba".to_string(),
+                password_hash: hash_task_manager_publication_password("usuario-seguro".to_string())
+                    .expect("user password hash"),
+            }],
             max_clients: DEFAULT_PUBLICATION_CLIENT_LIMIT,
             task_root_at_vault: false,
             port: 52471,
@@ -5950,11 +6123,7 @@ mod tests {
             Value::Null
         );
         assert_eq!(bootstrap["settings"]["pomodoro"]["runState"], "idle");
-        assert_eq!(bootstrap["aiPreferences"]["apiKey"], "");
-        assert_eq!(
-            bootstrap["aiPreferences"]["ollamaUrl"],
-            "https://127.0.0.1:1"
-        );
+        assert!(bootstrap.get("aiPreferences").is_none());
     }
 
     #[test]
@@ -6380,17 +6549,20 @@ mod tests {
     }
 
     #[test]
-    fn login_creates_an_http_only_session_only_for_the_correct_password() {
+    fn login_creates_an_http_only_session_for_credentials_without_device_approval() {
         let publication = publication();
         let runtime = Arc::new(Mutex::new(PublicationRuntime {
             payload: Some(publication.clone()),
-            approved_devices: HashSet::from(["device-identifier-1234".to_string()]),
+            access_users: HashMap::from([(
+                "usuario-prueba".to_string(),
+                publication.access_users[0].password_hash.clone(),
+            )]),
             ..PublicationRuntime::default()
         }));
 
         let rejected = serve_login(
-            br#"{"password":"incorrecta"}"#,
-            Some("device-identifier-1234".to_string()),
+            r#"{"username":"usuario-prueba","userPassword":"incorrecta","boardPassword":"contraseña-segura"}"#.as_bytes(),
+            Some("unapproved-device".to_string()),
             &publication.password_hash,
             &runtime,
             TASK_MANAGER_PUBLICATION_PATH,
@@ -6403,8 +6575,8 @@ mod tests {
             .is_empty());
 
         let accepted = serve_login(
-            r#"{"password":"contraseña-segura"}"#.as_bytes(),
-            Some("device-identifier-1234".to_string()),
+            r#"{"username":"usuario-prueba","userPassword":"usuario-seguro","boardPassword":"contraseña-segura"}"#.as_bytes(),
+            Some("unapproved-device".to_string()),
             &publication.password_hash,
             &runtime,
             TASK_MANAGER_PUBLICATION_PATH,
@@ -6442,11 +6614,20 @@ mod tests {
             payload: Some(publication),
             approved_devices,
             authenticated_sessions,
+            approved_device_users: HashMap::from([(
+                "device-new".to_string(),
+                "usuario-prueba".to_string(),
+            )]),
+            access_users: HashMap::from([(
+                "usuario-prueba".to_string(),
+                hash_task_manager_publication_password("usuario-seguro".to_string())
+                    .expect("user hash"),
+            )]),
             ..PublicationRuntime::default()
         }));
 
         let response = serve_login(
-            br#"{"password":"password-segura"}"#,
+            br#"{"username":"usuario-prueba","userPassword":"usuario-seguro","boardPassword":"password-segura"}"#,
             Some("device-new".to_string()),
             &password_hash,
             &runtime,
@@ -6470,6 +6651,7 @@ mod tests {
         publication.approved_devices = vec![PublishedDevice {
             id: "device-1".to_string(),
             name: "Cliente 1".to_string(),
+            username: "usuario-prueba".to_string(),
         }];
         let runtime = Arc::new(Mutex::new(PublicationRuntime {
             payload: Some(publication.clone()),
@@ -6487,15 +6669,15 @@ mod tests {
         runtime
             .lock()
             .expect("revalidation runtime")
-            .approved_devices
+            .authenticated_sessions
             .clear();
         assert!(current_authenticated_publication(&runtime, "session-1").is_none());
 
         runtime
             .lock()
             .expect("revalidation runtime")
-            .approved_devices
-            .insert("device-1".to_string());
+            .authenticated_sessions
+            .insert("session-1".to_string(), "device-1".to_string());
         runtime.lock().expect("revalidation runtime").payload = None;
         assert!(current_authenticated_publication(&runtime, "session-1").is_none());
     }
@@ -7027,7 +7209,7 @@ mod tests {
     }
 
     #[test]
-    fn http_ai_stream_registration_is_bound_to_the_authenticated_device() {
+    fn http_ai_stream_registration_requires_an_authenticated_session() {
         let runtime = Arc::new(Mutex::new(PublicationRuntime {
             payload: Some(publication()),
             approved_devices: HashSet::from(["device-approved".to_string()]),
@@ -7045,7 +7227,7 @@ mod tests {
             register_publication_ai_stream(&runtime, "session-approved")
                 .expect("approved AI stream registration");
         assert!(!cancellation.load(Ordering::Acquire));
-        assert!(register_publication_ai_stream(&runtime, "session-revoked").is_none());
+        assert!(register_publication_ai_stream(&runtime, "missing-session").is_none());
         unregister_publication_ai_stream(&runtime, stream_id);
         assert!(runtime
             .lock()

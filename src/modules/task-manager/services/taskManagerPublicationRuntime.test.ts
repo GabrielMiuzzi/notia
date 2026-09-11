@@ -52,6 +52,7 @@ describe('buildTaskManagerPublicationPayload', () => {
       theme: 'light',
       passwordHash: '$notia-pbkdf2-sha256$test',
       approvedDevices: [],
+      accessUsers: [],
       maxClients: 64,
       port: 52471,
       aiPreferences: { ollamaUrl: 'https://ollama.example', apiKey: 'secret', selectedModel: 'qwen3', thinkingEnabled: true, thinkingLevel: 'medium' },
