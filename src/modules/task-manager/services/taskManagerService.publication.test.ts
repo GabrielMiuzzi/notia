@@ -15,7 +15,7 @@ const vaultRuntime = vi.hoisted(() => ({
 
 vi.mock('./vaultRuntime', () => vaultRuntime)
 
-import { loadTaskManagerSnapshot, updateTaskFrontmatter } from './taskManagerService'
+import { loadTaskManagerSnapshot, resolveTaskManagerRuntimePath, updateTaskFrontmatter } from './taskManagerService'
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -57,5 +57,18 @@ describe('published Task Manager filesystem flow', () => {
     vaultRuntime.readMarkdownFiles.mockRejectedValue(new Error('429 Too Many Requests'))
 
     await expect(loadTaskManagerSnapshot('published-vault')).rejects.toThrow('429 Too Many Requests')
+  })
+
+  it('resolves the published task path through the opaque vault alias', async () => {
+    vi.stubGlobal('window', {
+      __NOTIA_PUBLISHED_TASK_MANAGER__: true,
+      __NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__: false,
+      __NOTIA_PUBLISHED_TASK_ROOT_FOLDER__: 'task-mannager',
+    })
+
+    await expect(resolveTaskManagerRuntimePath(
+      'published-vault',
+      'task-mannager/default/ticket.md',
+    )).resolves.toBe('published-vault/task-mannager/default/ticket.md')
   })
 })

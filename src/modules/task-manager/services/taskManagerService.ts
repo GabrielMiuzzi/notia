@@ -356,6 +356,11 @@ export async function loadTaskManagerSnapshotForChangedPaths(
   }
 }
 
+export async function resolveTaskManagerRuntimePath(vaultPath: string, taskPath: string): Promise<string> {
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
+  return runtimeRoot.toAbsolutePath(taskPath)
+}
+
 export async function createTask(vaultPath: string, formData: TaskFormData, tasks: TaskItem[]): Promise<string> {
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
@@ -407,9 +412,7 @@ export async function updateTaskFrontmatter(
   updates: Record<string, unknown>,
   options?: { baseContent?: string },
 ): Promise<void> {
-  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
-
-  const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
+  const absolutePath = await resolveTaskManagerRuntimePath(vaultPath, taskPath)
   const snapshotRevision = options?.baseContent !== undefined
     && typeof window !== 'undefined'
     && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
@@ -941,9 +944,7 @@ export function buildTaskEditPayload(
 }
 
 export async function updateTaskBody(vaultPath: string, taskPath: string, contentUpdater: (content: string) => string): Promise<void> {
-  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
-
-  const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
+  const absolutePath = await resolveTaskManagerRuntimePath(vaultPath, taskPath)
   const readResult = await readFileContent(absolutePath)
   if (!readResult.ok) {
     throw new Error(readResult.error || 'No se pudo leer la tarea.')

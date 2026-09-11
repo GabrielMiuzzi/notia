@@ -5230,6 +5230,29 @@ fn internalize_publication_path(path: &str, publication: &TaskManagerPublication
             &normalized_path[alias_with_separator.len()..]
         );
     }
+
+    // Task Manager keeps logical paths relative to its workspace in the
+    // browser snapshot. Accept that representation at the publication
+    // boundary too, while the authorization layer still restricts the
+    // resulting absolute path to the published boards.
+    if !std::path::Path::new(&normalized_path).is_absolute() {
+        let vault = publication.vault_path.trim_end_matches(['/', '\\']);
+        let normalized = normalized_path.trim_matches('/');
+        if publication.task_root_at_vault {
+            let root_folder = std::path::Path::new(vault)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("task-mannager");
+            let root_prefix = format!("{root_folder}/");
+            if normalized
+                .get(..root_prefix.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&root_prefix))
+            {
+                return format!("{vault}/{}", &normalized[root_prefix.len()..]);
+            }
+        }
+        return format!("{vault}/{normalized}");
+    }
     path.to_string()
 }
 
@@ -6077,6 +6100,10 @@ mod tests {
         let publication = publication();
         assert_eq!(
             internalize_publication_path("published-vault/task-mannager/equipo.md", &publication),
+            "C:/Vault/task-mannager/equipo.md"
+        );
+        assert_eq!(
+            internalize_publication_path("task-mannager/equipo.md", &publication),
             "C:/Vault/task-mannager/equipo.md"
         );
         assert_eq!(

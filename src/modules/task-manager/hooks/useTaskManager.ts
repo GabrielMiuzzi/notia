@@ -48,6 +48,7 @@ import {
   readTaskMarkdownSourceWithRevision,
   resolveTaskManagerSnapshotChangedPaths,
   resolveTaskManagerMutationJournalPath,
+  resolveTaskManagerRuntimePath,
   renameBoardWorkspace,
   setTaskManagerRuntimeRootPolicy,
   syncTaskIndexesAndMetadata,
@@ -182,6 +183,17 @@ const EMPTY_SNAPSHOT: TaskManagerSnapshot = {
   documents: [],
   tasks: [],
   pomodoroEntries: [],
+}
+
+function isTransientPublishedEmptySnapshot(
+  previousSnapshot: TaskManagerSnapshot,
+  nextSnapshot: TaskManagerSnapshot,
+): boolean {
+  return typeof window !== 'undefined'
+    && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
+    && previousSnapshot.tasks.length > 0
+    && nextSnapshot.tasks.length === 0
+    && nextSnapshot.documents.length === 0
 }
 
 const AUTO_COLOR_PALETTE = ['#2e6db0', '#00b894', '#7c5ce7', '#e17055', '#fd79a8', '#d97a1e', '#4caf50', '#636e72']
@@ -485,16 +497,22 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
   ) => {
     setSettings((previousSettings) => {
       const nextSettings = updater(previousSettings)
+      const controlledVaultPath = isExternallyControlled
+        ? activeVaultRef.current?.path ?? previousSettings.activeVaultPath
+        : nextSettings.activeVaultPath
+      const resolvedSettings = isExternallyControlled
+        ? { ...nextSettings, activeVaultPath: controlledVaultPath }
+        : nextSettings
       saveTaskManagerSettings(
         isExternallyControlled
           ? {
-            ...nextSettings,
+            ...resolvedSettings,
             activeVaultPath: null,
           }
-          : nextSettings,
+          : resolvedSettings,
         { syncPublication: options?.syncPublication === true },
       )
-      return nextSettings
+      return resolvedSettings
     })
   }, [isExternallyControlled])
 
@@ -765,6 +783,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
                 pendingChangedPaths,
               )
               : await loadTaskManagerSnapshot(settings.activeVaultPath)
+            if (
+              isTransientPublishedEmptySnapshot(snapshotRef.current, nextSnapshot)
+              && reloadRetryRef.current.attempt < 3
+            ) {
+              scheduleReloadRetry()
+              continue
+            }
             if (generation === reloadState.generation) {
               if (
                 shouldNotifyExternalChange
@@ -804,12 +829,12 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
   useEffect(() => subscribeTaskManagerMutations((event) => {
     if (settings.activeVaultPath === event.vaultPath) {
-      if (!window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+      if (!window.__NOTIA_PUBLISHED_TASK_MANAGER__ && !isExternallyControlled) {
         setSettings(loadTaskManagerSettings())
       }
       void reload(event.changedPaths, { forceFullReload: event.forceFullReload === true })
     }
-  }), [reload, settings.activeVaultPath])
+  }), [isExternallyControlled, reload, settings.activeVaultPath])
 
   useEffect(() => {
     if (typeof window === 'undefined' || window.__NOTIA_PUBLISHED_TASK_MANAGER__ || !settings.activeVaultPath) {
@@ -1394,7 +1419,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       if (options?.publicationSettings) {
         await persistSharedMetadata(settings.activeVaultPath, options.publicationSettings, { throwOnError: true })
       }
-      const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
+      const loadedSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
+      const nextSnapshot = isTransientPublishedEmptySnapshot(initialSnapshot, loadedSnapshot)
+        ? initialSnapshot
+        : loadedSnapshot
       const snapshotChanged = !areTaskManagerSnapshotsEqual(initialSnapshot, nextSnapshot)
       const changedPaths = resolveTaskManagerSnapshotChangedPaths(initialSnapshot, nextSnapshot)
       if (journalPath && journalActive) {
@@ -1743,7 +1771,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
             command: 'append_task_comment',
             args: {
               payload: {
-                filePath: task.filePath,
+                filePath: await resolveTaskManagerRuntimePath(
+                  settings.activeVaultPath as string,
+                  task.filePath,
+                ),
                 comment: normalizedComment,
               },
             },
