@@ -4,6 +4,7 @@ import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { InkMathPreferences } from '../preferences/inkMathSettingsStorage'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../preferences/telegramSettingsStorage'
 import { normalizeTaskManagerPublicationPreferences, type TaskManagerPublicationAccessUser } from '../preferences/taskManagerPublicationSettingsStorage'
+import { DEFAULT_LIBRARY_CONTEXTS, normalizeLibraryContexts, type LibraryContext } from '../contexts/libraryContexts'
 
 const NOTIA_CONFIG_DIR = '.notia'
 const NOTIA_CONFIG_FILE = 'notiaConfig.json'
@@ -19,6 +20,7 @@ export interface NotiaLibraryConfig {
   taskManagerPublication?: {
     accessUsers: TaskManagerPublicationAccessUser[]
   }
+  contexts?: LibraryContext[]
 }
 
 interface LibraryConfigOptions {
@@ -30,6 +32,7 @@ const DEFAULT_LIBRARY_CONFIG: NotiaLibraryConfig = {
   panelDesplegable: {
     refreshIntervalMs: 30000,
   },
+  contexts: DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })),
 }
 
 function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
@@ -47,6 +50,7 @@ function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
     taskManagerPublication: candidate.taskManagerPublication && typeof candidate.taskManagerPublication === 'object'
       ? { accessUsers: normalizeTaskManagerPublicationPreferences({ accessUsers: candidate.taskManagerPublication.accessUsers }).accessUsers }
       : undefined,
+    contexts: normalizeLibraryContexts(candidate.contexts),
   }
 }
 

@@ -50,6 +50,7 @@ import {
   resolveTaskManagerMutationJournalPath,
   resolveTaskManagerRuntimePath,
   renameBoardWorkspace,
+  reconcileBoardMarkdownContext,
   setTaskManagerRuntimeRootPolicy,
   syncTaskIndexesAndMetadata,
   updateTaskBody,
@@ -70,6 +71,7 @@ import {
 } from '../services/vaultRuntime'
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
+import { DEFAULT_CONTEXT_TAG, normalizeContextTag } from '../../../services/contexts/libraryContexts'
 import { readTaskManagerVaultCache, writeTaskManagerVaultCache } from '../services/taskManagerVaultCache'
 import { dispatchTaskManagerMutation, subscribeTaskManagerMutations } from '../services/taskManagerMutationEvents'
 import {
@@ -158,7 +160,7 @@ export interface UseTaskManagerResult {
   openBoardCreateDialog: () => void
   openBoardEditDialog: (board: Board) => void
   closeBoardDialog: () => void
-  submitBoardDialog: (payload: { name: string; color: string; activityHoursPerDay: number }) => Promise<void>
+  submitBoardDialog: (payload: { name: string; color: string; activityHoursPerDay: number; contexto: string }) => Promise<void>
   removeBoard: (boardName: string) => Promise<void>
   openGroupCreateDialog: () => void
   openGroupEditDialog: (group: Group) => void
@@ -564,6 +566,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           ...defaultBoard,
           ...(previousBoardsByName.get(defaultBoard.name) ?? {}),
           activityHoursPerDay: normalizeBoardActivityHours(previousBoardsByName.get(defaultBoard.name)?.activityHoursPerDay ?? defaultBoard.activityHoursPerDay),
+          contexto: previousBoardsByName.get(defaultBoard.name)?.contexto ?? defaultBoard.contexto ?? DEFAULT_CONTEXT_TAG,
         })
       }
 
@@ -583,6 +586,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           name: boardName,
           color: previousBoard?.color ?? AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
           activityHoursPerDay: normalizeBoardActivityHours(previousBoard?.activityHoursPerDay ?? 24),
+          contexto: previousBoard?.contexto ?? DEFAULT_CONTEXT_TAG,
         })
       }
 
@@ -594,6 +598,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
             name: boardName,
             color: previousBoard?.color ?? AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
             activityHoursPerDay: normalizeBoardActivityHours(previousBoard?.activityHoursPerDay ?? 24),
+            contexto: previousBoard?.contexto ?? DEFAULT_CONTEXT_TAG,
           })
         }
       }
@@ -637,6 +642,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           board.name === previousSettings.boards[index]?.name
           && board.color === previousSettings.boards[index]?.color
           && board.activityHoursPerDay === previousSettings.boards[index]?.activityHoursPerDay
+          && board.contexto === previousSettings.boards[index]?.contexto
         ))
       const sameGroups = nextGroups.length === previousSettings.groups.length
         && nextGroups.every((group, index) => (
@@ -1612,7 +1618,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     try {
       await runSync(async () => {
         if (taskDialog.mode === 'create' || !taskDialog.task) {
-          await createTask(settings.activeVaultPath as string, formData, snapshotRef.current.tasks)
+          const boardContext = settings.boards.find((board) => board.name === formData.board)?.contexto ?? DEFAULT_CONTEXT_TAG
+          await createTask(settings.activeVaultPath as string, { ...formData, contexto: boardContext }, snapshotRef.current.tasks)
           return
         }
 
@@ -1626,6 +1633,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           prioridad: formData.priority,
           estimacion: formData.estimatedHours,
           parent: formData.parentTaskName ? `[[${formData.parentTaskName}]]` : '',
+          contexto: settings.boards.find((board) => board.name === formData.board)?.contexto ?? DEFAULT_CONTEXT_TAG,
         })
       })
       closeTaskDialog()
@@ -1639,7 +1647,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           ? `No se pudo guardar la tarea: ${runtimeMessage}`
           : 'No se pudo guardar la tarea.')
     }
-  }, [closeTaskDialog, runSync, settings.activeVaultPath, taskDialog.mode, taskDialog.task, updateTaskFrontmatterCompat])
+  }, [closeTaskDialog, runSync, settings.activeVaultPath, settings.boards, taskDialog.mode, taskDialog.task, updateTaskFrontmatterCompat])
 
   const updateTaskState = useCallback(async (task: TaskItem, nextState: string) => {
     if (!settings.activeVaultPath) {
@@ -1845,7 +1853,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     setBoardDialog({ open: false, mode: 'create', board: null })
   }, [])
 
-  const submitBoardDialog = useCallback(async (payload: { name: string; color: string; activityHoursPerDay: number }) => {
+  const submitBoardDialog = useCallback(async (payload: { name: string; color: string; activityHoursPerDay: number; contexto: string }) => {
     const normalizedName = sanitizeFilename(payload.name).toLowerCase()
     if (!normalizedName) {
       setError('El tablero necesita un nombre válido.')
@@ -1854,6 +1862,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
     const normalizedColor = payload.color || '#2e6db0'
     const normalizedActivityHoursPerDay = normalizeBoardActivityHours(payload.activityHoursPerDay)
+    const normalizedContexto = normalizeContextTag(payload.contexto) ?? DEFAULT_CONTEXT_TAG
 
     try {
       if (!settings.activeVaultPath) {
@@ -1870,6 +1879,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           name: normalizedName,
           color: normalizedColor,
           activityHoursPerDay: normalizedActivityHoursPerDay,
+          contexto: normalizedContexto,
         }]
         const nextPublicationSettings = {
           ...settings,
@@ -1878,12 +1888,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         }
         await runSync(async () => {
           await ensureBoardWorkspace(settings.activeVaultPath as string, normalizedName)
-          updateSettings((previousSettings) => ({
-            ...previousSettings,
-            boards: nextBoards,
-            activeTab: normalizedName,
-          }))
+          await reconcileBoardMarkdownContext(settings.activeVaultPath as string, normalizedName, normalizedContexto)
         }, nextBoards, { publicationSettings: nextPublicationSettings })
+        updateSettings((previousSettings) => ({
+          ...previousSettings,
+          boards: nextBoards,
+          activeTab: normalizedName,
+        }))
       } else if (boardDialog.board) {
         const previousName = boardDialog.board.name
 
@@ -1901,11 +1912,12 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
             return board
           }
 
-          return {
-            name: effectiveName,
-            color: effectiveColor,
-            activityHoursPerDay: normalizedActivityHoursPerDay,
-          }
+            return {
+              name: effectiveName,
+              color: effectiveColor,
+              activityHoursPerDay: normalizedActivityHoursPerDay,
+              contexto: normalizedContexto,
+            }
         })
         const nextGroups = settings.groups.map((group) => {
           if ((group.board ?? DEFAULT_BOARD_NAME) !== previousName) {
@@ -1928,23 +1940,14 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           if (canRenameOrRecolor && previousName !== effectiveName) {
             await renameBoardWorkspace(settings.activeVaultPath as string, previousName, effectiveName)
           }
-          updateSettings((previousSettings) => ({
-            ...previousSettings,
-            boards: previousSettings.boards.map((board) => {
-              if (board.name !== previousName) {
-                return board
-              }
-
-              return {
-                name: effectiveName,
-                color: effectiveColor,
-                activityHoursPerDay: normalizedActivityHoursPerDay,
-              }
-            }),
-            groups: nextGroups,
-            activeTab: previousSettings.activeTab === previousName ? effectiveName : previousSettings.activeTab,
-          }))
+          await reconcileBoardMarkdownContext(settings.activeVaultPath as string, effectiveName, normalizedContexto)
         }, nextBoards, { publicationSettings: nextPublicationSettings })
+        updateSettings((previousSettings) => ({
+          ...previousSettings,
+          boards: nextBoards,
+          groups: nextGroups,
+          activeTab: previousSettings.activeTab === previousName ? effectiveName : previousSettings.activeTab,
+        }))
       }
       closeBoardDialog()
     } catch (runtimeError) {

@@ -3,9 +3,16 @@ import { resolveFileViewKind } from '../../services/views/fileViewResolver'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 import type { LibraryGraphEdge, LibraryGraphModel, LibraryGraphNode } from '../../types/graph/libraryGraph'
 import { getFileExtension } from '../../utils/files/getFileExtension'
+import { getFrontmatterValue, parseFrontmatterDocument } from '../markdown/frontmatterEngine'
+import { findLibraryContext, type LibraryContext } from '../../services/contexts/libraryContexts'
 
 type MarkdownSourcesByPath = Record<string, string>
 type PathLookup = Map<string, string | null>
+
+export interface LibraryGraphContextOptions {
+  contexts?: readonly LibraryContext[]
+  boardContextsByName?: Readonly<Record<string, string>>
+}
 
 interface FileDescriptor {
   path: string
@@ -398,13 +405,40 @@ function resolveTargetPath(
   return null
 }
 
-function buildGraphNodes(fileDescriptors: FileDescriptor[]): LibraryGraphNode[] {
+function resolveNodeContext(
+  descriptor: FileDescriptor,
+  sources: MarkdownSourcesByPath,
+  options?: LibraryGraphContextOptions,
+): { contextTag?: string; contextColor?: string } {
+  if (!descriptor.isMarkdown) {
+    return {}
+  }
+
+  const boardMatch = descriptor.logicalPath.match(/(?:^|\/)(?:task-mannager|task-manager)\/([^/]+)\//i)
+  const boardContext = boardMatch
+    ? options?.boardContextsByName?.[boardMatch[1].toLowerCase()]
+    : undefined
+  const sourceContext = getFrontmatterValue(
+    parseFrontmatterDocument(sources[descriptor.path] ?? '').frontmatter,
+    'contexto',
+  )
+  const contextTag = boardContext ?? (typeof sourceContext === 'string' ? sourceContext : undefined)
+  const context = findLibraryContext(options?.contexts ?? [], contextTag)
+  return context ? { contextTag: context.tag, contextColor: context.color } : {}
+}
+
+function buildGraphNodes(
+  fileDescriptors: FileDescriptor[],
+  markdownSourcesByPath: MarkdownSourcesByPath,
+  options?: LibraryGraphContextOptions,
+): LibraryGraphNode[] {
   return fileDescriptors
     .map((descriptor) => ({
       id: descriptor.path,
       path: descriptor.path,
       label: descriptor.fileNameWithoutExtension || descriptor.fileName || descriptor.label,
       degree: 0,
+      ...resolveNodeContext(descriptor, markdownSourcesByPath, options),
     }))
     .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }))
 }
@@ -467,6 +501,7 @@ export function buildLibraryGraphModel(
   _rootPath: string | null,
   markdownSourcesByPath: MarkdownSourcesByPath,
   flatFileList?: NotiaFlatFileEntry[],
+  contextOptions?: LibraryGraphContextOptions,
 ): LibraryGraphModel {
   const fileDescriptors: FileDescriptor[] = []
   if (flatFileList && flatFileList.length > 0) {
@@ -478,7 +513,7 @@ export function buildLibraryGraphModel(
     return { nodes: [], edges: [] }
   }
 
-  const graphNodes = buildGraphNodes(fileDescriptors)
+  const graphNodes = buildGraphNodes(fileDescriptors, markdownSourcesByPath, contextOptions)
   const pathLookup = buildPathLookup(fileDescriptors)
   const relativePathByNodePath = new Map(fileDescriptors.map((descriptor) => [descriptor.path, descriptor.relativePath]))
   const edgeKeySet = new Set<string>()

@@ -6,6 +6,7 @@ import { shouldUseLargeMarkdownView } from '../../../engines/markdown/markdownEd
 import { ImageView } from './ImageView'
 import { LargeMarkdownView } from './LargeMarkdownView'
 import { TextView } from './TextView'
+import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 
 const MarkdownView = lazy(async () => {
   const module = await import('./MarkdownView')
@@ -38,6 +39,7 @@ interface FileViewHostProps {
   theme: string
   markdownZoom: number
   onMarkdownZoomChange: (zoom: number) => void
+  contexts?: readonly LibraryContext[]
 }
 
 function FileViewHostComponent({
@@ -50,6 +52,7 @@ function FileViewHostComponent({
   theme,
   markdownZoom,
   onMarkdownZoomChange,
+  contexts = [],
 }: FileViewHostProps) {
   const handleMermaidSourcePersist = useCallback(async (nextSource: string) => {
     onTextSourceChange(nextSource)
@@ -93,6 +96,7 @@ function FileViewHostComponent({
           theme={theme}
           zoom={markdownZoom}
           onZoomChange={onMarkdownZoomChange}
+          contexts={contexts}
         />
       </Suspense>
     )

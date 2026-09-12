@@ -8,6 +8,7 @@ import { MAX_MARKDOWN_ZOOM, MIN_MARKDOWN_ZOOM } from './views/markdown/useMarkdo
 import { MarkdownExportModal } from './MarkdownExportModal'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
+import type { LibraryContext } from '../../services/contexts/libraryContexts'
 
 const DEFAULT_MARKDOWN_ZOOM = 1
 
@@ -20,6 +21,7 @@ interface MainViewProps {
   onSelectionChange: (selection: MarkdownSelectionContext | null) => void
   externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
+  contexts?: readonly LibraryContext[]
 }
 
 function getSaveStatusLabel(status: NotiaDocumentSaveStatus): string {
@@ -43,6 +45,7 @@ function MainViewComponent({
   onSelectionChange,
   externalSourceUpdate,
   theme,
+  contexts = [],
 }: MainViewProps) {
   const [markdownZoom, setMarkdownZoom] = useState(DEFAULT_MARKDOWN_ZOOM)
   const [isDocumentMenuOpen, setIsDocumentMenuOpen] = useState(false)
@@ -195,6 +198,7 @@ function MainViewComponent({
           theme={theme}
           markdownZoom={markdownZoom}
           onMarkdownZoomChange={setMarkdownZoom}
+          contexts={contexts}
         />
       </section>
       <MarkdownExportModal

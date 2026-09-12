@@ -15,6 +15,7 @@ import {
 } from '../../../engines/markdown/frontmatterEngine'
 import { WikiLinkPropertyInput } from './markdown/WikiLinkPropertyInput'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
+import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 
 const PROTECTED_PROPERTY_KEYS = new Set([
   'createdat',
@@ -30,6 +31,8 @@ interface MarkdownPropertiesPanelProps {
   onEditProperty: (key: string, value: FrontmatterValue) => void
   onDeleteProperty: (key: string) => void
   onOpenLinkedFile: (filePath: string) => void
+  contexts?: readonly LibraryContext[]
+  lockedContextTag?: string
 }
 
 function getPropertyIcon(value: FrontmatterValue, key: string) {
@@ -171,6 +174,8 @@ export function MarkdownPropertiesPanel({
   onEditProperty,
   onDeleteProperty,
   onOpenLinkedFile,
+  contexts = [],
+  lockedContextTag,
 }: MarkdownPropertiesPanelProps) {
   const [isAddingProperty, setIsAddingProperty] = useState(false)
   const [keyInput, setKeyInput] = useState('')
@@ -240,7 +245,13 @@ export function MarkdownPropertiesPanel({
               <div className="notia-properties-value">
                 {editingKey === entry.key ? (
                   <div className="notia-properties-edit-form">
-                    {entry.key.toLowerCase() === 'nextpage' || entry.key.toLowerCase() === 'previouspage' ? (
+                    {entry.key.toLowerCase() === 'contexto' && lockedContextTag ? (
+                      <span>{lockedContextTag} (tablero)</span>
+                    ) : entry.key.toLowerCase() === 'contexto' && contexts.length > 0 ? (
+                      <select className="notia-properties-input" value={editValueInput} onChange={(event) => setEditValueInput(event.target.value)} autoFocus>
+                        {contexts.map((context) => <option key={context.tag} value={context.tag}>{context.tag}</option>)}
+                      </select>
+                    ) : entry.key.toLowerCase() === 'nextpage' || entry.key.toLowerCase() === 'previouspage' ? (
                       <WikiLinkPropertyInput
                         value={editValueInput}
                         targets={wikiLinkTargets}
@@ -261,24 +272,27 @@ export function MarkdownPropertiesPanel({
                         autoFocus
                       />
                     )}
-                    <NotiaButton onClick={submitEditProperty}>Save</NotiaButton>
+                    <NotiaButton onClick={submitEditProperty} disabled={entry.key.toLowerCase() === 'contexto' && Boolean(lockedContextTag)}>Save</NotiaButton>
                     <NotiaButton variant="secondary" onClick={cancelEditProperty}>Cancel</NotiaButton>
                   </div>
                 ) : (
                   <div
                     className="notia-properties-value-display"
-                    onClick={() => startEditProperty(entry)}
+                    onClick={() => {
+                      if (entry.key.toLowerCase() === 'contexto' && lockedContextTag) return
+                      startEditProperty(entry)
+                    }}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') startEditProperty(entry)
+                      if ((event.key === 'Enter' || event.key === ' ') && !(entry.key.toLowerCase() === 'contexto' && lockedContextTag)) startEditProperty(entry)
                     }}
                   >
                     {renderPropertyValue(entry, wikiLinkLookup, onOpenLinkedFile)}
                   </div>
                 )}
               </div>
-              {!PROTECTED_PROPERTY_KEYS.has(entry.key.toLowerCase()) ? (
+              {!PROTECTED_PROPERTY_KEYS.has(entry.key.toLowerCase()) && !(entry.key.toLowerCase() === 'contexto' && lockedContextTag) ? (
                 <NotiaButton
                   variant="ghost"
                   className="notia-properties-delete-button"

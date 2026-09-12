@@ -4,6 +4,7 @@ export interface Board {
   name: string
   color: string
   activityHoursPerDay: number
+  contexto?: string
 }
 
 export interface Group {
@@ -23,6 +24,7 @@ export interface TaskFrontmatter {
   fechaFin?: string
   fechaFinDinamica?: boolean | string
   tablero?: string
+  contexto?: string
   equipo?: string
   prioridad?: string
   dedicado?: number | string
@@ -69,6 +71,7 @@ export interface TaskFormData {
   priority: TaskPriority | ''
   estimatedHours: number
   parentTaskName: string
+  contexto?: string
 }
 
 export type PomodoroPhase = 'work' | 'short-break' | 'long-break'

@@ -29,6 +29,11 @@ import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesyste
 import { getBaseName, getBasenameWithoutExtension, getParentDirectory, toAbsoluteVaultPath, toRelativeVaultPath } from '../utils/path'
 import { createMarkdownFile, deleteEntry, directoryExists, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, taskManagerPathExists, writeFileContent } from './vaultRuntime'
 import { listPendingTaskManagerMutations } from './taskManagerMutationJournal'
+import {
+  parseFrontmatterDocument as parseLibraryFrontmatterDocument,
+  serializeFrontmatterDocument as serializeLibraryFrontmatterDocument,
+  setFrontmatterValue as setLibraryFrontmatterValue,
+} from '../../../engines/markdown/frontmatterEngine'
 
 const ALTERNATE_TASKS_ROOT_FOLDER = 'task-manager'
 const forcedTasksRootInsideVaultPaths = new Set<string>()
@@ -736,6 +741,34 @@ async function ensureFile(runtimeRoot: TaskWorkspaceRuntimeRoot, relativePath: s
     throw new Error(writeResult.error || `No se pudo escribir ${relativePath}`)
   }
   return content
+}
+
+/** Makes the board context authoritative for every Markdown file below its workspace. */
+export async function reconcileBoardMarkdownContext(
+  vaultPath: string,
+  boardName: string,
+  contexto: string,
+): Promise<void> {
+  const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
+  const boardPath = runtimeRoot.toAbsolutePath(getBoardFolder(normalizeBoardName(boardName)))
+  const documents = await readMarkdownFiles(boardPath)
+  for (const document of documents) {
+    const parsed = parseLibraryFrontmatterDocument(document.content)
+    const currentContext = parsed.frontmatter.find((entry) => entry.key.toLowerCase() === 'contexto')?.value
+    if (currentContext === contexto) {
+      continue
+    }
+
+    const nextContent = serializeLibraryFrontmatterDocument({
+      hasFrontmatter: true,
+      frontmatter: setLibraryFrontmatterValue(parsed.frontmatter, 'contexto', contexto),
+      body: parsed.body,
+    })
+    const writeResult = await writeFileContent(document.path, nextContent)
+    if (!writeResult.ok) {
+      throw new Error(writeResult.error || `No se pudo sincronizar el contexto de ${document.path}.`)
+    }
+  }
 }
 
 async function writeIfChanged(

@@ -58,6 +58,8 @@ import { recognizeInkMathWithAi } from '../../../services/ai/aiRuntime'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/nord.css'
 import '../../../modules/inkmath/inkmath.css'
+import type { LibraryContext } from '../../../services/contexts/libraryContexts'
+import { loadTaskManagerSettings } from '../../../modules/task-manager/services/taskManagerStorage'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -77,6 +79,7 @@ interface MarkdownViewProps {
   theme?: string
   zoom: number
   onZoomChange: (zoom: number) => void
+  contexts?: readonly LibraryContext[]
 }
 
 function clampWikiLinkMenuLeft(left: number): number {
@@ -327,9 +330,16 @@ function MarkdownViewInner({
   externalSourceUpdate,
   zoom,
   onZoomChange,
+  contexts = [],
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
+  const lockedContextTag = useMemo(() => {
+    const normalizedPath = documentPath.replace(/\\/g, '/')
+    const match = normalizedPath.match(/(?:^|\/)(?:task-mannager|task-manager)\/([^/]+)\//i)
+    if (!match) return undefined
+    return loadTaskManagerSettings().boards.find((board) => board.name.toLowerCase() === match[1].toLowerCase())?.contexto
+  }, [documentPath])
 
   const [wikiLinkMenuState, setWikiLinkMenuState] = useState<WikiLinkSuggestionMenuState | null>(null)
   const [isEditorReady, setIsEditorReady] = useState(false)
@@ -1001,6 +1011,8 @@ function MarkdownViewInner({
             onEditProperty={handleEditProperty}
             onDeleteProperty={handleDeleteProperty}
             onOpenLinkedFile={onOpenLinkedFile}
+            contexts={contexts}
+            lockedContextTag={lockedContextTag}
           />
         </div>
         <div ref={rootRef} className="notia-markdown-editor-root" />

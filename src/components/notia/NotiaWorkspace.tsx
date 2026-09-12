@@ -17,6 +17,7 @@ import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
+import type { LibraryContext } from '../../services/contexts/libraryContexts'
 
 const GraphView = lazy(async () => {
   const module = await import('./views/GraphView')
@@ -33,6 +34,7 @@ interface NotiaWorkspaceProps {
   coldPassEntries: ColdPassEntry[]
   coldPassSession: object | null
   activeTaskManagerVault: { path: string; androidTreeUri?: string } | null
+  libraryContexts: LibraryContext[]
   graphModel: LibraryGraphModel
   graphSourcesByPath: Record<string, string>
   isGraphLoading: boolean
@@ -65,6 +67,7 @@ function NotiaWorkspaceComponent({
   coldPassEntries,
   coldPassSession,
   activeTaskManagerVault,
+  libraryContexts,
   graphModel,
   graphSourcesByPath,
   isGraphLoading,
@@ -184,6 +187,7 @@ function NotiaWorkspaceComponent({
           onOpenTaskFile={handleOpenFile}
           onActivePanelChange={handleTaskManagerPanelChange}
           onActiveChatContextChange={handleTaskManagerChatContextChange}
+          contexts={libraryContexts}
         />
       </Suspense>
     )
@@ -225,6 +229,7 @@ function NotiaWorkspaceComponent({
       markdownWikiLinkTargets={markdownWikiLinkTargets}
       onOpenLinkedFile={handleOpenFileFromView}
       theme={appTheme}
+      contexts={libraryContexts}
     />
   )
 }

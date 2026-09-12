@@ -3,6 +3,8 @@ export interface LibraryGraphNode {
   path: string
   label: string
   degree: number
+  contextTag?: string
+  contextColor?: string
 }
 
 export interface LibraryGraphEdge {

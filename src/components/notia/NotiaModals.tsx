@@ -25,6 +25,7 @@ import type { TelegramPreferences } from '../../services/preferences/telegramSet
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
+import type { LibraryContext } from '../../services/contexts/libraryContexts'
 
 function getParentDirectory(filePath: string): string {
   const lastForwardSlash = filePath.lastIndexOf('/')
@@ -45,6 +46,8 @@ interface NotiaModalsProps {
   onBackupPreferencesChange: (value: BackupPreferences) => void
   taskManagerPublicationPreferences: TaskManagerPublicationPreferences
   onTaskManagerPublicationPreferencesChange: (value: TaskManagerPublicationPreferences) => void
+  contexts: LibraryContext[]
+  onContextsChange: (value: LibraryContext[]) => void
   coldPassPromptState: {
     open: boolean
     requiresConfirmation: boolean
@@ -91,6 +94,8 @@ function NotiaModalsComponent({
   onBackupPreferencesChange,
   taskManagerPublicationPreferences,
   onTaskManagerPublicationPreferencesChange,
+  contexts,
+  onContextsChange,
   coldPassPromptState,
   coldPassDeletePromptState,
   coldPassImportPromptState,
@@ -308,6 +313,8 @@ function NotiaModalsComponent({
         onBackupPreferencesChange={onBackupPreferencesChange}
         taskManagerPublicationPreferences={taskManagerPublicationPreferences}
         onTaskManagerPublicationPreferencesChange={onTaskManagerPublicationPreferencesChange}
+        contexts={contexts}
+        onContextsChange={onContextsChange}
       />
       <LibraryManagerModal
         open={isLibraryManagerOpen}

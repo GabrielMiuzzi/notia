@@ -21,6 +21,7 @@ import { selectLibraryStatus } from '../../../features/library/librarySelectors'
 import type { NotiaLibrary } from '../../../types/notia'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
 import { normalizeTaskManagerPublicationPreferences, type TaskManagerPublicationPreferences } from '../../../services/preferences/taskManagerPublicationSettingsStorage'
+import { DEFAULT_LIBRARY_CONTEXTS, normalizeLibraryContexts, type LibraryContext } from '../../../services/contexts/libraryContexts'
 
 interface UseLibraryConfigSyncParams {
   activeLibrary: NotiaLibrary | null
@@ -34,6 +35,8 @@ interface UseLibraryConfigSyncParams {
   setTelegramPreferences: (value: TelegramPreferences) => void
   taskManagerPublicationPreferences: TaskManagerPublicationPreferences
   setTaskManagerPublicationPreferences: (value: TaskManagerPublicationPreferences) => void
+  contexts: LibraryContext[]
+  setContexts: (value: LibraryContext[]) => void
 }
 
 export function useLibraryConfigSync({
@@ -48,6 +51,8 @@ export function useLibraryConfigSync({
   setTelegramPreferences,
   taskManagerPublicationPreferences,
   setTaskManagerPublicationPreferences,
+  contexts,
+  setContexts,
 }: UseLibraryConfigSyncParams): boolean {
   const [isLibraryConfigReady, setIsLibraryConfigReady] = useState(false)
   const libraryConfigLoadedRef = useRef(false)
@@ -60,6 +65,7 @@ export function useLibraryConfigSync({
     inkMathPreferences,
     telegramPreferences,
     taskManagerPublicationPreferences,
+    contexts,
   })
 
   // Wait until the tree is fully loaded before reading/writing config.
@@ -72,14 +78,16 @@ export function useLibraryConfigSync({
       aiPreferences,
       explorerRefreshIntervalMs,
       inkMathPreferences,
-      telegramPreferences,
-      taskManagerPublicationPreferences,
-    }
-  }, [aiPreferences, explorerRefreshIntervalMs, inkMathPreferences, taskManagerPublicationPreferences, telegramPreferences])
+    telegramPreferences,
+    taskManagerPublicationPreferences,
+    contexts,
+  }
+  }, [aiPreferences, contexts, explorerRefreshIntervalMs, inkMathPreferences, taskManagerPublicationPreferences, telegramPreferences])
 
   useEffect(() => {
     if (!activeLibrary) {
       setIsLibraryConfigReady(false)
+      setContexts(DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })))
       if (libraryConfigTimeoutRef.current) {
         window.clearTimeout(libraryConfigTimeoutRef.current)
         libraryConfigTimeoutRef.current = null
@@ -97,6 +105,9 @@ export function useLibraryConfigSync({
       setIsLibraryConfigReady(false)
       return
     }
+
+    // Do not expose the previous library's context catalog while this library loads.
+    setContexts(DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })))
 
     let isCancelled = false
     libraryConfigLoadedRef.current = false
@@ -136,6 +147,7 @@ export function useLibraryConfigSync({
           ...fallbackPreferencesRef.current.taskManagerPublicationPreferences,
           accessUsers: config.taskManagerPublication?.accessUsers ?? [],
         }))
+        setContexts(normalizeLibraryContexts(config.contexts))
         initialConfigRef.current = config
       } else {
         // A library without a config file also starts without a credential.
@@ -156,7 +168,9 @@ export function useLibraryConfigSync({
           },
           telegram: fallbackPreferencesRef.current.telegramPreferences,
           taskManagerPublication: { accessUsers: [] },
+          contexts: DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })),
         }
+        setContexts(DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })))
       }
 
       libraryConfigLoadedRef.current = true
@@ -169,7 +183,7 @@ export function useLibraryConfigSync({
       libraryConfigLoadedRef.current = false
       initialConfigRef.current = null
     }
-  }, [activeLibrary, isLibraryReady, setAiPreferences, setExplorerRefreshIntervalMs, setInkMathPreferences, setTaskManagerPublicationPreferences, setTelegramPreferences])
+  }, [activeLibrary, isLibraryReady, setAiPreferences, setContexts, setExplorerRefreshIntervalMs, setInkMathPreferences, setTaskManagerPublicationPreferences, setTelegramPreferences])
 
   useEffect(() => {
     if (!activeLibrary) {
@@ -194,6 +208,7 @@ export function useLibraryConfigSync({
       taskManagerPublication: {
         accessUsers: taskManagerPublicationPreferences.accessUsers,
       },
+      contexts: normalizeLibraryContexts(contexts),
     }
 
     if (initialConfigRef.current) {
@@ -226,7 +241,7 @@ export function useLibraryConfigSync({
         libraryConfigTimeoutRef.current = null
       }
     }
-  }, [activeLibrary, aiPreferences, explorerRefreshIntervalMs, inkMathPreferences, taskManagerPublicationPreferences, telegramPreferences])
+  }, [activeLibrary, aiPreferences, contexts, explorerRefreshIntervalMs, inkMathPreferences, taskManagerPublicationPreferences, telegramPreferences])
 
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)

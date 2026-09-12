@@ -6,6 +6,7 @@ import {
 import { createDefaultPomodoroState, normalizePomodoroState } from '../engines/pomodoroEngine'
 import type { Board, Group, TaskManagerSettings } from '../types/taskManagerTypes'
 import { isRecord } from './guards'
+import { DEFAULT_CONTEXT_TAG, normalizeContextTag } from '../../../services/contexts/libraryContexts'
 
 const FALLBACK_COLORS = ['#d97a1e', '#2e6db0', '#00b894', '#e17055', '#fd79a8', '#636e72']
 
@@ -54,6 +55,7 @@ function normalizeBoards(rawBoards: unknown): Board[] {
           name: String(name).trim().toLowerCase(),
           color: FALLBACK_COLORS[index % FALLBACK_COLORS.length],
           activityHoursPerDay: 24,
+          contexto: DEFAULT_CONTEXT_TAG,
         }))
         .filter((board) => Boolean(board.name)),
     )
@@ -65,6 +67,7 @@ function normalizeBoards(rawBoards: unknown): Board[] {
       name: typeof item.name === 'string' ? item.name.trim().toLowerCase() : '',
       color: typeof item.color === 'string' ? item.color : '#2e6db0',
       activityHoursPerDay: normalizeBoardActivityHours(item.activityHoursPerDay),
+      contexto: normalizeContextTag(item.contexto) ?? DEFAULT_CONTEXT_TAG,
     }))
     .filter((board) => Boolean(board.name))
 
@@ -101,6 +104,7 @@ function mergeWithDefaultBoards(boards: Board[]): Board[] {
   const merged = DEFAULT_BOARDS.map((defaultBoard) => ({
     ...(byName.get(defaultBoard.name) ?? defaultBoard),
     activityHoursPerDay: normalizeBoardActivityHours(byName.get(defaultBoard.name)?.activityHoursPerDay ?? defaultBoard.activityHoursPerDay),
+    contexto: normalizeContextTag(byName.get(defaultBoard.name)?.contexto) ?? DEFAULT_CONTEXT_TAG,
   }))
   const additionalBoards = boards.filter((board) => board.name !== DEFAULT_BOARD_NAME)
   return [...merged, ...additionalBoards]

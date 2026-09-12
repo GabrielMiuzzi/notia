@@ -163,6 +163,10 @@ function GraphViewComponent({
     () => new Set(searchResults.map((searchResult) => searchResult.path)),
     [searchResults],
   )
+  const graphNodeByPath = useMemo(
+    () => new Map(graphModel.nodes.map((node) => [node.path, node])),
+    [graphModel.nodes],
+  )
 
   const svgWrapperRef = useRef<HTMLDivElement | null>(null)
 
@@ -235,6 +239,15 @@ function GraphViewComponent({
       const filePath = safeIdToPath.get(extractedId)
       if (!filePath) return
       ;(el as HTMLElement).setAttribute('data-notia-path', filePath)
+      const graphNode = graphNodeByPath.get(filePath)
+      if (graphNode?.contextColor) {
+        const shape = el.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
+        if (shape) {
+          shape.style.fill = graphNode.contextColor
+          shape.style.stroke = graphNode.contextColor
+        }
+        ;(el as HTMLElement).setAttribute('data-notia-context', graphNode.contextTag ?? '')
+      }
     })
 
     // Apply current search highlight immediately after render
@@ -257,7 +270,7 @@ function GraphViewComponent({
         }
       }
     })
-  }, [matchedPaths, safeIdToPath, searchQuery])
+  }, [graphNodeByPath, matchedPaths, safeIdToPath, searchQuery])
 
   // Click handler: open file or toggle chat selection
   const handleNodeClick = useCallback(
@@ -327,12 +340,12 @@ function GraphViewComponent({
           shape.style.stroke = '#ff79c6'
           shape.style.strokeWidth = '3'
         } else {
-          shape.style.stroke = ''
+          shape.style.stroke = graphNodeByPath.get(path)?.contextColor ?? ''
           shape.style.strokeWidth = ''
         }
       }
     })
-  }, [chatSelectedPaths])
+  }, [chatSelectedPaths, graphNodeByPath])
 
   // Persist settings
   useEffect(() => {
@@ -444,6 +457,19 @@ function GraphViewComponent({
             </button>
           )}
         </label>
+      </div>
+
+      <div
+        aria-label="Referencias de colores por contexto"
+        style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 12px', fontSize: 12 }}
+      >
+        {Array.from(new Map(graphModel.nodes.filter((node) => node.contextTag && node.contextColor).map((node) => [node.contextTag, node.contextColor])).entries()).map(([tag, color]) => (
+          <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: '50%', background: color }} />
+            {tag}
+          </span>
+        ))}
+        {graphModel.nodes.some((node) => !node.contextTag) ? <span>Sin contexto</span> : null}
       </div>
 
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 9 }}>

@@ -154,6 +154,7 @@ export function buildTaskContent(data: TaskFormData, order: number): string {
     `fechaFin: "${safeEndDate}"`,
     `fechaFinDinamica: ${data.dynamicEndDate}`,
     `tablero: "${data.board}"`,
+    `contexto: "${data.contexto ?? '#Personal'}"`,
     `equipo: "${data.group}"`,
     `prioridad: "${data.priority}"`,
     'dedicado: 0',

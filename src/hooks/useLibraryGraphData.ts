@@ -9,6 +9,7 @@ import { startPerformanceMeasurement } from '../services/runtime/performanceBase
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../types/notia'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
 import { scheduleLibraryLinkCacheRebuild } from '../services/libraries/libraryLinkCacheSchedule'
+import type { LibraryContext } from '../services/contexts/libraryContexts'
 
 const EMPTY_GRAPH_MODEL: LibraryGraphModel = {
   nodes: [],
@@ -23,6 +24,8 @@ interface UseLibraryGraphDataParams {
   treeNodes: NotiaFileNode[]
   flatFileList: NotiaFlatFileEntry[]
   revision: number
+  contexts?: readonly LibraryContext[]
+  boardContextsByName?: Readonly<Record<string, string>>
 }
 
 export function useLibraryGraphData({
@@ -33,6 +36,8 @@ export function useLibraryGraphData({
   treeNodes,
   flatFileList,
   revision,
+  contexts = [],
+  boardContextsByName = {},
 }: UseLibraryGraphDataParams) {
   const [graphSourcesByPath, setGraphSourcesByPath] = useState<Record<string, string>>({})
   const [graphModel, setGraphModel] = useState<LibraryGraphModel>(EMPTY_GRAPH_MODEL)
@@ -69,7 +74,7 @@ export function useLibraryGraphData({
 
   const graphStructureCacheKey =
     enabled && (libraryPath || rootPath) && graphFileStructureSignature
-      ? `${libraryPath ?? rootPath}::${graphFileStructureSignature}`
+      ? `${libraryPath ?? rootPath}::${graphFileStructureSignature}::${JSON.stringify(contexts)}::${JSON.stringify(boardContextsByName)}`
       : ''
 
   useEffect(() => {
@@ -182,6 +187,7 @@ export function useLibraryGraphData({
         rootPath,
         graphSourcesByPath,
         flatFileList.length > 0 ? flatFileList : undefined,
+        { contexts, boardContextsByName },
       )
       graphModelMeasurement.success({
         edgeCount: nextGraphModel.edges.length,
@@ -223,6 +229,8 @@ export function useLibraryGraphData({
     rootPath,
     libraryAndroidTreeUri,
     flatFileList,
+    contexts,
+    boardContextsByName,
   ])
 
   return {

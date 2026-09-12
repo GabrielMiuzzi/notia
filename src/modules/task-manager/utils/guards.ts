@@ -18,6 +18,7 @@ export function toTaskFrontmatter(value: unknown): TaskFrontmatter | null {
   if (typeof value.fechaFin === 'string') frontmatter.fechaFin = value.fechaFin
   if (typeof value.fechaFinDinamica === 'boolean' || typeof value.fechaFinDinamica === 'string') frontmatter.fechaFinDinamica = value.fechaFinDinamica
   if (typeof value.tablero === 'string') frontmatter.tablero = value.tablero
+  if (typeof value.contexto === 'string') frontmatter.contexto = value.contexto
   if (typeof value.equipo === 'string') frontmatter.equipo = value.equipo
   if (typeof value.prioridad === 'string') frontmatter.prioridad = value.prioridad
   if (typeof value.dedicado === 'number' || typeof value.dedicado === 'string') frontmatter.dedicado = value.dedicado

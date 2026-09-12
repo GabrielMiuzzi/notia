@@ -1,0 +1,31 @@
+# Funcionalidades
+
+- Gestión de bibliotecas locales de documentos.
+- Explorador de archivos y carpetas con búsqueda integrada.
+- Editor enriquecido de archivos Markdown.
+- Propiedades y frontmatter editables en notas Markdown.
+- Wikilinks y enlaces bidireccionales entre notas.
+- Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
+- Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
+- Gráficos XGraph interactivos en notas Markdown.
+- Graph View de relaciones entre documentos.
+- Contextos configurables por biblioteca (`#Laboral`, `#Personal` y `#Academico` por defecto), con color asociado y coloración de nodos en Graph View.
+- Exportación de notas a PDF y DOCX.
+- InkMath para reconocer fórmulas manuscritas.
+- Chat local con IA mediante Ollama.
+- Memoria persistente y herramientas nativas para el agente de IA.
+- Chat efímero de Meeting con transcripción offline y diarización.
+- Dictado y síntesis de voz offline.
+- Integración de Telegram con chat, notas de voz e imágenes.
+- ColdPass para credenciales cifradas.
+- Sincronización de ColdPass mediante Bluetooth.
+- Task Manager con tableros Kanban, vista de tabla, subtareas y comentarios.
+- Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero.
+- Temporizador Pomodoro integrado en Task Manager.
+- Publicación colaborativa de Task Manager en la red local.
+- Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas e inversiones.
+- Calendario con feriados nacionales y bancarios de Argentina.
+- Temas claro y oscuro.
+- Backups automáticos de bibliotecas en Windows.
+- Bandeja del sistema en Windows.
+- Soporte multiplataforma para Windows, macOS, Linux y Android.

@@ -4,17 +4,22 @@ import { selectIndexRevision } from '../../../features/library/librarySelectors'
 import { selectFlatFileList } from '../../../features/documents/documentsSelectors'
 import { useLibraryGraphData } from '../../../hooks/useLibraryGraphData'
 import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
+import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 
 interface UseGraphWorkspaceParams {
   activeLibrary: NotiaLibrary | null
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents'
   treeNodes: NotiaFileNode[]
+  contexts: readonly LibraryContext[]
+  boardContextsByName: Readonly<Record<string, string>>
 }
 
 export function useGraphWorkspace({
   activeLibrary,
   activeWorkspaceView,
   treeNodes,
+  contexts,
+  boardContextsByName,
 }: UseGraphWorkspaceParams) {
   const graphRevision = useAppSelector(selectIndexRevision)
   const flatFileList = useAppSelector(selectFlatFileList)
@@ -29,6 +34,8 @@ export function useGraphWorkspace({
     treeNodes,
     flatFileList,
     revision: graphRevision,
+    contexts,
+    boardContextsByName,
   })
 
   const graphChatAvailablePaths = useMemo(

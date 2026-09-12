@@ -40,8 +40,9 @@ import { loadTaskManagerSettings } from '../../modules/task-manager/services/tas
 import { loadTaskManagerSnapshot } from '../../modules/task-manager/services/taskManagerService'
 import { approveTaskManagerPublicationDevice, buildTaskManagerPublicationPayload, getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, hashTaskManagerPublicationPassword, listPendingTaskManagerPublicationDevices, openTaskManagerPublication, publishTaskManagerBoards, revokeTaskManagerPublicationDevice, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
 import { loadTaskManagerPublicationTelemetry, recordTaskManagerPublicationTelemetry } from '../../modules/task-manager/services/taskManagerPublicationTelemetry'
+import { normalizeContextTag, normalizeLibraryContexts, type LibraryContext } from '../../services/contexts/libraryContexts'
 
-type SettingsSection = 'General' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
+type SettingsSection = 'General' | 'Contextos' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
 
 interface SettingsModalProps {
   open: boolean
@@ -58,9 +59,11 @@ interface SettingsModalProps {
   onBackupPreferencesChange: (value: BackupPreferences) => void
   taskManagerPublicationPreferences: TaskManagerPublicationPreferences
   onTaskManagerPublicationPreferencesChange: (value: TaskManagerPublicationPreferences) => void
+  contexts: LibraryContext[]
+  onContextsChange: (value: LibraryContext[]) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
+const SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 function formatPublicationBytes(bytes: number): string {
@@ -99,6 +102,8 @@ export function SettingsModal({
   onBackupPreferencesChange,
   taskManagerPublicationPreferences,
   onTaskManagerPublicationPreferencesChange,
+  contexts,
+  onContextsChange,
 }: SettingsModalProps) {
   const dispatch = useAppDispatch()
   const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
@@ -175,6 +180,8 @@ export function SettingsModal({
   }>({ tone: 'idle', message: 'Esta acción elimina definitivamente todos los datos del módulo Finanzas en la biblioteca activa.' })
   const [availableModels, setAvailableModels] = useState<AiModelOption[]>([])
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false)
+  const [newContextTag, setNewContextTag] = useState('')
+  const [newContextColor, setNewContextColor] = useState('#64748B')
   const modelSelectRef = useRef<HTMLDivElement | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [modelsErrorMessage, setModelsErrorMessage] = useState<string | null>(null)
@@ -535,6 +542,67 @@ export function SettingsModal({
                 Dispositivo
               </div>
               <div className="notia-settings-card-value">{runtimeDevice}</div>
+            </div>
+          ) : activeSection === 'Contextos' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Contextos de la biblioteca</div>
+              <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                Cada nota puede declarar una propiedad <code>contexto</code> con un tag como <code>#Personal</code>. El color se usa en Graph View.
+              </div>
+              <div className="notia-settings-actions" role="list" aria-label="Contextos configurados">
+                {contexts.map((context) => {
+                  const isUsedByBoard = taskManagerSettings.boards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
+                  return (
+                    <div key={context.tag} className="notia-settings-actions" role="listitem">
+                      <input
+                        className="notia-settings-input"
+                        aria-label={`Tag de contexto ${context.tag}`}
+                        value={context.tag}
+                        onChange={(event) => {
+                          const nextTag = normalizeContextTag(event.target.value)
+                          if (!nextTag || contexts.some((item) => item !== context && item.tag.toLowerCase() === nextTag.toLowerCase())) return
+                          onContextsChange(contexts.map((item) => item === context ? { ...item, tag: nextTag } : item))
+                        }}
+                      />
+                      <input
+                        type="color"
+                        aria-label={`Color de contexto ${context.tag}`}
+                        value={context.color}
+                        onChange={(event) => onContextsChange(contexts.map((item) => item === context ? { ...item, color: event.target.value.toUpperCase() } : item))}
+                      />
+                      <NotiaButton
+                        variant="secondary"
+                        disabled={contexts.length <= 1 || isUsedByBoard}
+                        title={isUsedByBoard ? 'No se puede eliminar un contexto usado por un tablero.' : undefined}
+                        onClick={() => onContextsChange(contexts.filter((item) => item !== context))}
+                      >
+                        Eliminar
+                      </NotiaButton>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="notia-settings-actions">
+                <input
+                  className="notia-settings-input"
+                  aria-label="Nuevo tag de contexto"
+                  placeholder="#NuevoContexto"
+                  value={newContextTag}
+                  onChange={(event) => setNewContextTag(event.target.value)}
+                />
+                <input type="color" aria-label="Color del nuevo contexto" value={newContextColor} onChange={(event) => setNewContextColor(event.target.value.toUpperCase())} />
+                <NotiaButton
+                  onClick={() => {
+                    const tag = normalizeContextTag(newContextTag)
+                    if (!tag || contexts.some((item) => item.tag.toLowerCase() === tag.toLowerCase())) return
+                    onContextsChange(normalizeLibraryContexts([...contexts, { tag, color: newContextColor }]))
+                    setNewContextTag('')
+                  }}
+                  disabled={!newContextTag.trim()}
+                >
+                  Agregar contexto
+                </NotiaButton>
+              </div>
             </div>
           ) : activeSection === 'Panel desplegable' ? (
             <div className="notia-settings-card">

@@ -62,11 +62,12 @@ describe('frontmatterEngine helpers', () => {
     assert.ok(result.source.includes('createdAt: 1234567890'))
     assert.ok(result.source.includes('nextPage: N/A'))
     assert.ok(result.source.includes('previousPage: N/A'))
+    assert.ok(result.source.includes('contexto: "#Personal"'))
     assert.ok(result.source.includes('# Hello'))
   })
 
   it('ensureMarkdownDefaults does not mutate when all keys present', () => {
-    const source = `---\ncreatedAt: 1234567890\nnextPage: N/A\npreviousPage: N/A\n---\n\n# Hello`
+    const source = `---\ncreatedAt: 1234567890\nnextPage: N/A\npreviousPage: N/A\ncontexto: "#Personal"\n---\n\n# Hello`
     const result = ensureMarkdownDefaults(source, { createdAt: 999 })
     assert.strictEqual(result.mutated, false)
     assert.strictEqual(result.source, source)

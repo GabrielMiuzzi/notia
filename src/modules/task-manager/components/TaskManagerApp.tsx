@@ -3,6 +3,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../types/taskManagerTypes'
+import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
 import { resolveTaskManagerPanelChatPaths } from '../engines/taskChatContextEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
@@ -47,6 +48,7 @@ interface TaskManagerAppProps {
   onActivePanelChange?: (panelId: string) => void
   onActiveChatContextChange?: (context: TaskManagerChatContext | null) => void
   onPublishedChatContextChange?: (context: TaskManagerChatContext | null) => void
+  contexts?: LibraryContext[]
 }
 
 function TaskManagerAppComponent({
@@ -58,6 +60,7 @@ function TaskManagerAppComponent({
   onActivePanelChange,
   onActiveChatContextChange,
   onPublishedChatContextChange,
+  contexts = [],
 }: TaskManagerAppProps) {
   const mountTimerRef = useRef(
     notiaTimer('task-manager', 'TaskManagerApp mount', {
@@ -448,6 +451,7 @@ function TaskManagerAppComponent({
           board={manager.boardDialog.board}
           onClose={manager.closeBoardDialog}
           onSubmit={manager.submitBoardDialog}
+          contexts={contexts}
         />
 
         <GroupDialog
@@ -517,6 +521,10 @@ function areTaskManagerAppPropsEqual(
   }
 
   if (previous.onPublishedChatContextChange !== next.onPublishedChatContextChange) {
+    return false
+  }
+
+  if (previous.contexts !== next.contexts) {
     return false
   }
 

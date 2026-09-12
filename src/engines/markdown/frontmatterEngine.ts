@@ -1,3 +1,5 @@
+import { DEFAULT_CONTEXT_TAG } from '../../services/contexts/libraryContexts'
+
 export type FrontmatterScalarValue = string | number | boolean | null
 export type FrontmatterValue = FrontmatterScalarValue | FrontmatterScalarValue[]
 
@@ -307,6 +309,11 @@ export function ensureMarkdownDefaults(
 
   if (!hasFrontmatterKey(nextEntries, 'previousPage')) {
     nextEntries = setFrontmatterValue(nextEntries, 'previousPage', 'N/A')
+    mutated = true
+  }
+
+  if (!hasFrontmatterKey(nextEntries, 'contexto')) {
+    nextEntries = setFrontmatterValue(nextEntries, 'contexto', DEFAULT_CONTEXT_TAG)
     mutated = true
   }
 

@@ -5,6 +5,11 @@ import { setPendingCreation, setRenamingPath, setContextMenu, setDialogState } f
 import { createLibraryEntry, performLibraryEntryOperation } from '../../../services/libraries/libraryRuntime'
 import { findTreeNodeByPath } from '../../../utils/tree/findTreeNodeByPath'
 import { isSameOrNestedPath, getParentDirectory, joinParentPath } from './useTabManager'
+import { join } from '../../../utils/files/pathUtils'
+import { writeLibraryFileContent } from '../../../services/libraries/libraryDocumentRuntime'
+import { DEFAULT_CONTEXT_TAG } from '../../../services/contexts/libraryContexts'
+import { loadTaskManagerSettings } from '../../../modules/task-manager/services/taskManagerStorage'
+import { reconcileBoardMarkdownContext } from '../../../modules/task-manager/services/taskManagerService'
 import type { NotiaFileNode } from '../../../types/notia'
 
 interface UseFileTreeActionsParams {
@@ -39,6 +44,29 @@ export function useFileTreeActions({
     if (!result.ok) {
       dispatch(setDialogState({ type: 'info', title: 'No se pudo crear', message: result.error ?? 'No se pudo crear el elemento.' }))
       return
+    }
+    if (currentPendingCreation.kind === 'note') {
+      const fileName = name.toLowerCase().endsWith('.md') ? name : `${name}.md`
+      const notePath = join(currentPendingCreation.parentPath, fileName)
+      const noteSource = [
+        '---',
+        `contexto: "${DEFAULT_CONTEXT_TAG}"`,
+        '---',
+        '',
+      ].join('\n')
+      const writeResult = await writeLibraryFileContent(notePath, noteSource, {
+        androidDirectoryUri: activeLibrary.androidTreeUri,
+      })
+      if (!writeResult.ok) {
+        dispatch(setDialogState({ type: 'info', title: 'Nota creada parcialmente', message: writeResult.error ?? 'No se pudo guardar el contexto inicial de la nota.' }))
+      }
+      const boardName = resolveTaskBoardName(currentPendingCreation.parentPath)
+      const boardContext = boardName
+        ? loadTaskManagerSettings().boards.find((board) => board.name === boardName)?.contexto
+        : undefined
+      if (boardName && boardContext) {
+        await reconcileBoardMarkdownContext(activeLibrary.path, boardName, boardContext)
+      }
     }
     dispatch(setPendingCreation(null))
     notifyLibraryTreeChanged(currentPendingCreation.parentPath)
@@ -104,6 +132,13 @@ export function useFileTreeActions({
         dispatch(setDialogState({ type: 'info', title: 'No se pudo mover', message: moveResult.error ?? 'No se pudo mover el elemento.' }))
         return
       }
+      const boardName = resolveTaskBoardName(normalizedTargetDirectoryPath)
+      const boardContext = boardName
+        ? loadTaskManagerSettings().boards.find((board) => board.name === boardName)?.contexto
+        : undefined
+      if (boardName && boardContext) {
+        await reconcileBoardMarkdownContext(activeLibrary.path, boardName, boardContext)
+      }
       await closeTabsByPath(normalizedSourcePath)
       notifyLibraryTreeChanged(normalizedTargetDirectoryPath)
     })()
@@ -124,4 +159,9 @@ export function useFileTreeActions({
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function resolveTaskBoardName(pathValue: string): string | undefined {
+  const match = normalizePath(pathValue).match(/(?:^|\/)(?:task-mannager|task-manager)\/([^/]+)/i)
+  return match?.[1]?.toLowerCase()
 }

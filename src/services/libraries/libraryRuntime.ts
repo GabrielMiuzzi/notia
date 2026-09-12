@@ -1,5 +1,6 @@
 import type { NotiaFileNode, NotiaFlatFileEntry, NotiaLibrary } from '../../types/notia'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
+import { join } from '../../utils/files/pathUtils'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
 import {
@@ -16,6 +17,8 @@ import {
   searchLibraryFiles as searchFilesystemFiles,
   type FilesystemOperationResult,
 } from '../files/filesystemEngine'
+import { writeTextFile } from '../files/filesystemEngine'
+import { DEFAULT_CONTEXT_TAG } from '../contexts/libraryContexts'
 
 interface PickedLibrary {
   name: string
@@ -252,9 +255,20 @@ export async function createLibraryEntry(
   const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath)
 
   try {
-    return await createFilesystemEntry(normalizedDirectoryPath, name, kind, {
+    const result = await createFilesystemEntry(normalizedDirectoryPath, name, kind, {
       androidDirectoryUri: options?.androidDirectoryUri,
     })
+    if (!result.ok || kind !== 'note') {
+      return result
+    }
+
+    const normalizedFileName = name.toLowerCase().endsWith('.md') ? name : `${name}.md`
+    const writeResult = await writeTextFile(
+      join(normalizedDirectoryPath, normalizedFileName),
+      `---\ncontexto: "${DEFAULT_CONTEXT_TAG}"\n---\n`,
+      { androidDirectoryUri: options?.androidDirectoryUri },
+    )
+    return writeResult.ok ? result : writeResult
   } catch (error) {
     console.error('[notia] create_library_entry failed', error)
     return { ok: false, error: 'Could not create entry.' }

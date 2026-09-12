@@ -49,6 +49,8 @@ import { useWindowsBackups } from './hooks/useWindowsBackups'
 import { useTaskManagerPublicationAutostart } from '../../modules/task-manager/hooks/useTaskManagerPublicationAutostart'
 import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manager/hooks/useTaskManagerPublicationAiHostBridge'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
+import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../services/contexts/libraryContexts'
+import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
 
 // --- Pure helper function ---
 
@@ -85,6 +87,7 @@ function NotiaMenuComponent() {
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
   const [markdownSelection, setMarkdownSelection] = useState<MarkdownSelectionContext | null>(null)
   const [markdownExternalUpdate, setMarkdownExternalUpdate] = useState<MarkdownDocumentUpdate | null>(null)
+  const [libraryContexts, setLibraryContexts] = useState<LibraryContext[]>(() => DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })))
   const markdownExternalUpdateRevisionRef = useRef(0)
   const closeColdPassTabRef = useRef<() => void>(() => {})
   const isExitingApplicationRef = useRef(false)
@@ -340,6 +343,8 @@ function NotiaMenuComponent() {
     setTelegramPreferences: handleTelegramPreferencesChange,
     taskManagerPublicationPreferences,
     setTaskManagerPublicationPreferences: handleTaskManagerPublicationPreferencesChange,
+    contexts: libraryContexts,
+    setContexts: setLibraryContexts,
   })
 
   useTaskManagerPublicationAutostart({
@@ -431,6 +436,12 @@ function NotiaMenuComponent() {
     [activeLibrary],
   )
 
+  const taskManagerBoardContexts = useMemo(() => Object.fromEntries(
+    loadTaskManagerSettings().boards
+      .filter(() => libraryContexts.length > 0)
+      .map((board) => [board.name.toLowerCase(), board.contexto ?? '#Personal']),
+  ), [libraryContexts])
+
   const {
     graphChatContextSummary,
     graphChatEffectivePaths,
@@ -439,7 +450,13 @@ function NotiaMenuComponent() {
     graphSourcesByPath,
     isGraphLoading,
     setGraphChatSelectedPaths,
-  } = useGraphWorkspace({ activeLibrary, activeWorkspaceView, treeNodes })
+  } = useGraphWorkspace({
+    activeLibrary,
+    activeWorkspaceView,
+    treeNodes,
+    contexts: libraryContexts,
+    boardContextsByName: taskManagerBoardContexts,
+  })
 
   const {
     agentCorpusPaths: rightPanelAgentCorpusPaths,
@@ -557,6 +574,7 @@ function NotiaMenuComponent() {
             coldPassEntries={coldPassEntries}
             coldPassSession={coldPassSession}
             activeTaskManagerVault={activeTaskManagerVault}
+            libraryContexts={libraryContexts}
             graphModel={graphModel}
             graphSourcesByPath={graphSourcesByPath}
             isGraphLoading={isGraphLoading}
@@ -594,6 +612,8 @@ function NotiaMenuComponent() {
           onAiPreferencesChange={handleAiPreferencesChange}
           onExplorerRefreshIntervalMsChange={handleExplorerRefreshIntervalMsChange}
           onInkMathPreferencesChange={handleInkMathPreferencesChange}
+          contexts={libraryContexts}
+          onContextsChange={setLibraryContexts}
         onTelegramPreferencesChange={handleTelegramPreferencesChange}
         backupPreferences={backupPreferences}
         onBackupPreferencesChange={(value) => dispatch(setBackupPreferences(value))}

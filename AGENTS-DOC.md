@@ -1,162 +1,61 @@
-# Documentación
+# Guía de documentación
 
-La publicación colaborativa de Task Manager vive en `src-tauri/src/task_manager_publication.rs` y `src/modules/task-manager/services/taskManagerPublicationClient.ts`. HTTPS conserva el login/bootstrap y las lecturas; `/task-manager/ws` usa un protocolo JSON versionado con `publicationEpoch`, cursor `sequence`, `revision`, `operationId`, ACK, replay, resync y eventos terminales. Las mutaciones deben pasar por la autorización de publicación, la serialización de dominio y la revisión de archivo; no agregar escrituras directas al bridge remoto ni volver a introducir SSE como transporte de colaboración.
+Este archivo define únicamente la forma de documentar el repositorio. No debe contener información específica del producto, funcionalidades concretas, nombres de módulos, rutas de implementación, decisiones de arquitectura ni notas de estado. Esa información pertenece a la documentación técnica del proyecto.
 
-El runtime común rechaza anuncios explícitos de acciones pendientes como respuesta final cuando hay herramientas disponibles, y fuerza una ronda con native tools. Las correcciones son internas, acotadas y nunca autorizan escrituras, reemplazan confirmaciones ni se guardan como reglas o memorias. Mantener cubiertos la continuación tras streaming, el límite de reintentos y la cancelación sin repetición de mutaciones.
+## Propósito de cada documento
 
-El conocimiento operativo de XGraph se agrega al prompt conversacional común mediante `XGRAPH_AGENT_GUIDE`, sin modificar los prompts personalizados de la biblioteca. Mantener la guía sincronizada con `xgraphEngine` y `xgraphPreviewRuntime`: sintaxis Markdown, variables del tablero, controles, persistencia, permisos y límites. La guía no autoriza nuevas herramientas ni cambia el formato de respuesta de Telegram.
+- `README.md`: documentación funcional para usuarios y personas no técnicas. Explica qué hace el producto, cómo se usa, sus requisitos y las soluciones a problemas frecuentes.
+- `README-TECH.md`: documentación técnica específica del proyecto. Contiene arquitectura, módulos, contratos, flujos, decisiones, diagramas, validaciones, límites y estado técnico real.
+- `AGENTS.md`: reglas generales para trabajar en el repositorio: preparación, edición, pruebas, seguridad, revisión y entrega.
+- `AGENTS-DOC.md`: reglas para mantener la documentación sincronizada. No contiene contenido específico del proyecto.
+- `FUNCIONALIDADES.md`: únicamente una lista breve de funcionalidades actualmente disponibles.
+- `CHANGELOG.md`: una línea acumulativa por cada iteración de desarrollo.
 
-El canal de Telegram personaliza el prompt del agente para evitar Markdown y envía las respuestas con el subconjunto HTML compatible de Telegram. Esta regla no se aplica al chat principal, los chats laterales ni Meeting.
+## Flujo documental obligatorio
 
-Finanzas es un scope del mismo runtime común. No recibe documentos de la biblioteca como contexto y expone únicamente herramientas financieras tipadas y la aclaración al usuario; no ofrece reglas, memorias, documentos ni Task Manager durante una carga financiera. Chat interno y Telegram comparten los mismos servicios financieros, estados y persistencia; el canal solo cambia formato e historial efímero. Las fotos autorizadas de Telegram se descargan mediante un comando nativo acotado a 4 MB y entran al mismo agente como adjuntos de imagen; el update y los metadatos de la solicitud pendiente se checkpointan antes de procesarla, por lo que el bridge reanuda la cola si el WebView termina inesperadamente. El agente clasifica cada imagen antes de mutar. Ante un ticket legible, `create_finance_purchase` busca o crea automáticamente una categoría, guarda compra, líneas, precios y gasto. Ante un recibo de sueldo, `create_finance_salary` guarda período, empleador, importes, conceptos y evidencia, crea el ingreso neto sin categoría y comprueba el registro completo mediante una lectura posterior; el bridge repite esa prueba inmediatamente antes de comunicar el éxito por Telegram y rechaza cualquier mensaje afirmativo que no tenga el recibo persistido completo. Un PDF identificado como recibo firmado conserva el neto impreso como autoritativo aunque no coincida con bruto menos descuentos; la excepción queda registrada y no se aplica a fotos, cargas manuales ni documentos sin firma. Ante un resumen de tarjeta, `create_finance_credit_card_statement` guarda emisor, período, cierre, vencimiento, saldos y líneas; crea gastos únicamente para consumos/cargos y concilia pagos/créditos, sin convertir el total a pagar en otro gasto. Las tres herramientas auto-confirman en Telegram, deduplican y producen un resultado terminal determinista; se mantiene la aclaración de cuenta cuando no puede inferirse razonablemente. El bridge mantiene de forma durable hasta diez solicitudes pendientes, por lo que un álbum o varias fotos sucesivas se procesan secuencialmente y no se descartan mientras otra espera respuesta.
+Antes de iniciar un desarrollo:
 
-La sección **Configuraciones → Finanzas** expone la única operación de borrado total del módulo. `finance_clear_all_data` vacía atómicamente todas las entidades financieras de la biblioteca activa después de una confirmación destructiva, conserva esquema y migraciones, sincroniza SAF cuando corresponde y notifica a las vistas montadas para recargarse.
+1. Consultar `README.md`, `README-TECH.md`, `AGENTS.md` y este archivo.
+2. Identificar qué documentos describen el área que se modificará.
+3. Revisar si existe documentación previa que deba conservarse o actualizarse.
 
-La inicialización del agente garantiza también `.agent/memory/rules.md` y `.agent/memory/memory.md` en cada biblioteca, creando únicamente los elementos faltantes.
-También crea `.agent/skills/` si no existe.
-Las reglas permanentes detectadas en una conversación se escriben directamente en `NOTIA_IA_RULES` sin confirmación; esta excepción no se extiende a documentos, tickets ni otras mutaciones del usuario.
-Las correcciones generadas por validadores se agregan como instrucciones internas de sistema, nunca como mensajes del usuario. No pueden crear reglas o memorias; la inicialización elimina del bloque aprendido cualquier corrección interna conocida que hubiera quedado persistida por versiones anteriores.
-Los hechos personales y contextos duraderos pertenecen a `.agent/memory/memory.md`, no a `NOTIA_IA_RULES`. Toda modificación interna de reglas aprendidas o memorias programa una reorganización conjunta en background mediante el Ollama configurado, que puede reclasificar elementos sin alterar `NOTIA_DEFAULT_RULES`.
-Telegram usa HTML limitado y un formateador defensivo; el runtime común recupera llamadas XML heredadas únicamente cuando coinciden con herramientas nativas disponibles.
+Después de cada desarrollo, funcionalidad, bugfix, refactor o cambio de contrato:
 
-## Capacidad de voz offline
+1. Actualizar `README-TECH.md` con la implementación real, decisiones, contratos, validaciones, errores, límites y pendientes técnicos.
+2. Actualizar `README.md` cuando cambien el comportamiento, la configuración, la instalación o el uso visible para las personas usuarias.
+3. Actualizar `FUNCIONALIDADES.md` si se agregó, eliminó o modificó una funcionalidad visible. Debe seguir siendo solo una lista, sin explicaciones ni historial.
+4. Agregar una línea a `CHANGELOG.md` con el formato `[YYYY-MM-DD HH:mm:ss Z] Descripción breve del cambio.` La fecha y hora deben corresponder al momento de la iteración y las entradas anteriores no se editan ni se eliminan.
+5. Revisar que los documentos no se contradigan entre sí.
+6. Si un documento no requiere cambios, verificarlo explícitamente y dejar constancia en el resumen de la iteración.
 
-La frontera pública de voz vive en `src/services/speech/` y `src-tauri/src/commands/speech.rs`; los componentes no invocan Tauri directamente. Captura, worker ASR, runtime dinámico, repositorio de modelos y diarización son servicios Rust separados. Windows y Android conservan el mismo contrato, con permiso/empaquetado Android detrás de `mobile_speech_permission` y `build.rs`.
+## Reglas de contenido
 
-Los eventos `speech://state`, `speech://partial` y `speech://segments` se filtran por `sessionId` y todo listener requiere cleanup. No registrar audio/transcripciones, aceptar rutas nativas desde la UI ni marcar modelos como instalados sin tamaño y SHA-256 válidos.
+- Documentar el estado real, no la intención futura ni una tarea pendiente como si ya estuviera implementada.
+- Separar claramente comportamiento actual, decisiones, limitaciones, validaciones pendientes y trabajo futuro.
+- Mantener ejemplos, nombres, formatos, diagramas y contratos sincronizados con el código.
+- Explicar entradas, salidas, validaciones, errores, casos límite y efectos sobre datos persistidos cuando correspondan.
+- No registrar secretos, credenciales, tokens, datos personales, rutas privadas ni payloads sensibles.
+- Usar lenguaje claro, títulos estables y nomenclatura consistente.
+- Evitar duplicar información técnica detallada fuera de `README-TECH.md`.
+- No convertir `AGENTS.md` ni `AGENTS-DOC.md` en un inventario de funcionalidades o en un registro de decisiones del producto.
 
-La documentación es un entregable obligatorio de cada cambio de código. No se considera una tarea completa hasta que la documentación refleje fielmente el estado actual del sistema.
+## Documentación técnica
 
-### Reglas generales
+Cuando un desarrollo modifique una vista, flujo, servicio, comando, endpoint, evento, contrato, persistencia o integración:
 
-1. **Documentación sincronizada**: todo PR o conjunto de cambios debe ir acompañado de la actualización correspondiente en los archivos de documentación. Nunca dejar `README.md` ni `README-TECH.md` desactualizados respecto al código.
+- describir el flujo de extremo a extremo;
+- registrar los contratos de entrada y salida;
+- documentar las validaciones y la política de errores;
+- incluir ejemplos completos cuando exista un protocolo estructurado;
+- actualizar los diagramas afectados;
+- indicar las pruebas ejecutadas y las validaciones que quedaron pendientes;
+- señalar compatibilidad, migraciones y recuperación cuando se modifiquen datos o contratos.
 
-2. **Dos audiencias, dos documentos**:
-   - **`README.md`**: orientado a usuarios finales y analistas funcionales. Debe explicar qué hace la app, cómo usarla y qué valor aporta cada feature.
-   - **`README-TECH.md`**: orientado a ingenieros de software. Debe explicar arquitectura, integración, decisiones técnicas y cómo extender el sistema.
+## Revisión antes de entregar
 
-### Contenido obligatorio de README.md
-
-- Descripción funcional de la aplicación y sus módulos.
-- Guía de uso paso a paso para cada feature.
-- **Si hay controllers/endpoints**: incluir por cada feature los endpoints, headers, body necesario y detalle de consumo en lenguaje funcional (qué hace, cuándo usarlo, ejemplos simples).
-- Requisitos de sistema e instalación.
-- Configuración de entorno (variables, settings, preferencias).
-- FAQ o troubleshooting desde la perspectiva del usuario.
-
-### Contenido obligatorio de README-TECH.md
-
-- **Documentación general**: descripción técnica del servicio, stack de tecnologías, cómo levantar el proyecto en local, variables de entorno relevantes y decisiones arquitectónicas.
-- **Documentación específica de flujos**: para cada flujo modificado o agregado, detallar:
-  - Endpoints, headers y body necesarios, con detalle de consumo técnico (método, path, query, request/response).
-  - **Ejemplos JSON obligatorios (backend)**: para cada endpoint que reciba o devuelva JSON, incluir el ejemplo completo del request body y del response body en bloques de código JSON. No omitir campos; mostrar la estructura real con valores representativos.
-  - Entradas y salidas (tipos, formatos, contratos).
-  - Validaciones aplicadas.
-  - Pasos del proceso (secuencia lógica).
-  - Comportamiento ante errores y casos límite.
-  - Dependencias con otros módulos.
-- **Diagramas en Mermaid**: agregar diagramas obligatoriamente. La granularidad depende del tipo de sistema:
-  - **Backend (servicios con controllers/endpoints)**: generar los diagramas **por cada controller/funcionalidad**.
-  - **Frontend (aplicaciones con vistas/páginas)**: generar los diagramas **por cada vista/funcionalidad**.
-  - En ambos casos, cada unidad (controller o vista) debe tener su propio conjunto de diagramas separados, nunca mezclados en uno solo.
-  - Diagramas requeridos por unidad:
-    - Un diagrama de flujo específico.
-    - Un diagrama de arquitectura (componentes/relaciones) específico.
-    - Un diagrama de secuencia específico.
-  - Diagramas generales del sistema:
-    - Flujos de proceso (diagramas de flujo).
-    - Secuencias entre componentes (diagramas de secuencia).
-    - Arquitectura del sistema y relaciones entre módulos (diagramas de componentes/despliegue).
-    - Modelos de datos relevantes (diagramas de clases/ER).
-    - Acoplamiento y cohesión entre módulos (diagramas UML de paquetes/componentes).
-
-### Reglas de formato
-
-- Usar bloques de código ` ```mermaid ` para todos los diagramas.
-- Asegurar que los diagramas sean legibles y estén actualizados con el código.
-- Emplear nomenclatura consistente con el resto del proyecto (nombres de módulos, servicios, tipos).
-
-### Reglas de existencia
-
-> **Regla:** Si `README.md` o `README-TECH.md` no existen en el repositorio, deben crearse inmediatamente con la información mínima requerida antes de considerar finalizada cualquier tarea de desarrollo.
-
-### Informe de cohesión vs acoplamiento
-
-`README-TECH.md` debe incluir una sección titulada **"Informe de cohesión vs acoplamiento"** con un análisis detallado del estado actual del sistema. El informe debe contener:
-
-1. **Resumen ejecutivo**: valoración general del nivel de cohesión y acoplamiento del sistema (alto/medio/bajo para cada uno).
-2. **Análisis por módulo/capa**: para cada capa o módulo relevante (controllers, services, common, models, etc.):
-   - Nivel de cohesión (funcional, secuencial, comunicacional, etc.).
-   - Nivel de acoplamiento con otros módulos (de datos, de control, de contenido, etc.).
-   - Observaciones y riesgos identificados.
-3. **Diagrama de dependencias**: un diagrama Mermaid que visualice las dependencias reales entre módulos, destacando acoplamientos fuertes.
-4. **Métricas cualitativas**:
-   - ¿Cada módulo tiene una única responsabilidad clara?
-   - ¿Existen dependencias circulares?
-   - ¿Hay módulos que conozcan la implementación interna de otros?
-   - ¿Los cambios en un módulo impactan a otros módulos?
-5. **Recomendaciones**: acciones concretas para mejorar la cohesión o reducir el acoplamiento, si aplica.
-
-> **Regla:** este informe debe actualizarse con cada cambio estructural significativo (nueva capa, nuevo módulo, refactorización de dependencias).
-
-### Informe de arquitectura
-
-`README-TECH.md` debe incluir una sección titulada **"Informe de arquitectura"** que analice globalmente la salud estructural del sistema. El informe debe contener:
-
-1. **Complejidad ciclomática**:
-   - Evaluar funciones críticas (comandos de Tauri, servicios, lógica de negocios en Rust y TypeScript).
-   - Identificar funciones con complejidad alta (>10) y proponer extracción o refactorización.
-   - Incluir ejemplos de funciones refactorizables y su posible división.
-
-2. **Modularidad**:
-   - Análisis de la separación de responsabilidades entre capas (`components/`, `services/`, `engines/`, `commands/`, `filesystem/`).
-   - Evaluación de la reutilización de módulos (si existen duplicaciones o abstracciones compartidas).
-   - Medición del acoplamiento aferente/eferente (qualitativo) por módulo.
-   - Identificación de "módulos Dios" o archivos que concentran demasiada lógica.
-
-3. **Escalabilidad arquitectónica**:
-   - Evaluación de cuellos de botella actuales (ej: main thread, polling, watchers).
-   - Capacidad de agregar nuevas features sin modificar código existente (Open/Closed Principle).
-   - Facilidad para agregar nuevos commands de Tauri, nuevos tipos de documento, nuevas vistas o nuevos backends de IA.
-   - Recomendaciones concretas para mejorar la escalabilidad horizontal (nuevos módulos) y vertical (renderizado, performance).
-
-> **Regla:** este informe debe actualizarse cada vez que se agregue un módulo de negocio nuevo, se refactorice una capa o se identifique un cuello de botella de performance.
-
-### Informe de calidad de código
-
-`README-TECH.md` debe incluir una sección final titulada **"Informe de calidad de código"** que evalúe de forma continua el estado del código del proyecto. El informe debe contener:
-
-1. **Legibilidad del código**:
-   - Uso consistente de naming conventions (sección 6 de AGENTS.md).
-   - Clarity sobre intención vs implementación (nombres descriptivos, funciones cortas).
-   - Uso apropiado de comentarios (solo "por qué", no "qué").
-   - Formato y estilo consistente (linting, formatting).
-
-2. **Mantenibilidad**:
-   - Facilidad para localizar y modificar funcionalidades.
-   - Ausencia de código muerto o dependencias no utilizadas.
-   - Evolución de la deuda técnica (lista de items conocidos y plan de mitigación).
-   - Facilidad de onboarding para nuevos desarrolladores/agentes.
-
-3. **Testabilidad**:
-   - Porcentaje de código en `engines/` y `utils/` (puro/sin side-effects) vs código acoplado a UI o Tauri.
-   - Identificación de bloques de código que requieren mocking excesivo.
-   - Plan para aumentar la cobertura de pruebas unitarias y de integración.
-
-4. **Observabilidad**:
-   - Instrumentación existente (performance baselines, logging, eventos).
-   - Facilidad de diagnóstico de errores en producción y Android (logcat).
-   - Métricas clave expuestas (duraciones, tasa de errores, tamaño de estado).
-
-5. **Clean code y principios SOLID**:
-   - Análisis del cumplimiento de los 5 principios SOLID en las capas críticas (services, commands, components).
-   - Evaluación de DRY, KISS y separación de responsabilidades.
-   - Identificación de violaciones conocidas (ej: commands con lógica de negocio, componentes con state duplicado) y plan de corrección.
-
-> **Regla:** este informe debe actualizarse con cada refactorización significativa, eliminación de deuda técnica o introducción de nuevos patrones de código.
-
-> **Regla general de sincronización:** los tres informes (cohesión vs acoplamiento, arquitectura y calidad de código) son entregables obligatorios de `README-TECH.md` y deben mantenerse actualizados con cada cambio estructural significativo (nueva capa, nuevo módulo, refactorización de dependencias o resolución de deuda técnica).
-
-### Nota de concurrencia: Task Manager publicado (2026-09-10)
-
-La conexión WebSocket tiene un único propietario para alternar envío y lectura con timeout; no volver a separar ambos usando un mutex común alrededor de una lectura bloqueante. Las notificaciones del watcher respetan el batch remoto activo y no deben descartarse mediante una ventana temporal. El resultado remoto de begin/end no es el cursor del ACK. En el protocolo, `operationId` correlaciona el batch completo y debe propagarse realmente a begin, todas sus escrituras y end; la idempotencia de cada comando usa el `messageId`, que debe conservarse al reintentar ese comando. `begin` es idempotente solo mientras sigue vivo el mismo batch y no se cachea después de una desconexión. Una caída transitoria conserva el batch durante una gracia acotada de 20 segundos y el cliente lo revalida con `begin` antes de reintentar escrituras; si lo pendiente era `end`, reintenta ese cierre sin reabrir el lote. El host espera su turno fuera del hilo de UI en vez de rechazar inmediatamente una operación remota en cierre. Las escrituras de tickets resuelven concurrencia con la revisión específica del archivo y el lock global, mientras que la revisión global queda para settings compartidos. Un arrastre usa orden fraccional entre vecinos y normalmente persiste solo el ticket movido; no volver a renumerar columnas completas en cada gesto. Un fallo de lectura de snapshot debe propagarse y conservar el último estado válido, nunca convertirse en un snapshot vacío. La cola de recargas debe volver a adquirir ownership si una invalidación llega entre la última comprobación de trabajo y la finalización de la Promise activa; una notificación pendiente nunca puede quedar sin consumidor. En el hook, la referencia al snapshot confirmado no se reescribe desde renders que pueden observar una transición anterior. Las pruebas de regresión y las limitaciones de validación nativa/multiusuario están registradas en `tasks.md`; compilar los tests no equivale a ejecutarlos.
+- Confirmar que `FUNCIONALIDADES.md` contiene solo una lista.
+- Confirmar que `CHANGELOG.md` tiene exactamente una nueva línea para la iteración.
+- Confirmar que la fecha, hora y zona horaria del changelog son correctas.
+- Confirmar que `README.md` y `README-TECH.md` no describen un estado anterior.
+- Revisar enlaces, bloques de código, tablas y diagramas.
+- Verificar que no se hayan agregado secretos ni detalles sensibles.
