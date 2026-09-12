@@ -205,7 +205,7 @@ npm run dev:android
 | `npm run build` | Compilación TypeScript + build Vite |
 | `npm run lint` | ESLint |
 | `npm run dev:tauri` | Dev desktop Linux (auto-detect backend) |
-| `npm run dev:tauri:windows` | Dev desktop Windows; inicia Vite de forma controlada o reutiliza el Vite de este repositorio si ya ocupa el puerto 1420. Rechaza procesos ajenos y ejecuta Tauri sin duplicar `beforeDevCommand`. |
+| `npm run dev:tauri:windows` | Dev desktop Windows; genera primero el build multipagina requerido por la publicacion de Task Manager, luego inicia Vite de forma controlada o reutiliza el Vite de este repositorio si ya ocupa el puerto 1420. Rechaza procesos ajenos y ejecuta Tauri sin duplicar `beforeDevCommand`. |
 | `npm run dev:tauri:wayland` | Fuerza backend Wayland |
 | `npm run dev:tauri:wayland:fallback` | Wayland con fallback a X11 |
 | `npm run dev:tauri:x11` | Fuerza backend X11 |

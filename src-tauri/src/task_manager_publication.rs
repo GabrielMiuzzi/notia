@@ -8,6 +8,8 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
+use chrono::{DateTime, Local, Utc};
+#[cfg(target_os = "windows")]
 use rcgen::{CertificateParams, KeyPair};
 #[cfg(target_os = "windows")]
 use rustls::{
@@ -2961,7 +2963,7 @@ fn execute_publication_comment_append(
     if !current.ok {
         return Err("No se pudo leer la tarea publicada.".to_string());
     }
-    let timestamp = unix_timestamp_millis();
+    let timestamp = format_publication_comment_timestamp(unix_timestamp_millis());
     let comment_block = format!("## Comentario - {timestamp}\n{comment}\n");
     let next_content = if current.content.trim().is_empty() {
         comment_block
@@ -3449,6 +3451,21 @@ fn unix_timestamp_millis() -> u64 {
         .map_or(0, |duration| {
             duration.as_millis().min(u128::from(u64::MAX)) as u64
         })
+}
+
+#[cfg(target_os = "windows")]
+fn format_publication_comment_timestamp(timestamp_millis: u64) -> String {
+    let Some(timestamp_millis) = i64::try_from(timestamp_millis).ok() else {
+        return "01/01/1970 00:00".to_string();
+    };
+    DateTime::<Utc>::from_timestamp_millis(timestamp_millis)
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&Local)
+                .format("%d/%m/%Y %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "01/01/1970 00:00".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -7581,9 +7598,37 @@ mod tests {
         assert!(result.1);
         let content = fs::read_to_string(&task_path).expect("updated task");
         assert!(content.contains("Contenido"));
-        assert!(content.contains("## Comentario - "));
+        let comment_heading = content
+            .lines()
+            .find(|line| line.starts_with("## Comentario - "))
+            .expect("comment heading");
+        assert_eq!(
+            comment_heading.len(),
+            "## Comentario - DD/MM/YYYY HH:MM".len()
+        );
+        assert!(comment_heading
+            .strip_prefix("## Comentario - ")
+            .is_some_and(|timestamp| {
+                timestamp.len() == 16
+                    && timestamp.as_bytes()[2] == b'/'
+                    && timestamp.as_bytes()[5] == b'/'
+                    && timestamp.as_bytes()[10] == b' '
+                    && timestamp.as_bytes()[13] == b':'
+            }));
         assert!(content.contains("Comentario concurrente"));
         fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn formats_publication_comment_timestamp_for_people() {
+        assert_eq!(
+            format_publication_comment_timestamp(1_789_181_556_059),
+            DateTime::<Utc>::from_timestamp_millis(1_789_181_556_059)
+                .expect("timestamp")
+                .with_timezone(&Local)
+                .format("%d/%m/%Y %H:%M")
+                .to_string()
+        );
     }
 
     #[test]

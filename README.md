@@ -575,6 +575,8 @@ npm install
 
 ### Modo desarrollo
 
+Los launchers de Tauri generan automaticamente el build multipagina antes de iniciar la app. Esto tambien prepara `public-task-manager.html`, que el servidor HTTPS local necesita para entregar la pantalla posterior al login de la URL publicada de Task Manager.
+
 ```bash
 # Solo frontend web (Vite, puerto 1420)
 npm run dev

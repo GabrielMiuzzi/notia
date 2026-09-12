@@ -73,6 +73,12 @@ if (Test-NotiaDevPort) {
 }
 
 try {
+  Write-Host 'Generando los assets publicados de Task Manager...'
+  & npm.cmd run build
+  if ($LASTEXITCODE -ne 0) {
+    throw "El build de los assets publicados termino con codigo $LASTEXITCODE."
+  }
+
   if (-not (Test-NotiaDevPort)) {
     Write-Host 'Iniciando Vite en http://127.0.0.1:1420...'
     $viteProcess = Start-Process `
