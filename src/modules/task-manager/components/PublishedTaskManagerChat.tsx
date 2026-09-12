@@ -7,10 +7,11 @@ import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRu
 import { runPublishedTaskManagerChatProxy } from '../services/publishedTaskManagerChatProxyRuntime'
 
 interface PublishedTaskManagerChatProps {
+  taskManagerScopeKey: string | null
   scopePaths: string[]
 }
 
-export function PublishedTaskManagerChat({ scopePaths }: PublishedTaskManagerChatProps) {
+export function PublishedTaskManagerChat({ taskManagerScopeKey, scopePaths }: PublishedTaskManagerChatProps) {
   const [messages, setMessages] = useState<StoredChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -42,6 +43,7 @@ export function PublishedTaskManagerChat({ scopePaths }: PublishedTaskManagerCha
     setIsSubmitting(true)
     try {
       const answer = await runPublishedTaskManagerChatProxy({
+        taskManagerScopeKey,
         scopePaths,
         prompt,
         previousMessages,

@@ -2,6 +2,7 @@ import type { StoredChatMessage } from '../../../services/chat/chatDocumentStora
 import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
 
 interface PublishedTaskManagerChatProxyInput {
+  taskManagerScopeKey: string | null
   scopePaths: string[]
   prompt: string
   previousMessages: StoredChatMessage[]
@@ -33,6 +34,7 @@ export async function runPublishedTaskManagerChatProxy(
     body: JSON.stringify({
       prompt: input.prompt,
       previousMessages: input.previousMessages,
+      taskManagerScopeKey: input.taskManagerScopeKey,
       scopePaths: input.scopePaths,
     }),
     signal: input.signal,

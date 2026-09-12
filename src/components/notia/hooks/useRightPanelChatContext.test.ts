@@ -37,6 +37,8 @@ describe('resolveRightPanelContextScopeKey', () => {
   it('assigns stable and distinct scopes to Task Manager and Graph View', () => {
     expect(resolveRightPanelContextScopeKey('task-manager', null, null, '__finished__'))
       .toBe('task-manager:__finished__')
+    expect(resolveRightPanelContextScopeKey('task-manager', null, 'task-manager:panel:equipo'))
+      .toBe('task-manager:panel:equipo')
     expect(resolveRightPanelContextScopeKey('graph', null, null)).toBe('graph-view:right-panel')
   })
 })

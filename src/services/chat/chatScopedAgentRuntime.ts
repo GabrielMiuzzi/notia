@@ -54,6 +54,13 @@ import { documentEditPresetInstruction } from '../../engines/markdown/documentEd
 import { dispatchLibraryTreeChanged } from '../libraries/libraryTreeEvents'
 import { invalidateLibrarySearchGraphIndex } from '../libraries/librarySearchGraphIndex'
 import { startPerformanceMeasurement } from '../runtime/performanceBaseline'
+import {
+  isArchivedTaskManagerChatPath,
+  isExplicitArchivedTaskManagerRequest,
+  normalizeTaskManagerChatBoard,
+  resolveTaskManagerChatScope,
+  taskManagerChatBoardFromPath,
+} from './taskManagerChatScopeEngine'
 
 export type ChatAgentScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance'
 export type ChatAgentResponseFormat = 'telegram-html'
@@ -395,11 +402,14 @@ function taskTitle(value: string): string {
 }
 
 function resolveTaskManagerBoard(scopeKey: string | null | undefined): string | null {
+  const normalizedScopeKey = scopeKey?.startsWith('task-manager:task-manager:')
+    ? scopeKey.slice('task-manager:'.length)
+    : scopeKey
   const prefix = 'task-manager:panel:'
-  if (!scopeKey?.startsWith(prefix)) {
+  if (!normalizedScopeKey?.startsWith(prefix)) {
     return null
   }
-  const board = scopeKey.slice(prefix.length).trim()
+  const board = normalizedScopeKey.slice(prefix.length).trim()
   return board && !board.startsWith('__') ? board : null
 }
 
@@ -1416,6 +1426,7 @@ export function buildChatAgentTools(
               priorities: { type: 'array', items: { type: 'string', enum: ['Baja', 'Media', 'Alta', 'Urgente'] } },
               groups: { type: 'array', items: { type: 'string' } },
               board: { type: 'string', description: 'Tablero autorizado por nombre. Si se omite, usa el tablero activo del scope.' },
+              includeArchived: { type: 'boolean', description: 'Incluye tareas de Completadas/Canceladas solo cuando el usuario las pidio de forma explicita.' },
               tags: { type: 'array', items: { type: 'string' } },
               from: { type: 'string', description: 'Fecha inicial YYYY-MM-DD.' },
               to: { type: 'string', description: 'Fecha final YYYY-MM-DD.' },
@@ -1427,16 +1438,25 @@ export function buildChatAgentTools(
         type: 'function',
         function: {
           name: 'search_task_context',
-          description: 'Recupera fragmentos relevantes de tickets mediante RAG local.',
-          parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, ticketIds: { type: 'array', items: { type: 'string' } } } },
+          description: 'Recupera fragmentos relevantes de tickets mediante RAG local. Por defecto usa solo el tablero activo y excluye Completadas/Canceladas.',
+          parameters: { type: 'object', required: ['query'], properties: {
+            query: { type: 'string' },
+            ticketIds: { type: 'array', items: { type: 'string' } },
+            board: { type: 'string', description: 'Tablero autorizado por nombre. Si se omite, usa el tablero activo del scope.' },
+            includeArchived: { type: 'boolean', description: 'Incluye tareas de Completadas/Canceladas solo cuando el usuario las pidio de forma explicita.' },
+          } },
         },
       },
       {
         type: 'function',
         function: {
           name: 'read_task_tickets',
-          description: 'Lee tickets completos previamente identificados, incluyendo sus subtareas.',
-          parameters: { type: 'object', required: ['ticketIds'], properties: { ticketIds: { type: 'array', items: { type: 'string' } } } },
+          description: 'Lee tickets completos previamente identificados, incluyendo sus subtareas. Respeta el tablero activo y excluye archivados por defecto.',
+          parameters: { type: 'object', required: ['ticketIds'], properties: {
+            ticketIds: { type: 'array', items: { type: 'string' } },
+            board: { type: 'string', description: 'Tablero autorizado por nombre. Si se omite, usa el tablero activo del scope.' },
+            includeArchived: { type: 'boolean', description: 'Incluye tareas de Completadas/Canceladas solo cuando el usuario las pidio de forma explicita.' },
+          } },
         },
       },
     )
@@ -1447,7 +1467,10 @@ export function buildChatAgentTools(
         description: 'Enumera y lee todos los tickets del Task Manager. Debes usarla para inventarios, conteos, resúmenes o comparaciones que pidan todos los tickets, todo el tablero, cada persona o una visión completa.',
         parameters: {
           type: 'object',
-          properties: {},
+          properties: {
+            board: { type: 'string', description: 'Tablero autorizado por nombre. Si se omite, usa el tablero activo del scope.' },
+            includeArchived: { type: 'boolean', description: 'Incluye tareas de Completadas/Canceladas solo cuando el usuario las pidio de forma explicita.' },
+          },
         },
       },
     })
@@ -1681,6 +1704,8 @@ export function buildChatAgentSystemPrompt(
   if (scope === 'task-manager') {
     base.push(
       'Estas en Task Manager. No recibiste todos los tickets como contexto.',
+      'Por defecto responde exclusivamente sobre el tablero activo del scope. No mezcles tableros publicados ni cambies de tablero por una coincidencia de texto; solo usa otro tablero si el usuario lo solicita de forma explicita y esta autorizado.',
+      'Por defecto excluye los tickets ubicados en Completadas, Canceladas, finished, cancelled o completadas. Incluyelos solamente cuando el usuario pida explicitamente esos estados, esos tableros o tickets archivados, y pasa includeArchived:true a la herramienta correspondiente.',
       'Para preguntas tematicas generales sobre tareas usa primero search_task_context.',
       'Si el usuario pide todos los tickets, un inventario, conteo, resumen completo o comparacion global, debes llamar read_all_task_tickets. RAG devuelve solo coincidencias parciales y nunca sirve para afirmar que encontraste todos.',
       'Antes de decir "todos", verifica que el resultado de read_all_task_tickets no este truncado y menciona cualquier truncamiento.',
@@ -2102,6 +2127,54 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     const path = document.option.relativePath.replace(/\\/g, '/').toLowerCase()
     return path.startsWith('task-mannager/') || path.startsWith('task-manager/')
   })
+  const activeTaskManagerBoard = resolveTaskManagerBoard(options.taskManagerScopeKey)
+  const normalizedTaskManagerScopeKey = options.taskManagerScopeKey?.startsWith('task-manager:task-manager:')
+    ? options.taskManagerScopeKey.slice('task-manager:'.length)
+    : options.taskManagerScopeKey
+  const activeTaskManagerPanelId = normalizedTaskManagerScopeKey?.startsWith('task-manager:panel:')
+    ? normalizedTaskManagerScopeKey.slice('task-manager:panel:'.length).trim()
+    : null
+  const activeTaskManagerPanelIncludesArchived = activeTaskManagerPanelId === '__finished__' || activeTaskManagerPanelId === '__cancelled__'
+  const taskMetadataValue = (metadata: Record<string, unknown>, key: string): string => {
+    const value = metadata[key]
+    return Array.isArray(value)
+      ? value.filter((item): item is string | number => typeof item === 'string' || typeof item === 'number').join(' ')
+      : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+  }
+  const taskDocumentMetadata = (content: string): Record<string, unknown> => Object.fromEntries(
+    parseFrontmatterDocument(content).frontmatter.map((entry) => [entry.key, entry.value]),
+  )
+  const taskDocumentMatchesScope = (
+    document: AgentDocument,
+    metadata: Record<string, unknown>,
+    scope: ReturnType<typeof resolveTaskManagerChatScope>,
+  ): boolean => {
+    if (!scope.includeArchived && isArchivedTaskManagerChatPath(document.option.relativePath)) return false
+    if (!scope.board) return true
+    const board = normalizeTaskManagerChatBoard(
+      taskMetadataValue(metadata, 'tablero') || taskManagerChatBoardFromPath(document.option.relativePath) || '',
+    )
+    return board === scope.board
+  }
+  const loadTaskDocumentsInScope = async (
+    args: Record<string, unknown>,
+    explicitValues: string[] = [],
+  ): Promise<{ scope: ReturnType<typeof resolveTaskManagerChatScope>; documents: AgentDocument[] }> => {
+    const requestedBoard = typeof args.board === 'string' ? args.board : null
+    const includeArchived = activeTaskManagerPanelIncludesArchived
+      || args.includeArchived === true
+      || isExplicitArchivedTaskManagerRequest([...explicitValues, requestedBoard ?? ''])
+    const scope = resolveTaskManagerChatScope(activeTaskManagerBoard, requestedBoard, includeArchived)
+    const files = taskDocuments.length > 0
+      ? await loadInlineFileAttachments(options.library, taskDocuments.map((document) => document.option.path), candidates)
+      : []
+    const scopedDocuments = files.flatMap((file, index) => {
+      const document = taskDocuments[index]
+      if (!document || !taskDocumentMatchesScope(document, taskDocumentMetadata(file.content), scope)) return []
+      return [document]
+    })
+    return { scope, documents: scopedDocuments }
+  }
   const byId = new Map(documents.map((document) => [document.id, document]))
   const authorized = new Set<string>()
   let requiredTicketSections: RequiredTicketSection[] = []
@@ -4636,12 +4709,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
 
     if (name === 'get_task_board_summary') {
       if (options.scope !== 'task-manager') return { ok: false, error: 'task-manager-scope-required' }
-      const requestedBoard = typeof args.board === 'string' ? args.board.trim() : ''
-      const activeBoard = resolveTaskManagerBoard(options.taskManagerScopeKey)
-      const selectedTasks = taskDocuments.filter((document) => {
-        if (requestedBoard && !document.option.relativePath.toLocaleLowerCase('es').includes(`/${requestedBoard.toLocaleLowerCase('es')}/`)) return false
-        return true
-      })
+      const { scope, documents: selectedTasks } = await loadTaskDocumentsInScope(args)
       const files = await loadInlineFileAttachments(options.library, selectedTasks.map((document) => document.option.path), candidates)
       const byState = new Map<string, number>()
       const byPriority = new Map<string, number>()
@@ -4658,7 +4726,8 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const toRecord = (source: Map<string, number>): Record<string, number> => Object.fromEntries([...source.entries()].sort((left, right) => right[1] - left[1]))
       return {
         ok: true,
-        board: requestedBoard || activeBoard,
+        board: scope.board,
+        includeArchived: scope.includeArchived,
         total: files.length,
         byState: toRecord(byState),
         byPriority: toRecord(byPriority),
@@ -4673,8 +4742,8 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       )
       return getTaskManagerAgentOptions(
         options.library.path,
-        resolveTaskManagerBoard(options.taskManagerScopeKey)
-          ?? (typeof args.board === 'string' ? args.board.trim() || null : null),
+        (typeof args.board === 'string' ? args.board.trim() || null : null)
+          ?? resolveTaskManagerBoard(options.taskManagerScopeKey),
       )
     }
 
@@ -4683,8 +4752,8 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       const selectedDocument = ticketId
         ? taskDocuments.find((document) => document.id === ticketId)
         : undefined
-      const board = resolveTaskManagerBoard(options.taskManagerScopeKey)
-        ?? (typeof args.board === 'string' ? args.board.trim() || null : null)
+      const board = (typeof args.board === 'string' ? args.board.trim() || null : null)
+        ?? resolveTaskManagerBoard(options.taskManagerScopeKey)
       let mutation: TaskManagerAgentMutation
       let confirmation: string
       let confirmationPreview: MutationPreview | undefined
@@ -5098,6 +5167,17 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         const requestedGroups = stringArray(args.groups).map(normalizeAgentSearchText)
         const requestedBoard = typeof args.board === 'string' ? normalizeAgentSearchText(args.board) : ''
         const requestedTags = stringArray(args.tags).map(normalizeAgentSearchText)
+        const taskScope = resolveTaskManagerChatScope(
+          activeTaskManagerBoard,
+          requestedBoard || null,
+          activeTaskManagerPanelIncludesArchived
+            || args.includeArchived === true || isExplicitArchivedTaskManagerRequest([
+            query,
+            ...titles,
+            ...requestedStates,
+            requestedBoard,
+          ]),
+        )
         const from = typeof args.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.from) ? args.from : ''
         const to = typeof args.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.to) ? args.to : ''
         if ((args.from !== undefined && !from) || (args.to !== undefined && !to)) {
@@ -5138,6 +5218,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
             && (!requestedBoard || board === requestedBoard)
             && (requestedTags.length === 0 || requestedTags.every((tag) => tags.includes(tag)))
             && (!from && !to || datesOverlap)
+            && taskDocumentMatchesScope(document, metadata, taskScope)
           const terms = [...titles, ...(query ? [query] : [])]
           const score = terms.length > 0
             ? Math.max(...terms.map((term) => Math.max(scoreAgentText(term, document.option.name) * 2, scoreAgentText(term, filterText))))
@@ -5248,7 +5329,8 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     if (isRead) {
       const isTaskRead = name === 'read_task_tickets'
       const requestedIds = stringArray(isTaskRead ? args.ticketIds : args.documentIds)
-      const availableDocuments = isTaskRead ? taskDocuments : documents
+      const taskScopeResult = isTaskRead ? await loadTaskDocumentsInScope(args) : null
+      const availableDocuments = isTaskRead ? taskScopeResult?.documents ?? [] : documents
       const selected = requestedIds
         .map((id) => availableDocuments.find((document) => document.id === id))
         .filter((document): document is AgentDocument => Boolean(document))
@@ -5290,9 +5372,10 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     }
 
     if (name === 'read_all_task_tickets') {
+      const { scope, documents: scopedTaskDocuments } = await loadTaskDocumentsInScope(args)
       const files = await loadInlineFileAttachments(
         options.library,
-        taskDocuments.map((document) => document.option.path),
+        scopedTaskDocuments.map((document) => document.option.path),
         candidates,
       )
       let consumed = 0
@@ -5311,9 +5394,11 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
         return [{ title: file.name, path: file.path, content }]
       })
       return {
-        totalTickets: taskDocuments.length,
+        totalTickets: scopedTaskDocuments.length,
         returnedTickets: tickets.length,
         truncated,
+        board: scope.board,
+        includeArchived: scope.includeArchived,
         tickets,
       }
     }
@@ -5321,11 +5406,12 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     const isRag = name === 'search_task_context' || name === 'search_library_context'
     if (isRag) {
       const isTaskRag = name === 'search_task_context'
-      const availableDocuments = isTaskRag ? taskDocuments : documents
       const query = typeof args.query === 'string' ? args.query.trim() : ''
       if (!query) {
         return { ok: false, error: 'missing-query' }
       }
+      const taskScopeResult = isTaskRag ? await loadTaskDocumentsInScope(args, [query]) : null
+      const availableDocuments = isTaskRag ? taskScopeResult?.documents ?? [] : documents
       const rawRequestedIds = isTaskRag ? args.ticketIds : args.documentIds
       const requested = stringArray(rawRequestedIds)
         .map((id) => availableDocuments.find((document) => document.id === id))

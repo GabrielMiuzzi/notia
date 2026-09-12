@@ -19,6 +19,7 @@ describe('runPublishedTaskManagerChatProxy', () => {
     const onMessageDelta = vi.fn()
 
     await expect(runPublishedTaskManagerChatProxy({
+      taskManagerScopeKey: 'task-manager:panel:equipo',
       scopePaths: ['published-vault/task-mannager/equipo/ticket.md'],
       prompt: 'Resume el ticket',
       previousMessages: [{ role: 'user', content: 'Hola' }],
@@ -34,6 +35,7 @@ describe('runPublishedTaskManagerChatProxy', () => {
       body: JSON.stringify({
         prompt: 'Resume el ticket',
         previousMessages: [{ role: 'user', content: 'Hola' }],
+        taskManagerScopeKey: 'task-manager:panel:equipo',
         scopePaths: ['published-vault/task-mannager/equipo/ticket.md'],
       }),
     }))

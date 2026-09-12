@@ -7,6 +7,7 @@ import type { NotiaLibrary } from '../../../types/notia'
 interface PublishedTaskManagerChatInput {
   aiPreferences: AiPreferences
   library: NotiaLibrary
+  taskManagerScopeKey?: string | null
   scopePaths: string[]
   prompt: string
   previousMessages: StoredChatMessage[]
@@ -24,7 +25,7 @@ export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskM
     aiPreferences: input.aiPreferences,
     library: input.library,
     scopePaths: input.scopePaths,
-    taskManagerScopeKey: 'task-manager:published-boards',
+    taskManagerScopeKey: input.taskManagerScopeKey ?? 'task-manager:published-boards',
     requestClarification: async (question, signal, choices) => {
       if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
       const suffix = choices?.length ? `\n\nOpciones:\n${choices.map((choice) => `- ${choice}`).join('\n')}` : ''

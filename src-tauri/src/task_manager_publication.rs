@@ -153,6 +153,8 @@ struct PublishedAiStreamRequest {
     #[serde(default)]
     previous_messages: Vec<PublishedAiChatMessage>,
     #[serde(default)]
+    task_manager_scope_key: Option<String>,
+    #[serde(default)]
     scope_paths: Vec<String>,
 }
 
@@ -4553,6 +4555,7 @@ fn register_published_ai_host_request(
         "vaultPath": vault_path,
         "prompt": request.prompt,
         "previousMessages": request.previous_messages,
+        "taskManagerScopeKey": request.task_manager_scope_key,
         "scopePaths": request.scope_paths,
     });
     if let Err(error) = app_handle.emit(PUBLISHED_AI_HOST_REQUEST_EVENT, event) {

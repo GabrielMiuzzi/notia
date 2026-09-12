@@ -121,12 +121,12 @@ function TaskManagerAppComponent({
   const publishedChatContext = useMemo(() => {
     if (!manager.settings.activeVaultPath || !publishedBoardNameSet) return null
     return {
-      scopeKey: 'task-manager:published-boards',
+      scopeKey: `task-manager:panel:${activeBoard}`,
       filePaths: Array.from(new Set(visibleTasks.map((task) => (
         toAbsoluteVaultPath(manager.settings.activeVaultPath as string, task.filePath)
       )))).sort((left, right) => left.localeCompare(right, 'es')),
     } satisfies TaskManagerChatContext
-  }, [manager.settings.activeVaultPath, publishedBoardNameSet, visibleTasks])
+  }, [activeBoard, manager.settings.activeVaultPath, publishedBoardNameSet, visibleTasks])
 
   useEffect(() => {
     onPublishedChatContextChange?.(publishedChatContext)

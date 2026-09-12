@@ -18,6 +18,7 @@ interface PublishedAiHostRequest {
   vaultPath: string
   prompt: string
   previousMessages: StoredChatMessage[]
+  taskManagerScopeKey: string | null
   scopePaths: string[]
 }
 
@@ -87,6 +88,7 @@ function parsePublishedAiHostRequest(value: unknown): PublishedAiHostRequest | n
     || typeof candidate.prompt !== 'string'
     || !Array.isArray(candidate.previousMessages)
     || !Array.isArray(candidate.scopePaths)
+    || (candidate.taskManagerScopeKey !== undefined && candidate.taskManagerScopeKey !== null && (typeof candidate.taskManagerScopeKey !== 'string' || candidate.taskManagerScopeKey.length > 200))
   ) return null
   if (
     !candidate.requestId.trim()
@@ -107,12 +109,16 @@ function parsePublishedAiHostRequest(value: unknown): PublishedAiHostRequest | n
 
   const scopePaths = candidate.scopePaths.filter((path): path is string => typeof path === 'string')
   if (scopePaths.length !== candidate.scopePaths.length) return null
+  const taskManagerScopeKey = candidate.taskManagerScopeKey === null || candidate.taskManagerScopeKey === undefined
+    ? null
+    : candidate.taskManagerScopeKey.trim().slice(0, 200)
 
   return {
     requestId: candidate.requestId,
     vaultPath: candidate.vaultPath,
     prompt: candidate.prompt,
     previousMessages,
+    taskManagerScopeKey,
     scopePaths,
   }
 }
@@ -169,6 +175,7 @@ export function useTaskManagerPublicationAiHostBridge({
           aiPreferences: aiPreferencesRef.current,
           library,
           scopePaths,
+          taskManagerScopeKey: request.taskManagerScopeKey,
           prompt: request.prompt,
           previousMessages: request.previousMessages,
           signal: controller.signal,

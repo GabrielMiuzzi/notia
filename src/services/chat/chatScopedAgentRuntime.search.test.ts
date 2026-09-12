@@ -100,6 +100,50 @@ describe('chatScopedAgentRuntime metadata search', () => {
     expect(JSON.stringify(result)).not.toContain('Contenido privado')
   })
 
+  it('limits Task Manager searches to the active board and excludes archived tickets by default', async () => {
+    const taskPaths = [
+      'C:/vault/task-mannager/equipo/activo.md',
+      'C:/vault/task-mannager/finished/completada.md',
+      'C:/vault/task-mannager/otro/otro.md',
+    ]
+    mocks.loadInlineFileAttachments.mockImplementation(async (_library, paths: string[]) => paths.map((path) => ({
+      path,
+      name: path.split('/').pop() ?? path,
+      content: path.endsWith('/activo.md')
+        ? '---\ntarea: Activa\ntablero: equipo\nestado: Pendiente\n---\nTrabajo de X'
+        : path.endsWith('/completada.md')
+          ? '---\ntarea: Completada\ntablero: equipo\nestado: Finalizada\n---\nTrabajo de X archivado'
+          : '---\ntarea: Otro\ntablero: otro\nestado: Pendiente\n---\nTrabajo de X en otro tablero',
+    })))
+
+    const agent = await createChatScopedAgent({
+      scope: 'task-manager',
+      publishedScope: true,
+      taskManagerScopeKey: 'task-manager:panel:equipo',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: {
+        ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: false, thinkingLevel: 'medium',
+      },
+      scopePaths: taskPaths,
+      persistencePolicy: 'published-no-memory',
+      requestClarification: vi.fn(),
+      requestConfirmation: vi.fn(),
+    })
+
+    const result = await agent.executeTool({
+      function: { name: 'search_task_context', arguments: { query: 'Trabajo de X' } },
+    }, new AbortController().signal) as { tickets: Array<{ path: string }> }
+
+    expect(result.tickets.map((ticket) => ticket.path)).toEqual(['C:/vault/task-mannager/equipo/activo.md'])
+
+    const archivedResult = await agent.executeTool({
+      function: { name: 'search_task_tickets', arguments: { states: ['Finalizada'], includeArchived: true } },
+    }, new AbortController().signal) as { matches: Array<{ candidates: Array<{ logicalPath: string }> }> }
+
+    expect(archivedResult.matches[0]?.candidates.map((candidate) => candidate.logicalPath)).toEqual(['task-mannager/finished/completada.md'])
+  })
+
   it('keeps dirty active selection and authorization boundaries in workspace context', async () => {
     const agent = await createChatScopedAgent({
       scope: 'document',

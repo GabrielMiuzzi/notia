@@ -44,7 +44,7 @@ export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: Pu
           <TaskManagerApp embedded vault={{ path: bootstrapData.vaultPath }} publishedBoardNames={bootstrapData.settings.boards.map((board) => board.name)} canManageBoards={false} onPublishedChatContextChange={setChatContext} />
         </div>
         <aside className={`notia-right-panel ${isChatOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`} aria-hidden={!isChatOpen}>
-          {isChatOpen ? <PublishedTaskManagerChat scopePaths={chatContext?.filePaths ?? []} /> : null}
+          {isChatOpen ? <PublishedTaskManagerChat taskManagerScopeKey={chatContext?.scopeKey ?? null} scopePaths={chatContext?.filePaths ?? []} /> : null}
         </aside>
       </div>
     </div>

@@ -69,7 +69,10 @@ export function resolveRightPanelContextScopeKey(
   taskManagerPanelId = '',
 ): string | null {
   if (activeWorkspaceView === 'task-manager') {
-    return `task-manager:${taskManagerScopeKey?.trim() || taskManagerPanelId.trim() || 'default'}`
+    const normalizedScopeKey = taskManagerScopeKey?.trim() || ''
+    return normalizedScopeKey.startsWith('task-manager:')
+      ? normalizedScopeKey
+      : `task-manager:${normalizedScopeKey || taskManagerPanelId.trim() || 'default'}`
   }
   if (activeWorkspaceView === 'graph') return 'graph-view:right-panel'
   if (activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown') {
