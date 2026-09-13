@@ -19,10 +19,10 @@
 - Integración de Telegram con chat, notas de voz e imágenes.
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
-- Task Manager con tableros Kanban, vista de tabla, subtareas y comentarios.
+- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas y comentarios.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero.
 - Temporizador Pomodoro integrado en Task Manager.
-- Publicación colaborativa de Task Manager en la red local.
+- Publicación colaborativa de Task Manager en la red local con creación de tareas y subtareas.
 - Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas e inversiones.
 - Calendario con feriados nacionales y bancarios de Argentina.
 - Temas claro y oscuro.

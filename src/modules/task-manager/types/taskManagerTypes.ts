@@ -74,6 +74,10 @@ export interface TaskFormData {
   contexto?: string
 }
 
+export type TaskCreationRequest =
+  | { kind: 'task'; group?: string }
+  | { kind: 'subtask'; parentTaskName: string; group?: string }
+
 export type PomodoroPhase = 'work' | 'short-break' | 'long-break'
 export type PomodoroRunState = 'idle' | 'running' | 'paused'
 

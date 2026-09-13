@@ -17,7 +17,7 @@ import {
 } from '../engines/pomodoroLogEngine'
 import { buildRebalancedEndDates } from '../engines/scheduleEngine'
 import { buildBoardTaskIndexContent, buildRootTaskIndexContent, CANCELLED_TASK_INDEX_PATH, FINISHED_TASK_INDEX_PATH, getBoardTaskIndexPath, ROOT_TASK_INDEX_PATH } from '../engines/taskIndexEngine'
-import { buildTaskContent, getBoardFolder, getBoardSubtasksFolder, getTasks, isTaskMarkdownFile, resolveNewTaskOrder, resolveTaskEndDate, resolveTaskPath } from '../engines/taskEngine'
+import { buildTaskContent, getBoardFolder, getBoardSubtasksFolder, getTasks, isTaskMarkdownFile, resolveNewTaskOrder, resolveTaskEndDate, resolveTaskParent, resolveTaskPath } from '../engines/taskEngine'
 import type {
   Board,
   MarkdownFileDocument,
@@ -369,11 +369,20 @@ export async function resolveTaskManagerRuntimePath(vaultPath: string, taskPath:
 export async function createTask(vaultPath: string, formData: TaskFormData, tasks: TaskItem[]): Promise<string> {
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
-  const order = resolveNewTaskOrder(tasks, formData)
+  const parentTaskName = formData.parentTaskName.trim()
+  const parentTask = parentTaskName
+    ? resolveTaskParent(tasks, parentTaskName, formData.board)
+    : null
+  if (parentTaskName && !parentTask) {
+    throw new Error('La tarea padre ya no está disponible en este tablero. Actualizá el tablero e intentá nuevamente.')
+  }
+
   const normalizedFormData: TaskFormData = {
     ...formData,
+    parentTaskName: parentTask?.fileName ?? '',
     endDate: resolveTaskEndDate(formData.endDate, formData.estimatedHours),
   }
+  const order = resolveNewTaskOrder(tasks, normalizedFormData)
   const desiredPath = resolveTaskPath(vaultPath, normalizedFormData.title, normalizedFormData.board, normalizedFormData.parentTaskName)
   const relativeDesiredPath = toRelativeVaultPath(vaultPath, desiredPath)
   const existingPaths = new Set(tasks.map((task) => task.filePath))

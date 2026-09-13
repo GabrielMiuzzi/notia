@@ -171,6 +171,32 @@ export function buildTaskContent(data: TaskFormData, order: number): string {
   ].join('\n')
 }
 
+export function resolveTaskParent(
+  tasks: TaskItem[],
+  parentTaskName: string,
+  boardName: string,
+): TaskItem | null {
+  const normalizedParentName = normalizeParentTaskName(parentTaskName).toLowerCase()
+  if (!normalizedParentName) {
+    return null
+  }
+
+  const normalizedBoard = normalizeBoardName(boardName)
+  const matchingParents = tasks.filter((task) => {
+    if (normalizeBoardName(task.board) !== normalizedBoard || task.parentTaskName.trim()) {
+      return false
+    }
+
+    return [task.fileName, task.title]
+      .some((candidate) => candidate.trim().toLowerCase() === normalizedParentName)
+  })
+  if (matchingParents.length === 1) {
+    return matchingParents[0] ?? null
+  }
+
+  return matchingParents.find((task) => task.fileName.trim().toLowerCase() === normalizedParentName) ?? null
+}
+
 export function resolveNewTaskOrder(tasks: TaskItem[], data: TaskFormData): number {
   const goesToTop = data.state === 'En progreso' || data.priority === 'Urgente'
 

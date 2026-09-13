@@ -1275,10 +1275,17 @@ fn sanitize_publication_settings(
                     .filter(|hours| hours.is_finite())
                     .map(|hours| hours.clamp(0.0, 24.0))
                     .unwrap_or(24.0);
+                let contexto = board
+                    .get("contexto")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|context| is_safe_publication_context(context))
+                    .unwrap_or("#Personal");
                 Some(serde_json::json!({
                     "name": name,
                     "color": color,
                     "activityHoursPerDay": activity_hours,
+                    "contexto": contexto,
                 }))
             })
             .take(64)
@@ -1336,6 +1343,17 @@ fn is_safe_publication_name(value: &str, max_length: usize) -> bool {
         && !value.contains('>')
         && !value.contains('"')
         && !value.contains('&')
+}
+
+#[cfg(target_os = "windows")]
+fn is_safe_publication_context(value: &str) -> bool {
+    value.len() <= 120
+        && value.starts_with('#')
+        && !value[1..].is_empty()
+        && !value[1..].contains('#')
+        && !value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
 }
 
 #[cfg(target_os = "windows")]
@@ -6306,7 +6324,7 @@ mod tests {
         let sanitized = sanitize_publication_settings(
             serde_json::json!({
                 "boards": [
-                    { "name": " EQUIPO ", "color": "red; background:url(https://attacker)", "activityHoursPerDay": 99 },
+                    { "name": " EQUIPO ", "color": "red; background:url(https://attacker)", "activityHoursPerDay": 99, "contexto": "#Laboral" },
                     { "name": "privado", "color": "#fff" }
                 ],
                 "groups": [
@@ -6323,6 +6341,7 @@ mod tests {
         assert_eq!(sanitized["boards"][0]["name"], "equipo");
         assert_eq!(sanitized["boards"][0]["color"], "#2e6db0");
         assert_eq!(sanitized["boards"][0]["activityHoursPerDay"], 24.0);
+        assert_eq!(sanitized["boards"][0]["contexto"], "#Laboral");
         assert_eq!(sanitized["groups"].as_array().map(Vec::len), Some(1));
         assert_eq!(sanitized["groups"][0]["name"], "Visible");
     }

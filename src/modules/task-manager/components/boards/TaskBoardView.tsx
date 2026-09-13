@@ -3,7 +3,7 @@ import { TextField } from '@mui/material'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import { buildMinimalTaskOrderUpdates } from '../../engines/orderEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
-import type { Group, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
+import type { Group, TaskCreationRequest, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { TaskManagerModal } from '../common/TaskManagerModal'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
@@ -12,7 +12,7 @@ interface TaskBoardViewProps {
   boardName: string
   tasks: TaskItem[]
   groups: Group[]
-  onCreateTask: (defaults?: { parentTaskName?: string; group?: string }) => void
+  onCreateTask: (request?: TaskCreationRequest) => void
   onEditTask: (task: TaskItem) => void
   onChangeTaskState: (task: TaskItem, nextState: string) => Promise<void>
   onChangeTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
@@ -825,7 +825,7 @@ export function TaskBoardView({
                       />
                     ) : null}
                     <div className="tareas-task-card tareas-task-card-add">
-                      <span className="tareas-add-link" onClick={() => onCreateTask({ group: group.name })}>
+                      <span className="tareas-add-link" onClick={() => onCreateTask({ kind: 'task', group: group.name })}>
                         <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
                         Nueva tarea
                       </span>
@@ -1061,7 +1061,7 @@ export function TaskBoardView({
                     />
                   ) : null}
                   <div className="tareas-task-card tareas-task-card-add">
-                    <span className="tareas-add-link" onClick={() => onCreateTask({ group: '' })}>
+                    <span className="tareas-add-link" onClick={() => onCreateTask({ kind: 'task', group: '' })}>
                       <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
                       Nueva tarea
                     </span>
@@ -1142,7 +1142,7 @@ interface TaskCardProps {
   subtasks: TaskItem[]
   isSubtasksExpanded: boolean
   onToggleSubtasks: (taskPath: string) => void
-  onCreateTask: (defaults?: { parentTaskName?: string; group?: string }) => void
+  onCreateTask: (request?: TaskCreationRequest) => void
   onEditTask: (task: TaskItem) => void
   onChangeTaskState: (task: TaskItem, nextState: string) => Promise<void>
   onChangeTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
@@ -1408,7 +1408,7 @@ function TaskCardComponent({
           </span>
         ) : <span className="tareas-card-subtasks">Sin subtareas</span>}
 
-        <span className="tareas-add-link" onClick={() => onCreateTask({ parentTaskName: task.fileName, group: task.group })}>
+        <span className="tareas-add-link" onClick={() => onCreateTask({ kind: 'subtask', parentTaskName: task.fileName, group: task.group })}>
           <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
           Subtarea
         </span>

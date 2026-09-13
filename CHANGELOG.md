@@ -6,3 +6,7 @@
 [2026-09-12 13:55:43 -03:00] Se revisó tasks.md contra README.md, README-TECH.md y FUNCIONALIDADES.md y se aclararon fuentes de verdad, herencia, edición manual y renderizado de Graph View.
 [2026-09-12 14:27:01 -03:00] Se implementaron contextos por biblioteca, frontmatter `contexto`, colores en Graph View, contexto heredado por tableros de Task Manager y defaults #Laboral/#Personal/#Academico.
 [2026-09-12 18:49:12 -03:00] Se corrigió la edición del contexto de tableros de Task Manager para conservarla después de la sincronización y actualizar los archivos `.md` asociados.
+[2026-09-12 20:09:19 -03:00] Se corrigió la creación de tarjetas desde el navegador publicado evitando recrear carpetas de tableros ya existentes.
+[2026-09-12 22:11:45 -03:00] Se corrigió la eliminación de grupos/columnas en el Task Manager publicado sincronizando la configuración con el host.
+[2026-09-12 22:27:40 -03:00] Se evitó crear subtareas huérfanas en la URL publicada validando y canonicalizando la tarea padre antes de escribir el archivo.
+[2026-09-12 22:35:31 -03:00] Se corrigió la publicación del contexto de los tableros y se separó explícitamente la creación de tareas principales de la creación de subtareas para evitar herencias accidentales.

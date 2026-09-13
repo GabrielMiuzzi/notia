@@ -15,7 +15,7 @@ const vaultRuntime = vi.hoisted(() => ({
 
 vi.mock('./vaultRuntime', () => vaultRuntime)
 
-import { loadTaskManagerSnapshot, resolveTaskManagerRuntimePath, updateTaskFrontmatter } from './taskManagerService'
+import { createTask, loadTaskManagerSnapshot, resolveTaskManagerRuntimePath, updateTaskFrontmatter } from './taskManagerService'
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -70,5 +70,29 @@ describe('published Task Manager filesystem flow', () => {
       'published-vault',
       'task-mannager/default/ticket.md',
     )).resolves.toBe('published-vault/task-mannager/default/ticket.md')
+  })
+
+  it('rejects a stale published parent before creating a potentially orphaned file', async () => {
+    vi.stubGlobal('window', {
+      __NOTIA_PUBLISHED_TASK_MANAGER__: true,
+      __NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__: false,
+      __NOTIA_PUBLISHED_TASK_ROOT_FOLDER__: 'task-mannager',
+    })
+
+    await expect(createTask('published-vault', {
+      title: 'Seguimiento',
+      detail: '',
+      state: 'Pendiente',
+      endDate: '',
+      dynamicEndDate: true,
+      board: 'equipo',
+      group: 'Pendiente',
+      priority: 'Media',
+      estimatedHours: 0,
+      parentTaskName: 'padre-desactualizado',
+    }, [])).rejects.toThrow('La tarea padre ya no está disponible')
+
+    expect(vaultRuntime.createMarkdownFile).not.toHaveBeenCalled()
+    expect(vaultRuntime.writeFileContent).not.toHaveBeenCalled()
   })
 })

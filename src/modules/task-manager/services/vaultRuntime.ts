@@ -496,12 +496,18 @@ export async function ensureFolderPath(rootPath: string, relativePath: string): 
   let currentPath = normalizeFilesystemPath(rootPath)
 
   for (const segment of segments) {
+    const nextPath = `${currentPath}/${segment}`
+    if (await directoryExists(nextPath)) {
+      currentPath = nextPath
+      continue
+    }
+
     const result = await createFolder(currentPath, segment)
     if (!result.ok && !isAlreadyExistsError(result.error)) {
       throw new Error(result.error || `No se pudo crear la carpeta ${segment}`)
     }
 
-    currentPath = `${currentPath}/${segment}`
+    currentPath = nextPath
   }
 }
 

@@ -27,7 +27,7 @@ import {
   normalizeTaskArrangementUpdates,
   selectChangedTaskArrangementUpdates,
 } from '../engines/orderEngine'
-import type { Board, Group, PomodoroDurations, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
+import type { Board, Group, PomodoroDurations, TaskCreationRequest, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 import { sanitizeFilename } from '../utils/sanitizeFilename'
 import { loadTaskManagerSettings, saveTaskManagerSettings } from '../services/taskManagerStorage'
@@ -144,7 +144,7 @@ export interface UseTaskManagerResult {
   setActiveVaultPath: (vault: TaskManagerVaultRef | null) => Promise<void>
   selectVault: () => Promise<void>
   reload: () => Promise<void>
-  openTaskCreateDialog: (defaults?: { parentTaskName?: string; group?: string }) => void
+  openTaskCreateDialog: (request?: TaskCreationRequest) => void
   openTaskEditDialog: (task: TaskItem) => void
   closeTaskDialog: () => void
   submitTaskDialog: (formData: TaskFormData) => Promise<void>
@@ -1424,6 +1424,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       }
       if (options?.publicationSettings) {
         await persistSharedMetadata(settings.activeVaultPath, options.publicationSettings, { throwOnError: true })
+        if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true) {
+          await syncTaskManagerPublicationSettings(
+            settings.activeVaultPath,
+            options.publicationSettings,
+            mutationContext,
+          )
+        }
       }
       const loadedSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
       const nextSnapshot = isTransientPublishedEmptySnapshot(initialSnapshot, loadedSnapshot)
@@ -1595,8 +1602,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     setPublicationConflict(null)
   }, [reload])
 
-  const openTaskCreateDialog = useCallback((defaults?: { parentTaskName?: string; group?: string }) => {
-    setTaskCreateDefaults(defaults ?? {})
+  const openTaskCreateDialog = useCallback((request?: TaskCreationRequest) => {
+    setTaskCreateDefaults(request?.kind === 'subtask'
+      ? { parentTaskName: request.parentTaskName, group: request.group }
+      : { group: request?.group })
     setTaskDialog({ open: true, mode: 'create', task: null })
   }, [])
 
