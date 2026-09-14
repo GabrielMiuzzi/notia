@@ -2,12 +2,27 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTelegramProgressMessage,
   createTelegramProgressState,
+  markTelegramProgressThinking,
   reduceTelegramProgress,
   shouldPublishTelegramProgress,
   telegramToolLabel,
 } from './telegramProgressRuntime'
 
 describe('telegram progress runtime', () => {
+  it('keeps the acknowledgement in the editable message until thinking starts', () => {
+    const initial = createTelegramProgressState()
+    expect(buildTelegramProgressMessage(initial)).toContain('Solicitud recibida y en proceso')
+
+    const afterPlanning = reduceTelegramProgress(initial, {
+      type: 'phase-changed', phase: 'planning', round: 1,
+    })
+    expect(buildTelegramProgressMessage(afterPlanning)).toContain('Solicitud recibida y en proceso')
+
+    const thinking = markTelegramProgressThinking(afterPlanning)
+    expect(buildTelegramProgressMessage(thinking)).toContain('Organizando los pasos')
+    expect(buildTelegramProgressMessage(thinking)).not.toContain('Solicitud recibida y en proceso')
+  })
+
   it('renders safe, human-readable labels instead of internal tool names', () => {
     const state = reduceTelegramProgress(
       createTelegramProgressState(),

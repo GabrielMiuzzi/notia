@@ -15,10 +15,11 @@ import { formatTelegramMessage } from '../../../services/telegram/telegramMessag
 import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
 import type { AiImageAttachment } from '../../../services/ai/aiRuntime'
+import { classifyWebSearchNeed } from '../../../services/ai/webSearchRuntime'
 import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
 import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from '../../../services/runtime/notiaLogger'
 import { renderTelegramPdfPages } from '../../../services/telegram/telegramPdfRenderer'
-import { buildTelegramProgressMessage, createTelegramProgressState, isCriticalTelegramProgressEvent, reduceTelegramProgress, shouldPublishTelegramProgress } from '../../../services/telegram/telegramProgressRuntime'
+import { buildTelegramProgressMessage, createTelegramProgressState, isCriticalTelegramProgressEvent, markTelegramProgressThinking, reduceTelegramProgress, shouldPublishTelegramProgress } from '../../../services/telegram/telegramProgressRuntime'
 
 interface Params {
   library: NotiaLibrary | null
@@ -94,9 +95,23 @@ export function describeTelegramAgentError(error: unknown, fallback = 'No se pud
  * arguments, private paths or document fragments. The actual preview remains
  * available in the desktop UI; the channel only carries the decision needed.
  */
-export function sanitizeTelegramConfirmationQuestion(_question: string): string {
-  void _question
-  return 'Confirmación requerida: la IA preparó una operación autorizada. Revisá el cambio en Notia y respondé Confirmar o Cancelar.'
+export function sanitizeTelegramConfirmationQuestion(question: string): string {
+  const normalizedQuestion = question
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLocaleLowerCase('es')
+
+  if (normalizedQuestion.startsWith('buscar fuentes publicas en internet con esta consulta')) {
+    return 'Confirmación requerida: para responder esta consulta, la IA necesita buscar información actualizada en fuentes públicas de internet. La búsqueda no modifica tu biblioteca ni tus documentos. Respondé Confirmar para permitirla o Cancelar para detenerla.'
+  }
+  if (normalizedQuestion.startsWith('aprobar este plan de ejecucion')) {
+    return 'Confirmación requerida: la IA preparó un plan de trabajo con varios pasos que puede modificar tu biblioteca. Revisá el detalle en Notia y respondé Confirmar o Cancelar.'
+  }
+  if (normalizedQuestion.startsWith('la ia solicita leer')) {
+    return 'Confirmación requerida: la IA necesita permiso para leer información adicional de tu biblioteca y completar la consulta. Revisá el pedido en Notia y respondé Confirmar o Cancelar.'
+  }
+  return 'Confirmación requerida: la IA preparó un cambio en tu biblioteca. El detalle y la vista previa están disponibles en Notia; respondé Confirmar o Cancelar.'
 }
 
 /** Adds an update without losing its order; the active request is tracked separately. */
@@ -129,6 +144,24 @@ export function isTelegramFinanceRequest(value: string): boolean {
   return moneyAmount.test(normalized) && financeVerb.test(normalized)
 }
 
+export function isTelegramCurrentNewsRequest(value: string): boolean {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es')
+  const asksForNews = /\b(notici(?:a|as)|novedad(?:es)?|actualidad|panorama)\b/.test(normalized)
+  return asksForNews && classifyWebSearchNeed(value) !== 'none'
+}
+
+export function isTelegramPublicWebRequest(value: string): boolean {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es')
+  const publicSourceTerm = /\b(en internet|en la web|fuente(?:s)?|enlace(?:s)?|link(?:s)?|url(?:s)?)\b/.test(normalized)
+  return publicSourceTerm && classifyWebSearchNeed(value) === 'explicit'
+}
+
 export function resolveTelegramAgentScope(value: string, previousScope: TelegramAgentScope | null): TelegramAgentScope {
   const normalized = value
     .normalize('NFD')
@@ -136,6 +169,8 @@ export function resolveTelegramAgentScope(value: string, previousScope: Telegram
     .toLocaleLowerCase('es')
   const explicitLibraryRequest = /\b(nota|notas|documento|documentos|archivo|archivos|biblioteca|carpeta|carpetas|tarea|tareas|tablero|board)\b/.test(normalized)
   if (explicitLibraryRequest) return 'library'
+  if (isTelegramCurrentNewsRequest(value)) return 'library'
+  if (isTelegramPublicWebRequest(value) && !isTelegramFinanceRequest(value)) return 'library'
   if (isTelegramFinanceRequest(value)) return 'finance'
   return previousScope === 'finance' && !explicitLibraryRequest ? 'finance' : 'library'
 }
@@ -409,6 +444,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           }, 'error')
         })
       }
+      const publishThinkingStarted = (): void => {
+        const nextProgressState = markTelegramProgressThinking(progressState)
+        if (nextProgressState === progressState) return
+        progressState = nextProgressState
+        lastProgressPublishedAt = null
+        publishProgress({ type: 'phase-changed', phase: progressState.phase, round: progressState.round })
+      }
       progressPublisherRef.current = publishProgress
       publishProgress({ type: 'request-received' })
       if (request.plan) {
@@ -517,6 +559,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           diagnosticModule: request.attachment ? TELEGRAM_AI_DIAGNOSTIC_MODULE : undefined,
         }, {
           abortSignal: abortController.signal,
+          onThinkingDelta: () => {
+            publishThinkingStarted()
+          },
           onAgentProgress: publishProgress,
         })
         if (savedSalary) {
@@ -739,17 +784,13 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar más de 10 solicitudes pendientes. Esperá a que termine alguna e intentá nuevamente.')
         return
       }
-      if (!update.audio) {
+      if (!update.audio && requestsAhead > 0) {
         await sendTelegramMessage(
           state.telegram.botToken,
           peer.chatId,
           attachment
-            ? requestsAhead > 0
-              ? `Documento recibido. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
-              : 'Documento recibido y en proceso.'
-            : requestsAhead > 0
-              ? `Solicitud recibida. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
-              : 'Solicitud recibida y en proceso.',
+            ? `Documento recibido. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
+            : `Solicitud recibida. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`,
         )
       }
       conversationScopeRef.current = scope

@@ -132,6 +132,64 @@ describe('agent execution continuation', () => {
     expect(progressEvents.every((event) => event.requestId === 'telegram-request-1')).toBe(true)
   })
 
+  it('does not accept a fresh-information answer before a successful web search', async () => {
+    const searchCall: AiNativeToolCall = {
+      function: { name: 'search_web', arguments: { query: 'noticias públicas de Argentina' } },
+    }
+    const searchTool = {
+      type: 'function' as const,
+      function: { name: 'search_web', description: 'Busca fuentes públicas.', parameters: {} },
+    }
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { content: 'Encontré las últimas noticias.' } })
+      .mockResolvedValueOnce({ message: { tool_calls: [searchCall] } })
+      .mockResolvedValueOnce({ message: { content: 'Fuente: https://inventada.example/noticia' } })
+      .mockResolvedValueOnce({ message: { content: 'Fuente: https://example.com/noticia' } })
+    const executeTool = vi.fn(async () => ({
+      ok: true,
+      searchedQuery: 'noticias públicas de Argentina',
+      consistency: 'insufficient',
+      results: [{ url: 'https://example.com/noticia' }],
+    }))
+
+    const answer = await runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde con evidencia.',
+      prompt: 'Dame las últimas noticias financieras.',
+      previousMessages: [],
+      tools: [searchTool],
+      requiredToolNames: ['search_web'],
+      executeTool,
+      streamFinalResponse: false,
+    })
+
+    expect(answer).toContain('https://example.com/noticia')
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(invoke).toHaveBeenCalledTimes(4)
+    expect((vi.mocked(invoke).mock.calls[1]?.[1] as { payload?: { messages?: Array<{ content?: string }> } }).payload?.messages)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('todavía no fue verificada') })]))
+    expect((vi.mocked(invoke).mock.calls[3]?.[1] as { payload?: { messages?: Array<{ content?: string }> } }).payload?.messages)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('URLs devueltas por search_web') })]))
+  })
+
+  it('does not present a web answer after the search provider fails', async () => {
+    const searchCall: AiNativeToolCall = { function: { name: 'search_web', arguments: { query: 'noticias públicas' } } }
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [searchCall] } })
+      .mockResolvedValueOnce({ message: { content: 'Encontré noticias verificadas.' } })
+    const executeTool = vi.fn(async () => ({ ok: false, error: 'provider-unavailable' }))
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde con evidencia.',
+      prompt: 'Dame las últimas noticias.',
+      previousMessages: [],
+      tools: [{ type: 'function', function: { name: 'search_web', description: 'Busca', parameters: {} } }],
+      requiredToolNames: ['search_web'],
+      executeTool,
+      streamFinalResponse: false,
+    })).rejects.toThrow('No pude verificar la información en la web')
+    expect(executeTool).toHaveBeenCalledOnce()
+  })
+
   it('emits a plan and step lifecycle without exposing model thinking', async () => {
     const planCall: AiNativeToolCall = {
       function: { name: 'set_task_execution_plan', arguments: { steps: ['Leer', 'Aplicar'] } },

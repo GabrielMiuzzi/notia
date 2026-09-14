@@ -148,6 +148,8 @@ export interface NativeToolAgentInput {
   image?: AiImageAttachment | null
   previousMessages: StoredChatMessage[]
   tools: AiNativeToolDefinition[]
+  /** Tools that must succeed before the model can present a final answer. */
+  requiredToolNames?: string[]
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
   resolveToolResultAnswer?: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer?: (answer: string) => string | null
@@ -1666,6 +1668,51 @@ export function parseLegacyXmlToolCalls(value: string, tools: AiNativeToolDefini
   )) === index)
 }
 
+type RequiredToolFailure = 'failed' | 'declined'
+
+function asToolResultRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function isSuccessfulRequiredToolResult(toolName: string, result: unknown): boolean {
+  const record = asToolResultRecord(result)
+  if (record?.ok !== true || record.declined === true) return false
+  if (toolName !== 'search_web') return true
+  return typeof record.searchedQuery === 'string'
+    && record.searchedQuery.trim().length > 0
+    && Array.isArray(record.results)
+}
+
+function normalizeEvidenceUrl(value: string): string | null {
+  const trimmed = value.trim().replace(/[.,!?;:]+$/g, '')
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return null
+  }
+}
+
+function extractResultUrls(result: unknown): string[] {
+  const results = asToolResultRecord(result)?.results
+  if (!Array.isArray(results)) return []
+  return results.flatMap((item) => {
+    const url = asToolResultRecord(item)?.url
+    if (typeof url !== 'string') return []
+    const normalized = normalizeEvidenceUrl(url)
+    return normalized ? [normalized] : []
+  })
+}
+
+function extractAnswerUrls(answer: string): string[] {
+  return (answer.match(/https?:\/\/[^\s<>"'`\])}]+/gi) ?? [])
+    .map(normalizeEvidenceUrl)
+    .filter((value): value is string => Boolean(value))
+}
+
 export async function runNativeToolAgent(
   preferences: AiPreferences,
   input: NativeToolAgentInput,
@@ -1710,6 +1757,9 @@ export async function runNativeToolAgent(
     model,
   })
   const toolCallTimeoutSeconds = Math.min(600, Math.max(1, Math.ceil((input.toolCallTimeoutMs ?? AI_TOOL_AGENT_TIMEOUT_MS) / 1_000)))
+  const requiredToolNames = [...new Set((input.requiredToolNames ?? [])
+    .map((name) => name.trim())
+    .filter(Boolean))]
   const controller = new AbortController()
   const abort = () => controller.abort()
   options.abortSignal?.addEventListener('abort', abort, { once: true })
@@ -1737,12 +1787,21 @@ export async function runNativeToolAgent(
       hasImage: imageAttachmentBase64(input.image).length > 0,
       imageBytesApprox: imageAttachmentBase64(input.image).reduce((total, value) => total + Math.floor(value.length * 0.75), 0),
       toolCount: input.tools.length,
+      requiredToolNames,
       maxRounds,
       toolCallTimeoutSeconds,
     })
+    const unavailableRequiredToolNames = requiredToolNames.filter((name) => !input.tools.some((tool) => tool.function.name === name))
+    if (unavailableRequiredToolNames.length > 0) {
+      throw new Error(`No puedo verificar esta consulta porque la herramienta requerida no está disponible: ${unavailableRequiredToolNames.join(', ')}. No voy a presentar resultados ni fuentes sin verificarlos.`)
+    }
     let requiresNativeToolRound = false
     let planApprovedForRequest = false
     let consecutivePendingActions = 0
+    const completedRequiredToolNames = new Set<string>()
+    const failedRequiredToolNames = new Map<string, RequiredToolFailure>()
+    const requiredWebSearchUrls = new Set<string>()
+    let requiredWebSearchResultCount: number | null = null
     for (let round = 0; round < maxRounds; round += 1) {
       const roundNumber = round + 1
       const roundStartedAt = performance.now()
@@ -1855,9 +1914,35 @@ export async function runNativeToolAgent(
         } else {
           consecutivePendingActions = 0
         }
-        const correctionPrompt = pendingAction
-          ? 'La respuesta anuncia una accion pendiente pero no solicita herramientas. No termines con una promesa: continua ahora mediante las herramientas disponibles y sus confirmaciones, respetando el pedido y el scope autorizado. Reutiliza las lecturas previas; no repitas cambios ya aplicados. Si falta un dato, usa la herramienta de aclaracion. Si la accion fue rechazada, fallo o no esta disponible, explica ese resultado sin reintentar la mutacion ni prometer ejecutarla.'
-          : input.validateFinalAnswer?.(answer) ?? null
+        const missingRequiredToolNames = requiredToolNames.filter((name) => !completedRequiredToolNames.has(name))
+        const requiredToolFailure = requiredToolNames.find((name) => failedRequiredToolNames.has(name))
+        if (requiredToolFailure) {
+          const failure = failedRequiredToolNames.get(requiredToolFailure)
+          throw new Error(failure === 'declined'
+            ? 'La búsqueda web fue cancelada. No presentaré resultados ni fuentes como si hubieran sido verificados.'
+            : 'No pude verificar la información en la web. No presentaré resultados ni fuentes sin una búsqueda exitosa.')
+        }
+        if (completedRequiredToolNames.has('search_web') && requiredWebSearchResultCount === 0) {
+          throw new Error('La búsqueda web no devolvió fuentes suficientes para verificar esta consulta. No presentaré resultados ni fuentes inventados.')
+        }
+        if (completedRequiredToolNames.has('search_web') && requiredWebSearchResultCount !== null
+          && requiredWebSearchResultCount > 0 && requiredWebSearchUrls.size === 0) {
+          throw new Error('La búsqueda web no devolvió enlaces verificables. No presentaré resultados ni fuentes inventados.')
+        }
+        const missingRequiredToolCorrection = missingRequiredToolNames.length > 0
+          ? `Esta consulta depende de información actualizada y todavía no fue verificada. Debes llamar ahora a ${missingRequiredToolNames.join(', ')} antes de responder; no redactes noticias, cifras, cambios ni fuentes basándote en conocimiento previo o en una suposición.`
+          : null
+        const answerUrls = extractAnswerUrls(answer)
+        const unsupportedWebCitation = requiredWebSearchUrls.size > 0
+          && (answerUrls.length === 0 || answerUrls.some((url) => !requiredWebSearchUrls.has(url)))
+        const webCitationCorrection = unsupportedWebCitation
+          ? 'La búsqueda web devolvió fuentes. No finalices sin incluir enlaces directos y verificables a URLs devueltas por search_web; no inventes URLs, nombres de medios ni citas numeradas sin enlace. Usa exclusivamente la evidencia recuperada y separa hechos de inferencias.'
+          : null
+        const correctionPrompt = missingRequiredToolCorrection
+          ?? webCitationCorrection
+          ?? (pendingAction
+            ? 'La respuesta anuncia una accion pendiente pero no solicita herramientas. No termines con una promesa: continua ahora mediante las herramientas disponibles y sus confirmaciones, respetando el pedido y el scope autorizado. Reutiliza las lecturas previas; no repitas cambios ya aplicados. Si falta un dato, usa la herramienta de aclaracion. Si la accion fue rechazada, fallo o no esta disponible, explica ese resultado sin reintentar la mutacion ni prometer ejecutarla.'
+            : input.validateFinalAnswer?.(answer) ?? null)
         if (correctionPrompt) {
           notifyProgress({ type: 'phase-changed', phase: 'verifying', round: roundNumber })
           options.onThinkingDelta?.(pendingAction
@@ -1986,6 +2071,19 @@ export async function runNativeToolAgent(
             : undefined,
         })
         const toolResultRecord = typeof result === 'object' && result !== null ? result as Record<string, unknown> : null
+        if (requiredToolNames.includes(call.function.name)) {
+          if (isSuccessfulRequiredToolResult(call.function.name, result)) {
+            completedRequiredToolNames.add(call.function.name)
+            if (call.function.name === 'search_web') {
+              requiredWebSearchResultCount = Array.isArray(asToolResultRecord(result)?.results)
+                ? (asToolResultRecord(result)?.results as unknown[]).length
+                : 0
+              for (const url of extractResultUrls(result)) requiredWebSearchUrls.add(url)
+            }
+          } else {
+            failedRequiredToolNames.set(call.function.name, toolResultRecord?.declined === true ? 'declined' : 'failed')
+          }
+        }
         if (PLAN_CONTROL_TOOLS.has(call.function.name)
           && toolResultRecord?.ok === true
           && toolResultRecord.approved === true) {

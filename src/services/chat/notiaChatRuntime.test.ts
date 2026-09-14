@@ -93,4 +93,28 @@ describe('notiaChatRuntime', () => {
       systemPrompt: expect.stringContaining('objetivo'),
     }), {})
   })
+
+  it('requires public web search for fresh information and source follow-ups', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('respuesta con fuente')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: false, thinkingLevel: 'medium' as const,
+    }
+    const agent = {
+      systemPrompt: 'Prompt',
+      tools: [{ type: 'function' as const, function: { name: 'search_web', description: 'Busca', parameters: {} } }],
+      executeTool: vi.fn(),
+    }
+
+    await runNotiaChatReply(preferences, {
+      agent,
+      prompt: '¿Me darías las fuentes?',
+      previousMessages: [{ role: 'assistant', content: 'Encontré noticias recientes.' }],
+      streamFinalResponse: false,
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      requiredToolNames: ['search_web'],
+    }), {})
+  })
 })

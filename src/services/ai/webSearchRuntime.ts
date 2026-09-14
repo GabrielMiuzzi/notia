@@ -34,8 +34,8 @@ export type WebSearchSanitizationResult =
 
 export type WebSearchNeed = 'explicit' | 'freshness' | 'none'
 
-const EXPLICIT_SEARCH_PATTERN = /(?:^|\s)(?:busc(?:a|ar|á|ame)|investig(?:a|ar|á)|consult[aá] fuentes?|fuentes? sobre|en internet|en la web|web search|ollama web|con citas?|encontr[aá] informaci[oó]n)(?=\s|$)/i
-const FRESH_INFORMATION_PATTERN = /(?:^|\s)(?:actual(?:izado)?|hoy|ahora|[uú]ltim[oa]s?|reciente(?:s)?|vigente|cotizaci[oó]n|precio(?:s)?|clima|noticia(?:s)?|versi[oó]n actual|cambi[oó]|regulaci[oó]n|ley vigente)(?=\s|$)/i
+const EXPLICIT_SEARCH_PATTERN = /(?:^|\s)(?:busc(?:a|ar|á|ame)|investig(?:a|ar|á)|consult[aá] fuentes?|fuentes?|enlace(?:s)?|links?|urls?|en internet|en la web|web search|ollama web|con citas?|encontr[aá] informaci[oó]n)(?=[\s?!.,;:]|$)/i
+const FRESH_INFORMATION_PATTERN = /(?:^|\s)(?:actual(?:izado)?|hoy|ahora|[uú]ltim[oa]s?|reciente(?:s)?|vigente|cotizaci[oó]n|precio(?:s)?|clima|noticia(?:s)?|versi[oó]n actual|cambi[oó]|regulaci[oó]n|ley vigente)(?=[\s?!.,;:]|$)/i
 
 /**
  * Supplies a deterministic hint to the agent without ever building a query

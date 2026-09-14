@@ -8,6 +8,7 @@ vi.mock('../../utils/platform/getRuntimeDevice', () => ({ getRuntimeDevice: () =
 describe('webSearchRuntime', () => {
   it.each([
     ['buscá fuentes públicas sobre Rust 2026', 'explicit'],
+    ['¿Me darías las fuentes?', 'explicit'],
     ['¿cuál es el precio actual del dólar?', 'freshness'],
     ['explicame qué es un índice invertido', 'none'],
   ] as const)('classifies web search need without creating a query: %s', (prompt, expected) => {

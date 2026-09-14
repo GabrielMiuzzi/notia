@@ -16,7 +16,7 @@
 - Memoria persistente y herramientas nativas para el agente de IA.
 - Chat efímero de Meeting con transcripción offline y diarización.
 - Dictado y síntesis de voz offline.
-- Integración de Telegram con chat, notas de voz e imágenes.
+- Integración de Telegram con chat, progreso editable, confirmaciones, notas de voz e imágenes.
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas y comentarios.

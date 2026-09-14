@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramFinanceRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, sanitizeTelegramConfirmationQuestion, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
+import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramCurrentNewsRequest, isTelegramFinanceRequest, isTelegramPublicWebRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, sanitizeTelegramConfirmationQuestion, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
 describe('Telegram finance scope', () => {
   it('rejects a salary success message without a persisted salary proof', () => {
@@ -26,6 +26,15 @@ describe('Telegram finance scope', () => {
     expect(isTelegramFinanceRequest('Abrí la nota del proyecto')).toBe(false)
     expect(resolveTelegramAgentScope('Digital', 'finance')).toBe('finance')
     expect(resolveTelegramAgentScope('Crea una nota sobre este gasto', 'finance')).toBe('library')
+  })
+
+  it('routes current news to the web-enabled library scope even when it mentions finance', () => {
+    expect(isTelegramCurrentNewsRequest('Dame las últimas noticias financieras de Argentina')).toBe(true)
+    expect(isTelegramCurrentNewsRequest('¿Qué noticias hay?')).toBe(true)
+    expect(isTelegramPublicWebRequest('¿Me darías las fuentes?')).toBe(true)
+    expect(resolveTelegramAgentScope('Dame las últimas noticias financieras de Argentina', 'finance')).toBe('library')
+    expect(resolveTelegramAgentScope('¿Me darías las fuentes?', 'finance')).toBe('library')
+    expect(resolveTelegramAgentScope('¿Cuál es la última cotización del dólar?', 'finance')).toBe('finance')
   })
 
   it('accepts explicit confirmations, cancellations and leaves ambiguous replies unresolved', () => {
@@ -98,5 +107,25 @@ describe('Telegram finance scope', () => {
     expect(message).not.toContain('sk-secret')
     expect(message).not.toContain('operationId')
     expect(message).not.toContain('C:\\Users\\gabmi')
+  })
+
+  it('explains why a web search needs confirmation without calling it a change', () => {
+    const message = sanitizeTelegramConfirmationQuestion(
+      'Buscar fuentes públicas en internet con esta consulta: "últimas noticias relevantes sobre Milei"',
+    )
+
+    expect(message).toContain('información actualizada en fuentes públicas de internet')
+    expect(message).toContain('no modifica tu biblioteca ni tus documentos')
+    expect(message).not.toContain('preparó un cambio')
+  })
+
+  it('describes a library write as a change while keeping its detail in Notia', () => {
+    const message = sanitizeTelegramConfirmationQuestion(
+      'Vista previa: contenido privado\n\nCrear la nota "privada.md".',
+    )
+
+    expect(message).toContain('preparó un cambio en tu biblioteca')
+    expect(message).toContain('vista previa están disponibles en Notia')
+    expect(message).not.toContain('privada.md')
   })
 })

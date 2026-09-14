@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   renderTelegramPdfPages: vi.fn(),
   buildTelegramProgressMessage: vi.fn(),
   createTelegramProgressState: vi.fn(),
+  markTelegramProgressThinking: vi.fn(),
   isCriticalTelegramProgressEvent: vi.fn(),
   reduceTelegramProgress: vi.fn(),
   shouldPublishTelegramProgress: vi.fn(),
@@ -91,6 +92,7 @@ vi.mock('../../../services/telegram/telegramPdfRenderer', () => ({
 vi.mock('../../../services/telegram/telegramProgressRuntime', () => ({
   buildTelegramProgressMessage: mocks.buildTelegramProgressMessage,
   createTelegramProgressState: mocks.createTelegramProgressState,
+  markTelegramProgressThinking: mocks.markTelegramProgressThinking,
   isCriticalTelegramProgressEvent: mocks.isCriticalTelegramProgressEvent,
   reduceTelegramProgress: mocks.reduceTelegramProgress,
   shouldPublishTelegramProgress: mocks.shouldPublishTelegramProgress,
@@ -134,6 +136,7 @@ describe('useTelegramAgentBridge integration', () => {
     mocks.runNotiaChatReply.mockResolvedValue('respuesta desde runtime comun')
     mocks.buildTelegramProgressMessage.mockReturnValue(null)
     mocks.createTelegramProgressState.mockReturnValue({ pendingCount: 0 })
+    mocks.markTelegramProgressThinking.mockImplementation((state: Record<string, unknown>) => ({ ...state, thinkingStarted: true }))
     mocks.isCriticalTelegramProgressEvent.mockReturnValue(false)
     mocks.reduceTelegramProgress.mockImplementation((state) => state)
     mocks.shouldPublishTelegramProgress.mockReturnValue(false)
@@ -179,6 +182,9 @@ describe('useTelegramAgentBridge integration', () => {
       [],
       'HTML',
     )
+    expect(mocks.sendTelegramMessage).not.toHaveBeenCalledWith(
+      'fixture-token', 42, 'Solicitud recibida y en proceso.',
+    )
     await vi.waitFor(() => expect(mocks.scheduleLongTermMemoriesForTurn).toHaveBeenCalled())
     expect(onLibraryChanged).toHaveBeenCalledOnce()
 
@@ -199,8 +205,9 @@ describe('useTelegramAgentBridge integration', () => {
     mocks.runNotiaChatReply.mockImplementation(async (
       _preferences: unknown,
       _input: unknown,
-      options: { onAgentProgress?: (event: unknown) => void },
+      options: { onAgentProgress?: (event: unknown) => void; onThinkingDelta?: (delta: string) => void },
     ) => {
+      options.onThinkingDelta?.('thinking privado que no debe enviarse')
       options.onAgentProgress?.({ type: 'completed', rounds: 1 })
       return 'respuesta final separada'
     })
@@ -227,6 +234,8 @@ describe('useTelegramAgentBridge integration', () => {
     await vi.waitFor(() => expect(mocks.editTelegramMessage).toHaveBeenCalledWith(
       'fixture-token', 42, 101, '<b>completed</b>', [], 'HTML',
     ))
+    expect(mocks.markTelegramProgressThinking).toHaveBeenCalledOnce()
+    expect(JSON.stringify(mocks.sendTelegramMessage.mock.calls)).not.toContain('thinking privado que no debe enviarse')
     expect(mocks.sendTelegramMessage).toHaveBeenCalledWith(
       'fixture-token', 42, 'respuesta final separada', [], 'HTML',
     )

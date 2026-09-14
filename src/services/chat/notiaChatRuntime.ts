@@ -75,6 +75,8 @@ export function runNotiaChatReply(
   input: NotiaChatReplyInput,
   options: NotiaChatReplyOptions = {},
 ): Promise<string> {
+  const webSearchNeed = classifyWebSearchNeed(input.prompt)
+  const hasWebSearchTool = input.agent.tools.some((tool) => tool.function.name === 'search_web')
   return runNativeToolAgent(preferences, {
     requestId: input.requestId,
     systemPrompt: buildSystemPrompt(input.agent, input.longTermMemories ?? [], input.prompt, input.intentContext),
@@ -83,6 +85,9 @@ export function runNotiaChatReply(
     previousMessages: input.previousMessages,
     tools: input.agent.tools,
     executeTool: input.agent.executeTool,
+    requiredToolNames: webSearchNeed === 'explicit' || (webSearchNeed === 'freshness' && hasWebSearchTool)
+      ? ['search_web']
+      : undefined,
     resolveToolResultAnswer: input.agent.resolveToolResultAnswer,
     validateFinalAnswer: input.agent.validateFinalAnswer,
     maxRounds: input.maxRounds ?? CHAT_AGENT_MAX_ROUNDS,

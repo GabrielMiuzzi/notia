@@ -10,3 +10,5 @@
 [2026-09-12 22:11:45 -03:00] Se corrigió la eliminación de grupos/columnas en el Task Manager publicado sincronizando la configuración con el host.
 [2026-09-12 22:27:40 -03:00] Se evitó crear subtareas huérfanas en la URL publicada validando y canonicalizando la tarea padre antes de escribir el archivo.
 [2026-09-12 22:35:31 -03:00] Se corrigió la publicación del contexto de los tableros y se separó explícitamente la creación de tareas principales de la creación de subtareas para evitar herencias accidentales.
+[2026-09-13 00:38:55 -03:00] Se mejoró el feedback del agente de Telegram: el acuse quedó integrado al progreso editable, se actualiza al iniciar el thinking y las confirmaciones distinguen búsquedas web de cambios en la biblioteca.
+[2026-09-13 00:55:06 -03:00] Se evitó que Telegram invente noticias o fuentes: las consultas actuales se enrutan al scope con búsqueda web, se exige ejecutar la herramienta y se validan los enlaces citados contra sus resultados.

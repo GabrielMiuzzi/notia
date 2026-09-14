@@ -7,6 +7,7 @@ export interface TelegramProgressState {
   lastEventTimestamp: number | null
   phase: AgentProgressPhase
   round: number | null
+  thinkingStarted: boolean
   toolLabel: string | null
   reasoningSummary: string | null
   multimodalStage: AgentMultimodalStage | null
@@ -82,7 +83,7 @@ const PHASE_LABELS: Record<AgentProgressPhase, string> = {
 }
 
 export function createTelegramProgressState(queuePosition: number | null = null): TelegramProgressState {
-  return { requestId: null, lastEventTimestamp: null, phase: 'preparing', round: null, toolLabel: null, reasoningSummary: 'Estoy entendiendo el pedido.', multimodalStage: null, queuePosition, plan: null, activePlanStepId: null }
+  return { requestId: null, lastEventTimestamp: null, phase: 'preparing', round: null, thinkingStarted: false, toolLabel: null, reasoningSummary: 'Estoy entendiendo el pedido.', multimodalStage: null, queuePosition, plan: null, activePlanStepId: null }
 }
 
 const MULTIMODAL_STAGE_LABELS: Record<AgentMultimodalStage, string> = {
@@ -115,6 +116,12 @@ function safePlanStepLabel(toolName: string | null | undefined): string {
 
 export function setTelegramProgressQueuePosition(state: TelegramProgressState, queuePosition: number | null): TelegramProgressState {
   return { ...state, queuePosition }
+}
+
+/** Keeps the initial acknowledgement in the same editable message until the model starts thinking. */
+export function markTelegramProgressThinking(state: TelegramProgressState): TelegramProgressState {
+  if (state.thinkingStarted) return state
+  return { ...state, thinkingStarted: true }
 }
 
 export function telegramToolLabel(toolName: string): string {
@@ -236,7 +243,11 @@ export function buildTelegramProgressMessage(
 ): string {
   const progressMode = preferences.progressMode ?? 'standard'
   if (progressMode === 'off') return ''
-  const lines = [`<b>${PHASE_LABELS[state.phase]}</b>`]
+  const waitingForThinking = !state.thinkingStarted
+    && (state.phase === 'preparing' || state.phase === 'planning')
+    && !state.multimodalStage
+    && !state.plan
+  const lines = [`<b>${waitingForThinking ? 'Solicitud recibida y en proceso.' : PHASE_LABELS[state.phase]}</b>`]
   if (progressMode !== 'minimal' && state.toolLabel) lines.push(`• ${state.toolLabel}`)
   if (preferences.showPlan !== false && progressMode !== 'minimal' && state.plan) {
     lines.push(`<b>TO-DO (${state.plan.steps.length} pasos)</b>`)
