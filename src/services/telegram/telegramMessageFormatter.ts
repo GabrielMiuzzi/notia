@@ -31,9 +31,29 @@ function formatInlineMarkdown(value: string): string {
     .replace(/_([^_\n]+)_/g, '<i>$1</i>')
 }
 
+function normalizeTelegramBlockMarkup(value: string): string {
+  const fencedParts = value.split(/(```[\s\S]*?```)/g)
+  return fencedParts.map((part, index) => {
+    if (index % 2 === 1) return part
+    return part
+      .replace(/\s*\\?<br\s*\/?>\s*/gi, '\n')
+      .replace(/\s*\\?<\/?(?:p|div)\b[^>]*>\s*/gi, '\n')
+      .replace(/\s*\\?<h[1-6]\b[^>]*>\s*/gi, '\n### ')
+      .replace(/\s*\\?<\/h[1-6]>\s*/gi, '\n')
+      .replace(/\s*\\?<\/?(?:ul|ol)\b[^>]*>\s*/gi, '\n')
+      .replace(/\s*\\?<li\b[^>]*>\s*/gi, '\n- ')
+      .replace(/\s*\\?<\/li>\s*/gi, '\n')
+      .replace(/\s*\\?<strong\b[^>]*>\s*/gi, '**')
+      .replace(/\s*\\?<\/strong>\s*/gi, '**')
+      .replace(/\s*\\?<em\b[^>]*>\s*/gi, '*')
+      .replace(/\s*\\?<\/em>\s*/gi, '*')
+  }).join('')
+}
+
 /** Converts common Markdown from the model into Telegram's small HTML subset. */
 export function formatTelegramMessage(markdown: string): string {
-  const normalizedMarkdown = markdown.replace(/\\(<\/?(?:b|i|u|s|code|pre)>|<a href="(?:https?|mailto):[^"<>]+">|<\/a>)/gi, '$1')
+  const normalizedMarkdown = normalizeTelegramBlockMarkup(markdown)
+    .replace(/\\(<\/?(?:b|i|u|s|code|pre)>|<a href="(?:https?|mailto):[^"<>]+">|<\/a>)/gi, '$1')
   const { value: preservedMarkdown, tags } = preserveTelegramTags(normalizedMarkdown)
   const escaped = escapeHtml(preservedMarkdown)
   const withCodeBlocks = escaped.replace(/```(?:[^\n]*)\n([\s\S]*?)```/g, '<pre>$1</pre>')

@@ -16,4 +16,24 @@ describe('formatTelegramMessage', () => {
     expect(formatTelegramMessage('Ticket de \\<b>Shami\\</b> por \\<b>$48.000\\</b>'))
       .toBe('Ticket de <b>Shami</b> por <b>$48.000</b>')
   })
+
+  it('converts model-generated HTML lists into Telegram bullets', () => {
+    const formatted = formatTelegramMessage([
+      'Temas principales:',
+      '<ul>',
+      '<li><b>Pagos:</b> Las tarjetas Mastercard y Amex están caídas.</li>',
+      '<li><b>Payment Engine:</b> Error 500 en desembolsos.</li>',
+      '</ul>',
+    ].join('\n'))
+
+    expect(formatted).toContain('• <b>Pagos:</b> Las tarjetas Mastercard y Amex están caídas.')
+    expect(formatted).toContain('• <b>Payment Engine:</b> Error 500 en desembolsos.')
+    expect(formatted).toContain('caídas.\n• <b>Payment Engine:</b>')
+    expect(formatted).not.toMatch(/<\/?(?:ul|li)>/)
+  })
+
+  it('does not rewrite HTML-looking tags inside fenced code', () => {
+    expect(formatTelegramMessage('```html\n<ul><li>ejemplo</li></ul>\n```'))
+      .toBe('<pre>&lt;ul&gt;&lt;li&gt;ejemplo&lt;/li&gt;&lt;/ul&gt;\n</pre>')
+  })
 })

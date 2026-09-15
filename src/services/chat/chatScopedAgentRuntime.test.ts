@@ -123,6 +123,20 @@ describe('chatScopedAgentRuntime', () => {
     expect(buildChatAgentTools('library').map((tool) => tool.function.name)).toContain('add_task_comment')
   })
 
+  it('keeps Telegram library access while exposing the finance toolset', () => {
+    const names = buildChatAgentTools('library', false, true).map((tool) => tool.function.name)
+    const prompt = buildChatAgentSystemPrompt('library', 'Base', null, 'telegram-html', undefined, undefined, true)
+
+    expect(names).toEqual(expect.arrayContaining([
+      'search_library_context',
+      'search_task_context',
+      'get_finance_dashboard',
+      'list_finance_purchases',
+    ]))
+    expect(prompt).toContain('acceso transversal')
+    expect(prompt).toContain('No limites la respuesta al modulo activo')
+  })
+
   it('exposes an explicit authorized-board filter for Task Manager search', () => {
     const searchTool = buildChatAgentTools('task-manager').find((tool) => tool.function.name === 'search_task_tickets')
     expect(searchTool?.function.parameters).toMatchObject({

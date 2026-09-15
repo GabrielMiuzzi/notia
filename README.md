@@ -2,6 +2,8 @@
 
 Si el agente anuncia una acción —por ejemplo, «Ahora insertaré este gráfico»— y no llama a una herramienta, Notia le pide continuar dentro de la misma operación. Conserva las confirmaciones de escritura. Tras dos intentos de corrección sin ejecución, muestra un error; una promesa no confirma que el archivo haya cambiado. Esta recuperación reconoce anuncios explícitos de acción y no garantiza que cualquier modelo complete todos los pedidos.
 
+El agente no muestra reglas internas, prompts, correcciones de validación ni nombres internos de herramientas. Si una respuesta del modelo intenta exponerlos, Notia la descarta y solicita una respuesta segura antes de enviarla.
+
 Si el modo desarrollo reinicia repetidamente con mensajes `File ... .gradle/... changed. Rebuilding application`, reiniciá una vez `npm run dev:tauri:windows` para que lea `src-tauri/.taurignore`. Ese archivo excluye las cachés y salidas de Gradle tanto del proyecto Android como de los ejemplos de dependencias en `vendor/`, que VS Code también puede importar automáticamente. Los warnings de funciones Rust sin uso no son la causa.
 
 ## XGraph en notas Markdown
@@ -110,6 +112,8 @@ La captura conserva una cola acotada para absorber el costo temporal del reconoc
 - **Backups en Windows**: configurá una carpeta del sistema para comprimir la biblioteca activa cada hora, conservando hasta 48 copias (2 días).
 - **Agente por Telegram**: vinculá de forma explícita un chat privado para buscar, leer y modificar la biblioteca activa desde el bot, conservando confirmaciones individuales para cada escritura.
 
+Desde Telegram, el agente tiene acceso transversal a la biblioteca activa: puede buscar reuniones y notas, consultar tickets de cualquier tablero de Task Manager y usar las herramientas de Finanzas en la misma conversación. El módulo seleccionado en la interfaz no limita esas consultas; las escrituras siguen requiriendo sus confirmaciones y verificaciones habituales.
+
 Las respuestas del agente en Telegram no usan Markdown. El modelo utiliza texto plano y, cuando hace falta, un subconjunto básico de HTML compatible con Telegram (por ejemplo, negrita, cursiva o código); el resto de los chats conserva su formato habitual.
 
 Mientras una solicitud de Telegram avanza, Notia mantiene un único mensaje de estado editable que comienza como **Solicitud recibida y en proceso**. Cuando llega la primera señal del thinking, ese mismo mensaje cambia a etapas claras como preparación, lectura, organización de pasos, ejecución y verificación. Si la solicitud es compuesta, muestra el TO-DO con el estado de cada paso. Las aclaraciones y confirmaciones aparecen en mensajes separados con sus botones. El estado muestra resúmenes breves del avance, nunca el razonamiento interno completo del modelo ni datos privados.
@@ -142,7 +146,7 @@ Notia mantiene esta estructura por biblioteca y repone automáticamente cualquie
 
 Después de modificar reglas aprendidas o memorias, Notia solicita en segundo plano al Ollama configurado que deduplique, ordene y clasifique nuevamente ambos conjuntos. Una instrucción puede pasar a reglas y un dato personal puede pasar a memoria. La conversación no espera este trabajo. Si la configuración apunta a Ollama Cloud, el contenido de reglas y memorias se envía a ese servicio para la reorganización.
 
-En Telegram, las respuestas finales se transforman al subconjunto HTML permitido por Telegram. Encabezados, listas, negritas, código y enlaces se normalizan aunque el modelo produzca Markdown; el resto de los chats conserva Markdown. Si un modelo emite accidentalmente una llamada de herramienta XML, Notia intenta recuperarla como tool calling nativo en vez de mostrarla como texto.
+En Telegram, las respuestas finales se transforman al subconjunto HTML permitido por Telegram. Encabezados, listas Markdown o HTML (`ul`/`ol`/`li`), negritas, código y enlaces se normalizan aunque el modelo produzca Markdown; el resto de los chats conserva Markdown. Si un modelo emite accidentalmente una llamada de herramienta XML, Notia intenta recuperarla como tool calling nativo en vez de mostrarla como texto.
 
 En Windows, pulsar la **X** oculta Notia en la bandeja del sistema en vez de finalizarla. Para volver, hacé doble clic izquierdo en el icono de Notia o abrí su menú y elegí **Abrir Notia**. Para terminar completamente la aplicación, elegí **Salir** desde ese mismo menú. Este comportamiento no se aplica en Android, macOS ni Linux.
 
@@ -190,15 +194,17 @@ Integración nativa de diagramas tipo Mermaid dentro del ecosistema de Notia.
 - Creá diagramas de flujo, arquitectura de sistemas, mapas mentales y más.
 - Los diagramas se guardan como archivos `.mmd` dentro de tu librería.
 - Edición visual completa con arrastrar y soltar, conectores, formas y estilos.
-- El **Graph View** reutiliza el mismo motor Mermaid para visualizar el grafo de wikilinks de la librería.
+- El **Graph View** usa `react-force-graph-3d` para visualizar el grafo de wikilinks de la librería en una escena 3D WebGL interactiva.
 
 ### Graph View
 
 Visualización gráfica de las relaciones entre todas tus notas.
 
 - Cada nota es un **nodo**; cada wikilink es una **conexión**.
-- Navegación interactiva: zoom, paneo, clic para abrir la nota desde el grafo.
-- El layout se genera como un diagrama Mermaid agrupado por carpetas, manteniendo la legibilidad en bibliotecas grandes.
+- Los títulos de las notas se muestran siempre sobre los nodos 3D; las rutas no forman parte de la etiqueta.
+- El grafo usa brillo controlado y sombras suaves estilo red neuronal, con efectos optimizados para mantener la fluidez; al pasar el cursor por un nodo, se resaltan también sus conexiones y vecinos directos.
+- Navegación interactiva: órbita, zoom, paneo y clic para abrir la nota desde el grafo.
+- El layout se calcula como un grafo de fuerzas en 3D, con colores por contexto y centrado manual desde el control del grafo.
 - Búsqueda integrada por título y contenido: muestra las notas coincidentes en un desplegable sobre la barra, permite enfocarlas en el grafo, agregarlas al contexto del chat o abrirlas, y resalta sus nodos.
 - Los chats laterales de Graph View, Task Manager y archivos comparten el mismo flujo persistente de creación, selección, hidratación y visualización. Cada contexto usa una clave estable y su propio archivo dentro del historial de chats. En Graph View, sin selección consulta la biblioteca mediante RAG local, incluyendo nombres y rutas de carpetas; por ejemplo, preguntar por `chats` recupera los documentos ubicados dentro de esa carpeta. Al seleccionar archivos usa su contenido completo como contexto directo. También puede buscar y leer por título mediante tool calling nativo de Ollama.
 - Durante una consulta con herramientas, el panel muestra si está analizando, ejecutando una búsqueda o procesando resultados. Los modelos grandes disponen de un tiempo ampliado para completar las distintas rondas del agente y la operación se puede cancelar desde el compositor.
@@ -217,6 +223,7 @@ Chat con inteligencia artificial local via **Ollama**.
 - En el chat lateral de un archivo abierto, el archivo activo está autorizado como contexto; la IA solicita permiso visible antes de leer cualquier otro archivo.
 - Cuando hace falta información actualizada, la IA puede solicitar buscar fuentes públicas mediante Ollama Cloud. La consulta pasa por un filtro que bloquea secretos, datos personales y contenido privado; la API key nunca se incluye en la búsqueda, en la URL, en los mensajes ni en los logs, y la confirmación del usuario no desactiva esa protección.
 - La vista principal de chat, los chats laterales y Telegram comparten el mismo agente con tool calling nativo, herramientas de biblioteca y Task Manager, aclaraciones, planes y confirmaciones individuales. El contexto activo solo limita qué archivos están autorizados inicialmente y qué tablero se considera activo.
+- Telegram autoriza inicialmente el corpus legible completo de la biblioteca y no hereda el módulo activo de la interfaz: sus consultas pueden combinar documentos, tickets de Task Manager y datos financieros.
 - El compositor admite dictado y adjuntos de audio mediante ASR/STT; Qwen3-TTS permanece disponible para superficies que lo integren, pero los chats no exponen un modo llamada ni leen automáticamente las respuestas. La sección **Configuraciones → Voz** concentra las opciones de transcripción y síntesis disponibles.
 - Cuando el agente necesita una aclaración abierta, muestra la pregunta dentro del hilo y pausa la ejecución. La respuesta escrita en el compositor reanuda la misma consulta; también puede cancelarse mientras espera.
 - Cada librería mantiene sus agentes como archivos Markdown en `.agent/promps/`. La carpeta `.agent` es visible y editable desde el explorador de Notia, aunque las demás carpetas ocultas continúan excluidas. Notia crea `default.md` automáticamente con el prompt general completo de Notia y lo repone si falta o está vacío. El chat lateral muestra un selector superior con `default` y cada archivo adicional —usando su nombre sin `.md`—, recuerda la elección por librería y usa su contenido en las siguientes consultas.
@@ -316,9 +323,9 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Visualiza todas las notas Markdown de la librería como nodos y los wikilinks entre ellas como conexiones, permitiendo navegación visual interactiva. |
 | **Cuándo usarlo** | Cuando querés explorar visualmente las relaciones entre tus notas, encontrar notas aisladas o descubrir clusters de conocimiento. |
-| **Pasos para consumir** | 1. Asegurate de tener notas Markdown con wikilinks en la librería. 2. En el **Icon Rail** (barra lateral izquierda), seleccionar **"Graph view"**. 3. Esperar a que se cargue el grafo (puede tomar segundos en bibliotecas grandes). 4. Usar zoom y paneo para explorar. 5. Hacer clic en un nodo para abrir la nota. 6. Usar la barra de búsqueda para encontrar texto en el título o contenido. 7. En una coincidencia, usar el ojo para centrar su nodo, `+` para agregarla o quitarla del contexto visible del chat, o el icono de archivo para abrirla. |
+| **Pasos para consumir** | 1. Asegurate de tener notas Markdown con wikilinks en la librería. 2. En el **Icon Rail** (barra lateral izquierda), seleccionar **"Graph view"**. 3. Esperar a que se cargue el grafo (puede tomar segundos en bibliotecas grandes). 4. Usar órbita, zoom y paneo para explorar. 5. Hacer clic en un nodo para abrir la nota. 6. Usar la barra de búsqueda para encontrar texto en el título o contenido. 7. En una coincidencia, usar el ojo para enfocar su nodo, `+` para agregarla o quitarla del contexto visible del chat, o el icono de archivo para abrirla. |
 | **Entradas esperadas** | Librería activa con al menos un archivo Markdown. No requiere entrada manual del usuario. |
-| **Salidas / Resultado** | Canvas interactivo con nodos (títulos de notas) y líneas de conexión (wikilinks). Al hacer clic en un nodo se abre la nota correspondiente en pestaña. |
+| **Salidas / Resultado** | Escena WebGL 3D interactiva con nodos (títulos de notas) y líneas de conexión (wikilinks). Al hacer clic en un nodo se abre la nota correspondiente en pestaña. |
 | **Errores comunes** | **"El grafo está vacío"**: no hay archivos Markdown en la librería. Solución: crear notas Markdown. **"Lentitud"**: bibliotecas con miles de notas pueden tardar en construir el modelo. El archivo `linkCache.md` dentro de `.notia/` acelera la vista previa del grafo y se regenera automáticamente en segundo plano; si aún se siente lento, considerá dividir la librería en partes más pequeñas. |
 
 ### AI Chat con Ollama
@@ -577,7 +584,7 @@ npm install
 
 ### Modo desarrollo
 
-Los launchers de Tauri generan automaticamente el build multipagina antes de iniciar la app. Esto tambien prepara `public-task-manager.html`, que el servidor HTTPS local necesita para entregar la pantalla posterior al login de la URL publicada de Task Manager.
+Los launchers de Tauri generan automáticamente el build multipágina de desarrollo antes de iniciar la app, sin minificar JavaScript para evitar inestabilidad del proceso nativo de esbuild en sesiones locales con WebView/Vite activos. Esto también prepara `public-task-manager.html`, que el servidor HTTPS local necesita para entregar la pantalla posterior al login de la URL publicada de Task Manager. El `npm run build` normal continúa siendo el build optimizado para producción.
 
 ```bash
 # Solo frontend web (Vite, puerto 1420)
@@ -685,7 +692,7 @@ Las ediciones documentales se proponen con diff por hunks, revisión exacta, con
 - Al cambiar de biblioteca o cerrar todos los documentos, Notia invalida la caché de renders Mermaid para liberar SVGs de la librería anterior.
 - Los componentes pesados (`MarkdownView`, `MermaidView`, `GraphView`) limpian sus recursos al desmontar: destruyen editores, remueven canvas, cancelan timeouts y limpian listeners globales.
 - Las vistas pesadas usan selectores Redux memoizados (`selectTheme`, `selectMermaidViewerState`, `selectActiveLibraryPath`) en lugar de funciones inline, reduciendo re-renders en cadena.
-- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, Cytoscape ni MUI.
+- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, react-force-graph-3d, Cytoscape ni MUI.
 - En escritorio, Notia precarga esas vistas de forma inteligente durante los momentos de inactividad (`requestIdleCallback`) para que la primera apertura de archivo sea instantánea; en Android la precarga se omite por defecto para ahorrar memoria y datos.
 - `vite.config.ts` agrupa dependencias grandes en chunks separados (`vendor-milkdown`, `vendor-mermaid`, `vendor-iconify-packs`, `vendor-mui`, `vendor-cytoscape`, `vendor-lucide`, etc.), manteniendo el bundle inicial en ~460 KB gzip.
 - Los icon packs de Mermaid (`@iconify-json/*`) y las librerías de exportación PDF (`jspdf`, `html2canvas`) se cargan dinámicamente solo cuando se abre el menú de iconos o se exporta un PDF, respectivamente.

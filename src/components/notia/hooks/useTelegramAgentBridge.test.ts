@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramCurrentNewsRequest, isTelegramFinanceRequest, isTelegramPublicWebRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, sanitizeTelegramConfirmationQuestion, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
-describe('Telegram finance scope', () => {
+describe('Telegram universal scope', () => {
   it('rejects a salary success message without a persisted salary proof', () => {
     expect(isUnverifiedTelegramSalarySuccess('Listo. Registré el recibo de sueldo de Banco.', null)).toBe(true)
     expect(isUnverifiedTelegramSalarySuccess('No pude registrar el recibo.', null)).toBe(false)
@@ -22,9 +22,11 @@ describe('Telegram finance scope', () => {
     expect(isTelegramFinanceRequest('como esta el IPC interanual?')).toBe(true)
   })
 
-  it('keeps general library requests outside finance scope', () => {
+  it('keeps every Telegram request in the universal library scope', () => {
     expect(isTelegramFinanceRequest('Abrí la nota del proyecto')).toBe(false)
-    expect(resolveTelegramAgentScope('Digital', 'finance')).toBe('finance')
+    expect(isTelegramFinanceRequest('¿Qué se estuvo hablando en las sincros?')).toBe(false)
+    expect(isTelegramFinanceRequest('Quiero saber con qué están los chicos según Historial sincros')).toBe(false)
+    expect(resolveTelegramAgentScope('Digital', 'finance')).toBe('library')
     expect(resolveTelegramAgentScope('Crea una nota sobre este gasto', 'finance')).toBe('library')
   })
 
@@ -34,7 +36,7 @@ describe('Telegram finance scope', () => {
     expect(isTelegramPublicWebRequest('¿Me darías las fuentes?')).toBe(true)
     expect(resolveTelegramAgentScope('Dame las últimas noticias financieras de Argentina', 'finance')).toBe('library')
     expect(resolveTelegramAgentScope('¿Me darías las fuentes?', 'finance')).toBe('library')
-    expect(resolveTelegramAgentScope('¿Cuál es la última cotización del dólar?', 'finance')).toBe('finance')
+    expect(resolveTelegramAgentScope('¿Cuál es la última cotización del dólar?', 'finance')).toBe('library')
   })
 
   it('accepts explicit confirmations, cancellations and leaves ambiguous replies unresolved', () => {

@@ -1,54 +1,38 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Eye, FileText, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react'
+import { Eye, FileText, LocateFixed, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
+import ForceGraph3D from 'react-force-graph-3d'
+import SpriteText from 'three-spritetext'
+import { AdditiveBlending, MeshBasicMaterial } from 'three'
 import { useAppSelector } from '../../../store/hooks'
-import { selectActiveLibraryPath } from '../../../features/library/librarySelectors'
 import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { NotiaButton } from '../../common/NotiaButton'
-import { MermaidCanvas } from '../../../modules/mermaid/components/MermaidCanvas'
-import { useMermaidRender } from '../../../modules/mermaid/hooks/useMermaidRender'
-import { buildLinkCacheMermaidCode } from '../../../engines/graph/linkCacheMermaidEngine'
 import { buildGraphSearchResults } from '../../../engines/graph/graphSearchEngine'
-import { extractMermaidNodeId } from '../../../modules/mermaid/engines/mermaidEngine'
-import type { LibraryGraphModel } from '../../../types/graph/libraryGraph'
+import type { LibraryGraphModel, LibraryGraphNode } from '../../../types/graph/libraryGraph'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
 
-const VIEWPORT_STORAGE_KEY = 'notia.linkGraphView.viewport.v1'
 const SETTINGS_STORAGE_KEY = 'notia.linkGraphView.settings.v1'
-
-interface ViewportState {
-  zoom: number
-  panX: number
-  panY: number
-}
 
 interface GraphSettings {
   gridEnabled: boolean
 }
 
-function readStoredViewport(): Partial<ViewportState> {
-  try {
-    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== 'object') return {}
-    const obj = parsed as Record<string, unknown>
-    return {
-      zoom: typeof obj.zoom === 'number' ? obj.zoom : undefined,
-      panX: typeof obj.panX === 'number' ? obj.panX : undefined,
-      panY: typeof obj.panY === 'number' ? obj.panY : undefined,
-    }
-  } catch {
-    return {}
-  }
+interface ForceNode extends LibraryGraphNode {
+  id: string
+  x?: number
+  y?: number
+  z?: number
+  vx?: number
+  vy?: number
+  vz?: number
 }
 
-function writeStoredViewport(vp: ViewportState): void {
-  try {
-    window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(vp))
-  } catch {
-    // ignore
-  }
+interface ForceLink {
+  id: string
+  source: string | ForceNode
+  target: string | ForceNode
 }
+
+type GraphRef = ComponentRef<typeof ForceGraph3D>
 
 function readStoredSettings(): Partial<GraphSettings> {
   try {
@@ -69,8 +53,30 @@ function writeStoredSettings(settings: GraphSettings): void {
   try {
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
   } catch {
-    // ignore
+    // localStorage puede estar deshabilitado en algunos WebViews.
   }
+}
+
+function getNodePath(value: string | ForceNode | undefined): string | undefined {
+  return typeof value === 'string' ? value : value?.path
+}
+
+function getContextColor(node: ForceNode, appTheme: string): string {
+  if (node.contextColor) return node.contextColor
+  return appTheme === 'dark' ? '#8be9fd' : '#2762d8'
+}
+
+function escapeTooltipHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }
+    return entities[character] ?? character
+  })
 }
 
 interface GraphViewProps {
@@ -87,40 +93,21 @@ function areGraphViewPropsEqual(
   previous: GraphViewProps,
   next: GraphViewProps,
 ): boolean {
-  if (previous.graphModel !== next.graphModel) {
-    return false
-  }
-
-  if (previous.graphSourcesByPath !== next.graphSourcesByPath) {
-    return false
-  }
-
-  if (previous.libraryName !== next.libraryName) {
-    return false
-  }
-
-  if (previous.isLoading !== next.isLoading) {
-    return false
-  }
-
-  if (previous.onOpenFile !== next.onOpenFile) {
-    return false
-  }
-
-  if (previous.chatSelectedPaths !== next.chatSelectedPaths) {
-    return false
-  }
-
-  if (previous.onChatSelectedPathsChange !== next.onChatSelectedPathsChange) {
-    return false
-  }
-
-  return true
+  return (
+    previous.graphModel === next.graphModel &&
+    previous.graphSourcesByPath === next.graphSourcesByPath &&
+    previous.libraryName === next.libraryName &&
+    previous.isLoading === next.isLoading &&
+    previous.onOpenFile === next.onOpenFile &&
+    previous.chatSelectedPaths === next.chatSelectedPaths &&
+    previous.onChatSelectedPathsChange === next.onChatSelectedPathsChange
+  )
 }
 
 function GraphViewComponent({
   graphModel,
   graphSourcesByPath,
+  isLoading,
   onOpenFile,
   chatSelectedPaths = [],
   onChatSelectedPathsChange,
@@ -133,22 +120,38 @@ function GraphViewComponent({
   )
   useEffect(() => {
     const mountTimer = mountTimerRef.current
-    return () => {
-      mountTimer.success()
-    }
+    return () => mountTimer.success()
   }, [])
 
-  const activeLibraryPath = useAppSelector(selectActiveLibraryPath)
   const appTheme = useAppSelector(selectTheme)
-  const rootPath = activeLibraryPath
-
   const [searchQuery, setSearchQuery] = useState('')
   const [isControlsOpen, setIsControlsOpen] = useState(false)
   const [settings, setSettings] = useState<GraphSettings>(() => ({
     gridEnabled: readStoredSettings().gridEnabled ?? true,
   }))
-  const [viewport, setViewport] = useState<Partial<ViewportState>>(() => readStoredViewport())
-  const [focusRequest, setFocusRequest] = useState<{ element: Element; requestId: number } | null>(null)
+  const [focusedPath, setFocusedPath] = useState<string | null>(null)
+  const [hoveredPath, setHoveredPath] = useState<string | null>(null)
+  const [graphSize, setGraphSize] = useState({ width: 0, height: 0 })
+
+  const graphHostRef = useRef<HTMLDivElement | null>(null)
+  const graphRef = useRef<GraphRef | undefined>(undefined)
+
+  useEffect(() => {
+    const host = graphHostRef.current
+    if (!host) return
+
+    const updateSize = () => {
+      setGraphSize({
+        width: Math.max(1, Math.floor(host.clientWidth)),
+        height: Math.max(1, Math.floor(host.clientHeight)),
+      })
+    }
+    updateSize()
+
+    const resizeObserver = new ResizeObserver(updateSize)
+    resizeObserver.observe(host)
+    return () => resizeObserver.disconnect()
+  }, [])
 
   const searchResults = useMemo(
     () => buildGraphSearchResults(
@@ -163,214 +166,165 @@ function GraphViewComponent({
     () => new Set(searchResults.map((searchResult) => searchResult.path)),
     [searchResults],
   )
-  const graphNodeByPath = useMemo(
-    () => new Map(graphModel.nodes.map((node) => [node.path, node])),
-    [graphModel.nodes],
-  )
+  const selectedPaths = useMemo(() => new Set(chatSelectedPaths), [chatSelectedPaths])
 
-  const svgWrapperRef = useRef<HTMLDivElement | null>(null)
+  const graphData = useMemo(() => ({
+    nodes: graphModel.nodes.map((node): ForceNode => ({
+      ...node,
+      id: node.path,
+    })),
+    links: graphModel.edges.map((edge): ForceLink => ({
+      ...edge,
+      source: edge.sourcePath,
+      target: edge.targetPath,
+    })),
+  }), [graphModel.edges, graphModel.nodes])
 
-  const handleFocusSearchResult = useCallback((path: string) => {
-    const nodes = svgWrapperRef.current?.querySelectorAll('[data-notia-path]') ?? []
-    const targetNode = Array.from(nodes).find((node) => node.getAttribute('data-notia-path') === path)
-    if (!targetNode) return
+  const hoveredNeighborPaths = useMemo(() => {
+    const neighbors = new Set<string>()
+    if (!hoveredPath) return neighbors
 
-    setFocusRequest((current) => ({
-      element: targetNode,
-      requestId: (current?.requestId ?? 0) + 1,
-    }))
-  }, [])
-
-  const handleToggleSearchResultInChat = useCallback((path: string) => {
-    if (!onChatSelectedPathsChange) return
-    onChatSelectedPathsChange(
-      chatSelectedPaths.includes(path)
-        ? chatSelectedPaths.filter((selectedPath) => selectedPath !== path)
-        : [...chatSelectedPaths, path],
-    )
-  }, [chatSelectedPaths, onChatSelectedPathsChange])
-
-  // Cleanup on unmount: clear result so MermaidCanvas unmount clears SVG
-  useEffect(() => {
-    return () => {
-      setSearchQuery('')
-      setIsControlsOpen(false)
-    }
-  }, [])
-
-  // Generate mermaid code from graph model
-  const mermaidCode = useMemo(() => {
-    if (graphModel.nodes.length === 0) {
-      return ''
-    }
-    const result = buildLinkCacheMermaidCode(graphModel, rootPath)
-    return result.code
-  }, [graphModel, rootPath])
-
-  const { result, error, isLoading } = useMermaidRender({
-    code: mermaidCode,
-    theme: appTheme === 'dark' ? 'dark' : 'default',
-  })
-
-  // Build reverse lookup map whenever the graph model changes
-  const safeIdToPath = useMemo(() => {
-    if (graphModel.nodes.length === 0) {
-      return new Map<string, string>()
-    }
-    const { pathToSafeId } = buildLinkCacheMermaidCode(graphModel, rootPath)
-    return new Map(
-      Array.from(pathToSafeId.entries()).map(([path, safeId]) => [safeId, path]),
-    )
-  }, [graphModel, rootPath])
-
-  // Post-render: inject data attributes into SVG nodes for click handling
-  const handleSvgInjected = useCallback((container: HTMLDivElement) => {
-    const svg = container.querySelector('svg')
-    if (!svg) return
-
-    if (safeIdToPath.size === 0) return
-
-    const nodeElements = svg.querySelectorAll('.node, .icon-shape')
-    nodeElements.forEach((el) => {
-      const rawId = el.id
-      if (!rawId) return
-      const extractedId = extractMermaidNodeId(rawId)
-      if (!extractedId) return
-      const filePath = safeIdToPath.get(extractedId)
-      if (!filePath) return
-      ;(el as HTMLElement).setAttribute('data-notia-path', filePath)
-      const graphNode = graphNodeByPath.get(filePath)
-      if (graphNode?.contextColor) {
-        const shape = el.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
-        if (shape) {
-          shape.style.fill = graphNode.contextColor
-          shape.style.stroke = graphNode.contextColor
-        }
-        ;(el as HTMLElement).setAttribute('data-notia-context', graphNode.contextTag ?? '')
-      }
+    graphData.links.forEach((link) => {
+      const sourcePath = getNodePath(link.source)
+      const targetPath = getNodePath(link.target)
+      if (sourcePath === hoveredPath && targetPath) neighbors.add(targetPath)
+      if (targetPath === hoveredPath && sourcePath) neighbors.add(sourcePath)
     })
+    return neighbors
+  }, [graphData.links, hoveredPath])
 
-    // Apply current search highlight immediately after render
-    const hasSearchQuery = searchQuery.trim().length > 0
-    nodeElements.forEach((el) => {
-      const htmlEl = el as HTMLElement
-      const path = htmlEl.getAttribute('data-notia-path')
-      if (!path) return
-      const matches = matchedPaths.has(path)
-      htmlEl.classList.toggle('notia-graph-node--search-match', hasSearchQuery && matches)
-      htmlEl.classList.toggle('notia-graph-node--search-dimmed', hasSearchQuery && !matches)
-      const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
-      if (shape) {
-        if (matches || !hasSearchQuery) {
-          shape.style.opacity = ''
-          shape.style.filter = ''
-        } else {
-          shape.style.opacity = '0.3'
-          shape.style.filter = 'grayscale(0.8)'
-        }
-      }
-    })
-  }, [graphNodeByPath, matchedPaths, safeIdToPath, searchQuery])
-
-  // Click handler: open file or toggle chat selection
-  const handleNodeClick = useCallback(
-    (e: React.MouseEvent) => {
-      const target = e.target as HTMLElement
-      const nodeEl = target.closest('[data-notia-path]') as HTMLElement | null
-      if (!nodeEl) return
-      const path = nodeEl.getAttribute('data-notia-path')
-      if (!path) return
-
-      if (e.shiftKey && onChatSelectedPathsChange) {
-        onChatSelectedPathsChange(
-          chatSelectedPaths.includes(path)
-            ? chatSelectedPaths.filter((p) => p !== path)
-            : [...chatSelectedPaths, path],
-        )
-      } else {
-        onOpenFile(path)
-      }
-    },
-    [chatSelectedPaths, onChatSelectedPathsChange, onOpenFile],
-  )
-
-  // Search highlight re-application when query changes (SVG already rendered)
-  useEffect(() => {
-    const wrapper = svgWrapperRef.current
-    if (!wrapper) return
-    const svg = wrapper.querySelector('svg') as SVGSVGElement | null
-    if (!svg) return
-
-    const hasSearchQuery = searchQuery.trim().length > 0
-    svg.querySelectorAll('.node, .icon-shape').forEach((el) => {
-      const htmlEl = el as HTMLElement
-      const path = htmlEl.getAttribute('data-notia-path')
-      if (!path) return
-      const matches = matchedPaths.has(path)
-      htmlEl.classList.toggle('notia-graph-node--search-match', hasSearchQuery && matches)
-      htmlEl.classList.toggle('notia-graph-node--search-dimmed', hasSearchQuery && !matches)
-      const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
-      if (shape) {
-        if (matches || !hasSearchQuery) {
-          shape.style.opacity = ''
-          shape.style.filter = ''
-        } else {
-          shape.style.opacity = '0.3'
-          shape.style.filter = 'grayscale(0.8)'
-        }
-      }
-    })
-  }, [matchedPaths, searchQuery])
-
-  // Selection visual feedback
-  useEffect(() => {
-    const wrapper = svgWrapperRef.current
-    if (!wrapper) return
-    const svg = wrapper.querySelector('svg') as SVGSVGElement | null
-    if (!svg) return
-
-    svg.querySelectorAll('.node, .icon-shape').forEach((el) => {
-      const htmlEl = el as HTMLElement
-      const path = htmlEl.getAttribute('data-notia-path')
-      if (!path) return
-      const isSelected = chatSelectedPaths.includes(path)
-      const shape = htmlEl.querySelector('rect, circle, ellipse, polygon, path') as SVGElement | null
-      if (shape) {
-        if (isSelected) {
-          shape.style.stroke = '#ff79c6'
-          shape.style.strokeWidth = '3'
-        } else {
-          shape.style.stroke = graphNodeByPath.get(path)?.contextColor ?? ''
-          shape.style.strokeWidth = ''
-        }
-      }
-    })
-  }, [chatSelectedPaths, graphNodeByPath])
-
-  // Persist settings
   useEffect(() => {
     writeStoredSettings(settings)
   }, [settings])
 
-  const handleZoomChange = useCallback((zoom: number) => {
-    setViewport((prev) => {
-      const base: ViewportState = { zoom: 1, panX: 0, panY: 0 }
-      const next: ViewportState = { ...base, ...prev, zoom }
-      writeStoredViewport(next)
-      return next
-    })
+  const handleToggleSearchResultInChat = useCallback((path: string) => {
+    if (!onChatSelectedPathsChange) return
+    onChatSelectedPathsChange(
+      selectedPaths.has(path)
+        ? chatSelectedPaths.filter((selectedPath) => selectedPath !== path)
+        : [...chatSelectedPaths, path],
+    )
+  }, [chatSelectedPaths, onChatSelectedPathsChange, selectedPaths])
+
+  const handleFocusSearchResult = useCallback((path: string) => {
+    const node = graphData.nodes.find((candidate) => candidate.path === path)
+    setFocusedPath(path)
+    if (
+      !node ||
+      typeof node.x !== 'number' ||
+      typeof node.y !== 'number' ||
+      typeof node.z !== 'number'
+    ) return
+
+    const distance = Math.max(90, 260 / Math.sqrt(node.degree + 1))
+    graphRef.current?.cameraPosition(
+      {
+        x: node.x + distance,
+        y: node.y + distance * 0.45,
+        z: node.z + distance,
+      },
+      { x: node.x, y: node.y, z: node.z },
+      650,
+    )
+  }, [graphData.nodes])
+
+  const handleFitGraph = useCallback(() => {
+    setFocusedPath(null)
+    graphRef.current?.zoomToFit(600, 72)
   }, [])
 
-  const handlePanChange = useCallback((x: number, y: number) => {
-    setViewport((prev) => {
-      const base: ViewportState = { zoom: 1, panX: 0, panY: 0 }
-      const next: ViewportState = { ...base, ...prev, panX: x, panY: y }
-      writeStoredViewport(next)
-      return next
-    })
+  const handleNodeClick = useCallback((node: ForceNode, event: MouseEvent) => {
+    if (event.shiftKey && onChatSelectedPathsChange) {
+      handleToggleSearchResultInChat(node.path)
+      return
+    }
+    onOpenFile(node.path)
+  }, [handleToggleSearchResultInChat, onChatSelectedPathsChange, onOpenFile])
+
+  const handleNodeHover = useCallback((node: ForceNode | null) => {
+    setHoveredPath(node?.path ?? null)
   }, [])
 
-  const hasContent = mermaidCode.trim().length > 0
+  const isHoveredConnection = useCallback((link: ForceLink) => {
+    if (!hoveredPath) return false
+    const sourcePath = getNodePath(link.source)
+    const targetPath = getNodePath(link.target)
+    return sourcePath === hoveredPath || targetPath === hoveredPath
+  }, [hoveredPath])
+
+  const getNodeDisplayColor = useCallback((node: ForceNode) => {
+    const hasSearch = searchQuery.trim().length > 0
+    const isHovered = node.path === hoveredPath
+    const isNeighbor = hoveredNeighborPaths.has(node.path)
+
+    if (isHovered) return '#ffffff'
+    if (isNeighbor) return node.contextColor ?? (appTheme === 'dark' ? '#8be9fd' : '#4ca7ff')
+    if (selectedPaths.has(node.path)) return '#ff79c6'
+    if (hoveredPath) return appTheme === 'dark' ? '#243447' : '#b9c3d0'
+    if (node.path === focusedPath) return appTheme === 'dark' ? '#f1fa8c' : '#7d5a00'
+    if (matchedPaths.has(node.path)) return appTheme === 'dark' ? '#f1fa8c' : '#7d5a00'
+    if (hasSearch) return appTheme === 'dark' ? '#4b5563' : '#a7b0bd'
+    return getContextColor(node, appTheme)
+  }, [appTheme, focusedPath, hoveredNeighborPaths, hoveredPath, matchedPaths, searchQuery, selectedPaths])
+
+  const linkMaterialCacheRef = useRef(new Map<string, MeshBasicMaterial>())
+  const getLinkMaterial = useCallback((link: ForceLink) => {
+    const isActive = isHoveredConnection(link)
+    const cacheKey = `${appTheme}:${isActive ? 'active' : 'idle'}`
+    const cachedMaterial = linkMaterialCacheRef.current.get(cacheKey)
+    if (cachedMaterial) return cachedMaterial
+
+    const material = new MeshBasicMaterial({
+      color: isActive ? '#82dfe8' : (appTheme === 'dark' ? '#24546c' : '#5e7894'),
+      transparent: true,
+      opacity: isActive ? 0.74 : 0.26,
+      blending: AdditiveBlending,
+      depthWrite: false,
+    })
+    linkMaterialCacheRef.current.set(cacheKey, material)
+    return material
+  }, [appTheme, isHoveredConnection])
+
+  useEffect(() => () => {
+    linkMaterialCacheRef.current.forEach((material) => material.dispose())
+    linkMaterialCacheRef.current.clear()
+  }, [])
+
+  const createNodeLabel = useCallback((node: ForceNode) => {
+    const label = new SpriteText(node.label)
+    const isHovered = node.path === hoveredPath
+    const isNeighbor = hoveredNeighborPaths.has(node.path)
+    const isFocused = node.path === focusedPath
+    label.color = isHovered ? '#ffffff' : isNeighbor ? '#bffcff' : isFocused ? '#fff2b6' : (appTheme === 'dark' ? '#f8f8f2' : '#20232a')
+    label.fontFace = 'Inter, system-ui, sans-serif'
+    label.fontWeight = '600'
+    label.textHeight = isHovered ? 4.2 : 3.4
+    label.strokeWidth = 0.08
+    label.strokeColor = appTheme === 'dark' ? '#06101d' : '#ffffff'
+    ;(label as unknown as { position: { y: number } }).position.y = 6
+    return label
+  }, [appTheme, focusedPath, hoveredNeighborPaths, hoveredPath])
+
+  const contextLegend = useMemo(
+    () => Array.from(
+      new Map(
+        graphModel.nodes
+          .filter((node) => node.contextTag && node.contextColor)
+          .map((node) => [node.contextTag as string, node.contextColor as string]),
+      ).entries(),
+    ),
+    [graphModel.nodes],
+  )
+
+  const hasContent = graphData.nodes.length > 0
+  const graphBackground = settings.gridEnabled
+    ? {
+        backgroundImage: appTheme === 'dark'
+          ? 'linear-gradient(rgba(139, 233, 253, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(139, 233, 253, 0.06) 1px, transparent 1px)'
+          : 'linear-gradient(rgba(39, 98, 216, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(39, 98, 216, 0.08) 1px, transparent 1px)',
+        backgroundSize: '24px 24px',
+      }
+    : undefined
 
   return (
     <div
@@ -386,16 +340,9 @@ function GraphViewComponent({
     >
       <div className="notia-graph-search-shell">
         {searchQuery.trim() && (
-          <div
-            className="notia-graph-search-results"
-            role="list"
-            aria-label="Archivos que coinciden con la búsqueda"
-          >
+          <div className="notia-graph-search-results" role="list" aria-label="Archivos que coinciden con la búsqueda">
             {searchResults.length > 0 ? searchResults.map((searchResult) => (
-              <div
-                key={searchResult.path}
-                className="notia-graph-search-result"
-              >
+              <div key={searchResult.path} className="notia-graph-search-result">
                 <div className="notia-graph-search-result-main">
                   <strong>{searchResult.label}</strong>
                   <span>{searchResult.preview}</span>
@@ -411,12 +358,12 @@ function GraphViewComponent({
                 </button>
                 <button
                   type="button"
-                  className={`notia-graph-search-result-action${chatSelectedPaths.includes(searchResult.path) ? ' is-selected' : ''}`}
+                  className={`notia-graph-search-result-action${selectedPaths.has(searchResult.path) ? ' is-selected' : ''}`}
                   onClick={() => handleToggleSearchResultInChat(searchResult.path)}
                   disabled={!onChatSelectedPathsChange}
-                  aria-label={`${chatSelectedPaths.includes(searchResult.path) ? 'Quitar' : 'Agregar'} ${searchResult.label} ${chatSelectedPaths.includes(searchResult.path) ? 'del' : 'al'} contexto del chat`}
-                  aria-pressed={chatSelectedPaths.includes(searchResult.path)}
-                  title={chatSelectedPaths.includes(searchResult.path) ? 'Quitar del contexto del chat' : 'Agregar al contexto del chat'}
+                  aria-label={`${selectedPaths.has(searchResult.path) ? 'Quitar' : 'Agregar'} ${searchResult.label} ${selectedPaths.has(searchResult.path) ? 'del' : 'al'} contexto del chat`}
+                  aria-pressed={selectedPaths.has(searchResult.path)}
+                  title={selectedPaths.has(searchResult.path) ? 'Quitar del contexto del chat' : 'Agregar al contexto del chat'}
                 >
                   <Plus size={18} aria-hidden="true" />
                 </button>
@@ -431,9 +378,7 @@ function GraphViewComponent({
                 </button>
               </div>
             )) : (
-              <div className="notia-graph-search-empty" role="status">
-                No se encontraron archivos.
-              </div>
+              <div className="notia-graph-search-empty" role="status">No se encontraron archivos.</div>
             )}
           </div>
         )}
@@ -443,27 +388,19 @@ function GraphViewComponent({
             type="text"
             placeholder="Buscar por título o contenido..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(event) => setSearchQuery(event.target.value)}
             aria-label="Buscar archivos por título o contenido"
           />
           {searchQuery && (
-            <button
-              type="button"
-              className="notia-graph-search-clear"
-              onClick={() => setSearchQuery('')}
-              aria-label="Limpiar búsqueda"
-            >
+            <button type="button" className="notia-graph-search-clear" onClick={() => setSearchQuery('')} aria-label="Limpiar búsqueda">
               <X size={18} />
             </button>
           )}
         </label>
       </div>
 
-      <div
-        aria-label="Referencias de colores por contexto"
-        style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 12px', fontSize: 12 }}
-      >
-        {Array.from(new Map(graphModel.nodes.filter((node) => node.contextTag && node.contextColor).map((node) => [node.contextTag, node.contextColor])).entries()).map(([tag, color]) => (
+      <div aria-label="Referencias de colores por contexto" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 12px', fontSize: 12 }}>
+        {contextLegend.map(([tag, color]) => (
           <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: '50%', background: color }} />
             {tag}
@@ -473,110 +410,87 @@ function GraphViewComponent({
       </div>
 
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 9 }}>
-        <NotiaButton
-          variant="ghost"
-          size="icon"
-          onClick={() => setIsControlsOpen((prev) => !prev)}
-          aria-label="Ajustes del grafo"
-        >
+        <NotiaButton variant="ghost" size="icon" onClick={() => setIsControlsOpen((previous) => !previous)} aria-label="Ajustes del grafo">
           <SlidersHorizontal size={16} />
         </NotiaButton>
       </div>
 
-      {/* Controls panel */}
       {isControlsOpen && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 48,
-            right: 12,
-            zIndex: 10,
-            background: 'var(--color-card-bg)',
-            border: '1px solid var(--color-border-soft)',
-            borderRadius: 8,
-            padding: 12,
-            minWidth: 200,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-          }}
-        >
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: 13,
-              color: 'var(--color-app-text)',
-              cursor: 'pointer',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={settings.gridEnabled}
-              onChange={(e) =>
-                setSettings((prev) => ({ ...prev, gridEnabled: e.target.checked }))
-              }
-            />
+        <div style={{ position: 'absolute', top: 48, right: 12, zIndex: 10, background: 'var(--color-card-bg)', border: '1px solid var(--color-border-soft)', borderRadius: 8, padding: 12, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-app-text)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={settings.gridEnabled} onChange={(event) => setSettings((previous) => ({ ...previous, gridEnabled: event.target.checked }))} />
             Mostrar grid
           </label>
+          <NotiaButton variant="ghost" size="sm" onClick={handleFitGraph} style={{ marginTop: 8, width: '100%' }}>
+            <LocateFixed size={15} aria-hidden="true" />
+            Centrar grafo
+          </NotiaButton>
         </div>
       )}
 
-      {/* Canvas */}
       <div
-        ref={svgWrapperRef}
-        style={{ flex: 1, position: 'relative', overflow: 'hidden' }}
-        onClick={handleNodeClick}
+        ref={graphHostRef}
+        className="notia-graph-3d-canvas"
+        style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden', ...graphBackground }}
       >
-        {(!hasContent || isLoading) && !error && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--color-icon-muted)',
-              fontSize: 13,
-              pointerEvents: 'none',
-            }}
-          >
-            {!hasContent ? 'No hay nodos para mostrar.' : 'Renderizando diagrama...'}
+        {(!hasContent || isLoading) && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-icon-muted)', fontSize: 13, pointerEvents: 'none', zIndex: 1 }}>
+            {isLoading ? 'Cargando grafo...' : 'No hay nodos para mostrar.'}
           </div>
         )}
-        {error && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#ff5555',
-              fontSize: 13,
-              padding: 16,
-              textAlign: 'center',
-              pointerEvents: 'none',
+        {hasContent && graphSize.width > 0 && graphSize.height > 0 && (
+          <ForceGraph3D
+            ref={graphRef as never}
+            width={graphSize.width}
+            height={graphSize.height}
+            graphData={graphData}
+            nodeId="id"
+            linkSource="source"
+            linkTarget="target"
+            backgroundColor="rgba(0,0,0,0)"
+            rendererConfig={{ antialias: false, powerPreference: 'high-performance' }}
+            nodeVal={(node) => Math.max(1, node.degree + 1)}
+            nodeLabel={(node) => escapeTooltipHtml(node.label)}
+            nodeResolution={6}
+            nodeThreeObject={createNodeLabel}
+            nodeThreeObjectExtend
+            nodeColor={getNodeDisplayColor}
+            linkColor={(link) => {
+              const sourcePath = getNodePath(link.source)
+              const targetPath = getNodePath(link.target)
+              if (isHoveredConnection(link)) return '#82dfe8'
+              const isRelated = Boolean(sourcePath && targetPath && (matchedPaths.has(sourcePath) || matchedPaths.has(targetPath) || selectedPaths.has(sourcePath) || selectedPaths.has(targetPath)))
+              if (hoveredPath) return appTheme === 'dark' ? '#17304c' : '#9aa9bb'
+              return isRelated ? (appTheme === 'dark' ? '#6272a4' : '#7a8db5') : (appTheme === 'dark' ? '#2f7aa0' : '#4c82bb')
             }}
-          >
-            {error}
-          </div>
-        )}
-        {hasContent && (
-          <MermaidCanvas
-            result={result}
-            isLoading={isLoading}
-            error={error}
-            gridEnabled={settings.gridEnabled}
-            panZoomEnabled
-            theme={appTheme === 'dark' ? 'dark' : 'default'}
-            readOnly
-            onSvgInjected={handleSvgInjected}
-            initialZoom={viewport.zoom}
-            initialPanX={viewport.panX}
-            initialPanY={viewport.panY}
-            onZoomChange={handleZoomChange}
-            onPanChange={handlePanChange}
-            focusRequest={focusRequest}
+            linkWidth={(link) => {
+              const sourcePath = getNodePath(link.source)
+              const targetPath = getNodePath(link.target)
+              if (isHoveredConnection(link)) return 2.2
+              if (sourcePath && targetPath && (selectedPaths.has(sourcePath) || selectedPaths.has(targetPath))) return 1.8
+              return hoveredPath ? 0.5 : 0.8
+            }}
+            linkResolution={4}
+            linkMaterial={getLinkMaterial}
+            linkDirectionalParticles={(link) => isHoveredConnection(link) ? 2 : 0}
+            linkDirectionalParticleSpeed={(link) => isHoveredConnection(link) ? 0.008 : 0}
+            linkDirectionalParticleWidth={(link) => isHoveredConnection(link) ? 1.4 : 0}
+            linkDirectionalParticleColor={(link) => isHoveredConnection(link) ? '#d7fbff' : '#8be9fd'}
+            onNodeClick={handleNodeClick}
+            onNodeHover={handleNodeHover}
+            onBackgroundClick={() => {
+              setFocusedPath(null)
+              setHoveredPath(null)
+            }}
+            cooldownTicks={90}
+            cooldownTime={4000}
+            warmupTicks={50}
+            d3AlphaDecay={0.08}
+            d3VelocityDecay={0.45}
+            numDimensions={3}
+            controlType="orbit"
+            enableNavigationControls
+            enableNodeDrag={false}
           />
         )}
       </div>

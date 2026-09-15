@@ -100,6 +100,30 @@ describe('chatScopedAgentRuntime metadata search', () => {
     expect(JSON.stringify(result)).not.toContain('Contenido privado')
   })
 
+  it('does not apply finance response validation to universal library requests by default', async () => {
+    const createAgent = (validateFinanceResponses?: boolean) => createChatScopedAgent({
+      scope: 'library',
+      enableFinanceTools: true,
+      ...(validateFinanceResponses === undefined ? {} : { validateFinanceResponses }),
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: {
+        ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: false, thinkingLevel: 'medium',
+      },
+      scopePaths: [],
+      persistencePolicy: 'ephemeral-no-memory',
+      requestClarification: vi.fn(),
+      requestConfirmation: vi.fn(),
+    })
+    const answer = 'Listo. Registré el gasto de $5000.'
+
+    const universalAgent = await createAgent(false)
+    expect(universalAgent.validateFinalAnswer(answer)).toBeNull()
+
+    const financeAgent = await createAgent(true)
+    expect(financeAgent.validateFinalAnswer(answer)).toContain('No afirmes ni prometas')
+  })
+
   it('limits Task Manager searches to the active board and excludes archived tickets by default', async () => {
     const taskPaths = [
       'C:/vault/task-mannager/equipo/activo.md',

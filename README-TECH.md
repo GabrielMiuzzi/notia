@@ -6,6 +6,8 @@
 
 Ante una promesa, el runtime añade una corrección interna de sistema y fuerza la siguiente ronda por `run_desktop_ai_tool_chat` con el catálogo nativo, incluso si la promesa provino de la ronda de texto en streaming posterior a una lectura. Android conserva su transporte y recibe la misma validación. La corrección exige respetar el scope y las confirmaciones, reutilizar lecturas y no repetir mutaciones aplicadas o rechazadas. No se convierte el código del mensaje en una escritura automática. `isInternalAgentCorrection` impide guardar esta instrucción como regla aprendida.
 
+Antes de emitir cualquier respuesta final, `runNativeToolAgent` inspecciona también el texto generado en busca de reglas internas, prompts, mensajes del sistema, correcciones de validadores y nombres internos de herramientas. Si los detecta, no publica deltas ni guarda esa respuesta como resultado: agrega una corrección interna y solicita una nueva respuesta. El mismo bloqueo se aplica a respuestas terminales de herramientas; si el modelo insiste hasta agotar las rondas, el usuario recibe únicamente un error genérico seguro.
+
 Se permiten dos correcciones consecutivas por promesas sin tool calls; una tercera produce un error visible indicando que la última acción no está confirmada. Una ronda con herramientas reinicia ese contador; siguen vigentes los límites globales de rondas y timeout. Los resultados terminales tipados de escritura, error o cancelación conservan su salida directa. El streaming y sus listeners se mantienen; un borrador ya emitido puede contener la promesa mientras se continúa la ejecución, pero no se acepta como resultado terminal. El mapa de responsabilidades no cambia: detección pura en `engines/ai`, orquestación y transporte en `aiRuntime`, políticas de scope en `chatScopedAgentRuntime`.
 
 Pruebas: detector con anuncios, citas, ejemplos y resultados terminales; integración con bridge Tauri simulado para lectura → promesa en streaming → inserción nativa, agotamiento de correcciones y cancelación sin reintento. No se usan modelos, red ni archivos de biblioteca reales.
@@ -159,6 +161,7 @@ Notia es una aplicación de gestión de conocimiento **local-first** construida 
 | Iconos | Lucide React | ^0.577.0 |
 | Editor Markdown | @milkdown/crepe | ^7.19.0 |
 | Diagramas | Mermaid | ^11.14.0 |
+| Graph View | react-force-graph-3d (`ForceGraph3D`) + three-spritetext | ^1.29.1 / ^1.10.0 |
 | Backend | Rust | Edition 2021 |
 | Serialización Rust | Serde + serde_json | ^1 |
 | HTTP Client Rust | reqwest | 0.13.2 |
@@ -205,7 +208,7 @@ npm run dev:android
 | `npm run build` | Compilación TypeScript + build Vite |
 | `npm run lint` | ESLint |
 | `npm run dev:tauri` | Dev desktop Linux (auto-detect backend) |
-| `npm run dev:tauri:windows` | Dev desktop Windows; genera primero el build multipagina requerido por la publicacion de Task Manager, luego inicia Vite de forma controlada o reutiliza el Vite de este repositorio si ya ocupa el puerto 1420. Rechaza procesos ajenos y ejecuta Tauri sin duplicar `beforeDevCommand`. |
+| `npm run dev:tauri:windows` | Dev desktop Windows; genera primero el build multipágina sin minificar requerido por la publicación de Task Manager, luego inicia Vite de forma controlada o reutiliza el Vite de este repositorio si ya ocupa el puerto 1420. Rechaza procesos ajenos y ejecuta Tauri sin duplicar `beforeDevCommand`. |
 | `npm run dev:tauri:wayland` | Fuerza backend Wayland |
 | `npm run dev:tauri:wayland:fallback` | Wayland con fallback a X11 |
 | `npm run dev:tauri:x11` | Fuerza backend X11 |
@@ -231,7 +234,7 @@ npm run dev:android
 
 1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, Mermaid, ColdPass, Task Manager) se almacenan como archivos en el filesystem. SQLite se reserva para índices y datos estructurados de la aplicación; no hay servidor. El estado en Redux modela solo UI, selección y datos derivados.
 2. **Cifrado de ColdPass en frontend**: la passkey nunca viaja al backend. El cifrado/descifrado AES-256-GCM con PBKDF2 (250k iteraciones) se ejecuta en el navegador vía **Web Crypto API**. El backend Rust solo lee/escribe bytes opacos.
-3. **Renderizado de Graph View mediante motor Mermaid compartido**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y se convierte a código Mermaid vía `linkCacheMermaidEngine.ts`. La vista utiliza el mismo `MermaidCanvas` que el editor de diagramas, garantizando coherencia visual y un único motor de renderizado. Web Workers pueden emplearse para cómputo pesado puntual, pero actualmente no hay workers activos en el frontend.
+3. **Renderizado 3D de Graph View con `react-force-graph-3d`**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y `GraphView.tsx` lo transforma a `graphData` para `ForceGraph3D`, que calcula el layout de fuerzas y pinta nodos/aristas mediante WebGL. El renderer 3D se consume desde su entrypoint dedicado, sin cargar la distribución completa ni sus módulos VR/AR. Mermaid continúa aislado para el editor de diagramas y no participa en esta vista.
 
 4. **Contextos documentales**: `src/services/contexts/libraryContexts.ts` define el contrato `#tag` + color y sus valores por defecto (`#Laboral`, `#Personal`, `#Academico`). La colección se persiste en `.notia/notiaConfig.json`. `ensureMarkdownDefaults()` garantiza `contexto: "#Personal"` en Markdown nuevo o legado que todavía no tenga la propiedad; los tags se serializan entre comillas porque `#` inicia comentarios YAML.
 4. **Redux Toolkit para estado global**: 5 slices (`ui`, `preferences`, `library`, `documents`, `explorer`) con persistencia de preferencias en `localStorage` dentro de los propios reducers.
@@ -251,7 +254,7 @@ Los resúmenes de tarjeta usan `finance_save_credit_card_statement` y `finance_l
 
 La evidencia original vive en `finance_source_artifacts`; las respuestas completas del extractor en `finance_extraction_results`. Borrar o reemplazar la referencia física no elimina compras, líneas, precios, recibos ni resúmenes normalizados. Las bajas de movimientos son lógicas y cuentas/categorías se desactivan. No se registran tokens, documentos, prompts ni payloads financieros en logs.
 
-El scope `finance` de `createChatScopedAgent` no adjunta documentos de la biblioteca. Lista cuentas y categorías mediante herramientas, exige aclaración si falta la cuenta, no permite SQL ni creación implícita de categorías y ejecuta mutaciones por `notiaChatRuntime.ts`. Telegram selecciona ese mismo scope para solicitudes financieras, conserva `actorUserId`, deduplica updates y, en audio, aporta al caso de uso la transcripción más el `fileId` original. Las confirmaciones siguen usando el bridge HTML común y expiran a los dos minutos.
+El scope `finance` de `createChatScopedAgent` no adjunta documentos de la biblioteca. Lista cuentas y categorías mediante herramientas, exige aclaración si falta la cuenta, no permite SQL ni creación implícita de categorías y ejecuta mutaciones por `notiaChatRuntime.ts`. Telegram conserva el agente universal `library` también para solicitudes financieras —el campo `scope` de la request solo clasifica la validación financiera y los comprobantes—, conserva `actorUserId`, deduplica updates y, en audio, aporta al caso de uso la transcripción más el `fileId` original. Las confirmaciones siguen usando el bridge HTML común y expiran a los dos minutos.
    El dashboard y los comandos financieros del primer corte funcionan en desktop. El plugin Android actual solo implementa inicialización/sincronización de la base por SAF; las operaciones CRUD financieras móviles requieren ampliar ese adapter antes de declarar paridad Android.
 
 ---
@@ -561,9 +564,9 @@ La selección del editor se transforma en `MarkdownSelectionContext` mediante `s
 ### 2.4 Graph View
 
 #### Descripción
-Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos. A partir de la versión 1.0.13, el Graph View utiliza el **mismo motor Mermaid** que el editor de diagramas: el modelo de nodos y aristas se convierte a código Mermaid (`linkCacheMermaidEngine.ts`) y se renderiza mediante `MermaidCanvas.tsx`, aprovechando zoom/pan, temas y caché LRU compartidos.
+Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos. Graph View utiliza `ForceGraph3D` de **react-force-graph-3d**: recibe el modelo tipado de nodos y aristas, ejecuta un layout de fuerzas y renderiza una escena WebGL 3D, con títulos persistentes sobre los nodos, órbita, zoom y foco de resultados.
 
-Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde el catálogo de la biblioteca. Para los archivos bajo `task-mannager/` o `task-manager/`, el contexto del tablero es la fuente de verdad; `GraphView.tsx` aplica el color al SVG renderizado y muestra una leyenda, manteniendo el pipeline Mermaid existente.
+Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde el catálogo de la biblioteca. Para los archivos bajo `task-mannager/` o `task-manager/`, el contexto del tablero es la fuente de verdad; `GraphView.tsx` aplica el color al nodo 3D y muestra una leyenda.
 
 #### Endpoints (Commands Tauri)
 
@@ -579,8 +582,8 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
 
 #### Salidas
 - `LibraryGraphModel` — `{ nodes: GraphNode[], edges: GraphEdge[] }`.
-- `Mermaid source` — código Mermaid generado por `buildLinkCacheMermaidCode()`.
-- Renderizado SVG/DOM posicionado por Mermaid, interactivo vía `MermaidCanvas`.
+- `ForceGraphData` — `{ nodes: ForceNode[], links: ForceLink[] }` generado desde `LibraryGraphModel`.
+- Renderizado WebGL 3D posicionado por `ForceGraph3D`, con callbacks de selección, foco, órbita y zoom; cada nodo agrega un `SpriteText` con su título, sin incluir el path.
 - Archivo `.notia/linkCache.md` — cache del diagrama regenerado en background.
 
 #### Validaciones
@@ -594,11 +597,12 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
    - Crea un nodo por cada archivo Markdown.
    - Parsea wikilinks del contenido vía `wikiLinkEngine.ts`.
    - Crea aristas entre nodos cuando un wikilink apunta a otro archivo existente.
-3. **Generación de Mermaid**: `GraphView.tsx` invoca `buildLinkCacheMermaidCode(graphModel, rootPath)`, que agrupa los nodos en subgrafos por carpeta y genera un `flowchart TD`.
-4. **Renderizado**: `GraphView.tsx` pasa el código Mermaid a `useMermaidRender()` y luego a `MermaidCanvas.tsx` (modo `readOnly`), obteniendo SVG, zoom/pan y temas consistentes con el resto de la app.
-5. **Post-render**: `onSvgInjected` inyecta `data-notia-path` en cada nodo SVG y aplica resaltado de búsqueda/selección.
-6. **Navegación**: clic en nodo → dispatch `documentsSlice.actions.openDocument()` → abre la nota en pestaña.
-7. **Cache en disco**: tras construir el modelo, `useLibraryGraphData.ts` programa (vía `libraryLinkCacheSchedule.ts`) la regeneración de `.notia/linkCache.md` en segundo plano, con debounce de 1.5 s.
+3. **Adaptación al renderer**: `GraphView.tsx` copia cada nodo usando su path como `id` y convierte cada edge a `{ source, target }`, evitando mutar el `LibraryGraphModel` compartido mientras `react-force-graph` calcula posiciones.
+4. **Renderizado**: `ForceGraph3D` ejecuta el layout de fuerzas y dibuja nodos y aristas en WebGL; `controlType="orbit"` permite rotar, hacer zoom y desplazar la cámara. El layout no modifica la cámara al detenerse; el encuadre solo se ejecuta desde el botón explícito **Centrar grafo**.
+5. **Interacción**: clic en un nodo abre el archivo; Shift+clic lo agrega o quita del contexto del chat; búsqueda y selección actualizan los colores sin manipular DOM/SVG. `onNodeHover` calcula vecinos directos desde las aristas, resalta el nodo y las conexiones relacionadas, atenúa el resto y activa partículas direccionales en los enlaces activos. `nodeThreeObjectExtend` conserva la esfera del nodo y suma una etiqueta `SpriteText` orientada hacia la cámara; el tooltip usa únicamente el título.
+6. **Efectos visuales**: los enlaces usan materiales aditivos de baja intensidad y partículas únicamente en conexiones bajo hover; el brillo queda dentro de WebGL, sin filtros CSS sobre el canvas ni postprocesado bloom continuo, mientras la iluminación aporta volumen a los nodos.
+7. **Navegación**: clic en nodo → dispatch `documentsSlice.actions.openDocument()` → abre la nota en pestaña.
+8. **Cache en disco**: tras construir el modelo, `useLibraryGraphData.ts` programa (vía `libraryLinkCacheSchedule.ts`) la regeneración de `.notia/linkCache.md` en segundo plano, con debounce de 1.5 s.
 
 #### Comportamiento ante errores
 - Error construyendo el modelo: se captura en el hook, se loguea y `GraphView.tsx` muestra estado vacío o mensaje de error.
@@ -606,7 +610,7 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
 - Fallo al escribir `linkCache.md`: se loguea como warning; no bloquea la vista.
 
 #### Dependencias
-- **Frontend**: `GraphView.tsx`, `useLibraryGraphData.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `linkCacheMermaidEngine.ts`, `MermaidCanvas.tsx`, `useMermaidRender.ts`, `mermaidEngine.ts`, `libraryLinkCacheRuntime.ts`, `libraryLinkCacheSchedule.ts`, `useLibraryLinkCacheAutoRebuild.ts`.
+- **Frontend**: `GraphView.tsx`, `react-force-graph-3d`, `three-spritetext`, `useLibraryGraphData.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `libraryLinkCacheRuntime.ts`, `libraryLinkCacheSchedule.ts`, `useLibraryLinkCacheAutoRebuild.ts`.
 - **Backend**: `read_markdown_files`.
 
 ---
@@ -2252,10 +2256,10 @@ sequenceDiagram
 flowchart TD
     Start([Usuario abre Graph View]) --> ReadMD["getIndexedLibraryGraphSourcesByPath()<br/>lee .md de la librería"]
     ReadMD --> BuildModel["useLibraryGraphData.ts<br/>buildLibraryGraphModel()<br/>nodos + wikilinks → aristas"]
-    BuildModel --> GenerateMermaid["linkCacheMermaidEngine.ts<br/>genera flowchart TD por carpeta"]
-    GenerateMermaid --> Render["MermaidCanvas.tsx<br/>mermaid.render() → SVG"]
-    Render --> PostInject["onSvgInjected:<br/>data-notia-path + highlight"]
-    PostInject --> UserClick{"¿Clic en nodo?"}
+    BuildModel --> AdaptGraph["GraphView.tsx<br/>adapta a graphData"]
+    AdaptGraph --> Render["ForceGraph3D<br/>layout de fuerzas + WebGL"]
+    Render --> Interaction["zoom/pan, foco y highlight"]
+    Interaction --> UserClick{"¿Clic en nodo?"}
     UserClick -->|Sí| OpenDoc["dispatch openDocument<br/>abrir nota en pestaña"]
     UserClick -->|No| End([Fin])
     OpenDoc --> End
@@ -2268,7 +2272,7 @@ flowchart TD
 graph LR
     subgraph GraphView["Vista: Graph"]
         GraphViewComp["GraphView.tsx"]
-        Canvas["MermaidCanvas.tsx<br/>readOnly"]
+        Canvas["ForceGraph3D<br/>escena WebGL 3D"]
     end
 
     subgraph GraphHooks["Hooks Graph"]
@@ -2278,12 +2282,7 @@ graph LR
     subgraph GraphEngines["Engines Graph"]
         LibGraph["libraryGraphEngine.ts"]
         WikiLink["wikiLinkEngine.ts"]
-        LinkMermaid["linkCacheMermaidEngine.ts"]
-    end
-
-    subgraph MermaidModule["Módulo Mermaid"]
-        MermaidEngine["mermaidEngine.ts"]
-        MermaidRender["useMermaidRender.ts"]
+        ForceGraph["react-force-graph-3d"]
     end
 
     subgraph GraphCache["Link Cache"]
@@ -2293,11 +2292,9 @@ graph LR
     end
 
     GraphViewComp --> Canvas
-    GraphViewComp --> LinkMermaid
+    GraphViewComp --> ForceGraph
     GraphData --> LibGraph
     LibGraph --> WikiLink
-    GraphViewComp --> MermaidRender
-    MermaidRender --> MermaidEngine
     GraphData -.-> CacheSchedule
     CacheSchedule --> CacheRuntime
     CacheHook --> CacheSchedule
@@ -2315,8 +2312,7 @@ sequenceDiagram
     participant Tauri as Tauri API
     participant RustCmd as filesystem::commands
     participant LibGraph as libraryGraphEngine.ts
-    participant LinkEngine as linkCacheMermaidEngine.ts
-    participant Canvas as MermaidCanvas.tsx
+    participant ForceGraph as react-force-graph-3d / ForceGraph3D
     participant Cache as libraryLinkCacheSchedule.ts
 
     User->>Graph: Abrir Graph View
@@ -2340,14 +2336,10 @@ sequenceDiagram
     Cache->>Cache: rebuildLibraryLinkCache()
     Cache->>FSEngine: writeTextFile(.notia/linkCache.md)
 
-    Graph->>LinkEngine: buildLinkCacheMermaidCode(model, rootPath)
-    LinkEngine-->>Graph: mermaid source
-
-    Graph->>Canvas: render(code, theme)
-    Canvas->>Canvas: mermaid.render(id, source)
-    Canvas-->>Canvas: inject SVG + onSvgInjected
-
-    Graph->>Graph: apply search/selection highlights
+    Graph->>ForceGraph: graphData = nodes + links
+    ForceGraph->>ForceGraph: calcula layout de fuerzas y dibuja WebGL 3D
+    ForceGraph-->>Graph: cámara / node events
+    Graph->>Graph: aplica búsqueda, selección y foco
 
     User->>Graph: Clic en nodo
     Graph->>Graph: dispatch openDocument(path)
@@ -2939,7 +2931,7 @@ graph TB
 
 ## 6. Notas de Performance
 
-- **Graph View en hilo principal + motor Mermaid**: el modelo de grafo se construye sincrónicamente en `useLibraryGraphData.ts` y se convierte a código Mermaid para renderizado por `MermaidCanvas`. El layout aprovecha el motor Mermaid optimizado; no hay Web Workers activos en el frontend actualmente.
+- **Graph View en hilo principal + escena WebGL**: el modelo se construye sincrónicamente en `useLibraryGraphData.ts` y se renderiza con `ForceGraph3D` de `react-force-graph-3d`. El layout se calcula en el hilo principal; el dibujo usa resolución reducida, materiales aditivos sutiles y partículas solo para enlaces bajo hover, sin postprocesado continuo ni Web Workers activos en el frontend actualmente.
 - **Lazy render de Mermaid inline**: `useMermaidLazyRender` usa `IntersectionObserver` para no renderizar diagramas embebidos fuera del viewport hasta que sean visibles.
 - **Cancelación de renders**: `renderMermaid` acepta `AbortSignal`; los hooks `useMermaidRender` y `useMermaidLazyRender` abortan renders pendientes al desmontar, reduciendo trabajo en segundo plano.
 - **Caché LRU con límite de peso**: `mermaidEngine.ts` usa `WeightedLruCache` (20 entradas / 5 MB) para evitar que SVGs grandes consuman memoria indefinidamente.
@@ -2954,7 +2946,7 @@ graph TB
 - **Timers de performance base**: `NotiaMenu` y `useDocumentOpener` registran duraciones vía `notiaTimer`/`performanceBaseline` para facilitar benchmarking continuo en Android.
 - **Memoización de vistas pesadas (1.2b)**: `ChatWorkspaceView`, `TaskManagerApp`, `MermaidCanvas` y `GraphView` usan `React.memo` con comparadores personalizados (`areChatWorkspaceViewPropsEqual`, `areTaskManagerAppPropsEqual`, `areMermaidCanvasPropsEqual`, `areGraphViewPropsEqual`). Esto evita re-renderizados cuando el padre actualiza estado no consumido por la vista (por ejemplo, `NotiaWorkspace` cambiando un setter sin que cambien las props de la vista).
 - **Renderizado directo del hilo de mensajes**: `ChatWorkspaceView` renderiza todos los mensajes del hilo activo sin virtualización. Esto evita que mensajes largos del asistente (con Markdown, listas o bloques de código) se corten al forzar una altura fija por item. La virtualización de altura fija fue descartada porque los mensajes de chat tienen altura variable e impredecible; una futura optimización podría usar medición dinámica por item (`ResizeObserver`) si fuera necesario para conversaciones muy largas.
-- **Callbacks estables en `MermaidCanvas`**: los handlers del toolbar de flechas (`onEdgeTypeChange`, `onEdgeColorChange`, `onEdgeLabelChange`) se envuelven en `useCallback` para no invalidar el memo del canvas durante interacciones de pointer.
+- **Callbacks estables en Graph View**: `GraphView` memoiza el modelo adaptado y los handlers de foco/selección para evitar reconstrucciones innecesarias durante interacciones de pointer.
 - **Selectores Redux memoizados (2.3/2.4)**: vistas pesadas (`MermaidView`, `GraphView`, `MarkdownView`, `InlineMermaidPreview`) dejaron de usar selectores inline anónimos. Ahora consumen selectores reutilizables con `createSelector` (`selectMermaidViewerState`, `selectMermaidTheme`, `selectActiveLibraryPath`, `selectTheme`), reduciendo la creación de nuevas referencias de objetos en cada render y facilitando la estabilidad de `React.memo`.
 - **Code splitting con `React.lazy` (4.1)**: `MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp` se cargan bajo demanda. `FileViewHost` y `NotiaWorkspace` envuelven estas vistas en `Suspense` con fallback mínimo (spinner Notia), reduciendo el tiempo de parseo/ejecución del bundle inicial en Android y desktop.
 - **Preload inteligente para escritorio (4.2)**: `useLazyPreloadOnIdle.ts` (usado en `App.tsx`) precarga los chunks de los editores más comunes durante los momentos de inactividad (`requestIdleCallback` / `setTimeout` fallback), respetando el retraso configurado antes de solicitar tiempo ocioso y reintentando si el callback no tiene presupuesto. En Android la precarga se omite por defecto para conservar memoria y datos móviles.
@@ -2966,7 +2958,7 @@ graph TB
 - **Perfil de compilación release optimizado (6.1)**: `src-tauri/Cargo.toml` configura `lto = true`, `codegen-units = 1`, `strip = true` y `panic = "abort"` para reducir tamaño y mejorar rendimiento en Android. `overflow-checks` se mantiene habilitado por seguridad.
 - **Logging y SAF optimizados (6.2/6.3)**: Android release usa log level `Info`. Se agregó throttle de 200 ms a `refresh_root_tree_cache` y una cache LRU de 500 entradas en `AndroidDirectoryPickerState` para resoluciones de paths SAF sin JNI repetido.
 - **Commands de lectura async con spawn_blocking (6.5)**: `read_library_tree`, `search_library_files` y `read_markdown_files` son ahora commands `async` que delegan el escaneo recursivo a `tokio::task::spawn_blocking`, evitando bloquear el hilo principal de Tauri en bibliotecas grandes.
-- **Cleanup de vistas pesadas (7.1)**: `MarkdownView`, `MermaidView`, `MermaidCanvas` y `GraphView` limpian explícitamente DOM, refs, timeouts, listeners y canvas al desmontar.
+- **Cleanup de vistas pesadas (7.1)**: `MarkdownView`, `MermaidView`, `MermaidCanvas` y `GraphView` limpian explícitamente DOM, refs, timeouts, listeners y canvas al desmontar; Graph View desconecta además el `ResizeObserver` del host.
 - **Cachés LRU acotadas (7.2)**: `mermaidEngine.ts` usa límites reducidos en Android (10 entradas / 2 MB) frente a desktop (20 / 5 MB).
 - **Invalidación agresiva de caches (7.3)**: al cambiar de biblioteca (`librarySlice.setSelectedLibraryId`) o cerrar tabs (`documentsSlice.resetTabs` / `closeAllTextDocuments`) se invalida la caché de renders Mermaid, evitando retención de SVGs de librerías anteriores.
 - **Listeners globales verificados (7.4)**: `useLibraryTreeSync` corrige la desuscripción del watcher desktop; `useGlobalEventListeners` y `useRightPanelMount` remueven listeners/RAF en cleanup; `uiSlice` desmonta el panel de chat al cerrarlo.
@@ -3031,9 +3023,9 @@ graph TB
 
 #### 8.2.5 Frontend — Web Workers (`workers/`)
 
-- **Cohesión**: **N/A actualmente**. El directorio `src/workers/` está vacío tras la migración del Graph View al motor Mermaid compartido.
+- **Cohesión**: **N/A actualmente**. El directorio `src/workers/` está vacío; Graph View y su layout `ForceGraph3D` siguen ejecutándose en el hilo principal.
 - **Acoplamiento**: **N/A**.
-- **Observaciones**: Web Workers siguen siendo la herramienta recomendada por `AGENTS.md` para cómputo pesado fuera del hilo principal, pero en este momento no hay workers activos. Si el perfilado del renderizado Mermaid o del modelado del grafo vuelve a superar 100 ms consistentemente, se reevaluará su reintroducción.
+- **Observaciones**: Web Workers siguen siendo la herramienta recomendada por `AGENTS.md` para cómputo pesado fuera del hilo principal, pero en este momento no hay workers activos. Si el perfilado del layout de fuerzas o del modelado del grafo supera 100 ms consistentemente, se reevaluará su reintroducción.
 - **Riesgo**: Bajo. El modelo de grafo actual se construye en el hilo principal; bibliotecas muy grandes pueden causar jank momentáneo.
 
 #### 8.2.6 Backend — Commands (`commands/`)
@@ -3213,7 +3205,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 #### Recomendaciones para escalabilidad
 
 1. **Horizontal**: el módulo `task-manager/` demuestra que nuevos dominios pueden vivir como módulos auto-contenidos con sus propios engines, services y types. Replicar este patrón para futuras features. El módulo `mermaid/` ahora también demuestra que puede exponer componentes para consumo externo (`InlineMermaidPreview`).
-2. **Vertical (renderizado)**: el Graph View ahora renderiza mediante Mermaid en el hilo principal. Si el modelado del grafo supera 100 ms consistentemente, reintroducir Web Workers o delegar `buildLibraryGraphModel` a un worker.
+2. **Vertical (renderizado)**: Graph View usa `ForceGraph3D`; el layout de fuerzas se ejecuta en el hilo principal y la escena se dibuja con WebGL. Si el layout o el modelado del grafo supera 100 ms consistentemente, reintroducir Web Workers o delegar `buildLibraryGraphModel` a un worker.
 3. **Storage**: migrar de `localStorage` a un `StorageAdapter` que pueda evolucionar a `IndexedDB` para datos de mayor volumen (ej. índice de búsqueda, historial de Pomodoro).
 
 ---
@@ -3522,7 +3514,7 @@ Los mensajes financieros de Telegram aceptan fotos y documentos PDF. Los PDF se 
 
 Las cuentas de pago son referencias de procedencia o destino y no exponen ni calculan saldos. Los ingresos, gastos y recibos asociados se preservan para reportes sin alterar la cuenta. El saldo acumulado pertenece exclusivamente a las reservas de ahorro y se deriva de su importe inicial y de sus movimientos confirmados.
 
-`telegramMessageFormatter.ts` convierte Markdown común a HTML limitado antes de `send_telegram_message`: encabezados a `<b>`, listas a viñetas, negrita/cursiva/código a sus etiquetas admitidas y enlaces seguros a `<a>`. El formateador escapa HTML arbitrario y preserva únicamente el subconjunto autorizado. El backend mantiene `parseMode = HTML` como único modo aceptado.
+`telegramMessageFormatter.ts` convierte Markdown común a HTML limitado antes de `send_telegram_message`: encabezados a `<b>`, listas Markdown o bloques HTML generados por el modelo (`<ul>`, `<ol>`, `<li>`) a viñetas, negrita/cursiva/código a sus etiquetas admitidas y enlaces seguros a `<a>`. Los tags reconocidos se normalizan fuera de fences; el formateador escapa HTML arbitrario y preserva únicamente el subconjunto autorizado. El backend mantiene `parseMode = HTML` como único modo aceptado.
 
 El feedback operativo de Telegram usa eventos tipados del runtime común, separados de `onThinkingDelta`. `telegramProgressRuntime.ts` reduce esos eventos a fases y etiquetas humanas seguras, aplica deduplicación y limita las actualizaciones intermedias a una por cada dos segundos. El bridge crea un único mensaje de estado editable por request: su estado inicial funciona como acuse (**Solicitud recibida y en proceso**) y `markTelegramProgressThinking` habilita el cambio a la primera etapa observable cuando llega la primera señal de `onThinkingDelta`. Las solicitudes activas ya no envían un acuse hardcodeado separado; las que esperan detrás de otra solicitud sí reciben un aviso de cola independiente. Las preguntas de aclaración y confirmación se conservan en mensajes independientes para no romper sus botones. El sanitizador de confirmaciones distingue una búsqueda web —explica que consulta fuentes públicas actualizadas y no modifica la biblioteca— de una escritura, que remite al detalle y la vista previa disponibles en Notia. Las consultas de noticias actuales se enrutan al scope de biblioteca, que sí expone `search_web`, aunque mencionen finanzas; el runtime común pasa `requiredToolNames` para impedir una respuesta final antes de una búsqueda exitosa y valida que los enlaces citados pertenezcan a los resultados devueltos. Si la herramienta falla, es cancelada o no devuelve fuentes verificables, la respuesta se detiene sin inventar resultados. Telegram recibe únicamente el estado observable —por ejemplo, leyendo, organizando pasos, ejecutando o verificando— y nunca el thinking crudo, prompts, argumentos de tools, rutas ni contenido privado.
 
@@ -3530,7 +3522,7 @@ El feedback operativo de Telegram usa eventos tipados del runtime común, separa
 
 Los updates `voice` y `audio` se normalizan como `{ fileId, duration, mimeType?, fileSize? }` únicamente después del control de identidad. `transcribe_telegram_audio` repite en Rust los límites de 15 minutos y 20 MB, llama `getFile`, valida la ruta devuelta, descarga con timeout y decodifica OGG/Opus mediante `ogg` + `ropus`, ambos sin FFmpeg ni FFI adicional. El PCM mono a 16 kHz se procesa con el mismo `Qwen3AsrRecognizer` local y luego se devuelve a la caché residente.
 
-Los updates `photo` se normalizan como `{ fileId, fileSize?, width, height }`; `download_telegram_photo` valida el identificador, dimensiones, ruta remota y límite de 4 MB tanto antes como después de descargar. Antes de procesar, el bridge guarda sincrónicamente en `localStorage`, bajo un scope de biblioteca, bot y chat, el checkpoint de updates y un sobre de recuperación de la cola; el texto original se elimina antes de serializar y solo queda en memoria durante la sesión. La solicitud activa permanece en ese registro hasta que termina; si el WebView se reinicia, vuelve a la cabeza de la cola como interrumpida y solo `/reanudar` permite continuar, sin repetir una mutación desconocida. El comando devuelve JPEG en Base64 al bridge, que lo adjunta a la misma llamada de `notiaChatRuntime` y fuerza el scope `finance`. El bridge conserva solamente los metadatos de hasta diez fotos pendientes y descarga cada imagen al iniciar su turno, evitando retener en memoria un álbum entero en Base64. Un fallo al enviar el mensaje de error se registra pero no interrumpe el drenaje de las solicitudes restantes. Conserva la referencia del ticket activo durante las aclaraciones de cuenta y la libera únicamente cuando `create_finance_purchase` confirma su persistencia. La herramienta `create_finance_purchase` recibe un esquema estricto de comercio, cuenta, importes y líneas; acepta importes canónicos, numéricos y formatos localizados comunes, deriva el subtotal exacto desde las líneas y devuelve campos inválidos concretos. La validación admite impuestos adicionados al subtotal o informados como ya incluidos —caso habitual en comprobantes argentinos— sin perder el importe fiscal extraído. Las excepciones de una native tool se convierten en resultados `ok:false` con código seguro para que el agente pueda corregir o informar el fallo sin terminar toda la conversación. Después del primer intento estructurado, el runtime elimina el Base64 de las rondas correctivas porque los argumentos completos ya permanecen en el historial de tool calling. Telegram emite progreso por etapa y limita los reintentos visibles mediante un intervalo. La huella SHA-256 del ticket evita registrar por segunda vez un comprobante ya confirmado. El modelo configurado debe aceptar adjuntos de imagen y tool calling; si no puede leer la foto, el agente debe pedir una imagen más legible o informar que no es un ticket, nunca inventar productos.
+Los updates `photo` se normalizan como `{ fileId, fileSize?, width, height }`; `download_telegram_photo` valida el identificador, dimensiones, ruta remota y límite de 4 MB tanto antes como después de descargar. Antes de procesar, el bridge guarda sincrónicamente en `localStorage`, bajo un scope de biblioteca, bot y chat, el checkpoint de updates y un sobre de recuperación de la cola; el texto original se elimina antes de serializar y solo queda en memoria durante la sesión. La solicitud activa permanece en ese registro hasta que termina; si el WebView se reinicia, vuelve a la cabeza de la cola como interrumpida y solo `/reanudar` permite continuar, sin repetir una mutación desconocida. El comando devuelve JPEG en Base64 al bridge, que lo adjunta a la misma llamada de `notiaChatRuntime`; el agente conserva el acceso transversal `library` más `enableFinanceTools`, por lo que puede clasificar documentos financieros y consultar el resto de la biblioteca en el mismo turno. El bridge conserva solamente los metadatos de hasta diez fotos pendientes y descarga cada imagen al iniciar su turno, evitando retener en memoria un álbum entero en Base64. Un fallo al enviar el mensaje de error se registra pero no interrumpe el drenaje de las solicitudes restantes. Conserva la referencia del ticket activo durante las aclaraciones de cuenta y la libera únicamente cuando `create_finance_purchase` confirma su persistencia. La herramienta `create_finance_purchase` recibe un esquema estricto de comercio, cuenta, importes y líneas; acepta importes canónicos, numéricos y formatos localizados comunes, deriva el subtotal exacto desde las líneas y devuelve campos inválidos concretos. La validación admite impuestos adicionados al subtotal o informados como ya incluidos —caso habitual en comprobantes argentinos— sin perder el importe fiscal extraído. Las excepciones de una native tool se convierten en resultados `ok:false` con código seguro para que el agente pueda corregir o informar el fallo sin terminar toda la conversación. Después del primer intento estructurado, el runtime elimina el Base64 de las rondas correctivas porque los argumentos completos ya permanecen en el historial de tool calling. Telegram emite progreso por etapa y limita los reintentos visibles mediante un intervalo. La huella SHA-256 del ticket evita registrar por segunda vez un comprobante ya confirmado. El modelo configurado debe aceptar adjuntos de imagen y tool calling; si no puede leer la foto, el agente debe pedir una imagen más legible o informar que no es un ticket, nunca inventar productos.
 
 Algunos modelos devuelven XML heredado en lugar del `tool_calls` nativo. `parseLegacyXmlToolCalls` recupera también el envoltorio `<tool_call><name>…</name><arguments>…</arguments></tool_call>` y normaliza nombres que omiten guiones bajos —por ejemplo `listfinanceaccounts`— exclusivamente si coinciden de forma exacta con una herramienta disponible. El XML se convierte en una llamada nativa antes de llegar al bridge y nunca se muestra como respuesta al usuario.
 
@@ -3538,7 +3530,7 @@ Las mutaciones de Finanzas iniciadas por Telegram se auto-confirman para reducir
 
 La integración usa long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
 
-El emparejamiento exige `/start` y aprobación local. Cada update posterior debe coincidir tanto en `chatId` como en `userId`. El scope `library` del agente ofrece búsqueda y lectura sobre el corpus completo, además de `create_library_note`, `replace_library_document` y `delete_library_document`. Estas mutaciones son serializadas, se ejecutan individualmente y llaman `requestConfirmation`; Telegram muestra callbacks efímeros asociados a una operación concreta.
+El emparejamiento exige `/start` y aprobación local. Cada update posterior debe coincidir tanto en `chatId` como en `userId`. Telegram construye siempre el agente con `scope: 'library'`, `scopePaths` igual a todas las rutas legibles de la biblioteca y `enableFinanceTools: true`; así conserva búsqueda y lectura del corpus completo, tickets de todos los tableros y las herramientas financieras sin heredar el módulo seleccionado en la interfaz. Las requests financieras y los comprobantes agregan `validateFinanceResponses: true` para conservar las comprobaciones de mutaciones; las consultas documentales no activan ese validador, evitando que una corrección interna de Finanzas se filtre en respuestas sobre reuniones o tareas. El resolver histórico de scopes se mantiene por compatibilidad con solicitudes persistidas, pero devuelve `library` y nunca reduce una consulta a Finanzas. Estas capacidades no eliminan las confirmaciones ni los límites de escritura: `create_library_note`, las mutaciones de Task Manager y las operaciones financieras siguen ejecutándose mediante sus herramientas y verificaciones propias. Telegram muestra callbacks efímeros asociados a una operación concreta.
 
 Comandos Tauri:
 

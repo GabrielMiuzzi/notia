@@ -21,8 +21,8 @@ configure_wayland() {
   export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 }
 
-echo "[notia] Generando los assets publicados de Task Manager..."
-npm run build
+echo "[notia] Generando los assets publicados de Task Manager (build de desarrollo)..."
+npm run build -- --minify=false
 
 requested_backend="${NOTIA_TAURI_BACKEND:-auto}"
 

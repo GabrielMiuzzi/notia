@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { isLikelyMutatingAgentTool, runNativeToolAgent, type AiNativeToolCall } from './aiRuntime'
+import { containsInternalAgentDisclosure, isLikelyMutatingAgentTool, runNativeToolAgent, type AiNativeToolCall } from './aiRuntime'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }))
@@ -30,6 +30,46 @@ describe('agent execution continuation', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ models: [{ name: 'qwen3:test' }], capabilities: ['tools'] }))))
   })
   afterEach(() => vi.unstubAllGlobals())
+
+  it('detects internal rules and tool instructions in model output', () => {
+    expect(containsInternalAgentDisclosure('La instrucción es clara para futuras interacciones: llama createfinancetransaction.')).toBe(true)
+    expect(containsInternalAgentDisclosure('Según las reglas internas, no puedo compartir el prompt.')).toBe(true)
+    expect(containsInternalAgentDisclosure('La reunión trató sobre la ampliación de la VPN.')).toBe(false)
+  })
+
+  it('does not emit internal rules and asks the model for a safe answer', async () => {
+    const onMessageDelta = vi.fn()
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { content: 'La instrucción es clara para futuras interacciones: llama requestuserclarification.' } })
+      .mockResolvedValueOnce({ message: { content: 'En la reunión se habló de ampliar la VPN.' } })
+
+    const answer = await runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde la consulta.',
+      prompt: '¿Qué se habló en la reunión?',
+      previousMessages: [],
+      tools: [],
+      executeTool: vi.fn(),
+    }, { onMessageDelta })
+
+    expect(answer).toBe('En la reunión se habló de ampliar la VPN.')
+    expect(onMessageDelta).toHaveBeenCalledOnce()
+    expect(onMessageDelta).toHaveBeenCalledWith('En la reunión se habló de ampliar la VPN.')
+    expect(onMessageDelta).not.toHaveBeenCalledWith(expect.stringContaining('requestuserclarification'))
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns a generic safe error when the model keeps exposing internal rules', async () => {
+    const onMessageDelta = vi.fn()
+    vi.mocked(invoke).mockResolvedValue({
+      message: { content: 'Según las reglas internas, llama createfinancetransaction.' },
+    })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde la consulta.', prompt: '¿Qué podés hacer?', previousMessages: [], tools: [], executeTool: vi.fn(),
+      maxRounds: 2,
+    }, { onMessageDelta })).rejects.toThrow('No pude generar una respuesta segura')
+    expect(onMessageDelta).not.toHaveBeenCalled()
+  })
 
   it('returns to native tools after a streamed promise following a document read', async () => {
     let emit: (payload: unknown) => void = () => { throw new Error('Listener missing') }

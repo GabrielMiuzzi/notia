@@ -163,16 +163,13 @@ export function isTelegramPublicWebRequest(value: string): boolean {
 }
 
 export function resolveTelegramAgentScope(value: string, previousScope: TelegramAgentScope | null): TelegramAgentScope {
-  const normalized = value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLocaleLowerCase('es')
-  const explicitLibraryRequest = /\b(nota|notas|documento|documentos|archivo|archivos|biblioteca|carpeta|carpetas|tarea|tareas|tablero|board)\b/.test(normalized)
-  if (explicitLibraryRequest) return 'library'
-  if (isTelegramCurrentNewsRequest(value)) return 'library'
-  if (isTelegramPublicWebRequest(value) && !isTelegramFinanceRequest(value)) return 'library'
-  if (isTelegramFinanceRequest(value)) return 'finance'
-  return previousScope === 'finance' && !explicitLibraryRequest ? 'finance' : 'library'
+  // Telegram is a channel over the whole active library, not a mirror of the
+  // module currently selected in the desktop UI. Keep this resolver for the
+  // persisted request contract, but never narrow a request to Finance here:
+  // the agent receives library/task tools plus the finance toolset below.
+  void value
+  void previousScope
+  return 'library'
 }
 
 export function parseTelegramConfirmationDecision(value: string): boolean | null {
@@ -516,7 +513,12 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent context build started', undefined, 'info')
         const files = await loadLibraryFileOptions(state.library)
         const agent = await createChatScopedAgent({
-          scope: request.scope, library: state.library, scopePaths: files.map((file) => file.path), actorUserId: request.actorUserId,
+          scope: 'library',
+          enableFinanceTools: true,
+          validateFinanceResponses: request.scope === 'finance',
+          library: state.library,
+          scopePaths: files.map((file) => file.path),
+          actorUserId: request.actorUserId,
           aiPreferences: state.aiPreferences,
           promptFileName: loadSelectedAgentPromptFileName(state.library.id),
           responseFormat: 'telegram-html',
@@ -768,7 +770,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           ? { kind: 'pdf' as const, value: update.document }
           : null
       const prompt = text || (attachment ? '[Origen: documento de Telegram. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente.]' : '')
-      const scope = attachment ? 'finance' : resolveTelegramAgentScope(prompt, conversationScopeRef.current)
+      const scope = attachment || isTelegramFinanceRequest(prompt)
+        ? 'finance'
+        : resolveTelegramAgentScope(prompt, conversationScopeRef.current)
       if (attachment) {
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram image received', {
           updateId: update.updateId,

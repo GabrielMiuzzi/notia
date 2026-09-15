@@ -8,7 +8,7 @@
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
 - Gráficos XGraph interactivos en notas Markdown.
-- Graph View de relaciones entre documentos.
+- Graph View 3D de relaciones entre documentos, con órbita, zoom, foco y colores por contexto.
 - Contextos configurables por biblioteca (`#Laboral`, `#Personal` y `#Academico` por defecto), con color asociado y coloración de nodos en Graph View.
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
@@ -16,7 +16,7 @@
 - Memoria persistente y herramientas nativas para el agente de IA.
 - Chat efímero de Meeting con transcripción offline y diarización.
 - Dictado y síntesis de voz offline.
-- Integración de Telegram con chat, progreso editable, confirmaciones, notas de voz e imágenes.
+- Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes.
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas y comentarios.

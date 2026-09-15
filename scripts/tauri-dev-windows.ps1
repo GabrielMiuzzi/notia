@@ -73,8 +73,8 @@ if (Test-NotiaDevPort) {
 }
 
 try {
-  Write-Host 'Generando los assets publicados de Task Manager...'
-  & npm.cmd run build
+  Write-Host 'Generando los assets publicados de Task Manager (build de desarrollo)...'
+  & npm.cmd run build -- --minify=false
   if ($LASTEXITCODE -ne 0) {
     throw "El build de los assets publicados termino con codigo $LASTEXITCODE."
   }

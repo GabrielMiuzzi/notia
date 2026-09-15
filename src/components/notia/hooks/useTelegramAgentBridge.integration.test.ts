@@ -170,6 +170,9 @@ describe('useTelegramAgentBridge integration', () => {
     })
 
     await vi.waitFor(() => expect(mocks.runNotiaChatReply).toHaveBeenCalled())
+    expect(mocks.createChatScopedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'library', enableFinanceTools: true, validateFinanceResponses: false }),
+    )
     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ prompt: 'resumime el proyecto', streamFinalResponse: false }),
