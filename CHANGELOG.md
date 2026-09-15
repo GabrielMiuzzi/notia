@@ -1,3 +1,5 @@
+[2026-09-15 14:19:01 -03:00] Graph View ajustó los títulos del canvas 2D a una tipografía más pequeña y liviana para reducir la saturación visual y el solapamiento entre etiquetas.
+[2026-09-15 13:52:21 -03:00] Graph View migró de `react-force-graph-3d` a `react-force-graph-2d`; los nodos y títulos se dibujan en canvas 2D y se retiraron las dependencias de Three.js.
 [2026-09-15 02:47:26 -03:00] Se redujo el costo visual de Graph View: se eliminó el bloom y el filtro CSS del canvas, se atenuaron halos y partículas, se bajó la resolución de nodos y enlaces y se desactivó el antialiasing para mejorar la fluidez.
 [2026-09-15 02:41:48 -03:00] Graph View incorporó estética de red neuronal: bloom WebGL, halo CSS, materiales aditivos, partículas en las conexiones activas y resaltado de vecinos al hacer hover.
 [2026-09-15 02:31:56 -03:00] Graph View ahora muestra títulos persistentes en cada nodo 3D mediante `three-spritetext`; el path se eliminó tanto de las etiquetas visibles como del tooltip.

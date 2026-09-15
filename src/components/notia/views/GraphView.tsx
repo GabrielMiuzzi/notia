@@ -1,8 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react'
 import { Eye, FileText, LocateFixed, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
-import ForceGraph3D from 'react-force-graph-3d'
-import SpriteText from 'three-spritetext'
-import { AdditiveBlending, MeshBasicMaterial } from 'three'
+import ForceGraph2D from 'react-force-graph-2d'
 import { useAppSelector } from '../../../store/hooks'
 import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { NotiaButton } from '../../common/NotiaButton'
@@ -20,10 +18,8 @@ interface ForceNode extends LibraryGraphNode {
   id: string
   x?: number
   y?: number
-  z?: number
   vx?: number
   vy?: number
-  vz?: number
 }
 
 interface ForceLink {
@@ -32,7 +28,7 @@ interface ForceLink {
   target: string | ForceNode
 }
 
-type GraphRef = ComponentRef<typeof ForceGraph3D>
+type GraphRef = ComponentRef<typeof ForceGraph2D>
 
 function readStoredSettings(): Partial<GraphSettings> {
   try {
@@ -212,20 +208,12 @@ function GraphViewComponent({
     if (
       !node ||
       typeof node.x !== 'number' ||
-      typeof node.y !== 'number' ||
-      typeof node.z !== 'number'
+      typeof node.y !== 'number'
     ) return
 
-    const distance = Math.max(90, 260 / Math.sqrt(node.degree + 1))
-    graphRef.current?.cameraPosition(
-      {
-        x: node.x + distance,
-        y: node.y + distance * 0.45,
-        z: node.z + distance,
-      },
-      { x: node.x, y: node.y, z: node.z },
-      650,
-    )
+    const targetZoom = Math.max(1.8, Math.min(3.6, 5 / Math.sqrt(node.degree + 1)))
+    graphRef.current?.centerAt(node.x, node.y, 650)
+    graphRef.current?.zoom(targetZoom, 650)
   }, [graphData.nodes])
 
   const handleFitGraph = useCallback(() => {
@@ -267,43 +255,54 @@ function GraphViewComponent({
     return getContextColor(node, appTheme)
   }, [appTheme, focusedPath, hoveredNeighborPaths, hoveredPath, matchedPaths, searchQuery, selectedPaths])
 
-  const linkMaterialCacheRef = useRef(new Map<string, MeshBasicMaterial>())
-  const getLinkMaterial = useCallback((link: ForceLink) => {
-    const isActive = isHoveredConnection(link)
-    const cacheKey = `${appTheme}:${isActive ? 'active' : 'idle'}`
-    const cachedMaterial = linkMaterialCacheRef.current.get(cacheKey)
-    if (cachedMaterial) return cachedMaterial
+  const drawNode = useCallback((node: ForceNode, context: CanvasRenderingContext2D, globalScale: number) => {
+    if (typeof node.x !== 'number' || typeof node.y !== 'number') return
 
-    const material = new MeshBasicMaterial({
-      color: isActive ? '#82dfe8' : (appTheme === 'dark' ? '#24546c' : '#5e7894'),
-      transparent: true,
-      opacity: isActive ? 0.74 : 0.26,
-      blending: AdditiveBlending,
-      depthWrite: false,
-    })
-    linkMaterialCacheRef.current.set(cacheKey, material)
-    return material
-  }, [appTheme, isHoveredConnection])
-
-  useEffect(() => () => {
-    linkMaterialCacheRef.current.forEach((material) => material.dispose())
-    linkMaterialCacheRef.current.clear()
-  }, [])
-
-  const createNodeLabel = useCallback((node: ForceNode) => {
-    const label = new SpriteText(node.label)
     const isHovered = node.path === hoveredPath
     const isNeighbor = hoveredNeighborPaths.has(node.path)
     const isFocused = node.path === focusedPath
-    label.color = isHovered ? '#ffffff' : isNeighbor ? '#bffcff' : isFocused ? '#fff2b6' : (appTheme === 'dark' ? '#f8f8f2' : '#20232a')
-    label.fontFace = 'Inter, system-ui, sans-serif'
-    label.fontWeight = '600'
-    label.textHeight = isHovered ? 4.2 : 3.4
-    label.strokeWidth = 0.08
-    label.strokeColor = appTheme === 'dark' ? '#06101d' : '#ffffff'
-    ;(label as unknown as { position: { y: number } }).position.y = 6
-    return label
-  }, [appTheme, focusedPath, hoveredNeighborPaths, hoveredPath])
+    const nodeColor = getNodeDisplayColor(node)
+    const radius = Math.max(3.5, Math.min(10, 3.2 + Math.sqrt(Math.max(0, node.degree)) * 1.1))
+    const labelColor = isHovered
+      ? '#ffffff'
+      : isNeighbor
+        ? '#bffcff'
+        : isFocused
+          ? '#fff2b6'
+          : (appTheme === 'dark' ? '#f8f8f2' : '#20232a')
+    const x = node.x
+    const y = node.y
+    const strokeColor = appTheme === 'dark' ? 'rgba(5, 16, 29, 0.95)' : 'rgba(255, 255, 255, 0.92)'
+
+    context.save()
+    context.beginPath()
+    context.arc(x, y, radius, 0, 2 * Math.PI, false)
+    context.fillStyle = nodeColor
+    context.fill()
+    context.lineWidth = (isHovered ? 2 : isNeighbor ? 1.2 : 0.8) / globalScale
+    context.strokeStyle = isHovered || isNeighbor ? '#8be9fd' : strokeColor
+    context.stroke()
+
+    if (isHovered || isNeighbor) {
+      context.beginPath()
+      context.arc(x, y, radius + (isHovered ? 3.5 : 2.2) / globalScale, 0, 2 * Math.PI, false)
+      context.lineWidth = 1 / globalScale
+      context.strokeStyle = isHovered ? 'rgba(139, 233, 253, 0.9)' : 'rgba(139, 233, 253, 0.55)'
+      context.stroke()
+    }
+
+    const fontSize = 8 / globalScale
+    const labelY = y - radius - 5 / globalScale
+    context.font = `500 ${fontSize}px Inter, system-ui, sans-serif`
+    context.textAlign = 'center'
+    context.textBaseline = 'bottom'
+    context.lineWidth = 1.5 / globalScale
+    context.strokeStyle = strokeColor
+    context.strokeText(node.label, x, labelY)
+    context.fillStyle = labelColor
+    context.fillText(node.label, x, labelY)
+    context.restore()
+  }, [appTheme, focusedPath, getNodeDisplayColor, hoveredNeighborPaths, hoveredPath])
 
   const contextLegend = useMemo(
     () => Array.from(
@@ -430,7 +429,7 @@ function GraphViewComponent({
 
       <div
         ref={graphHostRef}
-        className="notia-graph-3d-canvas"
+        className="notia-graph-2d-canvas"
         style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden', ...graphBackground }}
       >
         {(!hasContent || isLoading) && (
@@ -439,7 +438,7 @@ function GraphViewComponent({
           </div>
         )}
         {hasContent && graphSize.width > 0 && graphSize.height > 0 && (
-          <ForceGraph3D
+          <ForceGraph2D
             ref={graphRef as never}
             width={graphSize.width}
             height={graphSize.height}
@@ -448,12 +447,9 @@ function GraphViewComponent({
             linkSource="source"
             linkTarget="target"
             backgroundColor="rgba(0,0,0,0)"
-            rendererConfig={{ antialias: false, powerPreference: 'high-performance' }}
             nodeVal={(node) => Math.max(1, node.degree + 1)}
             nodeLabel={(node) => escapeTooltipHtml(node.label)}
-            nodeResolution={6}
-            nodeThreeObject={createNodeLabel}
-            nodeThreeObjectExtend
+            nodeCanvasObject={drawNode}
             nodeColor={getNodeDisplayColor}
             linkColor={(link) => {
               const sourcePath = getNodePath(link.source)
@@ -470,8 +466,6 @@ function GraphViewComponent({
               if (sourcePath && targetPath && (selectedPaths.has(sourcePath) || selectedPaths.has(targetPath))) return 1.8
               return hoveredPath ? 0.5 : 0.8
             }}
-            linkResolution={4}
-            linkMaterial={getLinkMaterial}
             linkDirectionalParticles={(link) => isHoveredConnection(link) ? 2 : 0}
             linkDirectionalParticleSpeed={(link) => isHoveredConnection(link) ? 0.008 : 0}
             linkDirectionalParticleWidth={(link) => isHoveredConnection(link) ? 1.4 : 0}
@@ -487,9 +481,6 @@ function GraphViewComponent({
             warmupTicks={50}
             d3AlphaDecay={0.08}
             d3VelocityDecay={0.45}
-            numDimensions={3}
-            controlType="orbit"
-            enableNavigationControls
             enableNodeDrag={false}
           />
         )}

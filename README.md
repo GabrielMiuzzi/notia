@@ -194,7 +194,7 @@ Integración nativa de diagramas tipo Mermaid dentro del ecosistema de Notia.
 - Creá diagramas de flujo, arquitectura de sistemas, mapas mentales y más.
 - Los diagramas se guardan como archivos `.mmd` dentro de tu librería.
 - Edición visual completa con arrastrar y soltar, conectores, formas y estilos.
-- El **Graph View** usa `react-force-graph-3d` para visualizar el grafo de wikilinks de la librería en una escena 3D WebGL interactiva.
+- El **Graph View** usa `react-force-graph-2d` para visualizar el grafo de wikilinks de la librería en un canvas 2D interactivo.
 
 ### Graph View
 
@@ -325,7 +325,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Cuándo usarlo** | Cuando querés explorar visualmente las relaciones entre tus notas, encontrar notas aisladas o descubrir clusters de conocimiento. |
 | **Pasos para consumir** | 1. Asegurate de tener notas Markdown con wikilinks en la librería. 2. En el **Icon Rail** (barra lateral izquierda), seleccionar **"Graph view"**. 3. Esperar a que se cargue el grafo (puede tomar segundos en bibliotecas grandes). 4. Usar órbita, zoom y paneo para explorar. 5. Hacer clic en un nodo para abrir la nota. 6. Usar la barra de búsqueda para encontrar texto en el título o contenido. 7. En una coincidencia, usar el ojo para enfocar su nodo, `+` para agregarla o quitarla del contexto visible del chat, o el icono de archivo para abrirla. |
 | **Entradas esperadas** | Librería activa con al menos un archivo Markdown. No requiere entrada manual del usuario. |
-| **Salidas / Resultado** | Escena WebGL 3D interactiva con nodos (títulos de notas) y líneas de conexión (wikilinks). Al hacer clic en un nodo se abre la nota correspondiente en pestaña. |
+| **Salidas / Resultado** | Canvas 2D interactivo con nodos (títulos de notas) y líneas de conexión (wikilinks). Al hacer clic en un nodo se abre la nota correspondiente en pestaña. |
 | **Errores comunes** | **"El grafo está vacío"**: no hay archivos Markdown en la librería. Solución: crear notas Markdown. **"Lentitud"**: bibliotecas con miles de notas pueden tardar en construir el modelo. El archivo `linkCache.md` dentro de `.notia/` acelera la vista previa del grafo y se regenera automáticamente en segundo plano; si aún se siente lento, considerá dividir la librería en partes más pequeñas. |
 
 ### AI Chat con Ollama
@@ -692,7 +692,7 @@ Las ediciones documentales se proponen con diff por hunks, revisión exacta, con
 - Al cambiar de biblioteca o cerrar todos los documentos, Notia invalida la caché de renders Mermaid para liberar SVGs de la librería anterior.
 - Los componentes pesados (`MarkdownView`, `MermaidView`, `GraphView`) limpian sus recursos al desmontar: destruyen editores, remueven canvas, cancelan timeouts y limpian listeners globales.
 - Las vistas pesadas usan selectores Redux memoizados (`selectTheme`, `selectMermaidViewerState`, `selectActiveLibraryPath`) en lugar de funciones inline, reduciendo re-renders en cadena.
-- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, react-force-graph-3d, Cytoscape ni MUI.
+- Las vistas más pesadas (`MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp`) se cargan bajo demanda mediante `React.lazy`, con `Suspense` y fallback mínimo, así el bundle inicial no incluye el editor Milkdown/Crepe, Monaco, Mermaid, react-force-graph-2d, Cytoscape ni MUI.
 - En escritorio, Notia precarga esas vistas de forma inteligente durante los momentos de inactividad (`requestIdleCallback`) para que la primera apertura de archivo sea instantánea; en Android la precarga se omite por defecto para ahorrar memoria y datos.
 - `vite.config.ts` agrupa dependencias grandes en chunks separados (`vendor-milkdown`, `vendor-mermaid`, `vendor-iconify-packs`, `vendor-mui`, `vendor-cytoscape`, `vendor-lucide`, etc.), manteniendo el bundle inicial en ~460 KB gzip.
 - Los icon packs de Mermaid (`@iconify-json/*`) y las librerías de exportación PDF (`jspdf`, `html2canvas`) se cargan dinámicamente solo cuando se abre el menú de iconos o se exporta un PDF, respectivamente.

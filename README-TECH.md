@@ -161,7 +161,7 @@ Notia es una aplicación de gestión de conocimiento **local-first** construida 
 | Iconos | Lucide React | ^0.577.0 |
 | Editor Markdown | @milkdown/crepe | ^7.19.0 |
 | Diagramas | Mermaid | ^11.14.0 |
-| Graph View | react-force-graph-3d (`ForceGraph3D`) + three-spritetext | ^1.29.1 / ^1.10.0 |
+| Graph View | react-force-graph-2d (`ForceGraph2D`) | ^1.29.1 |
 | Backend | Rust | Edition 2021 |
 | Serialización Rust | Serde + serde_json | ^1 |
 | HTTP Client Rust | reqwest | 0.13.2 |
@@ -234,7 +234,7 @@ npm run dev:android
 
 1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, Mermaid, ColdPass, Task Manager) se almacenan como archivos en el filesystem. SQLite se reserva para índices y datos estructurados de la aplicación; no hay servidor. El estado en Redux modela solo UI, selección y datos derivados.
 2. **Cifrado de ColdPass en frontend**: la passkey nunca viaja al backend. El cifrado/descifrado AES-256-GCM con PBKDF2 (250k iteraciones) se ejecuta en el navegador vía **Web Crypto API**. El backend Rust solo lee/escribe bytes opacos.
-3. **Renderizado 3D de Graph View con `react-force-graph-3d`**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y `GraphView.tsx` lo transforma a `graphData` para `ForceGraph3D`, que calcula el layout de fuerzas y pinta nodos/aristas mediante WebGL. El renderer 3D se consume desde su entrypoint dedicado, sin cargar la distribución completa ni sus módulos VR/AR. Mermaid continúa aislado para el editor de diagramas y no participa en esta vista.
+3. **Renderizado 2D de Graph View con `react-force-graph-2d`**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y `GraphView.tsx` lo transforma a `graphData` para `ForceGraph2D`, que calcula el layout de fuerzas y pinta nodos/aristas en un canvas 2D. El renderer 2D se consume desde su entrypoint dedicado y Mermaid continúa aislado para el editor de diagramas.
 
 4. **Contextos documentales**: `src/services/contexts/libraryContexts.ts` define el contrato `#tag` + color y sus valores por defecto (`#Laboral`, `#Personal`, `#Academico`). La colección se persiste en `.notia/notiaConfig.json`. `ensureMarkdownDefaults()` garantiza `contexto: "#Personal"` en Markdown nuevo o legado que todavía no tenga la propiedad; los tags se serializan entre comillas porque `#` inicia comentarios YAML.
 4. **Redux Toolkit para estado global**: 5 slices (`ui`, `preferences`, `library`, `documents`, `explorer`) con persistencia de preferencias en `localStorage` dentro de los propios reducers.
@@ -564,9 +564,9 @@ La selección del editor se transforma en `MarkdownSelectionContext` mediante `s
 ### 2.4 Graph View
 
 #### Descripción
-Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos. Graph View utiliza `ForceGraph3D` de **react-force-graph-3d**: recibe el modelo tipado de nodos y aristas, ejecuta un layout de fuerzas y renderiza una escena WebGL 3D, con títulos persistentes sobre los nodos, órbita, zoom y foco de resultados.
+Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos. Graph View utiliza `ForceGraph2D` de **react-force-graph-2d**: recibe el modelo tipado de nodos y aristas, ejecuta un layout de fuerzas y renderiza un canvas 2D, con títulos persistentes sobre los nodos, zoom, paneo y foco de resultados.
 
-Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde el catálogo de la biblioteca. Para los archivos bajo `task-mannager/` o `task-manager/`, el contexto del tablero es la fuente de verdad; `GraphView.tsx` aplica el color al nodo 3D y muestra una leyenda.
+Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde el catálogo de la biblioteca. Para los archivos bajo `task-mannager/` o `task-manager/`, el contexto del tablero es la fuente de verdad; `GraphView.tsx` aplica el color al nodo 2D y muestra una leyenda.
 
 #### Endpoints (Commands Tauri)
 
@@ -583,7 +583,7 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
 #### Salidas
 - `LibraryGraphModel` — `{ nodes: GraphNode[], edges: GraphEdge[] }`.
 - `ForceGraphData` — `{ nodes: ForceNode[], links: ForceLink[] }` generado desde `LibraryGraphModel`.
-- Renderizado WebGL 3D posicionado por `ForceGraph3D`, con callbacks de selección, foco, órbita y zoom; cada nodo agrega un `SpriteText` con su título, sin incluir el path.
+- Renderizado en canvas 2D posicionado por `ForceGraph2D`, con callbacks de selección, foco, paneo y zoom; cada nodo dibuja su título de forma persistente, sin incluir el path.
 - Archivo `.notia/linkCache.md` — cache del diagrama regenerado en background.
 
 #### Validaciones
@@ -598,9 +598,9 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
    - Parsea wikilinks del contenido vía `wikiLinkEngine.ts`.
    - Crea aristas entre nodos cuando un wikilink apunta a otro archivo existente.
 3. **Adaptación al renderer**: `GraphView.tsx` copia cada nodo usando su path como `id` y convierte cada edge a `{ source, target }`, evitando mutar el `LibraryGraphModel` compartido mientras `react-force-graph` calcula posiciones.
-4. **Renderizado**: `ForceGraph3D` ejecuta el layout de fuerzas y dibuja nodos y aristas en WebGL; `controlType="orbit"` permite rotar, hacer zoom y desplazar la cámara. El layout no modifica la cámara al detenerse; el encuadre solo se ejecuta desde el botón explícito **Centrar grafo**.
-5. **Interacción**: clic en un nodo abre el archivo; Shift+clic lo agrega o quita del contexto del chat; búsqueda y selección actualizan los colores sin manipular DOM/SVG. `onNodeHover` calcula vecinos directos desde las aristas, resalta el nodo y las conexiones relacionadas, atenúa el resto y activa partículas direccionales en los enlaces activos. `nodeThreeObjectExtend` conserva la esfera del nodo y suma una etiqueta `SpriteText` orientada hacia la cámara; el tooltip usa únicamente el título.
-6. **Efectos visuales**: los enlaces usan materiales aditivos de baja intensidad y partículas únicamente en conexiones bajo hover; el brillo queda dentro de WebGL, sin filtros CSS sobre el canvas ni postprocesado bloom continuo, mientras la iluminación aporta volumen a los nodos.
+4. **Renderizado**: `ForceGraph2D` ejecuta el layout de fuerzas y dibuja nodos y aristas en canvas; sus controles permiten hacer zoom y desplazar la vista. El layout no modifica la vista al detenerse; el encuadre solo se ejecuta desde el botón explícito **Centrar grafo**.
+5. **Interacción**: clic en un nodo abre el archivo; Shift+clic lo agrega o quita del contexto del chat; búsqueda y selección actualizan los colores sin manipular DOM/SVG. `onNodeHover` calcula vecinos directos desde las aristas, resalta el nodo y las conexiones relacionadas, atenúa el resto y activa partículas direccionales en los enlaces activos. `nodeCanvasObject` dibuja cada nodo, su título persistente y un realce sutil para los nodos relacionados; el tooltip usa únicamente el título.
+6. **Efectos visuales**: los enlaces usan colores y partículas de baja intensidad únicamente en conexiones bajo hover; el dibujo ocurre directamente en canvas 2D, sin WebGL ni postprocesado bloom continuo.
 7. **Navegación**: clic en nodo → dispatch `documentsSlice.actions.openDocument()` → abre la nota en pestaña.
 8. **Cache en disco**: tras construir el modelo, `useLibraryGraphData.ts` programa (vía `libraryLinkCacheSchedule.ts`) la regeneración de `.notia/linkCache.md` en segundo plano, con debounce de 1.5 s.
 
@@ -610,7 +610,7 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
 - Fallo al escribir `linkCache.md`: se loguea como warning; no bloquea la vista.
 
 #### Dependencias
-- **Frontend**: `GraphView.tsx`, `react-force-graph-3d`, `three-spritetext`, `useLibraryGraphData.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `libraryLinkCacheRuntime.ts`, `libraryLinkCacheSchedule.ts`, `useLibraryLinkCacheAutoRebuild.ts`.
+- **Frontend**: `GraphView.tsx`, `react-force-graph-2d`, `useLibraryGraphData.ts`, `libraryGraphEngine.ts`, `wikiLinkEngine.ts`, `libraryLinkCacheRuntime.ts`, `libraryLinkCacheSchedule.ts`, `useLibraryLinkCacheAutoRebuild.ts`.
 - **Backend**: `read_markdown_files`.
 
 ---
@@ -2257,7 +2257,7 @@ flowchart TD
     Start([Usuario abre Graph View]) --> ReadMD["getIndexedLibraryGraphSourcesByPath()<br/>lee .md de la librería"]
     ReadMD --> BuildModel["useLibraryGraphData.ts<br/>buildLibraryGraphModel()<br/>nodos + wikilinks → aristas"]
     BuildModel --> AdaptGraph["GraphView.tsx<br/>adapta a graphData"]
-    AdaptGraph --> Render["ForceGraph3D<br/>layout de fuerzas + WebGL"]
+    AdaptGraph --> Render["ForceGraph2D<br/>layout de fuerzas + canvas"]
     Render --> Interaction["zoom/pan, foco y highlight"]
     Interaction --> UserClick{"¿Clic en nodo?"}
     UserClick -->|Sí| OpenDoc["dispatch openDocument<br/>abrir nota en pestaña"]
@@ -2272,7 +2272,7 @@ flowchart TD
 graph LR
     subgraph GraphView["Vista: Graph"]
         GraphViewComp["GraphView.tsx"]
-        Canvas["ForceGraph3D<br/>escena WebGL 3D"]
+        Canvas["ForceGraph2D<br/>canvas 2D"]
     end
 
     subgraph GraphHooks["Hooks Graph"]
@@ -2282,7 +2282,7 @@ graph LR
     subgraph GraphEngines["Engines Graph"]
         LibGraph["libraryGraphEngine.ts"]
         WikiLink["wikiLinkEngine.ts"]
-        ForceGraph["react-force-graph-3d"]
+        ForceGraph["react-force-graph-2d"]
     end
 
     subgraph GraphCache["Link Cache"]
@@ -2312,7 +2312,7 @@ sequenceDiagram
     participant Tauri as Tauri API
     participant RustCmd as filesystem::commands
     participant LibGraph as libraryGraphEngine.ts
-    participant ForceGraph as react-force-graph-3d / ForceGraph3D
+    participant ForceGraph as react-force-graph-2d / ForceGraph2D
     participant Cache as libraryLinkCacheSchedule.ts
 
     User->>Graph: Abrir Graph View
@@ -2337,7 +2337,7 @@ sequenceDiagram
     Cache->>FSEngine: writeTextFile(.notia/linkCache.md)
 
     Graph->>ForceGraph: graphData = nodes + links
-    ForceGraph->>ForceGraph: calcula layout de fuerzas y dibuja WebGL 3D
+    ForceGraph->>ForceGraph: calcula layout de fuerzas y dibuja canvas 2D
     ForceGraph-->>Graph: cámara / node events
     Graph->>Graph: aplica búsqueda, selección y foco
 
@@ -2931,7 +2931,7 @@ graph TB
 
 ## 6. Notas de Performance
 
-- **Graph View en hilo principal + escena WebGL**: el modelo se construye sincrónicamente en `useLibraryGraphData.ts` y se renderiza con `ForceGraph3D` de `react-force-graph-3d`. El layout se calcula en el hilo principal; el dibujo usa resolución reducida, materiales aditivos sutiles y partículas solo para enlaces bajo hover, sin postprocesado continuo ni Web Workers activos en el frontend actualmente.
+- **Graph View en hilo principal + canvas 2D**: el modelo se construye sincrónicamente en `useLibraryGraphData.ts` y se renderiza con `ForceGraph2D` de `react-force-graph-2d`. El layout y el dibujo se calculan en el hilo principal; los colores y partículas se aplican solo a enlaces bajo hover y no hay Web Workers activos en el frontend actualmente.
 - **Lazy render de Mermaid inline**: `useMermaidLazyRender` usa `IntersectionObserver` para no renderizar diagramas embebidos fuera del viewport hasta que sean visibles.
 - **Cancelación de renders**: `renderMermaid` acepta `AbortSignal`; los hooks `useMermaidRender` y `useMermaidLazyRender` abortan renders pendientes al desmontar, reduciendo trabajo en segundo plano.
 - **Caché LRU con límite de peso**: `mermaidEngine.ts` usa `WeightedLruCache` (20 entradas / 5 MB) para evitar que SVGs grandes consuman memoria indefinidamente.
@@ -3023,7 +3023,7 @@ graph TB
 
 #### 8.2.5 Frontend — Web Workers (`workers/`)
 
-- **Cohesión**: **N/A actualmente**. El directorio `src/workers/` está vacío; Graph View y su layout `ForceGraph3D` siguen ejecutándose en el hilo principal.
+- **Cohesión**: **N/A actualmente**. El directorio `src/workers/` está vacío; Graph View y su layout `ForceGraph2D` siguen ejecutándose en el hilo principal.
 - **Acoplamiento**: **N/A**.
 - **Observaciones**: Web Workers siguen siendo la herramienta recomendada por `AGENTS.md` para cómputo pesado fuera del hilo principal, pero en este momento no hay workers activos. Si el perfilado del layout de fuerzas o del modelado del grafo supera 100 ms consistentemente, se reevaluará su reintroducción.
 - **Riesgo**: Bajo. El modelo de grafo actual se construye en el hilo principal; bibliotecas muy grandes pueden causar jank momentáneo.
@@ -3205,7 +3205,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 #### Recomendaciones para escalabilidad
 
 1. **Horizontal**: el módulo `task-manager/` demuestra que nuevos dominios pueden vivir como módulos auto-contenidos con sus propios engines, services y types. Replicar este patrón para futuras features. El módulo `mermaid/` ahora también demuestra que puede exponer componentes para consumo externo (`InlineMermaidPreview`).
-2. **Vertical (renderizado)**: Graph View usa `ForceGraph3D`; el layout de fuerzas se ejecuta en el hilo principal y la escena se dibuja con WebGL. Si el layout o el modelado del grafo supera 100 ms consistentemente, reintroducir Web Workers o delegar `buildLibraryGraphModel` a un worker.
+2. **Vertical (renderizado)**: Graph View usa `ForceGraph2D`; el layout de fuerzas y el dibujo en canvas se ejecutan en el hilo principal. Si el layout o el modelado del grafo supera 100 ms consistentemente, reintroducir Web Workers o delegar `buildLibraryGraphModel` a un worker.
 3. **Storage**: migrar de `localStorage` a un `StorageAdapter` que pueda evolucionar a `IndexedDB` para datos de mayor volumen (ej. índice de búsqueda, historial de Pomodoro).
 
 ---

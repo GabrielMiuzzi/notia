@@ -1692,7 +1692,7 @@
   cursor: grabbing;
 }
 
-.notia-graph-3d-canvas {
+.notia-graph-2d-canvas {
   isolation: isolate;
   touch-action: none;
   cursor: grab;
@@ -1702,11 +1702,11 @@
     var(--color-graph-bg);
 }
 
-.notia-graph-3d-canvas:active {
+.notia-graph-2d-canvas:active {
   cursor: grabbing;
 }
 
-.notia-graph-3d-canvas canvas {
+.notia-graph-2d-canvas canvas {
   display: block;
   width: 100%;
   height: 100%;

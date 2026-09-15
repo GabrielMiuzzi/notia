@@ -8,7 +8,7 @@
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
 - Gráficos XGraph interactivos en notas Markdown.
-- Graph View 3D de relaciones entre documentos, con órbita, zoom, foco y colores por contexto.
+- Graph View 2D de relaciones entre documentos, con zoom, paneo, foco y colores por contexto.
 - Contextos configurables por biblioteca (`#Laboral`, `#Personal` y `#Academico` por defecto), con color asociado y coloración de nodos en Graph View.
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
