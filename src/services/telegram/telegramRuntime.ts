@@ -23,26 +23,62 @@ export interface TelegramUpdate {
   photo?: TelegramPhoto
   document?: TelegramDocument
   callbackQueryId?: string; callbackData?: string
+  chatType?: string
 }
 export interface TelegramButton { label: string; data: string }
 
+function isTelegramEntityParseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return message.toLowerCase().includes("can't parse entities")
+}
+
+function telegramHtmlToPlainText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
 export const checkTelegramBot = (token: string) => invoke<TelegramIdentity>('check_telegram_bot', { payload: { token } })
 export const pollTelegramUpdates = (token: string, offset: number) => invoke<TelegramUpdate[]>('poll_telegram_updates', { payload: { token, offset } })
-export const sendTelegramMessage = (
+export const sendTelegramMessage = async (
   token: string,
   chatId: number,
   text: string,
   buttons: TelegramButton[] = [],
   parseMode?: 'HTML',
-) => invoke<number>('send_telegram_message', { payload: { token, chatId, text, buttons, parseMode } })
-export const editTelegramMessage = (
+) => {
+  const payload = { token, chatId, text, buttons, parseMode }
+  try {
+    return await invoke<number>('send_telegram_message', { payload })
+  } catch (error) {
+    if (parseMode !== 'HTML' || !isTelegramEntityParseError(error)) throw error
+    return invoke<number>('send_telegram_message', {
+      payload: { ...payload, text: telegramHtmlToPlainText(text), parseMode: undefined },
+    })
+  }
+}
+export const editTelegramMessage = async (
   token: string,
   chatId: number,
   messageId: number,
   text: string,
   buttons: TelegramButton[] = [],
   parseMode?: 'HTML',
-) => invoke<void>('edit_telegram_message', { payload: { token, chatId, messageId, text, buttons, parseMode } })
+) => {
+  const payload = { token, chatId, messageId, text, buttons, parseMode }
+  try {
+    return await invoke<void>('edit_telegram_message', { payload })
+  } catch (error) {
+    if (parseMode !== 'HTML' || !isTelegramEntityParseError(error)) throw error
+    return invoke<void>('edit_telegram_message', {
+      payload: { ...payload, text: telegramHtmlToPlainText(text), parseMode: undefined },
+    })
+  }
+}
 export const answerTelegramCallback = (token: string, callbackQueryId: string) =>
   invoke<void>('answer_telegram_callback', { payload: { token, callbackQueryId } })
 export const transcribeTelegramAudio = (token: string, audio: TelegramAudio) =>

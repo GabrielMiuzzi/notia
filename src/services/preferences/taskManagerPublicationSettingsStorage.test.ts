@@ -2,37 +2,31 @@ import { describe, expect, it } from 'vitest'
 import { normalizeTaskManagerPublicationPreferences } from './taskManagerPublicationSettingsStorage'
 
 describe('normalizeTaskManagerPublicationPreferences', () => {
-  it('keeps only a PBKDF2 password hash and normalized board names', () => {
+  it('keeps only board names and publication limits', () => {
     expect(normalizeTaskManagerPublicationPreferences({
       publishedBoardNames: [' Equipo ', 'equipo'],
-      passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash',
       port: 52471,
     })).toEqual({
       publishedBoardNames: ['equipo'],
-      passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash',
-      accessUsers: [],
-      approvedDevices: [],
       maxClients: 64,
       port: 52471,
     })
   })
 
-  it('never treats a plaintext password as a persisted hash', () => {
+  it('ignores legacy publication passwords', () => {
     expect(normalizeTaskManagerPublicationPreferences({
       publishedBoardNames: [],
       passwordHash: 'mi-contraseña',
-    }).passwordHash).toBeNull()
+    })).toEqual({ publishedBoardNames: [], port: 52471, maxClients: 64 })
   })
 
-  it('accepts user access hashes but rejects plaintext user passwords', () => {
+  it('ignores legacy publication users', () => {
     expect(normalizeTaskManagerPublicationPreferences({
       accessUsers: [
         { username: ' Ana ', passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash' },
         { username: 'Bruno', passwordHash: 'secreto-en-claro' },
       ],
-    }).accessUsers).toEqual([
-      { username: 'Ana', passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash' },
-    ])
+    })).toEqual({ publishedBoardNames: [], port: 52471, maxClients: 64 })
   })
 
   it('bounds the configurable number of simultaneous clients', () => {

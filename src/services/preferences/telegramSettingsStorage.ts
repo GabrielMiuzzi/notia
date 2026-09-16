@@ -1,6 +1,7 @@
 import type { TelegramDocument, TelegramPhoto } from '../telegram/telegramRuntime'
 import type { AgentPlanStepStatus } from '../../types/ai/agentContracts'
 
+/** @deprecated Retained only for legacy test fixtures; linking uses SQLite. */
 export interface TelegramPeer {
   chatId: number
   userId: number
@@ -11,8 +12,10 @@ export interface TelegramPeer {
 export interface TelegramPreferences {
   enabled: boolean
   botToken: string
-  authorizedPeer: TelegramPeer | null
-  pendingPeer: TelegramPeer | null
+  /** @deprecated The production bridge resolves identities from SQLite. */
+  authorizedPeer?: TelegramPeer | null
+  /** @deprecated The production bridge does not persist pending peers. */
+  pendingPeer?: TelegramPeer | null
   updateOffset: number
   processedUpdateIds: number[]
 }

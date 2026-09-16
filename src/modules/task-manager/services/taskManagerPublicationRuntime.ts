@@ -11,7 +11,6 @@ import {
 } from './taskManagerMutationJournal'
 import { resolveTaskManagerMutationJournalPath } from './taskManagerService'
 import type { Board, Group, TaskItem, TaskManagerSettings } from '../types/taskManagerTypes'
-import type { PublishedTaskManagerDevice, TaskManagerPublicationAccessUser } from '../../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 
 export interface PublishedTaskManagerBoard {
@@ -24,18 +23,11 @@ export interface PublishedTaskManagerBoard {
 export interface TaskManagerPublicationPayload {
   vaultPath: string
   theme: 'dark' | 'light'
-  passwordHash: string
-  approvedDevices: PublishedTaskManagerDevice[]
-  accessUsers: TaskManagerPublicationAccessUser[]
   maxClients: number
   port: number
   aiPreferences: AiPreferences
   settings: TaskManagerSettings
   boards: PublishedTaskManagerBoard[]
-}
-
-export interface ApprovedTaskManagerPublicationDevice extends PublishedTaskManagerDevice {
-  passwordHash: string
 }
 
 export interface TaskManagerPublicationStatusSnapshot {
@@ -96,21 +88,15 @@ export function buildTaskManagerPublicationPayload(
   publishedBoardNames: string[],
   vaultPath: string,
   theme: 'dark' | 'light',
-  passwordHash: string,
   aiPreferences: AiPreferences,
-  approvedDevices: PublishedTaskManagerDevice[] = [],
   port = 52471,
   maxClients = 64,
-  accessUsers: TaskManagerPublicationAccessUser[] = [],
 ): TaskManagerPublicationPayload {
   const allowedBoardNames = new Set(publishedBoardNames.map((name) => name.trim().toLowerCase()))
   const isPublishedBoard = (boardName: string | undefined): boolean => allowedBoardNames.has(boardName?.trim().toLowerCase() ?? 'default')
   return {
     vaultPath,
     theme,
-    passwordHash,
-    approvedDevices,
-    accessUsers,
     maxClients: Math.min(64, Math.max(1, Math.trunc(maxClients))),
     port,
     aiPreferences,
@@ -148,10 +134,6 @@ export async function publishTaskManagerBoards(payload: TaskManagerPublicationPa
   return invoke<string>('publish_task_manager_boards', { payload })
 }
 
-export async function hashTaskManagerPublicationPassword(password: string): Promise<string> {
-  return invoke<string>('hash_task_manager_publication_password', { password })
-}
-
 export async function getTaskManagerPublicationUrl(): Promise<string> {
   return invoke<string>('get_task_manager_publication_url')
 }
@@ -164,10 +146,6 @@ export async function setTaskManagerPublicationRecovery(required: boolean): Prom
   }
   await invoke('set_task_manager_publication_recovery', { required })
 }
-export async function listPendingTaskManagerPublicationDevices(): Promise<PublishedTaskManagerDevice[]> { return invoke('list_pending_task_manager_publication_devices') }
-export async function approveTaskManagerPublicationDevice(deviceId: string): Promise<ApprovedTaskManagerPublicationDevice> { return invoke('approve_task_manager_publication_device', { deviceId }) }
-export async function revokeTaskManagerPublicationDevice(deviceId: string): Promise<void> { await invoke('revoke_task_manager_publication_device', { deviceId }) }
-
 export async function openTaskManagerPublication(): Promise<void> {
   await invoke('open_task_manager_publication')
 }

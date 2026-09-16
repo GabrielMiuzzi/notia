@@ -690,7 +690,7 @@ describe('useTelegramAgentBridge integration', () => {
       text: '2',
     }])
     await vi.waitFor(() => expect(mocks.sendTelegramMessage).toHaveBeenCalledWith(
-      'fixture-token', 42, expect.stringContaining('&quot;answer&quot;:&quot;B&quot;'), [], 'HTML',
+      'fixture-token', 42, 'respuesta {"ok":true,"answer":"B"}', [], 'HTML',
     ))
     reactMocks.cleanups.at(-1)?.()
   })

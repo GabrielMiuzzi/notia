@@ -608,6 +608,8 @@ NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=1 npm run dev:tauri:wayland
 
 En Windows, si el puerto 1420 ya está ocupado por una instancia de Vite iniciada desde este mismo repositorio, el comando la reutiliza. Si pertenece a otra aplicación o proyecto, informa el proceso que debe cerrarse y no inicia Tauri contra un servidor incorrecto.
 
+El launcher de Windows reintenta una vez el build de desarrollo si un proceso transitorio de esbuild se detiene. Si ambos intentos fallan, revisá procesos Node/Vite duplicados y el antivirus antes de volver a ejecutar el comando.
+
 ### Desarrollo para Android
 
 ```bash
@@ -711,3 +713,27 @@ Copyright © 2026 Gabriel. Todos los derechos reservados.
 ---
 
 **Notia** — Tu espacio de conocimiento, organizado.
+
+## Roles, usuarios y acceso
+
+En Telegram, el agente recibe instrucciones específicas para responder sin Markdown escapado y usando únicamente el subconjunto HTML admitido por Telegram.
+
+El agente de Telegram genera directamente la respuesta en el formato del canal. Si Telegram rechaza una entidad mal formada, Notia reintenta el envío como texto plano para no perder la respuesta.
+
+En **Configuraciones → Roles** se administran los roles de la biblioteca activa; cada biblioteca comienza con `Owner`, `Family` y `Guest`. En **Configuraciones → Usuarios** se pueden crear usuarios, asignarles un rol, cambiar su nombre o contraseña y eliminar usuarios que no sean `Owner`. Estos datos viven en el SQLite de cada biblioteca y no se mezclan al cambiarla. Las contraseñas solo se almacenan como hashes PBKDF2 y los usuarios sin contraseña se muestran como **Sin contraseña configurada**.
+
+La vinculación de Telegram se realiza en un chat privado escribiendo `/start`, el nombre de usuario de Notia y la contraseña correspondiente. Una cuenta no vinculada queda bloqueada fuera de ese flujo. El Task Manager publicado usa el mismo usuario y contraseña de la biblioteca; ya no requiere una contraseña adicional del tablero.
+
+## Acceso actualizado a publicación y Telegram
+
+La publicación de Task Manager usa únicamente las cuentas de la biblioteca: no existe una contraseña adicional del tablero, aprobación de dispositivos ni almacenamiento local de credenciales. El login muestra estados accesibles de carga, error, sesión inválida y reintento; las sesiones autenticadas quedan asociadas al `user_id` de SQLite.
+
+El enlace de Telegram se resuelve por chat privado contra SQLite. El flujo limita los intentos, aplica un enfriamiento temporal al alcanzar el límite y mantiene mensajes genéricos para no revelar si un usuario existe.
+
+Configuraciones permite recorrer todas sus secciones aunque el modal tenga mas paneles que espacio vertical: el menu lateral y el contenido tienen desplazamiento independiente, y en ventanas pequenas el menu se puede desplazar horizontalmente.
+
+Los desplegables de Configuraciones tienen el mismo comportamiento de menú que el resto de Notia: se cierran al seleccionar, con Escape o al hacer click fuera, y se pueden recorrer con teclado.
+
+Si escribis al bot desde un chat sin usuario vinculado, Notia te indica que inicies sesion con `/start` para comenzar el enlace y no procesa el mensaje como una consulta.
+
+El primer enlace de Telegram también funciona para usuarios recién creados sin contraseña: después de confirmar la nueva contraseña, Notia guarda el acceso y vincula el chat.

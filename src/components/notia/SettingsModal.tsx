@@ -34,15 +34,31 @@ import { financeErrorMessage } from '../../modules/finance/engines/financeError'
 import { notifyFinanceDataChanged } from '../../modules/finance/services/financeDataEvents'
 import { ConfirmationDialogModal } from './ConfirmationDialogModal'
 import { pickDirectory } from '../../services/files/filesystemEngine'
+import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
+import { NotiaSubmenuPanel } from './NotiaSubmenuPanel'
+import { NotiaSelectMenu } from '../common/NotiaSelectMenu'
 import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
 import { loadTaskManagerSnapshot } from '../../modules/task-manager/services/taskManagerService'
-import { approveTaskManagerPublicationDevice, buildTaskManagerPublicationPayload, getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, hashTaskManagerPublicationPassword, listPendingTaskManagerPublicationDevices, openTaskManagerPublication, publishTaskManagerBoards, revokeTaskManagerPublicationDevice, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
+import { buildTaskManagerPublicationPayload, getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, openTaskManagerPublication, publishTaskManagerBoards, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
 import { loadTaskManagerPublicationTelemetry, recordTaskManagerPublicationTelemetry } from '../../modules/task-manager/services/taskManagerPublicationTelemetry'
 import { normalizeContextTag, normalizeLibraryContexts, type LibraryContext } from '../../services/contexts/libraryContexts'
+import {
+  createLibraryRole,
+  createLibraryUser,
+  deleteLibraryUser,
+  listLibraryRoles,
+  listLibraryUsers,
+  unlinkLibraryUserTelegram,
+  updateLibraryUserName,
+  updateLibraryUserPassword,
+  updateLibraryUserRole,
+  type LibraryRole,
+  type LibraryUser,
+} from '../../services/libraries/libraryUsers'
 
-type SettingsSection = 'General' | 'Contextos' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
+type SettingsSection = 'General' | 'Contextos' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
 
 interface SettingsModalProps {
   open: boolean
@@ -63,7 +79,7 @@ interface SettingsModalProps {
   onContextsChange: (value: LibraryContext[]) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
+const SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
 const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
 
 function formatPublicationBytes(bytes: number): string {
@@ -170,8 +186,7 @@ export function SettingsModal({
   const [publicationStatus, setPublicationStatus] = useState('Seleccioná uno o más tableros para habilitar la publicación local.')
   const [publicationUrl, setPublicationUrl] = useState<string | null>(null)
   const [isPublishingBoards, setIsPublishingBoards] = useState(false)
-  const [publicationPasswordDraft, setPublicationPasswordDraft] = useState('')
-  const [pendingPublicationDevices, setPendingPublicationDevices] = useState<Array<{ id: string, name: string, username: string }>>([])
+
   const [publicationMetrics, setPublicationMetrics] = useState<TaskManagerPublicationStatusSnapshot | null>(null)
   const [publicationTelemetrySamples, setPublicationTelemetrySamples] = useState(() => loadTaskManagerPublicationTelemetry().samples.length)
   const [financeClearStatus, setFinanceClearStatus] = useState<{
@@ -182,7 +197,25 @@ export function SettingsModal({
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false)
   const [newContextTag, setNewContextTag] = useState('')
   const [newContextColor, setNewContextColor] = useState('#64748B')
-  const modelSelectRef = useRef<HTMLDivElement | null>(null)
+  const [libraryRoles, setLibraryRoles] = useState<LibraryRole[]>([])
+  const [libraryUsers, setLibraryUsers] = useState<LibraryUser[]>([])
+  const [libraryDataStatus, setLibraryDataStatus] = useState<{ tone: 'idle' | 'loading' | 'success' | 'error', message: string }>({ tone: 'idle', message: '' })
+  const [newRoleName, setNewRoleName] = useState('')
+  const [newUserName, setNewUserName] = useState('')
+  const [selectedUserRoleId, setSelectedUserRoleId] = useState('')
+  const [isSavingLibraryData, setIsSavingLibraryData] = useState(false)
+  const [passwordUserId, setPasswordUserId] = useState<string | null>(null)
+  const [passwordDraft, setPasswordDraft] = useState('')
+  const [passwordConfirmationDraft, setPasswordConfirmationDraft] = useState('')
+  const [showPasswordDraft, setShowPasswordDraft] = useState(false)
+  const [renameUserId, setRenameUserId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const [deleteUser, setDeleteUser] = useState<LibraryUser | null>(null)
+  const libraryDataGenerationRef = useRef(0)
+  const { triggerRef: modelTriggerRef, panelRef: modelPanelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
+    open: isModelMenuOpen,
+    onClose: () => setIsModelMenuOpen(false),
+  })
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [modelsErrorMessage, setModelsErrorMessage] = useState<string | null>(null)
   const [aiHealthStatus, setAiHealthStatus] = useState<{
@@ -225,7 +258,6 @@ export function SettingsModal({
 
   useEffect(() => {
     if (!open) {
-      setPublicationPasswordDraft('')
       return
     }
 
@@ -260,6 +292,39 @@ export function SettingsModal({
   }, [open])
 
   useEffect(() => {
+    libraryDataGenerationRef.current += 1
+    const generation = libraryDataGenerationRef.current
+    setIsSavingLibraryData(false)
+    setRenameUserId(null)
+    setPasswordUserId(null)
+    if (!open || !activeLibrary) {
+      setLibraryRoles([])
+      setLibraryUsers([])
+      setSelectedUserRoleId('')
+      setLibraryDataStatus({ tone: 'idle', message: '' })
+      return
+    }
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setLibraryRoles([])
+    setLibraryUsers([])
+    setSelectedUserRoleId('')
+    setLibraryDataStatus({ tone: 'loading', message: 'Cargando roles y usuarios desde SQLite…' })
+    void Promise.all([listLibraryRoles(context), listLibraryUsers(context)])
+      .then(([roles, users]) => {
+        if (generation !== libraryDataGenerationRef.current) return
+        setLibraryRoles(roles)
+        setLibraryUsers(users)
+        setSelectedUserRoleId(roles[0]?.id ?? '')
+        setLibraryDataStatus({ tone: 'success', message: '' })
+      })
+      .catch((error: unknown) => {
+        if (generation !== libraryDataGenerationRef.current) return
+        setLibraryDataStatus({ tone: 'error', message: error instanceof Error ? error.message : 'No se pudieron cargar los datos de la biblioteca.' })
+      })
+    return () => { libraryDataGenerationRef.current += 1 }
+  }, [activeLibrary, open])
+
+  useEffect(() => {
     if (!open || runtimeDevice !== 'Windows') return
     let cancelled = false
     void getTaskManagerPublicationUrl()
@@ -274,19 +339,14 @@ export function SettingsModal({
 
   useEffect(() => {
     if (!open || activeSection !== 'Publicar') return
-    const refresh = () => void listPendingTaskManagerPublicationDevices().then(setPendingPublicationDevices).catch(() => setPendingPublicationDevices([]))
     const refreshStatus = () => void getTaskManagerPublicationStatus()
       .then((status) => {
         setPublicationMetrics(status)
         setPublicationTelemetrySamples(recordTaskManagerPublicationTelemetry(status).samples.length)
       })
       .catch(() => setPublicationMetrics(null))
-    refresh()
     refreshStatus()
-    const timer = window.setInterval(() => {
-      refresh()
-      refreshStatus()
-    }, 2000)
+    const timer = window.setInterval(refreshStatus, 2000)
     return () => window.clearInterval(timer)
   }, [activeSection, open])
 
@@ -345,19 +405,6 @@ export function SettingsModal({
       cancelled = true
     }
   }, [aiPreferences, onAiPreferencesChange, open])
-
-  useEffect(() => {
-    if (!isModelMenuOpen) {
-      return
-    }
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !modelSelectRef.current?.contains(event.target)) {
-        setIsModelMenuOpen(false)
-      }
-    }
-    document.addEventListener('pointerdown', closeOnOutsidePointer)
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
-  }, [isModelMenuOpen])
 
   const commitAiPreferences = () => {
     const normalized = normalizeAiSettingsInput({
@@ -431,6 +478,146 @@ export function SettingsModal({
     } finally { setIsCheckingTelegram(false) }
   }
 
+  const handleAddLibraryRole = async () => {
+    if (!activeLibrary || !newRoleName.trim() || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    setLibraryDataStatus({ tone: 'loading', message: 'Guardando rol…' })
+    try {
+      const roles = await createLibraryRole(context, newRoleName)
+      if (generation === libraryDataGenerationRef.current) {
+        setLibraryRoles(roles)
+        setSelectedUserRoleId((current) => current || roles[0]?.id || '')
+        setNewRoleName('')
+        setLibraryDataStatus({ tone: 'success', message: 'Rol guardado.' })
+      }
+    } catch (error) {
+      if (generation === libraryDataGenerationRef.current) setLibraryDataStatus({ tone: 'error', message: error instanceof Error ? error.message : 'No se pudo guardar el rol.' })
+     } finally { if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false) }
+  }
+
+  const handleAddLibraryUser = async () => {
+    if (!activeLibrary || !newUserName.trim() || !selectedUserRoleId || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    setLibraryDataStatus({ tone: 'loading', message: 'Guardando usuario…' })
+    try {
+      const users = await createLibraryUser(context, newUserName, selectedUserRoleId)
+      if (generation === libraryDataGenerationRef.current) {
+        setLibraryUsers(users)
+        setNewUserName('')
+        setLibraryDataStatus({ tone: 'success', message: 'Usuario guardado.' })
+      }
+    } catch (error) {
+      if (generation === libraryDataGenerationRef.current) setLibraryDataStatus({ tone: 'error', message: error instanceof Error ? error.message : 'No se pudo guardar el usuario.' })
+     } finally { if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false) }
+  }
+
+  const handleLibraryMutationError = (error: unknown, generation = libraryDataGenerationRef.current) => {
+    if (generation !== libraryDataGenerationRef.current) return
+    setLibraryDataStatus({ tone: 'error', message: error instanceof Error ? error.message : 'No se pudo actualizar la biblioteca.' })
+  }
+
+  const handleUpdateLibraryUserName = async (userId: string) => {
+    if (!activeLibrary || !renameDraft.trim() || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    try {
+      const users = await updateLibraryUserName(context, userId, renameDraft)
+      if (generation !== libraryDataGenerationRef.current) return
+      setLibraryUsers(users)
+      setRenameUserId(null)
+      setRenameDraft('')
+      setLibraryDataStatus({ tone: 'success', message: 'Nombre actualizado.' })
+    } catch (error) {
+      handleLibraryMutationError(error, generation)
+    } finally {
+      if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false)
+    }
+  }
+
+  const handleUpdateLibraryUserRole = async (userId: string, roleId: string) => {
+    if (!activeLibrary || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    try {
+      const users = await updateLibraryUserRole(context, userId, roleId)
+      if (generation !== libraryDataGenerationRef.current) return
+      setLibraryUsers(users)
+      setLibraryDataStatus({ tone: 'success', message: 'Rol actualizado.' })
+    } catch (error) {
+      handleLibraryMutationError(error, generation)
+    } finally {
+      if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false)
+    }
+  }
+
+  const handleUnlinkLibraryUserTelegram = async (userId: string) => {
+    if (!activeLibrary || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    try {
+      const users = await unlinkLibraryUserTelegram(context, userId)
+      if (generation !== libraryDataGenerationRef.current) return
+      setLibraryUsers(users)
+      setLibraryDataStatus({ tone: 'success', message: 'Telegram desvinculado.' })
+    } catch (error) {
+      handleLibraryMutationError(error, generation)
+    } finally {
+      if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false)
+    }
+  }
+
+  const handleUpdateLibraryUserPassword = async (userId: string) => {
+    if (!activeLibrary || isSavingLibraryData) return
+    if (passwordDraft.length < 8 || passwordDraft.length > 256) {
+      setLibraryDataStatus({ tone: 'error', message: 'La contraseña debe tener entre 8 y 256 caracteres.' })
+      return
+    }
+    if (passwordDraft !== passwordConfirmationDraft) {
+      setLibraryDataStatus({ tone: 'error', message: 'Las contraseñas no coinciden.' })
+      return
+    }
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    try {
+      const users = await updateLibraryUserPassword(context, userId, passwordDraft)
+      if (generation !== libraryDataGenerationRef.current) return
+      setLibraryUsers(users)
+      setPasswordUserId(null)
+      setPasswordDraft('')
+      setPasswordConfirmationDraft('')
+      setLibraryDataStatus({ tone: 'success', message: 'Contraseña actualizada.' })
+    } catch (error) {
+      handleLibraryMutationError(error, generation)
+    } finally {
+      if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false)
+    }
+  }
+
+  const handleDeleteLibraryUser = async (userId: string) => {
+    if (!activeLibrary || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    setIsSavingLibraryData(true)
+    try {
+      const users = await deleteLibraryUser(context, userId)
+      if (generation !== libraryDataGenerationRef.current) return
+      setLibraryUsers(users)
+      setLibraryDataStatus({ tone: 'success', message: 'Usuario eliminado.' })
+    } catch (error) {
+      handleLibraryMutationError(error, generation)
+    } finally {
+      if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false)
+    }
+  }
+
   const handleClearFinanceData = async () => {
     if (!activeLibrary || isClearingFinanceData) return
     setIsFinanceDeleteConfirmationOpen(false)
@@ -470,41 +657,20 @@ export function SettingsModal({
       setPublicationStatus('Seleccioná al menos un tablero y asegurate de tener una biblioteca activa.')
       return
     }
-    if (!publicationPasswordDraft && !taskManagerPublicationPreferences.passwordHash) {
-      setPublicationStatus('Configurá una contraseña de al menos 8 caracteres para publicar.')
-      return
-    }
-    if (publicationPasswordDraft && publicationPasswordDraft.length < 8) {
-      setPublicationStatus('La contraseña debe tener al menos 8 caracteres.')
-      return
-    }
-
-    setIsPublishingBoards(true)
-    try {
-      const passwordHash = publicationPasswordDraft
-        ? await hashTaskManagerPublicationPassword(publicationPasswordDraft)
-        : taskManagerPublicationPreferences.passwordHash
-      if (!passwordHash) throw new Error('No se pudo configurar la contraseña de publicación.')
-      const snapshot = await loadTaskManagerSnapshot(activeLibrary.path)
+   setIsPublishingBoards(true)
+   try {
+    const snapshot = await loadTaskManagerSnapshot(activeLibrary.path)
       const url = await publishTaskManagerBoards(buildTaskManagerPublicationPayload(
         taskManagerSettings.boards,
         taskManagerSettings.groups,
         snapshot.tasks,
         taskManagerPublicationPreferences.publishedBoardNames,
         activeLibrary.path,
-        appTheme,
-        passwordHash,
-        resolveAiPreferencesForTransport(normalizedAiPreferences),
-        taskManagerPublicationPreferences.approvedDevices,
-        taskManagerPublicationPreferences.port,
-        taskManagerPublicationPreferences.maxClients,
-        taskManagerPublicationPreferences.accessUsers,
+         appTheme,
+         resolveAiPreferencesForTransport(normalizedAiPreferences),
+         taskManagerPublicationPreferences.port,
+         taskManagerPublicationPreferences.maxClients,
       ))
-      onTaskManagerPublicationPreferencesChange({
-        ...taskManagerPublicationPreferences,
-        passwordHash,
-      })
-      setPublicationPasswordDraft('')
       setPublicationUrl(url)
       setPublicationStatus('Tableros publicados en la red local. La URL solo funciona mientras Notia esté abierta.')
     } catch (error) {
@@ -625,6 +791,67 @@ export function SettingsModal({
                 </table>
               </div>
             </div>
+          ) : activeSection === 'Roles' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Roles de la biblioteca activa</div>
+              <form className="notia-settings-context-create" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryRole() }}>
+                <label className="notia-settings-context-create-label" htmlFor="notia-new-library-role">Nuevo rol</label>
+                <div className="notia-settings-context-create-row">
+                  <input id="notia-new-library-role" className="notia-settings-input" value={newRoleName} maxLength={64} placeholder="Nombre del rol" onChange={(event) => setNewRoleName(event.target.value)} />
+                  <NotiaButton type="submit" disabled={!activeLibrary || !newRoleName.trim() || isSavingLibraryData}>{isSavingLibraryData ? 'Guardando…' : 'Agregar rol'}</NotiaButton>
+                </div>
+              </form>
+              {libraryDataStatus.tone === 'error' ? <div className="notia-settings-status" role="alert">{libraryDataStatus.message}</div> : null}
+              {libraryDataStatus.tone === 'loading' ? <div className="notia-settings-status" role="status">{libraryDataStatus.message}</div> : null}
+              <div className="notia-settings-context-table-wrap">
+                <table className="notia-settings-context-table">
+                  <caption className="notia-settings-visually-hidden">Roles configurados en la biblioteca</caption>
+                  <thead><tr><th scope="col">Rol</th></tr></thead>
+                  <tbody>
+                    {libraryRoles.map((role) => <tr key={role.id}><td>{role.name}</td></tr>)}
+                  </tbody>
+                </table>
+                {!libraryDataStatus.message && libraryRoles.length === 0 ? <div className="notia-settings-card-label">No hay roles para mostrar.</div> : null}
+              </div>
+            </div>
+          ) : activeSection === 'Usuarios' ? (
+            <div className="notia-settings-card">
+              <div className="notia-settings-card-label">Usuarios de la biblioteca activa</div>
+              <form className="notia-settings-user-create" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryUser() }}>
+                <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Nombre del usuario</span><input className="notia-settings-input" value={newUserName} maxLength={64} placeholder="Nombre" onChange={(event) => setNewUserName(event.target.value)} /></label>
+                <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Rol</span><NotiaSelectMenu className="notia-settings-input" value={selectedUserRoleId} options={[{ value: '', label: 'Seleccioná un rol', disabled: true }, ...libraryRoles.map((role) => ({ value: role.id, label: role.name }))]} onChange={setSelectedUserRoleId} ariaLabel="Rol del nuevo usuario" disabled={libraryRoles.length === 0} /></label>
+                <div className="notia-settings-actions"><NotiaButton type="submit" disabled={!activeLibrary || !newUserName.trim() || !selectedUserRoleId || libraryRoles.length === 0 || isSavingLibraryData}>{isSavingLibraryData ? 'Guardando…' : 'Agregar un usuario'}</NotiaButton></div>
+              </form>
+              {libraryDataStatus.tone === 'error' ? <div className="notia-settings-status" role="alert">{libraryDataStatus.message}</div> : null}
+              {libraryDataStatus.tone === 'loading' ? <div className="notia-settings-status" role="status">{libraryDataStatus.message}</div> : null}
+              <div className="notia-settings-context-table-wrap">
+                <table className="notia-settings-context-table">
+                  <caption className="notia-settings-visually-hidden">Usuarios y roles de la biblioteca</caption>
+                  <thead><tr><th scope="col">Usuario</th><th scope="col">Rol</th><th scope="col">Contraseña</th><th scope="col">Acciones</th></tr></thead>
+                  <tbody>
+                    {libraryUsers.map((user) => (
+                      <tr key={user.id}>
+                        <td>
+                          {renameUserId === user.id ? <form onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserName(user.id) }}><input className="notia-settings-input" aria-label={`Nuevo nombre para ${user.name}`} value={renameDraft} maxLength={64} onChange={(event) => setRenameDraft(event.target.value)} /><div className="notia-settings-actions"><NotiaButton size="sm" type="submit" disabled={isSavingLibraryData || !renameDraft.trim()}>Guardar</NotiaButton><NotiaButton size="sm" type="button" variant="ghost" onClick={() => { setRenameUserId(null); setRenameDraft('') }}>Cancelar</NotiaButton></div></form> : user.name}
+                        </td>
+                         <td><NotiaSelectMenu className="notia-settings-input" ariaLabel={`Rol de ${user.name}`} value={user.roleId} options={libraryRoles.map((role) => ({ value: role.id, label: role.name }))} disabled={isSavingLibraryData} onChange={(roleId) => { void handleUpdateLibraryUserRole(user.id, roleId) }} /></td>
+                        <td>{user.passwordConfigured ? 'Configurada' : 'Sin contraseña configurada'}</td>
+                        <td>
+                          <div className="notia-settings-context-actions">
+                            <NotiaButton size="sm" variant="secondary" disabled={isSavingLibraryData} onClick={() => { setRenameUserId(user.id); setRenameDraft(user.name) }}>Cambiar nombre</NotiaButton>
+                            <NotiaButton size="sm" variant="secondary" disabled={isSavingLibraryData} onClick={() => { setPasswordUserId(user.id); setPasswordDraft(''); setPasswordConfirmationDraft(''); setShowPasswordDraft(false) }}>Establecer nueva contraseña</NotiaButton>
+                             {user.telegramLinked ? <NotiaButton size="sm" variant="secondary" disabled={isSavingLibraryData} onClick={() => { void handleUnlinkLibraryUserTelegram(user.id) }}>Desvincular Telegram</NotiaButton> : null}
+                            {user.id === 'user-owner' ? <span className="notia-settings-card-label" title="Owner es un usuario protegido">Owner protegido</span> : <NotiaButton size="sm" variant="danger" disabled={isSavingLibraryData} onClick={() => setDeleteUser(user)}>Eliminar usuario</NotiaButton>}
+                          </div>
+                          {passwordUserId === user.id ? <form className="notia-settings-user-inline-form" onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserPassword(user.id) }}><input className="notia-settings-input" aria-label="Nueva contraseña" type={showPasswordDraft ? 'text' : 'password'} autoComplete="new-password" minLength={8} maxLength={256} value={passwordDraft} onChange={(event) => setPasswordDraft(event.target.value)} placeholder="Nueva contraseña" /><input className="notia-settings-input" aria-label="Confirmar nueva contraseña" type={showPasswordDraft ? 'text' : 'password'} autoComplete="new-password" minLength={8} maxLength={256} value={passwordConfirmationDraft} onChange={(event) => setPasswordConfirmationDraft(event.target.value)} placeholder="Confirmar contraseña" /><NotiaButton size="sm" type="button" onClick={() => setShowPasswordDraft((current) => !current)}>{showPasswordDraft ? 'Ocultar' : 'Mostrar'}</NotiaButton><NotiaButton size="sm" type="submit" disabled={isSavingLibraryData}>Guardar</NotiaButton><NotiaButton size="sm" type="button" variant="ghost" onClick={() => setPasswordUserId(null)}>Cancelar</NotiaButton></form> : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {libraryUsers.length === 0 && libraryDataStatus.tone !== 'loading' ? <div className="notia-settings-card-label">No hay usuarios para mostrar.</div> : null}
+              </div>
+            </div>
           ) : activeSection === 'Panel desplegable' ? (
             <div className="notia-settings-card">
               <div className="notia-settings-card-label">Chequeo automatico de cambios</div>
@@ -711,12 +938,14 @@ export function SettingsModal({
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Selecciona cualquier modelo disponible. Para enviar imagenes, elegi uno con capacidad de vision.
                 </div>
-                <div className="notia-ai-model-select" ref={modelSelectRef}>
+                <div className="notia-ai-model-select">
                   <button
+                    ref={modelTriggerRef}
                     type="button"
                     className="notia-ai-model-select-trigger"
                     aria-haspopup="listbox"
                     aria-expanded={isModelMenuOpen}
+                    aria-controls={isModelMenuOpen ? 'notia-ai-model-select-menu' : undefined}
                     onClick={() => setIsModelMenuOpen((current) => !current)}
                     disabled={isLoadingModels || availableModels.length === 0}
                   >
@@ -724,7 +953,7 @@ export function SettingsModal({
                     <ChevronDown size={16} aria-hidden="true" />
                   </button>
                   {isModelMenuOpen ? (
-                    <div className="notia-ai-model-select-menu" role="listbox" aria-label="Modelos de Ollama">
+                    <NotiaSubmenuPanel ref={modelPanelRef} id="notia-ai-model-select-menu" className="notia-ai-model-select-menu" role="listbox" aria-label="Modelos de Ollama">
                       {availableModels.map((model) => (
                         <button
                           type="button"
@@ -754,7 +983,7 @@ export function SettingsModal({
                           </span>
                         </button>
                       ))}
-                    </div>
+                    </NotiaSubmenuPanel>
                   ) : null}
                 </div>
                 {selectedModelOption?.supportsThinking ? (
@@ -811,21 +1040,22 @@ export function SettingsModal({
                   <div className="notia-settings-card-label">Feedback del agente</div>
                   <label className="notia-settings-checkbox-row">
                     <span>Detalle del progreso</span>
-                    <select
+                    <NotiaSelectMenu
                       className="notia-settings-select"
+                      ariaLabel="Detalle del progreso"
                       value={progressModeDraft}
-                      onChange={(event) => {
-                        const value = event.target.value
+                      options={[
+                        { value: 'minimal', label: 'Mínimo' },
+                        { value: 'standard', label: 'Estándar' },
+                        { value: 'detailed', label: 'Detallado' },
+                        { value: 'off', label: 'Desactivado' },
+                      ]}
+                      onChange={(value) => {
                         if (value !== 'minimal' && value !== 'standard' && value !== 'detailed' && value !== 'off') return
                         setProgressModeDraft(value)
                         onAiPreferencesChange({ ...normalizedAiPreferences, progressMode: value })
                       }}
-                    >
-                      <option value="minimal">Mínimo</option>
-                      <option value="standard">Estándar</option>
-                      <option value="detailed">Detallado</option>
-                      <option value="off">Desactivado</option>
-                    </select>
+                    />
                   </label>
                   <label className="notia-settings-checkbox-row">
                     <span>Mostrar TO-DO</span>
@@ -927,16 +1157,21 @@ export function SettingsModal({
               <div className="notia-settings-card-value">{qwen3AsrPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Reconocimiento local GGUF mediante llama.cpp.</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Modelo</div>
-              <select className="notia-settings-input" aria-label="Modelo de Qwen3-ASR" value={qwen3AsrPreferences.model}
-                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, model: event.target.value as '0.6b' | '1.7b' }))}>
-                <option value="0.6b">Qwen3-ASR 0.6B Q8</option><option value="1.7b">Qwen3-ASR 1.7B Q8</option>
-              </select>
+              <NotiaSelectMenu
+                className="notia-settings-input"
+                ariaLabel="Modelo de Qwen3-ASR"
+                value={qwen3AsrPreferences.model}
+                options={[{ value: '0.6b', label: 'Qwen3-ASR 0.6B Q8' }, { value: '1.7b', label: 'Qwen3-ASR 1.7B Q8' }]}
+                onChange={(value) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, model: value as '0.6b' | '1.7b' }))}
+              />
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
-              <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-ASR" value={qwen3AsrPreferences.device}
-                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: event.target.value as 'cpu' | 'gpu' }))}>
-                <option value="cpu">CPU</option>
-                <option value="gpu">GPU (Vulkan)</option>
-              </select>
+              <NotiaSelectMenu
+                className="notia-settings-input"
+                ariaLabel="Dispositivo de Qwen3-ASR"
+                value={qwen3AsrPreferences.device}
+                options={[{ value: 'cpu', label: 'CPU' }, { value: 'gpu', label: 'GPU (Vulkan)' }]}
+                onChange={(value) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: value as 'cpu' | 'gpu' }))}
+              />
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
               <input className="notia-settings-input" aria-label="Idioma de Qwen3-ASR" value={qwen3AsrPreferences.language}
                 onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, language: event.target.value }))} />
@@ -952,20 +1187,29 @@ export function SettingsModal({
               <div className="notia-settings-card-value">{qwen3TtsPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Motor GGML nativo precargado al iniciar Notia en Windows y Android.</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Modelo</div>
-              <select className="notia-settings-input" aria-label="Modelo de Qwen3-TTS" value={qwen3TtsPreferences.model}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, model: event.target.value as '0.6b' | '1.7b' }))}>
-                <option value="0.6b">Qwen3-TTS 0.6B</option><option value="1.7b">Qwen3-TTS 1.7B</option>
-              </select>
+              <NotiaSelectMenu
+                className="notia-settings-input"
+                ariaLabel="Modelo de Qwen3-TTS"
+                value={qwen3TtsPreferences.model}
+                options={[{ value: '0.6b', label: 'Qwen3-TTS 0.6B' }, { value: '1.7b', label: 'Qwen3-TTS 1.7B' }]}
+                onChange={(value) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, model: value as '0.6b' | '1.7b' }))}
+              />
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
-              <select className="notia-settings-input" aria-label="Dispositivo de Qwen3-TTS" value={qwen3TtsPreferences.device}
-                onChange={() => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: 'cpu' }))}>
-                <option value="cpu">Automático (CUDA en Windows, CPU como respaldo)</option>
-              </select>
+              <NotiaSelectMenu
+                className="notia-settings-input"
+                ariaLabel="Dispositivo de Qwen3-TTS"
+                value={qwen3TtsPreferences.device}
+                options={[{ value: 'cpu', label: 'Automático (CUDA en Windows, CPU como respaldo)' }]}
+                onChange={() => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: 'cpu' }))}
+              />
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Voz</div>
-              <select className="notia-settings-input" aria-label="Voz de Qwen3-TTS" value={qwen3TtsPreferences.voice}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, voice: event.target.value }))}>
-                {QWEN3_TTS_VOICES.map((voice) => <option key={voice} value={voice}>{voice}</option>)}
-              </select>
+              <NotiaSelectMenu
+                className="notia-settings-input"
+                ariaLabel="Voz de Qwen3-TTS"
+                value={qwen3TtsPreferences.voice}
+                options={QWEN3_TTS_VOICES.map((voice) => ({ value: voice, label: voice }))}
+                onChange={(voice) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, voice }))}
+              />
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
               <input className="notia-settings-input" aria-label="Idioma de Qwen3-TTS" value={qwen3TtsPreferences.language}
                 onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, language: event.target.value }))} />
@@ -1004,7 +1248,7 @@ export function SettingsModal({
                 <div className="notia-settings-card-label">Bot de Telegram</div>
                 <div className="notia-settings-card-value">{telegramPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  El token se guarda sin cifrar dentro de .notia/notiaConfig.json de esta biblioteca. No compartas ese archivo.
+                  Configurá el token del bot para esta biblioteca. El enlace de usuarios se inicia desde Telegram con /start.
                 </div>
                 <div className="notia-settings-input-wrap">
                   <input className="notia-settings-input" type="password" value={telegramTokenDraft}
@@ -1015,7 +1259,7 @@ export function SettingsModal({
                 <div className="notia-settings-actions">
                   <NotiaButton variant="secondary" disabled={!telegramTokenDraft.trim() || isCheckingTelegram}
                     onClick={() => { void handleCheckTelegram() }}>
-                    {isCheckingTelegram ? 'Probando...' : 'Probar y emparejar'}
+                    {isCheckingTelegram ? 'Probando...' : 'Probar conexión'}
                   </NotiaButton>
                   <NotiaButton variant={telegramPreferences.enabled ? 'primary' : 'secondary'}
                     disabled={!telegramTokenDraft.trim()}
@@ -1023,27 +1267,32 @@ export function SettingsModal({
                     {telegramPreferences.enabled ? 'Desactivar' : 'Activar'}
                   </NotiaButton>
                 </div>
-                <div className="notia-settings-status">{telegramStatus}</div>
+                <div className="notia-settings-status" role="status">{telegramStatus}</div>
               </div>
               <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Chat autorizado</div>
-                <div className="notia-settings-card-value">
-                  {telegramPreferences.authorizedPeer?.displayName ?? 'Ninguno'}
+                <div className="notia-settings-card-label">Asociaciones de Telegram</div>
+                <div className="notia-settings-card-label notia-settings-card-label--spaced">
+                  Las asociaciones se completan desde el bot con /start y una contraseña del usuario. Solo se aceptan chats privados.
                 </div>
-                {telegramPreferences.pendingPeer ? (
-                  <>
-                    <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                      Solicitud de {telegramPreferences.pendingPeer.displayName} {telegramPreferences.pendingPeer.username ? `(@${telegramPreferences.pendingPeer.username})` : ''}.
-                    </div>
-                    <div className="notia-settings-actions">
-                      <NotiaButton onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, authorizedPeer: telegramPreferences.pendingPeer, pendingPeer: null })}>Autorizar</NotiaButton>
-                      <NotiaButton variant="secondary" onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, pendingPeer: null })}>Rechazar</NotiaButton>
-                    </div>
-                  </>
-                ) : <div className="notia-settings-card-label notia-settings-card-label--spaced">Envia /start al bot y espera la solicitud.</div>}
-                {telegramPreferences.authorizedPeer ? (
-                  <div className="notia-settings-actions"><NotiaButton variant="secondary" onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, authorizedPeer: null })}>Revocar acceso</NotiaButton></div>
-                ) : null}
+                {libraryUsers.filter((user) => user.telegramLinked).length === 0
+                  ? <div className="notia-settings-card-value">No hay usuarios vinculados.</div>
+                  : <ul className="notia-settings-association-list">
+                    {libraryUsers.filter((user) => user.telegramLinked).map((user) => (
+                      <li key={user.id}>
+                        <span>{user.name}</span>
+                        <NotiaButton
+                          size="sm"
+                          variant="secondary"
+                          disabled={isSavingLibraryData}
+                          onClick={() => {
+                            void handleUnlinkLibraryUserTelegram(user.id)
+                          }}
+                        >
+                          Desvincular Telegram
+                        </NotiaButton>
+                      </li>
+                    ))}
+                  </ul>}
               </div>
             </>
           ) : activeSection === 'Finanzas' ? (
@@ -1102,26 +1351,10 @@ export function SettingsModal({
                 ))}
               </div>
               {taskManagerSettings.boards.length === 0 ? <div className="notia-settings-status">Todavía no hay tableros disponibles.</div> : null}
-              <label className="notia-settings-input-wrap">
-                <span className="notia-settings-card-label">Contraseña de acceso</span>
-                <input
-                  className="notia-settings-input"
-                  type="password"
-                  value={publicationPasswordDraft}
-                  minLength={8}
-                  maxLength={256}
-                  autoComplete="new-password"
-                  placeholder={taskManagerPublicationPreferences.passwordHash ? 'Contraseña configurada; dejá vacío para conservarla' : 'Mínimo 8 caracteres'}
-                  onChange={(event) => setPublicationPasswordDraft(event.target.value)}
-                />
-              </label>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                La contraseña nunca se guarda en texto plano: Notia conserva únicamente un hash unidireccional PBKDF2-HMAC-SHA256 con salt.
-              </div>
               <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Puerto fijo de publicación</span><input className="notia-settings-input" type="number" min="1024" max="65535" value={taskManagerPublicationPreferences.port} onChange={(event) => { const port = Number(event.target.value); if (Number.isInteger(port) && port >= 1024 && port <= 65535) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, port }) }} /></label>
               <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Clientes simultáneos máximos</span><input className="notia-settings-input" type="number" min="1" max="64" value={taskManagerPublicationPreferences.maxClients} onChange={(event) => { const maxClients = Number(event.target.value); if (Number.isInteger(maxClients) && maxClients >= 1 && maxClients <= 64) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, maxClients }) }} /></label>
               <div className="notia-settings-actions">
-                <NotiaButton onClick={() => void handlePublishBoards()} disabled={isPublishingBoards || !activeLibrary || taskManagerPublicationPreferences.publishedBoardNames.length === 0 || (!publicationPasswordDraft && !taskManagerPublicationPreferences.passwordHash)}>
+                <NotiaButton onClick={() => void handlePublishBoards()} disabled={isPublishingBoards || !activeLibrary || taskManagerPublicationPreferences.publishedBoardNames.length === 0}>
                   {isPublishingBoards ? 'Publicando…' : 'Publicar y actualizar'}
                 </NotiaButton>
                 <NotiaButton variant="secondary" onClick={() => void openTaskManagerPublication()} disabled={!publicationUrl}>
@@ -1145,62 +1378,6 @@ export function SettingsModal({
               </div> : null}
               {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">Si otro equipo no puede abrirla, permití Notia en el Firewall de Windows para redes privadas.</div> : null}
               {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">La URL usa HTTPS con un certificado autofirmado: en cada equipo remoto aceptá o instalá el certificado de Notia la primera vez.</div> : null}
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Usuarios que solicitan acceso</div>
-              {pendingPublicationDevices.length === 0 ? (
-                <div className="notia-settings-card-label">No hay solicitudes pendientes.</div>
-              ) : pendingPublicationDevices.map((device) => (
-                <div key={device.id} className="notia-settings-actions">
-                  <span>{device.name} · Usuario: {device.username}</span>
-                  <NotiaButton
-                    variant="secondary"
-                    onClick={() => void approveTaskManagerPublicationDevice(device.id)
-                      .then((approved) => {
-                        const approvedDevice = {
-                          id: approved.id,
-                          name: approved.name,
-                          username: approved.username,
-                        }
-                        const accessUsers = approved.passwordHash
-                          ? Array.from(new Map([
-                            ...taskManagerPublicationPreferences.accessUsers,
-                            { username: approved.username, passwordHash: approved.passwordHash },
-                          ].map((user) => [user.username.toLowerCase(), user])).values())
-                          : taskManagerPublicationPreferences.accessUsers
-                        onTaskManagerPublicationPreferencesChange({
-                          ...taskManagerPublicationPreferences,
-                          accessUsers,
-                          approvedDevices: [...taskManagerPublicationPreferences.approvedDevices, approvedDevice],
-                        })
-                        setPendingPublicationDevices((current) => current.filter((item) => item.id !== approved.id))
-                      })
-                      .catch((error: unknown) => setPublicationStatus(error instanceof Error ? error.message : 'No se pudo autorizar el dispositivo.'))}
-                  >
-                    Aceptar usuario
-                  </NotiaButton>
-                </div>
-              ))}
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Usuarios con acceso</div>
-              {taskManagerPublicationPreferences.approvedDevices.length === 0 ? (
-                <div className="notia-settings-card-label">No hay usuarios con acceso.</div>
-              ) : taskManagerPublicationPreferences.approvedDevices.map((device) => (
-                <div key={device.id} className="notia-settings-actions">
-                  <span>{device.name} · Usuario: {device.username}</span>
-                  <NotiaButton
-                    variant="secondary"
-                    onClick={() => void revokeTaskManagerPublicationDevice(device.id)
-                      .then(() => {
-                        onTaskManagerPublicationPreferencesChange({
-                          ...taskManagerPublicationPreferences,
-                          approvedDevices: taskManagerPublicationPreferences.approvedDevices.filter((item) => item.id !== device.id),
-                        })
-                        setPublicationStatus(`${device.name} ya no tiene acceso.`)
-                      })
-                      .catch((error: unknown) => setPublicationStatus(error instanceof Error ? error.message : 'No se pudo revocar el dispositivo.'))}
-                  >
-                    Revocar acceso
-                  </NotiaButton>
-                </div>
-              ))}
               <div className="notia-settings-status" role="status">{publicationStatus}</div>
             </div>
           ) : (
@@ -1231,6 +1408,21 @@ export function SettingsModal({
         tone="danger"
         onConfirm={() => { void handleClearFinanceData() }}
         onCancel={() => setIsFinanceDeleteConfirmationOpen(false)}
+      />
+      <ConfirmationDialogModal
+        open={deleteUser !== null}
+        title="Eliminar usuario"
+        message={`¿Querés eliminar a ${deleteUser?.name ?? 'este usuario'}? Se revocará su vínculo de Telegram y no se puede deshacer.`}
+        confirmLabel="Eliminar usuario"
+        cancelLabel="Cancelar"
+        tone="danger"
+          onConfirm={() => {
+           if (!deleteUser) return
+           const userId = deleteUser.id
+           setDeleteUser(null)
+           void handleDeleteLibraryUser(userId)
+         }}
+        onCancel={() => setDeleteUser(null)}
       />
     </NotiaModalShell>
   )

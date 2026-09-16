@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramCurrentNewsRequest, isTelegramFinanceRequest, isTelegramPublicWebRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, sanitizeTelegramConfirmationQuestion, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
+import { buildTelegramConfirmationMessage, buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramCurrentNewsRequest, isTelegramFinanceRequest, isTelegramPublicWebRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
 describe('Telegram universal scope', () => {
   it('rejects a salary success message without a persisted salary proof', () => {
@@ -100,34 +100,41 @@ describe('Telegram universal scope', () => {
     expect(message).not.toContain('C:\\Users\\gabmi')
   })
 
-  it('does not send diffs or tool arguments with Telegram confirmations', () => {
-    const message = sanitizeTelegramConfirmationQuestion(
+  it('shows the concrete operation while redacting secrets and private paths', () => {
+    const message = buildTelegramConfirmationMessage(
       'Vista previa: reemplazar "secreto del documento" en C:\\Users\\gabmi\\Documents\\nota.md. operationId=op-1\n- API key: sk-secret\n+ contenido privado',
     )
     expect(message).toContain('Confirmación requerida')
-    expect(message).not.toContain('secreto del documento')
+    expect(message).toContain('secreto del documento')
+    expect(message).toContain('operationId=[oculto]')
+    expect(message).toContain('API key=[oculto]')
+    expect(message).toContain('contenido privado')
     expect(message).not.toContain('sk-secret')
-    expect(message).not.toContain('operationId')
     expect(message).not.toContain('C:\\Users\\gabmi')
   })
 
   it('explains why a web search needs confirmation without calling it a change', () => {
-    const message = sanitizeTelegramConfirmationQuestion(
+    const message = buildTelegramConfirmationMessage(
       'Buscar fuentes públicas en internet con esta consulta: "últimas noticias relevantes sobre Milei"',
     )
 
-    expect(message).toContain('información actualizada en fuentes públicas de internet')
-    expect(message).toContain('no modifica tu biblioteca ni tus documentos')
-    expect(message).not.toContain('preparó un cambio')
+    expect(message).toContain('últimas noticias relevantes sobre Milei')
   })
 
-  it('describes a library write as a change while keeping its detail in Notia', () => {
-    const message = sanitizeTelegramConfirmationQuestion(
-      'Vista previa: contenido privado\n\nCrear la nota "privada.md".',
-    )
+  it('uses preview metadata instead of leaking the full diff', () => {
+    const message = buildTelegramConfirmationMessage('ignored diff', {
+      operationId: 'op-1',
+      documents: [{ path: 'C:\\Users\\gabmi\\Documents\\nota.md', expectedRevision: 1, currentRevision: 1 }],
+      hunks: [{ id: 'hunk-1', documentPath: 'nota.md', startLine: 1, endLine: 2, oldText: 'privado', newText: 'nuevo', status: 'pending' }],
+      summary: 'Agregar un comentario al ticket "Cobranzas integradas".',
+      assumptions: [],
+      risks: ['La operación modifica un documento.'],
+      risk: 'medium',
+      allowedActions: ['apply-all', 'reject'],
+    })
 
-    expect(message).toContain('preparó un cambio en tu biblioteca')
-    expect(message).toContain('vista previa están disponibles en Notia')
-    expect(message).not.toContain('privada.md')
+    expect(message).toContain('Agregar un comentario al ticket "Cobranzas integradas".')
+    expect(message).toContain('Documentos afectados: 1. Cambios preparados: 1.')
+    expect(message).not.toContain('privado')
   })
 })

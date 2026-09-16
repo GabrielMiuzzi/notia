@@ -58,6 +58,27 @@ function Stop-ProcessTree([int]$RootProcessId) {
   Stop-Process -Id $RootProcessId -Force -ErrorAction SilentlyContinue
 }
 
+function Invoke-DevelopmentAssetsBuild {
+  $maxAttempts = 2
+
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    Write-Host "Generando los assets publicados de Task Manager (build de desarrollo; intento $attempt/$maxAttempts)..."
+    & npm.cmd run build -- --minify=false
+    $buildExitCode = $LASTEXITCODE
+
+    if ($buildExitCode -eq 0) {
+      return
+    }
+
+    if ($attempt -lt $maxAttempts) {
+      Write-Warning "El proceso de build termino con codigo $buildExitCode. Se reintentara para recuperar una interrupcion transitoria de esbuild."
+      Start-Sleep -Seconds 1
+    } else {
+      throw "El build de los assets publicados termino con codigo $buildExitCode luego de $maxAttempts intentos."
+    }
+  }
+}
+
 if (Test-NotiaDevPort) {
   $portOwner = Get-DevPortOwner
   if (Test-IsCurrentRepoViteProcess $portOwner) {
@@ -73,11 +94,7 @@ if (Test-NotiaDevPort) {
 }
 
 try {
-  Write-Host 'Generando los assets publicados de Task Manager (build de desarrollo)...'
-  & npm.cmd run build -- --minify=false
-  if ($LASTEXITCODE -ne 0) {
-    throw "El build de los assets publicados termino con codigo $LASTEXITCODE."
-  }
+  Invoke-DevelopmentAssetsBuild
 
   if (-not (Test-NotiaDevPort)) {
     Write-Host 'Iniciando Vite en http://127.0.0.1:1420...'

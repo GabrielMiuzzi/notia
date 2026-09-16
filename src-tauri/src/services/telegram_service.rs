@@ -42,6 +42,8 @@ struct TelegramUser {
 #[derive(Debug, Deserialize)]
 struct TelegramChat {
     id: i64,
+    #[serde(rename = "type")]
+    chat_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +129,7 @@ pub struct IncomingTelegramUpdate {
     pub document: Option<TelegramDocument>,
     pub callback_query_id: Option<String>,
     pub callback_data: Option<String>,
+    pub chat_type: String,
 }
 
 fn endpoint(token: &str, method: &str) -> Result<String, String> {
@@ -209,10 +212,12 @@ pub async fn get_updates(token: &str, offset: i64) -> Result<Vec<IncomingTelegra
                     document: message.document,
                     callback_query_id: None,
                     callback_data: None,
+                    chat_type: message.chat.chat_type,
                 });
             }
             let callback = update.callback_query?;
-            let chat_id = callback.message?.chat.id;
+            let callback_message = callback.message?;
+            let chat_id = callback_message.chat.id;
             Some(IncomingTelegramUpdate {
                 update_id: update.update_id,
                 chat_id,
@@ -224,6 +229,7 @@ pub async fn get_updates(token: &str, offset: i64) -> Result<Vec<IncomingTelegra
                 document: None,
                 callback_query_id: Some(callback.id),
                 callback_data: callback.data,
+                chat_type: callback_message.chat.chat_type,
             })
         })
         .collect())

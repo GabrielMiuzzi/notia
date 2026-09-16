@@ -701,6 +701,14 @@ describe('chatScopedAgentRuntime', () => {
     expect(regularPrompt).not.toContain('HTML compatible con Telegram')
   })
 
+  it('adds strict Telegram output constraints for escaped Markdown and HTML attributes', () => {
+    const prompt = buildChatAgentSystemPrompt('library', 'Base', null, 'telegram-html')
+
+    expect(prompt).toContain('No uses Markdown ni escapes con barra invertida')
+    expect(prompt).toContain('No uses atributos como style o class')
+    expect(prompt).toContain('Cada etiqueta abierta debe tener su cierre correspondiente')
+  })
+
   it('instructs Graph View to resolve named folders by path', () => {
     const prompt = buildChatAgentSystemPrompt('graph')
     expect(prompt).toContain('rutas o carpetas nombradas')

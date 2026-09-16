@@ -55,12 +55,19 @@ const PUBLICATION_CHANGED_PATH_LIMIT: usize = 32;
 const PUBLICATION_CHANGED_PATH_MAX_BYTES: usize = 512;
 #[cfg(target_os = "windows")]
 const PUBLICATION_LATENCY_BUCKETS_MS: [u64; 6] = [50, 100, 250, 500, 1_000, 5_000];
+#[cfg(test)]
 const PASSWORD_HASH_ITERATIONS: u32 = 210_000;
 const TASK_MANAGER_PUBLICATION_PATH: &str = "/task-manager";
 const PUBLISHED_VAULT_ALIAS: &str = "published-vault";
 #[cfg(target_os = "windows")]
 const PUBLISHED_AI_HOST_REQUEST_EVENT: &str = "notia-task-manager-publication-ai-request";
 const DEFAULT_PUBLICATION_CLIENT_LIMIT: usize = 64;
+
+#[cfg(test)]
+fn hash_task_manager_publication_password(password: String) -> Result<String, String> {
+    validate_publication_password(&password)?;
+    Ok(format_password_hash(password.as_bytes(), &random_salt()))
+}
 #[cfg(target_os = "windows")]
 const TASK_MANAGER_SHARED_METADATA_FILE: &str = ".notia-task-manager.json";
 #[cfg(target_os = "windows")]
@@ -113,10 +120,13 @@ pub struct TaskManagerPublicationPayload {
     #[serde(rename = "vaultPath")]
     vault_path: String,
     theme: String,
+    #[cfg(test)]
     #[serde(rename = "passwordHash")]
     password_hash: String,
+    #[cfg(test)]
     #[serde(rename = "approvedDevices", default)]
     approved_devices: Vec<PublishedDevice>,
+    #[cfg(test)]
     #[serde(rename = "accessUsers", default)]
     access_users: Vec<PublishedAccessUser>,
     #[serde(rename = "maxClients", default = "default_publication_client_limit")]
@@ -332,6 +342,7 @@ enum PublicationSettingsMutationShape {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg(test)]
 pub struct PublishedDevice {
     id: String,
     name: String,
@@ -341,19 +352,21 @@ pub struct PublishedDevice {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(test)]
 pub struct PublishedAccessUser {
     username: String,
     password_hash: String,
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 struct PendingPublishedDevice {
     name: String,
     username: String,
     password_hash: String,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", test))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovedPublishedDevice {
@@ -452,6 +465,14 @@ pub struct TaskManagerPublicationState {
     inner: Arc<Mutex<PublicationRuntime>>,
 }
 
+pub fn revoke_library_user_sessions(state: &TaskManagerPublicationState, user_id: &str) {
+    if let Ok(mut runtime) = state.inner.lock() {
+        runtime
+            .authenticated_sessions
+            .retain(|_, session_user_id| session_user_id != user_id);
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[derive(Debug, Default)]
 struct PublicationMetrics {
@@ -516,9 +537,13 @@ struct PublicationRuntime {
     payload: Option<TaskManagerPublicationPayload>,
     server_started: bool,
     authenticated_sessions: HashMap<String, String>,
+    #[cfg(test)]
     approved_devices: HashSet<String>,
+    #[cfg(test)]
     approved_device_users: HashMap<String, String>,
+    #[cfg(test)]
     access_users: HashMap<String, String>,
+    #[cfg(test)]
     pending_devices: HashMap<String, PendingPublishedDevice>,
     #[cfg(target_os = "windows")]
     publication_epoch: String,
@@ -564,14 +589,6 @@ struct PublicationRuntime {
     app_handle: Option<tauri::AppHandle>,
     #[cfg(target_os = "windows")]
     assets: Option<Arc<tauri::AssetResolver<tauri::Wry>>>,
-}
-
-#[tauri::command]
-pub fn hash_task_manager_publication_password(password: String) -> Result<String, String> {
-    validate_publication_password(&password)?;
-    let mut salt = [0_u8; 16];
-    rand::thread_rng().fill_bytes(&mut salt);
-    Ok(format_password_hash(password.as_bytes(), &salt))
 }
 
 #[cfg(target_os = "windows")]
@@ -626,9 +643,6 @@ pub fn publish_task_manager_boards(
         if payload.vault_path.trim().is_empty() {
             return Err("No hay una biblioteca activa para publicar.".to_string());
         }
-        if !is_valid_password_hash(&payload.password_hash) {
-            return Err("Configurá una contraseña válida para publicar.".to_string());
-        }
         if payload.port < 1024 {
             return Err("Elegí un puerto entre 1024 y 65535.".to_string());
         }
@@ -657,51 +671,6 @@ pub fn publish_task_manager_boards(
             close_publication_websocket_subscribers(&mut guard, "publication-reconfigured", false);
             guard.assets = Some(Arc::new(app.asset_resolver()));
             guard.payload = Some(payload);
-            guard.approved_devices =
-                guard
-                    .payload
-                    .as_ref()
-                    .map_or_else(HashSet::new, |publication| {
-                        publication
-                            .approved_devices
-                            .iter()
-                            .map(|device| device.id.clone())
-                            .collect()
-                    });
-            guard.approved_device_users =
-                guard
-                    .payload
-                    .as_ref()
-                    .map_or_else(HashMap::new, |publication| {
-                        publication
-                            .approved_devices
-                            .iter()
-                            .filter(|device| !device.username.trim().is_empty())
-                            .map(|device| {
-                                (
-                                    device.id.clone(),
-                                    normalize_publication_username(&device.username),
-                                )
-                            })
-                            .collect()
-                    });
-            guard.access_users = guard
-                .payload
-                .as_ref()
-                .map_or_else(HashMap::new, |publication| {
-                    publication
-                        .access_users
-                        .iter()
-                        .filter(|user| is_valid_password_hash(&user.password_hash))
-                        .map(|user| {
-                            (
-                                normalize_publication_username(&user.username),
-                                user.password_hash.clone(),
-                            )
-                        })
-                        .collect()
-                });
-            guard.pending_devices.clear();
             guard.authenticated_sessions.clear();
             guard.publication_epoch = generate_session_token();
             guard.revision = 0;
@@ -901,6 +870,7 @@ pub fn set_task_manager_publication_recovery(
 }
 
 #[tauri::command]
+#[cfg(test)]
 pub fn list_pending_task_manager_publication_devices(
     state: tauri::State<'_, TaskManagerPublicationState>,
 ) -> Result<Vec<PublishedDevice>, String> {
@@ -918,6 +888,7 @@ pub fn list_pending_task_manager_publication_devices(
         .collect())
 }
 #[tauri::command]
+#[cfg(test)]
 pub fn approve_task_manager_publication_device(
     state: tauri::State<'_, TaskManagerPublicationState>,
     device_id: String,
@@ -948,6 +919,7 @@ pub fn approve_task_manager_publication_device(
 }
 
 #[tauri::command]
+#[cfg(test)]
 pub fn revoke_task_manager_publication_device(
     state: tauri::State<'_, TaskManagerPublicationState>,
     device_id: String,
@@ -1755,7 +1727,6 @@ fn serve_request<S: Read + Write + Send + 'static>(
         return;
     }
     let ip_rate_limit = match (method, path.as_str()) {
-        ("POST", path) if path == format!("{base}/device") => Some((120, "device")),
         ("POST", path) if path == format!("{base}/login") => Some((30, "login")),
         ("POST", path) if path == format!("{base}/ai/stream") => Some((60, "ai")),
         ("POST", path) if path == format!("{base}/invoke") => Some((240, "invoke")),
@@ -1852,17 +1823,9 @@ fn serve_request<S: Read + Write + Send + 'static>(
             Err(_) => json_error("No se pudo consultar el estado de la publicaciÃ³n."),
         }
     } else if method == "GET" && (path == base || path == format!("{base}/")) {
-        serve_login_page()
-    } else if method == "POST" && path == format!("{base}/device") {
-        serve_device_registration(http_body(&request), &runtime)
+        serve_library_user_login_page()
     } else if method == "POST" && path == format!("{base}/login") {
-        serve_login(
-            http_body(&request),
-            request_header_value(&request, "x-notia-device-id"),
-            &publication.password_hash,
-            &runtime,
-            base,
-        )
+        serve_library_user_login(http_body(&request), &runtime, &publication.vault_path, base)
     } else if !authenticated {
         json_response(
             "401 Unauthorized",
@@ -2060,12 +2023,14 @@ fn normalize_publication_username(username: &str) -> String {
     username.trim().to_lowercase()
 }
 
+#[cfg(test)]
 fn random_salt() -> [u8; 16] {
     let mut salt = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut salt);
     salt
 }
 
+#[cfg(test)]
 fn format_password_hash(password: &[u8], salt: &[u8]) -> String {
     let derived = pbkdf2_hmac_sha256(password, salt, PASSWORD_HASH_ITERATIONS);
     format!(
@@ -2075,10 +2040,12 @@ fn format_password_hash(password: &[u8], salt: &[u8]) -> String {
     )
 }
 
+#[cfg(test)]
 fn is_valid_password_hash(encoded: &str) -> bool {
     parse_password_hash(encoded).is_some()
 }
 
+#[cfg(test)]
 fn password_matches_hash(password: &[u8], encoded: &str) -> bool {
     let Some((salt, expected)) = parse_password_hash(encoded) else {
         return false;
@@ -2093,6 +2060,7 @@ fn password_matches_hash(password: &[u8], encoded: &str) -> bool {
         == 0
 }
 
+#[cfg(test)]
 fn parse_password_hash(encoded: &str) -> Option<(Vec<u8>, [u8; 32])> {
     let parts = encoded.split('$').collect::<Vec<_>>();
     if parts.len() != 6
@@ -2111,6 +2079,7 @@ fn parse_password_hash(encoded: &str) -> Option<(Vec<u8>, [u8; 32])> {
     Some((salt, derived.try_into().ok()?))
 }
 
+#[cfg(test)]
 fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
     let mut first_input = Vec::with_capacity(salt.len() + 4);
     first_input.extend_from_slice(salt);
@@ -2127,6 +2096,7 @@ fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32]
     derived
 }
 
+#[cfg(test)]
 fn hmac_sha256(key: &[u8], value: &[u8]) -> [u8; 32] {
     const BLOCK_SIZE: usize = 64;
     let mut normalized_key = [0_u8; BLOCK_SIZE];
@@ -2174,7 +2144,7 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", test))]
 fn serve_login_page() -> Vec<u8> {
     const LOGIN_HTML: &str = r#"<!doctype html>
 <html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2215,6 +2185,92 @@ form.addEventListener('submit',async(event)=>{event.preventDefault();event.stopI
 }
 
 #[cfg(target_os = "windows")]
+fn serve_library_user_login_page() -> Vec<u8> {
+    const LOGIN_HTML: &str = r#"<!doctype html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notia · Task Manager</title><style>:root{font-family:Manrope,"Segoe UI",sans-serif;color:#f8f8f2;background:#282a36;color-scheme:dark}*{box-sizing:border-box}body{min-height:100dvh;margin:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#3a3452,#21222c 62%)}main{width:min(420px,100%);padding:30px;border:1px solid #44475a;border-radius:16px;background:#282a36;box-shadow:0 22px 60px #0008}h1{margin:0 0 8px;font-size:24px}p{margin:0 0 22px;color:#a6accd;line-height:1.5}label{display:grid;gap:8px;margin-top:14px;font-size:13px;font-weight:700}input,button{width:100%;min-height:48px;border-radius:10px;font:inherit}input{padding:0 13px;border:1px solid #6272a4;background:#21222c;color:#f8f8f2;outline:none}input:focus{border-color:#8be9fd;box-shadow:0 0 0 3px #8be9fd33}button{margin-top:16px;border:0;background:#bd93f9;color:#181927;font-weight:800;cursor:pointer}button:disabled{opacity:.65;cursor:wait}#error{min-height:20px;margin:12px 0 0;color:#ff6b7c;font-size:13px}</style></head><body><main><h1>Task Manager</h1><p>Ingresá el usuario y la contraseña configurados en Notia.</p><form id="login" aria-describedby="error"><label for="username">Usuario<input id="username" type="text" maxlength="64" autocomplete="username" required autofocus></label><label for="password">Contraseña<input id="password" type="password" minlength="8" maxlength="256" autocomplete="current-password" required></label><button id="submit" type="submit" aria-busy="false">Acceder</button><div id="error" role="alert" aria-live="polite"></div></form></main><script>const form=document.getElementById('login'),button=document.getElementById('submit'),error=document.getElementById('error'),password=document.getElementById('password');const base=location.pathname.replace(/\/+$/,'');form.addEventListener('submit',async event=>{event.preventDefault();button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='Ingresando…';error.textContent='';try{const response=await fetch(base+'/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value.trim(),password:password.value})});const body=await response.json();if(!response.ok)throw new Error(response.status===401?'Credenciales incorrectas.':body.error||'No se pudo iniciar sesión.');location.assign(base+'/app')}catch(reason){error.textContent=reason instanceof Error?reason.message:'No se pudo iniciar sesión. Verificá que Notia esté abierta y reintentá.';password.select();button.disabled=false;button.setAttribute('aria-busy','false');button.textContent='Acceder'}},true)</script></body></html>"#;
+    response("200 OK", "text/html; charset=utf-8", LOGIN_HTML.as_bytes())
+}
+
+#[cfg(all(target_os = "windows", test))]
+fn serve_library_user_login_page_legacy() -> Vec<u8> {
+    const LOGIN_HTML: &str = r#"<!doctype html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Notia · Task Manager</title><style>:root{font-family:Manrope,"Segoe UI",sans-serif;color:#f8f8f2;background:#282a36;color-scheme:dark}*{box-sizing:border-box}body{min-height:100dvh;margin:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#3a3452,#21222c 62%)}main{width:min(420px,100%);padding:30px;border:1px solid #44475a;border-radius:16px;background:#282a36;box-shadow:0 22px 60px #0008}h1{margin:0 0 8px;font-size:24px}p{margin:0 0 22px;color:#a6accd;line-height:1.5}label{display:grid;gap:8px;margin-top:14px;font-size:13px;font-weight:700}input,button{width:100%;min-height:48px;border-radius:10px;font:inherit}input{padding:0 13px;border:1px solid #6272a4;background:#21222c;color:#f8f8f2;outline:none}input:focus{border-color:#8be9fd;box-shadow:0 0 0 3px #8be9fd33}button{margin-top:16px;border:0;background:#bd93f9;color:#181927;font-weight:800;cursor:pointer}button:disabled{opacity:.65;cursor:wait}#error{min-height:20px;margin:12px 0 0;color:#ff6b7c;font-size:13px}</style></head><body><main><h1>Task Manager</h1><p>Ingresá el usuario y la contraseña configurados en Notia.</p><form id="login"><label>Usuario<input id="username" type="text" maxlength="64" autocomplete="username" required autofocus></label><label>Contraseña<input id="password" type="password" minlength="8" maxlength="256" autocomplete="current-password" required></label><button id="submit" type="submit">Acceder</button><div id="error" role="alert" aria-live="polite"></div></form></main><script>const form=document.getElementById('login'),button=document.getElementById('submit'),error=document.getElementById('error');const base=location.pathname.replace(/\/+$/,'');form.addEventListener('submit',async event=>{event.preventDefault();button.disabled=true;error.textContent='';try{const response=await fetch(base+'/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value.trim(),password:document.getElementById('password').value})});const body=await response.json();if(!response.ok)throw new Error(body.error||'No se pudo iniciar sesión.');location.assign(base+'/app')}catch(reason){error.textContent=reason instanceof Error?reason.message:'No se pudo iniciar sesión.';document.getElementById('password').select();button.disabled=false}},true)</script></main></body></html>"#;
+    response("200 OK", "text/html; charset=utf-8", LOGIN_HTML.as_bytes())
+}
+
+#[cfg(target_os = "windows")]
+fn serve_library_user_login(
+    body: &[u8],
+    runtime: &Arc<Mutex<PublicationRuntime>>,
+    library_path: &str,
+    publication_path: &str,
+) -> Vec<u8> {
+    let session_key = "library-user-login";
+    if !allow_publication_rate(
+        runtime,
+        session_key.to_string(),
+        10,
+        Duration::from_secs(60),
+    ) {
+        return publication_rate_limited_response(
+            "Demasiados intentos de inicio de sesión. Esperá antes de volver a intentar.",
+        );
+    }
+    let Some(input) = serde_json::from_slice::<Value>(body).ok() else {
+        return json_error("Credenciales incorrectas.");
+    };
+    let Some(username) = input.get("username").and_then(Value::as_str) else {
+        return json_error("Credenciales incorrectas.");
+    };
+    let Some(password) = input.get("password").and_then(Value::as_str) else {
+        return json_error("Credenciales incorrectas.");
+    };
+    if validate_publication_username(username).is_err()
+        || validate_publication_password(password).is_err()
+    {
+        return json_error("Credenciales incorrectas.");
+    }
+    let Some(user_id) =
+        crate::library_users::authenticate_library_user(library_path, username, password)
+    else {
+        return json_error("Credenciales incorrectas.");
+    };
+    let at_capacity = runtime.lock().ok().is_some_and(|guard| {
+        guard.payload.as_ref().is_some_and(|publication| {
+            guard.authenticated_sessions.len() >= publication_client_limit(publication)
+        })
+    });
+    if at_capacity {
+        return json_response_with_headers(
+            "429 Too Many Requests",
+            serde_json::json!({ "error": "La publicación alcanzó su capacidad máxima de sesiones.", "retryable": true }),
+            &["Retry-After: 30"],
+        );
+    }
+    let session = generate_session_token();
+    let inserted = runtime.lock().ok().is_some_and(|mut guard| {
+        if guard.payload.as_ref().is_some_and(|publication| {
+            guard.authenticated_sessions.len() >= publication_client_limit(publication)
+        }) {
+            return false;
+        }
+        guard
+            .authenticated_sessions
+            .insert(session.clone(), user_id);
+        true
+    });
+    if !inserted {
+        return json_error("La publicación cambió. Volvé a intentarlo.");
+    }
+    let cookie = format!("Set-Cookie: notia_task_session={session}; Secure; HttpOnly; SameSite=Strict; Path={publication_path}; Max-Age=43200");
+    json_response_with_headers(
+        "200 OK",
+        serde_json::json!({ "ok": true }),
+        &[cookie.as_str()],
+    )
+}
+
+#[cfg(all(target_os = "windows", test))]
 fn serve_device_registration(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime>>) -> Vec<u8> {
     let input = serde_json::from_slice::<Value>(body).ok();
     let device_id = input
@@ -2312,7 +2368,7 @@ fn serve_device_registration(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime
     json_response("200 OK", serde_json::json!({ "approved": approved }))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", test))]
 fn serve_login(
     body: &[u8],
     device_id: Option<String>,

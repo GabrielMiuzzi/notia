@@ -12,6 +12,8 @@ mod backup;
 mod database;
 mod finance;
 mod finance_records;
+mod library_users;
+mod user_auth;
 
 mod commands {
     pub mod ai;
@@ -192,6 +194,18 @@ pub fn run() {
             start_library_tree_watch,
             stop_library_tree_watch,
             database::initialize_library_database,
+            library_users::list_library_roles,
+            library_users::create_library_role,
+            library_users::list_library_users,
+            library_users::create_library_user,
+            library_users::update_library_user_password,
+            library_users::delete_library_user,
+            library_users::update_library_user_name,
+            library_users::update_library_user_role,
+            library_users::resolve_library_telegram_user,
+            library_users::find_library_user,
+            library_users::link_library_user_telegram,
+            library_users::unlink_library_user_telegram,
             finance::finance_get_dashboard,
             finance::finance_dev_list_tables,
             finance::finance_dev_query_table,
@@ -273,14 +287,10 @@ pub fn run() {
             start_window_dragging,
             start_window_dragging_with_restore,
             task_manager_publication::publish_task_manager_boards,
-            task_manager_publication::hash_task_manager_publication_password,
             task_manager_publication::publish_task_manager_ai_stream_event,
             task_manager_publication::get_task_manager_publication_url,
             task_manager_publication::get_task_manager_publication_status,
             task_manager_publication::set_task_manager_publication_recovery,
-            task_manager_publication::list_pending_task_manager_publication_devices,
-            task_manager_publication::approve_task_manager_publication_device,
-            task_manager_publication::revoke_task_manager_publication_device,
             task_manager_publication::open_task_manager_publication,
             task_manager_publication::stop_task_manager_publication,
             task_manager_publication::begin_task_manager_publication_batch,

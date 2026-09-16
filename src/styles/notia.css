@@ -3432,6 +3432,71 @@
   box-sizing: border-box;
 }
 
+.notia-select-menu {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.notia-select-menu-trigger {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  text-align: left;
+}
+
+.notia-select-menu-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-select-menu-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 130;
+  max-height: min(320px, 45dvh);
+  overflow-y: auto;
+  padding: 4px;
+  overscroll-behavior: contain;
+}
+
+.notia-select-menu-option {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-body-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-select-menu-option:hover,
+.notia-select-menu-option:focus-visible {
+  outline: none;
+  background: var(--color-hover-surface);
+  color: var(--color-hover-text);
+}
+
+.notia-select-menu-option.is-selected {
+  background: color-mix(in srgb, var(--color-accent-bg) 70%, transparent);
+  color: var(--color-heading-text);
+}
+
+.notia-select-menu-option:disabled {
+  color: var(--color-subtle-text);
+  cursor: default;
+  opacity: 0.75;
+}
+
 .notia-large-markdown-card {
   width: min(720px, 100%);
   margin: 0 auto;
@@ -4603,6 +4668,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 .notia-settings-header {
@@ -4623,7 +4689,8 @@
 
 .notia-settings-close {
   width: 26px;
-  height: 26px;
+  min-height: 48px;
+  height: 48px;
   border-radius: 6px;
 }
 
@@ -4702,6 +4769,14 @@
   margin-top: 12px;
 }
 
+.notia-settings-actions > .notia-button,
+.notia-settings-context-actions > .notia-button,
+.notia-settings-user-inline-form > .notia-button,
+.notia-settings-association-list .notia-button,
+.notia-settings-menu-item {
+  min-height: 48px;
+}
+
 .notia-settings-context-create {
   margin-top: 16px;
 }
@@ -4776,6 +4851,45 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notia-settings-user-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.65fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.notia-settings-user-create .notia-settings-input-wrap {
+  margin-top: 12px;
+}
+
+.notia-settings-user-inline-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.notia-settings-user-inline-form .notia-settings-input {
+  width: min(220px, 100%);
+}
+
+.notia-settings-association-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notia-settings-association-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .notia-settings-visually-hidden {
@@ -4798,6 +4912,18 @@
   .notia-settings-context-create-row .notia-button {
     grid-column: 1 / -1;
     justify-self: stretch;
+  }
+
+  .notia-settings-user-create {
+    grid-template-columns: 1fr;
+  }
+
+  .notia-settings-user-create .notia-settings-actions {
+    justify-content: stretch;
+  }
+
+  .notia-settings-user-create .notia-button {
+    width: 100%;
   }
 }
 
@@ -4843,12 +4969,18 @@
 
 .notia-settings-menu {
   width: 180px;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 180px;
   border-left: 1px solid var(--color-border-strong);
   background: var(--color-menu-panel-bg);
   padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .notia-settings-menu-item {
@@ -4867,6 +4999,44 @@
 .notia-settings-menu-item--active {
   background: var(--color-accent-bg);
   color: var(--color-accent-text);
+}
+
+@media (max-width: 720px), (max-height: 600px) {
+  .notia-settings-modal {
+    width: min(100vw - 24px, 860px);
+    height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 24px);
+    max-height: none;
+    flex-direction: column;
+  }
+
+  .notia-settings-menu {
+    order: -1;
+    width: 100%;
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-height: 66px;
+    border-left: 0;
+    border-bottom: 1px solid var(--color-border-strong);
+    padding: 8px;
+    scrollbar-gutter: auto;
+  }
+
+  .notia-settings-menu-item {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .notia-settings-body {
+    padding: 12px;
+  }
+
+  .notia-settings-association-list li {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 .notia-library-manager-modal {
@@ -6678,4 +6848,9 @@
 .notia-settings-select {
   min-width: 150px;
   padding: 6px 8px;
+}
+
+.notia-settings-checkbox-row > .notia-select-menu {
+  width: min(220px, 50%);
+  min-width: 150px;
 }

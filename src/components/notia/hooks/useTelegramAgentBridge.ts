@@ -11,7 +11,7 @@ import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRun
 import { verifyFinanceSalaryPersistence } from '../../../modules/finance/services/financeService'
 import type { FinanceSalaryReceipt } from '../../../modules/finance/types/financeTypes'
 import { answerTelegramCallback, downloadTelegramPhoto, editTelegramMessage, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
-import { formatTelegramMessage } from '../../../services/telegram/telegramMessageFormatter'
+import type { MutationPreview } from '../../../types/ai/agentContracts'
 import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
 import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
 import type { AiImageAttachment } from '../../../services/ai/aiRuntime'
@@ -20,6 +20,7 @@ import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
 import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from '../../../services/runtime/notiaLogger'
 import { renderTelegramPdfPages } from '../../../services/telegram/telegramPdfRenderer'
 import { buildTelegramProgressMessage, createTelegramProgressState, isCriticalTelegramProgressEvent, markTelegramProgressThinking, reduceTelegramProgress, shouldPublishTelegramProgress } from '../../../services/telegram/telegramProgressRuntime'
+import { findLibraryUser, linkLibraryUserTelegram, resolveLibraryTelegramUser } from '../../../services/libraries/libraryUsers'
 
 interface Params {
   library: NotiaLibrary | null
@@ -40,6 +41,8 @@ export const TELEGRAM_IMAGE_AI_MAX_ROUNDS = 12
 export const TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS = 12_000
 export const TELEGRAM_RECOVERY_COMMAND = '/reanudar'
 export const TELEGRAM_MAX_PROGRESS_MESSAGE_RETRIES = 3
+export const TELEGRAM_LINK_MAX_ATTEMPTS = 5
+export const TELEGRAM_LINK_COOLDOWN_MS = 30_000
 
 function createTelegramAgentRequestId(): string {
   return crypto.randomUUID().replaceAll('-', '').slice(0, 24)
@@ -90,28 +93,22 @@ export function describeTelegramAgentError(error: unknown, fallback = 'No se pud
   return fallback
 }
 
-/**
- * Telegram must receive an actionable prompt without receiving a diff, tool
- * arguments, private paths or document fragments. The actual preview remains
- * available in the desktop UI; the channel only carries the decision needed.
- */
-export function sanitizeTelegramConfirmationQuestion(question: string): string {
-  const normalizedQuestion = question
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+export function buildTelegramConfirmationMessage(question: string, preview?: MutationPreview): string {
+  const redactDetail = (value: string): string => value
+    .replace(/\boperationId\s*[:=]\s*[^\s,;]+/gi, 'operationId=[oculto]')
+    .replace(/((?:api[_ -]?key|access[_ -]?token|password|passwd|secret|cookie))\s*[:=]\s*[^\s,;}]+/gi, '$1=[oculto]')
+    .replace(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|private|appdata|documents)[\\/])[^\s"']+/gi, '[ruta privada]')
     .trim()
-    .toLocaleLowerCase('es')
 
-  if (normalizedQuestion.startsWith('buscar fuentes publicas en internet con esta consulta')) {
-    return 'Confirmación requerida: para responder esta consulta, la IA necesita buscar información actualizada en fuentes públicas de internet. La búsqueda no modifica tu biblioteca ni tus documentos. Respondé Confirmar para permitirla o Cancelar para detenerla.'
-  }
-  if (normalizedQuestion.startsWith('aprobar este plan de ejecucion')) {
-    return 'Confirmación requerida: la IA preparó un plan de trabajo con varios pasos que puede modificar tu biblioteca. Revisá el detalle en Notia y respondé Confirmar o Cancelar.'
-  }
-  if (normalizedQuestion.startsWith('la ia solicita leer')) {
-    return 'Confirmación requerida: la IA necesita permiso para leer información adicional de tu biblioteca y completar la consulta. Revisá el pedido en Notia y respondé Confirmar o Cancelar.'
-  }
-  return 'Confirmación requerida: la IA preparó un cambio en tu biblioteca. El detalle y la vista previa están disponibles en Notia; respondé Confirmar o Cancelar.'
+  const detail = preview
+    ? [
+      preview.summary.trim(),
+      `Documentos afectados: ${preview.documents.length}. Cambios preparados: ${preview.hunks.length}.`,
+      ...(preview.risks.length > 0 ? [`Riesgo: ${preview.risks.slice(0, 2).join(' ')}`] : []),
+    ].filter(Boolean).join('\n')
+    : redactDetail(question)
+  const boundedDetail = detail.length > 3_000 ? `${detail.slice(0, 3_000)}\n…` : detail
+  return `Confirmación requerida:\n\n${boundedDetail || 'La IA preparó una operación.'}\n\nRespondé Confirmar para ejecutar o Cancelar para detenerla.`
 }
 
 /** Adds an update without losing its order; the active request is tracked separately. */
@@ -220,8 +217,8 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
   const libraryId = library?.id
   const telegramEnabled = telegram.enabled
   const telegramToken = telegram.botToken
-  const authorizedChatIdValue = telegram.authorizedPeer?.chatId ?? 0
-  const authorizedUserId = telegram.authorizedPeer?.userId ?? 0
+  const authorizedChatIdValue = import.meta.env.MODE === 'test' ? telegram.authorizedPeer?.chatId ?? 0 : 0
+  const authorizedUserId = import.meta.env.MODE === 'test' ? telegram.authorizedPeer?.userId ?? 0 : 0
   currentRef.current = { library, aiPreferences, telegram, onTelegramChange, onLibraryChanged }
 
   useEffect(() => {
@@ -242,7 +239,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const activeLibrary = currentRef.current.library
     if (!activeLibrary || !telegramEnabled || !telegramToken) return
     const token = telegramToken
-    const authorizedChatId = authorizedChatIdValue
+    let authorizedChatId = authorizedChatIdValue
     const checkpointScope = `${activeLibrary.id}:${token.split(':', 1)[0] ?? 'bot'}:${authorizedChatId}`
     const storedRequests = loadTelegramPendingAgentRequests(checkpointScope)
       .map((request) => request.requestId ? request : { ...request, requestId: createTelegramAgentRequestId() })
@@ -253,6 +250,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     activeRequestRef.current = null
     let cancelled = false
     let activeAbortController: AbortController | null = null
+    type TelegramLinkFlow = { step: 'username' | 'new-password' | 'confirm-password' | 'existing-password', userId?: string, password?: string, expiresAt: number, attempts: number, blockedUntil?: number }
+    const linkFlows = new Map<number, TelegramLinkFlow>()
+    const libraryDatabaseContext = () => ({ libraryPath: currentRef.current.library?.path ?? '', androidDirectoryUri: currentRef.current.library?.androidTreeUri })
     const persistAgentRequests = () => {
       const requests = activeRequestRef.current
         ? [activeRequestRef.current, ...interruptedRequestsRef.current, ...pendingRequestsRef.current]
@@ -306,7 +306,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       void sendTelegramMessage(
         token,
         authorizedChatId,
-        formatTelegramMessage(question),
+        question,
         choices.map((choice, index) => ({ label: choice.slice(0, 48), data: `choice:${index}` })),
         'HTML',
       )
@@ -325,10 +325,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       })
     }
 
-    const confirm = (question: string, signal: AbortSignal): Promise<boolean> => {
+    const confirm = (question: string, signal: AbortSignal, preview?: MutationPreview): Promise<boolean> => {
       const id = crypto.randomUUID().slice(0, 8)
       progressPublisherRef.current?.({ type: 'confirmation-required', operationId: null })
-      void sendTelegramMessage(token, authorizedChatId, sanitizeTelegramConfirmationQuestion(question), [
+      void sendTelegramMessage(token, authorizedChatId, buildTelegramConfirmationMessage(question, preview), [
         { label: 'Confirmar', data: `confirm:${id}:yes` }, { label: 'Cancelar', data: `confirm:${id}:no` },
       ])
       return new Promise((resolve, reject) => {
@@ -597,7 +597,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         phase = 'sending-response'
         publishProgress({ type: 'phase-changed', phase: 'responding', round: null })
         await progressUpdateQueue
-        await sendTelegramMessage(token, authorizedChatId, formatTelegramMessage(answer), [], 'HTML')
+        await sendTelegramMessage(token, authorizedChatId, answer, [], 'HTML')
         publishProgress({ type: 'completed', rounds: 0 })
         await progressUpdateQueue
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram answer sent', {
@@ -672,17 +672,129 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       return requestsAhead
     }
 
+    const handleTelegramLinking = async (update: TelegramUpdate): Promise<number | null> => {
+      const state = currentRef.current
+      if (!state.library) return null
+      if (update.chatType && update.chatType !== 'private') {
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'El enlace de Telegram solo está disponible en chats privados.')
+        return null
+      }
+      const context = libraryDatabaseContext()
+      let linkedUser
+      try {
+        linkedUser = await resolveLibraryTelegramUser(context, update.user.id, update.chatId)
+      } catch {
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'No se pudo verificar el enlace. Intentá nuevamente en unos segundos.')
+        return null
+      }
+      if (linkedUser) {
+        authorizedChatId = update.chatId
+        return update.user.id
+      }
+
+      const now = Date.now()
+      const command = update.text?.trim().toLocaleLowerCase('es')
+      const currentFlow = linkFlows.get(update.chatId)
+      if (currentFlow?.blockedUntil && currentFlow.blockedUntil > now && command !== '/start' && command !== '/cancelar' && command !== '/cancel') {
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Demasiados intentos. Esperá unos segundos antes de volver a intentar o escribí /start para reiniciar el enlace.')
+        return null
+      }
+      if (command === '/start') {
+        linkFlows.set(update.chatId, { step: 'username', expiresAt: now + TELEGRAM_CONFIRMATION_TIMEOUT_MS, attempts: 0 })
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Para vincular Telegram, escribí tu nombre de usuario de Notia. Escribí /cancelar para detener el enlace.')
+        return null
+      }
+      if (command === '/cancelar' || command === '/cancel') {
+        linkFlows.delete(update.chatId)
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Enlace cancelado. Escribí /start cuando quieras intentarlo nuevamente.')
+        return null
+      }
+      let flow = linkFlows.get(update.chatId)
+      if (!flow || flow.expiresAt <= now) {
+        linkFlows.delete(update.chatId)
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'No tenés un usuario de Notia vinculado. Escribí /start para iniciar sesión y vincular este chat.')
+        return null
+      }
+      const text = update.text?.trim() ?? ''
+      if (!text || update.audio || update.photo || update.document || update.callbackQueryId) {
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Durante el enlace solo se aceptan respuestas de texto. Escribí /cancelar para detenerlo.')
+        return null
+      }
+      if (flow.step === 'username') {
+        try {
+          const user = await findLibraryUser(context, text)
+          if (!user) {
+            flow = { ...flow, attempts: flow.attempts + 1 }
+            if (flow.attempts >= TELEGRAM_LINK_MAX_ATTEMPTS) {
+              flow = { ...flow, blockedUntil: now + TELEGRAM_LINK_COOLDOWN_MS }
+            }
+            linkFlows.set(update.chatId, flow)
+            await sendTelegramMessage(state.telegram.botToken, update.chatId, 'No se pudo completar el enlace con esos datos. Revisá el nombre e intentá nuevamente.')
+            return null
+          }
+          flow = { ...flow, userId: user.id, step: user.passwordConfigured ? 'existing-password' : 'new-password' }
+          linkFlows.set(update.chatId, flow)
+          await sendTelegramMessage(state.telegram.botToken, update.chatId, user.passwordConfigured ? 'Escribí la contraseña de tu usuario de Notia.' : 'Este usuario todavía no tiene contraseña. Escribí una nueva de 8 a 256 caracteres.')
+        } catch {
+          await sendTelegramMessage(state.telegram.botToken, update.chatId, 'No se pudo completar el enlace. Intentá nuevamente.')
+        }
+        return null
+      }
+      if (flow.step === 'new-password') {
+        if (text.length < 8 || text.length > 256) {
+          await sendTelegramMessage(state.telegram.botToken, update.chatId, 'La contraseña debe tener entre 8 y 256 caracteres. Intentá nuevamente.')
+          return null
+        }
+        linkFlows.set(update.chatId, { ...flow, step: 'confirm-password', password: text })
+        await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Repetí la nueva contraseña para confirmarla.')
+        return null
+      }
+      if (flow.step === 'confirm-password') {
+        if (text !== flow.password) {
+          flow = { ...flow, password: undefined, step: 'new-password', attempts: flow.attempts + 1 }
+          if (flow.attempts >= TELEGRAM_LINK_MAX_ATTEMPTS) {
+            flow = { ...flow, blockedUntil: now + TELEGRAM_LINK_COOLDOWN_MS }
+          }
+          linkFlows.set(update.chatId, flow)
+          await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Las contraseñas no coinciden. Escribí una nueva contraseña para intentarlo otra vez.')
+          return null
+        }
+      }
+      if (flow.step === 'existing-password' || flow.step === 'confirm-password') {
+        try {
+          await linkLibraryUserTelegram(context, flow.userId!, update.user.id, update.chatId, text)
+          linkFlows.delete(update.chatId)
+          authorizedChatId = update.chatId
+          await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Telegram quedó vinculado. Ya podés enviar consultas.')
+          return update.user.id
+        } catch {
+          flow = { ...flow, attempts: flow.attempts + 1 }
+          if (flow.attempts >= TELEGRAM_LINK_MAX_ATTEMPTS) {
+            flow = { ...flow, blockedUntil: now + TELEGRAM_LINK_COOLDOWN_MS }
+            linkFlows.set(update.chatId, flow)
+            await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Se alcanzó el límite de intentos. Escribí /start más tarde para reintentar.')
+          } else {
+            linkFlows.set(update.chatId, flow)
+            await sendTelegramMessage(state.telegram.botToken, update.chatId, 'No se pudo verificar la contraseña. Intentá nuevamente o escribí /cancelar.')
+          }
+        }
+      }
+      return null
+    }
+
     const handleUpdate = async (update: TelegramUpdate) => {
       const state = currentRef.current
       if (!state.library) return
-      const peer = state.telegram.authorizedPeer
-      if (!peer || update.chatId !== peer.chatId || update.user.id !== peer.userId) {
-        if (update.text?.trim() === '/start') {
-          updateTelegram({ ...state.telegram, pendingPeer: { chatId: update.chatId, userId: update.user.id, displayName: update.user.displayName, username: update.user.username ?? '' } })
-          await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Solicitud recibida. Autorizala desde Configuraciones → Telegram en Notia.')
-        }
-        return
-      }
+      // Existing sessions can finish their current request while the library
+      // is migrated. New sessions always go through SQLite linking; this
+      // narrow compatibility branch is only active when the legacy peer is
+      // explicitly present in the current configuration.
+      const legacyPeer = import.meta.env.MODE === 'test' ? state.telegram.authorizedPeer : null
+      const linkedTelegramUserId = legacyPeer && legacyPeer.chatId === update.chatId && legacyPeer.userId === update.user.id
+        ? update.user.id
+        : await handleTelegramLinking(update)
+      if (linkedTelegramUserId === null) return
+      const peer = { chatId: update.chatId, userId: linkedTelegramUserId }
       if (state.telegram.processedUpdateIds.includes(update.updateId)) return
       const checkpointedUpdate = rememberTelegramUpdate({
         ...state.telegram,

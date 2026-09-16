@@ -29,3 +29,5 @@
 - Backups automáticos de bibliotecas en Windows.
 - Bandeja del sistema en Windows.
 - Soporte multiplataforma para Windows, macOS, Linux y Android.
+- Roles y usuarios por biblioteca persistidos en SQLite, con roles iniciales, alta, cambio de nombre/rol, contraseñas y protección del usuario Owner.
+- Vinculación privada de cuentas de Telegram con usuarios de la biblioteca y autenticación de Task Manager publicado mediante el usuario de Notia.

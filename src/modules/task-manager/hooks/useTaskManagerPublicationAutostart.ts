@@ -32,11 +32,8 @@ export function useTaskManagerPublicationAutostart({
   useEffect(() => {
     if (!enabled || hasEvaluatedStartup.current || !activeLibrary?.path) return
     hasEvaluatedStartup.current = true
-    const passwordHash = preferences.passwordHash
-
     if (
       getRuntimeDevice() !== 'Windows'
-      || !passwordHash
       || preferences.publishedBoardNames.length === 0
     ) {
       return
@@ -53,15 +50,12 @@ export function useTaskManagerPublicationAutostart({
         preferences.publishedBoardNames,
         activeLibrary.path,
         theme,
-        passwordHash,
         resolveAiPreferencesForTransport(aiPreferences),
-        preferences.approvedDevices,
         preferences.port,
         preferences.maxClients,
-        preferences.accessUsers,
       )))
       .catch((error: unknown) => {
         console.error('No se pudo restaurar la publicación de Task Manager.', error)
       })
-  }, [activeLibrary?.path, aiPreferences, enabled, preferences.accessUsers, preferences.approvedDevices, preferences.maxClients, preferences.passwordHash, preferences.port, preferences.publishedBoardNames, theme])
+  }, [activeLibrary?.path, aiPreferences, enabled, preferences.maxClients, preferences.port, preferences.publishedBoardNames, theme])
 }

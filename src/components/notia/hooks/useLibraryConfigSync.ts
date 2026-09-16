@@ -143,10 +143,7 @@ export function useLibraryConfigSync({
           })
         }
         setTelegramPreferences(normalizeTelegramPreferences(config.telegram))
-        setTaskManagerPublicationPreferences(normalizeTaskManagerPublicationPreferences({
-          ...fallbackPreferencesRef.current.taskManagerPublicationPreferences,
-          accessUsers: config.taskManagerPublication?.accessUsers ?? [],
-        }))
+        setTaskManagerPublicationPreferences(normalizeTaskManagerPublicationPreferences(fallbackPreferencesRef.current.taskManagerPublicationPreferences))
         setContexts(normalizeLibraryContexts(config.contexts))
         initialConfigRef.current = config
       } else {
@@ -167,7 +164,6 @@ export function useLibraryConfigSync({
             apiKey: '',
           },
           telegram: fallbackPreferencesRef.current.telegramPreferences,
-          taskManagerPublication: { accessUsers: [] },
           contexts: DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })),
         }
         setContexts(DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })))
@@ -205,9 +201,6 @@ export function useLibraryConfigSync({
         apiKey: getSessionAiApiKey(),
       },
       telegram: telegramPreferences,
-      taskManagerPublication: {
-        accessUsers: taskManagerPublicationPreferences.accessUsers,
-      },
       contexts: normalizeLibraryContexts(contexts),
     }
 

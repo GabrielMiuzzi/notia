@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 14;
+pub const CURRENT_SCHEMA_VERSION: i64 = 15;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -524,6 +524,51 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
         )?;
         transaction.commit()?;
     }
+    if current_version < 15 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_roles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                normalized_name TEXT NOT NULL UNIQUE,
+                sort_order INTEGER NOT NULL DEFAULT 1000,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_library_roles_order
+                ON library_roles(sort_order, created_at, id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_library_roles_normalized_name_ci
+                ON library_roles(lower(normalized_name));
+            INSERT OR IGNORE INTO library_roles
+                (id, name, normalized_name, sort_order, created_at, updated_at)
+            VALUES
+                ('role-owner', 'Owner', 'owner', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('role-family', 'Family', 'family', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('role-guest', 'Guest', 'guest', 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS library_users (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                normalized_name TEXT NOT NULL UNIQUE,
+                role_id TEXT NOT NULL REFERENCES library_roles(id),
+                password_hash TEXT,
+                telegram_user_id INTEGER UNIQUE,
+                telegram_chat_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_library_users_telegram_chat
+                ON library_users(telegram_chat_id)
+                WHERE telegram_chat_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_library_users_normalized_name_ci
+                ON library_users(lower(normalized_name));
+            INSERT OR IGNORE INTO library_users
+                (id, name, normalized_name, role_id, password_hash, created_at, updated_at)
+            VALUES
+                ('user-owner', 'Owner', 'owner', 'role-owner', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+            INSERT INTO notia_schema_migrations (version) VALUES (15);",
+        )?;
+        transaction.commit()?;
+    }
     Ok(current_version.max(CURRENT_SCHEMA_VERSION))
 }
 
@@ -814,5 +859,37 @@ mod tests {
             )
             .expect("failed version count");
         assert_eq!(failed_version, 0);
+    }
+
+    #[test]
+    fn creates_library_roles_and_owner_idempotently() {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        migrate(&connection).expect("migration");
+        migrate(&connection).expect("second migration");
+        let roles = connection
+            .prepare("SELECT name FROM library_roles ORDER BY sort_order")
+            .expect("roles query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("roles")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect roles");
+        assert_eq!(roles, vec!["Owner", "Family", "Guest"]);
+        let owner: (String, String, Option<String>) = connection
+            .query_row(
+                "SELECT u.id, r.name, u.password_hash FROM library_users u JOIN library_roles r ON r.id=u.role_id WHERE u.id='user-owner'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("owner");
+        assert_eq!(owner, ("user-owner".into(), "Owner".into(), None));
+        let owner_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM library_users WHERE id='user-owner'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("owner count");
+        assert_eq!(owner_count, 1);
+        assert!(connection.execute("INSERT INTO library_users (id,name,normalized_name,role_id,created_at,updated_at) VALUES ('bad','Bad','bad','missing',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", []).is_err());
     }
 }
