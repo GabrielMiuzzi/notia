@@ -422,6 +422,9 @@ function resolveNodeContext(
     parseFrontmatterDocument(sources[descriptor.path] ?? '').frontmatter,
     'contexto',
   )
+  // Task Manager board settings are authoritative for every ticket below the
+  // board folder. Keep the frontmatter as a fallback for legacy files when the
+  // board cannot be resolved from the current settings.
   const contextTag = boardContext ?? (typeof sourceContext === 'string' ? sourceContext : undefined)
   const context = findLibraryContext(options?.contexts ?? [], contextTag)
   return context ? { contextTag: context.tag, contextColor: context.color } : {}

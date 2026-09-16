@@ -549,59 +549,80 @@ export function SettingsModal({
               <div className="notia-settings-card-label notia-settings-card-label--spaced">
                 Cada nota puede declarar una propiedad <code>contexto</code> con un tag como <code>#Personal</code>. El color se usa en Graph View.
               </div>
-              <div className="notia-settings-actions" role="list" aria-label="Contextos configurados">
-                {contexts.map((context) => {
-                  const isUsedByBoard = taskManagerSettings.boards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
-                  return (
-                    <div key={context.tag} className="notia-settings-actions" role="listitem">
-                      <input
-                        className="notia-settings-input"
-                        aria-label={`Tag de contexto ${context.tag}`}
-                        value={context.tag}
-                        onChange={(event) => {
-                          const nextTag = normalizeContextTag(event.target.value)
-                          if (!nextTag || contexts.some((item) => item !== context && item.tag.toLowerCase() === nextTag.toLowerCase())) return
-                          onContextsChange(contexts.map((item) => item === context ? { ...item, tag: nextTag } : item))
-                        }}
-                      />
-                      <input
-                        type="color"
-                        aria-label={`Color de contexto ${context.tag}`}
-                        value={context.color}
-                        onChange={(event) => onContextsChange(contexts.map((item) => item === context ? { ...item, color: event.target.value.toUpperCase() } : item))}
-                      />
-                      <NotiaButton
-                        variant="secondary"
-                        disabled={contexts.length <= 1 || isUsedByBoard}
-                        title={isUsedByBoard ? 'No se puede eliminar un contexto usado por un tablero.' : undefined}
-                        onClick={() => onContextsChange(contexts.filter((item) => item !== context))}
-                      >
-                        Eliminar
-                      </NotiaButton>
-                    </div>
-                  )
-                })}
+              <div className="notia-settings-context-create">
+                <label className="notia-settings-context-create-label" htmlFor="notia-new-context-tag">Nuevo contexto</label>
+                <div className="notia-settings-context-create-row">
+                  <input
+                    id="notia-new-context-tag"
+                    className="notia-settings-input"
+                    aria-label="Nuevo tag de contexto"
+                    placeholder="#NuevoContexto"
+                    value={newContextTag}
+                    onChange={(event) => setNewContextTag(event.target.value)}
+                  />
+                  <input type="color" aria-label="Color del nuevo contexto" value={newContextColor} onChange={(event) => setNewContextColor(event.target.value.toUpperCase())} />
+                  <NotiaButton
+                    onClick={() => {
+                      const tag = normalizeContextTag(newContextTag)
+                      if (!tag || contexts.some((item) => item.tag.toLowerCase() === tag.toLowerCase())) return
+                      onContextsChange(normalizeLibraryContexts([...contexts, { tag, color: newContextColor }]))
+                      setNewContextTag('')
+                    }}
+                    disabled={!newContextTag.trim()}
+                  >
+                    Agregar contexto
+                  </NotiaButton>
+                </div>
               </div>
-              <div className="notia-settings-actions">
-                <input
-                  className="notia-settings-input"
-                  aria-label="Nuevo tag de contexto"
-                  placeholder="#NuevoContexto"
-                  value={newContextTag}
-                  onChange={(event) => setNewContextTag(event.target.value)}
-                />
-                <input type="color" aria-label="Color del nuevo contexto" value={newContextColor} onChange={(event) => setNewContextColor(event.target.value.toUpperCase())} />
-                <NotiaButton
-                  onClick={() => {
-                    const tag = normalizeContextTag(newContextTag)
-                    if (!tag || contexts.some((item) => item.tag.toLowerCase() === tag.toLowerCase())) return
-                    onContextsChange(normalizeLibraryContexts([...contexts, { tag, color: newContextColor }]))
-                    setNewContextTag('')
-                  }}
-                  disabled={!newContextTag.trim()}
-                >
-                  Agregar contexto
-                </NotiaButton>
+              <div className="notia-settings-context-table-wrap">
+                <table className="notia-settings-context-table">
+                  <caption className="notia-settings-visually-hidden">Contextos configurados</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Contexto</th>
+                      <th scope="col">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contexts.map((context) => {
+                      const isUsedByBoard = taskManagerSettings.boards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
+                      return (
+                        <tr key={context.tag}>
+                          <td>
+                            <input
+                              className="notia-settings-input"
+                              aria-label={`Tag de contexto ${context.tag}`}
+                              value={context.tag}
+                              onChange={(event) => {
+                                const nextTag = normalizeContextTag(event.target.value)
+                                if (!nextTag || contexts.some((item) => item !== context && item.tag.toLowerCase() === nextTag.toLowerCase())) return
+                                onContextsChange(contexts.map((item) => item === context ? { ...item, tag: nextTag } : item))
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <div className="notia-settings-context-actions">
+                              <input
+                                type="color"
+                                aria-label={`Color de contexto ${context.tag}`}
+                                value={context.color}
+                                onChange={(event) => onContextsChange(contexts.map((item) => item === context ? { ...item, color: event.target.value.toUpperCase() } : item))}
+                              />
+                              <NotiaButton
+                                variant="secondary"
+                                disabled={contexts.length <= 1 || isUsedByBoard}
+                                title={isUsedByBoard ? 'No se puede eliminar un contexto usado por un tablero.' : undefined}
+                                onClick={() => onContextsChange(contexts.filter((item) => item !== context))}
+                              >
+                                Eliminar
+                              </NotiaButton>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           ) : activeSection === 'Panel desplegable' ? (

@@ -1,3 +1,7 @@
+[2026-09-15 22:48:01 -03:00] Graph View volvió a priorizar el contexto vigente del tablero y recalcula su configuración al cambiar de vista, evitando aplicar un contexto antiguo del frontmatter.
+[2026-09-15 22:36:04 -03:00] Graph View ahora respeta el contexto explícito de los tickets en frontmatter y usa el contexto del tablero solo cuando el archivo no declara uno.
+[2026-09-15 22:29:14 -03:00] La leyenda de Graph View ahora muestra todos los contextos configurados, incluso cuando todavía no hay notas asociadas.
+[2026-09-15 22:22:43 -03:00] La configuración de contextos ahora separa el alta en un formulario superior y muestra los contextos en una tabla con acciones de color y eliminación.
 [2026-09-15 14:19:01 -03:00] Graph View ajustó los títulos del canvas 2D a una tipografía más pequeña y liviana para reducir la saturación visual y el solapamiento entre etiquetas.
 [2026-09-15 13:52:21 -03:00] Graph View migró de `react-force-graph-3d` a `react-force-graph-2d`; los nodos y títulos se dibujan en canvas 2D y se retiraron las dependencias de Three.js.
 [2026-09-15 02:47:26 -03:00] Se redujo el costo visual de Graph View: se eliminó el bloom y el filtro CSS del canvas, se atenuaron halos y partículas, se bajó la resolución de nodos y enlaces y se desactivó el antialiasing para mejorar la fluidez.

@@ -9,7 +9,7 @@
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
 - Gráficos XGraph interactivos en notas Markdown.
 - Graph View 2D de relaciones entre documentos, con zoom, paneo, foco y colores por contexto.
-- Contextos configurables por biblioteca (`#Laboral`, `#Personal` y `#Academico` por defecto), con color asociado y coloración de nodos en Graph View.
+- Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal` y `#Academico` por defecto), con leyenda completa y coloración de nodos en Graph View.
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
 - Chat local con IA mediante Ollama.
@@ -20,7 +20,7 @@
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas y comentarios.
-- Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero.
+- Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
 - Temporizador Pomodoro integrado en Task Manager.
 - Publicación colaborativa de Task Manager en la red local con creación de tareas y subtareas.
 - Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas e inversiones.

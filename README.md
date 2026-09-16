@@ -99,7 +99,7 @@ La captura conserva una cola acotada para absorber el costo temporal del reconoc
 - **InkMath en Markdown**: dibujá una fórmula desde los bloques Math y obtené su transcripción LaTeX mediante el modelo de visión configurado en Ollama.
 - **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas. Los diagramas embebidos en Markdown y los archivos `.mmd` comparten el **mismo motor visual**, temas y estilos. Renderizado lazy con `IntersectionObserver`, cancelación vía `AbortSignal` y caché LRU.
 - **Graph View**: visualización interactiva de relaciones entre notas mediante nodos y conexiones.
-- **Contextos**: Configuraciones permite crear y colorear tags de contexto (`#Laboral`, `#Personal` y `#Academico` por defecto). Las notas nuevas empiezan con `contexto: "#Personal"` y Graph View colorea los nodos según ese contexto.
+- **Contextos**: Configuraciones muestra los tags en una tabla y permite crear nuevos contextos desde el formulario superior, cambiar su color o eliminarlos (`#Laboral`, `#Personal` y `#Academico` por defecto). Las notas nuevas empiezan con `contexto: "#Personal"`; Graph View colorea los tickets según el contexto aplicado a su tablero y muestra todos los contextos configurados en su leyenda.
 - **AI Chat local**: conversación con modelos de lenguaje ejecutados localmente via Ollama, con memoria a largo plazo y contexto de archivos de la librería.
 - **ColdPass**: gestor de credenciales cifradas con generador de contraseñas y sincronización segura entre dispositivos vía Bluetooth.
 - **Task Manager**: tableros Kanban personalizables con grupos/columnas, tareas con estados, prioridad, subtareas, comentarios y temporizador Pomodoro integrado.

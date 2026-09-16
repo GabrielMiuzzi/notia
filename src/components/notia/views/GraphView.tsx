@@ -5,7 +5,9 @@ import { useAppSelector } from '../../../store/hooks'
 import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { NotiaButton } from '../../common/NotiaButton'
 import { buildGraphSearchResults } from '../../../engines/graph/graphSearchEngine'
+import { buildGraphContextLegend } from '../../../engines/graph/graphLegendEngine'
 import type { LibraryGraphModel, LibraryGraphNode } from '../../../types/graph/libraryGraph'
+import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
 
 const SETTINGS_STORAGE_KEY = 'notia.linkGraphView.settings.v1'
@@ -79,6 +81,7 @@ interface GraphViewProps {
   graphModel: LibraryGraphModel
   graphSourcesByPath: Record<string, string>
   libraryName: string
+  contexts: readonly LibraryContext[]
   isLoading: boolean
   onOpenFile: (filePath: string) => void
   chatSelectedPaths?: string[]
@@ -93,6 +96,7 @@ function areGraphViewPropsEqual(
     previous.graphModel === next.graphModel &&
     previous.graphSourcesByPath === next.graphSourcesByPath &&
     previous.libraryName === next.libraryName &&
+    previous.contexts === next.contexts &&
     previous.isLoading === next.isLoading &&
     previous.onOpenFile === next.onOpenFile &&
     previous.chatSelectedPaths === next.chatSelectedPaths &&
@@ -103,6 +107,7 @@ function areGraphViewPropsEqual(
 function GraphViewComponent({
   graphModel,
   graphSourcesByPath,
+  contexts,
   isLoading,
   onOpenFile,
   chatSelectedPaths = [],
@@ -305,14 +310,8 @@ function GraphViewComponent({
   }, [appTheme, focusedPath, getNodeDisplayColor, hoveredNeighborPaths, hoveredPath])
 
   const contextLegend = useMemo(
-    () => Array.from(
-      new Map(
-        graphModel.nodes
-          .filter((node) => node.contextTag && node.contextColor)
-          .map((node) => [node.contextTag as string, node.contextColor as string]),
-      ).entries(),
-    ),
-    [graphModel.nodes],
+    () => buildGraphContextLegend(contexts, graphModel.nodes),
+    [contexts, graphModel.nodes],
   )
 
   const hasContent = graphData.nodes.length > 0

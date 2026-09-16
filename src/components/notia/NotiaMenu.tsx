@@ -438,9 +438,9 @@ function NotiaMenuComponent() {
 
   const taskManagerBoardContexts = useMemo(() => Object.fromEntries(
     loadTaskManagerSettings().boards
-      .filter(() => libraryContexts.length > 0)
+      .filter(() => libraryContexts.length > 0 || activeWorkspaceView === 'graph')
       .map((board) => [board.name.toLowerCase(), board.contexto ?? '#Personal']),
-  ), [libraryContexts])
+  ), [activeWorkspaceView, libraryContexts])
 
   const {
     graphChatContextSummary,

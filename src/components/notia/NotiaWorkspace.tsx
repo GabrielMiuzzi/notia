@@ -155,6 +155,7 @@ function NotiaWorkspaceComponent({
           graphModel={graphModel}
           graphSourcesByPath={graphSourcesByPath}
           libraryName={libraryName}
+          contexts={libraryContexts}
           isLoading={isGraphLoading}
           onOpenFile={handleOpenFileFromView}
           chatSelectedPaths={graphChatSelectedPaths}
