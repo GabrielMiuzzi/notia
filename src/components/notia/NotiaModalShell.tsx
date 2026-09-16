@@ -34,7 +34,7 @@ export function NotiaModalShell({
     return null
   }
 
-  const panelClasses = ['notia-modal-engine-panel', resolveSizeClass(size), panelClassName]
+  const panelClasses = ['notia-modal-engine-panel', 'notia-modal-engine-panel--viewport', resolveSizeClass(size), panelClassName]
     .filter(Boolean)
     .join(' ')
 

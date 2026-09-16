@@ -202,6 +202,7 @@ pub fn run() {
             library_users::delete_library_user,
             library_users::update_library_user_name,
             library_users::update_library_user_role,
+            library_users::update_library_user_contexts,
             library_users::resolve_library_telegram_user,
             library_users::find_library_user,
             library_users::link_library_user_telegram,

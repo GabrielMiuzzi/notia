@@ -12,6 +12,7 @@ const HOST_BASE_CLASS = "inkmath-modal-engine-host";
 const PANEL_BASE_CLASS = "inkmath-modal-engine-panel";
 const BACKDROP_BASE_CLASS = "inkmath-modal-engine-backdrop";
 const NOTIA_PANEL_BASE_CLASS = "notia-modal-engine-panel";
+const NOTIA_VIEWPORT_CLASS = "notia-modal-engine-panel--viewport";
 const NOTIA_BACKDROP_BASE_CLASS = "notia-modal-engine-backdrop";
 const NOTIA_SIZE_BASE_CLASS = "notia-modal-engine-panel--";
 const MODAL_ENGINE_Z_INDEX = "2147483000";
@@ -37,7 +38,7 @@ export const attachInkMathModalEngine = (
 		backdrop.classList.add(BACKDROP_BASE_CLASS, NOTIA_BACKDROP_BASE_CLASS);
 	}
 	if (panel) {
-		panel.classList.add(PANEL_BASE_CLASS, NOTIA_PANEL_BASE_CLASS, toneClass, sizeClass, notiaSizeClass);
+		panel.classList.add(PANEL_BASE_CLASS, NOTIA_PANEL_BASE_CLASS, NOTIA_VIEWPORT_CLASS, toneClass, sizeClass, notiaSizeClass);
 	}
 
 	return () => {
@@ -49,6 +50,7 @@ export const attachInkMathModalEngine = (
 			panel.classList.remove(
 				PANEL_BASE_CLASS,
 				NOTIA_PANEL_BASE_CLASS,
+				NOTIA_VIEWPORT_CLASS,
 				toneClass,
 				sizeClass,
 				notiaSizeClass

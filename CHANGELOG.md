@@ -47,3 +47,5 @@
 [2026-09-16 15:14:29 -03:00] Telegram valida y sanea el HTML de las respuestas y reintenta como texto plano cuando la API rechaza entidades mal formadas.
 [2026-09-16 15:37:00 -03:00] Se reforzó el prompt específico de Telegram para impedir Markdown escapado y etiquetas HTML con atributos no compatibles.
 [2026-09-16 17:20:11 -03:00] Telegram ahora muestra el detalle concreto de cada confirmación y entrega las respuestas del agente directamente en el formato del canal.
+[2026-09-16 17:57:01 -03:00] Las acciones de Usuarios usan iconos compactos y los modales del motor global ocupan el 75% de la ventana.
+[2026-09-16 18:20:12 -03:00] Usuarios admite contextos permitidos con Owner de acceso total; se agrega #Confidencial en rojo y se aplica a la configuración de .agent y chat.

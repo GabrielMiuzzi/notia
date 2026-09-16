@@ -1,6 +1,8 @@
 import type { NotiaLibrary } from '../../types/notia'
 import { readLibraryTree, readLibraryDirectory, createLibraryEntry } from '../libraries/libraryRuntime'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { ensureConfidentialContext } from '../contexts/confidentialContextFiles'
+import { readLibraryFileContent, writeLibraryFileContent } from '../libraries/libraryDocumentRuntime'
 
 const CHAT_ROOT_DIRECTORY_NAME = 'chat'
 const CHAT_HISTORY_DIRECTORY_NAME = 'chats'
@@ -107,6 +109,7 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
           await Promise.allSettled(pendingCreations)
         }
       }
+      await migrateConfidentialChatFiles(library)
       return
     }
   } catch {
@@ -120,4 +123,36 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
   await Promise.allSettled([
     ensureFolder(chatDirectoryPath, CHAT_HISTORY_DIRECTORY_NAME, library),
   ])
+  await migrateConfidentialChatFiles(library)
+}
+
+async function migrateConfidentialChatFiles(library: NotiaLibrary): Promise<void> {
+  const chatRootPath = resolveChatRootDirectoryPath(library.path)
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  let nodes: Awaited<ReturnType<typeof readLibraryTree>>
+  try {
+    nodes = await readLibraryTree(chatRootPath, options)
+  } catch {
+    return
+  }
+
+  const visit = async (entries: typeof nodes, directoryPath: string): Promise<void> => {
+    for (const entry of entries) {
+      const entryPath = entry.path ?? joinChatPath(directoryPath, entry.name)
+      if (entry.type === 'folder') {
+        const children = entry.children ?? await readLibraryDirectory(entryPath, options)
+        await visit(children, entryPath)
+        continue
+      }
+      if (!/\.(?:md|markdown|txt)$/i.test(entry.name)) continue
+      const current = await readLibraryFileContent(entryPath, options)
+      if (!current.ok) continue
+      const next = ensureConfidentialContext(current.content)
+      if (!next.changed) continue
+      const result = await writeLibraryFileContent(entryPath, next.content, options)
+      if (!result.ok) throw new Error(result.error || 'No se pudo aplicar el contexto confidencial al chat.')
+    }
+  }
+
+  await visit(nodes, chatRootPath)
 }

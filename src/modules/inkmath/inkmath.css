@@ -758,3 +758,16 @@
 		overflow: hidden;
 	}
 }
+
+/* Keep InkMath aligned with the shared modal engine footprint, including its mobile breakpoint. */
+.notia-modal-engine-panel.inkmath-modal-engine-panel.notia-modal-engine-panel--viewport {
+	width: 75vw;
+	max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 16px);
+	height: 75dvh;
+	max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px);
+}
+
+.notia-modal-engine-panel.inkmath-modal-engine-panel.notia-modal-engine-panel--viewport.inkmath-modal-engine-panel--tone-inkmath .modal-content {
+	height: calc(75dvh - 32px);
+	max-height: calc(75dvh - 32px);
+}

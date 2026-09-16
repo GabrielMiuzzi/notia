@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
-import { Brain, ChevronDown, Eye, Wrench, X } from 'lucide-react'
+import { Brain, ChevronDown, Eye, KeyRound, Pencil, Trash2, Unlink, Wrench, X } from 'lucide-react'
 import {
   clampOcrDebounceMs,
   INKMATH_OCR_DEBOUNCE_MAX_MS,
@@ -54,6 +54,7 @@ import {
   updateLibraryUserName,
   updateLibraryUserPassword,
   updateLibraryUserRole,
+  updateLibraryUserContexts,
   type LibraryRole,
   type LibraryUser,
 } from '../../services/libraries/libraryUsers'
@@ -556,6 +557,29 @@ export function SettingsModal({
     }
   }
 
+  const handleUpdateLibraryUserContexts = async (user: LibraryUser, contextTag: string, checked: boolean) => {
+    if (!activeLibrary || user.allContexts || isSavingLibraryData) return
+    const generation = libraryDataGenerationRef.current
+    const context = { libraryPath: activeLibrary.path, androidDirectoryUri: activeLibrary.androidTreeUri }
+    const nextTags = new Set(user.allowedContexts.map((tag) => tag.toLowerCase()))
+    if (checked) nextTags.add(contextTag.toLowerCase())
+    else nextTags.delete(contextTag.toLowerCase())
+    const selectedTags = contexts
+      .filter((item) => nextTags.has(item.tag.toLowerCase()))
+      .map((item) => item.tag)
+    setIsSavingLibraryData(true)
+    try {
+      const users = await updateLibraryUserContexts(context, user.id, selectedTags)
+      if (generation !== libraryDataGenerationRef.current) return
+      setLibraryUsers(users)
+      setLibraryDataStatus({ tone: 'success', message: 'Contextos permitidos actualizados.' })
+    } catch (error) {
+      handleLibraryMutationError(error, generation)
+    } finally {
+      if (generation === libraryDataGenerationRef.current) setIsSavingLibraryData(false)
+    }
+  }
+
   const handleUnlinkLibraryUserTelegram = async (userId: string) => {
     if (!activeLibrary || isSavingLibraryData) return
     const generation = libraryDataGenerationRef.current
@@ -827,7 +851,7 @@ export function SettingsModal({
               <div className="notia-settings-context-table-wrap">
                 <table className="notia-settings-context-table">
                   <caption className="notia-settings-visually-hidden">Usuarios y roles de la biblioteca</caption>
-                  <thead><tr><th scope="col">Usuario</th><th scope="col">Rol</th><th scope="col">Contraseña</th><th scope="col">Acciones</th></tr></thead>
+                  <thead><tr><th scope="col">Usuario</th><th scope="col">Rol</th><th scope="col">Contraseña</th><th scope="col">Contextos permitidos</th><th scope="col">Acciones</th></tr></thead>
                   <tbody>
                     {libraryUsers.map((user) => (
                       <tr key={user.id}>
@@ -837,11 +861,75 @@ export function SettingsModal({
                          <td><NotiaSelectMenu className="notia-settings-input" ariaLabel={`Rol de ${user.name}`} value={user.roleId} options={libraryRoles.map((role) => ({ value: role.id, label: role.name }))} disabled={isSavingLibraryData} onChange={(roleId) => { void handleUpdateLibraryUserRole(user.id, roleId) }} /></td>
                         <td>{user.passwordConfigured ? 'Configurada' : 'Sin contraseña configurada'}</td>
                         <td>
-                          <div className="notia-settings-context-actions">
-                            <NotiaButton size="sm" variant="secondary" disabled={isSavingLibraryData} onClick={() => { setRenameUserId(user.id); setRenameDraft(user.name) }}>Cambiar nombre</NotiaButton>
-                            <NotiaButton size="sm" variant="secondary" disabled={isSavingLibraryData} onClick={() => { setPasswordUserId(user.id); setPasswordDraft(''); setPasswordConfirmationDraft(''); setShowPasswordDraft(false) }}>Establecer nueva contraseña</NotiaButton>
-                             {user.telegramLinked ? <NotiaButton size="sm" variant="secondary" disabled={isSavingLibraryData} onClick={() => { void handleUnlinkLibraryUserTelegram(user.id) }}>Desvincular Telegram</NotiaButton> : null}
-                            {user.id === 'user-owner' ? <span className="notia-settings-card-label" title="Owner es un usuario protegido">Owner protegido</span> : <NotiaButton size="sm" variant="danger" disabled={isSavingLibraryData} onClick={() => setDeleteUser(user)}>Eliminar usuario</NotiaButton>}
+                          <div className="notia-settings-user-context-list">
+                            {user.allContexts ? (
+                              <span className="notia-settings-user-context-all">Todos los contextos</span>
+                            ) : contexts.length === 0 ? (
+                              <span className="notia-settings-card-label">Sin contextos configurados</span>
+                            ) : contexts.map((context) => {
+                              const checked = user.allowedContexts.some((tag) => tag.toLowerCase() === context.tag.toLowerCase())
+                              return (
+                                <label key={context.tag} className="notia-settings-user-context-option">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={isSavingLibraryData}
+                                    aria-label={`${context.tag} permitido para ${user.name}`}
+                                    onChange={(event) => { void handleUpdateLibraryUserContexts(user, context.tag, event.target.checked) }}
+                                  />
+                                  <span className="notia-settings-context-dot" style={{ backgroundColor: context.color }} aria-hidden="true" />
+                                  <span>{context.tag}</span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                          <div className="notia-settings-context-actions notia-settings-user-actions">
+                            <NotiaButton
+                              size="icon"
+                              variant="secondary"
+                              aria-label={`Cambiar nombre de ${user.name}`}
+                              title="Cambiar nombre"
+                              disabled={isSavingLibraryData}
+                              onClick={() => { setRenameUserId(user.id); setRenameDraft(user.name) }}
+                            >
+                              <Pencil size={16} aria-hidden="true" />
+                            </NotiaButton>
+                            <NotiaButton
+                              size="icon"
+                              variant="secondary"
+                              aria-label={`Establecer nueva contraseña para ${user.name}`}
+                              title="Establecer nueva contraseña"
+                              disabled={isSavingLibraryData}
+                              onClick={() => { setPasswordUserId(user.id); setPasswordDraft(''); setPasswordConfirmationDraft(''); setShowPasswordDraft(false) }}
+                            >
+                              <KeyRound size={16} aria-hidden="true" />
+                            </NotiaButton>
+                            {user.telegramLinked ? (
+                              <NotiaButton
+                                size="icon"
+                                variant="secondary"
+                                aria-label={`Desvincular Telegram de ${user.name}`}
+                                title="Desvincular Telegram"
+                                disabled={isSavingLibraryData}
+                                onClick={() => { void handleUnlinkLibraryUserTelegram(user.id) }}
+                              >
+                                <Unlink size={16} aria-hidden="true" />
+                              </NotiaButton>
+                            ) : null}
+                            {user.id === 'user-owner' ? (
+                              <span className="notia-settings-card-label" title="Owner es un usuario protegido">Owner protegido</span>
+                            ) : (
+                              <NotiaButton
+                                size="icon"
+                                variant="danger"
+                                aria-label={`Eliminar usuario ${user.name}`}
+                                title="Eliminar usuario"
+                                disabled={isSavingLibraryData}
+                                onClick={() => setDeleteUser(user)}
+                              >
+                                <Trash2 size={16} aria-hidden="true" />
+                              </NotiaButton>
+                            )}
                           </div>
                           {passwordUserId === user.id ? <form className="notia-settings-user-inline-form" onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserPassword(user.id) }}><input className="notia-settings-input" aria-label="Nueva contraseña" type={showPasswordDraft ? 'text' : 'password'} autoComplete="new-password" minLength={8} maxLength={256} value={passwordDraft} onChange={(event) => setPasswordDraft(event.target.value)} placeholder="Nueva contraseña" /><input className="notia-settings-input" aria-label="Confirmar nueva contraseña" type={showPasswordDraft ? 'text' : 'password'} autoComplete="new-password" minLength={8} maxLength={256} value={passwordConfirmationDraft} onChange={(event) => setPasswordConfirmationDraft(event.target.value)} placeholder="Confirmar contraseña" /><NotiaButton size="sm" type="button" onClick={() => setShowPasswordDraft((current) => !current)}>{showPasswordDraft ? 'Ocultar' : 'Mostrar'}</NotiaButton><NotiaButton size="sm" type="submit" disabled={isSavingLibraryData}>Guardar</NotiaButton><NotiaButton size="sm" type="button" variant="ghost" onClick={() => setPasswordUserId(null)}>Cancelar</NotiaButton></form> : null}
                         </td>

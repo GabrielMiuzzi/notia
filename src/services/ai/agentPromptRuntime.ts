@@ -1,8 +1,9 @@
 import type { NotiaLibrary } from '../../types/notia'
 import { readTextFile, writeTextFile } from '../files/filesystemEngine'
-import { createLibraryEntry } from '../libraries/libraryRuntime'
-import { readLibraryDirectory } from '../libraries/libraryRuntime'
+import { createLibraryEntry, readLibraryDirectory, readLibraryTree } from '../libraries/libraryRuntime'
 import { resolveLongTermMemoryFilePath } from '../chat/chatLibraryStructure'
+import { parseFrontmatterDocument } from '../../engines/markdown/frontmatterEngine'
+import { ensureConfidentialContext } from '../contexts/confidentialContextFiles'
 
 export const DEFAULT_AGENT_PROMPT = [
   "# Agente IA de Notia",
@@ -748,9 +749,9 @@ async function ensureAgentMemoryStructure(
 
   const rulesPath = joinLibraryPath(memoryDirectoryPath, MEMORY_RULES_FILE_NAME)
   const currentRules = await readTextFile(rulesPath, options)
-  const migration = migrateMisclassifiedRules(currentRules.ok ? currentRules.content : '')
-  const nextRules = migration.rules
-  if (!currentRules.ok || currentRules.content.trim() !== nextRules) {
+  const migration = migrateMisclassifiedRules(currentRules.ok ? parseFrontmatterDocument(currentRules.content).body : '')
+  const nextRules = ensureConfidentialContext(migration.rules).content
+  if (!currentRules.ok || currentRules.content !== nextRules) {
     const result = await writeTextFile(rulesPath, nextRules, options)
     if (!result.ok) throw new Error(result.error || 'No se pudieron inicializar las reglas del agente.')
   }
@@ -758,10 +759,10 @@ async function ensureAgentMemoryStructure(
     const memoryPath = joinLibraryPath(memoryDirectoryPath, MEMORY_FILE_NAME)
     const currentMemory = await readTextFile(memoryPath, options)
     const existing = currentMemory.ok
-      ? currentMemory.content.split('\n').map((line) => line.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean)
+      ? parseFrontmatterDocument(currentMemory.content).body.split('\n').map((line) => line.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean)
       : []
     const merged = Array.from(new Set([...existing, ...migration.memories]))
-    const result = await writeTextFile(memoryPath, merged.map((memory) => `- ${memory}`).join('\n'), options)
+    const result = await writeTextFile(memoryPath, ensureConfidentialContext(merged.map((memory) => `- ${memory}`).join('\n')).content, options)
     if (!result.ok) throw new Error(result.error || 'No se pudieron migrar las memorias del agente.')
   }
 }
@@ -772,7 +773,7 @@ export async function loadAgentRules(library: NotiaLibrary, responseFormat?: str
     joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME),
     { androidDirectoryUri: library.androidTreeUri },
   )
-  return resolveAgentRulesContent(result.ok ? result.content : DEFAULT_AGENT_RULES, responseFormat)
+  return resolveAgentRulesContent(result.ok ? parseFrontmatterDocument(result.content).body : DEFAULT_AGENT_RULES, responseFormat)
 }
 
 export async function appendAgentRule(library: NotiaLibrary, rule: string): Promise<{ added: boolean }> {
@@ -780,9 +781,9 @@ export async function appendAgentRule(library: NotiaLibrary, rule: string): Prom
   const path = joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME)
   const options = { androidDirectoryUri: library.androidTreeUri }
   const current = await readTextFile(path, options)
-  const next = appendAgentRuleContent(current.ok ? current.content : '', rule)
+  const next = appendAgentRuleContent(current.ok ? parseFrontmatterDocument(current.content).body : '', rule)
   if (!next.added) return { added: false }
-  const result = await writeTextFile(path, next.content, options)
+  const result = await writeTextFile(path, ensureConfidentialContext(next.content).content, options)
   if (!result.ok) throw new Error(result.error || 'No se pudo guardar la regla del agente.')
   return { added: true }
 }
@@ -791,7 +792,7 @@ export async function loadAgentIaRules(library: NotiaLibrary): Promise<string[]>
   await ensureAgentPromptFile(library)
   const path = joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME)
   const result = await readTextFile(path, { androidDirectoryUri: library.androidTreeUri })
-  const content = ensureDefaultAgentRules(result.ok ? result.content : '')
+  const content = ensureDefaultAgentRules(result.ok ? parseFrontmatterDocument(result.content).body : '')
   const start = content.indexOf(IA_RULES_START) + IA_RULES_START.length
   const end = content.indexOf(IA_RULES_END, start)
   return content.slice(start, end).split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter(Boolean)
@@ -802,12 +803,12 @@ export async function writeAgentIaRules(library: NotiaLibrary, rules: string[]):
   const path = joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_RULES_FILE_NAME)
   const options = { androidDirectoryUri: library.androidTreeUri }
   const current = await readTextFile(path, options)
-  const content = ensureDefaultAgentRules(current.ok ? current.content : '')
+  const content = ensureDefaultAgentRules(current.ok ? parseFrontmatterDocument(current.content).body : '')
   const start = content.indexOf(IA_RULES_START) + IA_RULES_START.length
   const end = content.indexOf(IA_RULES_END, start)
   const unique = Array.from(new Set(rules.map((rule) => rule.trim()).filter(Boolean)))
   const block = unique.map((rule) => `- ${rule}`).join('\n')
-  const result = await writeTextFile(path, `${content.slice(0, start)}\n${block}${block ? '\n' : ''}${content.slice(end)}`, options)
+  const result = await writeTextFile(path, ensureConfidentialContext(`${content.slice(0, start)}\n${block}${block ? '\n' : ''}${content.slice(end)}`).content, options)
   if (!result.ok) throw new Error(result.error || 'No se pudieron reorganizar las reglas del agente.')
 }
 
@@ -819,7 +820,7 @@ export async function loadAgentMemories(library: NotiaLibrary): Promise<string[]
     { androidDirectoryUri: library.androidTreeUri },
   )
   if (!result.ok) return []
-  return result.content
+  return parseFrontmatterDocument(result.content).body
     .split('\n')
     .map((line) => line.replace(/^\s*[-*]\s*/, '').trim())
     .filter((line) => Boolean(line) && !line.startsWith('<!--'))
@@ -832,7 +833,7 @@ export async function writeAgentMemories(library: NotiaLibrary, memories: string
     .slice(0, 100)
   const result = await writeTextFile(
     joinLibraryPath(resolveAgentMemoryDirectoryPath(library.path), MEMORY_FILE_NAME),
-    [MEMORY_VERSION_MARKER, '', ...unique.map((memory) => `- ${memory}`), ''].join('\n'),
+    ensureConfidentialContext([MEMORY_VERSION_MARKER, '', ...unique.map((memory) => `- ${memory}`), ''].join('\n')).content,
     { androidDirectoryUri: library.androidTreeUri },
   )
   if (!result.ok) throw new Error(result.error || 'No se pudo guardar la memoria del agente.')
@@ -845,6 +846,39 @@ function parseMemoryItems(content: string): string[] {
     .filter((line) => Boolean(line) && !line.startsWith('#') && !line.startsWith('<!--'))
 }
 
+async function migrateConfidentialAgentFiles(
+  agentDirectoryPath: string,
+  library: NotiaLibrary,
+): Promise<void> {
+  const options = { androidDirectoryUri: library.androidTreeUri }
+  let nodes
+  try {
+    nodes = await readLibraryTree(agentDirectoryPath, options)
+  } catch {
+    return
+  }
+
+  const visit = async (entries: typeof nodes, directoryPath: string): Promise<void> => {
+    for (const entry of entries) {
+      const entryPath = entry.path ?? joinLibraryPath(directoryPath, entry.name)
+      if (entry.type === 'folder') {
+        const children = entry.children ?? await readLibraryDirectory(entryPath, options)
+        await visit(children, entryPath)
+        continue
+      }
+      if (!/\.(?:md|markdown|txt)$/i.test(entry.name)) continue
+      const current = await readTextFile(entryPath, options)
+      if (!current.ok) continue
+      const next = ensureConfidentialContext(current.content)
+      if (!next.changed) continue
+      const result = await writeTextFile(entryPath, next.content, options)
+      if (!result.ok) throw new Error(result.error || 'No se pudo aplicar el contexto confidencial.')
+    }
+  }
+
+  await visit(nodes, agentDirectoryPath)
+}
+
 /**
  * Migrates the old chat memory once, keeping a local recovery copy inside the
  * active .agent/memory directory. The legacy file is intentionally read-only
@@ -855,7 +889,7 @@ export async function migrateLegacyAgentMemory(library: NotiaLibrary): Promise<{
   const legacy = await readTextFile(resolveLongTermMemoryFilePath(library.path), options)
   if (!legacy.ok) return { migrated: false, memories: 0 }
 
-  const legacyMemories = parseMemoryItems(legacy.content)
+  const legacyMemories = parseMemoryItems(parseFrontmatterDocument(legacy.content).body)
   if (legacyMemories.length === 0) return { migrated: false, memories: 0 }
 
   const memoryDirectoryPath = resolveAgentMemoryDirectoryPath(library.path)
@@ -874,10 +908,10 @@ export async function migrateLegacyAgentMemory(library: NotiaLibrary): Promise<{
 
   const memoryPath = joinLibraryPath(memoryDirectoryPath, MEMORY_FILE_NAME)
   const current = await readTextFile(memoryPath, options)
-  const currentMemories = current.ok ? parseMemoryItems(current.content) : []
+  const currentMemories = current.ok ? parseMemoryItems(parseFrontmatterDocument(current.content).body) : []
   const merged = Array.from(new Map([...currentMemories, ...legacyMemories]
     .map((memory) => [memory.toLowerCase(), memory] as const)).values()).slice(0, 100)
-  const nextContent = [MEMORY_VERSION_MARKER, '', ...merged.map((memory) => `- ${memory}`), ''].join('\n')
+  const nextContent = ensureConfidentialContext([MEMORY_VERSION_MARKER, '', ...merged.map((memory) => `- ${memory}`), ''].join('\n')).content
   if (!current.ok || current.content !== nextContent) {
     const result = await writeTextFile(memoryPath, nextContent, options)
     if (!result.ok) throw new Error(result.error || 'No se pudo migrar la memoria legacy.')
@@ -912,7 +946,9 @@ export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<stri
   const options = { androidDirectoryUri: library.androidTreeUri }
   const current = await readTextFile(promptPath, options)
   if (current.ok && current.content.trim() && current.content.trim() !== LEGACY_DEFAULT_AGENT_PROMPT) {
-    return current.content.trim()
+    await migrateConfidentialAgentFiles(agentDirectoryPath, library)
+    const migrated = await readTextFile(promptPath, options)
+    return migrated.ok ? parseFrontmatterDocument(migrated.content).body.trim() : current.content.trim()
   }
 
   if (!current.ok) {
@@ -924,6 +960,7 @@ export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<stri
     throw new Error(writeResult.error || 'No se pudo inicializar el prompt del agente.')
   }
 
+  await migrateConfidentialAgentFiles(agentDirectoryPath, library)
   return DEFAULT_AGENT_PROMPT
 }
 
@@ -947,11 +984,14 @@ export async function loadAgentPrompt(library: NotiaLibrary, fileName: string): 
     return loadAgentDefaultPrompt(library)
   }
 
+  await ensureAgentPromptFile(library)
   const result = await readTextFile(
     joinLibraryPath(resolveAgentPromptsDirectoryPath(library.path), normalizedFileName),
     { androidDirectoryUri: library.androidTreeUri },
   )
-  return result.ok ? resolveAgentPromptContent(result.content) : loadAgentDefaultPrompt(library)
+  return result.ok
+    ? resolveAgentPromptContent(parseFrontmatterDocument(result.content).body)
+    : loadAgentDefaultPrompt(library)
 }
 
 export function loadSelectedAgentPromptFileName(libraryId: string): string {

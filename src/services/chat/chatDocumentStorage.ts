@@ -3,6 +3,7 @@ import type { NotiaLibrary } from '../../types/notia'
 import { fromStoredLibraryPath, toStoredLibraryPath } from '../libraries/libraryPathMapping'
 import { readLibraryFileContent, writeLibraryFileContent } from '../libraries/libraryDocumentRuntime'
 import { loadAgentMemories, writeAgentMemories } from '../ai/agentPromptRuntime'
+import { CONFIDENTIAL_CONTEXT_TAG } from '../contexts/libraryContexts'
 
 export interface StoredChatMessage {
   role: 'user' | 'assistant'
@@ -144,6 +145,7 @@ export function serializeChatDocument(document: StoredChatDocument): string {
     hasFrontmatter: true,
     frontmatter: [
       { key: 'title', value: document.title },
+      { key: 'contexto', value: CONFIDENTIAL_CONTEXT_TAG },
       { key: 'longTermMemory', value: document.longTermMemoryEnabled },
       { key: 'contextMemory', value: document.contextMemoryEnabled },
       { key: 'contextMemoryMessageCount', value: clampContextMemoryMessageCount(document.contextMemoryMessageCount) },

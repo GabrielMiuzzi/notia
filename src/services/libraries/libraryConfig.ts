@@ -3,13 +3,14 @@ import { readTextFile, writeTextFile, createDirectory, pathExists } from '../fil
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { InkMathPreferences } from '../preferences/inkMathSettingsStorage'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../preferences/telegramSettingsStorage'
-import { DEFAULT_LIBRARY_CONTEXTS, normalizeLibraryContexts, type LibraryContext } from '../contexts/libraryContexts'
+import { DEFAULT_LIBRARY_CONTEXTS, ensureDefaultLibraryContexts, normalizeLibraryContexts, type LibraryContext } from '../contexts/libraryContexts'
 
 const NOTIA_CONFIG_DIR = '.notia'
 const NOTIA_CONFIG_FILE = 'notiaConfig.json'
 
 export interface NotiaLibraryConfig {
   version: number
+  contextDefaultsVersion?: number
   panelDesplegable?: {
     refreshIntervalMs: number
   }
@@ -25,6 +26,7 @@ interface LibraryConfigOptions {
 
 const DEFAULT_LIBRARY_CONFIG: NotiaLibraryConfig = {
   version: 1,
+  contextDefaultsVersion: 1,
   panelDesplegable: {
     refreshIntervalMs: 30000,
   },
@@ -39,11 +41,14 @@ function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
   const candidate = value as Partial<NotiaLibraryConfig>
   return {
     version: typeof candidate.version === 'number' ? candidate.version : 1,
+    contextDefaultsVersion: 1,
     panelDesplegable: candidate.panelDesplegable ?? DEFAULT_LIBRARY_CONFIG.panelDesplegable,
     inkMath: candidate.inkMath,
     ia: candidate.ia,
     telegram: candidate.telegram ? normalizeTelegramPreferences(candidate.telegram) : undefined,
-    contexts: normalizeLibraryContexts(candidate.contexts),
+    contexts: candidate.contextDefaultsVersion === 1
+      ? normalizeLibraryContexts(candidate.contexts)
+      : ensureDefaultLibraryContexts(candidate.contexts),
   }
 }
 
@@ -76,7 +81,11 @@ export async function readLibraryConfig(
     }
     
     const parsed = JSON.parse(result.content)
-    return normalizeLibraryConfig(parsed)
+    const normalized = normalizeLibraryConfig(parsed)
+    if (!parsed || typeof parsed !== 'object' || (parsed as { contextDefaultsVersion?: unknown }).contextDefaultsVersion !== 1) {
+      await writeTextFile(configPath, JSON.stringify(normalized, null, 2), options)
+    }
+    return normalized
   } catch {
     return null
   }

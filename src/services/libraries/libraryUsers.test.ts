@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const invokeMock = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 
-import { createLibraryRole, createLibraryUser, findLibraryUser, listLibraryRoles, resolveLibraryTelegramUser } from './libraryUsers'
+import { createLibraryRole, createLibraryUser, findLibraryUser, listLibraryRoles, resolveLibraryTelegramUser, updateLibraryUserContexts } from './libraryUsers'
 
 describe('libraryUsers service', () => {
   beforeEach(() => invokeMock.mockReset())
@@ -36,6 +36,18 @@ describe('libraryUsers service', () => {
     await findLibraryUser({ libraryPath: '/library' }, 'Ana')
     expect(invokeMock).toHaveBeenCalledWith('find_library_user', {
       payload: { context: { libraryPath: '/library', androidDirectoryUri: undefined }, name: 'Ana' },
+    })
+  })
+
+  it('serializes allowed user contexts', async () => {
+    invokeMock.mockResolvedValueOnce([])
+    await updateLibraryUserContexts({ libraryPath: '/library' }, 'user-child', ['#Laboral', '#Confidencial'])
+    expect(invokeMock).toHaveBeenCalledWith('update_library_user_contexts', {
+      payload: {
+        context: { libraryPath: '/library', androidDirectoryUri: undefined },
+        userId: 'user-child',
+        contextTags: ['#Laboral', '#Confidencial'],
+      },
     })
   })
 

@@ -17,6 +17,8 @@ export interface LibraryUser {
   roleName: string
   passwordConfigured: boolean
   telegramLinked: boolean
+  allowedContexts: string[]
+  allContexts: boolean
 }
 
 export interface LibraryDataError {
@@ -80,6 +82,10 @@ export function updateLibraryUserName(context: LibraryDatabaseContext, userId: s
 
 export function updateLibraryUserRole(context: LibraryDatabaseContext, userId: string, roleId: string): Promise<LibraryUser[]> {
   return invokeLibrary('update_library_user_role', { context: payload(context), userId, roleId })
+}
+
+export function updateLibraryUserContexts(context: LibraryDatabaseContext, userId: string, contextTags: string[]): Promise<LibraryUser[]> {
+  return invokeLibrary('update_library_user_contexts', { context: payload(context), userId, contextTags })
 }
 
 export function resolveLibraryTelegramUser(context: LibraryDatabaseContext, telegramUserId: number, telegramChatId: number): Promise<LibraryUser | null> {

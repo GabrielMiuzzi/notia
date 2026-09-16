@@ -43,6 +43,8 @@ pub struct LibraryUserDto {
     pub role_name: String,
     pub password_configured: bool,
     pub telegram_linked: bool,
+    pub allowed_contexts: Vec<String>,
+    pub all_contexts: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +91,14 @@ pub struct UpdateLibraryUserRolePayload {
     pub context: LibraryDatabaseContext,
     pub user_id: String,
     pub role_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLibraryUserContextsPayload {
+    pub context: LibraryDatabaseContext,
+    pub user_id: String,
+    pub context_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -272,7 +282,7 @@ fn list_users(connection: &Connection) -> CommandResult<Vec<LibraryUserDto>> {
          FROM library_users u JOIN library_roles r ON r.id = u.role_id
          ORDER BY u.id = 'user-owner' DESC, u.created_at, u.id",
     ).map_err(map_sql_error)?;
-    let result = statement
+    let users = statement
         .query_map([], |row| {
             Ok(LibraryUserDto {
                 id: row.get(0)?,
@@ -281,12 +291,53 @@ fn list_users(connection: &Connection) -> CommandResult<Vec<LibraryUserDto>> {
                 role_name: row.get(3)?,
                 password_configured: row.get(4)?,
                 telegram_linked: row.get(5)?,
+                allowed_contexts: Vec::new(),
+                all_contexts: false,
             })
         })
         .map_err(map_sql_error)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(map_sql_error);
-    result
+        .map_err(map_sql_error)?;
+    users
+        .into_iter()
+        .map(|user| enrich_user_contexts(connection, user))
+        .collect()
+}
+
+fn enrich_user_contexts(
+    connection: &Connection,
+    mut user: LibraryUserDto,
+) -> CommandResult<LibraryUserDto> {
+    let mut statement = connection
+        .prepare("SELECT context_tag FROM library_user_contexts WHERE user_id=?1 ORDER BY context_tag COLLATE NOCASE")
+        .map_err(map_sql_error)?;
+    user.allowed_contexts = statement
+        .query_map(params![user.id], |row| row.get(0))
+        .map_err(map_sql_error)?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(map_sql_error)?;
+    user.all_contexts = user.role_id == OWNER_ROLE_ID;
+    Ok(user)
+}
+
+fn normalize_context_tag(value: &str) -> CommandResult<String> {
+    let trimmed = value.trim();
+    let normalized = if trimmed.starts_with('#') {
+        trimmed.to_string()
+    } else {
+        format!("#{trimmed}")
+    };
+    if normalized.len() < 2
+        || normalized.len() > 128
+        || normalized[1..].contains('#')
+        || normalized.chars().any(char::is_whitespace)
+    {
+        return Err(error(
+            "invalid_context",
+            "Cada contexto debe ser una etiqueta sin espacios de hasta 128 caracteres.",
+        ));
+    }
+    Ok(normalized)
 }
 
 #[tauri::command]
@@ -461,6 +512,63 @@ pub fn update_library_user_role(
 }
 
 #[tauri::command]
+pub fn update_library_user_contexts(
+    app: AppHandle,
+    payload: UpdateLibraryUserContextsPayload,
+) -> CommandResult<Vec<LibraryUserDto>> {
+    if payload.user_id.trim() == OWNER_USER_ID {
+        return Err(error(
+            "protected_user",
+            "El usuario Owner conserva acceso a todos los contextos.",
+        ));
+    }
+
+    let mut context_tags: Vec<String> = Vec::with_capacity(payload.context_tags.len());
+    for value in &payload.context_tags {
+        let normalized = normalize_context_tag(value)?;
+        if !context_tags.iter().any(|tag| tag.eq_ignore_ascii_case(&normalized)) {
+            context_tags.push(normalized);
+        }
+    }
+    if context_tags.len() > 128 {
+        return Err(error(
+            "invalid_context",
+            "Un usuario no puede tener más de 128 contextos permitidos.",
+        ));
+    }
+
+    let connection = open_context(&app, &payload.context)?;
+    let transaction = connection.unchecked_transaction().map_err(map_sql_error)?;
+    let exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM library_users WHERE id=?1)",
+            params![payload.user_id.trim()],
+            |row| row.get(0),
+        )
+        .map_err(map_sql_error)?;
+    if !exists {
+        return Err(error("not_found", "El usuario no existe en esta biblioteca."));
+    }
+    transaction
+        .execute(
+            "DELETE FROM library_user_contexts WHERE user_id=?1",
+            params![payload.user_id.trim()],
+        )
+        .map_err(map_sql_error)?;
+    for context_tag in context_tags {
+        transaction
+            .execute(
+                "INSERT INTO library_user_contexts (user_id, context_tag) VALUES (?1, ?2)",
+                params![payload.user_id.trim(), context_tag],
+            )
+            .map_err(map_sql_error)?;
+    }
+    transaction.commit().map_err(map_sql_error)?;
+    sync_context(&app, &payload.context)?;
+    list_users(&connection)
+}
+
+#[tauri::command]
 pub fn resolve_library_telegram_user(
     app: AppHandle,
     payload: ResolveTelegramUserPayload,
@@ -476,8 +584,8 @@ pub fn resolve_library_telegram_user(
         "SELECT u.id, u.name, u.role_id, r.name, u.password_hash IS NOT NULL, u.telegram_user_id IS NOT NULL
          FROM library_users u JOIN library_roles r ON r.id=u.role_id WHERE u.telegram_user_id=?1 AND u.telegram_chat_id=?2",
         params![payload.telegram_user_id, payload.telegram_chat_id],
-        |row| Ok(LibraryUserDto { id: row.get(0)?, name: row.get(1)?, role_id: row.get(2)?, role_name: row.get(3)?, password_configured: row.get(4)?, telegram_linked: row.get(5)? }),
-    ).optional().map_err(map_sql_error)
+        |row| Ok(LibraryUserDto { id: row.get(0)?, name: row.get(1)?, role_id: row.get(2)?, role_name: row.get(3)?, password_configured: row.get(4)?, telegram_linked: row.get(5)?, allowed_contexts: Vec::new(), all_contexts: false }),
+    ).optional().map_err(map_sql_error)?.map(|user| enrich_user_contexts(&connection, user)).transpose()
 }
 
 #[tauri::command]
@@ -491,8 +599,8 @@ pub fn find_library_user(
         "SELECT u.id, u.name, u.role_id, r.name, u.password_hash IS NOT NULL, u.telegram_user_id IS NOT NULL
          FROM library_users u JOIN library_roles r ON r.id=u.role_id WHERE u.normalized_name=?1",
         params![name.to_lowercase()],
-        |row| Ok(LibraryUserDto { id: row.get(0)?, name: row.get(1)?, role_id: row.get(2)?, role_name: row.get(3)?, password_configured: row.get(4)?, telegram_linked: row.get(5)? }),
-    ).optional().map_err(map_sql_error)
+        |row| Ok(LibraryUserDto { id: row.get(0)?, name: row.get(1)?, role_id: row.get(2)?, role_name: row.get(3)?, password_configured: row.get(4)?, telegram_linked: row.get(5)?, allowed_contexts: Vec::new(), all_contexts: false }),
+    ).optional().map_err(map_sql_error)?.map(|user| enrich_user_contexts(&connection, user)).transpose()
 }
 
 #[tauri::command]

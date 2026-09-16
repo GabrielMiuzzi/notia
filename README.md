@@ -99,7 +99,8 @@ La captura conserva una cola acotada para absorber el costo temporal del reconoc
 - **InkMath en Markdown**: dibujá una fórmula desde los bloques Math y obtené su transcripción LaTeX mediante el modelo de visión configurado en Ollama.
 - **Diagramas Mermaid**: incrusta y edita diagramas de flujo, arquitectura y más dentro de tus notas. Los diagramas embebidos en Markdown y los archivos `.mmd` comparten el **mismo motor visual**, temas y estilos. Renderizado lazy con `IntersectionObserver`, cancelación vía `AbortSignal` y caché LRU.
 - **Graph View**: visualización interactiva de relaciones entre notas mediante nodos y conexiones.
-- **Contextos**: Configuraciones muestra los tags en una tabla y permite crear nuevos contextos desde el formulario superior, cambiar su color o eliminarlos (`#Laboral`, `#Personal` y `#Academico` por defecto). Las notas nuevas empiezan con `contexto: "#Personal"`; Graph View colorea los tickets según el contexto aplicado a su tablero y muestra todos los contextos configurados en su leyenda.
+- **Contextos**: Configuraciones muestra los tags en una tabla y permite crear nuevos contextos desde el formulario superior, cambiar su color o eliminarlos (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto). Las notas nuevas empiezan con `contexto: "#Personal"`; Graph View colorea los tickets según el contexto aplicado a su tablero y muestra todos los contextos configurados en su leyenda.
+- **Usuarios y permisos de contexto**: en **Configuraciones → Usuarios** cada usuario puede tener contextos permitidos asociados mediante casillas. Owner tiene todos los contextos por defecto y esa condición queda protegida.
 - **AI Chat local**: conversación con modelos de lenguaje ejecutados localmente via Ollama, con memoria a largo plazo y contexto de archivos de la librería.
 - **ColdPass**: gestor de credenciales cifradas con generador de contraseñas y sincronización segura entre dispositivos vía Bluetooth.
 - **Task Manager**: tableros Kanban personalizables con grupos/columnas, tareas con estados, prioridad, subtareas, comentarios y temporizador Pomodoro integrado.
@@ -720,7 +721,7 @@ En Telegram, el agente recibe instrucciones específicas para responder sin Mark
 
 El agente de Telegram genera directamente la respuesta en el formato del canal. Si Telegram rechaza una entidad mal formada, Notia reintenta el envío como texto plano para no perder la respuesta.
 
-En **Configuraciones → Roles** se administran los roles de la biblioteca activa; cada biblioteca comienza con `Owner`, `Family` y `Guest`. En **Configuraciones → Usuarios** se pueden crear usuarios, asignarles un rol, cambiar su nombre o contraseña y eliminar usuarios que no sean `Owner`. Estos datos viven en el SQLite de cada biblioteca y no se mezclan al cambiarla. Las contraseñas solo se almacenan como hashes PBKDF2 y los usuarios sin contraseña se muestran como **Sin contraseña configurada**.
+En **Configuraciones → Roles** se administran los roles de la biblioteca activa; cada biblioteca comienza con `Owner`, `Family` y `Guest`. En **Configuraciones → Usuarios** se pueden crear usuarios, asignarles un rol, cambiar su nombre o contraseña y eliminar usuarios que no sean `Owner`. Las acciones de cada usuario se muestran como iconos compactos con tooltip y soporte de teclado. Estos datos viven en el SQLite de cada biblioteca y no se mezclan al cambiarla. Las contraseñas solo se almacenan como hashes PBKDF2 y los usuarios sin contraseña se muestran como **Sin contraseña configurada**.
 
 La vinculación de Telegram se realiza en un chat privado escribiendo `/start`, el nombre de usuario de Notia y la contraseña correspondiente. Una cuenta no vinculada queda bloqueada fuera de ese flujo. El Task Manager publicado usa el mismo usuario y contraseña de la biblioteca; ya no requiere una contraseña adicional del tablero.
 
@@ -730,7 +731,7 @@ La publicación de Task Manager usa únicamente las cuentas de la biblioteca: no
 
 El enlace de Telegram se resuelve por chat privado contra SQLite. El flujo limita los intentos, aplica un enfriamiento temporal al alcanzar el límite y mantiene mensajes genéricos para no revelar si un usuario existe.
 
-Configuraciones permite recorrer todas sus secciones aunque el modal tenga mas paneles que espacio vertical: el menu lateral y el contenido tienen desplazamiento independiente, y en ventanas pequenas el menu se puede desplazar horizontalmente.
+Configuraciones permite recorrer todas sus secciones aunque el modal tenga mas paneles que espacio vertical: el menu lateral y el contenido tienen desplazamiento independiente, y en ventanas pequenas el menu se puede desplazar horizontalmente. Configuraciones y los demás modales del motor global ocupan el 75% del ancho y alto de la ventana.
 
 Los desplegables de Configuraciones tienen el mismo comportamiento de menú que el resto de Notia: se cierran al seleccionar, con Escape o al hacer click fuera, y se pueden recorrer con teclado.
 

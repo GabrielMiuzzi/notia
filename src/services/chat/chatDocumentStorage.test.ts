@@ -115,6 +115,7 @@ describe('appendChatMessages', () => {
     const serialized = serializeChatDocument(document)
     const parsed = parseChatDocument(serialized, 'Fallback')
 
+    expect(serialized).toContain('contexto: "#Confidencial"')
     expect(parsed.title).toBe(document.title)
     expect(parsed.messages).toEqual(document.messages)
   })

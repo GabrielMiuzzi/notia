@@ -4657,6 +4657,15 @@
   width: min(860px, calc(100vw - 56px));
 }
 
+/* Every modal exposed by the shared modal engine uses the same viewport footprint. */
+.notia-modal-engine-panel.notia-modal-engine-panel--viewport {
+  width: 75vw;
+  max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 16px);
+  height: 75dvh;
+  max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 16px);
+  box-sizing: border-box;
+}
+
 .notia-settings-modal {
   height: min(460px, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 84px));
   display: flex;
@@ -4877,6 +4886,49 @@
   width: min(220px, 100%);
 }
 
+.notia-settings-user-actions > .notia-button {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+}
+
+.notia-settings-user-context-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 180px;
+}
+
+.notia-settings-user-context-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-heading-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.notia-settings-user-context-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.notia-settings-context-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.notia-settings-user-context-all {
+  color: var(--color-heading-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .notia-settings-association-list {
   display: grid;
   gap: 10px;
@@ -5003,9 +5055,6 @@
 
 @media (max-width: 720px), (max-height: 600px) {
   .notia-settings-modal {
-    width: min(100vw - 24px, 860px);
-    height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 24px);
-    max-height: none;
     flex-direction: column;
   }
 

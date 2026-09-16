@@ -4,11 +4,13 @@ export interface LibraryContext {
 }
 
 export const DEFAULT_CONTEXT_TAG = '#Personal'
+export const CONFIDENTIAL_CONTEXT_TAG = '#Confidencial'
 
 export const DEFAULT_LIBRARY_CONTEXTS: readonly LibraryContext[] = [
   { tag: '#Laboral', color: '#2563EB' },
   { tag: '#Personal', color: '#16A34A' },
   { tag: '#Academico', color: '#9333EA' },
+  { tag: CONFIDENTIAL_CONTEXT_TAG, color: '#DC2626' },
 ]
 
 const CONTEXT_TAG_PATTERN = /^#[^\s#]+$/
@@ -62,6 +64,17 @@ export function normalizeLibraryContexts(value: unknown): LibraryContext[] {
   return contexts
 }
 
+export function ensureDefaultLibraryContexts(value: unknown): LibraryContext[] {
+  const contexts = normalizeLibraryContexts(value)
+  const knownTags = new Set(contexts.map((context) => context.tag.toLowerCase()))
+  for (const defaultContext of DEFAULT_LIBRARY_CONTEXTS) {
+    if (!knownTags.has(defaultContext.tag.toLowerCase())) {
+      contexts.push({ ...defaultContext })
+    }
+  }
+  return contexts
+}
+
 export function findLibraryContext(
   contexts: readonly LibraryContext[],
   tag: unknown,
@@ -80,4 +93,3 @@ export function resolveContextColor(
 ): string | undefined {
   return findLibraryContext(contexts, tag)?.color
 }
-

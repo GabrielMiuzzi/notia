@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 15;
+pub const CURRENT_SCHEMA_VERSION: i64 = 16;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -566,6 +566,20 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
             VALUES
                 ('user-owner', 'Owner', 'owner', 'role-owner', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
             INSERT INTO notia_schema_migrations (version) VALUES (15);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 16 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_user_contexts (
+                user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                context_tag TEXT NOT NULL CHECK (length(trim(context_tag)) > 0),
+                PRIMARY KEY (user_id, context_tag)
+            );
+            CREATE INDEX IF NOT EXISTS idx_library_user_contexts_tag
+                ON library_user_contexts(context_tag);
+            INSERT INTO notia_schema_migrations (version) VALUES (16);",
         )?;
         transaction.commit()?;
     }

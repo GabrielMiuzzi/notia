@@ -9,7 +9,8 @@
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
 - Gráficos XGraph interactivos en notas Markdown.
 - Graph View 2D de relaciones entre documentos, con zoom, paneo, foco y colores por contexto.
-- Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal` y `#Academico` por defecto), con leyenda completa y coloración de nodos en Graph View.
+- Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con leyenda completa y coloración de nodos en Graph View.
+- Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
 - Chat local con IA mediante Ollama.
@@ -29,5 +30,5 @@
 - Backups automáticos de bibliotecas en Windows.
 - Bandeja del sistema en Windows.
 - Soporte multiplataforma para Windows, macOS, Linux y Android.
-- Roles y usuarios por biblioteca persistidos en SQLite, con roles iniciales, alta, cambio de nombre/rol, contraseñas y protección del usuario Owner.
+- Roles y usuarios por biblioteca persistidos en SQLite, con roles iniciales, alta, cambio de nombre/rol, contraseñas, acciones compactas por iconos y protección del usuario Owner.
 - Vinculación privada de cuentas de Telegram con usuarios de la biblioteca y autenticación de Task Manager publicado mediante el usuario de Notia.

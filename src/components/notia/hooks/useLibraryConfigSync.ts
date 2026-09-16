@@ -155,6 +155,7 @@ export function useLibraryConfigSync({
         })
         initialConfigRef.current = {
           version: 1,
+          contextDefaultsVersion: 1,
           panelDesplegable: {
             refreshIntervalMs: fallbackPreferencesRef.current.explorerRefreshIntervalMs,
           },
@@ -192,6 +193,7 @@ export function useLibraryConfigSync({
 
     const config: NotiaLibraryConfig = {
       version: 1,
+      contextDefaultsVersion: 1,
       panelDesplegable: {
         refreshIntervalMs: explorerRefreshIntervalMs,
       },
