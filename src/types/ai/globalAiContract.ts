@@ -13,6 +13,7 @@ export type AiAppSurface =
   | 'graph-view'
   | 'meeting'
   | 'finance'
+  | 'multichat'
   | 'other'
 
 export type AiConsumptionSource =
@@ -93,7 +94,7 @@ export interface AiAuthorizationDecision {
 
 const CHANNELS = new Set<AiChannel>(['app', 'public-url', 'telegram'])
 const APP_SURFACES = new Set<AiAppSurface>([
-  'main-chat', 'sidebar-chat', 'document', 'task-manager', 'graph-view', 'meeting', 'finance', 'other',
+  'main-chat', 'sidebar-chat', 'document', 'task-manager', 'graph-view', 'meeting', 'finance', 'multichat', 'other',
 ])
 const PERSISTENCE_POLICIES = new Set<AiChatPersistencePolicy>([
   'persistent', 'ephemeral-no-memory', 'published-no-memory',

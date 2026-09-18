@@ -1546,6 +1546,256 @@
   overflow: hidden;
 }
 
+.multichat-view {
+  overflow: auto;
+  padding: clamp(16px, 4vw, 40px);
+}
+
+.multichat-setup,
+.multichat-room {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.multichat-setup {
+  display: grid;
+  gap: 16px;
+  padding: clamp(18px, 4vw, 32px);
+}
+
+.multichat-setup h1,
+.multichat-room h1 {
+  margin: 0;
+  color: var(--color-heading-text);
+}
+
+.multichat-setup p {
+  margin: 0;
+  color: var(--color-subtle-text);
+}
+
+.multichat-field {
+  display: grid;
+  gap: 7px;
+  color: var(--color-heading-text);
+  font-weight: 600;
+}
+
+.multichat-field-help {
+  color: var(--color-subtle-text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.multichat-select,
+.multichat-room textarea,
+.multichat-context-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-main-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  padding: 9px 10px;
+}
+
+.multichat-select:focus-visible,
+.multichat-room textarea:focus-visible,
+.multichat-context-input:focus-visible,
+.multichat-choice input:focus-visible {
+  outline: 2px solid var(--color-active-border);
+  outline-offset: 2px;
+}
+
+.multichat-choice-group {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.multichat-choice-group legend {
+  padding: 0 5px;
+  color: var(--color-heading-text);
+  font-weight: 600;
+}
+
+.multichat-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--color-subtle-text);
+  cursor: pointer;
+}
+
+.multichat-choice input {
+  margin: 2px 0 0;
+  accent-color: var(--color-active-border);
+}
+
+.multichat-room {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.multichat-room header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.multichat-room header span {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.multichat-room-context {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  padding: 9px 11px;
+  color: var(--color-subtle-text);
+}
+
+.multichat-room-context summary {
+  cursor: pointer;
+  color: var(--color-heading-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.multichat-room-context p {
+  margin: 9px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.multichat-agents {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.multichat-agents span {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: color-mix(in srgb, var(--color-modal-bg) 72%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.multichat-messages {
+  min-height: 180px;
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--color-modal-bg) 65%, transparent);
+}
+
+.multichat-messages > p {
+  color: var(--color-subtle-text);
+  text-align: center;
+}
+
+.multichat-message {
+  max-width: min(82%, 700px);
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.multichat-message:last-child {
+  margin-bottom: 0;
+}
+
+.multichat-message--user {
+  margin-left: auto;
+  background: color-mix(in srgb, var(--color-accent-bg) 30%, transparent);
+}
+
+.multichat-message--agent {
+  background: color-mix(in srgb, var(--color-hover-surface) 60%, transparent);
+}
+
+.multichat-message--streaming {
+  border-style: dashed;
+}
+
+.multichat-message--streaming details {
+  margin: 0 0 8px;
+  color: var(--color-subtle-text);
+}
+
+.multichat-message--streaming summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.multichat-message--streaming details p {
+  margin-top: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.multichat-message strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+
+.multichat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.multichat-room > [role="status"] {
+  min-height: 20px;
+  margin: 0;
+  color: var(--color-subtle-text);
+}
+
+.multichat-room textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.multichat-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 560px) {
+  .multichat-view {
+    padding: 12px;
+  }
+
+  .multichat-setup {
+    padding: 16px;
+  }
+
+  .multichat-message {
+    max-width: 94%;
+  }
+}
+
 .notia-main-header {
   min-height: 48px;
   border-bottom: 1px solid var(--color-border-strong);

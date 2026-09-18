@@ -590,6 +590,7 @@ function NotiaMenuComponent() {
           />
           <NotiaRightPanel
             isMeetingContext={activeWorkspaceView === 'meeting'}
+            isMultichatContext={activeWorkspaceView === 'multichat'}
             agentCorpusPaths={rightPanelAgentCorpusPaths}
             agentScope={rightPanelAgentScope}
             previousChats={previousChatFiles}

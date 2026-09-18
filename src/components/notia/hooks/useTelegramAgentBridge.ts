@@ -54,6 +54,33 @@ function withTelegramRequestStatus(
   return { ...request, status }
 }
 
+async function sendTelegramMessageBestEffort(
+  token: string,
+  chatId: number,
+  text: string,
+  buttons: Parameters<typeof sendTelegramMessage>[3] = [],
+  parseMode?: Parameters<typeof sendTelegramMessage>[4],
+): Promise<number | null> {
+  try {
+    if (parseMode === undefined && buttons.length === 0) {
+      return await sendTelegramMessage(token, chatId, text)
+    }
+    if (parseMode === undefined) {
+      return await sendTelegramMessage(token, chatId, text, buttons)
+    }
+    return await sendTelegramMessage(token, chatId, text, buttons, parseMode)
+  } catch (error) {
+    // A user can block the bot or remove the chat after a request was queued.
+    // Fire-and-forget notifications must not become unhandled promise
+    // rejections; the durable request itself remains available for recovery.
+    notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram notification failed', {
+      chatId,
+      error: describeTelegramAgentError(error, 'No se pudo enviar la notificación a Telegram.'),
+    }, 'error')
+    return null
+  }
+}
+
 function plansMatch(left: TelegramPersistedPlan | undefined, right: TelegramPersistedPlan | undefined): boolean {
   if (!left || !right) return left === right
   return left.steps.length === right.steps.length
@@ -277,7 +304,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     document.addEventListener('visibilitychange', cancelOnVisibilityChange)
     if (interruptedRequestsRef.current.length > 0) {
       const count = interruptedRequestsRef.current.length
-      void sendTelegramMessage(
+      void sendTelegramMessageBestEffort(
         token,
         authorizedChatId,
         `${count === 1 ? 'Tengo una solicitud' : `Tengo ${count} solicitudes`} interrumpida${count === 1 ? '' : 's'} con estado desconocido. Escribi ${TELEGRAM_RECOVERY_COMMAND} si queres reanudarla${count === 1 ? '' : 's'}; no la voy a repetir automaticamente.`,
@@ -302,7 +329,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const waitForText = (question: string, choices: string[], signal: AbortSignal): Promise<string> => {
       choicesRef.current = choices
       progressPublisherRef.current?.({ type: 'clarification-required', clarificationId: null })
-      void sendTelegramMessage(
+      void sendTelegramMessageBestEffort(
         token,
         authorizedChatId,
         question,
@@ -327,14 +354,14 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     const confirm = (question: string, signal: AbortSignal, preview?: MutationPreview): Promise<boolean> => {
       const id = crypto.randomUUID().slice(0, 8)
       progressPublisherRef.current?.({ type: 'confirmation-required', operationId: null })
-      void sendTelegramMessage(token, authorizedChatId, buildTelegramConfirmationMessage(question, preview), [
+      void sendTelegramMessageBestEffort(token, authorizedChatId, buildTelegramConfirmationMessage(question, preview), [
         { label: 'Confirmar', data: `confirm:${id}:yes` }, { label: 'Cancelar', data: `confirm:${id}:no` },
       ])
       return new Promise((resolve, reject) => {
         const timeoutId = window.setTimeout(() => {
           confirmationRef.current.delete(id)
           resolve(false)
-          void sendTelegramMessage(token, authorizedChatId, 'La confirmación venció después de 2 minutos. No se aplicaron cambios.')
+          void sendTelegramMessageBestEffort(token, authorizedChatId, 'La confirmación venció después de 2 minutos. No se aplicaron cambios.')
         }, TELEGRAM_CONFIRMATION_TIMEOUT_MS)
         const abort = () => {
           window.clearTimeout(timeoutId)

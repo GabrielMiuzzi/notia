@@ -1,261 +1,183 @@
-# Auditoría funcional y uso diario de Finanzas
+# Multichat con dinámicas y agentes múltiples
 
-> Estado: fases 1 a 5 implementadas y verificadas por pruebas/compilación; fases 3 y 4 conservan validación manual pendiente; fases 6 a 9 parcialmente pendientes por cobertura cross-surface y validación de plataforma.
-
-> Validación de esta iteración: `npm test -- --run` (117 archivos, 620 tests), `npm run lint`, `npm run build -- --minify=false`, `npx tsc --noEmit`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, `cargo check --manifest-path src-tauri/Cargo.toml --tests`, `cargo test --manifest-path src-tauri/Cargo.toml --no-run` y `git diff --check` pasan. `cargo test --manifest-path src-tauri/Cargo.toml --lib` compila pero no puede iniciar el ejecutable en este Windows (`STATUS_ENTRYPOINT_NOT_FOUND`). Cargo conserva warnings preexistentes; la validación manual de UI, Telegram y Android/SAF sigue pendiente.
+> Estado: llamada plana a Ollama y streaming de Multichat implementados y validados; pruebas UI/accesibilidad y validaciones manuales de plataforma pendientes por falta de entorno dedicado.
 
 ## Objetivo
 
-Revisar si las relaciones actuales del módulo de Finanzas representan de forma útil y comprensible la información registrada, y convertir esos datos en una experiencia práctica para el control diario de gastos y ahorro.
-
-El módulo no pretende ser una contabilidad exacta ni conciliar saldos bancarios. Las cuentas continuarán funcionando como etiquetas de origen/destino: efectivo, bancos, billeteras y tarjetas pueden quedar incompletos o no coincidir con la realidad. La aplicación debe priorizar una carga sencilla, relaciones explícitas y métricas honestas antes que una falsa precisión.
+Agregar una vista principal **Multichat**, ubicada en la barra izquierda inmediatamente debajo de **Calendario**, donde el usuario pueda crear una sala efímera seleccionando una dinámica Markdown, un contexto adicional opcional y entre uno y seis agentes Markdown. El orquestador debe coordinar turnos secuenciales entre el usuario y los agentes mediante llamadas planas al adaptador existente de Ollama, sin tools de IA ni búsquedas automáticas, conservar los últimos 40 mensajes con identificación explícita del hablante, mostrar el thinking y la respuesta en streaming y permitir que el chat desplegable derecho consulte la conversación activa como contexto auxiliar.
 
 ## Decisiones confirmadas
 
-- Finanzas es información sensible y solo debe estar disponible dentro del contexto `#Confidencial`.
-- El Owner conserva el acceso completo que ya le corresponde; no se amplía el acceso a otros contextos.
-- Las cuentas no mantendrán un saldo conciliable. Solo identificarán el origen o destino declarado de un movimiento.
-- No se agregará sincronización bancaria ni se intentará inferir dinero disponible real.
-- Las prioridades de uso diario son:
-  1. control de gastos;
-  2. control de ahorro.
-- La carga rápida debe ser más importante que la precisión contable absoluta.
-- Telegram debe usar las mismas reglas de relación, cálculo y clasificación que la interfaz.
-- Las consultas financieras locales deben seguir resolviéndose con datos locales y no con búsqueda web.
-- ARS y USD deben mantenerse separados en totales, gráficos, comparaciones y porcentajes.
-- Los datos registrados, documentados, conciliados y derivados deben poder distinguirse visualmente.
-- Este plan reemplaza el plan anterior de fecha de carga y reconciliación de servicios; sus cambios ya existentes en el código deben conservarse.
-
-## Principios y límites del modelo
-
-- SQLite por biblioteca continúa siendo la fuente de verdad.
-- Las cuentas son etiquetas, no libros contables ni saldos.
-- Las reservas de ahorro sí conservan saldo acumulado mediante su saldo inicial y movimientos confirmados.
-- Un gasto confirmado no equivale necesariamente a un gasto documentado o conciliado.
-- Un ticket, un resumen de tarjeta, una factura y una ocurrencia de servicio pueden aportar evidencia distinta del mismo hecho; no deben duplicar el gasto.
-- Pagos y créditos de tarjeta no son gastos de servicios.
-- El total a pagar de un resumen no debe registrarse como un gasto adicional.
-- Los movimientos descartados no participan de las métricas principales.
-- Los movimientos pendientes deben quedar visibles como pendientes y no mezclarse silenciosamente con los confirmados.
-- Las relaciones ambiguas no se aplican automáticamente.
-- Las métricas no deben llamarse “saldo disponible” si no existe un saldo real conciliable.
-- No se guardarán prompts, respuestas completas de modelos, secretos ni contenido privado en logs.
-
-## Relaciones que deben auditarse
-
-1. **Movimiento → cuenta, categoría, comercio y servicio**
-   - La cuenta representa origen o destino declarado.
-   - La categoría representa clasificación del gasto o ingreso.
-   - El comercio y el servicio son relaciones opcionales y deben poder distinguirse de una descripción libre.
-
-2. **Ticket → compra → movimiento**
-   - Verificar cuándo el ticket crea o reutiliza un gasto.
-   - Detectar tickets sin movimiento, movimientos sin ticket y duplicados.
-   - Mantener líneas y totales sin duplicar el importe.
-
-3. **Resumen de tarjeta → líneas → movimientos**
-   - Los consumos y cargos pueden generar gastos individuales.
-   - Pagos y créditos deben quedar como conciliación del resumen, no como gastos.
-   - El total a pagar nunca debe duplicar la suma de consumos.
-   - Las relaciones con servicios deben conservar el período del resumen y su evidencia.
-
-4. **Servicio → ocurrencia → factura → gasto**
-   - Distinguir servicio activo, ocurrencia esperada, ocurrencia pagada, factura y gasto vinculado.
-   - Mostrar cuándo falta evidencia o cuándo existe una propuesta ambigua.
-   - Evitar que una factura por sí sola cree un gasto genérico.
-
-5. **Sueldo → ingreso → ahorro**
-   - Verificar si el sueldo registrado participa correctamente en los indicadores de ahorro.
-   - Separar ingreso cobrado, sueldo documentado y dato usado en un cálculo.
-
-6. **Reserva → movimientos de ahorro**
-   - Separar aportes, retiros, rendimientos, pérdidas y ajustes.
-   - Diferenciar ahorro del período de saldo acumulado de la reserva.
-   - Evitar contar un aporte como gasto común o un retiro como ingreso.
-
-7. **Inversión/valuación → patrimonio**
-   - Distinguir valuación patrimonial de dinero disponible.
-   - Indicar el origen y la fecha de cada valuación.
-
-8. **Cuotas → compromisos futuros**
-   - Verificar qué representa una cuota generada y cómo aparece frente al gasto original.
-   - Evitar contar el total de una compra en cuotas y cada cuota como gastos independientes si el modelo no lo pretende.
-
-## Fase 1 — Auditoría funcional y matriz de relaciones
-
-- [x] Inventariar las entidades financieras, sus campos de relación y sus consumidores en UI, servicios, Rust y tools de IA.
-- [x] Crear una matriz de relaciones con cardinalidad, fuente de verdad, datos derivados, relaciones opcionales y estados ambiguos.
-- [x] Identificar qué relaciones se crean automáticamente, cuáles requieren selección explícita y cuáles solo son sugerencias.
-- [x] Verificar que los DTO TypeScript y Rust representen las mismas relaciones y estados.
-- [x] Documentar las reglas vigentes de gastos confirmados, pendientes, corregidos y descartados.
-- [x] Documentar cómo se separan ARS y USD en cada cálculo.
-- [x] Revisar la relación entre tickets y movimientos para localizar duplicaciones, ausencias y reintentos.
-- [x] Revisar la relación entre resúmenes, líneas, movimientos, pagos y créditos.
-- [x] Revisar la relación entre servicios, ocurrencias, facturas, propuestas y gastos.
-- [x] Revisar la relación entre sueldos, ingresos, ahorro y evolución salarial.
-- [x] Revisar la relación entre reservas, movimientos de ahorro, intercambios y movimientos vinculados.
-- [x] Revisar la relación entre inversiones, valuaciones, patrimonio y fechas de corte.
-- [x] Revisar la relación entre planes de cuotas, cuotas y movimientos.
-- [x] Crear fixtures aislados con relaciones completas, incompletas, duplicadas y ambiguas.
-- [x] Registrar los casos donde no debe inferirse ninguna relación.
-
-## Fase 2 — Reglas de dominio para gastos y ahorro
-
-- [x] Crear transformaciones puras para obtener gastos registrados por día, semana, mes y categoría.
-- [x] Excluir movimientos descartados y separar los pendientes de los confirmados.
-- [x] Definir el tratamiento de movimientos corregidos sin contar dos veces el mismo hecho.
-- [x] Mantener los totales y comparaciones separados por moneda.
-- [x] Crear una transformación pura para aportes, retiros, rendimientos, pérdidas y ajustes de ahorro.
-- [x] Calcular por separado ahorro del período, variación neta y saldo acumulado de cada reserva.
-- [x] Definir qué dato de ingreso se usa para porcentajes de ahorro y mostrar cuando no exista suficiente información.
-- [x] Impedir que movimientos de ahorro se mezclen como gastos o ingresos ordinarios sin una regla explícita.
-- [x] Crear un resultado tipado para métricas incompletas, relaciones ambiguas y datos insuficientes.
-- [x] Evitar nombres engañosos como “saldo disponible”, “dinero restante” o equivalentes cuando no exista conciliación real.
-- [x] Verificar que los cálculos no dependan de la búsqueda web ni de cotizaciones externas para el control básico de gastos y ahorro.
-- [x] Agregar pruebas deterministas de límites, monedas, estados, fechas, duplicados y ausencia de relaciones.
-
-## Fase 3 — Resumen diario de Finanzas
-
-- [x] Revisar la estructura actual de `FinanceView`, `FinanceDashboard` y `FinanceRecordsPanel` para priorizar acciones diarias sobre información secundaria.
-- [x] Diseñar un resumen con vistas diaria, semanal y mensual.
-- [x] Mostrar gastos recientes y acumulados por categoría.
-- [x] Mostrar las categorías con mayor consumo y su variación frente al período comparable cuando existan datos suficientes.
-- [x] Mostrar aportes y retiros de ahorro del período.
-- [x] Mostrar el saldo acumulado de reservas separado del ahorro generado durante el período.
-- [x] Mostrar movimientos pendientes de confirmar o corregir.
-- [x] Mostrar gastos sin categoría, sin evidencia o con relaciones incompletas.
-- [x] Mostrar una indicación clara de cobertura: cantidad de datos registrados y limitaciones conocidas.
-- [x] Evitar presentar métricas derivadas como saldos reales de cuentas.
-- [x] Mantener accesos visibles a registrar gasto y registrar movimiento de ahorro.
-- [x] Mantener estados de carga, vacío, error, carga parcial, datos incompletos y actualización.
-- [ ] Verificar uso con ancho reducido, touch, teclado, foco visible y textos largos.
-
-## Fase 4 — Carga rápida y uso cotidiano
-
-- [x] Diseñar un flujo breve para registrar un gasto con importe, fecha, descripción, categoría opcional y cuenta-origen seleccionable según el contrato nativo vigente.
-- [x] Usar la fecha actual y valores recientes como sugerencias, sin convertirlos en relaciones obligatorias.
-- [x] Permitir corregir categoría, cuenta o fecha antes de confirmar.
-- [x] Diseñar un flujo breve para registrar un aporte, retiro, rendimiento, pérdida o ajuste de ahorro.
-- [x] Mostrar la reserva y moneda seleccionadas antes de confirmar.
-- [x] Mantener los formularios detallados de tickets, sueldos, resúmenes y cuotas como flujos avanzados.
-- [x] Reutilizar las mismas validaciones y servicios nativos de las cargas existentes.
-- [x] Evitar crear un segundo registro cuando una carga rápida coincide exactamente con un movimiento reciente; se requiere una decisión explícita para duplicarlo.
-- [x] Mantener confirmaciones y resultados persistidos según el canal y la mutación.
-- [ ] Verificar que la carga rápida sea viable en escritorio, móvil y teclado virtual.
-- [x] Mantener el Dashboard y Servicios dentro de un único contenedor de Finanzas con un solo scroll vertical.
-- [x] Mantener Dashboard y Servicios dentro de un único panel estructural, con el scroll en el contenedor común de Finanzas.
-- [x] Ubicar el scroll en el tabpanel Home de Finanzas para que todo el panel, incluidos Servicios, sea navegable verticalmente.
-
-## Fase 5 — Exploración y reparación de relaciones
-
-- [x] Permitir filtrar gastos por fecha, categoría, cuenta declarada, moneda, estado, origen y servicio.
-- [x] Mostrar desde cada gasto sus relaciones disponibles de cuenta, categoría, servicio y evidencia.
-- [x] Diferenciar relaciones con incompatibilidades de validación y relaciones faltantes mediante el panel de revisión.
-- [x] Crear una vista o sección de gastos sin categoría.
-- [x] Crear una vista o sección de gastos sin evidencia documental.
-- [x] Extender la exploración para filtrar y auditar relaciones específicas de tickets, tarjetas y ahorro; la reparación queda limitada a las propuestas nativas existentes.
-- [x] Crear una vista o sección de tickets sin movimiento asociado.
-- [x] Crear una vista o sección de movimientos potencialmente duplicados.
-- [x] Crear una vista o sección de consumos de tarjeta todavía no conciliados con servicios.
-- [x] Crear una vista o sección de servicios con ocurrencia o factura incompleta.
-- [x] Permitir reparar una relación con una operación explícita, idempotente y auditable.
-- [x] No permitir que corregir una relación duplique gastos, tickets, movimientos o evidencias.
-- [x] Conservar historial cuando una relación sea reemplazada o desvinculada.
-
-## Fase 6 — Consistencia entre UI, IA y Telegram
-
-- [ ] Verificar que la interfaz y Telegram calculen los mismos totales y estados con el mismo snapshot.
-- [x] Verificar automáticamente que Telegram pueda registrar ahorro sin crear relaciones implícitas inseguras y que las ambigüedades no lleguen a confirmación.
-- [ ] Verificar que texto, audio, imagen y PDF terminen en los mismos contratos financieros.
-- [ ] Verificar que una aclaración de categoría, cuenta, servicio o documento no mutile hasta resolver la ambigüedad.
-- [x] Mantener una única confirmación visible por mutación financiera en Telegram.
-- [x] Verificar automáticamente que Telegram comunique la operación de ahorro solo después del resultado persistido.
-- [ ] Hacer que las respuestas indiquen cuando los datos son parciales, estimados o no conciliados.
-- [x] Mantener `ephemeral-no-memory` en Telegram y no guardar datos financieros en memoria global.
-- [x] Probar que las consultas de datos locales no llamen a `search_web`.
-- [ ] Verificar autorización de lectura y escritura mediante `#Confidencial` para cada tool financiera.
-
-## Fase 7 — Persistencia, compatibilidad y seguridad
-
-- [x] Determinar que las reparaciones auditables requieren una migración SQLite; las lecturas y transformaciones permanecen compatibles.
-- [x] Agregar la migración v20 idempotente para el historial de reparaciones, compatible con bases existentes.
-- [x] Validar biblioteca, actor estable, contexto y origen en todos los nuevos comandos.
-- [x] Mantener importes con centavos exactos y validación de moneda en el límite nativo.
-- [x] Mantener operaciones de relación y reparación atómicas cuando modifiquen más de una entidad.
-- [x] Garantizar reintentos idempotentes y resultados verificables mediante `operationId`.
-- [ ] No registrar contenido privado, documentos, secretos, prompts ni respuestas completas del agente.
-- [ ] Revisar que los cambios no expongan Finanzas en la URL pública de Task Manager.
-- [ ] Revisar accesibilidad semántica, labels, roles, foco y acciones alternativas a hover.
-
-## Fase 8 — Pruebas
-
-- [x] Probar la matriz de relaciones con fixtures aislados.
-- [x] Probar gastos por día, semana, mes y categoría mediante rangos deterministas del motor.
-- [x] Probar gastos confirmados, pendientes, corregidos, descartados y duplicados en las reglas de dominio/auditoría.
-- [x] Probar ARS y USD sin agregación cruzada.
-- [x] Probar aportes, retiros, rendimientos, pérdidas, ajustes y saldo acumulado de ahorro.
-- [x] Probar que retirar ahorro no se cuente como gasto común.
-- [x] Probar tickets con y sin movimiento asociado.
-- [ ] Probar resúmenes con consumos, pagos, créditos, intereses, impuestos y total a pagar.
-- [ ] Probar que el total del resumen no duplique gastos.
-- [ ] Probar servicios con pago, factura, gasto, ocurrencia faltante y ambigüedad.
-- [ ] Probar cuotas sin duplicar el total de la compra.
-- [ ] Probar inversiones y valuaciones sin presentarlas como saldo disponible.
-- [ ] Probar datos incompletos y mensajes de cobertura parcial.
-- [ ] Probar carga rápida y actualización del dashboard después de guardar.
-- [ ] Probar consistencia entre UI, app chat y Telegram con los mismos fixtures.
-- [ ] Probar autorización `#Confidencial`, biblioteca distinta y actor no autorizado.
-- [ ] Probar cancelación, rechazo, errores de persistencia, reintentos y operaciones obsoletas.
-- [ ] Mantener pruebas sin servicios reales, bots reales, red externa ni secretos.
-
-## Fase 9 — Validación y documentación
-
-- [x] Ejecutar las pruebas focalizadas del dominio financiero.
-- [ ] Ejecutar pruebas de UI y accesibilidad afectadas.
-- [x] Ejecutar pruebas de integración de tools, chat y Telegram.
-- [x] Ejecutar `npx tsc --noEmit`.
-- [x] Ejecutar `npm run lint`.
-- [x] Ejecutar `npm run build -- --minify=false`.
-- [x] Ejecutar la suite web completa con los flags definidos por el proyecto.
-- [x] Ejecutar `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`.
-- [x] Ejecutar `cargo check --manifest-path src-tauri/Cargo.toml --tests`.
-- [x] Ejecutar las pruebas nativas disponibles y registrar bloqueos de plataforma.
-- [ ] Validar manualmente el resumen diario con datos de gastos y ahorro.
-- [ ] Validar manualmente carga rápida en escritorio y pantalla reducida.
-- [ ] Validar manualmente Telegram con gasto simple, gasto ambiguo, aporte de ahorro y cancelación.
-- [ ] Actualizar `README-TECH.md` con el modelo de relaciones, métricas, límites, contratos y validaciones reales.
-- [ ] Actualizar `README.md` si cambia el comportamiento visible para usuarios.
-- [ ] Actualizar `FUNCIONALIDADES.md` si cambia el inventario de capacidades.
-- [ ] Agregar exactamente una línea a `CHANGELOG.md` con fecha, hora y zona horaria.
-- [ ] Solicitar al subagente documentador la sincronización final y revisar su resultado.
-- [x] Revisar el diff completo, preservar cambios preexistentes y eliminar artefactos accidentales.
-
-## Criterios de aceptación
-
-- [ ] El usuario puede consultar gastos diarios, semanales y mensuales por categoría y moneda.
-- [ ] El usuario puede consultar cuánto aportó, retiró y acumuló en ahorro sin mezclar esos conceptos.
-- [ ] Ninguna pantalla presenta saldos de cuentas o dinero disponible que el modelo no pueda conocer.
-- [ ] Cada métrica informa o permite entender si se basa en datos completos, parciales, pendientes o no conciliados.
-- [ ] Los gastos provenientes de tickets y resúmenes no se duplican.
-- [ ] Pagos, créditos y totales de tarjeta no aparecen como gastos individuales incorrectos.
-- [ ] Las relaciones con servicios, tickets, tarjetas, ahorro e inversiones son visibles y trazables.
-- [ ] Las relaciones ambiguas requieren decisión explícita y no se aplican silenciosamente.
-- [ ] Registrar un gasto cotidiano requiere pocos campos y no obliga a completar relaciones que no se conocen.
-- [ ] Registrar ahorro requiere pocos pasos y actualiza el resumen de forma verificable.
-- [ ] UI, chat de la app y Telegram producen resultados equivalentes para los mismos datos.
-- [ ] Toda lectura y mutación financiera respeta `#Confidencial`.
-- [ ] Los importes ARS y USD no se mezclan en cálculos engañosos.
-- [ ] Los cambios conservan idempotencia, historial, auditoría y compatibilidad con datos existentes.
+- La funcionalidad se implementará para Windows y Android.
+- La carpeta de dinámicas será `.agent/dynamics/`, dentro de la biblioteca activa.
+- Los agentes se seleccionan desde `.agent/promps/`, respetando la estructura existente del proyecto.
+- Las dinámicas y los prompts son archivos Markdown de texto libre; el frontmatter se ignora al cargar su contenido.
+- La aplicación debe garantizar `.agent/dynamics/` aunque la carpeta todavía no exista.
+- Una sala requiere una dinámica válida y entre uno y seis agentes válidos. Si falta cualquiera de ellos, la sala no puede iniciarse.
+- Los agentes seleccionados quedan fijos durante toda la sala y nunca pueden participar agentes que no hayan sido seleccionados para esa sala.
+- La sala comienza vacía y espera el primer mensaje del usuario.
+- Las sesiones son efímeras: no se guardan como chats ni se recuperan del historial; al cerrar la pestaña de Multichat se pierde su estado.
+- Al crear la sala se puede incluir un contexto adicional libre; queda fijo durante la sala y se reenvía a cada agente junto con la dinámica y su prompt en todos los turnos.
+- Los agentes no reciben tools de IA, no pueden iniciar mutaciones ni búsquedas web y no requieren confirmaciones.
+- La sala no ejecuta el motor global de agentes: cada turno usa una llamada plana al adaptador local existente de Ollama, con cancelación y errores compartidos.
+- La selección de turnos debe limitarse al conjunto de agentes de la sala. Cada ronda elige un subconjunto no vacío y un orden aleatorio dentro de ese conjunto, salvo que la dinámica nombre agentes concretos o indique explícitamente que deben participar todos.
+- Las respuestas de una ronda son secuenciales para que cada agente pueda recibir las respuestas anteriores en el contexto.
+- Los agentes pueden iniciar turnos entre ellos de forma automática. Si el usuario no interviene, la cadena automática debe detenerse después de un límite aleatorio de entre una y cuatro rondas y esperar nuevamente al usuario; una dinámica puede pedir explícitamente esperar al usuario.
+- Cada agente recibe como historial conversacional los últimos 40 mensajes, con el hablante identificado como usuario o agente concreto.
+- Cada agente debe recibir la dinámica seleccionada, su propio prompt y el contexto adicional fijo de la sala.
+- Cada agente debe ejecutarse mediante una llamada plana al adaptador existente de Ollama, sin catálogo de tools ni búsqueda web.
+- Cada agente se muestra con nombre derivado de su archivo, icono diferenciado y color asignado automáticamente desde una paleta fija.
+- El panel derecho conserva sus permisos normales de chat y no recibe tools ni capacidades de la sala Multichat.
+- Cuando el panel derecho se abre desde Multichat, debe conocer que el contexto activo es una sala Multichat y poder consultar la conversación activa como contexto, pero no debe convertirse en un participante ni publicar mensajes dentro de la sala.
 
 ## Fuera de alcance
 
-- Conciliación automática con bancos, billeteras o tarjetas.
-- Cálculo de saldo real de cuentas.
-- Pretender que el efectivo registrado sea exacto.
-- Integración bancaria o sincronización externa de movimientos.
-- Presupuestos obligatorios o límites de gasto antes de validar el modelo actual.
-- Compartir Finanzas fuera de usuarios autorizados por `#Confidencial`.
-- Exponer Finanzas en la URL pública de Task Manager.
-- Usar búsqueda web para completar o validar datos financieros locales.
-- Resolver automáticamente relaciones ambiguas.
-- Eliminar documentos, movimientos o evidencias para “limpiar” inconsistencias.
+- Persistir salas Multichat o agregarlas al historial de chats.
+- Permitir cambiar la dinámica o los agentes después de iniciar una sala.
+- Permitir que agentes no seleccionados entren en una sala.
+- Crear un motor de IA separado del motor global existente.
+- Agregar un canal nuevo para Telegram o la URL pública.
+- Cambiar los permisos normales del panel derecho.
+- Permitir que el panel derecho participe automáticamente en los turnos del Multichat.
+
+## Fase 1 — Contratos, arquitectura y estado efímero
+
+- [x] Inventariar el flujo vigente de pestañas especiales, barra izquierda, workspace principal y panel derecho.
+- [x] Definir el contrato tipado de una sala: dinámica, agentes seleccionados, mensajes, hablante, estado de ronda, contador/límite de rondas automáticas y cancelación.
+- [x] Definir el contrato de mensaje Multichat con `user` o identificador estable de agente como hablante, sin perder el nombre visible del agente.
+- [x] Definir el contexto adicional de la sala como contenido textual fijo, serializable y separado del historial de mensajes.
+- [x] Definir el límite exacto de 40 mensajes para cada solicitud de agente y la transformación serializable del historial.
+- [x] Definir estados observables: configuración, sala vacía, turno del usuario, turno de agentes, espera del usuario, carga, error, cancelación y agente sin respuesta.
+- [x] Definir una política de sesión efímera que no escriba archivos de chat ni localStorage y elimine el estado al cerrar la pestaña de Multichat.
+- [x] Definir cómo el estado activo queda disponible para el panel derecho mientras la sala está montada.
+- [x] Definir el contrato de la llamada plana a Ollama, sin scope de tools, actor ni autorización de mutaciones.
+- [x] Definir el streaming separado de thinking y respuesta, incluyendo cancelación y cleanup.
+- [x] Documentar los contratos de cancelación, resultados obsoletos, timeout y cleanup para rondas secuenciales.
+
+## Fase 2 — Estructura `.agent/dynamics` y carga segura de archivos
+
+- [x] Extender la inicialización existente de `.agent` para garantizar `.agent/dynamics/` sin modificar ni reemplazar dinámicas creadas por el usuario.
+- [x] Crear un servicio tipado para listar dinámicas `.md` directamente dentro de `.agent/dynamics/`.
+- [x] Crear un servicio tipado para cargar el contenido de una dinámica seleccionada.
+- [x] Reutilizar el cargador de `.agent/promps/` para listar y leer prompts de agentes, filtrando únicamente archivos Markdown válidos.
+- [x] Ignorar frontmatter al componer dinámicas y prompts, sin alterar los archivos del usuario.
+- [x] Validar nombres de archivo, extensiones, rutas y pertenencia a las carpetas permitidas para impedir traversal o lecturas fuera de la biblioteca.
+- [x] Rechazar archivos ausentes, vacíos, ilegibles o selecciones que hayan cambiado antes de iniciar la sala.
+- [x] Definir mensajes de error seguros para carpeta inexistente, dinámica inválida, prompt inválido y ausencia de agentes.
+- [x] Cubrir con pruebas deterministas la creación idempotente de la carpeta, el filtrado Markdown, la extracción del cuerpo sin frontmatter y los límites de selección.
+
+## Fase 3 — Motor de orquestación Multichat
+
+- [x] Implementar un motor puro para seleccionar participantes únicamente entre los agentes fijados en la sala.
+- [x] Implementar la interpretación de la política indicada por la dinámica para elegir un subconjunto o todos los agentes de la sala, con orden aleatorio y subconjunto no vacío por defecto.
+- [x] Implementar la selección aleatoria con una fuente inyectable para pruebas deterministas.
+- [x] Implementar la secuencia de respuestas: cada agente recibe el historial actualizado después de la respuesta anterior.
+- [x] Implementar la creación de rondas automáticas entre agentes y el límite aleatorio de una a cuatro rondas sin intervención del usuario.
+- [x] Reiniciar el contador de rondas automáticas cuando el usuario interviene.
+- [x] Impedir respuestas automáticas cuando la dinámica o el estado de la sala requieren esperar al usuario.
+- [x] Construir para cada agente un prompt compuesto por dinámica, prompt individual, contexto fijo y política de participación, sin conceder capacidades externas.
+- [x] Incluir el contexto adicional fijo de la sala en cada solicitud de agente junto con la dinámica y el prompt individual.
+- [x] Incorporar los últimos 40 mensajes con etiquetas explícitas del tipo `Usuario` o nombre del agente.
+- [x] Ejecutar cada ronda a través del adaptador plano de streaming de Ollama y no mediante llamadas directas desde la vista.
+- [x] Garantizar que la llamada plana no envíe catálogo de tools ni habilite búsqueda web o mutaciones.
+- [x] Mantener dinámica, prompt, contexto e historial acotado consistentes durante cada turno.
+- [x] Manejar cancelación de la sala, cancelación de una respuesta, timeout, error de un agente y resultados obsoletos sin continuar la cadena automáticamente.
+- [x] Definir si un agente que devuelve una respuesta vacía se omite con error visible o detiene la ronda, respetando el comportamiento seguro del runtime global.
+- [x] Agregar pruebas de selección, exclusión de agentes no seleccionados, orden secuencial, ventana de 40 mensajes, límite automático, cancelación y streaming sin tools.
+
+## Fase 4 — Vista Multichat y creación de salas
+
+- [x] Agregar la acción de barra izquierda **Multichat** inmediatamente debajo de **Calendario**, con icono accesible y estado activo.
+- [x] Extender los tipos de UI, pestañas especiales, selectores, navegación, títulos de pestañas y cierre de pestaña para la nueva vista.
+- [x] Crear el flujo de configuración inicial de una sala con selección obligatoria de una dinámica y de uno a seis agentes.
+- [x] Agregar un textbox accesible para contexto adicional opcional y conservarlo inmutable al iniciar la sala.
+- [x] Mostrar nombres sin `.md`, indicar archivos vacíos o inválidos y bloquear el inicio hasta tener una configuración válida.
+- [x] Eliminar la configuración de permisos de sala porque el runtime no ofrece tools ni mutaciones.
+- [x] Mantener dinámica y agentes inmutables una vez creada la sala.
+- [x] Iniciar la vista con una conversación vacía y un compositor para el primer mensaje del usuario.
+- [x] Renderizar mensajes de usuario y agentes en orden cronológico, mostrando nombre, icono, color y estado de participación.
+- [x] Mostrar estados de espera del usuario, thinking y respuesta incremental por agente, turnos automáticos, error individual, cancelación y reintento seguro.
+- [x] Permitir cancelar una cadena de respuestas sin dejar turnos obsoletos ejecutándose.
+- [x] Eliminar el estado de la sala al cerrar su pestaña, sin guardar historial ni rehidratarla al volver a abrir Multichat.
+- [x] Diseñar controles semánticos, labels, foco visible, navegación por teclado, touch, tamaños reducidos, textos largos y teclado virtual.
+- [x] Asignar iconos y colores de forma determinista mediante una paleta fija, sin requerir metadata adicional en los `.md`.
+- [ ] Verificar que la interfaz siga funcionando con uno y seis agentes, respuestas largas y mensajes intercalados.
+
+## Fase 5 — Llamada plana y streaming de Ollama
+
+- [x] Conectar cada agente al adaptador plano existente de Ollama sin catálogo de tools ni búsqueda web.
+- [x] Mostrar deltas de thinking y respuesta separados mientras el agente responde.
+- [x] Cancelar y limpiar el stream activo sin guardar thinking ni resultados obsoletos.
+- [x] Mantener el prompt de dinámica, agente, contexto e historial acotado fuera de cualquier catálogo de capacidades.
+
+## Fase 6 — Contexto del panel derecho
+
+- [x] Extender la resolución de contexto del panel derecho para reconocer la vista Multichat.
+- [x] Exponer una etiqueta clara de contexto activo indicando que el panel está consultando una sala Multichat.
+- [x] Pasar al panel derecho la conversación activa con sus últimos 40 mensajes y hablantes identificados.
+- [x] Hacer disponible la dinámica y la composición de agentes como contexto descriptivo cuando corresponda, sin convertir el panel en participante.
+- [x] Hacer disponible el contexto adicional de la sala al panel derecho como información auxiliar, sin convertirlo en participante.
+- [x] Mantener el chat del panel derecho como un único asistente auxiliar que responde normalmente al usuario.
+- [x] Mantener los permisos normales del panel derecho aunque Multichat no tenga tools.
+- [x] No persistir la conversación Multichat por el hecho de abrir o usar el panel derecho.
+- [x] Invalidar el contexto del panel cuando se cierre la sala, cambie la biblioteca o se destruya la pestaña.
+- [x] Cubrir con pruebas el contexto presente, la conversación truncada a 40 mensajes, el aislamiento tras cerrar la sala y la independencia del panel derecho.
+
+## Fase 7 — Validación multiplataforma y pruebas
+
+- [x] Agregar pruebas unitarias del motor de selección, aleatoriedad inyectable, ventanas de contexto, turnos, streaming y ausencia de tools.
+- [x] Agregar pruebas de servicios de dinámicas y prompts sin filesystem real ni datos privados.
+- [x] Agregar pruebas de integración del runtime plano con varios agentes y ejecución secuencial simulada.
+- [ ] Agregar pruebas de UI para configuración, validaciones, conversación vacía, mensajes diferenciados, cancelación y cierre efímero.
+- [ ] Agregar pruebas de accesibilidad para la acción de barra, selector de dinámica, selección múltiple, compositor, streaming y mensajes.
+- [ ] Verificar Windows con archivos locales y watcher de biblioteca.
+- [ ] Verificar Android con SAF, lectura de `.agent/dynamics/`, prompts, creación de sala, cancelación y cierre de pestaña.
+- [x] Ejecutar `npm test -- --run`.
+- [x] Ejecutar `npx tsc --noEmit`.
+- [x] Ejecutar `npm run lint`.
+- [x] Ejecutar `npm run build -- --minify=false`.
+- [x] Ejecutar `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`.
+- [x] Ejecutar `cargo check --manifest-path src-tauri/Cargo.toml --tests`.
+- [x] Ejecutar `git diff --check`.
+- [x] Registrar explícitamente las validaciones manuales pendientes de Android físico, si no hubiera dispositivo disponible.
+
+## Fase 8 — Documentación y entrega
+
+- [x] Revisar el diff completo y preservar cualquier cambio preexistente.
+- [x] Verificar que no se hayan creado logs temporales, archivos accidentales, secretos ni artefactos generados.
+- [x] Marcar en este archivo únicamente las tareas implementadas y verificadas.
+- [x] Actualizar `README-TECH.md` con arquitectura, llamada plana, streaming, ausencia de tools, ciclo efímero, orquestación, contexto del panel, límites y validaciones reales mediante el flujo documental obligatorio.
+- [x] Actualizar `README.md` con el uso visible de Multichat, streaming y ausencia de tools mediante el flujo documental obligatorio.
+- [x] Actualizar `FUNCIONALIDADES.md` con la funcionalidad visible, manteniendo el archivo como lista breve.
+- [x] Agregar exactamente una línea nueva a `CHANGELOG.md` con fecha, hora, zona horaria y resumen del cambio.
+- [x] Solicitar obligatoriamente al subagente documentador la sincronización final con el resumen de cambios, archivos modificados y validaciones ejecutadas.
+- [x] Revisar el resultado del subagente documentador y corregir contradicciones documentales antes de entregar.
+
+## Criterios de aceptación
+
+- [x] Existe un acceso **Multichat** debajo de Calendario en la barra izquierda.
+- [x] La aplicación garantiza `.agent/dynamics/` y permite elegir dinámicas Markdown creadas por el usuario.
+- [x] El usuario puede seleccionar una dinámica y entre uno y seis agentes de `.agent/promps/`.
+- [x] La sala no inicia si la dinámica o algún prompt seleccionado está vacío, ilegible o inválido.
+- [x] Multichat no ofrece tools, búsquedas web, mutaciones ni selección de permisos de sala.
+- [x] La sala comienza vacía y el primer mensaje siempre lo escribe el usuario.
+- [x] El usuario puede incluir contexto adicional al crear la sala y cada agente lo recibe junto con la dinámica y su prompt en cada turno.
+- [x] Solo participan agentes seleccionados para esa sala.
+- [x] Las respuestas son secuenciales y cada agente recibe los últimos 40 mensajes identificados por hablante.
+- [x] Las rondas automáticas entre agentes son posibles, pero se detienen después de un límite aleatorio de una a cuatro rondas sin usuario, salvo que la dinámica pida esperar.
+- [x] Cada agente muestra thinking y respuesta mediante streaming del adaptador plano de Ollama.
+- [x] Cada agente se identifica visualmente por nombre, icono y color.
+- [x] La sala no se persiste y se pierde al cerrar la pestaña Multichat.
+- [x] El contexto de la sala se incluye en cada llamada plana; la sala no usa tools ni memoria global del agente.
+- [x] El panel derecho reconoce el contexto Multichat y puede consultar la conversación activa, pero responde como asistente único y no participa en la sala.
+- [x] El panel derecho conserva sus permisos normales aunque Multichat no tenga tools.
+- [ ] El comportamiento funciona en Windows y Android dentro de las limitaciones de plataforma documentadas.
+
+## Riesgos y límites que deben documentarse
+
+- [x] La aleatoriedad debe ser reproducible en pruebas y no debe permitir participantes fuera del conjunto seleccionado.
+- [x] La ejecución secuencial puede aumentar la latencia y el consumo de tokens con seis agentes.
+- [x] La ventana de 40 mensajes debe respetarse aunque la conversación total crezca; el estado visual puede conservar más mensajes mientras el contexto enviado se acota.
+- [x] El contenido de dinámicas, prompts y contexto es una instrucción del usuario, pero no habilita tools ni búsquedas.
+- [x] El stream puede aumentar la latencia y el consumo de tokens con seis agentes; la cancelación debe descartar resultados obsoletos.
+- [x] Si una llamada plana o un agente falla durante una cadena automática, el runtime debe detener la continuación automática y mostrar un estado recuperable.

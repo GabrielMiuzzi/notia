@@ -10,6 +10,7 @@ export type WorkspaceAiView =
   | 'coldpass'
   | 'meeting'
   | 'finance'
+  | 'multichat'
   | 'calendar'
 
 export type WorkspaceAiScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance' | 'published'
@@ -316,6 +317,7 @@ function isWorkspaceAiView(value: unknown): value is WorkspaceAiView {
     || value === 'coldpass'
     || value === 'meeting'
     || value === 'finance'
+    || value === 'multichat'
     || value === 'calendar'
 }
 

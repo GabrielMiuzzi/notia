@@ -131,13 +131,13 @@ Validación de aquella incorporación: build frontend y 233 pruebas aprobadas; l
 
 `notiaChatRuntime.ts` es la fachada única de ejecución. Los adaptadores conservan sus transportes —UI local, NDJSON/streaming publicado y formato HTML de Telegram—, pero comparten ciclo de tools, aclaraciones, confirmaciones, planes, cancelación y validación; la excepción es Telegram con `enableFinanceTools`, cuyo catálogo retira las herramientas de planes para limitar el turno financiero a una mutación confirmada. La URL pública usa la proyección estricta `published-task-manager`: solo expone capacidades de Task Manager y solo incorpora tickets con metadata válida cuyo tablero pertenece a la selección publicada. `scopePaths`, IDs y nombres recibidos del navegador son hints de UX; el host reconstruye el universo desde la biblioteca y Rust revalida board, ticket, contexto, revisión y operación antes de persistir. Documentos generales, Graph View y Finanzas quedan fuera de esa proyección.
 
-`aiAuthorizationEngine.ts` normaliza contextos sin prefijos ni coincidencias parciales; un recurso sin `contexto` cae en `#Personal`. El catálogo se filtra antes de enviarlo al modelo y cada tool se autoriza de nuevo al ejecutarse. Owner tiene todos los contextos; los demás usuarios solo tienen los tags persistidos en `library_user_contexts`. Todas las tools financieras, incluido el snapshot completo, las lecturas paginadas o por ID, el CRUD, las bajas, la reversión, la limpieza, las cotizaciones, inflación, históricos, patrimonio, comprobantes y extracción, exigen `#Confidencial` tanto para leer como para escribir. La memoria de `.agent/memory/` se hidrata únicamente para `user-owner`; las reglas operativas se cargan desde la biblioteca según el agente construido. Meeting, Graph View, Telegram y la publicación no crean ni hidratan memoria global. Telegram envía `persistencePolicy: 'ephemeral-no-memory'` en su envelope y `useTelegramAgentBridge` propaga explícitamente esa misma política a `createGlobalAiAgent`, por lo que `createChatScopedAgent` no carga ni persiste memoria para esa superficie.
+`aiAuthorizationEngine.ts` normaliza contextos sin prefijos ni coincidencias parciales; un recurso sin `contexto` cae en `#Personal`. El catálogo se filtra antes de enviarlo al modelo y cada tool se autoriza de nuevo al ejecutarse. Owner tiene todos los contextos; los demás usuarios solo tienen los tags persistidos en `library_user_contexts`. Todas las tools financieras, incluido el snapshot completo, las lecturas paginadas o por ID, el CRUD, las bajas, la reversión, la limpieza, las cotizaciones, inflación, históricos, patrimonio, comprobantes y extracción, exigen `#Confidencial` tanto para leer como para escribir. La memoria de `.agent/memory/` se hidrata únicamente para `user-owner`; las reglas operativas se cargan desde la biblioteca según el agente construido. Meeting, Graph View, Multichat, Telegram y la publicación no crean ni hidratan memoria global. Telegram envía `persistencePolicy: 'ephemeral-no-memory'` en su envelope y `useTelegramAgentBridge` propaga explícitamente esa misma política a `createGlobalAiAgent`, por lo que `createChatScopedAgent` no carga ni persiste memoria para esa superficie.
 
 La publicación usa sesiones server-side con expiración de 12 horas. Vencer una sesión, revocar o eliminar el usuario, cambiar sus contextos, cambiar de biblioteca o detener/republicar cancela requests del host, streams de IA y WebSockets asociados. Finanzas conserva el `actorLibraryUserId` estable y el canal `app`, `public-url` o `telegram` en el `FinanceContext` y en las mutaciones cubiertas; el ID numérico de Telegram permanece separado como identidad externa histórica. Las mutaciones financieras de Telegram no se auto-confirman: usan una única confirmación visible por mutación, ejecución y resultado verificable; la segunda confirmación reforzada queda reservada a los canales que la solicitan.
 
 Los rechazos usan errores seguros como `missing-actor`, `invalid-source`, `unauthorized-context`, `unauthorized-tool`, `session-revoked`, `library-mismatch` y `resource-not-found`, sin revelar existencia, rutas, títulos, snippets, saldos ni metadata protegida.
 
-Validación registrada para esta iteración: `npm test` pasó con 115 archivos y 606 tests, junto con `npm run lint`, `npm run build -- --minify=false` (5843 módulos), `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, `cargo check --manifest-path src-tauri/Cargo.toml --tests` y `git diff --check`. Permanecen warnings existentes de bundles/tamaños del build y de código Rust no usado. Quedan pendientes las validaciones manuales de UI, Telegram real y Android/SAF.
+Validación registrada para una iteración anterior del runtime: `npm test` pasó con 115 archivos y 606 tests, junto con `npm run lint`, `npm run build -- --minify=false` (5843 módulos), `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, `cargo check --manifest-path src-tauri/Cargo.toml --tests` y `git diff --check`. Permanecen warnings existentes de bundles/tamaños del build y de código Rust no usado. Quedan pendientes las validaciones manuales de UI, Telegram real y Android/SAF; la validación vigente de Multichat se registra en su sección.
 
 Las ediciones del documento activo cuentan con `propose_document_edit` y `apply_document_edit` para separar preview de escritura. Los aliases `replace_active_markdown_document` e `insert_active_markdown_document` también calculan un `MutationPreview` con hunk acotado, revisan la hash de la fuente dirty antes y después de la confirmación, registran un `operationId` idempotente y notifican al editor mediante `onActiveMarkdownDocumentChanged`. `undo_ai_operation` usa un journal en memoria y rechaza restaurar si el documento cambió después; el journal no persiste contenido privado ni habilita restauración ciega.
 
@@ -352,13 +352,13 @@ Al aceptar, `finance_decide_audit_proposal` abre una transacción SQLite nativa,
 
 Las reglas deterministas generan las tres operaciones de auditoría general anteriores. Los hallazgos contextuales solo se incorporan si traen `proposalType`, `ruleKey`, `operation`, `parameters`, `reason`, `currentData` y `suggestedChange` acotados; el catálogo restringe `operation` a esas tres opciones y el aplicador nativo vuelve a validar los parámetros. La reconciliación determinista de tarjeta usa además `reconcile_card_service_consumption` únicamente para propuestas `service-card-reconciliation`. `FinanceServicesView` muestra la descripción del objeto estructurado en lugar de exponer el JSON como único texto de la propuesta.
 
-#### Composición actual de Finanzas y validación de esta iteración
+#### Composición actual de Finanzas y validación de una iteración anterior
 
 `FinanceView` conserva únicamente las pestañas **Home** y **Dev**. Home renderiza `FinanceDashboard` y `FinanceServicesView` dentro de `section.finance-home-tabpanel`, el único contenedor con `overflow-y: auto` y desplazamiento vertical navegable de todo el módulo Home. Dentro del tabpanel se anidan `.notia-finance-view` y el único `div.finance-home-panel`, que agrupa ambos módulos; servicios, ocurrencias, facturas/boletas, historial y auditoría se consumen debajo del dashboard y no desde una pestaña Servicios independiente. El tabpanel permite recorrer verticalmente todo Finanzas y Servicios, mientras `.notia-finance-view`, `.finance-home-panel` y los roots de `FinanceDashboard` y `FinanceServicesView` usan altura automática y `overflow: visible`, sin scrolls internos. El root del dashboard conserva la clase `finance-dashboard`, también durante la carga, para separar su layout del root de Servicios. `FinanceServicesView` importa estáticamente `listFinanceServiceOccurrenceVersions`; no mantiene el import dinámico anterior. `FinanceDashboard` y `FinanceServicesView` usan contenedores semánticos `section` en lugar de anidar elementos `main`.
 
 Las regresiones de `src/services/chat/chatScopedAgentRuntime.search.test.ts` cubren el flujo de ahorro por Telegram: si el nombre de la reserva coincide con varias reservas, el resultado devuelve `finance-savings-reserve-ambiguous`, solicita aclaración y no llama a la confirmación ni a `saveFinanceSavingsExchange`; cuando la reserva y la cuenta quedan resueltas, se solicita una sola confirmación, se persiste el intercambio y la respuesta devuelve el movimiento y la transacción persistidos. Este caso no agrega una segunda confirmación ni una búsqueda web.
 
-Validaciones ejecutadas en esta iteración: `npm test -- --run` pasó con 117 archivos y 620 tests; también pasaron `npm run lint`, `npx tsc --noEmit`, `npm run build -- --minify=false` y `git diff --check`. El build conserva warnings de Vite ya conocidos. Quedan pendientes las validaciones manuales de UI, Telegram real y Android/SAF.
+Validaciones ejecutadas en una iteración anterior de Finanzas: `npm test -- --run` pasó con 117 archivos y 620 tests; también pasaron `npm run lint`, `npx tsc --noEmit`, `npm run build -- --minify=false` y `git diff --check`. El build conserva warnings de Vite ya conocidos. Quedan pendientes las validaciones manuales de UI, Telegram real y Android/SAF; la validación vigente de Multichat se registra en su sección.
 
 #### Refresco resiliente de Servicios y eventos financieros
 
@@ -923,11 +923,11 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
 #### Descripción
 Sistema de chat con Ollama local o Cloud según la configuración. Incluye health check con caché, streaming de respuestas en desktop y Android, listado de modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
-Todos los chats de la aplicación —vista principal, panel lateral, Meeting, Telegram y la URL pública— entran obligatoriamente por `notiaChatRuntime.ts`. Esta fachada ejecuta `runNativeToolAgent` con el agente construido por `chatScopedAgentRuntime.ts`, el mismo prompt, configuración, límites, validación y serialización de mutaciones. Los adaptadores envían únicamente el catálogo autorizado por la política del actor; las tools se validan y ejecutan localmente, se agregan sus resultados y el ciclo continúa hasta la respuesta final. Meeting, Telegram y publicación usan políticas sin memoria. Telegram declara `ephemeral-no-memory` en el request y `useTelegramAgentBridge` la pasa explícitamente al construir el agente; las escrituras requieren confirmación individual y las solicitudes compuestas usan un plan aprobado antes de ejecutar, excepto cuando Finanzas está habilitada: en ese caso se filtran las herramientas de planes, el turno admite como máximo una mutación financiera confirmada y no se encadenan dos confirmaciones. La capacidad informada por `/api/show` solo ayuda al selector; `/api/chat` es la autoridad final del proveedor.
+Todos los chats de la aplicación —vista principal, panel lateral, Meeting, Telegram y la URL pública— entran obligatoriamente por `notiaChatRuntime.ts`. Esa fachada ejecuta `runNativeToolAgent` con el agente construido por `chatScopedAgentRuntime.ts`, compartiendo prompt, configuración, límites, validación y serialización de mutaciones. Multichat es una superficie separada: `multichatRuntime.ts` usa directamente `streamAiChatReply` para una llamada plana por agente y no entra en el ciclo de tools, aclaraciones, confirmaciones o memoria global. Meeting, Telegram y publicación usan políticas sin memoria. Telegram declara `ephemeral-no-memory` en el request y `useTelegramAgentBridge` la pasa explícitamente al construir el agente; las escrituras requieren confirmación individual y las solicitudes compuestas usan un plan aprobado antes de ejecutar, excepto cuando Finanzas está habilitada: en ese caso se filtran las herramientas de planes, el turno admite como máximo una mutación financiera confirmada y no se encadenan dos confirmaciones. La capacidad informada por `/api/show` solo ayuda al selector; `/api/chat` es la autoridad final del proveedor.
 
-La fachada versionada `globalAiChatRuntime.ts` es el límite único para los adaptadores de aplicación, URL pública y Telegram. Cada solicitud contiene `version`, `libraryId`, `requestId`, un `actor.libraryUserId` estable, canal/superficie, `WorkspaceAiSnapshot`, scope solicitado y política de persistencia. Telegram conserva el identificador numérico únicamente como identidad externa vinculada; no lo usa como autorización. El motor `aiAuthorizationEngine.ts` filtra el catálogo y vuelve a autorizar cada llamada: los contextos se comparan por etiqueta exacta, sin prefijos, el frontmatter ausente o inválido cae en `#Personal`, y todo Finanzas requiere `#Confidencial`. La memoria solo se hidrata para `user-owner`; las reglas se cargan desde la biblioteca según el agente construido. Meeting, Telegram y la URL publicada usan políticas sin memoria; en Telegram la política se propaga explícitamente desde `useTelegramAgentBridge` a `createGlobalAiAgent`.
+La fachada versionada `globalAiChatRuntime.ts` es el límite único para los adaptadores de aplicación, URL pública y Telegram; Multichat no la utiliza para ejecutar agentes. Cada request global contiene `version`, `libraryId`, `requestId`, un `actor.libraryUserId` estable, canal/superficie, `WorkspaceAiSnapshot`, scope solicitado y política de persistencia. Telegram conserva el identificador numérico únicamente como identidad externa vinculada; no lo usa como autorización. El motor `aiAuthorizationEngine.ts` filtra el catálogo y vuelve a autorizar cada llamada: los contextos se comparan por etiqueta exacta, sin prefijos, el frontmatter ausente o inválido cae en `#Personal`, y todo Finanzas requiere `#Confidencial`. La memoria solo se hidrata para `user-owner` en las superficies que la usan; Multichat pasa `longTermMemories: []`, `files: []` e `image: null` a `streamAiChatReply` y no carga ni persiste memoria global. En Telegram la política se propaga explícitamente desde `useTelegramAgentBridge` a `createGlobalAiAgent`.
 
-La URL pública recibe desde Rust el `libraryUserId` de la sesión autenticada y expone solamente la proyección publicada del Task Manager. El runtime vuelve a comprobar biblioteca, actor, contexto y herramientas antes de leer o mutar. Los errores de autorización se serializan con códigos seguros (`unauthorized-context`, `unauthorized-tool`, `session-revoked`, entre otros), sin revelar rutas, usuarios ni contenido privado. Finanzas persiste además el actor estable en sus movimientos y transacciones; la migración de SQLite vigente es la versión 19 e incluye servicios, auditoría, referencias de origen y la unicidad de asociación de ocurrencias.
+La URL pública recibe desde Rust el `libraryUserId` de la sesión autenticada y expone solamente la proyección publicada del Task Manager. El runtime vuelve a comprobar biblioteca, actor, contexto y herramientas antes de leer o mutar. Los errores de autorización se serializan con códigos seguros (`unauthorized-context`, `unauthorized-tool`, `session-revoked`, entre otros), sin revelar rutas, usuarios ni contenido privado. Finanzas persiste además el actor estable en sus movimientos y transacciones; la migración de SQLite vigente es la versión 20 e incluye servicios, auditoría, referencias de origen, la unicidad de asociación de ocurrencias y el historial de reparaciones.
 
 El contexto de los chats persistentes se materializa además en `workspaceAiSnapshotRuntime.ts`. `useWorkspaceAiSnapshot` captura vista, scope, biblioteca, documento activo, buffer dirty actual, hash de revisión estable, selección y metadata de pestañas; nunca incluye el árbol completo ni el contenido de pestañas no autorizadas. El snapshot se invalida al cambiar cualquiera de sus dependencias y `createChatScopedAgent` lo usa como respaldo para ruta, fuente y selección del documento activo. La fuente dirty se conserva solo para el scope documento y se utiliza para localizar y editar el buffer que el usuario realmente está viendo.
 
@@ -935,13 +935,13 @@ El agente dispone además de `get_workspace_context`, `get_active_document_outli
 
 La tool `search_web` es una capacidad separada del transporte conversacional. Antes de cada llamada, `webSearchRuntime.ts` normaliza y bloquea consultas que contengan secretos, credenciales, PII evidente, rutas privadas, datos financieros/médicos o contexto explícitamente privado; la aprobación del usuario no puede desactivar ese filtro. El adapter solo recibe la consulta pública y `maxResults`: en desktop invoca `run_desktop_ai_web_search`, que valida que el endpoint sea Ollama Cloud, mantiene la API key en el header nativo y no la registra; en Android usa el endpoint HTTPS de Ollama Cloud. La query nunca se construye con historial, memoria, snapshot, archivos ni argumentos de otras tools. Las respuestas se acotan a título, URL HTTP(S), fuente, snippet y `verificationScore`; el score es `0` cuando Ollama no entrega verificación independiente, y la coincidencia entre fuentes continúa siendo heurística. Las instrucciones encontradas en páginas se tratan como contenido no confiable y no pueden cambiar scope ni autorizar mutaciones.
 
-Los chats no incluyen modo llamada ni lectura automática de respuestas. `useVoiceTranscription` y los runtimes ASR/STT permiten grabar o adjuntar audio para convertirlo en texto dentro del compositor; Qwen3-TTS permanece separado para las superficies que lo necesiten. No debe interpretarse como una sesión conversacional continua ni como autorización para enviar audio o respuestas automáticamente.
+Los chats no incluyen modo llamada ni lectura automática de respuestas. `useVoiceTranscription` y los runtimes ASR/STT permiten grabar o adjuntar audio para convertirlo en texto dentro del compositor; Qwen3-TTS permanece separado para las superficies que lo necesiten. No debe interpretarse como una sesión conversacional continua ni como autorización para enviar audio o respuestas automáticamente. Multichat es una excepción al flujo de agentes descrito para los chats persistentes: usa únicamente la llamada plana a `streamAiChatReply`, sin `createChatScopedAgent`, tools, memoria global ni mutaciones. Las referencias a `createChatScopedAgent` de la descripción genérica del chat aplican a esos otros scopes, no a Multichat.
 
 En escritorio, el agente mantiene native tool calling para la ronda que decide y ejecuta herramientas. Después de recibir resultados, la ronda de respuesta natural se solicita mediante el stream NDJSON de Ollama, propagando sus deltas al mismo callback del runtime compartido; así la UI y la voz pueden comenzar antes de que termine toda la respuesta. Si esa respuesta nativa es transitoriamente vacía y no contiene `tool_calls`, `runNativeToolAgent` agrega una corrección interna al historial de inferencia, conserva los resultados de las tools y fuerza otra ronda nativa —`run_desktop_ai_tool_chat` en desktop y el bridge nativo equivalente en Android— mientras queden rondas disponibles. El vacío no se publica ni se persiste como respuesta; si se agota el límite, se informa `La IA no devolvio contenido ni solicito herramientas.`.
 
 La síntesis de respuestas largas conserva fragmentos acotados para limitar memoria, pero todas las inferencias usan la misma voz e instrucción explícita de español natural. El backend reduce la variabilidad del muestreo (`temperature 0.15`, `top_p 0.85`, `top_k 20`) para evitar cambios de timbre o prosodia entre fragmentos. En Windows, `ensure_loaded_with_acceleration` selecciona automáticamente CUDA si el runtime incluye `ggml-cuda.dll` y encuentra `cublas64_13.dll`. La cadena carga explícitamente `ggml-base`, `ggml-cpu`, `ggml-cuda` y `ggml` antes del runtime para registrar el backend dinámico. Después valida que el backend activo contenga `CUDA` y lo registra en logs; si una instalación que cumple los prerrequisitos no logra activarlo, devuelve el error exacto en lugar de degradarse silenciosamente a CPU. Android y equipos sin runtime CUDA continúan en CPU. El frontend aplica una corrección de reproducción de `1.12x` sobre la velocidad elegida, limitada al rango admitido, porque el tempo base del modelo CustomVoice resulta perceptiblemente lento; el backend no vuelve a aplicar esa velocidad.
 
-`ChatWorkspaceView` implementa el chat lateral persistente para archivos Markdown, Task Manager, Graph View y Finanzas. Los contextos comparten el mismo ciclo de creación, selección, hidratación, envío y renderizado; solo cambian el scope del agente y el contexto autorizado. `ChatMarkdownMessage` conserva el parser Markdown seguro de la interfaz y renderiza expresiones inline, bloques `$$...$$`, `\[...\]` y fences `latex`/`math`/`tex` con KaTeX, manteniendo el texto original si la fórmula no es válida. Cada fórmula se muestra dentro de un marco y ofrece un botón accesible con ícono de ojo para alternar temporalmente al código LaTeX original. La asociación con el archivo de chat se guarda mediante claves estables (`document:<ruta>`, `task-manager:<scope>` y `graph-view:right-panel`). Finanzas no define una clave de historial aislada: `useRightPanelChatFiles` entrega al panel la colección global de `chat/chats/*.md`, `useRightPanelChatContext` conserva el scope `finance` pero deja vacíos el scope y las rutas preferidas, y `NotiaRightPanel` desactiva `selectMatchingChatOnly`; por eso el panel puede seleccionar y reutilizar una conversación global existente. Esto reutiliza los mensajes del chat como historial, no concede acceso adicional a documentos: el corpus financiero continúa sin adjuntos y las tools de Finanzas siguen sujetas a `#Confidencial`. Meeting usa una UI deliberadamente efímera, pero llama a la misma fachada `notiaChatRuntime.ts`, construye el mismo agente `library` y agrega la transcripción actual dentro de la consulta; no posee una ruta de inferencia alternativa. La instancia recibe `persistencePolicy: 'ephemeral-no-memory'`, `readOnly: true` y un `WorkspaceAiSnapshot` de vista `meeting`, por lo que no carga/escribe memoria global ni ejecuta mutaciones de biblioteca desde ese panel.
+`ChatWorkspaceView` implementa el chat lateral persistente para archivos Markdown, Task Manager, Graph View y Finanzas. Los contextos comparten el mismo ciclo de creación, selección, hidratación, envío y renderizado; solo cambian el scope del agente y el contexto autorizado. `ChatMarkdownMessage` conserva el parser Markdown seguro de la interfaz y renderiza expresiones inline, bloques `$$...$$`, `\[...\]` y fences `latex`/`math`/`tex` con KaTeX, manteniendo el texto original si la fórmula no es válida. Cada fórmula se muestra dentro de un marco y ofrece un botón accesible con ícono de ojo para alternar temporalmente al código LaTeX original. La asociación con el archivo de chat se guarda mediante claves estables (`document:<ruta>`, `task-manager:<scope>` y `graph-view:right-panel`). Finanzas no define una clave de historial aislada: `useRightPanelChatFiles` entrega al panel la colección global de `chat/chats/*.md`, `useRightPanelChatContext` conserva el scope `finance` pero deja vacíos el scope y las rutas preferidas, y `NotiaRightPanel` desactiva `selectMatchingChatOnly`; por eso el panel puede seleccionar y reutilizar una conversación global existente. Esto reutiliza los mensajes del chat como historial, no concede acceso adicional a documentos: el corpus financiero continúa sin adjuntos y las tools de Finanzas siguen sujetas a `#Confidencial`. Meeting usa una UI deliberadamente efímera, pero llama a la misma fachada `notiaChatRuntime.ts`, construye el mismo agente `library` y agrega la transcripción actual dentro de la consulta; no posee una ruta de inferencia alternativa. La instancia recibe `persistencePolicy: 'ephemeral-no-memory'`, `readOnly: true` y un `WorkspaceAiSnapshot` de vista `meeting`, por lo que no carga/escribe memoria global ni ejecuta mutaciones de biblioteca desde ese panel. Multichat usa la vista y runtime propios descritos en la sección siguiente: la sala permanece en memoria, no crea un archivo de chat y cada agente se construye mediante `createGlobalAiAgent` con `persistencePolicy: 'persistent'`.
 
 - Task Manager no adjunta todos los tickets: el corpus del agente se deriva del panel activo (`task-manager:panel:<id>`), por lo que un tablero no puede recuperar tareas de otros tableros ni de `finished`/`cancelled`. Los paneles Completadas y Canceladas exponen únicamente su carpeta y Pomodoro no expone tickets. Dentro de ese alcance, `search_task_context` recupera fragmentos RAG agrupados por ticket con `ticketId`, ruta y título; `read_task_tickets` abre los IDs identificados y `read_all_task_tickets` recorre el corpus permitido para inventarios, conteos y resúmenes exhaustivos. Esta última informa total, cantidad devuelta y truncamiento. Para cada padre recuperado o leído, `extractTaskChildTitles` interpreta exclusivamente el campo `childs` del frontmatter y `resolveTaskChildDocuments` resuelve los wikilinks contra archivos de `subTasks/` del mismo tablero. El runtime expande esa relación recursivamente y agrega fragmentos de las hijas en RAG o su contenido completo en la lectura directa; nunca cruza a otro tablero aunque exista una subtarea con el mismo nombre. Los límites globales de caracteres y el alcance del panel continúan aplicándose. `selectDiverseAgentFragments` prioriza el mejor fragmento de cada ruta antes de repetir un archivo, evitando que historiales con muchas menciones desplacen otros tickets relevantes. Los resúmenes por persona deben relevar cada ticket de manera independiente, considerar atribuciones explícitas en metadatos y cuerpo, admitir múltiples responsables y separar personas, equipos, menciones incidentales y asignaciones ambiguas; el conteo se basa en rutas únicas. Para detalles, el agente debe leer todos los IDs únicos y renderizar una sección por ruta, incluidas las subtareas expandidas.
 - `search_library_documents` conserva una búsqueda de metadata —nombre, título, ruta, tipo, tags y valores/claves de frontmatter— sin devolver el cuerpo; en scope documento solo inspecciona metadata del archivo activo. `search_library_context` añade offsets de caracteres y líneas inicial/final a cada fragmento RAG, además de score y ruta, para que el agente pueda citar evidencia concreta sin releer documentos completos.
@@ -1169,7 +1169,7 @@ flowchart LR
    - Si el título no cambió y el cuerpo del `.md` termina con un marker válido (`user` o `assistant`), se escriben solo los mensajes nuevos al final.
    - Si el título cambió o el formato no es seguro, fallback a `saveChatDocument` (re-escritura completa).
 6. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
-7. **Memoria activa**: la extracción y reorganización usan `.agent/memory/memory.md` bajo `persistencePolicy: 'persistent'`; Meeting y publicación no la cargan ni escriben. `LongTermMemory.md` solo se conserva como compatibilidad legacy.
+7. **Memoria activa**: la extracción y reorganización usan `.agent/memory/memory.md` bajo `persistencePolicy: 'persistent'`; Meeting, Multichat y publicación no la cargan ni escriben. `LongTermMemory.md` solo se conserva como compatibilidad legacy.
 
 #### Pasos del proceso (Android)
 
@@ -1192,6 +1192,154 @@ flowchart LR
 #### Dependencias
 - **Frontend**: `aiRuntime.ts`, `chatAttachmentRuntime.ts`, `chatDocumentStorage.ts`, `aiSettingsStorage.ts`, `useChatState.ts`, `useChatSubmitMessage.ts`, `useChatAttachmentMenu.ts`, `ChatWorkspaceView.tsx`, `ChatHistoryPanel.tsx`, `ChatThread.tsx`, `ChatComposer.tsx`, `ChatMarkdownMessage.tsx`.
 - **Backend**: `commands::ai.rs`, `services::ai_service.rs`, `mobile_ai_bridge.rs`.
+
+---
+
+### 2.5.1 Multichat
+
+#### Descripción y límites
+
+Multichat es una superficie de aplicación para Windows y Android. Se accede desde la acción `multichat` de `LEFT_RAIL_ACTIONS`, inmediatamente después de `calendar`, y se monta como `MultichatView`. No agrega un motor de inferencia ni comandos Tauri nuevos: `multichatRuntime.ts` invoca directamente el adaptador existente `streamAiChatReply` de Ollama una vez por agente, con callbacks separados para thinking y respuesta.
+
+La sala es efímera en cuanto a historial: `MultichatView` conserva el estado únicamente mientras la pestaña está montada, no crea archivos en `chat/chats/`, no usa `localStorage` y no se rehidrata al abrir Multichat nuevamente. Tampoco carga ni persiste memoria global: el runtime envía `longTermMemories: []`, `files: []` e `image: null` en cada llamada plana al adaptador.
+
+La configuración muestra un textbox accesible **Contexto adicional (opcional)**. Al crear la sala, el contenido se recorta con `trim()` y se guarda en `MultichatRoom.contextContent`; desde ese momento queda fijo e inmutable junto con la dinámica y los agentes. Si no contiene texto, no se agrega una sección vacía al prompt. Cuando existe, `multichatRuntime.ts` lo incorpora en cada llamada junto con la dinámica seleccionada y el prompt individual, como sección separada de `serializeMultichatHistory`, que limita el historial conversacional a 40 mensajes. Es contenido ingresado por el usuario y no confiable; no concede permisos.
+
+#### Archivos Markdown y carga segura
+
+`multichatLibraryRuntime.ts` usa estas ubicaciones dentro de la biblioteca activa:
+
+| Recurso | Ubicación | Contrato de lectura |
+|---|---|---|
+| Dinámicas | `.agent/dynamics/` | Archivos Markdown directos (`*.md`), sin subdirectorios. El nombre visible es el nombre de archivo sin extensión y el frontmatter se elimina solo al componer el contenido. |
+| Agentes | `.agent/promps/` | Reutiliza `listAgentPrompts`/`loadAgentPrompt`; solo se aceptan archivos Markdown válidos y el nombre visible omite `.md`. |
+
+`ensureAgentPromptFile` crea de forma idempotente `.agent/`, `promps/`, `dynamics/`, `skills/` y la estructura de memoria, sin reemplazar dinámicas existentes. La lectura usa el adaptador de filesystem de escritorio o el URI SAF de Android. `isValidMultichatMarkdownFileName` rechaza nombres vacíos, extensiones distintas de `.md`, separadores de ruta, `.` y `..`, evitando traversal. `stripMultichatFrontmatter` devuelve el cuerpo recortado sin modificar el archivo original.
+
+La vista bloquea el inicio si falta una dinámica, si su cuerpo está vacío, si un prompt no puede leerse o está vacío, o si la selección no contiene entre uno y seis agentes. La validación se repite después de cargar los archivos para cubrir cambios ocurridos entre el listado y la creación. También rechaza agentes repetidos y conserva únicamente el conjunto cargado para esa sala. Los errores visibles distinguen carga general, dinámica inválida/vacía, prompt inválido/ilegible/vacío y cantidad de agentes inválida.
+
+#### Contratos de estado y mensajes
+
+`src/types/multichat.ts` define los límites y contratos serializables:
+
+| Tipo | Campos relevantes |
+|---|---|
+| `MultichatRoom` | `id`, `dynamic`, `agents`, `contextContent`, `messages`, `round`, `cancelled` y `libraryId`. La dinámica, el contexto adicional y los agentes son inmutables desde la vista una vez creada; no existe un campo de permisos. |
+| `MultichatAgent` | `fileName`, `name`, `prompt`, `icon` y `color`. El nombre deriva del archivo; iconos y colores se asignan por posición desde una paleta fija. |
+| `MultichatMessage` | `id`, `speakerId` (`user` o `agent:<archivo>`), `speakerName`, `content` y `createdAt`. |
+| `MultichatSerializedMessage` | `speaker`, `name` y `content`; es la forma enviada al contexto de cada agente y al panel derecho. |
+| `MultichatRoundState` | Estado observable (`configuration`, `empty`, `user-turn`, `agent-turn`, `waiting-user`, `loading`, `error`, `cancelled` o `agent-no-response`), contador/límite de rondas automáticas (`automaticRounds`/`automaticRoundLimit`), agente activo y error seguro. |
+| `MultichatPanelContext` | ID de sala, etiqueta, nombre de dinámica, nombres de agentes, `contextContent` y conversación serializada para el panel derecho. |
+
+La sala se crea vacía y el primer mensaje siempre lo agrega el usuario. El estado visual puede conservar más mensajes mientras la pestaña siga montada, pero `serializeMultichatHistory` acota a los últimos `MULTICHAT_MAX_MESSAGES = 40` mensajes cada vez que construye el contexto conversacional. El `contextContent` fijo no forma parte de esa ventana: se concatena por separado en cada prompt de agente. Cada línea conserva el hablante explícito (`Usuario` o el nombre del agente), incluso cuando se transforma a los roles `user`/`assistant` que consume el adaptador de Ollama.
+
+#### Selección y orquestación de turnos
+
+`multichatEngine.ts` implementa la coordinación pura:
+
+1. `validateAgentSelection` exige entre `MULTICHAT_MIN_AGENTS = 1` y `MULTICHAT_MAX_AGENTS = 6`, nombres de archivo únicos y prompts no vacíos.
+2. `selectMultichatParticipants` parte únicamente de los agentes fijados en la sala y limita la entrada al máximo de seis agentes. Si la dinámica contiene el nombre de uno o más agentes fijados, selecciona esos agentes; si contiene una indicación explícita de participación total (`todos`, `todas`, `all`, `everyone` o `cada agente`), conserva todo el conjunto fijado. Cuando ambas señales aparecen, la selección por nombres prevalece, igual que en la implementación. En ambos casos mezcla aleatoriamente el orden. Sin una de esas instrucciones, elige un subconjunto no vacío aleatorio y luego lo ordena aleatoriamente. La fuente aleatoria es inyectable para pruebas y nunca agrega un agente externo a la sala.
+3. `runSequentialMultichatTurns` invoca cada agente en orden. Cuando una respuesta no vacía se completa, `MultichatView` la agrega inmediatamente al estado visible y al contexto de la sala antes de invocar al siguiente agente; así las respuestas anteriores permanecen acumuladas en orden mientras el siguiente transmite y los agentes posteriores reciben todo lo ya completado dentro de la ventana de 40 mensajes.
+4. `chooseAutomaticRoundLimit` fija al crear la sala un límite aleatorio de 1 a 4 rondas. Una ronda es una ejecución completa de `runMultichatRound` y puede incluir todos los agentes seleccionados; el contador aumenta una vez por ronda completada, no una vez por respuesta individual. `dynamicAllowsAutomaticTurns` permite continuar automáticamente por defecto y solo devuelve `false` cuando la dinámica pide explícitamente esperar al usuario o desactivar el encadenamiento.
+5. Al terminar una ronda sin error ni respuesta vacía, la vista inicia la siguiente ronda automáticamente mientras `automaticRounds < automaticRoundLimit`. Un nuevo mensaje del usuario reinicia el contador en cero; una respuesta vacía, un error o una dinámica que pida intervención detienen la cadena.
+
+La dinámica y el contexto adicional son contenido del usuario, no una fuente de permisos. Multichat no crea un agente global ni envía `requestedScope`, `WorkspaceAiSnapshot`, herramientas o una política de autorización: construye un prompt plano con dinámica, prompt individual, contexto adicional fijo cuando existe, política de participación e historial etiquetado de hasta 40 mensajes. Ese prompt se pasa a `streamAiChatReply` junto con el historial como `previousMessages` y los campos vacíos `longTermMemories`, `files` e `image`.
+
+#### Llamada plana y ausencia de capacidades de agente
+
+Multichat no recibe catálogo de tools y no ejecuta `createChatScopedAgent`, `createGlobalAiAgent` ni `runGlobalAiChat`. Por diseño no ofrece búsqueda web, lectura o escritura de biblioteca, mutaciones, planes, aclaraciones ni confirmaciones. No existe `MultichatPermission`, ni selector `read-only`/`read-write`, ni una política de sala que proyectar. La autorización y los permisos normales del panel derecho no se heredan a Multichat porque la sala no ejecuta herramientas.
+
+`streamAiChatReply` recibe `previousMessages` con los mensajes de usuario como `role: 'user'` y las respuestas anteriores como `role: 'assistant'`, prefijadas con el nombre del agente. Sus opciones reciben el `AbortSignal`, `onThinkingDelta` y `onMessageDelta`. La UI mantiene ambos flujos en un estado de streaming temporal; cuando `onAgentComplete` recibe un `MultichatMessage` no vacío, lo confirma de inmediato en la lista visible y actualiza el contexto del panel antes de que comience el siguiente agente. La actualización es idempotente por `message.id`, por lo que el cierre de la ronda no vuelve a agregar respuestas ya mostradas. El thinking y los deltas parciales nunca se guardan como mensajes.
+
+#### Cancelación, errores y limpieza
+
+`MultichatView` mantiene un `AbortController` por cadena. El `AbortSignal` se propaga a `runMultichatRound` y a `streamAiChatReply`, y se comprueba antes y después de cada agente; una cancelación produce `AbortError`, marca la sala como `cancelled`, limpia el agente activo y no inicia otra ronda automática. Al desmontar la vista o cambiar de biblioteca también se aborta la operación y se elimina el contexto del panel. Los errores del adaptador se muestran de forma segura; Multichat no agrega un timeout, ciclo de tools ni política de permisos propios.
+
+Una respuesta vacía no se agrega como mensaje en blanco. El motor notifica `onAgentComplete(agent, null)`; la vista muestra `agent-no-response` y el nombre del agente, conserva las respuestas no vacías ya obtenidas y detiene la continuación automática. Si todos los agentes de una ronda quedan sin respuesta, la ronda termina sin nuevas entradas y muestra el error visible correspondiente. Un error no cancelado marca `error`, limpia el agente activo y tampoco continúa la cadena.
+
+#### Contexto auxiliar del panel derecho
+
+`multichatSessionStore.ts` mantiene en memoria el `MultichatPanelContext` activo. `useRightPanelChatContext` reconoce la vista, usa scope `library`, clave `multichat:right-panel`, rutas adjuntas vacías y etiqueta `Contexto activo: sala Multichat`. El resumen contiene la dinámica, los nombres de agentes, el contexto adicional fijo cuando existe y como máximo los últimos 40 mensajes. El contexto adicional se expone solo como información auxiliar y conserva su carácter de contenido no confiable, sin modificar la autorización del panel. Al cerrar la sala, desmontar la vista o cambiar de biblioteca se invalida el contexto.
+
+`NotiaRightPanel` monta `ChatWorkspaceView` con `ephemeralChat` y sin persistencia del contexto auxiliar. El panel es un único asistente: puede consultar el resumen de la sala, pero no se incorpora a `MultichatRoom`, no recibe turnos ni publica mensajes dentro de ella. Su scope y permisos normales de chat permanecen independientes de Multichat.
+
+```mermaid
+flowchart TD
+    Menu[Calendario → Multichat] --> Setup[Dinámica + contexto opcional + 1..6 prompts]
+    Setup --> Load[Cargar .agent/dynamics y .agent/promps]
+    Load --> Validate{Archivos y selección válidos}
+    Validate -->|No| Error[Error seguro, sin crear sala]
+    Validate -->|Sí| Room[Sala efímera en memoria]
+    Room --> User[Mensaje del usuario]
+    User --> Select[Seleccionar subconjunto y orden según dinámica]
+    Select --> Round[Turnos secuenciales por adaptador Ollama]
+    Round --> History[Streaming separado y guardar solo respuesta final]
+    History --> Auto{¿Otra ronda? dinámica + límite 1..4}
+    Auto -->|Continuar| Select
+    Auto -->|Esperar| Room
+    Room -. contexto auxiliar .-> Panel[Panel derecho, asistente único]
+```
+
+```mermaid
+sequenceDiagram
+    participant U as Usuario
+    participant V as MultichatView
+    participant E as multichatEngine
+    participant O as streamAiChatReply / Ollama
+    participant P as Panel derecho
+    U->>V: Crear sala y enviar mensaje
+    V->>E: Seleccionar participantes fijados
+    loop Agentes de la ronda
+        E->>O: prompt plano + historial máximo 40
+        O-->>E: deltas de thinking y respuesta
+        E->>V: Confirmar respuesta completada en la UI
+        V->>E: Incorporar respuesta al contexto siguiente
+    end
+    E-->>V: Mensajes, espera, error o cancelación
+    V->>P: Actualizar contexto auxiliar en memoria
+```
+
+#### Validación, compatibilidad y pendientes técnicos
+
+Las pruebas unitarias y de integración cubren selección acotada, nombres explícitos, selección por defecto de subconjunto no vacío, orden aleatorio, indicación explícita de todos los agentes, exclusión de agentes no fijados, aleatoriedad inyectable, límite de 1–4 rondas, continuidad automática por defecto y espera explícita al usuario, distinción entre rondas y respuestas de agentes, orden secuencial, ventana de 40, contexto adicional incluido en cada prompt, respuesta vacía, carga Markdown sin frontmatter, rechazo de traversal, llamada plana sin tools, callbacks separados de thinking/respuesta, cancelación, descarte de resultados obsoletos, cierre del contexto en memoria, aislamiento por `roomId`, suscripción independiente y scope independiente del panel derecho. En esta iteración, `src/services/multichat/multichatLibraryRuntime.test.ts` fija la delegación idempotente de la creación de `.agent/dynamics/`, el filtrado de nombres Markdown, la extracción de frontmatter sin modificar la fuente y los límites de selección 1..6; `src/engines/multichat/multichatEngine.test.ts` cubre la selección determinista de subconjuntos, nombres concretos, participación explícita de todos, exclusión del conjunto de la sala, cancelación antes de invocar y descarte de una respuesta que se vuelve obsoleta; `src/services/multichat/multichatSessionStore.test.ts` verifica los 40 mensajes de contexto, el aislamiento por sala y la notificación independiente del panel.
+
+Validaciones acumuladas de la implementación base:
+
+- `npm test -- --run`: 121 archivos y 633 tests aprobados.
+- `npx vitest run src/services/multichat src/engines/multichat`: 4 archivos y 11 tests aprobados.
+- `npx tsc --noEmit`: aprobado.
+- `npm run lint`: aprobado.
+- `npm run build -- --minify=false`: build correcto; permanecen warnings existentes de chunks e importaciones dinámicas.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: aprobado previamente.
+- `cargo check --manifest-path src-tauri/Cargo.toml --tests`: aprobado previamente; permanecen warnings existentes.
+- `git diff --check`: aprobado.
+
+Validaciones ejecutadas para esta corrección de acumulación visible:
+
+- `npx tsc --noEmit`: aprobado.
+- `npx vitest run src/services/multichat src/engines/multichat`: 4 archivos y 11 tests aprobados.
+- ESLint del archivo `src/components/notia/views/MultichatView.tsx`: aprobado.
+- `git diff --check`: aprobado.
+
+Validaciones ejecutadas para esta corrección de rondas automáticas:
+
+- `npm test -- --run`: 121 archivos y 633 tests aprobados.
+- `npm run lint`: aprobado.
+- `npx tsc --noEmit`: aprobado.
+- `npx vitest run src/services/multichat src/engines/multichat`: 4 archivos y 11 tests aprobados.
+- `git diff --check`: aprobado.
+
+Validaciones ejecutadas en esta iteración de selección determinista de participantes de Multichat:
+
+- `npm test -- --run`: 121 archivos y 640 tests aprobados.
+- `npx tsc --noEmit`: aprobado.
+- `npm run lint`: aprobado.
+- `npm run build -- --minify=false`: build correcto con 5851 módulos; conserva warnings Vite existentes.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: aprobado.
+- `cargo check --manifest-path src-tauri/Cargo.toml --tests`: aprobado; conserva warnings Rust existentes.
+- `git diff --check`: aprobado.
+
+La implementación conserva la carga de dinámicas/prompts mediante los adaptadores de filesystem local de Windows y SAF/bridge de Android, pero la inferencia de Multichat usa el adaptador conversacional existente y no el contrato global de agentes con tools. Siguen pendientes las pruebas de UI y accesibilidad, además de la validación manual en Windows, Android, SAF y con Ollama real por falta de un entorno dedicado; también permanecen pendientes los escenarios manuales con uno y seis agentes, respuestas largas y mensajes intercalados, tal como queda declarado en `tasks.md`.
 
 ---
 
@@ -3741,7 +3889,7 @@ El agente recibe `responseFormat: 'telegram-html'` al construirse. Esa personali
 `ensureAgentPromptFile` también garantiza la estructura persistente `.agent/memory/rules.md` y `.agent/memory/memory.md`. Primero inspecciona el directorio para no recrear archivos existentes y solo crea los faltantes; la operación es segura ante ejecuciones repetidas y compatible con filesystem local y Android SAF.
 `rules.md` contiene un bloque administrado con las reglas mínimas de seguridad, evidencia, lectura exacta y formato por canal. Notia mantiene ese bloque actualizado y conserva las reglas personalizadas agregadas fuera de sus marcadores; el runtime carga el archivo y filtra las líneas `[telegram-html]` exclusivamente para Telegram.
 El bloque `NOTIA_IA_RULES` almacena instrucciones permanentes aprendidas durante el chat del Owner. La herramienta interna `add_agent_rule` detecta pedidos del tipo “cuando X, hacé Y” y agrega directamente una regla deduplicada sin solicitar confirmación ni modificar `NOTIA_DEFAULT_RULES`; la autorización `memory` rechaza esta tool para cualquier otro actor. Las mutaciones de documentos y tareas mantienen sus confirmaciones.
-`memory.md` almacena hechos duraderos del Owner, sin confirmación. Solo se inyecta al crear un agente cuyo `libraryUserId` es `user-owner` y cuya política es persistente; Telegram, la URL publicada, Graph View, Meeting y los usuarios no Owner no lo leen ni lo escriben. En Telegram, `useTelegramAgentBridge` construye el agente con `persistencePolicy: 'ephemeral-no-memory'`, igual que la política del envelope.
+`memory.md` almacena hechos duraderos del Owner, sin confirmación. Solo se inyecta al crear un agente cuyo `libraryUserId` es `user-owner` y cuya política es persistente; Telegram, la URL publicada, Graph View, Meeting, Multichat y los usuarios no Owner no lo leen ni lo escriben. Multichat no crea un agente de memoria: envía `longTermMemories: []` al adaptador plano. En Telegram, `useTelegramAgentBridge` construye el agente con `persistencePolicy: 'ephemeral-no-memory'`, igual que la política del envelope.
 La herramienta `add_agent_memory` separa esos hechos de las instrucciones imperativas de `add_agent_rule` y solo está disponible para el Owner. La inicialización migra automáticamente desde `NOTIA_IA_RULES` las entradas factuales reconocibles —como identidad, empleo o preferencias— hacia `memory.md` sin atribuirlas a otros actores.
 Toda escritura interna autorizada en `NOTIA_IA_RULES` o `memory.md` programa una revisión conjunta en background con el Ollama configurado. El modelo devuelve un contrato JSON separado en `rules` y `memories`, permitiendo reclasificar elementos en ambas direcciones, deduplicarlos y reestructurarlos sin bloquear la conversación ni alterar `NOTIA_DEFAULT_RULES`.
 La misma inicialización garantiza además `.agent/skills/`, reservada para las habilidades del agente.
@@ -3752,6 +3900,7 @@ La estructura persistente por biblioteca es:
 
 ```text
 .agent/
+├── dynamics/
 ├── promps/default.md
 ├── memory/rules.md
 ├── memory/memory.md
@@ -3806,6 +3955,8 @@ flowchart LR
     Knowledge --> Files[.agent/memory]
     Knowledge --> Organizer[organizeAiAgentKnowledge]
     Organizer --> Ollama[Ollama configurado]
+    Multichat[MultichatView] --> Flat[streamAiChatReply]
+    Flat --> FlatOllama[Ollama configurado]
 ```
 
 ```mermaid
@@ -3846,6 +3997,8 @@ Algunos modelos devuelven XML heredado en lugar del `tool_calls` nativo. `parseL
 Las mutaciones de Finanzas iniciadas por Telegram conservan el ciclo común: resolver cuenta/categoría, generar preview, solicitar una única confirmación visible, persistir y devolver un resultado verificable. `create_finance_purchase`, `create_finance_salary` y `create_finance_credit_card_statement` no se auto-confirman por canal; sus errores de validación, duplicados y fallos SQLite se convierten en resultados seguros y no se afirma éxito sin `ok:true` y la verificación correspondiente. La cuenta sigue siendo una aclaración obligatoria cuando el mensaje, audio o comprobante no permite inferirla de manera razonable.
 
 La integración usa long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
+
+Las notificaciones iniciadas en modo fire-and-forget pasan por `sendTelegramMessageBestEffort`. Si el chat ya no existe, el usuario bloqueó el bot o Telegram rechaza el envío, la promesa se captura, se registra únicamente un diagnóstico sanitizado y se devuelve `null`; no queda un `Uncaught (in promise)` ni se pierde la solicitud durable, que conserva su estado para recuperación cuando corresponde. Las operaciones que esperan una respuesta mantienen su manejo explícito de errores separado de este wrapper.
 
 El emparejamiento exige `/start` y aprobación local del vínculo de Telegram. Cada update posterior debe coincidir tanto en `chatId` como en `userId`, y el bridge resuelve el usuario de la biblioteca antes de crear el envelope global. Telegram solicita el corpus legible de la biblioteca y tickets de todos los tableros, pero el catálogo y cada ejecución se filtran por los contextos permitidos; Finanzas solo queda disponible con `#Confidencial`. Las opciones históricas como `scope` o `enableFinanceTools` no conceden permisos. Las solicitudes financieras y los comprobantes mantienen sus comprobaciones de mutación; con Finanzas habilitada se eliminan del catálogo las herramientas de planes, el prompt limita el turno a una mutación confirmada y el bridge muestra una sola confirmación visible. Telegram muestra callbacks efímeros asociados a una operación concreta.
 

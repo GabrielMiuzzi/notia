@@ -1,3 +1,10 @@
+[2026-09-18 15:11:09 -03:00] Multichat selecciona por ronda participantes fijados mediante subconjunto y orden aleatorios, con nombres concretos o todos según la dinámica, y agrega pruebas deterministas.
+[2026-09-18 14:58:58 -03:00] Se agregaron regresiones deterministas de Multichat para carga segura, límites, cancelación, resultados obsoletos y contexto aislado, con la validación completa aprobada.
+[2026-09-18 14:43:57 -03:00] Se documentó la coordinación de Multichat por rondas automáticas de uno a cuatro, con espera explícita y reinicio por mensaje.
+[2026-09-18 14:26:12 -03:00] Se documentó la acumulación inmediata y ordenada de respuestas completadas en Multichat mientras continúa el streaming del siguiente agente.
+[2026-09-18 14:08:18 -03:00] Se sincronizó Multichat con su llamada plana a Ollama, streaming separado, ausencia de permisos y memoria global, y las notificaciones Telegram best-effort.
+[2026-09-18 04:34:49 -03:00] Se sincronizó la documentación con el contexto adicional fijo de Multichat, su aislamiento del historial y las políticas de autorización global.
+[2026-09-18 04:07:27 -03:00] Se sincronizó la documentación con la implementación funcional de Multichat, sus permisos, turnos, memoria y contexto auxiliar.
 [2026-09-18 02:13:41 -03:00] Se unificó el desplazamiento vertical de Finanzas y se agregaron regresiones para reservas de ahorro y Telegram.
 [2026-09-18 00:51:12 -03:00] Se sincronizó la documentación con el contrato global de IA, Finanzas, conciliación y la vista de Servicios.
 [2026-09-18 00:03:50 -03:00] Se hizo idempotente por centavos el replay nativo de ocurrencias y se sincronizó el vínculo de la compra asociada.

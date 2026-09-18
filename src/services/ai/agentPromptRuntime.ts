@@ -569,6 +569,7 @@ const AGENT_DIRECTORY_NAME = '.agent'
 const PROMPTS_DIRECTORY_NAME = 'promps'
 const MEMORY_DIRECTORY_NAME = 'memory'
 const SKILLS_DIRECTORY_NAME = 'skills'
+const DYNAMICS_DIRECTORY_NAME = 'dynamics'
 const MEMORY_RULES_FILE_NAME = 'rules.md'
 const MEMORY_FILE_NAME = 'memory.md'
 const LEGACY_MEMORY_BACKUP_FILE_NAME = 'LongTermMemory.legacy.v1.backup.md'
@@ -940,6 +941,7 @@ export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<stri
 
   await ensureFolder(library.path, AGENT_DIRECTORY_NAME, library)
   await ensureFolder(agentDirectoryPath, PROMPTS_DIRECTORY_NAME, library)
+  await ensureFolder(agentDirectoryPath, DYNAMICS_DIRECTORY_NAME, library)
   await ensureFolder(agentDirectoryPath, SKILLS_DIRECTORY_NAME, library)
   await ensureAgentMemoryStructure(agentDirectoryPath, library)
 

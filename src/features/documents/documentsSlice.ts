@@ -11,8 +11,9 @@ const COLDPASS_WORKSPACE_TAB_PATH = '__workspace_coldpass__'
 const MEETING_WORKSPACE_TAB_PATH = '__workspace_meeting__'
 const FINANCE_WORKSPACE_TAB_PATH = '__workspace_finance__'
 const CALENDAR_WORKSPACE_TAB_PATH = '__workspace_calendar__'
+const MULTICHAT_WORKSPACE_TAB_PATH = '__workspace_multichat__'
 
-export { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH }
+export { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH }
 
 const initialState: DocumentsState = {
   openTabs: [],
@@ -25,6 +26,7 @@ const initialState: DocumentsState = {
     meeting: false,
     finance: false,
     calendar: false,
+    multichat: false,
   },
   treeNodes: [],
   searchQuery: '',
@@ -108,6 +110,7 @@ const documentsSlice = createSlice({
         meeting: MEETING_WORKSPACE_TAB_PATH,
         finance: FINANCE_WORKSPACE_TAB_PATH,
         calendar: CALENDAR_WORKSPACE_TAB_PATH,
+        multichat: MULTICHAT_WORKSPACE_TAB_PATH,
       }
       state.activeTabPath = pathMap[action.payload]
     },
@@ -144,7 +147,7 @@ const documentsSlice = createSlice({
     resetTabs(state) {
       state.openTabs = []
       state.activeTabPath = null
-      state.specialTabs = { graph: false, chat: false, taskManager: false, coldPass: false, meeting: false, finance: false, calendar: false }
+       state.specialTabs = { graph: false, chat: false, taskManager: false, coldPass: false, meeting: false, finance: false, calendar: false, multichat: false }
       state.pendingCreation = null
       state.renamingPath = null
       state.contextMenu = null

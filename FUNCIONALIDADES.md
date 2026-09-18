@@ -15,8 +15,9 @@
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
 - Chat local con IA mediante Ollama, con reintento seguro de respuestas nativas vacías transitorias después de rondas de tools.
+- Multichat efímero con dinámicas Markdown, contexto adicional opcional fijo, de uno a seis agentes, selección por ronda de subconjunto y orden aleatorios —o agentes concretos/todos según la dinámica—, turnos secuenciales, streaming separado de thinking/respuesta y contexto auxiliar del panel derecho, sin tools, búsqueda web ni mutaciones.
 - Memoria persistente y herramientas nativas para el agente de IA.
-- Memoria persistente del agente para el usuario Owner y reglas operativas por biblioteca; Meeting, Graph View, Telegram y publicación sin memoria global.
+- Memoria persistente del agente para el usuario Owner y reglas operativas por biblioteca; Meeting, Graph View, Multichat, Telegram y publicación sin memoria global.
 - Chat efímero de Meeting con transcripción offline y diarización.
 - Dictado y síntesis de voz offline.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes.

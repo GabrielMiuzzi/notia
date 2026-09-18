@@ -20,6 +20,7 @@ import { shouldSelectMatchingRightPanelChat } from './hooks/useRightPanelChatCon
 
 interface NotiaRightPanelProps {
   isMeetingContext: boolean
+  isMultichatContext: boolean
   agentCorpusPaths: string[]
   agentScope: ChatAgentScope | null
   previousChats: { id: string; filePath: string; title: string }[]
@@ -41,6 +42,7 @@ interface NotiaRightPanelProps {
 
 function NotiaRightPanelComponent({
   isMeetingContext,
+  isMultichatContext,
   agentCorpusPaths,
   agentScope,
   previousChats,
@@ -163,7 +165,8 @@ function NotiaRightPanelComponent({
               preferredContextScopeKey={rightPanelPreferredContextScopeKey}
               transientContextPaths={rightPanelTransientContextPaths}
               transientContextMode={rightPanelTransientContextMode}
-              transientContextSummary={rightPanelTransientContextSummary}
+               transientContextSummary={rightPanelTransientContextSummary}
+               transientContextContent={rightPanelTransientContextSummary}
               transientContextDisplayPaths={rightPanelTransientSelectedPaths}
               onTransientContextPathRemove={(path) => {
                 onRightPanelTransientSelectedPathsChange(
@@ -171,7 +174,7 @@ function NotiaRightPanelComponent({
                 )
               }}
               persistTransientContext={false}
-              ephemeralChat={agentScope === 'graph'}
+               ephemeralChat={agentScope === 'graph' || isMultichatContext}
                selectMatchingChatOnly={shouldSelectMatchingRightPanelChat(rightPanelPreferredContextScopeKey, rightPanelPreferredContextPaths)}
               historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
               onChatCreated={chatCallbacks.onChatCreated}

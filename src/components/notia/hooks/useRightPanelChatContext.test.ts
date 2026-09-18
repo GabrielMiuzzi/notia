@@ -86,6 +86,12 @@ describe('resolveRightPanelAgentScope', () => {
   it('uses the finance scope while the Finance workspace is active', () => {
     expect(resolveRightPanelAgentScope('finance', null)).toBe('finance')
   })
+
+  it('uses the library scope and isolated context key for Multichat', () => {
+    expect(resolveRightPanelAgentScope('multichat', null)).toBe('library')
+    expect(resolveRightPanelContextScopeKey('multichat', null, null)).toBe('multichat:right-panel')
+    expect(resolveRightPanelAttachedContextPaths('multichat', null)).toEqual([])
+  })
 })
 
 describe('shouldSelectMatchingRightPanelChat', () => {

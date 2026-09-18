@@ -326,6 +326,23 @@ describe('chatScopedAgentRuntime metadata search', () => {
     expect(buildChatAgentTools('task-manager', true).map((tool) => tool.function.name)).not.toContain('search_web')
   })
 
+  it('projects a read-only catalog without mutation or plan tools', async () => {
+    const agent = await createChatScopedAgent({
+      scope: 'library',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [],
+      persistencePolicy: 'ephemeral-no-memory',
+      readOnly: true,
+      requestClarification: vi.fn(),
+      requestConfirmation: vi.fn(),
+    })
+    const names = agent.tools.map((tool) => tool.function.name)
+    expect(names).toContain('read_library_documents')
+    expect(names).not.toContain('create_library_note')
+    expect(names).not.toContain('set_agent_execution_plan')
+  })
+
   it('keeps Telegram finance mutations to one confirmation and links a unique local card payment', async () => {
     const requestConfirmation = vi.fn().mockResolvedValue(true)
     const service = { id: 'service-movistar', name: 'Movistar', categoryId: 'cat', currency: 'ARS', expectedAmount: '82997', dueDay: 10, defaultAccountId: null, provider: null, modality: 'fixed', active: true }

@@ -81,6 +81,7 @@ export function ChatWorkspaceViewComponent({
   transientContextPaths = EMPTY_CONTEXT_PATHS,
   transientContextMode = null,
   transientContextSummary = null,
+  transientContextContent = transientContextSummary,
   transientContextDisplayPaths = EMPTY_CONTEXT_PATHS,
   onTransientContextPathRemove,
   persistTransientContext = false,
@@ -532,6 +533,7 @@ export function ChatWorkspaceViewComponent({
       preferredContextScopeKey,
       persistTransientContext,
       hasTransientContext,
+      transientContextContent,
       onChatCreated: async (filePath) => {
         if (ephemeralChat) ephemeralChatPathsRef.current.add(filePath)
         await onChatCreated?.(filePath)
@@ -1209,6 +1211,10 @@ function areChatWorkspaceViewPropsEqual(
   }
 
   if (previous.transientContextSummary !== next.transientContextSummary) {
+    return false
+  }
+
+  if (previous.transientContextContent !== next.transientContextContent) {
     return false
   }
 

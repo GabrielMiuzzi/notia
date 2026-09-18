@@ -1,15 +1,16 @@
-import { useMemo } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import type { TaskManagerChatContext } from '../../../modules/task-manager/types/taskManagerTypes'
 import type { ChatFileContextMode } from '../../../services/chat/chatAttachmentRuntime'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
 import type { ChatAgentScope } from '../../../services/chat/chatScopedAgentRuntime'
 import type { MarkdownSelectionContext } from '../../../types/views/markdownSelection'
+import { getMultichatPanelContext, subscribeMultichatPanelContext } from '../../../services/multichat/multichatSessionStore'
 
 const EMPTY_CONTEXT_PATHS: string[] = []
 
 interface UseRightPanelChatContextParams {
   activeDocument: OpenFileDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'documents'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
@@ -41,6 +42,7 @@ export function resolveRightPanelAgentScope(
   if (activeWorkspaceView === 'task-manager') return 'task-manager'
   if (activeWorkspaceView === 'graph') return 'graph'
   if (activeWorkspaceView === 'finance') return 'finance'
+  if (activeWorkspaceView === 'multichat') return 'library'
   return activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
     ? 'document'
     : null
@@ -75,6 +77,7 @@ export function resolveRightPanelContextScopeKey(
       : `task-manager:${normalizedScopeKey || taskManagerPanelId.trim() || 'default'}`
   }
   if (activeWorkspaceView === 'graph') return 'graph-view:right-panel'
+  if (activeWorkspaceView === 'multichat') return 'multichat:right-panel'
   if (activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown') {
     return `document:${activeDocument.path.replace(/\\/g, '/')}`
   }
@@ -89,7 +92,7 @@ export function shouldSelectMatchingRightPanelChat(
 }
 
 function buildRightPanelChatContextLabel(
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents',
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'documents',
   activeDocument: OpenFileDocument | null,
   taskManagerPanelId: string,
   markdownSelection: MarkdownSelectionContext | null,
@@ -130,6 +133,10 @@ function buildRightPanelChatContextLabel(
     return 'Contexto activo: Finanzas'
   }
 
+  if (activeWorkspaceView === 'multichat') {
+    return 'Contexto activo: sala Multichat'
+  }
+
   if (!activeDocument) {
     return 'Contexto activo: sin pestaña seleccionada'
   }
@@ -159,12 +166,19 @@ export function useRightPanelChatContext({
   markdownSelection,
 }: UseRightPanelChatContextParams) {
   const agentScope = resolveRightPanelAgentScope(activeWorkspaceView, activeDocument)
+  const multichatContext = useSyncExternalStore(subscribeMultichatPanelContext, getMultichatPanelContext, getMultichatPanelContext)
   const rightPanelChatContextLabel = useMemo(
-    () => buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId, markdownSelection),
-    [activeDocument, activeWorkspaceView, markdownSelection, taskManagerActivePanelId],
+    () => activeWorkspaceView === 'multichat'
+      ? multichatContext?.label ?? 'Contexto activo: sala Multichat'
+      : buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId, markdownSelection),
+    [activeDocument, activeWorkspaceView, markdownSelection, multichatContext?.label, taskManagerActivePanelId],
   )
 
   const rightPanelChatContextKey = useMemo(() => {
+    if (activeWorkspaceView === 'multichat') {
+      return `multichat:${multichatContext?.roomId ?? 'empty'}`
+    }
+
     if (activeWorkspaceView === 'task-manager') {
       return `task-manager:${taskManagerChatContext?.scopeKey ?? taskManagerActivePanelId}`
     }
@@ -174,13 +188,17 @@ export function useRightPanelChatContext({
     }
 
     return `${activeWorkspaceView}:default`
-  }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
+  }, [activeDocument, activeWorkspaceView, multichatContext?.roomId, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
 
   const preferredContextPaths = useMemo(() => {
     return resolveRightPanelAttachedContextPaths(activeWorkspaceView, activeDocument)
   }, [activeDocument, activeWorkspaceView])
 
   const agentCorpusPaths = useMemo(() => {
+    if (activeWorkspaceView === 'multichat') {
+      return EMPTY_CONTEXT_PATHS
+    }
+
     if (activeWorkspaceView === 'task-manager') {
       return taskManagerChatContext?.filePaths ?? EMPTY_CONTEXT_PATHS
     }
@@ -233,6 +251,15 @@ export function useRightPanelChatContext({
     rightPanelChatContextLabel,
     transientContextMode,
     transientContextPaths,
-    transientContextSummary: graphChatHasExplicitSelection ? graphChatContextSummary : null,
+    transientContextSummary: activeWorkspaceView === 'multichat'
+      ? [
+        multichatContext?.dynamicName ? `Dinámica: ${multichatContext.dynamicName}` : null,
+        multichatContext?.agentNames.length ? `Agentes: ${multichatContext.agentNames.join(', ')}` : null,
+        multichatContext?.contextContent ? `Contexto adicional:\n${multichatContext.contextContent}` : null,
+        multichatContext?.messages.length
+          ? `Conversación activa:\n${multichatContext.messages.map((message) => `${message.speaker === 'user' ? 'Usuario' : message.name}: ${message.content}`).join('\n\n')}`
+          : 'La sala aún no tiene mensajes.',
+      ].filter(Boolean).join('\n\n')
+      : graphChatHasExplicitSelection ? graphChatContextSummary : null,
   }
 }

@@ -20,6 +20,7 @@ import {
   MEETING_WORKSPACE_TAB_PATH,
   FINANCE_WORKSPACE_TAB_PATH,
   CALENDAR_WORKSPACE_TAB_PATH,
+  MULTICHAT_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import {
   invalidateLibrarySearchGraphIndex,
@@ -53,6 +54,7 @@ interface OpenWorkspaceSpecialTabs {
   meeting: boolean
   finance: boolean
   calendar: boolean
+  multichat: boolean
 }
 
 function getDisplayBaseName(value: string): string {
@@ -107,6 +109,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.meeting) { tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' }) }
   if (specialTabs.finance) { tabs.push({ path: FINANCE_WORKSPACE_TAB_PATH, title: 'Finanzas' }) }
   if (specialTabs.calendar) { tabs.push({ path: CALENDAR_WORKSPACE_TAB_PATH, title: 'Calendario' }) }
+  if (specialTabs.multichat) { tabs.push({ path: MULTICHAT_WORKSPACE_TAB_PATH, title: 'Multichat' }) }
 
   return tabs
 }
@@ -214,6 +217,7 @@ export function useTabManager({
       || tabPath === MEETING_WORKSPACE_TAB_PATH
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
       || tabPath === CALENDAR_WORKSPACE_TAB_PATH
+      || tabPath === MULTICHAT_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = store.getState().documents.specialTabs
       if (
@@ -224,6 +228,7 @@ export function useTabManager({
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !currentSpecialTabs.meeting)
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !currentSpecialTabs.finance)
         || (tabPath === CALENDAR_WORKSPACE_TAB_PATH && !currentSpecialTabs.calendar)
+        || (tabPath === MULTICHAT_WORKSPACE_TAB_PATH && !currentSpecialTabs.multichat)
       ) { return }
 
       const currentTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, currentSpecialTabs)
@@ -238,6 +243,7 @@ export function useTabManager({
         meeting: tabPath === MEETING_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.meeting,
         finance: tabPath === FINANCE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.finance,
         calendar: tabPath === CALENDAR_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.calendar,
+        multichat: tabPath === MULTICHAT_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.multichat,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)
       const currentActiveTabPath = selectActiveTabPath(store.getState())
@@ -372,6 +378,7 @@ export function useTabManager({
       || tabPath === MEETING_WORKSPACE_TAB_PATH
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
       || tabPath === CALENDAR_WORKSPACE_TAB_PATH
+      || tabPath === MULTICHAT_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = store.getState().documents.specialTabs
       if (
@@ -382,6 +389,7 @@ export function useTabManager({
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !specialTabs.meeting)
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !specialTabs.finance)
         || (tabPath === CALENDAR_WORKSPACE_TAB_PATH && !specialTabs.calendar)
+        || (tabPath === MULTICHAT_WORKSPACE_TAB_PATH && !specialTabs.multichat)
       ) { return }
       dispatch(setActiveTabPath(tabPath))
       return

@@ -8,7 +8,7 @@ import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 
 interface UseGraphWorkspaceParams {
   activeLibrary: NotiaLibrary | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'documents'
   treeNodes: NotiaFileNode[]
   contexts: readonly LibraryContext[]
   boardContextsByName: Readonly<Record<string, string>>

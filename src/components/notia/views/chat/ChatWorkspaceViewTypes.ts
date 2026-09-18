@@ -34,6 +34,7 @@ export interface ChatWorkspaceViewProps {
   transientContextPaths?: string[]
   transientContextMode?: ChatFileContextMode | null
   transientContextSummary?: string | null
+  transientContextContent?: string | null
   transientContextDisplayPaths?: string[]
   onTransientContextPathRemove?: (path: string) => void
   persistTransientContext?: boolean
@@ -105,6 +106,7 @@ export interface ChatAttachmentState {
   effectiveSelectedContextMode: ChatFileContextMode
   transientContextSummaryLabel: string | null
   hasTransientContext: boolean
+  transientContextContent?: string | null
   selectedLibraryFileSummary: ChatLibraryFileOption[]
 }
 
@@ -167,6 +169,7 @@ export interface UseChatSubmitMessageDependencies {
   preferredContextScopeKey: string | null
   persistTransientContext: boolean
   hasTransientContext: boolean
+  transientContextContent?: string | null
   markdownSelection: MarkdownSelectionContext | null
   activeMarkdownSource: string | null
   workspaceSnapshot: WorkspaceAiSnapshot | null

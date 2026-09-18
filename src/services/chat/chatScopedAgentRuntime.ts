@@ -6619,6 +6619,7 @@ Confirmá nuevamente para continuar.`,
     accessPrincipal,
     options.publishedScope ? 'published-task-manager' : 'full',
   ).filter((tool) => !(options.responseFormat === 'telegram-html' && financeToolsAllowed && PLAN_CONTROL_TOOL_NAMES.has(tool.function.name)))
+    .filter((tool) => !options.readOnly || (!AGENT_PLAN_MUTATION_TOOL_NAMES.has(tool.function.name) && !PLAN_CONTROL_TOOL_NAMES.has(tool.function.name)))
 
   return {
     libraryId: options.library.id,

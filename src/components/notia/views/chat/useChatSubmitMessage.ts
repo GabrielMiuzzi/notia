@@ -62,6 +62,7 @@ export function useChatSubmitMessage(
     preferredContextScopeKey,
     persistTransientContext,
     hasTransientContext,
+    transientContextContent,
     markdownSelection,
     activeMarkdownSource,
     workspaceSnapshot,
@@ -317,7 +318,12 @@ export function useChatSubmitMessage(
           onExecutionPlanChange: onAgentExecutionPlanChange,
           requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
         })
-      const globalPrompt = buildChatAttachmentPrompt(trimmedMessage, selectedImageAttachment)
+      const globalPrompt = [
+        buildChatAttachmentPrompt(trimmedMessage, selectedImageAttachment),
+        transientContextContent?.trim()
+          ? `Contexto auxiliar de la sala o vista activa (solo consulta; no sos participante de esa sala):\n${transientContextContent.trim()}`
+          : null,
+      ].filter(Boolean).join('\n\n')
       const replyInput = {
         agent,
         image: selectedImageAttachment,

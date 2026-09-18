@@ -1,5 +1,5 @@
 export interface UiState {
-  activeView: 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar'
+  activeView: 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat'
   isSidebarOpen: boolean
   isRightChatPanelOpen: boolean
   isRightPanelChatMounted: boolean
