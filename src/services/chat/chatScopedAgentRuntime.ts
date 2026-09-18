@@ -1,5 +1,7 @@
 import type { NotiaLibrary } from '../../types/notia'
+import { listLibraryUsers, type LibraryUser } from '../libraries/libraryUsers'
 import type { FinanceSalaryReceipt } from '../../modules/finance/types/financeTypes'
+import { formatFinanceLoadedDate } from '../../modules/finance/engines/financeLoadedDate'
 import type { AiNativeToolCall, AiNativeToolDefinition } from '../ai/aiRuntime'
 import { XGRAPH_AGENT_GUIDE } from '../ai/xgraphAgentPrompt'
 import { appendAgentRule, DEFAULT_AGENT_PROMPT, isInternalAgentCorrection, isLikelyPersonalMemory, loadAgentMemories, loadAgentPrompt, loadAgentRules, resolveAgentRulesContent, DEFAULT_AGENT_RULES, writeAgentMemories } from '../ai/agentPromptRuntime'
@@ -13,6 +15,8 @@ import type { TaskFrontmatter, TaskPriority, TaskState } from '../../modules/tas
 import { updateMarkdownFrontmatter } from '../../modules/task-manager/engines/frontmatterEngine'
 import type { MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { AgentConfirmationDecision, MutationPreview, WebSearchFreshness, WorkspaceAiSnapshot } from '../../types/ai/agentContracts'
+import type { AiAccessPrincipal, AiActor } from '../../types/ai/globalAiContract'
+import { authorizeToolCall, canAccessResource, filterAuthorizedTools, principalFromUser, resourceContextFromFrontmatter, safeUnauthorizedContextResult } from '../ai/aiAuthorizationEngine'
 import { requiresReinforcedAiConfirmation } from '../ai/aiConfirmationPolicy'
 import { sanitizeWebSearchQuery, searchOllamaWeb, WebSearchError } from '../ai/webSearchRuntime'
 import {
@@ -54,6 +58,7 @@ import { documentEditPresetInstruction } from '../../engines/markdown/documentEd
 import { dispatchLibraryTreeChanged } from '../libraries/libraryTreeEvents'
 import { invalidateLibrarySearchGraphIndex } from '../libraries/librarySearchGraphIndex'
 import { startPerformanceMeasurement } from '../runtime/performanceBaseline'
+import { matchFinanceServices } from '../../modules/finance/engines/serviceEngine'
 import {
   isArchivedTaskManagerChatPath,
   isExplicitArchivedTaskManagerRequest,
@@ -97,11 +102,20 @@ export interface ChatAgentRuntimeOptions {
   promptFileName?: string
   taskManagerScopeKey?: string | null
   publishedScope?: boolean
+  /** Server-resolved board names. Client-provided publication hints are never authoritative. */
+  publishedBoardNames?: readonly string[]
   persistencePolicy?: ChatPersistencePolicy
   readOnly?: boolean
   responseFormat?: ChatAgentResponseFormat
   actorUserId?: number
+  /** Stable Notia identity. The numeric Telegram id is deliberately not used for authorization. */
+  actor?: AiActor
+  /** Resolved once at the channel boundary; useful for host and deterministic tests. */
+  accessPrincipal?: AiAccessPrincipal
   financeSourceReference?: string | null
+  /** Stable envelope/request identity used to deduplicate post-mutation audits. */
+  financeRequestId?: string | null
+  financeSource?: 'app' | 'public-url' | 'telegram'
   onFinancePurchaseSaved?: (sourceReference: string) => void
   onFinanceSalarySaved?: (sourceReference: string, salary?: FinanceSalaryReceipt) => void
   onFinanceCreditCardStatementSaved?: (sourceReference: string) => void
@@ -119,8 +133,8 @@ export interface ChatAgentRuntimeOptions {
   ) => Promise<{ approved: boolean; suggestion?: string; steps?: TaskExecutionStep[] }>
 }
 
-function hasFinanceAccess(options: Pick<ChatAgentRuntimeOptions, 'scope' | 'enableFinanceTools'>): boolean {
-  return options.scope === 'finance' || options.enableFinanceTools === true
+function hasFinanceAccess(principal: AiAccessPrincipal): boolean {
+  return principal.allContexts || principal.allowedContexts.some((tag) => tag.toLocaleLowerCase() === '#confidencial')
 }
 
 export function shouldLoadAgentMemory(persistencePolicy: ChatPersistencePolicy): boolean {
@@ -214,6 +228,26 @@ const AGENT_PLAN_MUTATION_TOOL_NAMES = new Set([
   'materialize_document_facts',
   'update_document_wikilink',
   'verify_operation',
+  'save_finance_account',
+  'save_finance_category',
+  'save_finance_transaction',
+  'save_finance_savings_reserve',
+  'save_finance_savings_movement',
+  'save_finance_savings_exchange',
+  'save_finance_purchase',
+  'save_finance_salary',
+  'save_finance_credit_card_statement',
+  'save_finance_installment_plan',
+  'save_finance_investment',
+  'save_finance_service',
+  'save_finance_service_occurrence',
+  'save_finance_service_invoice',
+  'link_finance_savings_account',
+  'set_finance_service_active',
+  'delete_finance_record',
+  'reverse_finance_transaction',
+  'clear_finance_data',
+  'extract_finance_document',
 ])
 const PLAN_CONTROL_TOOL_NAMES = new Set([
   'set_agent_execution_plan',
@@ -228,14 +262,7 @@ export function normalizeAgentPath(path: string): string {
 const TASK_STATES = new Set<TaskState>(['Pendiente', 'Cancelada', 'En progreso', 'Finalizada', 'Bloqueada'])
 const TASK_PRIORITIES = new Set<TaskPriority>(['Baja', 'Media', 'Alta', 'Urgente'])
 const PUBLISHED_TASK_MANAGER_TOOL_NAMES = new Set([
-  'search_library_documents',
-  'search_library_context',
-  'search_library_exact',
-  'get_document_metadata',
-  'find_document_references',
-  'compare_documents',
-  'extract_document_facts',
-  'read_library_documents',
+  'get_workspace_context',
   'request_user_clarification',
   'read_all_task_tickets',
   'search_task_tickets',
@@ -244,10 +271,6 @@ const PUBLISHED_TASK_MANAGER_TOOL_NAMES = new Set([
   'get_task_manager_options',
   'get_task_board_summary',
   'set_task_execution_plan',
-  'create_library_note',
-  'replace_library_document',
-  'delete_library_document',
-  'request_file_read_permission',
   ...TASK_MUTATION_TOOL_NAMES,
 ])
 export const CHAT_AGENT_MAX_ROUNDS = 64
@@ -295,7 +318,37 @@ export const CHAT_AGENT_SINGLE_CALL_TOOL_NAMES = [
   'create_finance_purchase',
   'create_finance_salary',
   'create_finance_credit_card_statement',
-] as const
+  'create_finance_service',
+  'create_finance_service_occurrence',
+   'create_finance_service_invoice',
+   'audit_finance_month',
+   'preview_finance_audit_proposal',
+   'apply_finance_audit_proposal',
+    'get_finance_full_snapshot',
+    'get_finance_record',
+    'list_finance_records',
+    'reverse_finance_transaction',
+   'save_finance_account',
+   'save_finance_category',
+   'save_finance_transaction',
+   'save_finance_savings_reserve',
+  'save_finance_savings_movement',
+  'save_finance_savings_exchange',
+   'save_finance_purchase',
+   'save_finance_salary',
+   'save_finance_credit_card_statement',
+   'save_finance_installment_plan',
+   'save_finance_investment',
+   'save_finance_service',
+   'save_finance_service_occurrence',
+   'save_finance_service_invoice',
+   'link_finance_savings_account',
+   'set_finance_service_active',
+  'delete_finance_record',
+  'reverse_finance_transaction',
+  'clear_finance_data',
+   'extract_finance_document',
+ ] as const
 
 const FINANCE_TOOL_NAMES = new Set([
   'request_user_clarification',
@@ -321,6 +374,39 @@ const FINANCE_TOOL_NAMES = new Set([
   'list_finance_price_history',
   'get_finance_net_worth',
   'list_finance_net_worth_history',
+  'list_finance_services',
+  'list_finance_service_occurrences',
+  'list_finance_service_invoices',
+  'list_finance_audits',
+  'create_finance_service',
+  'create_finance_service_occurrence',
+   'create_finance_service_invoice',
+   'audit_finance_month',
+   'preview_finance_audit_proposal',
+   'apply_finance_audit_proposal',
+   'get_finance_full_snapshot',
+   'get_finance_record',
+   'list_finance_records',
+   'save_finance_account',
+   'save_finance_category',
+   'save_finance_transaction',
+   'save_finance_savings_reserve',
+   'save_finance_savings_movement',
+   'save_finance_savings_exchange',
+   'save_finance_purchase',
+   'save_finance_salary',
+   'save_finance_credit_card_statement',
+   'save_finance_installment_plan',
+   'save_finance_investment',
+   'save_finance_service',
+   'save_finance_service_occurrence',
+   'save_finance_service_invoice',
+   'link_finance_savings_account',
+   'set_finance_service_active',
+   'delete_finance_record',
+   'reverse_finance_transaction',
+   'clear_finance_data',
+   'extract_finance_document',
 ])
 
 /** Accepts canonical, numeric and common ARS/USD locale forms from tool-calling models. */
@@ -658,6 +744,36 @@ export function buildTicketSectionCorrection(
     'La ruta puede aparecer dentro de la seccion, pero una viñeta Path no cuenta como encabezado.',
     'No coloques Estado, Prioridad, Rol ni Detalle de un ticket debajo del encabezado de otro.',
   ].join('\n')
+}
+
+function financeRecordTool(name: string, description: string, recordProperties: Record<string, unknown>, requiredRecordFields: string[] = []): AiNativeToolDefinition {
+  return {
+    type: 'function',
+    function: {
+      name,
+      description,
+      parameters: {
+        type: 'object',
+        required: ['record'],
+        properties: {
+          record: {
+            type: 'object',
+            required: requiredRecordFields,
+            properties: recordProperties,
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+  }
+}
+
+export function paginateFinanceRecords<T>(items: readonly T[], requestedLimit: unknown, requestedOffset: unknown): { items: T[]; total: number; limit: number; offset: number; hasMore: boolean } {
+  const rawLimit = typeof requestedLimit === 'number' && Number.isInteger(requestedLimit) ? requestedLimit : 50
+  const rawOffset = typeof requestedOffset === 'number' && Number.isInteger(requestedOffset) ? requestedOffset : 0
+  const limit = Math.max(1, Math.min(200, rawLimit))
+  const offset = Math.max(0, rawOffset)
+  return { items: items.slice(offset, offset + limit), total: items.length, limit, offset, hasMore: offset + limit < items.length }
 }
 
 export function buildChatAgentTools(
@@ -1243,6 +1359,76 @@ export function buildChatAgentTools(
       },
       {
         type: 'function', function: {
+          name: 'list_finance_services',
+          description: 'Lista servicios mensuales activos e inactivos con su categoría, moneda, importe esperado y modalidad. Es de solo lectura y debe usarse para resolver coincidencias antes de registrar un gasto.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_service_occurrences',
+          description: 'Consulta las ocurrencias mensuales y sus importes pagados, estados y evidencias para un período YYYY-MM.',
+          parameters: { type: 'object', required: ['period'], properties: { period: { type: 'string', description: 'Período YYYY-MM.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_service_invoices',
+          description: 'Consulta facturas y boletas de servicios por período. Es de solo lectura y no crea gastos.',
+          parameters: { type: 'object', properties: { period: { type: 'string', description: 'Período YYYY-MM, opcional.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_service',
+          description: 'Propone y, luego de confirmación reforzada individual, crea o actualiza un servicio mensual. Requiere nombre, categoría de gasto, moneda e importe esperado; no crea obligaciones futuras.',
+          parameters: { type: 'object', required: ['name', 'categoryId', 'currency', 'expectedAmount'], properties: { name: { type: 'string' }, categoryId: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, expectedAmount: { type: 'string' }, dueDay: { type: 'integer', minimum: 1, maximum: 31 }, defaultAccountId: { type: 'string' }, provider: { type: 'string' }, modality: { type: 'string', enum: ['fixed', 'variable'] } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_service_occurrence',
+          description: 'Registra o actualiza una ocurrencia mensual de un servicio y conserva versiones anteriores. Requiere confirmación individual si incluye un gasto o reemplaza evidencia. Antes de usarla, lista los servicios y ocurrencias locales; si el pago proviene de un resumen de tarjeta, preferí la conciliación de auditoría o vinculá el transactionId existente y no inventes un serviceId.',
+          parameters: { type: 'object', required: ['serviceId', 'period', 'expectedAmount'], properties: { serviceId: { type: 'string' }, period: { type: 'string' }, expectedAmount: { type: 'string' }, paidAmount: { type: 'string' }, effectiveDate: { type: 'string' }, transactionId: { type: 'string' }, artifactId: { type: 'string' }, sourceReference: { type: 'string' }, status: { type: 'string', enum: ['pending', 'current', 'accepted', 'rejected', 'discarded', 'failed', 'outdated'] }, reason: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'create_finance_service_invoice',
+          description: 'Registra una factura o boleta de servicio asociable a un período y servicio. No genera un gasto adicional por sí misma; requiere confirmación reforzada.',
+          parameters: { type: 'object', required: ['period', 'amount', 'currency'], properties: { serviceId: { type: 'string' }, period: { type: 'string' }, dueDate: { type: 'string' }, provider: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, transactionId: { type: 'string' }, artifactId: { type: 'string' }, sourceReference: { type: 'string' }, rawExtraction: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'audit_finance_month',
+          description: 'Ejecuta una auditoría mensual estructurada combinando reglas deterministas y análisis contextual. Devuelve propuestas, pero nunca aplica ajustes; cada propuesta requiere preview y confirmación independiente.',
+           parameters: { type: 'object', required: ['period'], properties: { period: { type: 'string' }, reason: { type: 'string' }, contextualFindings: { type: 'array', maxItems: 50, description: 'Hallazgos contextuales del modelo basados únicamente en los datos normalizados devueltos por las lecturas financieras. Toda propuesta debe usar una operación estructurada permitida y parámetros verificables.', items: { type: 'object', required: ['proposalType', 'ruleKey', 'operation', 'parameters', 'reason', 'currentData', 'suggestedChange'], properties: { proposalType: { type: 'string' }, ruleKey: { type: 'string' }, operation: { type: 'string', enum: ['mark_occurrence_discarded', 'set_occurrence_expected_amount', 'unlink_transaction_service'] }, parameters: { type: 'object' }, serviceId: { type: 'string' }, reason: { type: 'string' }, currentData: { type: 'string' }, suggestedChange: { type: 'string' }, evidence: { type: 'string' } } } } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_audits',
+           description: 'Consulta ejecuciones y propuestas de auditoría por período, estado y proposalType, incluyendo service-card-reconciliation y sus evidencias.',
+           parameters: { type: 'object', properties: { period: { type: 'string' }, status: { type: 'string' }, proposalType: { type: 'string', enum: ['service-unpaid', 'amount-variation', 'orphan-service-link', 'service-card-reconciliation'] } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'preview_finance_audit_proposal',
+           description: 'Devuelve el preview estructurado de una propuesta financiera pendiente, con proposalType y period reales. No modifica datos ni decide la propuesta.',
+           parameters: { type: 'object', required: ['proposalId'], properties: { proposalId: { type: 'string' }, proposalType: { type: 'string', enum: ['service-unpaid', 'amount-variation', 'orphan-service-link', 'service-card-reconciliation'] } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'apply_finance_audit_proposal',
+           description: 'Presenta una propuesta financiera individual y, tras confirmación reforzada, registra aceptación, rechazo o cancelación. Requiere proposalType compatible y la huella del preview; nunca aplica una propuesta obsoleta ni una operación libre.',
+           parameters: { type: 'object', required: ['proposalId', 'expectedDataFingerprint', 'decision'], properties: { proposalId: { type: 'string' }, proposalType: { type: 'string', enum: ['service-unpaid', 'amount-variation', 'orphan-service-link', 'service-card-reconciliation'] }, expectedDataFingerprint: { type: 'string', description: 'Huella devuelta por preview_finance_audit_proposal; no acepta una operación libre.' }, decision: { type: 'string', enum: ['accepted', 'rejected', 'cancelled'] }, resolutionAssignments: { type: 'array', maxItems: 50, description: 'Solo para resolver grupos ambiguos. Cada selección debe coincidir con una línea y candidato del preview.', items: { type: 'object', required: ['statementId', 'lineId', 'serviceId', 'transactionId', 'purchaseDate', 'period', 'amount', 'currency'], properties: { statementId: { type: 'string' }, lineId: { type: 'string' }, serviceId: { type: 'string' }, transactionId: { type: 'string' }, purchaseDate: { type: 'string' }, period: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] } } } } } },
+        },
+      },
+      {
+        type: 'function', function: {
           name: 'get_finance_inflation_indices',
           description: 'Consulta los índices de inflación mensual e interanual publicados por ArgentinaDatos. Usala para preguntas sobre IPC y aclara que son datos de una fuente externa.',
           parameters: { type: 'object', properties: {} },
@@ -1269,7 +1455,7 @@ export function buildChatAgentTools(
           name: 'create_finance_transaction',
           description: 'Crea un ingreso, gasto, transferencia o ajuste usando IDs obtenidos de las herramientas financieras. Llamala solo cuando importe, moneda, fecha, cuenta y descripcion sean inequivocos. Solicita confirmacion reforzada visible antes de persistir y nunca digas que se registro sin llamar esta herramienta y recibir ok:true.',
           parameters: { type: 'object', required: ['transactionType', 'amount', 'currency', 'effectiveDate', 'accountId', 'description'], properties: {
-            transactionType: { type: 'string', enum: ['income', 'expense', 'transfer', 'adjustment'], description: 'expense descuenta, income acredita, transfer mueve entre cuentas y adjustment corrige un saldo sin clasificarlo como ingreso o gasto.' }, amount: { type: 'string', description: 'Importe decimal exacto como texto, sin simbolo de moneda ni separador de miles.' }, currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda de la cuenta elegida; nunca conviertas monedas.' }, effectiveDate: { type: 'string', description: 'Fecha efectiva exacta en formato YYYY-MM-DD.' }, accountId: { type: 'string', description: 'ID opaco de una cuenta activa obtenido con list_finance_accounts.' }, destinationAccountId: { type: 'string', description: 'ID opaco obligatorio para transfer; es la cuenta que recibe el importe.' }, categoryId: { type: 'string', description: 'ID opaco de una categoria existente o creada y confirmada mediante create_finance_category.' }, description: { type: 'string', description: 'Descripcion breve del hecho, por ejemplo Nafta.' }, confidence: { type: 'number', description: 'Entre 0 y 1; incluso 0.95 solo es una señal de calidad y nunca evita la confirmacion reforzada.' }, sourceReference: { type: 'string', description: 'Referencia opaca al audio o archivo original, si existe.' }, rawSource: { type: 'string', description: 'Transcripción original, si existe.' },
+            transactionType: { type: 'string', enum: ['income', 'expense', 'transfer', 'adjustment'], description: 'expense descuenta, income acredita, transfer mueve entre cuentas y adjustment corrige un saldo sin clasificarlo como ingreso o gasto.' }, amount: { type: 'string', description: 'Importe decimal exacto como texto, sin simbolo de moneda ni separador de miles.' }, currency: { type: 'string', enum: ['ARS', 'USD'], description: 'Moneda de la cuenta elegida; nunca conviertas monedas.' }, effectiveDate: { type: 'string', description: 'Fecha efectiva exacta en formato YYYY-MM-DD.' }, accountId: { type: 'string', description: 'ID opaco de una cuenta activa obtenido con list_finance_accounts.' }, destinationAccountId: { type: 'string', description: 'ID opaco obligatorio para transfer; es la cuenta que recibe el importe.' }, categoryId: { type: 'string', description: 'ID opaco de una categoria existente o creada y confirmada mediante create_finance_category.' }, serviceId: { type: 'string', description: 'ID opaco del servicio mensual existente obtenido con list_finance_services. Usalo para expresiones como "Pagué X de luz".' }, description: { type: 'string', description: 'Descripcion breve del hecho, por ejemplo Nafta.' }, confidence: { type: 'number', description: 'Entre 0 y 1; incluso 0.95 solo es una señal de calidad y nunca evita la confirmacion reforzada.' }, sourceReference: { type: 'string', description: 'Referencia opaca al audio o archivo original, si existe.' }, rawSource: { type: 'string', description: 'Transcripción original, si existe.' },
           } },
         },
       },
@@ -1359,8 +1545,8 @@ export function buildChatAgentTools(
       },
       {
         type: 'function', function: {
-          name: 'create_finance_credit_card_statement',
-          description: 'Guarda un resumen de tarjeta, sus líneas y los movimientos de consumos/cargos en la cuenta de tarjeta. El total a pagar del resumen no es otro gasto y el pago posterior debe registrarse como transferencia. Solicita confirmacion reforzada visible antes de persistir.',
+           name: 'create_finance_credit_card_statement',
+           description: 'Guarda un resumen de tarjeta, sus líneas y los movimientos de consumos/cargos en la cuenta de tarjeta. Devuelve el período real persistido, occurrences y el estado, cantidad y grupos ambiguos de conciliación de servicios; los grupos ambiguos no se aplican automáticamente. El total a pagar del resumen no es otro gasto y el pago posterior debe registrarse como transferencia. Solicita confirmacion reforzada visible antes de persistir.',
           parameters: { type: 'object', required: ['accountId', 'issuer', 'period', 'closingDate', 'dueDate', 'currency', 'previousBalance', 'paymentsAmount', 'creditsAmount', 'purchasesAmount', 'feesAmount', 'interestAmount', 'taxesAmount', 'totalDue', 'items'], properties: {
             accountId: { type: 'string', description: 'ID o nombre exacto de una cuenta activa de tipo credit_card que corresponde al resumen; no es la cuenta bancaria desde la que se pagará.' },
             issuer: { type: 'string', description: 'Banco o emisor leído del resumen.' },
@@ -1415,6 +1601,80 @@ export function buildChatAgentTools(
           name: 'list_finance_net_worth_history',
           description: 'Consulta toda la evolución histórica de patrimonio neto por fecha y moneda. Es solo lectura.',
           parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'get_finance_full_snapshot',
+          description: 'Lee una instantánea completa y normalizada de Finanzas: cuentas, categorías, movimientos, servicios, compras, sueldos, tarjetas, cuotas, inversiones, ahorro, auditorías y patrimonio. Usala antes de cualquier inventario o resumen global.',
+          parameters: { type: 'object', properties: { month: { type: 'string', description: 'Mes YYYY-MM usado para el dashboard y movimientos. Si se omite usa el mes actual.' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'list_finance_records',
+          description: 'Enumera una entidad financiera con límites deterministas y paginación en memoria. Devuelve items, total, limit, offset y hasMore; nunca asumas que una página es el total.',
+          parameters: { type: 'object', required: ['entity'], properties: {
+            entity: { type: 'string', enum: ['accounts', 'categories', 'movements', 'services', 'service_occurrences', 'service_occurrence_versions', 'service_invoices', 'purchases', 'salaries', 'credit_card_statements', 'price_history', 'installment_plans', 'installments', 'investments', 'audit_runs', 'audit_proposals', 'audits', 'net_worth_history', 'savings_reserves', 'savings_movements', 'savings_exchanges', 'merchants', 'artifacts'] },
+            month: { type: 'string', description: 'Mes YYYY-MM para movimientos, ocurrencias, ahorro y dashboard.' }, from: { type: 'string' }, to: { type: 'string' }, period: { type: 'string' }, occurrenceId: { type: 'string' }, planId: { type: 'string' }, active: { type: 'boolean' }, status: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 200 }, offset: { type: 'integer', minimum: 0 },
+          } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'get_finance_record',
+          description: 'Obtiene una entidad financiera por ID opaco. Primero usa list_finance_records o una lectura específica para resolver el ID; devuelve notFound si no existe.',
+          parameters: { type: 'object', required: ['entity', 'id'], properties: { entity: { type: 'string', enum: ['accounts', 'categories', 'movements', 'services', 'service_occurrences', 'service_occurrence_versions', 'service_invoices', 'purchases', 'salaries', 'credit_card_statements', 'installment_plans', 'installments', 'investments', 'savings_reserves', 'savings_movements', 'artifacts', 'audits', 'audit_proposals'] }, id: { type: 'string' } } },
+        },
+      },
+      financeRecordTool('save_finance_account', 'Crea o actualiza una cuenta financiera completa. Requiere confirmación reforzada individual y el objeto record debe contener un ID estable.', { id: { type: 'string' }, name: { type: 'string' }, accountType: { type: 'string', enum: ['cash', 'bank', 'credit_card', 'wallet', 'other'] }, currency: { type: 'string', enum: ['ARS', 'USD'] }, active: { type: 'boolean' } }, ['id', 'name', 'accountType', 'currency', 'active']),
+      financeRecordTool('save_finance_category', 'Crea o actualiza una categoría financiera. Requiere confirmación reforzada individual.', { id: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string', enum: ['income', 'expense'] }, description: { type: 'string' }, active: { type: 'boolean' } }, ['id', 'name', 'kind', 'active']),
+      financeRecordTool('save_finance_transaction', 'Crea o actualiza un movimiento financiero con todos sus campos explícitos. Requiere confirmación reforzada individual; para cambios de estado usa update_finance_transaction_status.', { id: { type: 'string' }, transactionType: { type: 'string', enum: ['income', 'expense', 'transfer', 'adjustment'] }, amount: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, effectiveDate: { type: 'string' }, accountId: { type: 'string' }, destinationAccountId: { type: 'string' }, categoryId: { type: 'string' }, serviceId: { type: 'string' }, description: { type: 'string' }, status: { type: 'string' } }, ['id', 'transactionType', 'amount', 'currency', 'effectiveDate', 'accountId', 'description']),
+      financeRecordTool('save_finance_savings_reserve', 'Crea o actualiza una reserva de ahorro. Requiere confirmación reforzada individual.', { id: { type: 'string' }, name: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, openingBalance: { type: 'string' }, objective: { type: 'string' }, active: { type: 'boolean' }, balance: { type: 'string' } }, ['id', 'name', 'currency', 'openingBalance', 'active', 'balance']),
+      financeRecordTool('save_finance_savings_movement', 'Crea o actualiza un movimiento de ahorro. Requiere confirmación reforzada individual y motivo para retiros.', { id: { type: 'string' }, reserveId: { type: 'string' }, accountId: { type: 'string' }, movementType: { type: 'string', enum: ['contribution', 'withdrawal', 'return', 'loss', 'adjustment'] }, amount: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, effectiveDate: { type: 'string' }, description: { type: 'string' }, reason: { type: 'string' } }, ['id', 'reserveId', 'accountId', 'movementType', 'amount', 'currency', 'effectiveDate']),
+      financeRecordTool('save_finance_savings_exchange', 'Crea o actualiza un intercambio de moneda para ahorro de forma atómica. Requiere confirmación reforzada individual.', { id: { type: 'string' }, reserveId: { type: 'string' }, sourceAccountId: { type: 'string' }, sourceAmount: { type: 'string' }, sourceCurrency: { type: 'string', enum: ['ARS', 'USD'] }, savingsAmount: { type: 'string' }, savingsCurrency: { type: 'string', enum: ['ARS', 'USD'] }, effectiveDate: { type: 'string' }, description: { type: 'string' } }, ['id', 'reserveId', 'sourceAccountId', 'sourceAmount', 'sourceCurrency', 'savingsAmount', 'savingsCurrency', 'effectiveDate', 'description']),
+      financeRecordTool('save_finance_purchase', 'Crea o actualiza un ticket completo con sus líneas y observaciones de precios. Requiere confirmación reforzada individual.', { id: { type: 'string' }, accountId: { type: 'string' }, categoryId: { type: 'string' }, merchantName: { type: 'string' }, observedAt: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, subtotalAmount: { type: 'string' }, discountAmount: { type: 'string' }, taxAmount: { type: 'string' }, totalAmount: { type: 'string' }, items: { type: 'array' }, status: { type: 'string' } }, ['id', 'accountId', 'merchantName', 'observedAt', 'currency', 'subtotalAmount', 'discountAmount', 'taxAmount', 'totalAmount', 'items']),
+      financeRecordTool('save_finance_salary', 'Crea o actualiza un recibo de sueldo completo con conceptos. Requiere confirmación reforzada individual.', { id: { type: 'string' }, accountId: { type: 'string' }, period: { type: 'string' }, paymentDate: { type: 'string' }, employer: { type: 'string' }, grossAmount: { type: 'string' }, deductionsTotal: { type: 'string' }, netAmount: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, concepts: { type: 'array' }, status: { type: 'string' } }, ['id', 'accountId', 'period', 'paymentDate', 'employer', 'grossAmount', 'deductionsTotal', 'netAmount', 'currency', 'concepts']),
+      financeRecordTool('save_finance_credit_card_statement', 'Crea o actualiza un resumen de tarjeta completo, incluyendo sus líneas. Requiere confirmación reforzada individual.', { id: { type: 'string' }, accountId: { type: 'string' }, issuer: { type: 'string' }, period: { type: 'string' }, closingDate: { type: 'string' }, dueDate: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, previousBalance: { type: 'string' }, paymentsAmount: { type: 'string' }, creditsAmount: { type: 'string' }, purchasesAmount: { type: 'string' }, feesAmount: { type: 'string' }, interestAmount: { type: 'string' }, taxesAmount: { type: 'string' }, totalDue: { type: 'string' }, items: { type: 'array' } }, ['id', 'accountId', 'issuer', 'period', 'closingDate', 'dueDate', 'currency', 'previousBalance', 'paymentsAmount', 'creditsAmount', 'purchasesAmount', 'feesAmount', 'interestAmount', 'taxesAmount', 'totalDue', 'items']),
+      financeRecordTool('save_finance_installment_plan', 'Crea o actualiza un plan de cuotas y sus cuotas. Requiere confirmación reforzada individual.', { id: { type: 'string' }, accountId: { type: 'string' }, merchantName: { type: 'string' }, description: { type: 'string' }, purchaseDate: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, totalAmount: { type: 'string' }, installmentCount: { type: 'integer', minimum: 1, maximum: 120 } }, ['id', 'accountId', 'merchantName', 'description', 'purchaseDate', 'currency', 'totalAmount', 'installmentCount']),
+      financeRecordTool('save_finance_investment', 'Crea o actualiza un activo, deuda, efectivo o security con su valuación. Requiere confirmación reforzada individual.', { id: { type: 'string' }, accountId: { type: 'string' }, name: { type: 'string' }, assetType: { type: 'string', enum: ['asset', 'debt', 'cash', 'security'] }, currency: { type: 'string', enum: ['ARS', 'USD'] }, active: { type: 'boolean' }, valuationDate: { type: 'string' }, valuationAmount: { type: 'string' } }, ['id', 'name', 'assetType', 'currency', 'active', 'valuationDate', 'valuationAmount']),
+      financeRecordTool('save_finance_service', 'Crea o actualiza un servicio mensual. Requiere confirmación reforzada individual y no crea obligaciones futuras.', { id: { type: 'string' }, name: { type: 'string' }, categoryId: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, expectedAmount: { type: 'string' }, dueDay: { type: 'integer' }, defaultAccountId: { type: 'string' }, provider: { type: 'string' }, modality: { type: 'string', enum: ['fixed', 'variable'] }, active: { type: 'boolean' } }, ['id', 'name', 'categoryId', 'currency', 'expectedAmount']),
+      financeRecordTool('save_finance_service_occurrence', 'Crea o actualiza una ocurrencia mensual y conserva versiones anteriores. Requiere confirmación reforzada individual.', { id: { type: 'string' }, serviceId: { type: 'string' }, period: { type: 'string' }, expectedAmount: { type: 'string' }, paidAmount: { type: 'string' }, effectiveDate: { type: 'string' }, transactionId: { type: 'string' }, artifactId: { type: 'string' }, sourceReference: { type: 'string' }, status: { type: 'string' } }, ['id', 'serviceId', 'period', 'expectedAmount']),
+      financeRecordTool('save_finance_service_invoice', 'Crea o actualiza una factura de servicio sin crear un gasto adicional automáticamente. Requiere confirmación reforzada individual.', { id: { type: 'string' }, serviceId: { type: 'string' }, period: { type: 'string' }, dueDate: { type: 'string' }, provider: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string', enum: ['ARS', 'USD'] }, transactionId: { type: 'string' }, artifactId: { type: 'string' }, sourceReference: { type: 'string' } }, ['id', 'period', 'amount', 'currency']),
+      {
+        type: 'function', function: {
+          name: 'link_finance_savings_account', description: 'Vincula una reserva de ahorro con una cuenta existente. Requiere confirmación reforzada individual.',
+          parameters: { type: 'object', required: ['reserveId', 'accountId'], properties: { reserveId: { type: 'string' }, accountId: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'set_finance_service_active', description: 'Activa o desactiva un servicio identificado sin borrar su historial. Requiere confirmación reforzada individual.',
+          parameters: { type: 'object', required: ['serviceId', 'active'], properties: { serviceId: { type: 'string' }, active: { type: 'boolean' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'delete_finance_record', description: 'Elimina un registro financiero identificado y devuelve el resultado. Es una operación irreversible: exige confirmación reforzada individual y nunca acepta un lote ambiguo.',
+          parameters: { type: 'object', required: ['entity', 'id'], properties: { entity: { type: 'string', enum: ['transaction', 'account', 'category'] }, id: { type: 'string' } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'reverse_finance_transaction', description: 'Revierte lógicamente un movimiento confirmado marcándolo como descartado y conserva el registro histórico. Requiere motivo y confirmación reforzada individual.',
+          parameters: { type: 'object', required: ['transactionId', 'reason'], properties: { transactionId: { type: 'string' }, reason: { type: 'string', minLength: 1, maxLength: 500 } } },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'clear_finance_data', description: 'Elimina todos los datos financieros. Solo se permite con una confirmación reforzada explícita que mencione el alcance total; no usar para corregir un registro individual.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function', function: {
+          name: 'extract_finance_document', description: 'Extrae campos estructurados de un artefacto financiero existente. No guarda entidades automáticamente; devuelve resultado y estado del artefacto para que el usuario revise antes de persistir.',
+          parameters: { type: 'object', required: ['artifactId', 'filePath', 'documentType'], properties: { artifactId: { type: 'string' }, filePath: { type: 'string' }, documentType: { type: 'string', enum: ['ticket', 'salary', 'credit_card_statement', 'service_invoice'] } } },
         },
       },
     )
@@ -1756,12 +2016,22 @@ export function buildChatAgentSystemPrompt(
       'Estas en Finanzas. Usa exclusivamente las herramientas financieras; no uses SQL ni modifiques saldos directamente.',
       'Para cotizaciones actuales usa get_finance_dollar_quotes (DolarApi). Para IPC mensual o interanual usa get_finance_inflation_indices (ArgentinaDatos), y para el historial del dolar oficial usa get_finance_historical_dollar_quotes (ArgentinaDatos). Informa siempre la fuente y la fecha disponible; si una consulta externa falla, dilo explicitamente.',
       'Para preguntas sobre precios historicos usa list_finance_price_history. Para patrimonio usa get_finance_net_worth o list_finance_net_worth_history. Para recibos, tickets y resumenes usa sus herramientas list_* y aplica filtros cuando el usuario indique un periodo. No afirmes que consultaste todos los registros si una herramienta devuelve un resultado truncado.',
+      'Para inventarios, conciliaciones o resúmenes globales usa get_finance_full_snapshot. Para una entidad concreta usa list_finance_records con filtros, limit y offset, y respeta total/hasMore; usa get_finance_record para un ID exacto y no confundas una página con el total.',
+      'Las herramientas save_finance_* permiten crear o editar entidades completas con un ID estable. Usa save_finance_savings_exchange para intercambios atómicos, set_finance_service_active para pausar servicios, reverse_finance_transaction para revertir lógicamente y delete_finance_record solo cuando el usuario pida eliminación permanente. clear_finance_data requiere una petición explícita de alcance total.',
+      'Para documentos financieros usa extract_finance_document solo como extracción revisable; no persistas automáticamente el resultado. Usa list_finance_records con entity artifacts para consultar artefactos y estados de extracción.',
       'No recibiste documentos de la biblioteca como contexto. Consulta solamente los datos mínimos necesarios mediante herramientas tipadas.',
       `La fecha actual para registrar operaciones sin fecha indicada es ${new Date().toISOString().slice(0, 10)}. Usa esa fecha solo cuando el usuario no indique otra.`,
       'Antes de registrar cualquier movimiento lista las cuentas. Si el usuario no indicó una cuenta inequívoca, llama request_user_clarification y espera; esto es obligatorio también en Telegram.',
       'Busca categorías existentes. Si no hay ninguna adecuada, podes proponer una nueva relacionada con el hecho y crearla solo con create_finance_category, que exige confirmación reforzada visible. Ante varias coincidencias solicita aclaración.',
+      'Para expresiones como "Pagué X de luz", lista servicios y ocurrencias del mes, resuelve una coincidencia única por nombre/proveedor/contexto y pide aclaración si hay cero o varias. Si no existe, propone por separado el alta del servicio y el gasto; ninguna confirmación autoriza la otra.',
+      'Las facturas o boletas de servicios pueden registrarse con create_finance_service_invoice desde imagen, PDF, texto o dictado. Una factura no crea automáticamente un gasto genérico ni duplica un resumen de tarjeta.',
+      'Las preguntas sobre datos financieros locales, auditorías, propuestas, resúmenes y conciliaciones se responden con las herramientas financieras y nunca requieren search_web. Para propuestas usa list_finance_audits, luego preview_finance_audit_proposal y conserva el proposalType, el período y la huella exactos.',
+      'Las propuestas service-card-reconciliation muestran el resumen, las líneas, la evidencia y los períodos destino. Los grupos ambiguos requieren decisión y nunca deben presentarse como aplicados automáticamente.',
+      'Un preview_finance_audit_proposal no termina el flujo: si el usuario pidió aplicar, después del preview llama apply_finance_audit_proposal en la misma operación con el proposalId, proposalType y expectedDataFingerprint exactos. Si el usuario responde "sí", "hacelo" o equivalente a una propuesta ya revisada, no vuelvas a mostrar el preview como respuesta final.',
+      'Si el usuario informa que un servicio fue cobrado en un resumen de tarjeta, no descartes la propuesta service-unpaid ni busques en internet: consulta los resúmenes y sus líneas locales, identifica el gasto existente y usa la propuesta service-card-reconciliation o registra una única ocurrencia vinculando ese transactionId. No encadenes create_finance_service_occurrence + preview_finance_audit_proposal + apply_finance_audit_proposal para el mismo pago: la mutación de la ocurrencia dispara la auditoría consolidada. Solo pide aclaración si hay más de un candidato o el período no puede determinarse con evidencia local.',
+      'Después de cada alta financiera confirmada ejecuta una única auditoría consolidada con audit_finance_month sobre el mes de la fecha efectiva. La auditoría solo propone cambios; cada propuesta requiere preview y confirmación individual y un rechazo no es una regla permanente.',
       'Cuando el usuario compre una moneda para acreditarla en una reserva de ahorro, usa create_finance_savings_exchange. Resuelve reserva y cuenta por nombre con get_finance_dashboard; nunca pidas IDs internos. Esta operación guarda la salida en la moneda de origen y el aporte en la moneda de la reserva de forma atómica.',
-      'Si recibes una imagen, clasifícala como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Orden obligatorio: usa create_finance_purchase para tickets, create_finance_salary para recibos y create_finance_credit_card_statement para resúmenes después de resolver la cuenta de tarjeta. El total del resumen no es otro gasto y el pago posterior es una transferencia separada. No afirmes que se guardó sin ejecutar la herramienta correspondiente.',
+      'Si recibes una imagen o PDF, clasifícala como ticket de compra, factura/boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito u otro documento. Orden obligatorio: usa create_finance_purchase para tickets, create_finance_service_invoice para facturas/boletas, create_finance_salary para recibos y create_finance_credit_card_statement para resúmenes después de resolver la cuenta de tarjeta. El total del resumen no es otro gasto y el pago posterior es una transferencia separada. No afirmes que se guardó sin ejecutar la herramienta correspondiente.',
       'Una aclaración no confirma una mutación. Las operaciones ambiguas quedan pendientes y cada confirmación es individual y reforzada.',
       'Nunca anuncies una carga como realizada sin ejecutar la herramienta correspondiente y recibir ok:true. Cuando todos los datos estén completos, llama la tool: ella solicita confirmación reforzada real y solo entonces persiste el movimiento.',
       'ARS y USD son libros separados: nunca conviertas ni sumes monedas.',
@@ -1779,6 +2049,7 @@ export function buildChatAgentSystemPrompt(
       base.push(
         'Esta conversacion de Telegram tiene acceso transversal: ademas de la biblioteca y Task Manager, puedes consultar y operar Finanzas mediante sus herramientas tipadas. No limites la respuesta al modulo activo de la interfaz ni digas que careces de acceso a otro modulo.',
         'Para una pregunta sobre reuniones, personas, tareas o tickets usa primero search_task_context y, si hace falta, read_task_tickets; para otros documentos usa search_library_context. Para una pregunta financiera usa las herramientas financieras correspondientes. Si el pedido mezcla areas, consulta ambas fuentes en la misma operacion.',
+        'Una pregunta financiera local nunca necesita search_web: usa get_finance_full_snapshot, list_finance_records, list_finance_audits o preview_finance_audit_proposal según corresponda. Conserva siempre el period estructurado y no confundas una propuesta ambigua con una aplicación.',
         'Las escrituras financieras conservan sus confirmaciones y verificaciones habituales; nunca afirmes que un registro se guardo sin recibir ok:true de la herramienta correspondiente.',
       )
     }
@@ -1810,6 +2081,11 @@ export function buildChatAgentSystemPrompt(
       'Respeta una negativa y no uses RAG global sin permiso explicito.',
     )
   }
+  if (responseFormat === 'telegram-html' && includeFinanceTools) {
+    base.push(
+      'Telegram Finanzas: no uses planes de ejecución para una operación financiera local. Ejecutá como máximo una mutación confirmada por turno; las lecturas y la auditoría automática posterior no requieren una segunda confirmación. Nunca envíes dos solicitudes de confirmación consecutivas para la misma mutación.',
+    )
+  }
   return base.join('\n')
 }
 
@@ -1821,10 +2097,12 @@ export function validateFinanceFinalAnswer(
   purchaseExecuted = false,
   salaryExecuted = false,
   creditCardStatementExecuted = false,
+  serviceInvoiceExecuted = false,
 ): string | null {
   const reportsDetectedTicket = /\bticket\s+(?:de\s+compra\s+)?detectado\b/i.test(answer)
   const reportsDetectedSalary = /\b(?:recibo\s+de\s+sueldo|liquidaci[oó]n\s+de\s+haberes)\s+(?:detectad[oa]|identificad[oa])\b/i.test(answer)
   const reportsDetectedCardStatement = /\bresumen\s+de\s+tarjeta(?:\s+de\s+cr[eé]dito)?\s+(?:detectad[oa]|identificad[oa])\b/i.test(answer)
+  const reportsDetectedServiceInvoice = /\b(?:factura|boleta)\s+(?:de\s+)?servicio\s+(?:detectad[oa]|identificad[oa])\b/i.test(answer)
   if (ticketPurchaseRequired && reportsDetectedTicket && !purchaseExecuted) {
     return 'Detectaste un ticket recibido por Telegram, pero aún no fue persistido. No finalices con un resumen: usa create_finance_purchase con la cuenta, categoría, comercio, fecha, total, líneas y sourceReference disponibles. Espera ok:true antes de responder que el ticket quedó registrado.'
   }
@@ -1833,6 +2111,9 @@ export function validateFinanceFinalAnswer(
   }
   if (ticketPurchaseRequired && reportsDetectedCardStatement && !creditCardStatementExecuted) {
     return 'Detectaste un resumen de tarjeta recibido por Telegram, pero aún no fue persistido. Usa create_finance_credit_card_statement con la cuenta credit_card, período, fechas, moneda, saldos, totales, líneas y sourceReference. Espera ok:true antes de responder que quedó registrado.'
+  }
+  if (ticketPurchaseRequired && reportsDetectedServiceInvoice && !serviceInvoiceExecuted) {
+    return 'Detectaste una factura o boleta de servicio recibida por Telegram, pero aún no fue persistida. Usa create_finance_service_invoice con período, importe, moneda y la referencia opaca disponible; no generes un gasto genérico adicional.'
   }
   if (mutationExecuted) return null
   const claimsPersistedOperation = /\b(?:he\s+)?(?:registr(?:é|e|ado)|guard(?:é|e|ado)|carg(?:ué|ue|ado)|anot(?:é|e|ado))\b|\blisto\b[^\n]*(?:gasto|ingreso|movimiento)/i.test(answer)
@@ -1849,6 +2130,7 @@ interface FinanceToolResult {
   ok?: unknown
   changed?: unknown
   duplicate?: unknown
+  declined?: unknown
   error?: unknown
   code?: unknown
   message?: unknown
@@ -1859,6 +2141,17 @@ interface FinanceToolResult {
   createdTransactions?: unknown
   accountName?: unknown
   categoryName?: unknown
+  invoice?: unknown
+  audit?: unknown
+  reconciliation?: unknown
+  occurrences?: unknown
+  run?: unknown
+  proposals?: unknown
+  proposal?: unknown
+  period?: unknown
+  proposalType?: unknown
+  proposalId?: unknown
+  decision?: unknown
 }
 
 interface ActiveMarkdownToolResult {
@@ -1879,6 +2172,10 @@ interface ActiveMarkdownToolResult {
 
 function financeToolResult(value: unknown): FinanceToolResult | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as FinanceToolResult : null
+}
+
+function parseFinanceStructuredValue(value: string): unknown {
+  try { return JSON.parse(value) } catch { return value }
 }
 
 function activeMarkdownToolResult(value: unknown): ActiveMarkdownToolResult | null {
@@ -1922,7 +2219,7 @@ export function resolveActiveMarkdownToolResultAnswer(call: AiNativeToolCall, re
     && resolved.ok === true && resolved.changed === true) {
     return `Listo. Apliqué el cambio en ${typeof resolved.path === 'string' ? resolved.path : 'el documento'}.`
   }
-  if (resolved.ok === true && resolved.changed === true) {
+      if (resolved.ok === true && resolved.changed === true) {
     const path = typeof resolved.path === 'string' ? resolved.path : 'el archivo activo'
     if (call.function.name === 'insert_active_markdown_document') {
       const count = typeof resolved.insertedBlockCount === 'number' ? resolved.insertedBlockCount : 1
@@ -1999,6 +2296,70 @@ function formatFinanceAmount(value: unknown): string {
 }
 
 export function resolveFinanceToolResultAnswer(call: AiNativeToolCall, result: unknown): string | null {
+  if (call.function.name === 'audit_finance_month') {
+    const resolved = financeToolResult(result)
+    const run = resolved?.run && typeof resolved.run === 'object' ? resolved.run as Record<string, unknown> : null
+    const period = typeof run?.period === 'string' ? run.period : typeof resolved?.period === 'string' ? resolved.period : ''
+    const proposals = Array.isArray(resolved?.proposals) ? resolved.proposals : []
+    const reconciliationCount = proposals.filter((proposal) => proposal && typeof proposal === 'object' && (proposal as Record<string, unknown>).proposalType === 'service-card-reconciliation').length
+    if (!run || !period) return 'No pude interpretar el resultado estructurado de la auditoría financiera.'
+    return `Auditoría del período ${period}: estado ${typeof run.status === 'string' ? run.status : 'desconocido'}. Se generaron ${proposals.length} propuesta(s) para revisión individual${reconciliationCount ? `, incluyendo ${reconciliationCount} de conciliación de consumos de tarjeta` : ''}. No se aplicaron cambios automáticamente.`
+  }
+  if (call.function.name === 'apply_finance_audit_proposal') {
+    const resolved = financeToolResult(result)
+    if (!resolved) return 'No pude interpretar la decisión de la propuesta de auditoría.'
+    if (resolved.ok === true && resolved.changed === true) {
+      const decision = resolved.decision === 'accepted' ? 'aplicada' : resolved.decision === 'rejected' ? 'rechazada' : 'cancelada'
+      const period = typeof resolved.period === 'string' ? resolved.period : ''
+      const proposalType = typeof resolved.proposalType === 'string' ? resolved.proposalType : 'propuesta de auditoría'
+      return `Listo. La ${proposalType} quedó ${decision}${period ? ` para el período ${period}` : ''}. La decisión fue verificada y no hay cambios pendientes de esa propuesta.`
+    }
+    if (resolved.ok === true && resolved.declined === true) return 'No se aplicó la propuesta porque la confirmación fue cancelada.'
+    if (resolved.error === 'finance-audit-proposal-outdated') return 'La propuesta quedó obsoleta porque los datos financieros cambiaron. No se aplicó ningún cambio; hay que volver a auditar el período.'
+    return null
+  }
+  if (call.function.name === 'create_finance_service_invoice') {
+    const resolved = financeToolResult(result)
+    if (!resolved) return 'No pude registrar la factura de servicio porque la herramienta financiera devolvió una respuesta inválida.'
+    if (resolved.ok === true && resolved.changed === true) {
+      const amount = formatFinanceAmount(call.function.arguments.amount)
+      const period = typeof call.function.arguments.period === 'string' ? call.function.arguments.period : ''
+      const audit = resolved.audit && typeof resolved.audit === 'object' ? resolved.audit as Record<string, unknown> : null
+      const proposalCount = Array.isArray(audit?.proposals) ? audit.proposals.length : 0
+      const auditStatus = audit?.status === 'pending' || audit?.ok === false ? ' La auditoría quedó pendiente para reintento.' : proposalCount > 0 ? ` La auditoría generó ${proposalCount} propuesta(s) para revisión individual.` : ' La auditoría mensual terminó sin propuestas.'
+      return `Listo. Registré la factura o boleta de servicio${period ? ` del período ${period}` : ''}${amount ? ` por ${amount}` : ''}.${auditStatus} No generé un gasto genérico adicional.`
+    }
+    if (resolved.error === 'finance-service-invoice-save-failed') return 'No pude guardar la factura de servicio. Verificá período, importe, moneda, servicio y que el comprobante no esté duplicado.'
+    return null
+  }
+  if (call.function.name === 'create_finance_service_occurrence') {
+    const resolved = financeToolResult(result)
+    if (!resolved) return 'No pude registrar la ocurrencia del servicio porque la herramienta financiera devolvió una respuesta inválida.'
+    if (resolved.ok === true && resolved.declined === true) return 'No registré la ocurrencia porque la confirmación fue cancelada.'
+    if (resolved.ok === true && resolved.changed === true) {
+      const period = typeof call.function.arguments.period === 'string' ? call.function.arguments.period.trim() : ''
+      const paidAmount = call.function.arguments.paidAmount === undefined || call.function.arguments.paidAmount === null
+        ? ''
+        : formatFinanceAmount(call.function.arguments.paidAmount)
+      return `Listo. Registré la ocurrencia del servicio${period ? ` del período ${period}` : ''}${paidAmount ? ` por ${paidAmount}` : ''}.`
+    }
+    switch (resolved.error) {
+      case 'invalid-finance-service-occurrence':
+        return 'No pude registrar la ocurrencia porque faltan o no son válidos el servicio, período o importe. No hice cambios.'
+      case 'finance-service-not-found':
+        return 'No encontré el servicio indicado en los datos financieros locales. No hice cambios ni busqué en internet.'
+      case 'finance-service-payment-not-found':
+        return 'No encontré un único gasto local de tarjeta que coincida con el servicio, importe y período. No hice cambios; necesito ese movimiento para vincular el pago sin inventar evidencia.'
+      case 'finance-service-payment-ambiguous':
+        return 'Encontré más de un gasto local compatible con ese servicio, importe y período. No hice cambios; necesito que indiques cuál corresponde al pago.'
+      case 'finance-service-occurrence-save-failed':
+        return 'No pude asociar completamente el gasto con la ocurrencia del servicio. El gasto podría haberse guardado; revisá la ocurrencia antes de reintentar y no lo dupliques.'
+      case 'native-tool-execution-failed':
+        return 'No pude guardar la ocurrencia del servicio por un error de almacenamiento. No afirmo que se haya guardado y no voy a reintentarla automáticamente.'
+      default:
+        return resolved.ok === false ? 'No pude registrar la ocurrencia del servicio. No se confirmó ningún cambio.' : null
+    }
+  }
   if (call.function.name === 'create_finance_credit_card_statement') {
     const resolved = financeToolResult(result)
     if (!resolved) return 'No pude registrar el resumen de tarjeta porque la herramienta financiera devolvió una respuesta inválida.'
@@ -2010,14 +2371,36 @@ export function resolveFinanceToolResultAnswer(call: AiNativeToolCall, result: u
       const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : ''
       const account = typeof resolved.accountName === 'string' ? resolved.accountName.trim() : typeof args.accountId === 'string' ? args.accountId.trim() : ''
       const period = typeof args.period === 'string' ? args.period.trim() : ''
-      const dueDate = typeof args.dueDate === 'string' ? args.dueDate.slice(0, 10) : ''
-      return [
-        `Listo. Registré el resumen de tarjeta de ${issuer}.`,
-        account ? `Tarjeta: ${account}` : '', period ? `Período: ${period}` : '',
-        dueDate ? `Vencimiento: ${dueDate}` : '', total ? `Total a pagar: $ ${total}${currency ? ` ${currency}` : ''}` : '',
-        `Movimientos creados: ${typeof resolved.createdTransactions === 'number' ? resolved.createdTransactions : 0}`,
-        `Consumos ya existentes conciliados: ${typeof resolved.matchedExistingTransactions === 'number' ? resolved.matchedExistingTransactions : 0}`,
-      ].filter(Boolean).join('\n')
+        const dueDate = typeof args.dueDate === 'string' ? args.dueDate.slice(0, 10) : ''
+       const reconciliation = resolved.reconciliation && typeof resolved.reconciliation === 'object' ? resolved.reconciliation as Record<string, unknown> : null
+       const assignments = Array.isArray(reconciliation?.assignments) ? reconciliation.assignments : []
+       const newAssignments = assignments.filter((assignment) => assignment && typeof assignment === 'object' && (assignment as Record<string, unknown>).assignmentStatus === 'new').length
+       const ambiguousGroups = Array.isArray(reconciliation?.ambiguousGroups) ? reconciliation.ambiguousGroups : []
+       const reconciliationStatus = typeof reconciliation?.status === 'string' ? reconciliation.status : 'unknown'
+       const persistedStatement = resolved.statement && typeof resolved.statement === 'object' ? resolved.statement as Record<string, unknown> : null
+       const persistedPeriod = typeof persistedStatement?.period === 'string' ? persistedStatement.period : period
+       const loadedDate = formatFinanceLoadedDate(typeof persistedStatement?.createdAt === 'string' ? persistedStatement.createdAt : null)
+       const ambiguousSummary = ambiguousGroups.map((group) => {
+         if (!group || typeof group !== 'object') return ''
+         const value = group as Record<string, unknown>
+         const lineIds = Array.isArray(value.lineIds) ? value.lineIds.filter((lineId): lineId is string => typeof lineId === 'string').join(', ') : ''
+         const reason = value.reason && typeof value.reason === 'object' ? (value.reason as Record<string, unknown>).message : null
+         return `${lineIds ? `líneas ${lineIds}` : 'líneas no identificadas'}${typeof reason === 'string' && reason.trim() ? `: ${reason.trim()}` : ''}`
+       }).filter(Boolean).join('; ')
+       const reconciliationMessage = ambiguousGroups.length > 0
+         ? `Conciliación: ${reconciliationStatus}; ${newAssignments} asignación(es) nueva(s), ${ambiguousGroups.length} grupo(s) ambiguo(s)${ambiguousSummary ? ` (${ambiguousSummary})` : ''}. No se aplicaron automáticamente los grupos ambiguos.`
+         : assignments.length > 0
+           ? `Conciliación: ${reconciliationStatus}; ${newAssignments} asignación(es) nueva(s), ${assignments.length} en total.`
+           : `Conciliación: ${reconciliationStatus}; no se detectaron consumos de servicios conciliables.`
+       return [
+         `Listo. Registré el resumen de tarjeta de ${issuer}.`,
+         account ? `Tarjeta: ${account}` : '', persistedPeriod ? `Período real: ${persistedPeriod}` : '',
+          dueDate ? `Vencimiento: ${dueDate}` : '', loadedDate ? `Cargado el: ${loadedDate}` : '', total ? `Total a pagar: $ ${total}${currency ? ` ${currency}` : ''}` : '',
+         `Movimientos creados: ${typeof resolved.createdTransactions === 'number' ? resolved.createdTransactions : 0}`,
+         `Consumos ya existentes conciliados: ${typeof resolved.matchedExistingTransactions === 'number' ? resolved.matchedExistingTransactions : 0}`,
+          `Ocurrencias devueltas: ${Array.isArray(resolved.occurrences) ? resolved.occurrences.length : 0}`,
+          reconciliationMessage,
+       ].filter(Boolean).join('\n')
     }
     if (resolved.error === 'finance-credit-card-statement-save-failed') {
       const message = typeof resolved.message === 'string' ? resolved.message.trim() : ''
@@ -2042,14 +2425,16 @@ export function resolveFinanceToolResultAnswer(call: AiNativeToolCall, result: u
         ? resolved.accountName.trim()
         : typeof args.accountId === 'string' ? args.accountId.trim() : ''
       const period = typeof args.period === 'string' ? args.period.trim() : ''
-      const date = typeof args.paymentDate === 'string' ? args.paymentDate.slice(0, 10) : ''
+       const date = typeof args.paymentDate === 'string' ? args.paymentDate.slice(0, 10) : ''
+       const persistedSalary = resolved.salary && typeof resolved.salary === 'object' ? resolved.salary as Record<string, unknown> : null
+       const loadedDate = formatFinanceLoadedDate(typeof persistedSalary?.createdAt === 'string' ? persistedSalary.createdAt : null)
       const conceptCount = Array.isArray(args.concepts) ? args.concepts.length : 0
       return [
         `Listo. Registré el recibo de sueldo de ${employer}.`,
         period ? `Período: ${period}` : '',
         net ? `Neto: $ ${net}${currency ? ` ${currency}` : ''}` : '',
         account ? `Cuenta: ${account}` : '',
-        date ? `Fecha de cobro: ${date}` : '',
+          date ? `Fecha de cobro: ${date}` : '', loadedDate ? `Cargado el: ${loadedDate}` : '',
         `Conceptos: ${conceptCount}`,
       ].filter(Boolean).join('\n')
     }
@@ -2100,12 +2485,48 @@ export function resolveFinanceToolResultAnswer(call: AiNativeToolCall, result: u
 }
 
 export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): Promise<{
+  libraryId?: string
+  actor?: AiActor
   systemPrompt: string
   tools: AiNativeToolDefinition[]
   executeTool: (call: AiNativeToolCall, signal: AbortSignal) => Promise<unknown>
   resolveToolResultAnswer: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer: (answer: string) => string | null
 }> {
+  const resolvedUser: LibraryUser | null = options.accessPrincipal
+    ? null
+    : options.actor
+      ? (await listLibraryUsers({
+        libraryPath: options.library.path,
+        androidDirectoryUri: options.library.androidTreeUri,
+      })).find((user) => user.id === options.actor?.libraryUserId) ?? null
+      : null
+  if (options.actor && !options.accessPrincipal && !resolvedUser) {
+    throw new Error('No se pudo resolver el usuario autorizado de la biblioteca.')
+  }
+  let accessPrincipal: AiAccessPrincipal = options.accessPrincipal
+    ? principalFromUser(options.accessPrincipal)
+    : resolvedUser
+      ? principalFromUser({
+        libraryUserId: resolvedUser.id,
+        roleId: resolvedUser.roleId,
+        allowedContexts: resolvedUser.allowedContexts,
+        allContexts: resolvedUser.allContexts,
+      })
+      : principalFromUser({
+        libraryUserId: options.actor?.libraryUserId ?? 'user-owner',
+        allowedContexts: [],
+        allContexts: true,
+      })
+  let financeToolsAllowed = hasFinanceAccess(accessPrincipal)
+  const financeActorId = () => ({
+    libraryUserId: accessPrincipal.libraryUserId,
+    source: options.financeSource ?? (options.responseFormat === 'telegram-html' ? 'telegram' : 'app'),
+  })
+  const ownerActor = accessPrincipal.libraryUserId === 'user-owner'
+  const resolvedActor: AiActor = options.actor
+    ? { ...options.actor, displayName: options.actor.displayName ?? resolvedUser?.name }
+    : { libraryUserId: accessPrincipal.libraryUserId, displayName: resolvedUser?.name }
   const defaultPrompt = options.publishedScope
     ? DEFAULT_AGENT_PROMPT
     : await loadAgentPrompt(options.library, options.promptFileName ?? 'default.md')
@@ -2114,8 +2535,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
     : await loadAgentRules(options.library, options.responseFormat)
   const persistencePolicy = options.persistencePolicy
     ?? (options.publishedScope ? 'published-no-memory' : 'persistent')
-  const agentMemories = shouldLoadAgentMemory(persistencePolicy) ? await loadAgentMemories(options.library) : []
-  const normalizedLibraryPath = options.library.path.replace(/\\/g, '/').replace(/\/+$/, '')
+  const agentMemories = shouldLoadAgentMemory(persistencePolicy) && ownerActor ? await loadAgentMemories(options.library) : []
   const activeDocumentPath = options.activeDocumentPath ?? options.workspaceSnapshot?.activeDocument?.path ?? null
   const activeMarkdownSource = typeof options.activeMarkdownSource === 'string'
     ? options.activeMarkdownSource
@@ -2128,31 +2548,98 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       dispatchLibraryTreeChanged({ vaultPath: options.library.path, pathHint: path, source: 'internal' })
     }
   }
-  const allOptions: ChatLibraryFileOption[] = options.publishedScope
-    ? options.scopePaths.map((pathValue) => {
-      const normalizedPath = pathValue.replace(/\\/g, '/')
-      return {
-        path: pathValue,
-        name: normalizedPath.split('/').pop() ?? normalizedPath,
-        relativePath: normalizedPath.startsWith(`${normalizedLibraryPath}/`)
-          ? normalizedPath.slice(normalizedLibraryPath.length + 1)
-          : normalizedPath,
-      }
-    })
-    : await loadLibraryFileOptions(options.library)
+  const refreshAccessPrincipal = async (): Promise<void> => {
+    // An actor-bound request must re-read the user before every tool round so
+    // context revocation cannot leave a stale principal alive in the agent.
+    const actorId = options.actor?.libraryUserId ?? options.accessPrincipal?.libraryUserId
+    if (!actorId) return
+    const currentUser = (await listLibraryUsers({
+      libraryPath: options.library.path,
+      androidDirectoryUri: options.library.androidTreeUri,
+    })).find((user) => user.id === actorId)
+    accessPrincipal = currentUser
+      ? principalFromUser({
+        libraryUserId: currentUser.id,
+        roleId: currentUser.roleId,
+        allowedContexts: currentUser.allowedContexts,
+        allContexts: currentUser.allContexts,
+      })
+      : principalFromUser({
+        libraryUserId: actorId,
+        allowedContexts: [],
+        allContexts: false,
+      })
+    financeToolsAllowed = hasFinanceAccess(accessPrincipal)
+  }
+  // A published browser can only suggest visible tickets through scopePaths. The
+  // authorized universe is rebuilt from the host library and validated task
+  // metadata; client paths are never used to create candidates.
+  const allOptions: ChatLibraryFileOption[] = await loadLibraryFileOptions(options.library)
   const normalizedScopePaths = new Set(options.scopePaths.map(normalizeAgentPath))
   const readableOptions = allOptions.filter((item) => /\.(md|markdown|txt)$/i.test(item.name))
-  const candidates = options.scope === 'finance'
+  const publishedBoardNames = new Set(
+    (options.publishedBoardNames ?? []).map((name) => name.trim().toLocaleLowerCase()).filter(Boolean),
+  )
+  const publishedOptions = options.publishedScope
+    ? (await loadInlineFileAttachments(options.library, readableOptions.map((item) => item.path), readableOptions))
+      .flatMap((file, index) => {
+        const option = readableOptions[index]
+        if (!option) return []
+        const relativePath = option.relativePath.replace(/\\/g, '/')
+        const pathParts = relativePath.split('/').filter(Boolean)
+        if (pathParts.length < 3 || !/^(task-mannager|task-manager)$/i.test(pathParts[0] ?? '')) return []
+        const metadata = Object.fromEntries(parseFrontmatterDocument(file.content).frontmatter.map((entry) => [entry.key, entry.value]))
+        const board = typeof metadata.tablero === 'string' && metadata.tablero.trim()
+          ? metadata.tablero.trim()
+          : pathParts[1] ?? ''
+        // Task Manager's snapshot accepts documents with a complete task
+        // frontmatter. Indexes and arbitrary markdown in a published folder do
+        // not become chat resources merely because their path matches.
+        if (!metadata.tarea || !metadata.estado || !publishedBoardNames.has(board.toLocaleLowerCase())) return []
+        return [option]
+      })
+    : readableOptions
+  const candidateOptions = options.publishedScope ? publishedOptions : readableOptions
+  const scopedOptions = options.scope === 'finance'
     ? []
     : options.scope === 'document' || (options.scope === 'library' && normalizedScopePaths.size === 0)
-    ? readableOptions
-    : readableOptions.filter((item) => normalizedScopePaths.has(normalizeAgentPath(item.path)))
+    ? candidateOptions
+    : options.publishedScope
+      ? candidateOptions
+      : candidateOptions.filter((item) => normalizedScopePaths.has(normalizeAgentPath(item.path)))
+  // A remote actor may only receive metadata/content from contexts granted in
+  // SQLite. Classification is done before the model sees the catalog, and an
+  // invalid/missing frontmatter value deterministically falls back to Personal.
+  const contextByPath = new Map<string, string>()
+  if (!accessPrincipal.allContexts && scopedOptions.length > 0) {
+    const metadataFiles = await loadInlineFileAttachments(
+      options.library,
+      scopedOptions.map((item) => item.path),
+      scopedOptions,
+    )
+    metadataFiles.forEach((file, index) => {
+      const option = scopedOptions[index]
+      if (option) contextByPath.set(normalizeAgentPath(option.path), resourceContextFromFrontmatter(file.content))
+    })
+  }
+  const candidates = scopedOptions.filter((option) => accessPrincipal.allContexts
+    || canAccessResource(accessPrincipal, {
+      contextTag: contextByPath.get(normalizeAgentPath(option.path)) ?? '#Personal',
+      libraryId: options.library.id,
+    }))
   const documents: AgentDocument[] = candidates.map((option, index) => ({ id: `doc-${index + 1}`, option }))
   const taskDocuments = documents.filter((document) => {
     const path = document.option.relativePath.replace(/\\/g, '/').toLowerCase()
     return path.startsWith('task-mannager/') || path.startsWith('task-manager/')
   })
-  const activeTaskManagerBoard = resolveTaskManagerBoard(options.taskManagerScopeKey)
+  const isPublishedBoardAllowed = (board: string | null | undefined): boolean => (
+    !options.publishedScope
+      || (typeof board === 'string' && publishedBoardNames.has(board.trim().toLocaleLowerCase()))
+  )
+  // The published chat may use the visible panel as UX context, but searches
+  // are allowed to cross every server-published board. Mutations still need an
+  // explicit board when no unambiguous board is supplied by the model.
+  const activeTaskManagerBoard = options.publishedScope ? null : resolveTaskManagerBoard(options.taskManagerScopeKey)
   const normalizedTaskManagerScopeKey = options.taskManagerScopeKey?.startsWith('task-manager:task-manager:')
     ? options.taskManagerScopeKey.slice('task-manager:'.length)
     : options.taskManagerScopeKey
@@ -2195,7 +2682,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
       : []
     const scopedDocuments = files.flatMap((file, index) => {
       const document = taskDocuments[index]
-      if (!document || !taskDocumentMatchesScope(document, taskDocumentMetadata(file.content), scope)) return []
+      if (!document || !authorized.has(document.id) || !taskDocumentMatchesScope(document, taskDocumentMetadata(file.content), scope)) return []
       return [document]
     })
     return { scope, documents: scopedDocuments }
@@ -2213,6 +2700,7 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   let financePurchaseExecuted = false
   let financeSalaryExecuted = false
   let financeCreditCardStatementExecuted = false
+  let financeServiceInvoiceExecuted = false
   let financeClarificationRequested = false
   const clarifiedAmbiguousTicketIds = new Set<string>()
 
@@ -2255,7 +2743,10 @@ export async function createChatScopedAgent(options: ChatAgentRuntimeOptions): P
   ): Promise<boolean | AgentConfirmationDecision> => {
     const firstDecision = await options.requestConfirmation(question, signal, preview)
     const firstAccepted = typeof firstDecision === 'boolean' ? firstDecision : firstDecision.accepted
-    if (!firstAccepted || !requiresReinforcedAiConfirmation(preview, forceReinforcement)) {
+    // Telegram already has a single explicit, user-visible confirmation step.
+    // A second prompt can arrive after the first one was accepted and looks
+    // like a duplicated request to the user.
+    if (options.responseFormat === 'telegram-html' || !firstAccepted || !requiresReinforcedAiConfirmation(preview, forceReinforcement)) {
       return firstDecision
     }
 
@@ -2274,6 +2765,17 @@ Confirmá nuevamente para continuar.`,
       ? false
       : { ...firstDecision, accepted: false }
   }
+
+  const buildFinanceMutationPreview = (operationId: string, summary: string, risks: readonly string[] = ['Afecta datos financieros confidenciales.']): MutationPreview => ({
+    operationId,
+    documents: [],
+    hunks: [],
+    summary,
+    assumptions: [],
+    risks,
+    risk: 'high',
+    allowedActions: ['apply-all', 'reject', 'cancel'],
+  })
 
   const initiallyAuthorizedPaths = new Set([
     ...(options.explicitlySelectedPaths ?? []),
@@ -2302,7 +2804,7 @@ Confirmá nuevamente para continuar.`,
   > => {
     const activeDocument = resolveActiveDocument()
     if (!activeDocument) return { ok: false, error: 'active-markdown-document-not-found' }
-    authorized.add(activeDocument.id)
+    if (!authorized.has(activeDocument.id)) return { ok: false, error: 'unauthorized-context' }
     const [file] = await loadInlineFileAttachments(options.library, [activeDocument.option.path], candidates)
     if (!file) return { ok: false, error: 'active-markdown-document-not-found' }
     const currentSource = options.getActiveMarkdownSource?.()
@@ -2328,6 +2830,24 @@ Confirmá nuevamente para continuar.`,
       return crypto.randomUUID()
     }
     return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  }
+
+  const refreshDocumentAuthorization = async (): Promise<void> => {
+    if (accessPrincipal.allContexts || documents.length === 0) return
+    const files = await loadInlineFileAttachments(
+      options.library,
+      documents.map((document) => document.option.path),
+      candidates,
+    )
+    files.forEach((file, index) => {
+      const document = documents[index]
+      if (!document) return
+      const allowed = canAccessResource(accessPrincipal, {
+        contextTag: resourceContextFromFrontmatter(file.content),
+        libraryId: options.library.id,
+      })
+      if (!allowed) authorized.delete(document.id)
+    })
   }
 
   const expectedActiveRevision = (active: { path: string; content: string }): number => (
@@ -2393,6 +2913,14 @@ Confirmá nuevamente para continuar.`,
       throw new Error('Se cancelo la ejecucion del agente.')
     }
     const { name, arguments: args } = call.function
+    await refreshAccessPrincipal()
+    const authorization = authorizeToolCall(
+      accessPrincipal,
+      name,
+      options.publishedScope ? 'published-task-manager' : 'full',
+    )
+    if (!authorization.allowed) return safeUnauthorizedContextResult()
+    await refreshDocumentAuthorization()
     if (name === 'undo_ai_operation' && !args.operationId && options.undoOperationId) {
       args.operationId = options.undoOperationId
     }
@@ -2416,9 +2944,16 @@ Confirmá nuevamente para continuar.`,
             : options.scope === 'graph'
               ? 'graph'
               : 'chat'
-      const activeDocument = snapshot?.activeDocument
+      const visibleCandidateOptions = candidates.filter((_option, index) => authorized.has(documents[index]?.id ?? ''))
+      const visibleActiveDocument = visibleCandidateOptions.find((option) => (
+        snapshot?.activeDocument?.path
+        && normalizeAgentPath(option.path) === normalizeAgentPath(snapshot.activeDocument.path)
+      ))
+      const activeDocument = snapshot?.activeDocument && visibleActiveDocument
         ? {
-          path: snapshot.activeDocument.path,
+          path: options.publishedScope
+            ? visibleActiveDocument.relativePath
+            : snapshot.activeDocument.path,
           name: snapshot.activeDocument.name,
           kind: snapshot.activeDocument.kind,
           revision: snapshot.activeDocument.revision,
@@ -2429,12 +2964,16 @@ Confirmá nuevamente para continuar.`,
         ok: true,
         view: snapshot?.view ?? fallbackView,
         scope: snapshot?.scope ?? options.scope,
-        library: snapshot?.library ?? { id: options.library.id, name: options.library.name, path: options.library.path },
+        library: options.publishedScope
+          ? { id: options.library.id, name: options.library.name, path: 'published-vault' }
+          : snapshot?.library ?? { id: options.library.id, name: options.library.name, path: options.library.path },
         activeDocument,
         activeDocumentRevision: snapshot?.activeDocumentRevision ?? null,
-        activeDocumentDirty: snapshot?.activeDocumentDirty ?? false,
-        selection: snapshot?.selection ?? markdownSelection ?? null,
-        openTabs: snapshot?.openTabs ?? [],
+        activeDocumentDirty: activeDocument ? snapshot?.activeDocumentDirty ?? false : false,
+        selection: activeDocument ? snapshot?.selection ?? markdownSelection ?? null : null,
+        openTabs: accessPrincipal.allContexts
+          ? snapshot?.openTabs ?? []
+          : (snapshot?.openTabs ?? []).filter((tab) => visibleCandidateOptions.some((option) => option.path === tab.path)),
         capabilities: snapshot?.capabilities ?? null,
         authorizedPathCount: options.scope === 'document'
           ? 1
@@ -3976,23 +4515,483 @@ Confirmá nuevamente para continuar.`,
       return { ok: true, changed: !current.some((item) => item.toLowerCase() === memory.toLowerCase()) }
     }
     if (name === 'get_finance_dashboard') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const month = typeof args.month === 'string' && /^\d{4}-\d{2}$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
       const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
-      return getFinanceDashboard(options.library, month)
+      return getFinanceDashboard(options.library, month, financeActorId())
+    }
+    if (name === 'get_finance_full_snapshot') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const month = typeof args.month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
+      const asOf = `${month}-${new Date().getUTCDate().toString().padStart(2, '0')}`
+      const actor = financeActorId()
+      const {
+        getFinanceDashboard, getFinanceNetWorth, listAllFinanceSavingsMovements, listAllFinanceTransactions, listFinanceCreditCardStatements, listFinanceAuditProposals,
+        listFinanceAuditRuns, listFinanceInstallmentPlans, listFinanceInstallments, listFinanceInvestments,
+        listFinancePriceHistory, listFinancePurchases, listFinanceSalaries, listFinanceServiceInvoices,
+        listAllFinanceServiceOccurrenceVersions, listAllFinanceServiceOccurrences, listFinanceServices, listFinanceNetWorthHistory, listFinanceArtifacts,
+      } = await import('../../modules/finance/services/financeService')
+      const [dashboard, allMovements, allSavingsMovements, services, occurrences, invoices, purchases, salaries, statements, priceHistory, plans, installments, investments, runs, proposals, netWorth, netWorthHistory, artifacts] = await Promise.all([
+        getFinanceDashboard(options.library, month, actor),
+        listAllFinanceTransactions(options.library, actor),
+        listAllFinanceSavingsMovements(options.library, actor),
+        listFinanceServices(options.library, actor),
+        listAllFinanceServiceOccurrences(options.library, actor),
+        listFinanceServiceInvoices(options.library, undefined, actor),
+        listFinancePurchases(options.library, {}, actor),
+        listFinanceSalaries(options.library, {}, actor),
+        listFinanceCreditCardStatements(options.library, {}, actor),
+        listFinancePriceHistory(options.library, {}, actor),
+        listFinanceInstallmentPlans(options.library, actor),
+        listFinanceInstallments(options.library, undefined, actor),
+        listFinanceInvestments(options.library, undefined, actor),
+        listFinanceAuditRuns(options.library, month, undefined, actor),
+        listFinanceAuditProposals(options.library, month, undefined, actor),
+        getFinanceNetWorth(options.library, asOf, actor),
+        listFinanceNetWorthHistory(options.library, actor),
+        listFinanceArtifacts(options.library, actor),
+      ])
+      const serviceOccurrenceVersions = await listAllFinanceServiceOccurrenceVersions(options.library, actor)
+      return {
+        ok: true,
+        month,
+        dashboard,
+        allMovements,
+        allSavingsMovements,
+        services,
+        serviceOccurrences: occurrences,
+        serviceOccurrenceVersions,
+        serviceInvoices: invoices,
+        purchases,
+        salaries,
+        creditCardStatements: statements,
+        priceHistory,
+        installmentPlans: plans,
+        installments,
+        investments,
+        audits: { runs, proposals },
+        netWorth,
+        netWorthHistory,
+        artifacts,
+      }
+    }
+    if (name === 'list_finance_records') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const entity = typeof args.entity === 'string' ? args.entity : ''
+      const month = typeof args.month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : month
+      const from = typeof args.from === 'string' ? args.from : `${month}-01`
+      const to = typeof args.to === 'string' ? args.to : `${month}-31`
+      const actor = financeActorId()
+      const { getFinanceDashboard, listAllFinanceSavingsMovements, listAllFinanceServiceOccurrenceVersions, listAllFinanceServiceOccurrences, listAllFinanceTransactions, listFinanceArtifacts, listFinanceCreditCardStatements, listFinanceAuditProposals, listFinanceAuditRuns, listFinanceInstallmentPlans, listFinanceInstallments, listFinanceInvestments, listFinancePriceHistory, listFinancePurchases, listFinanceSalaries, listFinanceServiceInvoices, listFinanceServiceOccurrenceVersions, listFinanceServiceOccurrences, listFinanceServices, listFinanceNetWorthHistory } = await import('../../modules/finance/services/financeService')
+      let items: unknown[]
+      switch (entity) {
+        case 'accounts': { items = (await getFinanceDashboard(options.library, month, actor)).accounts; break }
+        case 'categories': { items = (await getFinanceDashboard(options.library, month, actor)).categories; break }
+        case 'movements': { items = args.month ? (await getFinanceDashboard(options.library, month, actor)).transactions : await listAllFinanceTransactions(options.library, actor); break }
+        case 'savings_reserves': { items = (await getFinanceDashboard(options.library, month, actor)).savings; break }
+        case 'savings_movements': { items = args.month ? (await getFinanceDashboard(options.library, month, actor)).savingsMovements : await listAllFinanceSavingsMovements(options.library, actor); break }
+        case 'savings_exchanges': { items = (args.month ? (await getFinanceDashboard(options.library, month, actor)).savingsMovements : await listAllFinanceSavingsMovements(options.library, actor)).filter((movement) => movement.source === 'savings_exchange'); break }
+        case 'merchants': { items = (await getFinanceDashboard(options.library, month, actor)).merchants; break }
+        case 'artifacts': { items = await listFinanceArtifacts(options.library, actor); break }
+        case 'services': { items = await listFinanceServices(options.library, actor); break }
+        case 'service_occurrences': { items = args.period ? await listFinanceServiceOccurrences(options.library, period, actor) : await listAllFinanceServiceOccurrences(options.library, actor); break }
+        case 'service_occurrence_versions': {
+          const occurrenceId = typeof args.occurrenceId === 'string' ? args.occurrenceId.trim() : ''
+          items = occurrenceId ? await listFinanceServiceOccurrenceVersions(options.library, occurrenceId, actor) : await listAllFinanceServiceOccurrenceVersions(options.library, actor)
+          break
+        }
+        case 'service_invoices': { items = await listFinanceServiceInvoices(options.library, args.period ? period : undefined, actor); break }
+        case 'purchases': { items = await listFinancePurchases(options.library, { from, to }, actor); break }
+        case 'salaries': { items = await listFinanceSalaries(options.library, { from, to }, actor); break }
+        case 'credit_card_statements': { items = await listFinanceCreditCardStatements(options.library, { from, to }, actor); break }
+        case 'price_history': { items = await listFinancePriceHistory(options.library, { from, to, merchantId: typeof args.merchantId === 'string' ? args.merchantId : undefined, productId: typeof args.productId === 'string' ? args.productId : undefined }, actor); break }
+        case 'installment_plans': { items = await listFinanceInstallmentPlans(options.library, actor); break }
+        case 'installments': { items = await listFinanceInstallments(options.library, typeof args.planId === 'string' ? args.planId : undefined, actor); break }
+        case 'investments': { items = await listFinanceInvestments(options.library, typeof args.active === 'boolean' ? args.active : undefined, actor); break }
+        case 'audit_runs': { items = await listFinanceAuditRuns(options.library, args.period ? period : undefined, typeof args.status === 'string' ? args.status : undefined, actor); break }
+        case 'audit_proposals': { items = await listFinanceAuditProposals(options.library, args.period ? period : undefined, typeof args.status === 'string' ? args.status : undefined, actor); break }
+        case 'audits': { items = [...await listFinanceAuditRuns(options.library, args.period ? period : undefined, typeof args.status === 'string' ? args.status : undefined, actor), ...await listFinanceAuditProposals(options.library, args.period ? period : undefined, typeof args.status === 'string' ? args.status : undefined, actor)]; break }
+        case 'net_worth_history': { items = await listFinanceNetWorthHistory(options.library, actor); break }
+        default: return { ok: false, error: 'unknown-finance-entity', requiresClarification: true }
+      }
+      return { ok: true, entity, ...paginateFinanceRecords(items, args.limit, args.offset) }
+    }
+    if (name === 'get_finance_record') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const entity = typeof args.entity === 'string' ? args.entity : ''
+      const id = typeof args.id === 'string' ? args.id.trim() : ''
+      if (!entity || !id) return { ok: false, error: 'finance-record-id-required', requiresClarification: true }
+      if (entity === 'movements') {
+        const { getFinanceTransaction } = await import('../../modules/finance/services/financeService')
+        try {
+          return { ok: true, entity, id, record: await getFinanceTransaction(options.library, id, financeActorId()) }
+        } catch {
+          return { ok: false, entity, id, error: 'finance-record-not-found', notFound: true }
+        }
+      }
+      const listed = await executeToolUnsafe({ function: { name: 'list_finance_records', arguments: { entity, limit: 200, offset: 0 } } }, signal)
+      if (!listed || typeof listed !== 'object' || !('items' in listed) || !Array.isArray(listed.items)) return listed
+      const record = listed.items.find((item) => Boolean(item && typeof item === 'object' && 'id' in item && item.id === id))
+      return record ? { ok: true, entity, id, record } : { ok: false, entity, id, error: 'finance-record-not-found', notFound: true }
+    }
+    if (name === 'save_finance_account' || name === 'save_finance_category' || name === 'save_finance_transaction' || name === 'save_finance_savings_reserve' || name === 'save_finance_savings_movement' || name === 'save_finance_savings_exchange' || name === 'save_finance_purchase' || name === 'save_finance_salary' || name === 'save_finance_credit_card_statement' || name === 'save_finance_installment_plan' || name === 'save_finance_investment' || name === 'save_finance_service' || name === 'save_finance_service_occurrence' || name === 'save_finance_service_invoice') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      if (!args.record || typeof args.record !== 'object' || Array.isArray(args.record)) return { ok: false, error: 'finance-record-required', requiresClarification: true }
+      const record = args.record as Record<string, unknown>
+      const id = typeof record.id === 'string' ? record.id.trim() : ''
+      if (!id) return { ok: false, error: 'finance-record-stable-id-required', requiresClarification: true }
+      const entity = name.replace(/^save_finance_/, '')
+      const preview = JSON.stringify(record).slice(0, 2_000)
+      const mutationPreview = buildFinanceMutationPreview(`${name}:${id}`, `Guardar o actualizar ${entity} con ID ${id}. Preview: ${preview}`)
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true, entity, id }
+      const actor = financeActorId()
+      const source = options.financeSource ?? (options.responseFormat === 'telegram-html' ? 'telegram' : 'app')
+      const {
+        saveFinanceAccount, saveFinanceCategory, saveFinanceTransaction, saveFinanceSavingsReserve,
+        saveFinanceSavingsMovement, saveFinanceSavingsExchange, saveFinancePurchase, saveVerifiedFinanceSalary,
+        saveFinanceCreditCardStatement, saveFinanceInstallmentPlan, saveFinanceInvestment,
+        saveFinanceService, saveFinanceServiceOccurrence, saveFinanceServiceInvoice,
+      } = await import('../../modules/finance/services/financeService')
+      let saved: unknown
+      switch (name) {
+        case 'save_finance_account': saved = await saveFinanceAccount(options.library, record as unknown as import('../../modules/finance/types/financeTypes').FinanceAccount, actor); break
+        case 'save_finance_category': saved = await saveFinanceCategory(options.library, record as unknown as import('../../modules/finance/types/financeTypes').FinanceCategory, actor); break
+        case 'save_finance_transaction': saved = await saveFinanceTransaction(options.library, { ...record, source, actorLibraryUserId: accessPrincipal.libraryUserId } as unknown as import('../../modules/finance/types/financeTypes').FinanceTransaction, actor); break
+        case 'save_finance_savings_reserve': saved = await saveFinanceSavingsReserve(options.library, record as unknown as import('../../modules/finance/types/financeTypes').FinanceSavingsReserve, actor); break
+        case 'save_finance_savings_movement': saved = await saveFinanceSavingsMovement(options.library, { ...record, source, actorLibraryUserId: accessPrincipal.libraryUserId } as unknown as import('../../modules/finance/types/financeTypes').FinanceSavingsMovement, actor); break
+        case 'save_finance_savings_exchange': saved = await saveFinanceSavingsExchange(options.library, { ...record, actorLibraryUserId: accessPrincipal.libraryUserId, sourceReference: record.sourceReference ?? options.financeSourceReference ?? null, rawSource: record.rawSource ?? null } as unknown as import('../../modules/finance/types/financeTypes').FinanceSavingsExchange, actor); break
+        case 'save_finance_purchase': saved = await saveFinancePurchase(options.library, { ...record, status: record.status ?? 'confirmed', sourceReference: record.sourceReference ?? options.financeSourceReference ?? null } as unknown as import('../../modules/finance/types/financeTypes').FinancePurchaseRecord, actor); break
+        case 'save_finance_salary': saved = await saveVerifiedFinanceSalary(options.library, { ...record, status: record.status ?? 'confirmed', sourceReference: record.sourceReference ?? options.financeSourceReference ?? null } as unknown as import('../../modules/finance/types/financeTypes').FinanceSalaryReceipt, actor); break
+        case 'save_finance_credit_card_statement': saved = await saveFinanceCreditCardStatement(options.library, { ...record, status: record.status ?? 'confirmed', sourceReference: record.sourceReference ?? options.financeSourceReference ?? null } as unknown as import('../../modules/finance/types/financeTypes').FinanceCreditCardStatement, actor); break
+        case 'save_finance_installment_plan': saved = await saveFinanceInstallmentPlan(options.library, record as unknown as import('../../modules/finance/types/financeTypes').FinanceInstallmentPlan, actor); break
+        case 'save_finance_investment': saved = await saveFinanceInvestment(options.library, record as unknown as import('../../modules/finance/types/financeTypes').FinanceInvestment, actor); break
+        case 'save_finance_service': saved = await saveFinanceService(options.library, record as unknown as import('../../modules/finance/types/financeTypes').FinanceService, actor); break
+        case 'save_finance_service_occurrence': saved = await saveFinanceServiceOccurrence(options.library, { ...record, source, actorLibraryUserId: accessPrincipal.libraryUserId } as unknown as import('../../modules/finance/types/financeTypes').FinanceServiceOccurrence, typeof record.reason === 'string' ? record.reason : undefined, actor); break
+        case 'save_finance_service_invoice': saved = await saveFinanceServiceInvoice(options.library, { ...record, validationStatus: record.validationStatus ?? 'pending', sourceReference: record.sourceReference ?? options.financeSourceReference ?? null } as unknown as import('../../modules/finance/types/financeTypes').FinanceServiceInvoice, actor); break
+      }
+      financeMutationExecuted = true
+      return { ok: true, changed: true, entity, id, record: saved }
+    }
+    if (name === 'link_finance_savings_account') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const reserveId = typeof args.reserveId === 'string' ? args.reserveId.trim() : ''
+      const accountId = typeof args.accountId === 'string' ? args.accountId.trim() : ''
+      if (!reserveId || !accountId) return { ok: false, error: 'finance-link-ids-required', requiresClarification: true }
+      const mutationPreview = buildFinanceMutationPreview(`${name}:${reserveId}:${accountId}`, `Vincular la reserva ${reserveId} con la cuenta ${accountId}.`)
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const { linkFinanceSavingsAccount } = await import('../../modules/finance/services/financeService')
+      await linkFinanceSavingsAccount(options.library, reserveId, accountId, financeActorId())
+      financeMutationExecuted = true
+      return { ok: true, changed: true, reserveId, accountId }
+    }
+    if (name === 'set_finance_service_active') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const serviceId = typeof args.serviceId === 'string' ? args.serviceId.trim() : ''
+      if (!serviceId || typeof args.active !== 'boolean') return { ok: false, error: 'invalid-finance-service-active', requiresClarification: true }
+      const mutationPreview = buildFinanceMutationPreview(`${name}:${serviceId}`, `${args.active ? 'Activar' : 'Desactivar'} el servicio ${serviceId}. El historial se conservará.`)
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const { setFinanceServiceActive } = await import('../../modules/finance/services/financeService')
+      await setFinanceServiceActive(options.library, serviceId, args.active, financeActorId())
+      financeMutationExecuted = true
+      return { ok: true, changed: true, serviceId, active: args.active }
+    }
+    if (name === 'delete_finance_record') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const entity = args.entity === 'transaction' || args.entity === 'account' || args.entity === 'category' ? args.entity : null
+      const id = typeof args.id === 'string' ? args.id.trim() : ''
+      if (!entity || !id) return { ok: false, error: 'invalid-finance-delete', requiresClarification: true }
+      const mutationPreview = buildFinanceMutationPreview(`${name}:${entity}:${id}`, `Eliminar permanentemente el ${entity} financiero ${id}. Esta acción no se puede deshacer.`, ['Eliminación permanente de datos financieros confidenciales.'])
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const { deleteFinanceAccount, deleteFinanceCategory, deleteFinanceTransaction } = await import('../../modules/finance/services/financeService')
+      if (entity === 'account') await deleteFinanceAccount(options.library, id, financeActorId())
+      if (entity === 'category') await deleteFinanceCategory(options.library, id, financeActorId())
+      if (entity === 'transaction') await deleteFinanceTransaction(options.library, id, financeActorId())
+      financeMutationExecuted = true
+      return { ok: true, changed: true, entity, id }
+    }
+    if (name === 'reverse_finance_transaction') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const transactionId = typeof args.transactionId === 'string' ? args.transactionId.trim() : ''
+      const reason = typeof args.reason === 'string' ? args.reason.trim().slice(0, 500) : ''
+      if (!transactionId || !reason) return { ok: false, error: 'invalid-finance-reversal', requiresClarification: true }
+      const mutationPreview = buildFinanceMutationPreview(`${name}:${transactionId}`, `Revertir lógicamente el movimiento ${transactionId} y conservarlo como descartado. Motivo: ${reason}`)
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const { getFinanceTransaction, saveFinanceTransaction } = await import('../../modules/finance/services/financeService')
+      let current: import('../../modules/finance/types/financeTypes').FinanceTransaction
+      try {
+        current = await getFinanceTransaction(options.library, transactionId, financeActorId())
+      } catch {
+        return { ok: false, error: 'finance-transaction-not-found' }
+      }
+      const saved = await saveFinanceTransaction(options.library, { ...current, status: 'discarded', actorLibraryUserId: accessPrincipal.libraryUserId }, financeActorId())
+      financeMutationExecuted = true
+      return { ok: true, changed: true, transactionId, reason, record: saved }
+    }
+    if (name === 'clear_finance_data') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const mutationPreview = buildFinanceMutationPreview(name, 'Eliminar TODOS los datos financieros de esta biblioteca, incluyendo movimientos, compras, sueldos, tarjetas, servicios, ahorro, cuotas, inversiones y auditorías.', ['Eliminación irreversible del historial financiero completo.'])
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const { clearAllFinanceData } = await import('../../modules/finance/services/financeService')
+      await clearAllFinanceData(options.library, financeActorId())
+      financeMutationExecuted = true
+      return { ok: true, changed: true, scope: 'all-finance-data' }
+    }
+    if (name === 'extract_finance_document') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const artifactId = typeof args.artifactId === 'string' ? args.artifactId.trim() : ''
+      const filePath = typeof args.filePath === 'string' ? args.filePath.trim() : ''
+      const documentType = args.documentType === 'ticket' || args.documentType === 'salary' || args.documentType === 'credit_card_statement' || args.documentType === 'service_invoice' ? args.documentType : null
+      if (!artifactId || !filePath || !documentType) return { ok: false, error: 'invalid-finance-extraction', requiresClarification: true }
+      const mutationPreview = buildFinanceMutationPreview(`${name}:${artifactId}`, `Extraer ${documentType} del artefacto ${artifactId}. La extracción se guardará como resultado revisable y no creará entidades financieras.`)
+      const accepted = await requestMutationConfirmation(mutationPreview.summary, signal, mutationPreview, true)
+      if (!accepted) return { ok: true, changed: false, declined: true, artifactId }
+      const { extractFinanceDocument } = await import('../../modules/finance/services/financeService')
+      financeMutationExecuted = true
+      return { ok: true, changed: true, extraction: await extractFinanceDocument(options.library, artifactId, filePath, documentType, financeActorId()) }
+    }
+    if (name === 'list_finance_services') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const { listFinanceServices } = await import('../../modules/finance/services/financeService')
+      return { services: await listFinanceServices(options.library, financeActorId()) }
+    }
+    if (name === 'list_finance_service_occurrences') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : ''
+      if (!period) return { ok: false, error: 'invalid-finance-service-period', requiresClarification: true }
+      const { listFinanceServiceOccurrences } = await import('../../modules/finance/services/financeService')
+      return { period, occurrences: await listFinanceServiceOccurrences(options.library, period, financeActorId()) }
+    }
+    if (name === 'create_finance_service') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const serviceName = typeof args.name === 'string' ? args.name.trim().replace(/\s+/g, ' ') : ''
+      const expectedAmount = normalizeFinanceDecimal(args.expectedAmount)
+      const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+      const categoryId = typeof args.categoryId === 'string' ? args.categoryId.trim() : ''
+      const modality = args.modality === 'variable' ? 'variable' : 'fixed'
+      const dueDay = typeof args.dueDay === 'number' && Number.isInteger(args.dueDay) && args.dueDay >= 1 && args.dueDay <= 31 ? args.dueDay : null
+      if (!serviceName || serviceName.length > 160 || !expectedAmount || !currency || !categoryId) return { ok: false, error: 'invalid-finance-service', requiresClarification: true }
+      const { getFinanceDashboard, listFinanceServices, saveFinanceService } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7), financeActorId())
+      const category = dashboard.categories.find((candidate) => candidate.active && candidate.kind === 'expense' && (candidate.id === categoryId || candidate.name.localeCompare(categoryId, 'es', { sensitivity: 'accent' }) === 0))
+      if (!category) return { ok: false, error: 'finance-service-category-not-found', requiresClarification: true }
+      const provider = typeof args.provider === 'string' ? args.provider.trim().replace(/\s+/g, ' ') : null
+      const existing = matchFinanceServices((await listFinanceServices(options.library, financeActorId())).filter((service) => service.active), serviceName, provider)[0]
+      if (existing) return { ok: true, changed: false, duplicate: true, service: existing }
+      const service: import('../../modules/finance/types/financeTypes').FinanceService = { id: crypto.randomUUID(), name: serviceName, categoryId: category.id, currency, expectedAmount, dueDay, defaultAccountId: typeof args.defaultAccountId === 'string' ? args.defaultAccountId.trim() || null : null, provider, modality, active: true }
+      const accepted = await requestMutationConfirmation(`Crear el servicio mensual ${serviceName} por ${expectedAmount} ${currency}.`, signal, undefined, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const saved = await saveFinanceService(options.library, service, financeActorId())
+      financeMutationExecuted = true
+      return { ok: true, changed: true, service: saved }
+    }
+    if (name === 'list_finance_service_invoices') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : undefined
+      const { listFinanceServiceInvoices } = await import('../../modules/finance/services/financeService')
+      return { period: period ?? null, invoices: await listFinanceServiceInvoices(options.library, period, financeActorId()) }
+    }
+    if (name === 'create_finance_service_occurrence') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const serviceId = typeof args.serviceId === 'string' ? args.serviceId.trim() : ''
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : ''
+      const expectedAmount = normalizeFinanceDecimal(args.expectedAmount)
+      const paidAmount = args.paidAmount === undefined || args.paidAmount === null ? null : normalizeFinanceDecimal(args.paidAmount)
+      const effectiveDate = typeof args.effectiveDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.effectiveDate) ? args.effectiveDate : null
+      if (!serviceId || !period || !expectedAmount || (args.paidAmount !== undefined && !paidAmount)) return { ok: false, error: 'invalid-finance-service-occurrence', requiresClarification: true }
+      const { listAllFinanceTransactions, listFinanceServices, listFinanceServiceOccurrences, saveFinanceServiceOccurrence } = await import('../../modules/finance/services/financeService')
+      const service = (await listFinanceServices(options.library, financeActorId())).find((candidate) => candidate.id === serviceId)
+      if (!service) return { ok: false, error: 'finance-service-not-found', requiresClarification: true }
+      let transactionId = typeof args.transactionId === 'string' ? args.transactionId.trim() || null : null
+      let resolvedEffectiveDate = effectiveDate
+      if (paidAmount && !transactionId && options.responseFormat === 'telegram-html') {
+        const compact = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es').replace(/[^a-z0-9]+/g, '')
+        const serviceDescriptors = [service.name, service.provider ?? ''].map(compact).filter((value) => value.length >= 4)
+        const previousPeriod = (() => {
+          const [yearText, monthText] = period.split('-')
+          const year = Number(yearText)
+          const month = Number(monthText)
+          return month === 1 ? `${year - 1}-12` : `${yearText}-${String(month - 1).padStart(2, '0')}`
+        })()
+        const candidates = (await listAllFinanceTransactions(options.library, financeActorId())).filter((transaction) => {
+          if (transaction.transactionType !== 'expense' || transaction.status === 'discarded' || normalizeFinanceDecimal(transaction.amount) !== paidAmount || transaction.currency !== service.currency) return false
+          if (transaction.serviceId && transaction.serviceId !== service.id) return false
+          const transactionPeriod = transaction.effectiveDate.slice(0, 7)
+          if (transactionPeriod !== period && transactionPeriod !== previousPeriod) return false
+          return transaction.serviceId === service.id || serviceDescriptors.some((descriptor) => compact(transaction.description).includes(descriptor))
+        })
+        if (candidates.length > 1) return { ok: false, error: 'finance-service-payment-ambiguous', requiresClarification: true }
+        if (candidates.length === 0) return { ok: false, error: 'finance-service-payment-not-found', requiresClarification: true }
+        transactionId = candidates[0]!.id
+        resolvedEffectiveDate = candidates[0]!.effectiveDate
+      }
+      const occurrence: import('../../modules/finance/types/financeTypes').FinanceServiceOccurrence = { id: crypto.randomUUID(), serviceId, period, expectedAmount, paidAmount, effectiveDate: resolvedEffectiveDate, status: args.status === 'accepted' ? 'accepted' : paidAmount ? 'current' : 'pending', transactionId, artifactId: typeof args.artifactId === 'string' ? args.artifactId.trim() || null : null, sourceReference: typeof args.sourceReference === 'string' ? (args.sourceReference.trim() || (options.financeSourceReference ?? null)) : (options.financeSourceReference ?? null), rawSource: typeof args.rawSource === 'string' ? args.rawSource.slice(0, 20_000) : null, actorLibraryUserId: accessPrincipal.libraryUserId, source: options.financeSource ?? (options.responseFormat === 'telegram-html' ? 'telegram' : 'app') }
+      const accepted = await requestMutationConfirmation(`Registrar la ocurrencia de ${service.name} para ${period}${paidAmount ? ` por ${paidAmount} ${service.currency}` : ''}.`, signal, undefined, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      try {
+        const saved = await saveFinanceServiceOccurrence(options.library, occurrence, typeof args.reason === 'string' ? args.reason : undefined, financeActorId())
+        financeMutationExecuted = true
+        return { ok: true, changed: true, occurrence: saved, transactionId }
+      } catch {
+        // A native command can fail after SQLite committed (for example while
+        // synchronizing the library). Verify the persisted occurrence before
+        // reporting a failure that would invite a duplicate retry.
+        const persisted = await listFinanceServiceOccurrences(options.library, period, financeActorId()).catch(() => [])
+        const current = persisted.find((candidate) => candidate.serviceId === serviceId)
+        if (current
+          && normalizeFinanceDecimal(current.expectedAmount) === expectedAmount
+           && normalizeFinanceDecimal(current.paidAmount) === paidAmount
+          && current.transactionId === transactionId
+          && (current.status === 'current' || current.status === 'accepted')) {
+          financeMutationExecuted = true
+          return { ok: true, changed: true, recoveredAfterStorageError: true, occurrence: current, transactionId }
+        }
+        return { ok: false, changed: false, error: 'finance-service-occurrence-save-failed', code: 'storage' }
+      }
+    }
+    if (name === 'create_finance_service_invoice') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : ''
+       const amount = normalizeFinanceDecimal(args.amount)
+       const currency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
+       const serviceId = typeof args.serviceId === 'string' ? args.serviceId.trim() : ''
+       if (!period || !amount || !currency || !serviceId) return { ok: false, error: 'invalid-finance-service-invoice', requiresClarification: true }
+       const { listFinanceServices, saveFinanceServiceInvoice } = await import('../../modules/finance/services/financeService')
+       const service = (await listFinanceServices(options.library, financeActorId())).find((candidate) => candidate.id === serviceId)
+       if (!service || service.currency !== currency) return { ok: false, error: 'finance-service-invoice-service-invalid', requiresClarification: true }
+       const invoice: import('../../modules/finance/types/financeTypes').FinanceServiceInvoice = { id: crypto.randomUUID(), serviceId, period, dueDate: typeof args.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.dueDate) ? args.dueDate : null, provider: typeof args.provider === 'string' ? args.provider.trim() || null : service.provider ?? null, amount, currency, transactionId: typeof args.transactionId === 'string' ? args.transactionId.trim() || null : null, artifactId: typeof args.artifactId === 'string' ? args.artifactId.trim() || null : null, validationStatus: 'pending', sourceReference: typeof args.sourceReference === 'string' ? (args.sourceReference.trim() || (options.financeSourceReference ?? null)) : (options.financeSourceReference ?? null), rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null }
+      const accepted = await requestMutationConfirmation(`Registrar factura de servicio por ${amount} ${currency} del período ${period}.`, signal, undefined, true)
+      if (!accepted) return { ok: true, changed: false, declined: true }
+      const saved = await saveFinanceServiceInvoice(options.library, invoice, financeActorId())
+      financeMutationExecuted = true
+       financeServiceInvoiceExecuted = true
+      return { ok: true, changed: true, invoice: saved }
+    }
+    if (name === 'list_finance_audits') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : undefined
+      const status = typeof args.status === 'string' ? args.status : undefined
+      const requestedProposalType = typeof args.proposalType === 'string' ? args.proposalType.trim() : ''
+      if (requestedProposalType && !['service-unpaid', 'amount-variation', 'orphan-service-link', 'service-card-reconciliation'].includes(requestedProposalType)) return { ok: false, error: 'invalid-finance-audit-proposal-type', requiresClarification: true }
+      const proposalType = requestedProposalType || undefined
+      const { listFinanceAuditProposals, listFinanceAuditRuns } = await import('../../modules/finance/services/financeService')
+      const proposals = await listFinanceAuditProposals(options.library, period, status, financeActorId())
+      return { period: period ?? null, proposalType: proposalType ?? null, runs: await listFinanceAuditRuns(options.library, period, status, financeActorId()), proposals: proposalType ? proposals.filter((proposal) => proposal.proposalType === proposalType) : proposals }
+    }
+    if (name === 'preview_finance_audit_proposal') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const proposalId = typeof args.proposalId === 'string' ? args.proposalId.trim() : ''
+      if (!proposalId) return { ok: false, error: 'finance-audit-proposal-id-required', requiresClarification: true }
+      const { listFinanceAuditProposals } = await import('../../modules/finance/services/financeService')
+      const proposal = (await listFinanceAuditProposals(options.library, undefined, undefined, financeActorId())).find((candidate) => candidate.id === proposalId)
+      if (!proposal) return { ok: false, error: 'finance-audit-proposal-not-found' }
+      if (typeof args.proposalType === 'string' && args.proposalType !== proposal.proposalType) return { ok: false, error: 'finance-audit-proposal-type-mismatch', requiresClarification: true }
+      if (proposal.status !== 'pending') return { ok: false, error: 'finance-audit-proposal-not-pending', proposalType: proposal.proposalType, period: proposal.period }
+      return {
+        ok: true,
+        changed: false,
+        proposalType: proposal.proposalType,
+        period: proposal.period,
+        proposal,
+        preview: {
+          proposalType: proposal.proposalType,
+          period: proposal.period,
+          serviceId: proposal.serviceId,
+          reason: proposal.reason,
+          evidence: proposal.evidence,
+          dataFingerprint: proposal.dataFingerprint,
+          currentData: parseFinanceStructuredValue(proposal.currentData),
+          suggestedChange: parseFinanceStructuredValue(proposal.suggestedChange),
+        },
+        expectedDataFingerprint: proposal.dataFingerprint,
+      }
+    }
+    if (name === 'apply_finance_audit_proposal') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const proposalId = typeof args.proposalId === 'string' ? args.proposalId.trim() : ''
+      const proposalType = typeof args.proposalType === 'string' ? args.proposalType.trim() : ''
+      const expectedDataFingerprint = typeof args.expectedDataFingerprint === 'string' ? args.expectedDataFingerprint.trim() : ''
+       const decision = args.decision === 'accepted' || args.decision === 'rejected' || args.decision === 'cancelled' ? args.decision : null
+       if (!proposalId || !expectedDataFingerprint || !decision) return { ok: false, error: 'invalid-finance-audit-decision', requiresClarification: true }
+       const resolutionInput = Array.isArray(args.resolutionAssignments) ? args.resolutionAssignments : undefined
+       const resolutionAssignments = resolutionInput ? resolutionInput.slice(0, 50).flatMap((value) => {
+         if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+         const assignment = value as Record<string, unknown>
+         const fields = ['statementId', 'lineId', 'serviceId', 'transactionId', 'purchaseDate', 'period', 'amount']
+         if (fields.some((field) => typeof assignment[field] !== 'string' || !(assignment[field] as string).trim()) || (assignment.currency !== 'ARS' && assignment.currency !== 'USD')) return []
+         return [{ statementId: (assignment.statementId as string).trim(), lineId: (assignment.lineId as string).trim(), serviceId: (assignment.serviceId as string).trim(), transactionId: (assignment.transactionId as string).trim(), purchaseDate: (assignment.purchaseDate as string).trim(), period: (assignment.period as string).trim(), amount: (assignment.amount as string).trim(), currency: assignment.currency as import('../../modules/finance/types/financeTypes').FinanceCurrency, assignmentStatus: 'new' as const, evidence: { matching: 'manual-user-selection' } }]
+       }) : undefined
+       if (resolutionInput && resolutionAssignments && resolutionAssignments.length !== resolutionInput.length) return { ok: false, error: 'invalid-finance-resolution-assignments', requiresClarification: true }
+       const { listFinanceAuditProposals, decideFinanceAuditProposal } = await import('../../modules/finance/services/financeService')
+      const proposal = (await listFinanceAuditProposals(options.library, undefined, undefined, financeActorId())).find((candidate) => candidate.id === proposalId)
+      if (!proposal) return { ok: false, error: 'finance-audit-proposal-not-found' }
+      if (proposalType && proposal.proposalType !== proposalType) return { ok: false, error: 'finance-audit-proposal-type-mismatch', requiresClarification: true }
+      if (proposal.status !== 'pending' || proposal.dataFingerprint !== expectedDataFingerprint) return { ok: false, error: 'finance-audit-proposal-outdated', requiresClarification: true }
+       const resolutionText = resolutionAssignments?.length ? `\n\nSelecciones manuales: ${resolutionAssignments.map((assignment) => `${assignment.lineId} → ${assignment.serviceId}/${assignment.period}`).join(', ')}` : ''
+       const accepted = await requestMutationConfirmation(`Revisar la propuesta de auditoría: ${proposal.reason}\n\nDatos actuales: ${proposal.currentData}\n\nCambio sugerido: ${proposal.suggestedChange}${resolutionText}`, signal, undefined, true)
+       if (!accepted) return { ok: true, changed: false, declined: true, proposal }
+       await decideFinanceAuditProposal(options.library, proposal.id, decision, financeActorId(), expectedDataFingerprint, resolutionAssignments)
+      financeMutationExecuted = true
+      const persisted = (await listFinanceAuditProposals(options.library, undefined, undefined, financeActorId())).find((candidate) => candidate.id === proposal.id)
+      if (!persisted || persisted.status !== decision) return { ok: false, error: 'finance-audit-decision-unverified', requiresClarification: true }
+      return { ok: true, changed: true, proposalId: proposal.id, proposalType: persisted.proposalType, period: persisted.period, decision, dataFingerprint: persisted.dataFingerprint, proposal: persisted }
+    }
+    if (name === 'audit_finance_month') {
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
+      const period = typeof args.period === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ? args.period : ''
+      if (!period) return { ok: false, error: 'invalid-finance-audit-period', requiresClarification: true }
+      const { getFinanceDashboard, listFinanceAuditProposals, listFinanceServices, listFinanceServiceOccurrences, runFinanceAudit, saveFinanceAuditProposal } = await import('../../modules/finance/services/financeService')
+      const auditChange = (operation: string, parameters: Record<string, unknown>, description: string) => JSON.stringify({ operation, parameters, description })
+      const supportedAuditOperations = new Set(['mark_occurrence_discarded', 'set_occurrence_expected_amount', 'unlink_transaction_service'])
+      const fingerprint = `audit:${period}:${options.financeSourceReference ?? options.financeRequestId ?? crypto.randomUUID()}`
+      const nativeAudit = await runFinanceAudit(options.library, period, fingerprint, typeof args.reason === 'string' ? args.reason.slice(0, 500) : undefined, financeActorId())
+      const contextualFindings = Array.isArray(args.contextualFindings) ? args.contextualFindings.slice(0, 50) : []
+      if (contextualFindings.length > 0) {
+       const [services, occurrences, dashboard] = await Promise.all([listFinanceServices(options.library, financeActorId()), listFinanceServiceOccurrences(options.library, period, financeActorId()), getFinanceDashboard(options.library, period, financeActorId())])
+       for (const value of contextualFindings) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        const finding = value as Record<string, unknown>
+          const proposalType = typeof finding.proposalType === 'string' ? finding.proposalType.trim() : ''
+         const ruleKey = typeof finding.ruleKey === 'string' ? finding.ruleKey.trim().slice(0, 120) : ''
+         const operation = typeof finding.operation === 'string' ? finding.operation.trim() : ''
+         const parameters = finding.parameters && typeof finding.parameters === 'object' && !Array.isArray(finding.parameters) ? finding.parameters as Record<string, unknown> : null
+         const reason = typeof finding.reason === 'string' ? finding.reason.trim().slice(0, 500) : ''
+         const currentData = typeof finding.currentData === 'string' ? finding.currentData.slice(0, 20_000) : ''
+         const suggestedChange = typeof finding.suggestedChange === 'string' ? finding.suggestedChange.slice(0, 20_000) : ''
+          const expectedOperation = proposalType === 'service-unpaid' ? 'mark_occurrence_discarded' : proposalType === 'amount-variation' ? 'set_occurrence_expected_amount' : proposalType === 'orphan-service-link' ? 'unlink_transaction_service' : ''
+          if (!['service-unpaid', 'amount-variation', 'orphan-service-link'].includes(proposalType) || !ruleKey || !supportedAuditOperations.has(operation) || operation !== expectedOperation || !parameters || !reason || !currentData || !suggestedChange) continue
+          const serviceId = typeof finding.serviceId === 'string' ? finding.serviceId.trim() : null
+          if (proposalType !== 'orphan-service-link' && !serviceId) continue
+          const contextualOccurrence = serviceId ? occurrences.find((candidate) => candidate.serviceId === serviceId) : undefined
+          const dataFingerprint = proposalType === 'service-unpaid'
+            ? `service-unpaid:${period}:${serviceId}:${contextualOccurrence?.paidAmount ?? ''}:${contextualOccurrence?.expectedAmount ?? services.find((service) => service.id === serviceId)?.expectedAmount ?? ''}:${contextualOccurrence?.status ?? 'missing'}:${services.find((service) => service.id === serviceId)?.active ? 'active' : 'inactive'}`
+            : proposalType === 'amount-variation'
+              ? `amount-variation:${period}:${serviceId}:${contextualOccurrence?.paidAmount ?? ''}:${contextualOccurrence?.expectedAmount ?? ''}:${services.find((service) => service.id === serviceId)?.modality ?? ''}:${services.find((service) => service.id === serviceId)?.active ? 'active' : 'inactive'}`
+              : `orphan-service-link:${period}:${dashboard.transactions.filter((transaction) => Array.isArray(parameters.transactionIds) && parameters.transactionIds.includes(transaction.id)).sort((left, right) => left.id.localeCompare(right.id)).map((transaction) => `${transaction.id}:${transaction.serviceId ?? ''}:${transaction.amount}:${transaction.currency}:${transaction.effectiveDate}:${transaction.categoryId ?? ''}:${transaction.status}`).join('|')}`
+           await saveFinanceAuditProposal(options.library, { id: crypto.randomUUID(), auditRunId: nativeAudit.run.id, proposalType, status: 'pending', ruleKey: `ai:${ruleKey}`, dataFingerprint, serviceId, period, reason, currentData, suggestedChange: auditChange(operation, parameters, suggestedChange), evidence: typeof finding.evidence === 'string' ? finding.evidence.slice(0, 20_000) : null, actorLibraryUserId: accessPrincipal.libraryUserId, source: options.financeSource ?? 'app' }, financeActorId())
+       }
+      }
+      const proposals = (await listFinanceAuditProposals(options.library, period, undefined, financeActorId())).filter((proposal) => proposal.auditRunId === nativeAudit.run.id)
+      return { ok: true, changed: true, period: nativeAudit.run.period, run: nativeAudit.run, proposals }
     }
     if (name === 'get_finance_dollar_quotes') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const { getDollarQuotes } = await import('../../modules/finance/services/dollarQuotesService')
       return { source: 'DolarApi', quotes: await getDollarQuotes() }
     }
     if (name === 'get_finance_inflation_indices') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const { getArgentinaInflationIndices } = await import('../../modules/finance/services/argentinaInflationService')
       return { source: 'ArgentinaDatos', ...(await getArgentinaInflationIndices()) }
     }
     if (name === 'get_finance_historical_dollar_quotes') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const from = typeof args.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.from) ? args.from : undefined
       const to = typeof args.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.to) ? args.to : undefined
       if (from && to && from > to) return { ok: false, error: 'invalid-finance-date-range', requiresClarification: true }
@@ -4001,26 +5000,26 @@ Confirmá nuevamente para continuar.`,
       return { source: 'ArgentinaDatos', quotes: quotes.filter((quote) => (!from || quote.date >= from) && (!to || quote.date <= to)) }
     }
     if (name === 'list_finance_accounts' || name === 'list_finance_categories' || name === 'list_finance_movements') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const month = typeof args.month === 'string' && /^\d{4}-\d{2}$/.test(args.month) ? args.month : new Date().toISOString().slice(0, 7)
       const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, month)
+      const dashboard = await getFinanceDashboard(options.library, month, financeActorId())
       if (name === 'list_finance_accounts') return { accounts: dashboard.accounts.filter((account) => account.active) }
       if (name === 'list_finance_categories') return { categories: dashboard.categories.filter((category) => category.active) }
       return { month, movements: dashboard.transactions }
     }
     if (name === 'search_finance_categories') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const query = typeof args.query === 'string' ? args.query.trim().toLocaleLowerCase('es') : ''
       const kind = args.kind === 'income' || args.kind === 'expense' ? args.kind : null
       if (!query) return { ok: false, error: 'category-query-required' }
       const { getFinanceDashboard } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7), financeActorId())
       const matches = dashboard.categories.filter((category) => category.active && (!kind || category.kind === kind) && category.name.toLocaleLowerCase('es').includes(query))
       return { matches, exact: matches.length === 1 && matches[0]?.name.toLocaleLowerCase('es') === query, categoryCreationAllowed: matches.length === 0 }
     }
     if (name === 'create_finance_category') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const name = typeof args.name === 'string' ? args.name.trim().replace(/\s+/g, ' ') : ''
       const kind = args.kind === 'income' || args.kind === 'expense' ? args.kind : null
       const description = typeof args.description === 'string' ? args.description.trim() : ''
@@ -4028,7 +5027,7 @@ Confirmá nuevamente para continuar.`,
         return { ok: false, error: 'invalid-finance-category', requiresClarification: true }
       }
       const { getFinanceDashboard, saveFinanceCategory } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, new Date().toISOString().slice(0, 7), financeActorId())
       const existing = dashboard.categories.find((category) => category.active && category.kind === kind && category.name.localeCompare(name, 'es', { sensitivity: 'accent' }) === 0)
       if (existing) return { ok: true, changed: false, category: existing, duplicate: true }
       const accepted = await requestMutationConfirmation(`Crear la categoria ${name} para ${kind === 'expense' ? 'gastos' : 'ingresos'}.`, signal, undefined, true)
@@ -4036,10 +5035,10 @@ Confirmá nuevamente para continuar.`,
       const category: import('../../modules/finance/types/financeTypes').FinanceCategory = {
         id: crypto.randomUUID(), name, kind, active: true, parentId: null, description: description || null,
       }
-      return { ok: true, changed: true, category: await saveFinanceCategory(options.library, category) }
+      return { ok: true, changed: true, category: await saveFinanceCategory(options.library, category, financeActorId()) }
     }
     if (name === 'create_finance_purchase') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const accountValue = typeof args.accountId === 'string' ? args.accountId.trim() : ''
       const categoryValue = typeof args.categoryId === 'string' ? args.categoryId.trim() : ''
       const merchantName = typeof args.merchantName === 'string' ? args.merchantName.trim() : ''
@@ -4076,21 +5075,26 @@ Confirmá nuevamente para continuar.`,
         return { ok: false, error: 'invalid-finance-purchase', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
       }
       const { getFinanceDashboard, saveFinancePurchase } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, observedAt.slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, observedAt.slice(0, 7), financeActorId())
       const normalizedAccount = accountValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedAccount))
       if (!account || account.currency !== currency) return { ok: false, error: 'finance-purchase-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta listada con la misma moneda del ticket.' }
       const normalizedCategory = categoryValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const category = dashboard.categories.find((candidate) => candidate.active && candidate.kind === 'expense' && (candidate.id === categoryValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedCategory))
       if (!category && options.responseFormat === 'telegram-html') return { ok: false, error: 'finance-purchase-category-invalid', invalidFields: ['categoryId'], instruction: 'Usa el ID exacto devuelto por search_finance_categories o create_finance_category.' }
+      const requestedServiceId = typeof args.serviceId === 'string' ? args.serviceId.trim() : ''
+      const { listFinanceServices } = await import('../../modules/finance/services/financeService')
+      const service = requestedServiceId ? (await listFinanceServices(options.library, financeActorId())).find((candidate) => candidate.active && candidate.id === requestedServiceId) : null
+      if (requestedServiceId && !service) return { ok: false, error: 'finance-service-not-found', requiresClarification: true }
+      if (service && service.currency !== currency) return { ok: false, error: 'finance-service-expense-currency-mismatch', requiresClarification: true }
       const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
       if (!reference) return { ok: false, error: 'finance-purchase-source-required' }
-      const purchase: import('../../modules/finance/types/financeTypes').FinancePurchaseRecord = { id: crypto.randomUUID(), accountId: account.id, categoryId: category?.id ?? null, merchantName, observedAt, currency: currency as import('../../modules/finance/types/financeTypes').FinanceCurrency, subtotalAmount, discountAmount, taxAmount, totalAmount, status: 'pending', sourceReference: reference, rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null, items: items.map((item) => ({ ...item, categoryId: category?.id ?? null })) }
+      const purchase: import('../../modules/finance/types/financeTypes').FinancePurchaseRecord = { id: crypto.randomUUID(), accountId: account.id, categoryId: category?.id ?? null, serviceId: service?.id ?? null, merchantName, observedAt, currency: currency as import('../../modules/finance/types/financeTypes').FinanceCurrency, subtotalAmount, discountAmount, taxAmount, totalAmount, status: 'pending', sourceReference: reference, rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null, items: items.map((item) => ({ ...item, categoryId: category?.id ?? null })) }
       const accepted = await requestMutationConfirmation(`Guardar ticket de ${merchantName}: ${items.length} producto(s), total ${totalAmount} ${currency}, en ${account.name}.`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
       let saved: import('../../modules/finance/types/financeTypes').FinanceSavedPurchase
       try {
-        saved = await saveFinancePurchase(options.library, { ...purchase, status: 'confirmed' })
+        saved = await saveFinancePurchase(options.library, { ...purchase, status: 'confirmed' }, financeActorId())
       } catch (error) {
         const message = typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
           ? error.message
@@ -4136,7 +5140,7 @@ Confirmá nuevamente para continuar.`,
       }
     }
     if (name === 'create_finance_salary') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const accountValue = typeof args.accountId === 'string' ? args.accountId.trim() : ''
       const period = typeof args.period === 'string' && /^\d{4}-\d{2}$/.test(args.period.trim()) ? args.period.trim() : ''
       const paymentDate = typeof args.paymentDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.paymentDate.trim()) ? args.paymentDate.trim() : ''
@@ -4170,7 +5174,7 @@ Confirmá nuevamente para continuar.`,
         return { ok: false, error: 'invalid-finance-salary', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
       }
       const { getFinanceDashboard, saveVerifiedFinanceSalary } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, paymentDate.slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, paymentDate.slice(0, 7), financeActorId())
       const normalizedAccount = accountValue.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || candidate.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es') === normalizedAccount))
       if (!account || account.currency !== currency) return { ok: false, error: 'finance-salary-account-invalid', invalidFields: ['accountId'], instruction: 'Usa el ID exacto de una cuenta listada con la misma moneda del recibo.' }
@@ -4189,7 +5193,7 @@ Confirmá nuevamente para continuar.`,
       const accepted = await requestMutationConfirmation(`Guardar recibo de sueldo de ${employer}, período ${period}, neto ${netAmount} ${currency}, en ${account.name}.`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
       try {
-        const saved = await saveVerifiedFinanceSalary(options.library, salary)
+        const saved = await saveVerifiedFinanceSalary(options.library, salary, financeActorId())
         financeMutationExecuted = true
         financeSalaryExecuted = true
         options.onFinanceSalarySaved?.(reference, saved)
@@ -4215,7 +5219,7 @@ Confirmá nuevamente para continuar.`,
       }
     }
     if (name === 'create_finance_credit_card_statement') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const accountValue = typeof args.accountId === 'string' ? args.accountId.trim() : ''
       const issuer = typeof args.issuer === 'string' ? args.issuer.trim().replace(/\s+/g, ' ') : ''
       const cardLastFour = typeof args.cardLastFour === 'string' && /^\d{4}$/.test(args.cardLastFour.trim()) ? args.cardLastFour.trim() : null
@@ -4283,8 +5287,8 @@ Confirmá nuevamente para continuar.`,
       if (invalidFields.length > 0) {
         return { ok: false, error: 'invalid-finance-credit-card-statement', invalidFields, instruction: `Corrige solamente estos campos y reintenta: ${invalidFields.join(', ')}.` }
       }
-      const { getFinanceDashboard, saveFinanceCreditCardStatement } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, period)
+       const { getFinanceDashboard, listFinanceServices, listFinanceServiceOccurrences, saveFinanceCreditCardStatement } = await import('../../modules/finance/services/financeService')
+      const dashboard = await getFinanceDashboard(options.library, period, financeActorId())
       const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === accountValue || normalizeEntityName(candidate.name) === normalizeEntityName(accountValue)))
       if (!account || account.accountType !== 'credit_card') {
@@ -4292,21 +5296,31 @@ Confirmá nuevamente para continuar.`,
       }
       const reference = typeof args.sourceReference === 'string' && args.sourceReference.trim() ? args.sourceReference.trim() : options.financeSourceReference ?? null
       if (!reference) return { ok: false, error: 'finance-credit-card-statement-source-required' }
-      const statement: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatement = {
+       const statement: import('../../modules/finance/types/financeTypes').FinanceCreditCardStatement = {
         id: crypto.randomUUID(), accountId: account.id, issuer, cardLastFour, period, closingDate, dueDate, currency: currency!,
         previousBalance: amountFields.previousBalance!, paymentsAmount: amountFields.paymentsAmount!, creditsAmount: amountFields.creditsAmount!,
         purchasesAmount: amountFields.purchasesAmount!, feesAmount: amountFields.feesAmount!, interestAmount: amountFields.interestAmount!,
         taxesAmount: amountFields.taxesAmount!, totalDue: amountFields.totalDue!, minimumPayment, status: 'confirmed', sourceReference: reference,
-        rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null, items,
-      }
-      const accepted = await requestMutationConfirmation(`Guardar resumen de ${issuer}, período ${period}, total ${statement.totalDue} ${currency}, en ${account.name}.`, signal, undefined, true)
+         rawExtraction: typeof args.rawExtraction === 'string' ? args.rawExtraction.slice(0, 20_000) : null, items,
+       }
+       const [services, occurrences] = await Promise.all([
+         listFinanceServices(options.library, financeActorId()),
+         listFinanceServiceOccurrences(options.library, period, financeActorId()),
+       ])
+       const preview = (await import('../../modules/finance/engines/serviceEngine')).reconcileFinanceCardServices({
+         ...statement,
+         items: statement.items.map((item) => ({ ...item, transactionId: item.transactionId ?? `preview:${item.id}` })),
+       }, services, occurrences)
+       const previewAssignments = preview.assignments.map((assignment) => `${assignment.lineId} → ${assignment.period}`).join(', ') || 'sin asignaciones automáticas'
+       const previewAmbiguities = preview.ambiguousGroups.length > 0 ? ` Hay ${preview.ambiguousGroups.length} grupo(s) ambiguo(s) que no se asignarán automáticamente.` : ''
+       const accepted = await requestMutationConfirmation(`Guardar resumen de ${issuer}, período ${period}, total ${statement.totalDue} ${currency}, en ${account.name}. Conciliación prevista: ${previewAssignments}.${previewAmbiguities}`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
       try {
-        const saved = await saveFinanceCreditCardStatement(options.library, statement)
+         const saved = await saveFinanceCreditCardStatement(options.library, statement, financeActorId())
         financeMutationExecuted = true
         financeCreditCardStatementExecuted = true
         options.onFinanceCreditCardStatementSaved?.(reference)
-        return { ok: true, changed: true, statement: saved.statement, matchedExistingTransactions: saved.matchedExistingTransactions, createdTransactions: saved.createdTransactions, accountName: account.name }
+         return { ok: true, changed: true, statement: saved.statement, matchedExistingTransactions: saved.matchedExistingTransactions, createdTransactions: saved.createdTransactions, reconciliation: saved.reconciliation, occurrences: saved.occurrences, accountName: account.name }
       } catch (error) {
         const message = typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
           ? error.message
@@ -4328,30 +5342,30 @@ Confirmá nuevamente para continuar.`,
       }
     }
     if (name === 'update_finance_transaction_status') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const transactionId = typeof args.transactionId === 'string' ? args.transactionId.trim() : ''
       const status = typeof args.status === 'string' && ['confirmed', 'corrected', 'discarded'].includes(args.status) ? args.status : ''
       if (!transactionId || !status) return { ok: false, error: 'invalid-finance-status-update' }
       const { getFinanceDashboard, saveFinanceTransaction } = await import('../../modules/finance/services/financeService')
       const month = typeof args.effectiveDate === 'string' && /^\d{4}-\d{2}/.test(args.effectiveDate) ? args.effectiveDate.slice(0, 7) : new Date().toISOString().slice(0, 7)
-      const dashboard = await getFinanceDashboard(options.library, month)
+      const dashboard = await getFinanceDashboard(options.library, month, financeActorId())
       const current = dashboard.transactions.find((transaction) => transaction.id === transactionId)
       if (!current) return { ok: false, error: 'finance-transaction-not-found' }
       const updated = { ...current, status: status as import('../../modules/finance/types/financeTypes').FinanceTransactionStatus, amount: typeof args.amount === 'string' ? args.amount : current.amount, effectiveDate: typeof args.effectiveDate === 'string' ? args.effectiveDate : current.effectiveDate, accountId: typeof args.accountId === 'string' ? args.accountId : current.accountId, categoryId: typeof args.categoryId === 'string' ? args.categoryId : current.categoryId, description: typeof args.description === 'string' ? args.description : current.description }
       const accepted = await requestMutationConfirmation(`${status === 'discarded' ? 'Descartar' : 'Guardar'} el movimiento ${transactionId}.`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
-      return { ok: true, changed: true, transaction: await saveFinanceTransaction(options.library, updated) }
+      return { ok: true, changed: true, transaction: await saveFinanceTransaction(options.library, updated, financeActorId()) }
     }
     if (name === 'list_finance_salaries' || name === 'list_finance_purchases' || name === 'list_finance_credit_card_statements') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const filters = { from: typeof args.from === 'string' ? args.from : undefined, to: typeof args.to === 'string' ? args.to : undefined }
       const service = await import('../../modules/finance/services/financeService')
-      if (name === 'list_finance_salaries') return { salaries: await service.listFinanceSalaries(options.library, filters) }
-      if (name === 'list_finance_credit_card_statements') return { statements: await service.listFinanceCreditCardStatements(options.library, filters) }
-      return { purchases: await service.listFinancePurchases(options.library, filters) }
+      if (name === 'list_finance_salaries') return { salaries: await service.listFinanceSalaries(options.library, filters, financeActorId()) }
+      if (name === 'list_finance_credit_card_statements') return { statements: await service.listFinanceCreditCardStatements(options.library, filters, financeActorId()) }
+      return { purchases: await service.listFinancePurchases(options.library, filters, financeActorId()) }
     }
     if (name === 'list_finance_price_history') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const filters = {
         from: typeof args.from === 'string' ? args.from : undefined,
         to: typeof args.to === 'string' ? args.to : undefined,
@@ -4359,22 +5373,22 @@ Confirmá nuevamente para continuar.`,
         productId: typeof args.productId === 'string' ? args.productId : undefined,
       }
       const { listFinancePriceHistory } = await import('../../modules/finance/services/financeService')
-      return { observations: await listFinancePriceHistory(options.library, filters) }
+      return { observations: await listFinancePriceHistory(options.library, filters, financeActorId()) }
     }
     if (name === 'get_finance_net_worth') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const asOf = typeof args.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.asOf) ? args.asOf : ''
       if (!asOf) return { ok: false, error: 'invalid-finance-date', requiresClarification: true }
       const { getFinanceNetWorth } = await import('../../modules/finance/services/financeService')
-      return getFinanceNetWorth(options.library, asOf)
+      return getFinanceNetWorth(options.library, asOf, financeActorId())
     }
     if (name === 'list_finance_net_worth_history') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const { listFinanceNetWorthHistory } = await import('../../modules/finance/services/financeService')
-      return { history: await listFinanceNetWorthHistory(options.library) }
+      return { history: await listFinanceNetWorthHistory(options.library, financeActorId()) }
     }
     if (name === 'create_finance_transaction') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const amount = typeof args.amount === 'string' ? args.amount.trim() : ''
       const transactionType = typeof args.transactionType === 'string' ? args.transactionType : ''
       const requestedCurrency = args.currency === 'ARS' || args.currency === 'USD' ? args.currency : null
@@ -4389,7 +5403,7 @@ Confirmá nuevamente para continuar.`,
         return { ok: false, error: 'invalid-finance-transaction', requiresClarification: true }
       }
       const { getFinanceDashboard, saveFinanceTransaction } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7), financeActorId())
       const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const account = dashboard.accounts.find((candidate) => candidate.active && (candidate.id === requestedAccountId || normalizeEntityName(candidate.name) === normalizeEntityName(requestedAccountId)))
       if (!account) return { ok: false, error: 'finance-account-not-found', requiresClarification: true }
@@ -4409,15 +5423,29 @@ Confirmá nuevamente para continuar.`,
       if (category && (transactionType === 'income' || transactionType === 'expense') && category.kind !== transactionType) {
         return { ok: false, error: 'finance-category-kind-mismatch', requiresClarification: true }
       }
-      const transaction: import('../../modules/finance/types/financeTypes').FinanceTransaction = { id: crypto.randomUUID(), transactionType: transactionType as import('../../modules/finance/types/financeTypes').FinanceTransactionType, amount, currency, effectiveDate, accountId: account.id, destinationAccountId: destinationAccount?.id ?? null, categoryId: category?.id ?? null, description, source: options.responseFormat === 'telegram-html' ? 'telegram' : 'chat', status: 'confirmed', actorUserId: options.actorUserId, sourceReference: typeof args.sourceReference === 'string' ? args.sourceReference : null, rawSource: typeof args.rawSource === 'string' ? args.rawSource : null }
+      const requestedServiceId = typeof args.serviceId === 'string' ? args.serviceId.trim() : ''
+      const { listFinanceServices } = await import('../../modules/finance/services/financeService')
+      const service = requestedServiceId ? (await listFinanceServices(options.library, financeActorId())).find((candidate) => candidate.active && candidate.id === requestedServiceId) : null
+      if (requestedServiceId && !service) return { ok: false, error: 'finance-service-not-found', requiresClarification: true }
+      if (service && (transactionType !== 'expense' || service.currency !== currency)) return { ok: false, error: 'finance-service-expense-currency-mismatch', requiresClarification: true }
+      const transaction: import('../../modules/finance/types/financeTypes').FinanceTransaction = { id: crypto.randomUUID(), transactionType: transactionType as import('../../modules/finance/types/financeTypes').FinanceTransactionType, amount, currency, effectiveDate, accountId: account.id, destinationAccountId: destinationAccount?.id ?? null, categoryId: category?.id ?? null, serviceId: service?.id ?? null, description, source: options.financeSource ?? (options.responseFormat === 'telegram-html' ? 'telegram' : 'app'), status: 'confirmed', actorUserId: options.actorUserId, actorLibraryUserId: accessPrincipal.libraryUserId, sourceReference: typeof args.sourceReference === 'string' ? args.sourceReference : null, rawSource: typeof args.rawSource === 'string' ? args.rawSource : null }
       const accepted = await requestMutationConfirmation(`Confirmar ${transactionType === 'expense' ? 'gasto' : 'movimiento'} de ${amount} ${currency}: ${description || 'sin descripción'}.`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
-      const saved = await saveFinanceTransaction(options.library, transaction)
-      financeMutationExecuted = true
-      return { ok: true, changed: true, transaction: saved }
+      const saved = await saveFinanceTransaction(options.library, transaction, financeActorId())
+      let occurrence: import('../../modules/finance/types/financeTypes').FinanceServiceOccurrence | null = null
+      let occurrenceError: string | null = null
+       if (service) {
+        try {
+          const { saveFinanceServiceOccurrence } = await import('../../modules/finance/services/financeService')
+          occurrence = await saveFinanceServiceOccurrence(options.library, { id: crypto.randomUUID(), serviceId: service.id, period: effectiveDate.slice(0, 7), expectedAmount: service.expectedAmount, paidAmount: amount, effectiveDate, status: 'current', transactionId: saved.id, artifactId: null, sourceReference: saved.sourceReference, rawSource: saved.rawSource, actorLibraryUserId: accessPrincipal.libraryUserId, source: saved.source })
+         } catch (error) { occurrenceError = error instanceof Error ? error.message : 'No se pudo asociar la ocurrencia del servicio.' }
+       }
+       if (occurrenceError) return { ok: false, changed: false, error: 'finance-service-occurrence-save-failed', message: 'El gasto se guardó, pero no pudo asociarse de forma completa a la ocurrencia del servicio. Revisá la ocurrencia antes de reintentar.', transaction: saved, occurrenceError }
+       financeMutationExecuted = true
+      return { ok: true, changed: true, transaction: saved, occurrence, occurrenceError }
     }
     if (name === 'create_finance_savings_exchange') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const reserveReference = typeof args.reserve === 'string' ? args.reserve.trim() : ''
       const sourceAccountReference = typeof args.sourceAccount === 'string' ? args.sourceAccount.trim() : ''
       const sourceAmount = normalizeFinanceDecimal(args.sourceAmount)
@@ -4428,7 +5456,7 @@ Confirmá nuevamente para continuar.`,
       const description = typeof args.description === 'string' && args.description.trim() ? args.description.trim() : 'Compra de moneda para ahorro'
       if (!reserveReference || !sourceAccountReference || !sourceAmount || !savingsAmount || !sourceCurrency || !savingsCurrency || sourceCurrency === savingsCurrency) return { ok: false, error: 'invalid-finance-savings-exchange', requiresClarification: true }
       const { getFinanceDashboard, saveFinanceSavingsExchange } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7), financeActorId())
       const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const reserveMatches = dashboard.savings.filter((candidate) => candidate.active && (candidate.id === reserveReference || normalizeEntityName(candidate.name) === normalizeEntityName(reserveReference)))
       const accountMatches = dashboard.accounts.filter((candidate) => candidate.active && (candidate.id === sourceAccountReference || normalizeEntityName(candidate.name) === normalizeEntityName(sourceAccountReference)))
@@ -4440,13 +5468,13 @@ Confirmá nuevamente para continuar.`,
       const accepted = await requestMutationConfirmation(`Confirmar compra de ${savingsAmount} ${savingsCurrency} para ${reserve.name} con ${sourceAmount} ${sourceCurrency} desde ${sourceAccount.name}.`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
       const saved = await saveFinanceSavingsExchange(options.library, {
-        id: crypto.randomUUID(), reserveId: reserve.id, sourceAccountId: sourceAccount.id, sourceAmount, sourceCurrency, savingsAmount, savingsCurrency, effectiveDate, description, actorUserId: options.actorUserId, sourceReference: typeof args.sourceReference === 'string' ? args.sourceReference : null, rawSource: typeof args.rawSource === 'string' ? args.rawSource : null,
-      })
+        id: crypto.randomUUID(), reserveId: reserve.id, sourceAccountId: sourceAccount.id, sourceAmount, sourceCurrency, savingsAmount, savingsCurrency, effectiveDate, description, actorUserId: options.actorUserId, actorLibraryUserId: accessPrincipal.libraryUserId, sourceReference: typeof args.sourceReference === 'string' ? args.sourceReference : null, rawSource: typeof args.rawSource === 'string' ? args.rawSource : null,
+      }, financeActorId())
       financeMutationExecuted = true
       return { ok: true, changed: true, autoConfirmed: false, reserve: reserve.name, sourceAccount: sourceAccount.name, movement: saved.movement, transaction: saved.transaction }
     }
     if (name === 'create_finance_savings_movement') {
-      if (!hasFinanceAccess(options)) return { ok: false, error: 'finance-scope-required' }
+      if (!financeToolsAllowed) return { ok: false, error: 'finance-context-required' }
       const reserveId = typeof args.reserveId === 'string' ? args.reserveId.trim() : ''
       const accountId = typeof args.accountId === 'string' ? args.accountId.trim() : ''
       const movementType = typeof args.movementType === 'string' ? args.movementType : ''
@@ -4456,7 +5484,7 @@ Confirmá nuevamente para continuar.`,
       const reason = typeof args.reason === 'string' ? args.reason.trim() : ''
       if (!reserveId || !accountId || !currency || !/^-?\d+(\.\d+)?$/.test(amount) || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || !['contribution', 'withdrawal', 'return', 'loss', 'adjustment'].includes(movementType) || (movementType === 'withdrawal' && !reason)) return { ok: false, error: 'invalid-finance-savings-movement', requiresClarification: true }
       const { getFinanceDashboard, saveFinanceSavingsMovement } = await import('../../modules/finance/services/financeService')
-      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7))
+      const dashboard = await getFinanceDashboard(options.library, effectiveDate.slice(0, 7), financeActorId())
       const normalizeEntityName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('es')
       const reserveMatches = dashboard.savings.filter((candidate) => candidate.active && (candidate.id === reserveId || normalizeEntityName(candidate.name) === normalizeEntityName(reserveId)))
       const accountMatches = dashboard.accounts.filter((candidate) => candidate.active && (candidate.id === accountId || normalizeEntityName(candidate.name) === normalizeEntityName(accountId)))
@@ -4466,8 +5494,8 @@ Confirmá nuevamente para continuar.`,
       if (reserve.currency !== currency || account.currency !== currency) return { ok: false, error: 'finance-savings-movement-currency-mismatch', requiresClarification: true }
       const accepted = await requestMutationConfirmation(`Confirmar ${movementType === 'withdrawal' ? 'retiro' : 'movimiento'} de ahorro de ${amount} ${currency}.`, signal, undefined, true)
       if (!accepted) return { ok: true, changed: false, declined: true }
-      const movement: import('../../modules/finance/types/financeTypes').FinanceSavingsMovement = { id: crypto.randomUUID(), reserveId: reserve.id, accountId: account.id, movementType: movementType as import('../../modules/finance/types/financeTypes').FinanceSavingsMovementType, amount, currency, effectiveDate, description: typeof args.description === 'string' ? args.description.trim() : movementType, reason: reason || null, source: 'chat', status: 'confirmed', actorUserId: options.actorUserId }
-      const confirmed = await saveFinanceSavingsMovement(options.library, movement)
+      const movement: import('../../modules/finance/types/financeTypes').FinanceSavingsMovement = { id: crypto.randomUUID(), reserveId: reserve.id, accountId: account.id, movementType: movementType as import('../../modules/finance/types/financeTypes').FinanceSavingsMovementType, amount, currency, effectiveDate, description: typeof args.description === 'string' ? args.description.trim() : movementType, reason: reason || null, source: options.financeSource ?? (options.responseFormat === 'telegram-html' ? 'telegram' : 'app'), status: 'confirmed', actorUserId: options.actorUserId, actorLibraryUserId: accessPrincipal.libraryUserId }
+      const confirmed = await saveFinanceSavingsMovement(options.library, movement, financeActorId())
       financeMutationExecuted = true
       return { ok: true, changed: true, movement: confirmed, autoConfirmed: false }
     }
@@ -4506,7 +5534,7 @@ Confirmá nuevamente para continuar.`,
       return { ok: true, approved: true, steps: executionPlan }
     }
     if (name === 'request_user_clarification') {
-      if (hasFinanceAccess(options)) financeClarificationRequested = true
+      if (financeToolsAllowed) financeClarificationRequested = true
       const question = typeof args.question === 'string' ? args.question.trim() : ''
       const choices = stringArray(args.choices, 8)
       if (!question) {
@@ -4767,13 +5795,15 @@ Confirmá nuevamente para continuar.`,
       }
     }
     if (name === 'get_task_manager_options') {
+      const requestedBoard = (typeof args.board === 'string' ? args.board.trim() || null : null)
+        ?? (options.publishedScope ? null : resolveTaskManagerBoard(options.taskManagerScopeKey))
+      if (!isPublishedBoardAllowed(requestedBoard)) return { ok: false, error: 'published-board-not-authorized' }
       const { getTaskManagerAgentOptions } = await import(
         '../../modules/task-manager/services/taskManagerAgentMutationService'
       )
       return getTaskManagerAgentOptions(
         options.library.path,
-        (typeof args.board === 'string' ? args.board.trim() || null : null)
-          ?? resolveTaskManagerBoard(options.taskManagerScopeKey),
+        requestedBoard,
       )
     }
 
@@ -4784,6 +5814,7 @@ Confirmá nuevamente para continuar.`,
         : undefined
       const board = (typeof args.board === 'string' ? args.board.trim() || null : null)
         ?? resolveTaskManagerBoard(options.taskManagerScopeKey)
+      if (!isPublishedBoardAllowed(board)) return { ok: false, error: 'published-board-not-authorized' }
       let mutation: TaskManagerAgentMutation
       let confirmation: string
       let confirmationPreview: MutationPreview | undefined
@@ -5047,7 +6078,9 @@ Confirmá nuevamente para continuar.`,
         '../../modules/task-manager/services/taskManagerAgentMutationService'
       )
       try {
-        await executeTaskManagerAgentMutation(options.library.path, mutation)
+         await executeTaskManagerAgentMutation(options.library.path, mutation, {
+           allowedBoardNames: options.publishedScope ? [...publishedBoardNames] : undefined,
+         })
       } catch (error) {
         if (activePlanStep) {
           activePlanStep.status = 'failed'
@@ -5068,8 +6101,8 @@ Confirmá nuevamente para continuar.`,
       const requestedIds = stringArray(args.documentIds, 20)
       const selected = (requestedIds.length > 0
         ? requestedIds.map((id) => documents.find((document) => document.id === id)).filter((document): document is AgentDocument => Boolean(document))
-        : documents)
-        .filter((document) => options.scope !== 'document' || authorized.has(document.id))
+        : documents.filter((document) => authorized.has(document.id)))
+        .filter((document) => authorized.has(document.id))
         .slice(0, MAX_METADATA_SEARCH_FILES)
       if (requestedIds.length > 0 && selected.length !== requestedIds.length) return { ok: false, error: 'unknown-documents' }
       const permission = requireAuthorized(selected)
@@ -5133,7 +6166,7 @@ Confirmá nuevamente para continuar.`,
         normalizeAgentSearchText(target.option.name.replace(/\.(md|markdown|txt)$/i, '')),
         normalizeAgentSearchText(target.option.relativePath.replace(/\.(md|markdown|txt)$/i, '')),
       ].filter(Boolean))
-      const selected = documents.filter((document) => options.scope !== 'document' || authorized.has(document.id)).slice(0, MAX_METADATA_SEARCH_FILES)
+      const selected = documents.filter((document) => authorized.has(document.id)).slice(0, MAX_METADATA_SEARCH_FILES)
       const files = await loadInlineFileAttachments(options.library, selected.map((document) => document.option.path), candidates)
       const incoming: Array<Record<string, unknown>> = []
       const outgoing: Array<Record<string, unknown>> = []
@@ -5188,7 +6221,8 @@ Confirmá nuevamente para continuar.`,
 
     const isSearch = name === 'search_task_tickets' || name === 'search_library_documents'
     if (isSearch) {
-      const searchedDocuments = name === 'search_task_tickets' ? taskDocuments : documents
+      const searchedDocuments = (name === 'search_task_tickets' ? taskDocuments : documents)
+        .filter((document) => authorized.has(document.id))
       const titles = stringArray(args.titles)
       if (name === 'search_task_tickets') {
         const query = typeof args.query === 'string' ? args.query.trim() : ''
@@ -5291,9 +6325,7 @@ Confirmá nuevamente para continuar.`,
       const requestedType = args.type === 'markdown' || args.type === 'text' ? args.type : null
       const searchTerms = [...titles, ...(query ? [query] : [])]
       if (searchTerms.length === 0) return { ok: false, error: 'search-term-required' }
-      const metadataScope = options.scope === 'document'
-        ? searchedDocuments.filter((document) => authorized.has(document.id))
-        : searchedDocuments
+      const metadataScope = searchedDocuments.filter((document) => authorized.has(document.id))
       const needsFrontmatterSearch = Boolean(query) || requestedTags.length > 0
       const metadataTargets = needsFrontmatterSearch
         ? metadataScope.slice(0, MAX_METADATA_SEARCH_FILES)
@@ -5449,7 +6481,9 @@ Confirmá nuevamente para continuar.`,
       if (Array.isArray(rawRequestedIds) && stringArray(rawRequestedIds).length !== requested.length) {
         return { ok: false, error: 'unknown-documents' }
       }
-      const selected = (requested.length > 0 ? requested : availableDocuments).slice(0, MAX_RAG_FILES)
+      const selected = (requested.length > 0 ? requested : availableDocuments.filter((document) => authorized.has(document.id)))
+        .filter((document) => authorized.has(document.id))
+        .slice(0, MAX_RAG_FILES)
       const permission = requireAuthorized(selected)
       if (!permission.ok) {
         return { ok: false, error: 'permission-required', documentIds: permission.missing.slice(0, 20).map((item) => item.id) }
@@ -5522,6 +6556,36 @@ Confirmá nuevamente para continuar.`,
       const resultObject = result && typeof result === 'object' && !Array.isArray(result)
         ? result as Record<string, unknown>
         : null
+      const auditEligible = new Set([
+        'create_finance_transaction', 'create_finance_purchase', 'create_finance_salary',
+        'create_finance_credit_card_statement', 'create_finance_savings_movement',
+        'create_finance_savings_exchange', 'create_finance_category', 'create_finance_service',
+        'create_finance_service_occurrence', 'create_finance_service_invoice',
+        'save_finance_account', 'save_finance_category', 'save_finance_transaction',
+        'save_finance_savings_reserve', 'save_finance_savings_movement', 'save_finance_savings_exchange',
+        'save_finance_purchase', 'save_finance_salary', 'save_finance_credit_card_statement',
+        'save_finance_installment_plan', 'save_finance_investment', 'save_finance_service',
+        'save_finance_service_occurrence', 'save_finance_service_invoice', 'reverse_finance_transaction',
+      ])
+      if (financeToolsAllowed && auditEligible.has(call.function.name) && resultObject?.ok === true && resultObject.changed === true) {
+        const candidate = [resultObject.transaction, resultObject.purchase, resultObject.salary, resultObject.statement, resultObject.occurrence, resultObject.invoice, resultObject.record, resultObject.movement]
+          .find((value) => value && typeof value === 'object') as Record<string, unknown> | undefined
+        const effectiveValue = typeof candidate?.period === 'string'
+          ? candidate.period
+          : typeof candidate?.effectiveDate === 'string'
+            ? candidate.effectiveDate.slice(0, 7)
+            : typeof candidate?.paymentDate === 'string'
+              ? candidate.paymentDate.slice(0, 7)
+              : typeof candidate?.observedAt === 'string'
+                ? candidate.observedAt.slice(0, 7)
+                : new Date().toISOString().slice(0, 7)
+        try {
+          const audit = await executeToolUnsafe({ function: { name: 'audit_finance_month', arguments: { period: effectiveValue, reason: `Alta financiera ${call.function.name}` } } }, signal)
+          if (resultObject) resultObject.audit = audit
+        } catch {
+          if (resultObject) resultObject.audit = { ok: false, status: 'pending', error: 'finance-audit-pending' }
+        }
+      }
       const correlatedResult = resultObject && AGENT_PLAN_MUTATION_TOOL_NAMES.has(call.function.name)
         ? {
           ...resultObject,
@@ -5549,8 +6613,15 @@ Confirmá nuevamente para continuar.`,
   const resumedPlanGuidance = executionPlan.length > 0
     ? `Existe un TO-DO aprobado que se esta reanudando. No crees otro plan. Continua desde el primer paso pendiente y ejecuta solo una mutacion por vez, pasando exactamente su planStepId. Pasos actuales:\n${executionPlan.map((step, index) => `${index + 1}. [${step.status}] ${step.label}${step.plannedToolName ? ` (${step.plannedToolName})` : ''}`).join('\n')}`
     : null
+  const chatAgentTools = filterAuthorizedTools(
+    buildChatAgentTools(options.scope, options.publishedScope, financeToolsAllowed),
+    accessPrincipal,
+    options.publishedScope ? 'published-task-manager' : 'full',
+  ).filter((tool) => !(options.responseFormat === 'telegram-html' && financeToolsAllowed && PLAN_CONTROL_TOOL_NAMES.has(tool.function.name)))
 
   return {
+    libraryId: options.library.id,
+    actor: resolvedActor,
     systemPrompt: [buildChatAgentSystemPrompt(
       options.scope,
       defaultPrompt,
@@ -5562,13 +6633,13 @@ Confirmá nuevamente para continuar.`,
           ? `${rules}\n\nEsta sesion se ejecuta desde una publicacion de Task Manager. El limite de seguridad es estricto: solo podes consultar o modificar tickets y archivos pertenecientes a los tableros publicados. No menciones, busques, solicites permiso ni intentes acceder a ninguna otra parte de la biblioteca Notia. La sesion es efimera y no puede leer ni guardar reglas o memorias globales.`
           : rules,
       markdownSelection,
-      options.enableFinanceTools,
+      financeToolsAllowed,
     ), options.readOnly ? 'Esta superficie es efímera y de solo lectura: no propongas ni ejecutes mutaciones de biblioteca, tareas o archivos. Si el usuario pide cambiar algo, explicá que debe abrir una conversación persistente.' : null, options.undoOperationId ? 'El usuario pidió deshacer el último cambio de IA. Llamá undo_ai_operation; el runtime proveerá internamente el operationId autorizado y no necesitás inventarlo.' : null, resumedPlanGuidance].filter(Boolean).join('\n\n'),
-    tools: buildChatAgentTools(options.scope, options.publishedScope, options.enableFinanceTools),
+    tools: chatAgentTools,
     executeTool,
     resolveToolResultAnswer: (call, result) => (
       resolveActiveMarkdownToolResultAnswer(call, result)
-      ?? (hasFinanceAccess(options) ? resolveFinanceToolResultAnswer(call, result) : null)
+      ?? (financeToolsAllowed ? resolveFinanceToolResultAnswer(call, result) : null)
     ),
     validateFinalAnswer: (answer) => options.scope === 'task-manager'
       ? buildTicketSectionCorrection(answer, requiredTicketSections)
@@ -5580,7 +6651,8 @@ Confirmá nuevamente para continuar.`,
           options.responseFormat === 'telegram-html' && Boolean(options.financeSourceReference),
           financePurchaseExecuted,
           financeSalaryExecuted,
-          financeCreditCardStatementExecuted,
+           financeCreditCardStatementExecuted,
+           financeServiceInvoiceExecuted,
         )
         : options.scope === 'document'
           ? validateActiveMarkdownFinalAnswer(answer)

@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 16;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -186,6 +186,46 @@ fn database_path(library_path: &str) -> Result<PathBuf, String> {
         return Err("La ruta de la librería no es un directorio válido.".to_string());
     }
     Ok(library_root.join(NOTIA_DIRECTORY).join(DATABASE_FILE_NAME))
+}
+
+fn table_has_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, rusqlite::Error> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2",
+            params![table, column],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+}
+
+fn ensure_finance_service_link_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let transaction = connection.unchecked_transaction()?;
+
+    if !table_has_column(&transaction, "finance_transactions", "service_id")? {
+        transaction.execute(
+            "ALTER TABLE finance_transactions ADD COLUMN service_id TEXT REFERENCES finance_services(id)",
+            [],
+        )?;
+    }
+    if !table_has_column(&transaction, "finance_purchases", "service_id")? {
+        transaction.execute(
+            "ALTER TABLE finance_purchases ADD COLUMN service_id TEXT REFERENCES finance_services(id)",
+            [],
+        )?;
+    }
+    transaction.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finance_transactions_service ON finance_transactions(service_id)",
+        [],
+    )?;
+    transaction.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finance_purchases_service ON finance_purchases(service_id)",
+        [],
+    )?;
+    transaction.commit()
 }
 
 pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
@@ -583,6 +623,168 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
         )?;
         transaction.commit()?;
     }
+    if current_version < 17 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE finance_transactions ADD COLUMN actor_library_user_id TEXT;
+             ALTER TABLE finance_savings_movements ADD COLUMN actor_library_user_id TEXT;
+             CREATE INDEX IF NOT EXISTS idx_finance_transactions_actor_library ON finance_transactions(actor_library_user_id);
+             CREATE INDEX IF NOT EXISTS idx_finance_savings_actor_library ON finance_savings_movements(actor_library_user_id);
+             INSERT INTO notia_schema_migrations (version) VALUES (17);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 18 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS finance_services (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                 normalized_name TEXT NOT NULL,
+                 category_id TEXT NOT NULL REFERENCES finance_categories(id),
+                 currency TEXT NOT NULL CHECK (currency IN ('ARS', 'USD')),
+                 expected_amount TEXT NOT NULL,
+                 due_day INTEGER CHECK (due_day IS NULL OR due_day BETWEEN 1 AND 31),
+                 default_account_id TEXT REFERENCES finance_accounts(id),
+                 provider TEXT,
+                 normalized_provider TEXT,
+                 modality TEXT NOT NULL CHECK (modality IN ('fixed', 'variable')),
+                 active INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_services_name_provider
+                 ON finance_services(normalized_name, COALESCE(normalized_provider, ''));
+             CREATE INDEX IF NOT EXISTS idx_finance_services_category ON finance_services(category_id);
+             CREATE INDEX IF NOT EXISTS idx_finance_services_active ON finance_services(active);
+             CREATE TABLE IF NOT EXISTS finance_service_occurrences (
+                 id TEXT PRIMARY KEY,
+                 service_id TEXT NOT NULL REFERENCES finance_services(id) ON DELETE CASCADE,
+                 period TEXT NOT NULL CHECK (period GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'),
+                 expected_amount TEXT NOT NULL,
+                 paid_amount TEXT,
+                 effective_date TEXT,
+                 status TEXT NOT NULL CHECK (status IN ('pending', 'current', 'accepted', 'rejected', 'discarded', 'failed', 'outdated')),
+                 transaction_id TEXT REFERENCES finance_transactions(id),
+                 artifact_id TEXT REFERENCES finance_source_artifacts(id),
+                 source_reference TEXT,
+                 raw_source TEXT,
+                 actor_library_user_id TEXT,
+                 source TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 UNIQUE(service_id, period)
+             );
+             CREATE INDEX IF NOT EXISTS idx_finance_service_occurrences_period ON finance_service_occurrences(period);
+             CREATE INDEX IF NOT EXISTS idx_finance_service_occurrences_status ON finance_service_occurrences(status);
+             CREATE TABLE IF NOT EXISTS finance_service_occurrence_versions (
+                 id TEXT PRIMARY KEY,
+                 occurrence_id TEXT NOT NULL REFERENCES finance_service_occurrences(id) ON DELETE CASCADE,
+                 version_number INTEGER NOT NULL,
+                 expected_amount TEXT NOT NULL,
+                 paid_amount TEXT,
+                 effective_date TEXT,
+                 status TEXT NOT NULL,
+                 transaction_id TEXT,
+                 artifact_id TEXT,
+                 source_reference TEXT,
+                 raw_source TEXT,
+                 actor_library_user_id TEXT,
+                 source TEXT NOT NULL,
+                 reason TEXT,
+                 created_at TEXT NOT NULL,
+                 UNIQUE(occurrence_id, version_number)
+             );
+             CREATE TABLE IF NOT EXISTS finance_service_invoices (
+                 id TEXT PRIMARY KEY,
+                 service_id TEXT REFERENCES finance_services(id) ON DELETE SET NULL,
+                 period TEXT NOT NULL,
+                 due_date TEXT,
+                 provider TEXT,
+                 amount TEXT NOT NULL,
+                 currency TEXT NOT NULL CHECK (currency IN ('ARS', 'USD')),
+                 transaction_id TEXT REFERENCES finance_transactions(id),
+                 artifact_id TEXT REFERENCES finance_source_artifacts(id),
+                 validation_status TEXT NOT NULL CHECK (validation_status IN ('pending', 'valid', 'invalid', 'duplicate')),
+                 source_reference TEXT,
+                 raw_extraction TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+              CREATE INDEX IF NOT EXISTS idx_finance_service_invoices_period ON finance_service_invoices(period);
+              CREATE INDEX IF NOT EXISTS idx_finance_service_invoices_service ON finance_service_invoices(service_id);
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_service_invoices_artifact ON finance_service_invoices(artifact_id) WHERE artifact_id IS NOT NULL;
+             CREATE TABLE IF NOT EXISTS finance_audit_runs (
+                 id TEXT PRIMARY KEY,
+                 period TEXT NOT NULL,
+                 trigger_fingerprint TEXT NOT NULL UNIQUE,
+                 status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'outdated')),
+                 actor_library_user_id TEXT,
+                 source TEXT NOT NULL,
+                 reason TEXT,
+                 error_message TEXT,
+                 created_at TEXT NOT NULL,
+                 completed_at TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_finance_audit_runs_period_status ON finance_audit_runs(period, status);
+             CREATE TABLE IF NOT EXISTS finance_audit_proposals (
+                 id TEXT PRIMARY KEY,
+                 audit_run_id TEXT NOT NULL REFERENCES finance_audit_runs(id) ON DELETE CASCADE,
+                 proposal_type TEXT NOT NULL,
+                 status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'cancelled', 'outdated', 'failed')),
+                 rule_key TEXT NOT NULL,
+                 data_fingerprint TEXT NOT NULL,
+                 service_id TEXT REFERENCES finance_services(id) ON DELETE SET NULL,
+                 period TEXT NOT NULL,
+                 reason TEXT NOT NULL,
+                 current_data TEXT NOT NULL,
+                 suggested_change TEXT NOT NULL,
+                 evidence TEXT,
+                 actor_library_user_id TEXT,
+                 source TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 decided_at TEXT,
+                 UNIQUE(rule_key, data_fingerprint)
+             );
+             CREATE INDEX IF NOT EXISTS idx_finance_audit_proposals_status ON finance_audit_proposals(status);
+             CREATE INDEX IF NOT EXISTS idx_finance_audit_proposals_period ON finance_audit_proposals(period);
+             CREATE TABLE IF NOT EXISTS finance_audit_decisions (
+                 id TEXT PRIMARY KEY,
+                 proposal_id TEXT NOT NULL REFERENCES finance_audit_proposals(id) ON DELETE CASCADE,
+                 decision TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'cancelled', 'outdated')),
+                 actor_library_user_id TEXT,
+                 source TEXT NOT NULL,
+                 created_at TEXT NOT NULL
+             );
+             ALTER TABLE finance_transactions ADD COLUMN service_id TEXT REFERENCES finance_services(id);
+             ALTER TABLE finance_purchases ADD COLUMN service_id TEXT REFERENCES finance_services(id);
+             CREATE INDEX IF NOT EXISTS idx_finance_transactions_service ON finance_transactions(service_id);
+             CREATE INDEX IF NOT EXISTS idx_finance_purchases_service ON finance_purchases(service_id);
+             INSERT INTO notia_schema_migrations (version) VALUES (18);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 19 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE finance_transactions ADD COLUMN source_reference TEXT;
+             ALTER TABLE finance_transactions ADD COLUMN raw_source TEXT;
+             UPDATE finance_service_occurrences
+                SET transaction_id=NULL
+              WHERE transaction_id IS NOT NULL
+                AND id NOT IN (SELECT MAX(id) FROM finance_service_occurrences WHERE transaction_id IS NOT NULL GROUP BY transaction_id);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_service_occurrences_transaction
+                 ON finance_service_occurrences(transaction_id) WHERE transaction_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS idx_finance_audit_proposals_rule_period
+                 ON finance_audit_proposals(rule_key, period);
+             INSERT INTO notia_schema_migrations (version) VALUES (19);",
+        )?;
+        transaction.commit()?;
+    }
+    // Some development builds recorded schema version 18/19 before the
+    // association columns were present. Repair the invariant independently
+    // of the version marker so existing libraries can load their dashboard.
+    ensure_finance_service_link_columns(connection)?;
     Ok(current_version.max(CURRENT_SCHEMA_VERSION))
 }
 
@@ -720,6 +922,32 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'finance_receipts'", [], |row| row.get(0))
             .expect("receipts table");
         assert_eq!(receipts, 1);
+        for table in [
+            "finance_services",
+            "finance_service_occurrences",
+            "finance_service_occurrence_versions",
+            "finance_service_invoices",
+            "finance_audit_runs",
+            "finance_audit_proposals",
+            "finance_audit_decisions",
+        ] {
+            let exists: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("new finance table");
+            assert_eq!(exists, 1, "missing {table}");
+        }
+        let transaction_service_column: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('finance_transactions') WHERE name='service_id'", [], |row| row.get(0))
+            .expect("transaction service column");
+        assert_eq!(transaction_service_column, 1);
+        let purchase_service_column: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('finance_purchases') WHERE name='service_id'", [], |row| row.get(0))
+            .expect("purchase service column");
+        assert_eq!(purchase_service_column, 1);
         let ledger_column: i64 = connection
             .query_row("SELECT COUNT(*) FROM pragma_table_info('finance_savings_reserves') WHERE name = 'ledger_account_id'", [], |row| row.get(0))
             .expect("ledger account column");
@@ -873,6 +1101,36 @@ mod tests {
             )
             .expect("failed version count");
         assert_eq!(failed_version, 0);
+    }
+
+    #[test]
+    fn repairs_service_columns_when_current_version_was_recorded_early() {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        connection
+            .execute_batch(
+                "CREATE TABLE notia_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                 INSERT INTO notia_schema_migrations(version) VALUES(19);
+                 CREATE TABLE finance_services(id TEXT PRIMARY KEY);
+                 CREATE TABLE finance_transactions(id TEXT PRIMARY KEY);
+                 CREATE TABLE finance_purchases(id TEXT PRIMARY KEY);",
+            )
+            .expect("incomplete current schema");
+
+        assert_eq!(
+            migrate(&connection).expect("repair migration"),
+            CURRENT_SCHEMA_VERSION
+        );
+
+        for table in ["finance_transactions", "finance_purchases"] {
+            let column_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='service_id'",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("service link column");
+            assert_eq!(column_count, 1, "missing service_id in {table}");
+        }
     }
 
     #[test]

@@ -1,6 +1,8 @@
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
-import { createChatScopedAgent, type TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
-import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
+import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
+import { createGlobalAiAgent, runGlobalAiChat } from '../../../services/chat/globalAiChatRuntime'
+import { createGlobalAiRequest, type AiActor } from '../../../types/ai/globalAiContract'
+import { buildWorkspaceAiSnapshot } from '../../../services/ai/workspaceAiSnapshotRuntime'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
 
@@ -15,16 +17,21 @@ interface PublishedTaskManagerChatInput {
   onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
+  actor?: AiActor
+  publishedBoardNames?: readonly string[]
 }
 
 export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskManagerChatInput): Promise<string> {
-  const agent = await createChatScopedAgent({
+  const agent = await createGlobalAiAgent({
     scope: 'task-manager',
     publishedScope: true,
     persistencePolicy: 'published-no-memory',
     aiPreferences: input.aiPreferences,
     library: input.library,
     scopePaths: input.scopePaths,
+    actor: input.actor,
+    financeSource: 'public-url',
+    publishedBoardNames: input.publishedBoardNames,
     taskManagerScopeKey: input.taskManagerScopeKey ?? 'task-manager:published-boards',
     requestClarification: async (question, signal, choices) => {
       if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
@@ -40,11 +47,30 @@ export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskM
     }),
   })
 
-  return runNotiaChatReply(input.aiPreferences, {
+  const workspaceSnapshot = buildWorkspaceAiSnapshot({
+    view: 'task-manager',
+    scope: 'published',
+    library: input.library,
+    activeDocument: null,
+    openTabs: [],
+  })
+  const replyInput = {
     agent,
-    prompt: input.prompt,
     previousMessages: input.previousMessages,
     intentContext: {},
+  }
+  return runGlobalAiChat(input.aiPreferences, {
+    request: createGlobalAiRequest({
+      libraryId: input.library.id,
+      requestId: crypto.randomUUID(),
+      actor: agent.actor ?? input.actor ?? { libraryUserId: 'user-owner' },
+      source: { channel: 'public-url' },
+      workspaceSnapshot,
+      requestedScope: 'published-task-manager',
+      persistencePolicy: 'published-no-memory',
+      prompt: input.prompt,
+    }),
+    ...replyInput,
     streamFinalResponse: true,
     diagnosticModule: 'published-task-manager-chat',
   }, {

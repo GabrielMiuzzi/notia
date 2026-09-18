@@ -514,6 +514,7 @@ pub fn update_library_user_role(
 #[tauri::command]
 pub fn update_library_user_contexts(
     app: AppHandle,
+    state: tauri::State<'_, crate::task_manager_publication::TaskManagerPublicationState>,
     payload: UpdateLibraryUserContextsPayload,
 ) -> CommandResult<Vec<LibraryUserDto>> {
     if payload.user_id.trim() == OWNER_USER_ID {
@@ -526,7 +527,10 @@ pub fn update_library_user_contexts(
     let mut context_tags: Vec<String> = Vec::with_capacity(payload.context_tags.len());
     for value in &payload.context_tags {
         let normalized = normalize_context_tag(value)?;
-        if !context_tags.iter().any(|tag| tag.eq_ignore_ascii_case(&normalized)) {
+        if !context_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(&normalized))
+        {
             context_tags.push(normalized);
         }
     }
@@ -547,7 +551,10 @@ pub fn update_library_user_contexts(
         )
         .map_err(map_sql_error)?;
     if !exists {
-        return Err(error("not_found", "El usuario no existe en esta biblioteca."));
+        return Err(error(
+            "not_found",
+            "El usuario no existe en esta biblioteca.",
+        ));
     }
     transaction
         .execute(
@@ -564,6 +571,7 @@ pub fn update_library_user_contexts(
             .map_err(map_sql_error)?;
     }
     transaction.commit().map_err(map_sql_error)?;
+    crate::task_manager_publication::revoke_library_user_sessions(&state, payload.user_id.trim());
     sync_context(&app, &payload.context)?;
     list_users(&connection)
 }

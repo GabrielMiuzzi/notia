@@ -148,7 +148,7 @@ describe('useTelegramAgentBridge integration', () => {
     }]).mockImplementationOnce(() => new Promise<never>(() => undefined))
   })
 
-  it('processes text through the common runtime, keeps memory scheduling and cleans up the polling surface', async () => {
+  it('processes text through the common runtime without persistent memory and cleans up the polling surface', async () => {
     const onTelegramChange = vi.fn()
     const onLibraryChanged = vi.fn()
     useTelegramAgentBridge({
@@ -171,7 +171,12 @@ describe('useTelegramAgentBridge integration', () => {
 
     await vi.waitFor(() => expect(mocks.runNotiaChatReply).toHaveBeenCalled())
     expect(mocks.createChatScopedAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: 'library', enableFinanceTools: true, validateFinanceResponses: false }),
+      expect.objectContaining({
+        scope: 'library',
+        enableFinanceTools: true,
+        validateFinanceResponses: false,
+        persistencePolicy: 'ephemeral-no-memory',
+      }),
     )
     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(
       expect.anything(),
@@ -188,7 +193,7 @@ describe('useTelegramAgentBridge integration', () => {
     expect(mocks.sendTelegramMessage).not.toHaveBeenCalledWith(
       'fixture-token', 42, 'Solicitud recibida y en proceso.',
     )
-    await vi.waitFor(() => expect(mocks.scheduleLongTermMemoriesForTurn).toHaveBeenCalled())
+    expect(mocks.scheduleLongTermMemoriesForTurn).not.toHaveBeenCalled()
     expect(onLibraryChanged).toHaveBeenCalledOnce()
 
     reactMocks.cleanups.at(-1)?.()

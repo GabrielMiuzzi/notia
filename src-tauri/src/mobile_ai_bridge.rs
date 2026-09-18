@@ -152,6 +152,20 @@ pub struct RunAndroidAiToolChatPayload {
     tools: serde_json::Value,
     #[serde(default)]
     timeout_seconds: Option<u64>,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    library_id: Option<String>,
+    #[serde(default)]
+    actor_library_user_id: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    app_surface: Option<String>,
+    #[serde(default)]
+    requested_scope: Option<String>,
+    #[serde(default)]
+    persistence_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -597,6 +611,22 @@ pub fn run_android_ai_tool_chat(
                     .to_string(),
             );
         }
+        let global_metadata = [
+            payload.request_id.as_deref(),
+            payload.library_id.as_deref(),
+            payload.actor_library_user_id.as_deref(),
+            payload.channel.as_deref(),
+            payload.requested_scope.as_deref(),
+            payload.persistence_policy.as_deref(),
+        ];
+        if global_metadata
+            .iter()
+            .any(|value| value.is_some_and(|value| value.trim().is_empty()))
+            || global_metadata.iter().any(Option::is_none)
+                != global_metadata.iter().all(Option::is_none)
+        {
+            return Err("El sobre global de IA Android está incompleto.".to_string());
+        }
 
         let guard = state
             .handle
@@ -617,6 +647,13 @@ pub fn run_android_ai_tool_chat(
                     "messagesJson": payload.messages.to_string(),
                     "toolsJson": payload.tools.to_string(),
                     "timeoutSeconds": timeout_seconds,
+                    "requestId": payload.request_id,
+                    "libraryId": payload.library_id,
+                    "actorLibraryUserId": payload.actor_library_user_id,
+                    "channel": payload.channel,
+                    "appSurface": payload.app_surface,
+                    "requestedScope": payload.requested_scope,
+                    "persistencePolicy": payload.persistence_policy,
                 }),
             )
             .map_err(|error| {

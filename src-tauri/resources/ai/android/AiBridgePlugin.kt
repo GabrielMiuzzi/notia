@@ -83,6 +83,16 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
     fun toolChat(invoke: Invoke) {
         run(invoke) {
             val args = arguments(invoke)
+            val requestId = args.string("requestId")
+            val libraryId = args.string("libraryId")
+            val actorLibraryUserId = args.string("actorLibraryUserId")
+            val channel = args.string("channel")
+            val requestedScope = args.string("requestedScope")
+            val persistencePolicy = args.string("persistencePolicy")
+            val hasGlobalMetadata = listOf(requestId, libraryId, actorLibraryUserId, channel, requestedScope, persistencePolicy).any { it.isNotBlank() }
+            if (hasGlobalMetadata && listOf(requestId, libraryId, actorLibraryUserId, channel, requestedScope, persistencePolicy).any { it.isBlank() }) {
+                error("El sobre global de IA Android está incompleto.")
+            }
             val body = JSONObject()
                 .put("model", args.string("model"))
                 .put("stream", false)

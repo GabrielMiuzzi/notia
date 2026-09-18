@@ -7,6 +7,14 @@ const mocks = vi.hoisted(() => ({
   loadAgentRules: vi.fn(),
   searchOllamaWeb: vi.fn(),
   writeTextFile: vi.fn(),
+  runFinanceAudit: vi.fn(),
+  listFinanceAuditProposals: vi.fn(),
+  getFinanceDashboard: vi.fn(),
+  listAllFinanceTransactions: vi.fn(),
+  listFinanceServices: vi.fn(),
+  listFinanceServiceOccurrences: vi.fn(),
+  saveFinanceServiceOccurrence: vi.fn(),
+  saveFinanceAuditProposal: vi.fn(),
 }))
 
 vi.mock('./chatAttachmentRuntime', () => ({
@@ -30,6 +38,16 @@ vi.mock('../ai/webSearchRuntime', async () => {
 })
 vi.mock('../files/filesystemEngine', () => ({
   writeTextFile: mocks.writeTextFile,
+}))
+vi.mock('../../modules/finance/services/financeService', () => ({
+  runFinanceAudit: mocks.runFinanceAudit,
+  listFinanceAuditProposals: mocks.listFinanceAuditProposals,
+  getFinanceDashboard: mocks.getFinanceDashboard,
+  listAllFinanceTransactions: mocks.listAllFinanceTransactions,
+  listFinanceServices: mocks.listFinanceServices,
+  listFinanceServiceOccurrences: mocks.listFinanceServiceOccurrences,
+  saveFinanceServiceOccurrence: mocks.saveFinanceServiceOccurrence,
+  saveFinanceAuditProposal: mocks.saveFinanceAuditProposal,
 }))
 
 import { buildChatAgentTools, createChatScopedAgent } from './chatScopedAgentRuntime'
@@ -130,6 +148,11 @@ describe('chatScopedAgentRuntime metadata search', () => {
       'C:/vault/task-mannager/finished/completada.md',
       'C:/vault/task-mannager/otro/otro.md',
     ]
+    mocks.loadLibraryFileOptions.mockResolvedValue(taskPaths.map((path) => ({
+      path,
+      name: path.split('/').pop() ?? path,
+      relativePath: path.replace('C:/vault/', ''),
+    })))
     mocks.loadInlineFileAttachments.mockImplementation(async (_library, paths: string[]) => paths.map((path) => ({
       path,
       name: path.split('/').pop() ?? path,
@@ -143,13 +166,15 @@ describe('chatScopedAgentRuntime metadata search', () => {
     const agent = await createChatScopedAgent({
       scope: 'task-manager',
       publishedScope: true,
+      publishedBoardNames: ['equipo'],
       taskManagerScopeKey: 'task-manager:panel:equipo',
       library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
       aiPreferences: {
         ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3',
         thinkingEnabled: false, thinkingLevel: 'medium',
       },
-      scopePaths: taskPaths,
+      // A fake client path must not narrow or widen the host-derived ticket universe.
+      scopePaths: ['C:/vault/task-mannager/equipo/fake.md'],
       persistencePolicy: 'published-no-memory',
       requestClarification: vi.fn(),
       requestConfirmation: vi.fn(),
@@ -297,6 +322,80 @@ describe('chatScopedAgentRuntime metadata search', () => {
   it('does not expose public web search to finance or published Task Manager sessions', () => {
     expect(buildChatAgentTools('finance').map((tool) => tool.function.name)).not.toContain('search_web')
     expect(buildChatAgentTools('task-manager', true).map((tool) => tool.function.name)).not.toContain('search_web')
+  })
+
+  it('keeps Telegram finance mutations to one confirmation and links a unique local card payment', async () => {
+    const requestConfirmation = vi.fn().mockResolvedValue(true)
+    const service = { id: 'service-movistar', name: 'Movistar', categoryId: 'cat', currency: 'ARS', expectedAmount: '82997', dueDay: 10, defaultAccountId: null, provider: null, modality: 'fixed', active: true }
+    const transaction = { id: 'transaction-card', transactionType: 'expense', amount: '82997.00', currency: 'ARS', effectiveDate: '2026-08-19', accountId: 'card', categoryId: 'cat', description: 'MOVI STAR52928097 09/26', source: 'app', status: 'confirmed', serviceId: null }
+    mocks.listFinanceServices.mockResolvedValue([service])
+    mocks.listAllFinanceTransactions.mockResolvedValue([transaction])
+    mocks.saveFinanceServiceOccurrence.mockResolvedValue({
+      id: 'occurrence-september', serviceId: service.id, period: '2026-09', expectedAmount: '82997', paidAmount: '82997',
+      effectiveDate: transaction.effectiveDate, status: 'current', transactionId: transaction.id, artifactId: null,
+      sourceReference: null, rawSource: null, actorLibraryUserId: 'user-owner', source: 'telegram',
+    })
+    mocks.runFinanceAudit.mockResolvedValue({ run: { id: 'run-1', period: '2026-09', status: 'completed' }, proposals: [] })
+    mocks.listFinanceAuditProposals.mockResolvedValue([])
+
+    const agent = await createChatScopedAgent({
+      scope: 'library', enableFinanceTools: true, responseFormat: 'telegram-html',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [], persistencePolicy: 'ephemeral-no-memory', requestClarification: vi.fn(), requestConfirmation,
+    })
+
+    expect(agent.tools.map((tool) => tool.function.name)).not.toContain('set_agent_execution_plan')
+    expect(agent.systemPrompt).toContain('Nunca envíes dos solicitudes de confirmación consecutivas')
+    await expect(agent.executeTool({ function: { name: 'create_finance_service_occurrence', arguments: {
+      serviceId: service.id, period: '2026-09', expectedAmount: '82997', paidAmount: '82997',
+    } } }, new AbortController().signal)).resolves.toMatchObject({ ok: true, changed: true, transactionId: transaction.id })
+    expect(requestConfirmation).toHaveBeenCalledOnce()
+  })
+
+  it('recovers a committed occurrence when native storage reports an equivalent amount format', async () => {
+    const requestConfirmation = vi.fn().mockResolvedValue(true)
+    const service = { id: 'service-movistar', name: 'Movistar', categoryId: 'cat', currency: 'ARS', expectedAmount: '82997', dueDay: 10, defaultAccountId: null, provider: null, modality: 'fixed', active: true }
+    const transaction = { id: 'transaction-card', transactionType: 'expense', amount: '82997.00', currency: 'ARS', effectiveDate: '2026-08-19', accountId: 'card', categoryId: 'cat', description: 'MOVISTAR ARGENTINA 82997', source: 'credit_card_statement', status: 'confirmed', serviceId: null }
+    mocks.listFinanceServices.mockResolvedValue([service])
+    mocks.listAllFinanceTransactions.mockResolvedValue([transaction])
+    mocks.saveFinanceServiceOccurrence.mockRejectedValue(new Error('post-commit synchronization failed'))
+    mocks.listFinanceServiceOccurrences.mockResolvedValue([{
+      id: 'occurrence-september', serviceId: service.id, period: '2026-09', expectedAmount: '82997.00', paidAmount: '82997.00',
+      effectiveDate: transaction.effectiveDate, status: 'current', transactionId: transaction.id, artifactId: null,
+      sourceReference: null, rawSource: null, actorLibraryUserId: 'user-owner', source: 'telegram',
+    }])
+
+    const agent = await createChatScopedAgent({
+      scope: 'library', enableFinanceTools: true, responseFormat: 'telegram-html',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [], persistencePolicy: 'ephemeral-no-memory', requestClarification: vi.fn(), requestConfirmation,
+    })
+
+    await expect(agent.executeTool({ function: { name: 'create_finance_service_occurrence', arguments: {
+      serviceId: service.id, period: '2026-09', expectedAmount: '82997', paidAmount: '82997',
+    } } }, new AbortController().signal)).resolves.toMatchObject({ ok: true, changed: true, recoveredAfterStorageError: true })
+  })
+
+  it('delegates monthly audit generation to the native runtime and returns native reconciliation proposals', async () => {
+    const nativeProposal = { id: 'proposal-1', auditRunId: 'run-1', proposalType: 'service-card-reconciliation', period: '2026-09', status: 'pending' }
+    mocks.runFinanceAudit.mockResolvedValue({ run: { id: 'run-1', period: '2026-09', status: 'completed' }, proposals: [nativeProposal] })
+    mocks.listFinanceAuditProposals.mockResolvedValue([nativeProposal])
+    const agent = await createChatScopedAgent({
+      scope: 'finance',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [],
+      persistencePolicy: 'ephemeral-no-memory',
+      requestClarification: vi.fn(),
+      requestConfirmation: vi.fn().mockResolvedValue(false),
+    })
+
+    await expect(agent.executeTool({ function: { name: 'audit_finance_month', arguments: { period: '2026-09' } } }, new AbortController().signal)).resolves.toMatchObject({
+      period: '2026-09', run: { period: '2026-09' }, proposals: [{ proposalType: 'service-card-reconciliation' }],
+    })
+    expect(mocks.runFinanceAudit).toHaveBeenCalledWith(expect.anything(), '2026-09', expect.stringContaining('audit:2026-09:'), undefined, expect.anything())
   })
 
   it('executes a selected document edit through preview, confirmation and native write', async () => {

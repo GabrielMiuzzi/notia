@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
+import type { TaskManagerPublicationPreferences } from '../../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
 import { runPublishedTaskManagerHostChatReply } from '../services/publishedTaskManagerChatRuntime'
 
@@ -16,10 +17,12 @@ const MAX_PUBLISHED_CHAT_PROMPT_LENGTH = 50_000
 interface PublishedAiHostRequest {
   requestId: string
   vaultPath: string
+  libraryUserId: string
   prompt: string
   previousMessages: StoredChatMessage[]
   taskManagerScopeKey: string | null
   scopePaths: string[]
+  publishedBoardNames: string[]
 }
 
 interface PublishedAiHostStreamEvent {
@@ -33,6 +36,7 @@ interface PublishedAiHostStreamEvent {
 interface UseTaskManagerPublicationAiHostBridgeInput {
   activeLibrary: NotiaLibrary | null
   aiPreferences: AiPreferences
+  publicationPreferences: TaskManagerPublicationPreferences
 }
 
 function normalizePath(pathValue: string): string {
@@ -49,12 +53,13 @@ function isPathInside(pathValue: string, parentPath: string): boolean {
   return path === parent || path.startsWith(`${parent}/`)
 }
 
-function resolvePublishedScopePaths(vaultPath: string, scopePaths: string[]): string[] {
-  if (scopePaths.length === 0 || scopePaths.length > MAX_PUBLISHED_SCOPE_PATHS) {
+function resolvePublishedScopePaths(vaultPath: string, scopePaths: string[], publishedBoardNames: readonly string[]): string[] {
+  if (scopePaths.length > MAX_PUBLISHED_SCOPE_PATHS) {
     throw new Error('El chat publicado no tiene un contexto de tableros válido.')
   }
 
   const normalizedVaultPath = normalizePath(vaultPath)
+  const allowedBoards = new Set(publishedBoardNames.map((name) => name.trim().toLocaleLowerCase()).filter(Boolean))
   const resolvedPaths = scopePaths.map((scopePath) => {
     if (typeof scopePath !== 'string' || scopePath.length > MAX_PUBLISHED_CHAT_MESSAGE_LENGTH) {
       throw new Error('El contexto del chat publicado no es válido.')
@@ -64,11 +69,20 @@ function resolvePublishedScopePaths(vaultPath: string, scopePaths: string[]): st
       throw new Error('El contexto del chat publicado contiene una ruta no válida.')
     }
 
-    if (normalizedScopePath === 'published-vault') {
-      return normalizedVaultPath
+    const logicalPath = normalizedScopePath === 'published-vault'
+      ? ''
+      : normalizedScopePath.startsWith('published-vault/')
+        ? normalizedScopePath.slice('published-vault/'.length)
+        : normalizedScopePath
+    if (!/(^|\/)(task-mannager|task-manager)\//i.test(logicalPath)) {
+      throw new Error('El contexto publicado solo puede contener tableros de Task Manager.')
+    }
+    const taskRootMatch = /(?:^|\/)(task-mannager|task-manager)\/([^/]+)/i.exec(logicalPath)
+    if (!taskRootMatch || !allowedBoards.has(taskRootMatch[2].toLocaleLowerCase())) {
+      throw new Error('El contexto publicado contiene un tablero que no fue autorizado por la publicación.')
     }
     if (normalizedScopePath.startsWith('published-vault/')) {
-      return `${normalizedVaultPath}/${normalizedScopePath.slice('published-vault/'.length)}`
+      return `${normalizedVaultPath}/${logicalPath}`
     }
     if (!isPathInside(normalizedScopePath, normalizedVaultPath)) {
       throw new Error('El contexto del chat publicado está fuera de la biblioteca activa.')
@@ -85,14 +99,17 @@ function parsePublishedAiHostRequest(value: unknown): PublishedAiHostRequest | n
   if (
     typeof candidate.requestId !== 'string'
     || typeof candidate.vaultPath !== 'string'
+    || typeof candidate.libraryUserId !== 'string'
     || typeof candidate.prompt !== 'string'
     || !Array.isArray(candidate.previousMessages)
     || !Array.isArray(candidate.scopePaths)
+    || !Array.isArray(candidate.publishedBoardNames)
     || (candidate.taskManagerScopeKey !== undefined && candidate.taskManagerScopeKey !== null && (typeof candidate.taskManagerScopeKey !== 'string' || candidate.taskManagerScopeKey.length > 200))
   ) return null
   if (
     !candidate.requestId.trim()
     || !candidate.vaultPath.trim()
+    || !candidate.libraryUserId.trim()
     || candidate.prompt.length > MAX_PUBLISHED_CHAT_PROMPT_LENGTH
   ) return null
 
@@ -109,6 +126,8 @@ function parsePublishedAiHostRequest(value: unknown): PublishedAiHostRequest | n
 
   const scopePaths = candidate.scopePaths.filter((path): path is string => typeof path === 'string')
   if (scopePaths.length !== candidate.scopePaths.length) return null
+  const publishedBoardNames = candidate.publishedBoardNames.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+  if (publishedBoardNames.length !== candidate.publishedBoardNames.length) return null
   const taskManagerScopeKey = candidate.taskManagerScopeKey === null || candidate.taskManagerScopeKey === undefined
     ? null
     : candidate.taskManagerScopeKey.trim().slice(0, 200)
@@ -116,10 +135,12 @@ function parsePublishedAiHostRequest(value: unknown): PublishedAiHostRequest | n
   return {
     requestId: candidate.requestId,
     vaultPath: candidate.vaultPath,
+    libraryUserId: candidate.libraryUserId,
     prompt: candidate.prompt,
     previousMessages,
     taskManagerScopeKey,
     scopePaths,
+    publishedBoardNames,
   }
 }
 
@@ -134,12 +155,15 @@ function errorMessage(error: unknown): string {
 export function useTaskManagerPublicationAiHostBridge({
   activeLibrary,
   aiPreferences,
+  publicationPreferences,
 }: UseTaskManagerPublicationAiHostBridgeInput): void {
   const activeLibraryRef = useRef(activeLibrary)
   const aiPreferencesRef = useRef(aiPreferences)
+  const publicationPreferencesRef = useRef(publicationPreferences)
   const inFlightRequestsRef = useRef(new Set<string>())
   activeLibraryRef.current = activeLibrary
   aiPreferencesRef.current = aiPreferences
+  publicationPreferencesRef.current = publicationPreferences
 
   useEffect(() => {
     let disposed = false
@@ -168,13 +192,18 @@ export function useTaskManagerPublicationAiHostBridge({
         if (!library?.path || comparablePath(library.path) !== comparablePath(request.vaultPath)) {
           throw new Error('La biblioteca publicada no está activa en la app host.')
         }
-        const scopePaths = resolvePublishedScopePaths(library.path, request.scopePaths)
+        // Request board names and paths are UX hints only. The host's active
+        // publication settings are the authoritative publication boundary.
+        const publishedBoardNames = publicationPreferencesRef.current.publishedBoardNames
+        const scopePaths = resolvePublishedScopePaths(library.path, request.scopePaths, publishedBoardNames)
         if (!request.prompt.trim()) throw new Error('La consulta de IA no puede estar vacía.')
 
         const answer = await runPublishedTaskManagerHostChatReply({
           aiPreferences: aiPreferencesRef.current,
           library,
+          actor: { libraryUserId: request.libraryUserId },
           scopePaths,
+          publishedBoardNames,
           taskManagerScopeKey: request.taskManagerScopeKey,
           prompt: request.prompt,
           previousMessages: request.previousMessages,

@@ -358,6 +358,7 @@ function NotiaMenuComponent() {
   useTaskManagerPublicationAiHostBridge({
     activeLibrary,
     aiPreferences,
+    publicationPreferences: taskManagerPublicationPreferences,
   })
 
   useTelegramAgentBridge({

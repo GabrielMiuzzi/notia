@@ -84,6 +84,7 @@ export function ChatWorkspaceViewComponent({
   transientContextDisplayPaths = EMPTY_CONTEXT_PATHS,
   onTransientContextPathRemove,
   persistTransientContext = false,
+  ephemeralChat = false,
   selectMatchingChatOnly = false,
   historyHydrationMode = 'full',
   onChatCreated,
@@ -92,9 +93,11 @@ export function ChatWorkspaceViewComponent({
   activeMarkdownSource = null,
   onActiveMarkdownDocumentChanged,
 }: ChatWorkspaceViewProps) {
+  const ephemeralChatPathsRef = useRef<Set<string>>(new Set())
   const mountTimerRef = useRef(
     notiaTimer('chat', 'ChatWorkspaceView mount', {
       showHistoryPanel,
+      ephemeralChat,
       selectMatchingChatOnly,
       historyHydrationMode,
     }),
@@ -105,6 +108,17 @@ export function ChatWorkspaceViewComponent({
       timer.success()
     }
   }, [])
+
+  useEffect(() => {
+    const ephemeralChatPaths = ephemeralChatPathsRef.current
+    return () => {
+      if (!ephemeralChat || !library) return
+      for (const filePath of ephemeralChatPaths) {
+        void deleteChatDraftFile(filePath, library).catch(() => undefined)
+      }
+      ephemeralChatPaths.clear()
+    }
+  }, [ephemeralChat, library])
 
   const chatState = useChatState({
     library,
@@ -514,10 +528,14 @@ export function ChatWorkspaceViewComponent({
       selectedImageAttachment,
       selectedFileContextMode,
       showHistoryPanel,
+      ephemeralChat,
       preferredContextScopeKey,
       persistTransientContext,
       hasTransientContext,
-      onChatCreated,
+      onChatCreated: async (filePath) => {
+        if (ephemeralChat) ephemeralChatPathsRef.current.add(filePath)
+        await onChatCreated?.(filePath)
+      },
       markdownSelection,
       activeMarkdownSource,
       workspaceSnapshot,

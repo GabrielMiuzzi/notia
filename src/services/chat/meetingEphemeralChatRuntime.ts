@@ -1,7 +1,9 @@
 import { loadLibraryFileOptions } from './chatAttachmentRuntime'
 import type { StoredChatMessage } from './chatDocumentStorage'
-import { createChatScopedAgent, type TaskExecutionStep } from './chatScopedAgentRuntime'
+import type { TaskExecutionStep } from './chatScopedAgentRuntime'
+import { createGlobalAiAgent, createAppAiRequest, runGlobalAiChat } from './globalAiChatRuntime'
 import { runNotiaChatReply } from './notiaChatRuntime'
+import { isGlobalAiChatRequest } from '../../types/ai/globalAiContract'
 import { loadSelectedAgentPromptFileName } from '../ai/agentPromptRuntime'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../types/notia'
@@ -23,7 +25,7 @@ export async function runMeetingEphemeralChatReply(
   input: MeetingEphemeralChatReplyInput,
 ): Promise<string> {
   const files = await loadLibraryFileOptions(input.library)
-  const agent = await createChatScopedAgent({
+  const agent = await createGlobalAiAgent({
     scope: 'library',
     persistencePolicy: 'ephemeral-no-memory',
     readOnly: true,
@@ -34,6 +36,8 @@ export async function runMeetingEphemeralChatReply(
       activeDocument: null,
       openTabs: [],
     }),
+    actor: { libraryUserId: 'user-owner' },
+    financeSource: 'app',
     aiPreferences: input.aiPreferences,
     library: input.library,
     scopePaths: files.map((file) => file.path),
@@ -54,9 +58,7 @@ export async function runMeetingEphemeralChatReply(
     onExecutionPlanChange: input.onExecutionPlanChange,
   })
 
-  return runNotiaChatReply(input.aiPreferences, {
-    agent,
-    prompt: [
+  const prompt = [
       'Usá la siguiente transcripción actual de Meeting como contexto para responder la consulta.',
       'Si la respuesta no surge de ella ni de una herramienta autorizada, indicá que no está disponible.',
       '',
@@ -65,7 +67,38 @@ export async function runMeetingEphemeralChatReply(
       '',
       'CONSULTA:',
       input.prompt,
-    ].join('\n'),
+    ].join('\n')
+  const snapshot = buildWorkspaceAiSnapshot({
+    view: 'meeting',
+    scope: 'library',
+    library: input.library,
+    activeDocument: null,
+    openTabs: [],
+  })
+  const request = createAppAiRequest({
+      libraryId: input.library.id,
+      requestId: crypto.randomUUID(),
+      actor: agent.actor ?? { libraryUserId: 'user-owner' },
+      workspaceSnapshot: snapshot,
+      requestedScope: 'library',
+      persistencePolicy: 'ephemeral-no-memory',
+      prompt,
+      appSurface: 'meeting',
+    })
+  if (!isGlobalAiChatRequest(request)) {
+    return runNotiaChatReply(input.aiPreferences, {
+      agent,
+      prompt,
+      previousMessages: input.previousMessages,
+      intentContext: {},
+    }, {
+      abortSignal: input.signal,
+      onMessageDelta: input.onMessageDelta,
+    })
+  }
+  return runGlobalAiChat(input.aiPreferences, {
+    request,
+    agent,
     previousMessages: input.previousMessages,
     intentContext: {},
   }, {

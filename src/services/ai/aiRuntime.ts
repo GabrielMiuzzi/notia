@@ -17,6 +17,7 @@ import type {
   AgentProgressContext,
   AgentPlanStepStatus,
 } from '../../types/ai/agentContracts'
+import type { GlobalAiChatRequest } from '../../types/ai/globalAiContract'
 
 const AI_TOOL_AGENT_TIMEOUT_MS = 600_000
 const AI_HEALTH_CACHE_TTL_MS = 10_000
@@ -41,6 +42,9 @@ const PLAN_CONTROL_TOOLS = new Set([
 const ADDITIONAL_MUTATING_TOOL_NAMES = new Set([
   'link_ticket_document',
   'materialize_document_facts',
+  'link_finance_savings_account',
+  'reverse_finance_transaction',
+  'extract_finance_document',
 ])
 const NON_MUTATING_TOOL_PREFIXES = [
   'read_', 'search_', 'get_', 'find_', 'request_', 'validate_', 'verify_', 'propose_',
@@ -161,6 +165,8 @@ export interface AiNativeToolDefinition {
 
 export interface NativeToolAgentInput {
   requestId?: string
+  /** Versioned request metadata carried to native bridges when this is a global turn. */
+  globalRequest?: GlobalAiChatRequest
   systemPrompt: string
   prompt: string
   image?: AiImageAttachment | null
@@ -1864,6 +1870,7 @@ export async function runNativeToolAgent(
           requestPayload.think,
           toolCallTimeoutSeconds,
           controller.signal,
+          input.globalRequest,
         )
       } else if (round > 0 && messages.some((message) => message.role === 'tool') && !forceNativeToolRound && input.streamFinalResponse !== false) {
         // Tool rounds stay on the native tool-calling runtime. Once tools have
@@ -1922,6 +1929,14 @@ export async function runNativeToolAgent(
       if (effectiveToolCalls.length === 0) {
         const answer = content.trim()
         if (!answer) {
+          if (round + 1 < maxRounds) {
+            messages.push({
+              role: 'system',
+              content: 'La ronda anterior no devolvió contenido ni herramientas. Genera ahora una respuesta breve y útil para el usuario; si todavía falta ejecutar una acción, usa las herramientas disponibles. No finalices con una respuesta vacía.',
+            })
+            requiresNativeToolRound = true
+            continue
+          }
           throw new Error('La IA no devolvio contenido ni solicito herramientas.')
         }
         const internalAnswerDisclosure = containsInternalAgentDisclosure(answer)
@@ -2510,6 +2525,7 @@ async function invokeAndroidAiToolChat(
   think: boolean | 'low' | 'medium' | 'high',
   timeoutSeconds: number,
   abortSignal: AbortSignal,
+  globalRequest?: GlobalAiChatRequest,
 ): Promise<OllamaNativeToolResponse> {
   let lastError: unknown = null
   const invokeRequest = (async () => {
@@ -2523,6 +2539,15 @@ async function invokeAndroidAiToolChat(
             messages,
             tools,
             timeoutSeconds,
+            ...(globalRequest ? {
+              requestId: globalRequest.requestId,
+              libraryId: globalRequest.libraryId,
+              actorLibraryUserId: globalRequest.actor.libraryUserId,
+              channel: globalRequest.source.channel,
+              appSurface: globalRequest.source.channel === 'app' ? globalRequest.source.appSurface : undefined,
+              requestedScope: globalRequest.requestedScope,
+              persistencePolicy: globalRequest.persistencePolicy,
+            } : {}),
           },
         })
         return response

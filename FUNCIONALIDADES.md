@@ -10,11 +10,13 @@
 - Gráficos XGraph interactivos en notas Markdown.
 - Graph View 2D de relaciones entre documentos, con zoom, paneo, foco y colores por contexto.
 - Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con leyenda completa y coloración de nodos en Graph View.
+- IA global versionada para `app`, `public-url` y `telegram`, con actor estable por biblioteca, autorización exacta por contexto, Finanzas protegida por `#Confidencial`, chat efímero de Graph View y proyección estricta de Task Manager publicado.
 - Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
-- Chat local con IA mediante Ollama.
+- Chat local con IA mediante Ollama, con reintento seguro de respuestas nativas vacías transitorias después de rondas de tools.
 - Memoria persistente y herramientas nativas para el agente de IA.
+- Memoria persistente del agente para el usuario Owner y reglas operativas por biblioteca; Meeting, Graph View, Telegram y publicación sin memoria global.
 - Chat efímero de Meeting con transcripción offline y diarización.
 - Dictado y síntesis de voz offline.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes.
@@ -23,12 +25,13 @@
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas y comentarios.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
 - Temporizador Pomodoro integrado en Task Manager.
-- Publicación colaborativa de Task Manager en la red local con creación de tareas y subtareas.
-- Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas e inversiones.
+- Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.
+- Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas, inversiones, servicios mensuales integrados en Home, facturas/boletas, conciliación determinista de consumos de tarjeta con matching por límites de palabra y control integral mediante tools tipadas de IA con confirmaciones individuales, reforzadas cuando corresponde al canal.
+- Auditoría financiera con propuestas de acciones estructuradas, preview sin escritura, aplicación individual con huella vigente, resolución manual validada e invalidación ante cambios.
 - Calendario con feriados nacionales y bancarios de Argentina.
 - Temas claro y oscuro.
 - Backups automáticos de bibliotecas en Windows.
 - Bandeja del sistema en Windows.
 - Soporte multiplataforma para Windows, macOS, Linux y Android.
 - Roles y usuarios por biblioteca persistidos en SQLite, con roles iniciales, alta, cambio de nombre/rol, contraseñas, acciones compactas por iconos y protección del usuario Owner.
-- Vinculación privada de cuentas de Telegram con usuarios de la biblioteca y autenticación de Task Manager publicado mediante el usuario de Notia.
+- Vinculación privada de Telegram con usuarios de la biblioteca y autenticación de Task Manager publicado mediante usuario y contraseña de biblioteca, sin contraseña adicional de tablero ni aprobación de dispositivos.

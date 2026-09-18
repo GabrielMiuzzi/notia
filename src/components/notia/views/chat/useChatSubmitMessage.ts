@@ -8,8 +8,9 @@ import {
   checkAiHealth,
   type CancelableAiReplyHandle,
 } from '../../../../services/ai/aiRuntime'
-import { startNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
-import { createChatScopedAgent, type TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import { createAppAiRequest, startGlobalAiChat, startNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
+import { createGlobalAiAgent } from '../../../../services/chat/globalAiChatRuntime'
+import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
 import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
@@ -19,6 +20,15 @@ import type {
   UseChatSubmitMessageState,
 } from './ChatWorkspaceViewTypes'
 import type { AgentProgressEvent } from '../../../../types/ai/agentContracts'
+
+function resolveAppAiSurface(scope: string, view: string | undefined): import('../../../../types/ai/globalAiContract').AiAppSurface {
+  if (scope === 'document') return 'document'
+  if (scope === 'task-manager') return 'task-manager'
+  if (scope === 'graph') return 'graph-view'
+  if (scope === 'finance') return 'finance'
+  if (view === 'meeting') return 'meeting'
+  return 'main-chat'
+}
 
 export function useChatSubmitMessage(
   deps: UseChatSubmitMessageDependencies,
@@ -48,6 +58,7 @@ export function useChatSubmitMessage(
     selectedImageAttachment,
     selectedFileContextMode,
     showHistoryPanel,
+    ephemeralChat = false,
     preferredContextScopeKey,
     persistTransientContext,
     hasTransientContext,
@@ -133,7 +144,19 @@ export function useChatSubmitMessage(
     let targetChatFilePath = selectedChatFilePath
 
     if (!targetChatDocument || !targetChatFilePath) {
-      try {
+      if (ephemeralChat) {
+        const autoCreatePayload = buildAutoCreateChatPayload(showHistoryPanel)
+        targetChatDocument = {
+          title: 'Chat efímero',
+          ...autoCreatePayload,
+          longTermMemoryEnabled: false,
+          contextScopeKey: preferredContextScopeKey,
+          selectedContextMode: persistTransientContext ? effectiveSelectedContextMode : 'direct',
+          selectedContextFiles: persistTransientContext ? effectiveSelectedContextPaths : [],
+          messages: [],
+        }
+        targetChatFilePath = null
+      } else try {
         const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
         if (!mountedRef.current) return
         setPendingAutoCreatedChatFilePath(filePath)
@@ -263,8 +286,9 @@ export function useChatSubmitMessage(
         .filter((step) => step.status === 'pending' || step.status === 'in-progress')
         .map((step) => ({ ...step, status: step.status === 'in-progress' ? 'pending' as const : step.status }))
       const isContinuationRequest = /\b(contin(?:u[aá]a|uar|uemos)|reanuda|retoma|siguiente paso|segu[ií])\b/i.test(trimmedMessage)
+      const requestId = crypto.randomUUID()
       if (!isContinuationRequest || resumablePlan.length === 0) onAgentExecutionPlanChange([])
-      const agent = await createChatScopedAgent({
+      const agent = await createGlobalAiAgent({
           scope: effectiveAgentScope,
           aiPreferences,
           promptFileName: agentPromptFileName,
@@ -279,6 +303,9 @@ export function useChatSubmitMessage(
             : undefined,
           markdownSelection: effectiveAgentScope === 'document' ? markdownSelection : null,
           workspaceSnapshot,
+           actor: { libraryUserId: 'user-owner' },
+           financeSource: 'app',
+           financeRequestId: requestId,
           explicitlySelectedPaths: effectiveAgentScope === 'graph' && effectiveSelectedContextMode === 'direct'
             ? effectiveSelectedContextPaths
             : [],
@@ -290,19 +317,34 @@ export function useChatSubmitMessage(
           onExecutionPlanChange: onAgentExecutionPlanChange,
           requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
         })
-      const replyHandle: CancelableAiReplyHandle = startNotiaChatReply(aiPreferences, {
-            agent,
-            prompt: buildChatAttachmentPrompt(trimmedMessage, selectedImageAttachment),
-            image: selectedImageAttachment,
-            previousMessages: chatMemory,
-            longTermMemories,
-            intentContext: {
-              hasActiveDocument: Boolean(effectiveAgentScope === 'document' && agentCorpusPaths[0]),
-              hasSelection: Boolean(effectiveAgentScope === 'document' && markdownSelection?.selectedText.trim()),
-              hasConversationHistory: previousMessages.length > 0,
-              hasLastAppliedOperation: Boolean(undoOperationId),
-            },
-          }, streamCallbacks)
+      const globalPrompt = buildChatAttachmentPrompt(trimmedMessage, selectedImageAttachment)
+      const replyInput = {
+        agent,
+        image: selectedImageAttachment,
+        previousMessages: chatMemory,
+        longTermMemories,
+        intentContext: {
+          hasActiveDocument: Boolean(effectiveAgentScope === 'document' && agentCorpusPaths[0]),
+          hasSelection: Boolean(effectiveAgentScope === 'document' && markdownSelection?.selectedText.trim()),
+          hasConversationHistory: previousMessages.length > 0,
+          hasLastAppliedOperation: Boolean(undoOperationId),
+        },
+      }
+      const replyHandle: CancelableAiReplyHandle = workspaceSnapshot
+        ? startGlobalAiChat(aiPreferences, {
+          request: createAppAiRequest({
+            libraryId: library.id,
+             requestId,
+            actor: agent.actor ?? { libraryUserId: 'user-owner' },
+            workspaceSnapshot,
+            requestedScope: effectiveAgentScope,
+            persistencePolicy: 'persistent',
+            prompt: globalPrompt,
+            appSurface: resolveAppAiSurface(effectiveAgentScope, workspaceSnapshot.view),
+          }),
+          ...replyInput,
+        }, streamCallbacks)
+        : startNotiaChatReply(aiPreferences, { ...replyInput, prompt: globalPrompt }, streamCallbacks)
       activeReplyRef.current = replyHandle
       const streamedAnswer = await replyHandle.promise
       if (!mountedRef.current) return

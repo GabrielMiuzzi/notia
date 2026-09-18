@@ -117,4 +117,28 @@ describe('notiaChatRuntime', () => {
       requiredToolNames: ['search_web'],
     }), {})
   })
+
+  it('does not require web search for a local finance audit when the scope has no web tool', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('auditoría local')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: false, thinkingLevel: 'medium' as const,
+    }
+    const agent = {
+      systemPrompt: 'Finanzas locales',
+      tools: [{ type: 'function' as const, function: { name: 'audit_finance_month', description: 'Audita', parameters: {} } }],
+      executeTool: vi.fn(),
+    }
+
+    await runNotiaChatReply(preferences, {
+      agent,
+      prompt: 'Auditar el resumen local del período 2026-09',
+      previousMessages: [],
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      requiredToolNames: undefined,
+      systemPrompt: 'Finanzas locales',
+    }), {})
+  })
 })

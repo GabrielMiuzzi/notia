@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -6,8 +6,12 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::finance::{
-    format_cents, now, parse_cents, sync_context, validate_context, FinanceCommandResult,
-    FinanceContext,
+    format_cents, now, parse_cents, sync_context, valid_iso_date, valid_service_period,
+    validate_context, FinanceCommandResult, FinanceContext,
+};
+use crate::finance_reconciliation::{
+    reconcile_card_service_consumption, CardServiceReconciliation, ReconciliationInput,
+    ReconciliationLine, ReconciliationOccurrence, ReconciliationService,
 };
 
 const MAX_RECEIPT_ROUNDING_DISCREPANCY_CENTS: u128 = 1;
@@ -31,6 +35,7 @@ pub struct PurchaseRecord {
     pub id: String,
     pub account_id: String,
     pub category_id: Option<String>,
+    pub service_id: Option<String>,
     pub merchant_name: String,
     pub observed_at: String,
     pub currency: String,
@@ -81,6 +86,7 @@ pub struct ListPeriodPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PurchaseSummary {
     pub id: String,
+    pub service_id: Option<String>,
     pub merchant_name: String,
     pub observed_at: String,
     pub currency: String,
@@ -188,13 +194,7 @@ fn validate_purchase(record: &PurchaseRecord) -> Result<PurchaseValidation, Stri
 }
 
 fn valid_date(value: &str) -> bool {
-    value.len() >= 10
-        && value.as_bytes().get(4) == Some(&b'-')
-        && value.as_bytes().get(7) == Some(&b'-')
-        && value[..10]
-            .chars()
-            .enumerate()
-            .all(|(index, character)| matches!(index, 4 | 7) || character.is_ascii_digit())
+    value.get(..10).is_some_and(valid_iso_date)
 }
 
 fn hash_purchase(record: &PurchaseRecord) -> String {
@@ -228,6 +228,40 @@ pub fn finance_save_purchase(
     }
     let mut connection = validate_context(&payload.context, &app)?;
     let record = &payload.purchase;
+    let account_currency: String = connection
+        .query_row(
+            "SELECT currency FROM finance_accounts WHERE id=?1 AND active=1",
+            [&record.account_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "La cuenta de la compra no existe o está inactiva.".to_string())?;
+    if account_currency != record.currency {
+        return Err("La moneda de la compra no coincide con la cuenta.".into());
+    }
+    if let Some(category_id) = record.category_id.as_deref() {
+        let category_kind: String = connection
+            .query_row(
+                "SELECT kind FROM finance_categories WHERE id=?1 AND active=1",
+                [category_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "La categoría de la compra no existe o está inactiva.".to_string())?;
+        if category_kind != "expense" {
+            return Err("La compra requiere una categoría de gasto.".into());
+        }
+    }
+    if let Some(service_id) = record.service_id.as_deref() {
+        let service_currency: String = connection
+            .query_row(
+                "SELECT currency FROM finance_services WHERE id=?1 AND active=1",
+                [service_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "El servicio de la compra no existe o está inactivo.".to_string())?;
+        if service_currency != record.currency {
+            return Err("La moneda de la compra no coincide con el servicio.".into());
+        }
+    }
     let fingerprint = record
         .content_hash
         .clone()
@@ -294,12 +328,12 @@ pub fn finance_save_purchase(
         params![receipt_id, artifact_id, record.status, timestamp],
     ).map_err(|error| purchase_storage_error("receipt", error))?;
     transaction.execute(
-        "INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,category_id,description,source,status,source_artifact_id,merchant_id,operation_fingerprint,created_at,updated_at) VALUES (?1,'expense',?2,?3,?4,?5,?6,?7,'ticket',?8,?9,?10,?11,?12,?12) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,category_id=excluded.category_id,description=excluded.description,status=excluded.status,merchant_id=excluded.merchant_id,updated_at=excluded.updated_at",
-        params![transaction_id, record.total_amount, record.currency, &record.observed_at[..10], record.account_id, record.category_id, format!("Compra en {}", record.merchant_name.trim()), record.status, artifact_id, resolved_merchant_id, operation_fingerprint, timestamp],
+        "INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,category_id,description,source,status,source_artifact_id,service_id,merchant_id,operation_fingerprint,source_reference,raw_source,actor_library_user_id,created_at,updated_at) VALUES (?1,'expense',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,category_id=excluded.category_id,description=excluded.description,source=excluded.source,status=excluded.status,service_id=excluded.service_id,merchant_id=excluded.merchant_id,source_reference=excluded.source_reference,raw_source=excluded.raw_source,actor_library_user_id=excluded.actor_library_user_id,updated_at=excluded.updated_at",
+          params![transaction_id, record.total_amount, record.currency, &record.observed_at[..10], record.account_id, record.category_id, format!("Compra en {}", record.merchant_name.trim()), payload.context.source, record.status, artifact_id, record.service_id, resolved_merchant_id, operation_fingerprint, record.source_reference, record.raw_extraction, payload.context.actor_library_user_id, timestamp],
     ).map_err(|error| purchase_storage_error("transaction", error))?;
     transaction.execute(
-        "INSERT INTO finance_purchases (id,transaction_id,merchant_id,observed_at,currency,total_amount,source_artifact_id,subtotal_amount,discount_amount,tax_amount,validation_status,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12) ON CONFLICT(id) DO UPDATE SET merchant_id=excluded.merchant_id,observed_at=excluded.observed_at,total_amount=excluded.total_amount,subtotal_amount=excluded.subtotal_amount,discount_amount=excluded.discount_amount,tax_amount=excluded.tax_amount,validation_status=excluded.validation_status,updated_at=excluded.updated_at",
-        params![record.id, transaction_id, resolved_merchant_id, record.observed_at, record.currency, record.total_amount, artifact_id, record.subtotal_amount, record.discount_amount, record.tax_amount, record.status, timestamp],
+        "INSERT INTO finance_purchases (id,transaction_id,merchant_id,service_id,observed_at,currency,total_amount,source_artifact_id,subtotal_amount,discount_amount,tax_amount,validation_status,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13) ON CONFLICT(id) DO UPDATE SET merchant_id=excluded.merchant_id,service_id=excluded.service_id,observed_at=excluded.observed_at,total_amount=excluded.total_amount,subtotal_amount=excluded.subtotal_amount,discount_amount=excluded.discount_amount,tax_amount=excluded.tax_amount,validation_status=excluded.validation_status,updated_at=excluded.updated_at",
+         params![record.id, transaction_id, resolved_merchant_id, record.service_id, record.observed_at, record.currency, record.total_amount, artifact_id, record.subtotal_amount, record.discount_amount, record.tax_amount, record.status, timestamp],
     ).map_err(|error| purchase_storage_error("purchase", error))?;
     transaction.execute("DELETE FROM finance_price_observations WHERE purchase_item_id IN (SELECT id FROM finance_purchase_items WHERE purchase_id = ?1)", [&record.id]).map_err(|error| purchase_storage_error("clear_prices", error))?;
     transaction
@@ -356,7 +390,7 @@ pub fn finance_list_purchases(
 ) -> FinanceCommandResult<Vec<PurchaseSummary>> {
     let connection = validate_context(&payload.context, &app)?;
     let mut statement = connection.prepare(
-        "SELECT p.id,m.name,p.observed_at,p.currency,p.total_amount,p.validation_status,COUNT(i.id) FROM finance_purchases p LEFT JOIN finance_merchants m ON m.id=p.merchant_id LEFT JOIN finance_purchase_items i ON i.purchase_id=p.id WHERE (?1 IS NULL OR p.observed_at >= ?1) AND (?2 IS NULL OR p.observed_at <= ?2) AND (?3 IS NULL OR p.merchant_id=?3) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM finance_purchase_items pi WHERE pi.purchase_id=p.id AND pi.product_id=?4)) GROUP BY p.id ORDER BY p.observed_at DESC LIMIT 500"
+        "SELECT p.id,p.service_id,m.name,p.observed_at,p.currency,p.total_amount,p.validation_status,COUNT(i.id) FROM finance_purchases p LEFT JOIN finance_merchants m ON m.id=p.merchant_id LEFT JOIN finance_purchase_items i ON i.purchase_id=p.id WHERE (?1 IS NULL OR p.observed_at >= ?1) AND (?2 IS NULL OR p.observed_at <= ?2) AND (?3 IS NULL OR p.merchant_id=?3) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM finance_purchase_items pi WHERE pi.purchase_id=p.id AND pi.product_id=?4)) GROUP BY p.id ORDER BY p.observed_at DESC LIMIT 500"
     ).map_err(|error| error.to_string())?;
     let purchases = statement
         .query_map(
@@ -369,12 +403,13 @@ pub fn finance_list_purchases(
             |row| {
                 Ok(PurchaseSummary {
                     id: row.get(0)?,
-                    merchant_name: row.get(1)?,
-                    observed_at: row.get(2)?,
-                    currency: row.get(3)?,
-                    total_amount: row.get(4)?,
-                    status: row.get(5)?,
-                    item_count: row.get(6)?,
+                    service_id: row.get(1)?,
+                    merchant_name: row.get(2)?,
+                    observed_at: row.get(3)?,
+                    currency: row.get(4)?,
+                    total_amount: row.get(5)?,
+                    status: row.get(6)?,
+                    item_count: row.get(7)?,
                 })
             },
         )
@@ -447,6 +482,8 @@ pub struct SalaryReceipt {
     pub status: String,
     #[serde(default)]
     pub signed_document: bool,
+    #[serde(default, skip_deserializing)]
+    pub created_at: Option<String>,
     pub source_reference: Option<String>,
     pub raw_extraction: Option<String>,
     pub concepts: Vec<SalaryConcept>,
@@ -473,7 +510,7 @@ fn validate_salary_receipt(salary: &SalaryReceipt) -> Result<(), String> {
     if salary.id.trim().is_empty()
         || salary.employer.trim().is_empty()
         || salary.account_id.trim().is_empty()
-        || salary.period.len() != 7
+        || !valid_service_period(&salary.period)
         || !valid_date(&salary.payment_date)
         || !matches!(salary.currency.as_str(), "ARS" | "USD")
         || !matches!(
@@ -492,6 +529,21 @@ fn validate_salary_receipt(salary: &SalaryReceipt) -> Result<(), String> {
         .source_reference
         .as_deref()
         .is_some_and(|reference| reference.to_ascii_lowercase().ends_with(".pdf"));
+    if salary.employer.chars().count() > 160
+        || salary.concepts.len() > 200
+        || salary
+            .source_reference
+            .as_deref()
+            .map(|value| value.len() > 512)
+            .unwrap_or(false)
+        || salary
+            .raw_extraction
+            .as_deref()
+            .map(|value| value.len() > 20_000)
+            .unwrap_or(false)
+    {
+        return Err("El recibo supera los límites de texto o conceptos admitidos.".into());
+    }
     if salary.signed_document && !has_pdf_evidence {
         return Err("Un recibo marcado como firmado requiere una evidencia PDF.".into());
     }
@@ -575,7 +627,7 @@ pub fn finance_save_salary(
         .map_err(|error| error.to_string())?;
     transaction.execute("INSERT INTO finance_source_artifacts (id,source_type,reference,raw_text,content_hash,created_at) VALUES (?1,'salary',?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text",params![artifact_id,salary.source_reference,salary.raw_extraction,format!("salary:{}:{}",normalize(&salary.employer),salary.period),timestamp]).map_err(|error|error.to_string())?;
     transaction.execute("INSERT INTO finance_receipts (id,source_artifact_id,receipt_type,validation_status,created_at,updated_at) VALUES (?1,?2,'salary',?3,?4,?4) ON CONFLICT(id) DO UPDATE SET validation_status=excluded.validation_status,updated_at=excluded.updated_at",params![receipt_id,artifact_id,salary.status,timestamp]).map_err(|error|error.to_string())?;
-    transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,description,source,status,source_artifact_id,operation_fingerprint,created_at,updated_at) VALUES (?1,'income',?2,?3,?4,?5,?6,'salary',?7,?8,?9,?10,?10) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,status=excluded.status,updated_at=excluded.updated_at",params![transaction_id,salary.net_amount,salary.currency,&salary.payment_date[..10],salary.account_id,format!("Sueldo {} · {}",salary.employer,salary.period),salary.status,artifact_id,format!("salary:{}:{}",normalize(&salary.employer),salary.period),timestamp]).map_err(|error|error.to_string())?;
+    transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,description,source,status,source_artifact_id,operation_fingerprint,source_reference,raw_source,actor_library_user_id,created_at,updated_at) VALUES (?1,'income',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,source=excluded.source,status=excluded.status,source_reference=excluded.source_reference,raw_source=excluded.raw_source,actor_library_user_id=excluded.actor_library_user_id,updated_at=excluded.updated_at",params![transaction_id,salary.net_amount,salary.currency,&salary.payment_date[..10],salary.account_id,format!("Sueldo {} · {}",salary.employer,salary.period),payload.context.source,salary.status,artifact_id,format!("salary:{}:{}",normalize(&salary.employer),salary.period),salary.source_reference,salary.raw_extraction,payload.context.actor_library_user_id,timestamp]).map_err(|error|error.to_string())?;
     transaction.execute("INSERT INTO finance_salary_receipts (id,period,payment_date,employer,gross_amount,deductions_total,net_amount,currency,account_id,transaction_id,source_artifact_id,validation_status,signed_document,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14) ON CONFLICT(id) DO UPDATE SET payment_date=excluded.payment_date,gross_amount=excluded.gross_amount,deductions_total=excluded.deductions_total,net_amount=excluded.net_amount,account_id=excluded.account_id,validation_status=excluded.validation_status,signed_document=excluded.signed_document,updated_at=excluded.updated_at",params![salary.id,salary.period,salary.payment_date,salary.employer,salary.gross_amount,salary.deductions_total,salary.net_amount,salary.currency,salary.account_id,transaction_id,artifact_id,salary.status,salary.signed_document as i32,timestamp]).map_err(|error|error.to_string())?;
     transaction
         .execute(
@@ -586,10 +638,19 @@ pub fn finance_save_salary(
     for concept in &salary.concepts {
         transaction.execute("INSERT INTO finance_salary_concepts (id,salary_receipt_id,name,concept_type,amount,currency,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![concept.id,salary.id,concept.name,concept.concept_type,concept.amount,salary.currency,timestamp]).map_err(|error|error.to_string())?;
     }
+    let persisted_created_at: Option<String> = transaction
+        .query_row(
+            "SELECT created_at FROM finance_salary_receipts WHERE id=?1",
+            [&salary.id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);
     sync_context(&payload.context, &app)?;
-    Ok(salary.clone())
+    let mut saved = salary.clone();
+    saved.created_at = persisted_created_at;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -603,7 +664,7 @@ pub fn finance_list_salaries(
             .prepare(
                 "SELECT s.id,s.period,s.payment_date,s.employer,s.gross_amount,
                         s.deductions_total,s.net_amount,s.currency,s.account_id,
-                        s.validation_status,s.signed_document,a.reference,a.raw_text
+                         s.validation_status,s.signed_document,s.created_at,a.reference,a.raw_text
                  FROM finance_salary_receipts s
                  LEFT JOIN finance_source_artifacts a ON a.id=s.source_artifact_id
                  WHERE (?1 IS NULL OR s.period>=?1) AND (?2 IS NULL OR s.period<=?2)
@@ -624,8 +685,9 @@ pub fn finance_list_salaries(
                     account_id: row.get(8)?,
                     status: row.get(9)?,
                     signed_document: row.get::<_, i32>(10)? != 0,
-                    source_reference: row.get(11)?,
-                    raw_extraction: row.get(12)?,
+                    created_at: row.get(11)?,
+                    source_reference: row.get(12)?,
+                    raw_extraction: row.get(13)?,
                     concepts: Vec::new(),
                 })
             })
@@ -725,6 +787,8 @@ pub struct CreditCardStatement {
     pub total_due: String,
     pub minimum_payment: Option<String>,
     pub status: String,
+    #[serde(default, skip_deserializing)]
+    pub created_at: Option<String>,
     pub source_reference: Option<String>,
     pub raw_extraction: Option<String>,
     pub items: Vec<CreditCardStatementItem>,
@@ -743,6 +807,8 @@ pub struct SavedCreditCardStatement {
     pub statement: CreditCardStatement,
     pub matched_existing_transactions: usize,
     pub created_transactions: usize,
+    pub reconciliation: CardServiceReconciliation,
+    pub occurrences: Vec<crate::finance::FinanceServiceOccurrence>,
 }
 
 fn validate_credit_card_statement(statement: &CreditCardStatement) -> Result<(), String> {
@@ -853,6 +919,373 @@ fn statement_descriptions_match(
             && (statement.contains(&transaction) || transaction.contains(&statement)))
 }
 
+fn load_card_reconciliation_input(
+    transaction: &rusqlite::Transaction<'_>,
+    statement: &CreditCardStatement,
+    items: &[CreditCardStatementItem],
+) -> Result<ReconciliationInput, String> {
+    let services = transaction
+        .prepare("SELECT id,name,provider,currency FROM finance_services ORDER BY id")
+        .map_err(|error| error.to_string())?
+        .query_map([], |row| {
+            Ok(ReconciliationService {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                provider: row.get(2)?,
+                currency: row.get(3)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let occurrences = transaction
+        .prepare(
+            "SELECT id,service_id,period,expected_amount,paid_amount,effective_date,status,
+                    transaction_id,artifact_id,source_reference,raw_source,updated_at
+             FROM finance_service_occurrences",
+        )
+        .map_err(|error| error.to_string())?
+        .query_map([], |row| {
+            Ok(ReconciliationOccurrence {
+                id: row.get(0)?,
+                service_id: row.get(1)?,
+                period: row.get(2)?,
+                paid_amount: row.get(4)?,
+                transaction_id: row.get(7)?,
+                snapshot: format!(
+                    "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+                    row.get::<_, String>(11)?
+                ),
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let lines = items
+        .iter()
+        .map(|item| {
+            let transaction_snapshot = item
+                .transaction_id
+                .as_deref()
+                .map(|transaction_id| {
+                    transaction
+                        .query_row(
+                        "SELECT transaction_type,status,amount,currency,effective_date,service_id,
+                                operation_fingerprint,updated_at FROM finance_transactions
+                         WHERE id=?1 AND deleted_at IS NULL",
+                        [transaction_id],
+                        |row| {
+                            let transaction_type: String = row.get(0)?;
+                            let status: String = row.get(1)?;
+                            let amount: String = row.get(2)?;
+                            let currency: String = row.get(3)?;
+                            Ok((
+                                transaction_type == "expense"
+                                    && matches!(status.as_str(), "confirmed" | "corrected")
+                                    && matches!(statement.status.as_str(), "confirmed" | "corrected")
+                                    && amount == item.amount
+                                    && currency == item.currency,
+                                format!(
+                                    "{}:{}:{}:{}:{}:{}:{}:{}",
+                                    transaction_type,
+                                    status,
+                                    amount,
+                                    currency,
+                                    row.get::<_, String>(4)?,
+                                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                                    row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                                    row.get::<_, String>(7)?
+                                ),
+                            ))
+                        },
+                    )
+                    .unwrap_or((false, String::new()))
+                })
+                .unwrap_or((false, String::new()));
+            ReconciliationLine {
+                id: item.id.clone(),
+                transaction_id: item.transaction_id.clone(),
+                purchase_date: item.purchase_date.clone(),
+                description: item.description.clone(),
+                amount: item.amount.clone(),
+                currency: item.currency.clone(),
+                item_type: item.item_type.clone(),
+                confirmed: transaction_snapshot.0,
+                transaction_snapshot: transaction_snapshot.1,
+            }
+        })
+        .collect();
+    Ok(ReconciliationInput {
+        statement_id: statement.id.clone(),
+        statement_period: statement.period.clone(),
+        statement_snapshot: format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            statement.account_id,
+            statement.issuer,
+            statement.card_last_four.clone().unwrap_or_default(),
+            statement.period,
+            statement.closing_date,
+            statement.due_date,
+            statement.currency,
+            statement.previous_balance,
+            statement.payments_amount,
+            statement.credits_amount,
+            statement.purchases_amount,
+            statement.status,
+            statement.fees_amount,
+            statement.interest_amount,
+            statement.taxes_amount,
+            statement.total_due,
+            statement.minimum_payment.clone().unwrap_or_default(),
+            statement.source_reference.clone().unwrap_or_default(),
+            statement.raw_extraction.clone().unwrap_or_default()
+        ),
+        lines,
+        services,
+        occurrences,
+    })
+}
+
+fn occurrence_from_connection(
+    connection: &rusqlite::Connection,
+    service_id: &str,
+    period: &str,
+) -> Result<crate::finance::FinanceServiceOccurrence, String> {
+    connection
+        .query_row(
+            "SELECT id,service_id,period,expected_amount,paid_amount,effective_date,status,
+                    transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,
+                    source,created_at,updated_at
+             FROM finance_service_occurrences WHERE service_id=?1 AND period=?2",
+            params![service_id, period],
+            |row| {
+                Ok(crate::finance::FinanceServiceOccurrence {
+                    id: row.get(0)?,
+                    service_id: row.get(1)?,
+                    period: row.get(2)?,
+                    expected_amount: row.get(3)?,
+                    paid_amount: row.get(4)?,
+                    effective_date: row.get(5)?,
+                    status: row.get(6)?,
+                    transaction_id: row.get(7)?,
+                    artifact_id: row.get(8)?,
+                    source_reference: row.get(9)?,
+                    raw_source: row.get(10)?,
+                    actor_library_user_id: row.get(11)?,
+                    source: row.get(12)?,
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                })
+            },
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn retire_stale_card_statement_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    transaction_id: &str,
+    artifact_id: &str,
+    timestamp: &str,
+) -> Result<(), String> {
+    let linked_occurrence: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM finance_service_occurrences WHERE transaction_id=?1",
+            [transaction_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if linked_occurrence > 0 {
+        return Err(
+            "No se puede quitar una línea ya reconciliada; revisá la propuesta antes de editar el resumen."
+                .into(),
+        );
+    }
+    transaction
+        .execute(
+            "UPDATE finance_transactions
+             SET deleted_at=?1,updated_at=?1
+             WHERE id=?2 AND source='credit_card_statement'
+               AND source_artifact_id=?3
+               AND NOT EXISTS (
+                 SELECT 1 FROM finance_credit_card_statement_items
+                 WHERE transaction_id=?2
+               )",
+            params![timestamp, transaction_id, artifact_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn persist_card_reconciliation(
+    transaction: &rusqlite::Transaction<'_>,
+    source_reference: Option<&str>,
+    raw_source: Option<&str>,
+    artifact_id: &str,
+    reconciliation: &CardServiceReconciliation,
+    actor_library_user_id: &str,
+    source: &str,
+) -> Result<(), String> {
+    for assignment in &reconciliation.assignments {
+        let (service_currency, expected_amount): (String, String) = transaction
+            .query_row(
+                "SELECT currency,expected_amount FROM finance_services WHERE id=?1",
+                [&assignment.service_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| {
+                "El servicio de la reconciliación no existe o está inactivo.".to_string()
+            })?;
+        if service_currency != assignment.currency {
+            return Err("La moneda del consumo no coincide con el servicio.".into());
+        }
+        let transaction_state: (String, String, String, String, Option<String>) = transaction
+            .query_row(
+                "SELECT transaction_type,status,amount,currency,service_id FROM finance_transactions
+                 WHERE id=?1 AND deleted_at IS NULL",
+                [&assignment.transaction_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .map_err(|_| "La transacción de la reconciliación no existe.".to_string())?;
+        if transaction_state.0 != "expense"
+            || !matches!(transaction_state.1.as_str(), "confirmed" | "corrected")
+            || transaction_state.2 != assignment.amount
+            || transaction_state.3 != assignment.currency
+        {
+            return Err(
+                "La transacción de la reconciliación cambió o no es un gasto confirmado.".into(),
+            );
+        }
+        if transaction_state
+            .4
+            .as_deref()
+            .is_some_and(|service_id| service_id != assignment.service_id)
+        {
+            return Err("La transacción ya está vinculada a otro servicio.".into());
+        }
+        let old: Option<(String, Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT id,paid_amount,transaction_id FROM finance_service_occurrences
+                 WHERE service_id=?1 AND period=?2",
+                params![assignment.service_id, assignment.period],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some((occurrence_id, paid_amount, old_transaction_id)) = &old {
+            let is_same = old_transaction_id.as_deref() == Some(assignment.transaction_id.as_str())
+                && paid_amount
+                    .as_deref()
+                    .is_some_and(|value| parse_cents(value) == parse_cents(&assignment.amount));
+            if !is_same && (paid_amount.is_some() || old_transaction_id.is_some()) {
+                return Err("La ocurrencia destino ya está ocupada por otro pago.".into());
+            }
+            if !is_same {
+                let version: i64 = transaction
+                    .query_row(
+                        "SELECT COALESCE(MAX(version_number),0)+1
+                         FROM finance_service_occurrence_versions WHERE occurrence_id=?1",
+                        [occurrence_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction
+                    .execute(
+                        "INSERT INTO finance_service_occurrence_versions(
+                         id,occurrence_id,version_number,expected_amount,paid_amount,effective_date,
+                         status,transaction_id,artifact_id,source_reference,raw_source,
+                         actor_library_user_id,source,reason,created_at)
+                         SELECT ?1,id,?2,expected_amount,paid_amount,effective_date,status,
+                                transaction_id,artifact_id,source_reference,raw_source,
+                                actor_library_user_id,source,?3,?4
+                         FROM finance_service_occurrences WHERE id=?5",
+                        params![
+                            Uuid::new_v4().to_string(),
+                            version,
+                            "Resumen de tarjeta reconciliado",
+                            now(),
+                            occurrence_id
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        transaction
+            .execute(
+                "UPDATE finance_transactions SET service_id=?1,updated_at=?2
+                 WHERE id=?3 AND deleted_at IS NULL",
+                params![assignment.service_id, now(), assignment.transaction_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE finance_purchases SET service_id=?1,updated_at=?2
+                 WHERE transaction_id=?3",
+                params![assignment.service_id, now(), assignment.transaction_id],
+            )
+            .map_err(|error| error.to_string())?;
+        let occurrence_id = old
+            .as_ref()
+            .map(|value| value.0.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "service-occurrence:{}:{}",
+                    assignment.service_id, assignment.period
+                )
+            });
+        transaction
+            .execute(
+                "INSERT INTO finance_service_occurrences(
+                 id,service_id,period,expected_amount,paid_amount,effective_date,status,
+                 transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,
+                 source,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,'accepted',?7,?8,?9,?10,?11,?12,?13,?13)
+                 ON CONFLICT(service_id,period) DO UPDATE SET
+                 expected_amount=excluded.expected_amount,paid_amount=excluded.paid_amount,
+                 effective_date=excluded.effective_date,status=excluded.status,
+                 transaction_id=excluded.transaction_id,artifact_id=excluded.artifact_id,
+                 source_reference=excluded.source_reference,raw_source=excluded.raw_source,
+                 actor_library_user_id=excluded.actor_library_user_id,source=excluded.source,
+                 updated_at=excluded.updated_at",
+                params![
+                    occurrence_id,
+                    assignment.service_id,
+                    assignment.period,
+                    expected_amount,
+                    assignment.amount,
+                    assignment.purchase_date,
+                    assignment.transaction_id,
+                    artifact_id,
+                    source_reference,
+                    raw_source,
+                    actor_library_user_id,
+                    source,
+                    now()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn finance_save_credit_card_statement(
     app: tauri::AppHandle,
@@ -934,7 +1367,17 @@ pub fn finance_save_credit_card_statement(
             previous_balance,payments_amount,credits_amount,purchases_amount,fees_amount,
             interest_amount,taxes_amount,total_due,minimum_payment,source_artifact_id,
             validation_status,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?20)",
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?20)
+         ON CONFLICT(id) DO UPDATE SET
+             account_id=excluded.account_id,issuer=excluded.issuer,card_last_four=excluded.card_last_four,
+             period=excluded.period,closing_date=excluded.closing_date,due_date=excluded.due_date,
+             currency=excluded.currency,previous_balance=excluded.previous_balance,
+             payments_amount=excluded.payments_amount,credits_amount=excluded.credits_amount,
+             purchases_amount=excluded.purchases_amount,fees_amount=excluded.fees_amount,
+             interest_amount=excluded.interest_amount,taxes_amount=excluded.taxes_amount,
+             total_due=excluded.total_due,minimum_payment=excluded.minimum_payment,
+             source_artifact_id=excluded.source_artifact_id,validation_status=excluded.validation_status,
+             updated_at=excluded.updated_at",
             params![
                 statement.id,
                 statement.account_id,
@@ -963,6 +1406,18 @@ pub fn finance_save_credit_card_statement(
     let mut saved_statement = statement.clone();
     let mut matched_existing_transactions = 0_usize;
     let mut created_transactions = 0_usize;
+    let previous_items = transaction
+        .prepare(
+            "SELECT id,transaction_id FROM finance_credit_card_statement_items
+             WHERE statement_id=?1",
+        )
+        .map_err(|error| error.to_string())?
+        .query_map([&statement.id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     for item in &mut saved_statement.items {
         let creates_expense = statement.status != "pending"
             && matches!(
@@ -970,7 +1425,66 @@ pub fn finance_save_credit_card_statement(
                 "purchase" | "fee" | "interest" | "tax"
             );
         let linked_transaction = if creates_expense {
-            let existing = {
+            let existing_line_transaction: Option<String> = transaction
+                .query_row(
+                    "SELECT transaction_id FROM finance_credit_card_statement_items
+                     WHERE statement_id=?1 AND id=?2",
+                    params![statement.id, item.id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            let existing_line_transaction = existing_line_transaction.filter(|candidate| {
+                let assigned_elsewhere: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM finance_credit_card_statement_items
+                         WHERE statement_id=?1 AND transaction_id=?2 AND id<>?3",
+                        params![statement.id, candidate, item.id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or_default();
+                if assigned_elsewhere > 0 {
+                    return false;
+                }
+                transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM finance_transactions
+                         WHERE id=?1 AND account_id=?2 AND effective_date=?3 AND amount=?4
+                           AND currency=?5 AND transaction_type='expense'
+                           AND status IN ('confirmed','corrected') AND deleted_at IS NULL",
+                        params![
+                            candidate,
+                            statement.account_id,
+                            item.purchase_date,
+                            item.amount,
+                            item.currency
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap_or_default()
+                    > 0
+            });
+            let existing = if existing_line_transaction.is_some() {
+                existing_line_transaction
+            } else if item.transaction_id.as_deref().is_some_and(|candidate| {
+                transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM finance_transactions
+                         WHERE id=?1 AND transaction_type='expense' AND amount=?2
+                           AND currency=?3 AND status IN ('confirmed','corrected')
+                           AND deleted_at IS NULL
+                           AND NOT EXISTS (
+                             SELECT 1 FROM finance_credit_card_statement_items old_item
+                             WHERE old_item.statement_id=?4 AND old_item.transaction_id=?1 AND old_item.id<>?5
+                           )",
+                        params![candidate, item.amount, item.currency, statement.id, item.id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap_or_default()
+                    > 0
+            }) {
+                item.transaction_id.clone()
+            } else {
                 let mut candidates = transaction
                     .prepare(
                         "SELECT t.id,t.description,i.installment_number,p.installment_count
@@ -978,7 +1492,11 @@ pub fn finance_save_credit_card_statement(
                      LEFT JOIN finance_installments i ON i.id=t.installment_id
                      LEFT JOIN finance_installment_plans p ON p.id=i.plan_id
                      WHERE t.account_id=?1 AND t.effective_date=?2 AND t.amount=?3 AND t.currency=?4
-                       AND t.status IN ('confirmed','corrected') AND t.deleted_at IS NULL",
+                       AND t.status IN ('confirmed','corrected') AND t.deleted_at IS NULL
+                       AND NOT EXISTS (
+                         SELECT 1 FROM finance_credit_card_statement_items old_item
+                         WHERE old_item.statement_id=?5 AND old_item.transaction_id=t.id AND old_item.id<>?6
+                       )",
                     )
                     .map_err(|error| error.to_string())?;
                 let rows = candidates
@@ -987,7 +1505,9 @@ pub fn finance_save_credit_card_statement(
                             statement.account_id,
                             item.purchase_date,
                             item.amount,
-                            item.currency
+                             item.currency,
+                             statement.id,
+                             item.id
                         ],
                         |row| {
                             Ok((
@@ -1020,7 +1540,6 @@ pub fn finance_save_credit_card_statement(
                 matched_existing_transactions += 1;
                 Some(existing)
             } else {
-                let transaction_id = format!("card-statement-item:{}", item.id);
                 let fingerprint = format!(
                     "card-line:{}:{}:{}:{}:{}",
                     statement.account_id,
@@ -1029,6 +1548,7 @@ pub fn finance_save_credit_card_statement(
                     item.amount,
                     item.currency
                 );
+                let transaction_id = format!("card-statement-item:{}:{}", item.id, fingerprint);
                 transaction.execute(
                     "INSERT INTO finance_transactions(id,transaction_type,amount,currency,effective_date,account_id,category_id,description,source,status,source_artifact_id,operation_fingerprint,created_at,updated_at)
                      VALUES(?1,'expense',?2,?3,?4,?5,?6,?7,'credit_card_statement','confirmed',?8,?9,?10,?10)",
@@ -1043,17 +1563,104 @@ pub fn finance_save_credit_card_statement(
         item.transaction_id = linked_transaction.clone();
         transaction.execute(
             "INSERT INTO finance_credit_card_statement_items(id,statement_id,transaction_id,purchase_date,description,amount,currency,item_type,installment_number,installment_count,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(id) DO UPDATE SET statement_id=excluded.statement_id,
+                 transaction_id=excluded.transaction_id,purchase_date=excluded.purchase_date,
+                 description=excluded.description,amount=excluded.amount,currency=excluded.currency,
+                 item_type=excluded.item_type,installment_number=excluded.installment_number,
+                 installment_count=excluded.installment_count",
             params![item.id,statement.id,linked_transaction,item.purchase_date,item.description,item.amount,item.currency,item.item_type,item.installment_number,item.installment_count,timestamp],
         ).map_err(|error| error.to_string())?;
     }
+    let current_item_ids = saved_statement
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let current_item_transactions = saved_statement
+        .items
+        .iter()
+        .map(|item| (item.id.as_str(), item.transaction_id.as_deref()))
+        .collect::<BTreeMap<_, _>>();
+    for (item_id, old_transaction_id) in &previous_items {
+        if let Some(old_transaction_id) = old_transaction_id {
+            let new_transaction_id = current_item_transactions
+                .get(item_id.as_str())
+                .copied()
+                .flatten();
+            if new_transaction_id != Some(old_transaction_id.as_str()) {
+                retire_stale_card_statement_transaction(
+                    &transaction,
+                    old_transaction_id,
+                    &artifact_id,
+                    &timestamp,
+                )?;
+            }
+        }
+    }
+    for (item_id, transaction_id) in previous_items {
+        if current_item_ids.contains(item_id.as_str()) {
+            continue;
+        }
+        transaction
+            .execute(
+                "DELETE FROM finance_credit_card_statement_items WHERE statement_id=?1 AND id=?2",
+                params![statement.id, item_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if let Some(transaction_id) = transaction_id {
+            retire_stale_card_statement_transaction(
+                &transaction,
+                &transaction_id,
+                &artifact_id,
+                &timestamp,
+            )?;
+        }
+    }
+    let reconciliation_input =
+        load_card_reconciliation_input(&transaction, statement, &saved_statement.items)?;
+    let mut reconciliation = reconcile_card_service_consumption(&reconciliation_input);
+    persist_card_reconciliation(
+        &transaction,
+        statement.source_reference.as_deref(),
+        statement.raw_extraction.as_deref(),
+        &artifact_id,
+        &reconciliation,
+        &payload.context.actor_library_user_id,
+        &payload.context.source,
+    )?;
+    if !reconciliation.assignments.is_empty() {
+        reconciliation.status = if reconciliation.ambiguous_groups.is_empty() {
+            "applied".into()
+        } else {
+            "partial-applied".into()
+        };
+    }
+    let persisted_created_at: Option<String> = transaction
+        .query_row(
+            "SELECT created_at FROM finance_credit_card_statements WHERE id=?1",
+            [&statement.id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);
     sync_context(&payload.context, &app)?;
+    saved_statement.created_at = persisted_created_at;
+    let connection = validate_context(&payload.context, &app)?;
+    let occurrences = reconciliation
+        .assignments
+        .iter()
+        .map(|assignment| {
+            occurrence_from_connection(&connection, &assignment.service_id, &assignment.period)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(SavedCreditCardStatement {
         statement: saved_statement,
         matched_existing_transactions,
         created_transactions,
+        reconciliation,
+        occurrences,
     })
 }
 
@@ -1068,7 +1675,7 @@ pub fn finance_list_credit_card_statements(
             "SELECT s.id,s.account_id,s.issuer,s.card_last_four,s.period,s.closing_date,s.due_date,
                 s.currency,s.previous_balance,s.payments_amount,s.credits_amount,s.purchases_amount,
                 s.fees_amount,s.interest_amount,s.taxes_amount,s.total_due,s.minimum_payment,
-                s.validation_status,a.reference,a.raw_text
+                 s.validation_status,s.created_at,a.reference,a.raw_text
          FROM finance_credit_card_statements s
          JOIN finance_source_artifacts a ON a.id=s.source_artifact_id
          WHERE (?1 IS NULL OR s.period>=?1) AND (?2 IS NULL OR s.period<=?2)
@@ -1096,8 +1703,9 @@ pub fn finance_list_credit_card_statements(
                 total_due: row.get(15)?,
                 minimum_payment: row.get(16)?,
                 status: row.get(17)?,
-                source_reference: row.get(18)?,
-                raw_extraction: row.get(19)?,
+                created_at: row.get(18)?,
+                source_reference: row.get(19)?,
+                raw_extraction: row.get(20)?,
                 items: Vec::new(),
             })
         })
@@ -1244,6 +1852,77 @@ pub fn finance_save_installment_plan(
     Ok(result)
 }
 
+#[tauri::command]
+pub fn finance_list_installment_plans(
+    app: tauri::AppHandle,
+    context: FinanceContext,
+) -> FinanceCommandResult<Vec<InstallmentPlan>> {
+    let connection = validate_context(&context, &app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT p.id,p.account_id,COALESCE(m.name,''),p.description,p.purchase_date,p.currency,p.total_amount,p.installment_count
+             FROM finance_installment_plans p
+             LEFT JOIN finance_merchants m ON m.id=p.merchant_id
+             ORDER BY p.purchase_date DESC,p.created_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(InstallmentPlan {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                merchant_name: row.get(2)?,
+                description: row.get(3)?,
+                purchase_date: row.get(4)?,
+                currency: row.get(5)?,
+                total_amount: row.get(6)?,
+                installment_count: row.get(7)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListInstallmentsPayload {
+    pub context: FinanceContext,
+    pub plan_id: Option<String>,
+}
+
+#[tauri::command]
+pub fn finance_list_installments(
+    app: tauri::AppHandle,
+    payload: ListInstallmentsPayload,
+) -> FinanceCommandResult<Vec<Installment>> {
+    let connection = validate_context(&payload.context, &app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id,plan_id,installment_number,due_date,amount,status
+             FROM finance_installments
+             WHERE (?1 IS NULL OR plan_id=?1)
+             ORDER BY due_date,installment_number",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([payload.plan_id.as_deref()], |row| {
+            Ok(Installment {
+                id: row.get(0)?,
+                plan_id: row.get(1)?,
+                installment_number: row.get(2)?,
+                due_date: row.get(3)?,
+                amount: row.get(4)?,
+                status: row.get(5)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Investment {
@@ -1303,6 +1982,52 @@ pub fn finance_save_investment(
     drop(connection);
     sync_context(&payload.context, &app)?;
     Ok(item.clone())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListInvestmentsPayload {
+    pub context: FinanceContext,
+    pub active: Option<bool>,
+}
+
+#[tauri::command]
+pub fn finance_list_investments(
+    app: tauri::AppHandle,
+    payload: ListInvestmentsPayload,
+) -> FinanceCommandResult<Vec<Investment>> {
+    let connection = validate_context(&payload.context, &app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT i.id,i.account_id,i.name,i.asset_type,i.currency,i.active,
+                    COALESCE(v.valuation_date,''),COALESCE(v.amount,'0')
+             FROM finance_investments i
+             LEFT JOIN finance_valuations v ON v.id=(
+                 SELECT v2.id FROM finance_valuations v2
+                 WHERE v2.investment_id=i.id
+                 ORDER BY v2.valuation_date DESC,v2.created_at DESC LIMIT 1
+             )
+             WHERE (?1 IS NULL OR i.active=?1)
+             ORDER BY i.name",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([payload.active.map(|active| active as i32)], |row| {
+            Ok(Investment {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                asset_type: row.get(3)?,
+                currency: row.get(4)?,
+                active: row.get::<_, i32>(5)? != 0,
+                valuation_date: row.get(6)?,
+                valuation_amount: row.get(7)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
 }
 #[tauri::command]
 pub fn finance_get_net_worth(
@@ -1387,6 +2112,7 @@ mod tests {
             id: "p".into(),
             account_id: "a".into(),
             category_id: None,
+            service_id: None,
             merchant_name: "m".into(),
             observed_at: "2026-08-29".into(),
             currency: "ARS".into(),
@@ -1421,6 +2147,7 @@ mod tests {
             id: "included-tax".into(),
             account_id: "account".into(),
             category_id: None,
+            service_id: None,
             merchant_name: "Comercio".into(),
             observed_at: "2026-08-30".into(),
             currency: "ARS".into(),
@@ -1456,6 +2183,7 @@ mod tests {
             id: "rounded-fuel".into(),
             account_id: "account".into(),
             category_id: None,
+            service_id: None,
             merchant_name: "Estacion de servicio".into(),
             observed_at: "2026-08-28".into(),
             currency: "ARS".into(),
@@ -1491,6 +2219,7 @@ mod tests {
             id: "invalid-rounding".into(),
             account_id: "account".into(),
             category_id: None,
+            service_id: None,
             merchant_name: "Comercio".into(),
             observed_at: "2026-08-28".into(),
             currency: "ARS".into(),
@@ -1530,6 +2259,7 @@ mod tests {
             id: "p1".into(),
             account_id: "a".into(),
             category_id: None,
+            service_id: None,
             merchant_name: "Mercado".into(),
             observed_at: "2026-08-29".into(),
             currency: "ARS".into(),
@@ -1576,6 +2306,7 @@ mod tests {
             total_due: "2250".into(),
             minimum_payment: Some("500".into()),
             status: "confirmed".into(),
+            created_at: None,
             source_reference: Some("telegram-photo:file-1".into()),
             raw_extraction: None,
             items: [
@@ -1668,6 +2399,7 @@ mod tests {
             account_id: "account".into(),
             status: "confirmed".into(),
             signed_document: false,
+            created_at: None,
             source_reference: Some("telegram:salary.jpg".into()),
             raw_extraction: Some("recibo".into()),
             concepts: vec![SalaryConcept {
@@ -1699,6 +2431,7 @@ mod tests {
             account_id: "account".into(),
             status: "confirmed".into(),
             signed_document: true,
+            created_at: None,
             source_reference: Some("telegram:recibo-firmado.pdf".into()),
             raw_extraction: Some("Adelanto de aguinaldo. Firmado digitalmente.".into()),
             concepts: vec![],
@@ -1721,6 +2454,7 @@ mod tests {
             account_id: "account".into(),
             status: "confirmed".into(),
             signed_document: false,
+            created_at: None,
             source_reference: None,
             raw_extraction: None,
             concepts: vec![SalaryConcept {
@@ -1751,6 +2485,7 @@ mod tests {
                 account_id: "account".into(),
                 status: "confirmed".into(),
                 signed_document: false,
+                created_at: None,
                 source_reference: None,
                 raw_extraction: None,
                 concepts: Vec::new(),
@@ -1764,5 +2499,238 @@ mod tests {
         assert_eq!(rows[0].gross_change, "100.00");
         assert_eq!(rows[0].deductions_change, "10.00");
         assert_eq!(rows[0].net_change_percent.as_deref(), Some("10.00"));
+    }
+
+    #[test]
+    fn document_load_timestamp_is_camel_case_and_read_only_on_input() {
+        let salary = SalaryReceipt {
+            id: "salary".into(),
+            period: "2026-08".into(),
+            payment_date: "2026-08-31".into(),
+            employer: "Empresa SA".into(),
+            gross_amount: "100".into(),
+            deductions_total: "10".into(),
+            net_amount: "90".into(),
+            currency: "ARS".into(),
+            account_id: "account".into(),
+            status: "confirmed".into(),
+            signed_document: false,
+            created_at: Some("1767225600".into()),
+            source_reference: None,
+            raw_extraction: None,
+            concepts: vec![],
+        };
+        let serialized = serde_json::to_value(&salary).expect("salary DTO serializes");
+        assert_eq!(serialized["createdAt"], "1767225600");
+
+        let payload: SaveSalaryPayload = serde_json::from_value(serde_json::json!({
+            "context": {
+                "libraryPath": "library",
+                "actorLibraryUserId": "user-owner",
+                "source": "app"
+            },
+            "salary": {
+                "id": "salary",
+                "period": "2026-08",
+                "paymentDate": "2026-08-31",
+                "employer": "Empresa SA",
+                "grossAmount": "100",
+                "deductionsTotal": "10",
+                "netAmount": "90",
+                "currency": "ARS",
+                "accountId": "account",
+                "status": "confirmed",
+                "createdAt": "client-controlled-value",
+                "concepts": []
+            }
+        }))
+        .expect("salary payload deserializes");
+        assert_eq!(payload.salary.created_at, None);
+
+        let statement = valid_credit_card_statement();
+        let serialized = serde_json::to_value(&statement).expect("statement DTO serializes");
+        assert_eq!(serialized["createdAt"], serde_json::Value::Null);
+        let payload: SaveCreditCardStatementPayload = serde_json::from_value(serde_json::json!({
+            "context": {
+                "libraryPath": "library",
+                "actorLibraryUserId": "user-owner",
+                "source": "app"
+            },
+            "statement": {
+                "id": "statement",
+                "accountId": "card-account",
+                "issuer": "Banco Notia",
+                "period": "2026-08",
+                "closingDate": "2026-08-28",
+                "dueDate": "2026-09-08",
+                "currency": "ARS",
+                "previousBalance": "1000",
+                "paymentsAmount": "1000",
+                "creditsAmount": "100",
+                "purchasesAmount": "2000",
+                "feesAmount": "100",
+                "interestAmount": "50",
+                "taxesAmount": "200",
+                "totalDue": "2250",
+                "status": "confirmed",
+                "createdAt": "client-controlled-value",
+                "items": []
+            }
+        }))
+        .expect("statement payload deserializes");
+        assert_eq!(payload.statement.created_at, None);
+    }
+
+    #[test]
+    fn card_reconciliation_persistence_is_idempotent_and_versions_before_replacement() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        crate::database::migrate(&connection).expect("finance migrations");
+        connection
+            .execute(
+                "INSERT INTO finance_accounts(id,name,account_type,currency,opening_balance,active,created_at,updated_at)
+                 VALUES('card','Tarjeta','credit_card','ARS','0',1,'now','now')",
+                [],
+            )
+            .expect("card fixture");
+        connection
+            .execute(
+                "INSERT INTO finance_transactions(id,transaction_type,amount,currency,effective_date,account_id,description,source,status,created_at,updated_at)
+                 VALUES('card-line','expense','150.00','ARS','2026-08-15','card','Internet','credit_card_statement','confirmed','now','now')",
+                [],
+            )
+            .expect("transaction fixture");
+        connection
+            .execute(
+                "INSERT INTO finance_services(id,name,normalized_name,category_id,currency,expected_amount,modality,active,created_at,updated_at)
+                 VALUES('internet','Internet','internet','default-expense-services','ARS','100.00','fixed',1,'now','now')",
+                [],
+            )
+            .expect("service fixture");
+        connection
+            .execute(
+                "INSERT INTO finance_source_artifacts(id,source_type,reference,created_at)
+                 VALUES('statement-artifact','credit_card_statement','statement.pdf','now')",
+                [],
+            )
+            .expect("artifact fixture");
+        connection
+            .execute(
+                "INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,status,source,created_at,updated_at)
+                 VALUES('occurrence','internet','2026-08','100.00','pending','app','original','original')",
+                [],
+            )
+            .expect("occurrence fixture");
+        let reconciliation = CardServiceReconciliation {
+            status: "ready".into(),
+            assignments: vec![crate::finance_reconciliation::CardServiceAssignment {
+                statement_id: "statement".into(),
+                line_id: "line".into(),
+                service_id: "internet".into(),
+                transaction_id: "card-line".into(),
+                purchase_date: "2026-08-15".into(),
+                period: "2026-08".into(),
+                amount: "150.00".into(),
+                currency: "ARS".into(),
+                assignment_status: "new".into(),
+                evidence: serde_json::json!({"lineId":"line"}),
+            }],
+            ambiguous_groups: vec![],
+            reasons: vec![],
+        };
+        let statement = CreditCardStatement {
+            id: "statement".into(),
+            account_id: "card".into(),
+            issuer: "Banco".into(),
+            card_last_four: None,
+            period: "2026-08".into(),
+            closing_date: "2026-08-28".into(),
+            due_date: "2026-09-08".into(),
+            currency: "ARS".into(),
+            previous_balance: "0".into(),
+            payments_amount: "0".into(),
+            credits_amount: "0".into(),
+            purchases_amount: "150".into(),
+            fees_amount: "0".into(),
+            interest_amount: "0".into(),
+            taxes_amount: "0".into(),
+            total_due: "150".into(),
+            minimum_payment: None,
+            status: "confirmed".into(),
+            created_at: None,
+            source_reference: Some("statement.pdf".into()),
+            raw_extraction: Some("raw".into()),
+            items: vec![],
+        };
+        for _ in 0..2 {
+            let transaction = connection.transaction().expect("transaction");
+            persist_card_reconciliation(
+                &transaction,
+                statement.source_reference.as_deref(),
+                statement.raw_extraction.as_deref(),
+                "statement-artifact",
+                &reconciliation,
+                "user-owner",
+                "app",
+            )
+            .expect("persist reconciliation");
+            transaction.commit().expect("commit reconciliation");
+        }
+        let occurrence: (Option<String>, String, String) = connection
+            .query_row(
+                "SELECT paid_amount,created_at,status FROM finance_service_occurrences
+                 WHERE id='occurrence'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("persisted occurrence");
+        assert_eq!(occurrence.0.as_deref(), Some("150.00"));
+        assert_eq!(occurrence.1, "original");
+        assert_eq!(occurrence.2, "accepted");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM finance_service_occurrence_versions
+                     WHERE occurrence_id='occurrence'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("version count"),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT service_id FROM finance_transactions WHERE id='card-line'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .expect("transaction link")
+                .as_deref(),
+            Some("internet")
+        );
+        let mut invalid = reconciliation.clone();
+        invalid.assignments[0].amount = "999.00".into();
+        let transaction = connection.transaction().expect("rollback transaction");
+        assert!(persist_card_reconciliation(
+            &transaction,
+            statement.source_reference.as_deref(),
+            statement.raw_extraction.as_deref(),
+            "statement-artifact",
+            &invalid,
+            "user-owner",
+            "app",
+        )
+        .is_err());
+        drop(transaction);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT paid_amount FROM finance_service_occurrences WHERE id='occurrence'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .expect("rollback keeps occurrence"),
+            Some("150.00".into())
+        );
     }
 }

@@ -30,8 +30,9 @@ describe('runPublishedTaskManagerChatReply', () => {
     await expect(runPublishedTaskManagerHostChatReply({
       aiPreferences,
       library: { id: 'published', name: 'Publicada', path: 'C:/Vault' },
-      taskManagerScopeKey: 'task-manager:panel:equipo',
-      scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
+       taskManagerScopeKey: 'task-manager:panel:equipo',
+       scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
+       publishedBoardNames: ['equipo'],
       prompt: 'Move el ticket',
       previousMessages: [],
       signal,
@@ -41,8 +42,9 @@ describe('runPublishedTaskManagerChatReply', () => {
       scope: 'task-manager',
       publishedScope: true,
       persistencePolicy: 'published-no-memory',
-      taskManagerScopeKey: 'task-manager:panel:equipo',
-      scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
+       taskManagerScopeKey: 'task-manager:panel:equipo',
+       scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
+       publishedBoardNames: ['equipo'],
     }))
     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({
       agent,

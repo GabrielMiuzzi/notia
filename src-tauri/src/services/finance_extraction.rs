@@ -1,6 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use reqwest::multipart::{Form, Part};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -25,6 +26,17 @@ pub struct FinanceExtractionResult {
     pub extractor: String,
     pub status: String,
     pub raw_result: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceArtifactStatus {
+    pub artifact_id: String,
+    pub source_type: String,
+    pub reference: Option<String>,
+    pub content_hash: Option<String>,
+    pub created_at: String,
+    pub extraction: Option<FinanceExtractionResult>,
 }
 
 trait FinanceExtractionAdapter {
@@ -149,11 +161,11 @@ fn validated_document(
 ) -> Result<(String, String, Vec<u8>), String> {
     if !matches!(
         payload.document_type.as_str(),
-        "ticket" | "salary" | "credit_card_statement"
+        "ticket" | "salary" | "credit_card_statement" | "service_invoice"
     ) || payload.artifact_id.trim().is_empty()
     {
         return Err(
-            "El documento requiere tipo ticket, salary o credit_card_statement e identificador."
+            "El documento requiere tipo ticket, salary, credit_card_statement o service_invoice e identificador."
                 .into(),
         );
     }
@@ -205,8 +217,48 @@ pub async fn extract_finance_document(
     app: tauri::AppHandle,
     payload: ExtractFinanceDocumentPayload,
 ) -> FinanceCommandResult<FinanceExtractionResult> {
+    // Authorization is deliberately the first operation. Path canonicalization,
+    // file reads and the external adapter must never run for an unauthorized
+    // actor or an invalid source.
+    let connection = validate_context(&payload.context, &app)?;
     let (name, mime, bytes) = validated_document(&payload)?;
     let content_hash = format!("{:x}", Sha256::digest(&bytes));
+    if let Some((stored_hash, stored_type, stored_reference)) = connection
+        .query_row(
+            "SELECT content_hash,source_type,reference FROM finance_source_artifacts WHERE id=?1",
+            [&payload.artifact_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    {
+        if stored_hash.as_deref() != Some(content_hash.as_str())
+            || stored_type != payload.document_type
+            || stored_reference.as_deref() != Some(payload.file_path.as_str())
+        {
+            return Err("El artefacto ya existe con otro documento o tipo.".into());
+        }
+        if let Some(raw_result) = connection
+            .query_row(
+                "SELECT raw_result FROM finance_extraction_results WHERE source_artifact_id=?1 AND extractor='llamacloud-v2' AND status='completed' ORDER BY created_at DESC LIMIT 1",
+                [&payload.artifact_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+        {
+            let raw_result = serde_json::from_str(&raw_result).map_err(|_| "La extracción guardada no es válida.".to_string())?;
+            drop(connection);
+            return Ok(FinanceExtractionResult { artifact_id: payload.artifact_id, extractor: "llamacloud-v2".into(), status: "completed".into(), raw_result });
+        }
+    }
+    drop(connection);
     let adapter = LlamaCloudAdapter::from_environment()?;
     let raw_result = adapter.extract(&name, &mime, bytes).await?;
     let raw_json = serde_json::to_string(&raw_result)
@@ -216,8 +268,8 @@ pub async fn extract_finance_document(
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,content_hash,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,content_hash=excluded.content_hash",rusqlite::params![payload.artifact_id,payload.document_type,payload.file_path,content_hash,timestamp]).map_err(|error|error.to_string())?;
-    transaction.execute("INSERT INTO finance_extraction_results(id,source_artifact_id,extractor,raw_result,status,created_at) VALUES(?1,?2,'llamacloud-v2',?3,'completed',?4)",rusqlite::params![uuid::Uuid::new_v4().to_string(),payload.artifact_id,raw_json,timestamp]).map_err(|error|error.to_string())?;
+    transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,content_hash,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET source_type=excluded.source_type,reference=excluded.reference,content_hash=excluded.content_hash",rusqlite::params![payload.artifact_id,payload.document_type,payload.file_path,content_hash,timestamp]).map_err(|error| if error.to_string().contains("UNIQUE") { "El documento ya fue extraído con otro identificador.".to_string() } else { error.to_string() })?;
+    transaction.execute("INSERT INTO finance_extraction_results(id,source_artifact_id,extractor,raw_result,status,created_at) VALUES(?1,?2,'llamacloud-v2',?3,'completed',?4) ON CONFLICT(source_artifact_id) DO UPDATE SET extractor=excluded.extractor,raw_result=excluded.raw_result,status=excluded.status,created_at=excluded.created_at",rusqlite::params![uuid::Uuid::new_v4().to_string(),payload.artifact_id,raw_json,timestamp]).map_err(|error|error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);
     sync_context(&payload.context, &app)?;
@@ -227,4 +279,54 @@ pub async fn extract_finance_document(
         status: "completed".into(),
         raw_result,
     })
+}
+
+#[tauri::command]
+pub fn list_finance_artifacts(
+    app: tauri::AppHandle,
+    context: FinanceContext,
+) -> FinanceCommandResult<Vec<FinanceArtifactStatus>> {
+    let connection = validate_context(&context, &app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT a.id,a.source_type,a.reference,a.content_hash,a.created_at,
+                    e.extractor,e.status,e.raw_result
+             FROM finance_source_artifacts a
+             LEFT JOIN finance_extraction_results e ON e.id=(
+                 SELECT e2.id FROM finance_extraction_results e2
+                 WHERE e2.source_artifact_id=a.id
+                 ORDER BY e2.created_at DESC LIMIT 1
+             )
+             WHERE a.deleted_at IS NULL
+             ORDER BY a.created_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let raw_result = row
+                .get::<_, Option<String>>(7)?
+                .map(|value| serde_json::from_str(&value))
+                .transpose()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(FinanceArtifactStatus {
+                artifact_id: row.get(0)?,
+                source_type: row.get(1)?,
+                reference: row.get(2)?,
+                content_hash: row.get(3)?,
+                created_at: row.get(4)?,
+                extraction: row
+                    .get::<_, Option<String>>(5)?
+                    .zip(row.get::<_, Option<String>>(6)?)
+                    .map(|(extractor, status)| FinanceExtractionResult {
+                        artifact_id: row.get(0).unwrap_or_default(),
+                        extractor,
+                        status,
+                        raw_result: raw_result.clone().unwrap_or(serde_json::Value::Null),
+                    }),
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
 }

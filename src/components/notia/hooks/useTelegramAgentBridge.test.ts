@@ -20,6 +20,8 @@ describe('Telegram universal scope', () => {
     expect(isTelegramFinanceRequest('Digital, crea una nueva categoria llamada transporte.')).toBe(true)
     expect(isTelegramFinanceRequest('cual es la ultima cotizacion del dolar?')).toBe(true)
     expect(isTelegramFinanceRequest('como esta el IPC interanual?')).toBe(true)
+    expect(isTelegramFinanceRequest('Factura de luz por 1200 pesos')).toBe(true)
+    expect(isTelegramFinanceRequest('Pagué 1200 de luz')).toBe(true)
   })
 
   it('keeps every Telegram request in the universal library scope', () => {

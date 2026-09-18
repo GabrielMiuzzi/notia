@@ -183,9 +183,10 @@ function replaceMarkdownBody(content: string, nextBody: string): string {
 export async function executeTaskManagerAgentMutation(
   vaultPath: string,
   mutation: TaskManagerAgentMutation,
+  authorization: { allowedBoardNames?: readonly string[] } = {},
 ): Promise<void> {
   return enqueueTaskManagerMutation((mutationContext) => (
-    executeTaskManagerAgentMutationQueued(vaultPath, mutation, mutationContext)
+    executeTaskManagerAgentMutationQueued(vaultPath, mutation, mutationContext, authorization)
   ))
 }
 
@@ -193,6 +194,7 @@ async function executeTaskManagerAgentMutationQueued(
   vaultPath: string,
   mutation: TaskManagerAgentMutation,
   mutationContext: TaskManagerMutationContext,
+  authorization: { allowedBoardNames?: readonly string[] },
 ): Promise<void> {
   const initialSnapshot = await loadTaskManagerSnapshot(vaultPath)
   const initialSharedSettings = loadTaskManagerSettings()
@@ -206,7 +208,7 @@ async function executeTaskManagerAgentMutationQueued(
       journalActive = true
     }
     publicationBatchActive = await beginTaskManagerPublicationBatch(mutationContext.operationId)
-    const changedPaths = await executeTaskManagerAgentMutationInternal(vaultPath, mutation, mutationContext)
+    const changedPaths = await executeTaskManagerAgentMutationInternal(vaultPath, mutation, mutationContext, authorization)
     if (journalPath) {
       try {
         await recordTaskManagerMutationJournalChangedPaths(
@@ -312,11 +314,26 @@ async function executeTaskManagerAgentMutationInternal(
   vaultPath: string,
   mutation: TaskManagerAgentMutation,
   mutationContext: TaskManagerMutationContext,
+  authorization: { allowedBoardNames?: readonly string[] },
 ): Promise<string[]> {
   const snapshot = await loadTaskManagerSnapshot(vaultPath)
+  const allowedBoards = authorization.allowedBoardNames === undefined
+    ? null
+    : new Set(authorization.allowedBoardNames.map((board) => board.trim().toLocaleLowerCase()).filter(Boolean))
+  const assertAllowedBoard = (board: string): void => {
+    if (allowedBoards && !allowedBoards.has(board.trim().toLocaleLowerCase())) {
+      throw new Error('El tablero no pertenece a la publicación autorizada.')
+    }
+  }
+  const assertAllowedTask = (taskPath: string): TaskItem => {
+    const task = findTask(snapshot.tasks, taskPath)
+    assertAllowedBoard(task.board)
+    return task
+  }
   let affectedBoard: string | undefined
 
   if (mutation.kind === 'create-group') {
+    assertAllowedBoard(mutation.board)
     const board = requireBoard(mutation.board)
     const name = requireText(mutation.name, 'El nombre del grupo', 120)
     const color = requireGroupColor(mutation.color)
@@ -331,6 +348,7 @@ async function executeTaskManagerAgentMutationInternal(
     )
     affectedBoard = board
   } else if (mutation.kind === 'delete-group') {
+    assertAllowedBoard(mutation.board)
     const board = requireBoard(mutation.board)
     const name = requireText(mutation.name, 'El nombre del grupo', 120)
     const settings = loadTaskManagerSettings()
@@ -347,6 +365,7 @@ async function executeTaskManagerAgentMutationInternal(
     }, mutationContext)
     affectedBoard = board
   } else if (mutation.kind === 'create') {
+    assertAllowedBoard(mutation.board)
     const title = requireText(mutation.title, 'El titulo', 180)
     const content = optionalText(mutation.content, 'El contenido')
     const group = validateGroup(mutation.board, mutation.group)
@@ -370,7 +389,7 @@ async function executeTaskManagerAgentMutationInternal(
     }
     affectedBoard = mutation.board
   } else if (mutation.kind === 'bulk-update') {
-    const tasks = mutation.taskPaths.map((taskPath) => findTask(snapshot.tasks, taskPath))
+    const tasks = mutation.taskPaths.map(assertAllowedTask)
     if (tasks.length === 0 || tasks.length > 50) throw new Error('La actualización masiva debe incluir entre 1 y 50 tickets.')
     const originalSources = await Promise.all(tasks.map(async (task) => {
       const source = await readTaskMarkdownSourceWithRevision(vaultPath, task.filePath)
@@ -409,7 +428,7 @@ async function executeTaskManagerAgentMutationInternal(
         : `La actualizacion masiva fallo (${reason}); se revirtieron ${appliedTasks.length} ticket(s).`)
     }
   } else if (mutation.kind === 'duplicate') {
-    const sourceTask = findTask(snapshot.tasks, mutation.taskPath)
+    const sourceTask = assertAllowedTask(mutation.taskPath)
     const title = requireText(mutation.title, 'El titulo', 180)
     const sourceContent = await readTaskMarkdownSource(vaultPath, sourceTask.filePath)
     const formData: TaskFormData = {
@@ -431,7 +450,7 @@ async function executeTaskManagerAgentMutationInternal(
     }
     affectedBoard = sourceTask.board
   } else {
-    const task = findTask(snapshot.tasks, mutation.taskPath)
+    const task = assertAllowedTask(mutation.taskPath)
     affectedBoard = task.board
     if (mutation.kind === 'replace-content') {
       const content = requireText(mutation.content, 'El contenido')

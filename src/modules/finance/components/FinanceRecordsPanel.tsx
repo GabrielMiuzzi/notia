@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useConfirmationEngine } from "../../../context/confirmation/useConfirmationEngine";
 import type { NotiaLibrary } from "../../../types/notia";
 import {
   getFinanceNetWorth,
@@ -13,6 +14,9 @@ import {
   saveFinancePurchase,
   saveFinanceSalary,
   saveFinanceCreditCardStatement,
+  queueFinanceAudit,
+  listFinanceServices,
+  listFinanceServiceOccurrences,
 } from "../services/financeService";
 import type {
   FinanceAccount,
@@ -29,6 +33,8 @@ import type {
 import { validateTicketArithmetic } from "../engines/ticketValidation";
 import { parseSalaryExtraction } from "../engines/salaryExtraction";
 import { financeErrorMessage } from "../engines/financeError";
+import { formatFinanceLoadedDate } from "../engines/financeLoadedDate";
+import { reconcileFinanceCardServices } from "../engines/serviceEngine";
 import { CreditCardStatementForm } from "./CreditCardStatementForm";
 import { CreditCardEvolutionChart } from "./CreditCardEvolutionChart";
 import { DebtRatioEvolutionChart } from "./DebtRatioEvolutionChart";
@@ -56,6 +62,7 @@ function formatSalaryNet(amount: string, currency: FinanceCurrency): string {
 }
 
 export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
+  const { confirm } = useConfirmationEngine();
   const [form, setForm] = useState<FormKind>(null);
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
   const [prices, setPrices] = useState<FinancePriceObservation[]>([]);
@@ -129,7 +136,7 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
         </article>
         <article className="finance-card">
           <h3>Últimos sueldos</h3>
-          {latestSalaries.length ? <ul className="finance-category-list">{latestSalaries.map(({ salary }) => <li key={salary.id}><span>{salary.period} · {salary.employer}<small>Cobrado el {salary.paymentDate}</small></span><strong>Neto {formatSalaryNet(salary.netAmount, salary.currency)}</strong></li>)}</ul> : <p className="finance-muted">Sin recibos registrados.</p>}
+          {latestSalaries.length ? <ul className="finance-category-list">{latestSalaries.map(({ salary }) => { const loadedDate = formatFinanceLoadedDate(salary.createdAt); return <li key={salary.id}><span>{salary.period} · {salary.employer}<small>Cobrado el {salary.paymentDate}{loadedDate && <><br />Cargado el {loadedDate}</>}</small></span><strong>Neto {formatSalaryNet(salary.netAmount, salary.currency)}</strong></li> })}</ul> : <p className="finance-muted">Sin recibos registrados.</p>}
         </article>
       </div>
       <div className="finance-grid">
@@ -151,16 +158,28 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
       <div className="finance-grid">
         <article className="finance-card">
           <h3>Resúmenes de tarjeta</h3>
-          {cardStatements.length ? <ul className="finance-category-list">{cardStatements.slice(0, 8).map((statement) => <li key={statement.id}><span>{statement.issuer}{statement.cardLastFour ? ` · •••• ${statement.cardLastFour}` : ""}<small>{statement.period} · vence {statement.dueDate} · {statement.items.length} movimientos</small></span><strong>{statement.currency} {statement.totalDue}</strong></li>)}</ul> : <p className="finance-muted">Sin resúmenes registrados.</p>}
+          {cardStatements.length ? <ul className="finance-category-list">{cardStatements.slice(0, 8).map((statement) => { const loadedDate = formatFinanceLoadedDate(statement.createdAt); return <li key={statement.id}><span>{statement.issuer}{statement.cardLastFour ? ` · •••• ${statement.cardLastFour}` : ""}<small>{statement.period} · vence {statement.dueDate} · {statement.items.length} movimientos{loadedDate && <><br />Cargado el {loadedDate}</>}</small></span><strong>{statement.currency} {statement.totalDue}</strong></li> })}</ul> : <p className="finance-muted">Sin resúmenes registrados.</p>}
         </article>
         <article className="finance-card">
           <h3>Tratamiento contable</h3>
           <p className="finance-muted">Los consumos y cargos crean gastos en la cuenta de tarjeta. Pagos y créditos concilian el resumen; el total a pagar no se duplica como gasto.</p>
         </article>
       </div>
-      {form === "ticket" && <TicketForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (purchase) => { await saveFinancePurchase(library, purchase); await saved(); }} />}
-      {form === "salary" && <SalaryForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (salary) => { await saveFinanceSalary(library, salary); await saved(); }} />}
-      {form === "card-statement" && <CreditCardStatementForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (statement) => { await saveFinanceCreditCardStatement(library, statement); await saved(); }} />}
+      {form === "ticket" && <TicketForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (purchase) => { await saveFinancePurchase(library, purchase); await queueFinanceAudit(library, purchase.observedAt.slice(0, 7), `ui:purchase:${purchase.id}`, "Alta de compra desde Finanzas"); await saved(); }} />}
+      {form === "salary" && <SalaryForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (salary) => { await saveFinanceSalary(library, salary); await queueFinanceAudit(library, salary.paymentDate.slice(0, 7), `ui:salary:${salary.id}`, "Alta de sueldo desde Finanzas"); await saved(); }} />}
+      {form === "card-statement" && <CreditCardStatementForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (statement) => {
+        const [services, occurrences] = await Promise.all([listFinanceServices(library), listFinanceServiceOccurrences(library, statement.period)]);
+        const preview = reconcileFinanceCardServices({ ...statement, items: statement.items.map((item) => ({ ...item, transactionId: item.transactionId ?? `preview:${item.id}` })) }, services, occurrences);
+        const previewText = preview.assignments.map((assignment) => `${assignment.lineId} → ${assignment.period}`).join(", ") || "sin asignaciones automáticas";
+        const ambiguityText = preview.ambiguousGroups.length ? ` Hay ${preview.ambiguousGroups.length} grupo(s) ambiguo(s) que no se asignarán automáticamente.` : "";
+        const accepted = await confirm({ title: "Vista previa del resumen y conciliación", message: `Se guardará el resumen del período ${statement.period}. Conciliación prevista: ${previewText}.${ambiguityText}`, confirmLabel: "Continuar", tone: "default" });
+        if (!accepted) return;
+        const reinforced = await confirm({ title: "Confirmación reforzada", message: "Confirmá nuevamente para persistir el resumen y aplicar únicamente las asociaciones inequívocas.", confirmLabel: "Guardar resumen", tone: "danger" });
+        if (!reinforced) return;
+        await saveFinanceCreditCardStatement(library, statement);
+        await queueFinanceAudit(library, statement.period, `ui:card-statement:${statement.id}`, "Alta de resumen de tarjeta desde Finanzas");
+        await saved();
+      }} />}
       {form === "installments" && <InstallmentForm accounts={accounts} onCancel={() => setForm(null)} onSave={async (plan) => { await saveFinanceInstallmentPlan(library, plan); await saved(); }} />}
       {form === "investment" && <InvestmentForm accounts={accounts} onCancel={() => setForm(null)} onSave={async (investment) => { await saveFinanceInvestment(library, investment); await saved(); }} />}
     </section>

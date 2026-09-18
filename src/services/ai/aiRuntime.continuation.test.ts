@@ -107,6 +107,25 @@ describe('agent execution continuation', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+  it('recovers a transient empty native response after a tool round', async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+      .mockResolvedValueOnce({ message: { content: '' } })
+      .mockResolvedValueOnce({ message: { content: 'La memoria quedó actualizada.' } })
+
+    const answer = await runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde la consulta.',
+      prompt: 'Guardá esta información en memoria.',
+      previousMessages: [],
+      tools,
+      streamFinalResponse: false,
+      executeTool: vi.fn().mockResolvedValue({ ok: true, changed: true }),
+    })
+
+    expect(answer).toBe('La memoria quedó actualizada.')
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(3)
+  })
+
   it('stops with an actionable error after two unsuccessful corrections', async () => {
     vi.mocked(invoke).mockResolvedValue({ message: { content: 'Voy a insertar el gráfico.' } })
     const executeTool = vi.fn()
@@ -129,6 +148,36 @@ describe('agent execution continuation', () => {
     expect(answer).toContain('cancelaste')
     expect(executeTool).toHaveBeenCalledOnce()
     expect(invoke).toHaveBeenCalledOnce()
+  })
+
+  it('continues from an audit preview to the confirmed application', async () => {
+    const previewCall: AiNativeToolCall = {
+      function: { name: 'preview_finance_audit_proposal', arguments: { proposalId: 'proposal-1' } },
+    }
+    const applyCall: AiNativeToolCall = {
+      function: {
+        name: 'apply_finance_audit_proposal',
+        arguments: { proposalId: 'proposal-1', proposalType: 'service-card-reconciliation', expectedDataFingerprint: 'fingerprint-1', decision: 'accepted' },
+      },
+    }
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [previewCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [applyCall] } })
+    const executeTool = vi.fn()
+      .mockResolvedValueOnce({ ok: true, proposal: { proposalType: 'service-card-reconciliation', period: '2026-09' }, expectedDataFingerprint: 'fingerprint-1' })
+      .mockResolvedValueOnce({ ok: true, changed: true, decision: 'accepted', proposalType: 'service-card-reconciliation', period: '2026-09' })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Resuelve auditorías locales.', prompt: 'Sí, hacelo.', previousMessages: [], streamFinalResponse: false,
+      tools: [previewCall, applyCall].map((call) => ({ type: 'function' as const, function: { name: call.function.name, description: 'test', parameters: {} } })),
+      executeTool,
+      resolveToolResultAnswer: (call, result) => call.function.name === 'apply_finance_audit_proposal'
+        ? `Listo: ${(result as { decision: string }).decision}.`
+        : null,
+    })).resolves.toBe('Listo: accepted.')
+
+    expect(executeTool.mock.calls.map(([call]) => call)).toEqual([previewCall, applyCall])
+    expect(invoke).toHaveBeenCalledTimes(2)
   })
 
   it('does not fall back to the desktop tool transport from a published session', async () => {

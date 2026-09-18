@@ -16,6 +16,7 @@ import {
   loadRightPanelWidth,
   saveRightPanelWidth,
 } from '../../services/preferences/rightPanelStorage'
+import { shouldSelectMatchingRightPanelChat } from './hooks/useRightPanelChatContext'
 
 interface NotiaRightPanelProps {
   isMeetingContext: boolean
@@ -170,7 +171,8 @@ function NotiaRightPanelComponent({
                 )
               }}
               persistTransientContext={false}
-              selectMatchingChatOnly
+              ephemeralChat={agentScope === 'graph'}
+               selectMatchingChatOnly={shouldSelectMatchingRightPanelChat(rightPanelPreferredContextScopeKey, rightPanelPreferredContextPaths)}
               historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
               onChatCreated={chatCallbacks.onChatCreated}
               onChatDeleted={chatCallbacks.onChatDeleted}

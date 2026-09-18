@@ -3,8 +3,9 @@ import type { AiPreferences } from '../../../services/preferences/aiSettingsStor
 import type { TelegramPendingAgentRequestStatus, TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
 import { loadTelegramPendingAgentRequests, loadTelegramUpdateCheckpoint, mergeTelegramUpdateCheckpoint, rememberTelegramUpdate, saveTelegramPendingAgentRequests, saveTelegramUpdateCheckpoint, type TelegramAgentRequestScope, type TelegramPendingAgentRequest, type TelegramPersistedPlan } from '../../../services/preferences/telegramSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
-import { createChatScopedAgent } from '../../../services/chat/chatScopedAgentRuntime'
-import { runNotiaChatReply } from '../../../services/chat/notiaChatRuntime'
+import { createGlobalAiAgent, runGlobalAiChat } from '../../../services/chat/globalAiChatRuntime'
+import { createGlobalAiRequest } from '../../../types/ai/globalAiContract'
+import { buildWorkspaceAiSnapshot } from '../../../services/ai/workspaceAiSnapshotRuntime'
 import { loadSelectedAgentPromptFileName } from '../../../services/ai/agentPromptRuntime'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import { loadLibraryFileOptions } from '../../../services/chat/chatAttachmentRuntime'
@@ -12,8 +13,6 @@ import { verifyFinanceSalaryPersistence } from '../../../modules/finance/service
 import type { FinanceSalaryReceipt } from '../../../modules/finance/types/financeTypes'
 import { answerTelegramCallback, downloadTelegramPhoto, editTelegramMessage, extractTelegramPdf, pollTelegramUpdates, sendTelegramMessage, transcribeTelegramAudio, type TelegramUpdate } from '../../../services/telegram/telegramRuntime'
 import type { MutationPreview } from '../../../types/ai/agentContracts'
-import { scheduleLongTermMemoriesForTurn } from '../../../services/chat/chatLongTermMemorySync'
-import { loadAgentMemories } from '../../../services/ai/agentPromptRuntime'
 import type { AiImageAttachment } from '../../../services/ai/aiRuntime'
 import { classifyWebSearchNeed } from '../../../services/ai/webSearchRuntime'
 import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
@@ -134,7 +133,7 @@ export function isTelegramFinanceRequest(value: string): boolean {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLocaleLowerCase('es')
-  const financeTerms = /\b(finanzas?|financier[oa]s?|gast(?:o|os|e|aste|amos|ar)|pague|pagaste|pago|cobre|cobraste|cobro|ingreso|ingresos|saldo|saldos|cuenta|cuentas|categoria|categorias|ahorro|ahorros|retiro|aporte|transferencia|movimiento|movimientos|sueldo|ticket|precio|nafta|combustible|cotizacion(?:es)?|dolar(?:es)?|inflacion|ipc|oficial|blue)\b/
+  const financeTerms = /\b(finanzas?|financier[oa]s?|gast(?:o|os|e|aste|amos|ar)|pague|pagaste|pago|cobre|cobraste|cobro|ingreso|ingresos|saldo|saldos|cuenta|cuentas|categoria|categorias|ahorro|ahorros|retiro|aporte|transferencia|movimiento|movimientos|sueldo|ticket|factura|boleta|servicio|luz|gas|internet|precio|nafta|combustible|cotizacion(?:es)?|dolar(?:es)?|inflacion|ipc|oficial|blue)\b/
   if (financeTerms.test(normalized)) return true
   const moneyAmount = /(?:\$\s*\d|\b\d+(?:[.,]\d{1,2})?\s*(?:ars|usd|pesos?)\b)/
   const financeVerb = /\b(carg(?:a|ue|aste|amos|ar|ado)|anot(?:a|alo|arla|ar|e|aste|amos|ado)|registr(?:a|alo|arla|ar|e|aste|amos|ado))\b/
@@ -480,9 +479,9 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             if (!downloaded.extractedContent.trim()) {
               const pages = await renderTelegramPdfPages(downloaded.base64 ?? '')
             image = { name: downloaded.fileName, mimeType: 'image/jpeg', base64: pages[0], additionalBase64: pages.slice(1) }
-              text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}, renderizado como ${pages.length} imagen(es). Analiza visualmente todas las páginas y clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro. Extrae todos los campos legibles y usa la herramienta financiera correspondiente.]`
+             text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}, renderizado como ${pages.length} imagen(es). Analiza visualmente todas las páginas y clasifica el documento como factura/boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito, ticket u otro. Extrae todos los campos legibles y usa la herramienta financiera correspondiente; para una factura de servicio usa create_finance_service_invoice sin crear un gasto genérico adicional.]`
             } else {
-            text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente. Para un recibo de sueldo usa signedDocument=true solo si el contenido indica firma digital, electrónica o manuscrita; en ese caso conserva el neto impreso aunque difiera de bruto menos descuentos.`
+             text = `${text ? `${text}\n\n` : ''}[Origen: PDF de Telegram fileId=${downloaded.fileId}. Contenido extraído por el extractor documental: ${downloaded.extractedContent}] Clasifica el documento como factura/boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito, ticket u otro y usa la herramienta financiera correspondiente. Para una factura de servicio usa create_finance_service_invoice sin crear un gasto genérico adicional. Para un recibo de sueldo usa signedDocument=true solo si el contenido indica firma digital, electrónica o manuscrita; en ese caso conserva el neto impreso aunque difiera de bruto menos descuentos.`
             }
             publishProgress({ type: 'phase-changed', phase: 'reading', round: null })
           } else {
@@ -503,7 +502,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           image = { name: `telegram-${downloaded.fileId}.jpg`, mimeType: downloaded.mimeType, base64: downloaded.base64 }
           financeSourceReference = buildTelegramFinanceSourceReference(downloaded.fileId)
           pendingFinanceSourceReferenceRef.current = financeSourceReference
-          text = text || `[Origen: imagen de Telegram fileId=${downloaded.fileId}. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Si es ticket, extrae comercio, fecha, moneda, total y productos. Si es recibo de sueldo, extrae período, fecha de cobro, empleador, bruto, descuentos, neto, moneda y conceptos. Si es un resumen de tarjeta, extrae emisor, últimos cuatro dígitos, período, cierre, vencimiento, moneda, saldo anterior, pagos, créditos, compras, cargos, intereses, impuestos, total, pago mínimo y todas las líneas.]`
+           text = text || `[Origen: imagen de Telegram fileId=${downloaded.fileId}. Clasifica el documento como factura/boleta de servicio, ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Si es factura/boleta de servicio, extrae proveedor, servicio, período, emisión, vencimiento, importe y moneda, y usa create_finance_service_invoice sin duplicar un gasto. Si es ticket, extrae comercio, fecha, moneda, total y productos. Si es recibo de sueldo, extrae período, fecha de cobro, empleador, bruto, descuentos, neto, moneda y conceptos. Si es un resumen de tarjeta, extrae emisor, últimos cuatro dígitos, período, cierre, vencimiento, moneda, saldo anterior, pagos, créditos, compras, cargos, intereses, impuestos, total, pago mínimo y todas las líneas.]`
           }
         }
         phase = 'building-agent'
@@ -512,16 +511,27 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const agentBuildStartedAt = performance.now()
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent context build started', undefined, 'info')
         const files = await loadLibraryFileOptions(state.library)
-        const agent = await createChatScopedAgent({
+        const agent = await createGlobalAiAgent({
           scope: 'library',
           enableFinanceTools: true,
           validateFinanceResponses: request.scope === 'finance',
           library: state.library,
           scopePaths: files.map((file) => file.path),
           actorUserId: request.actorUserId,
+          financeSource: 'telegram',
+          financeRequestId: request.requestId,
+          actor: {
+            libraryUserId: request.actorLibraryUserId ?? 'user-owner',
+            externalIdentity: {
+              provider: 'telegram',
+              userId: request.actorUserId,
+              chatId: authorizedChatId,
+            },
+          },
           aiPreferences: state.aiPreferences,
           promptFileName: loadSelectedAgentPromptFileName(state.library.id),
           responseFormat: 'telegram-html',
+          persistencePolicy: 'ephemeral-no-memory',
           financeSourceReference,
           onFinancePurchaseSaved: (sourceReference) => {
             if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
@@ -548,10 +558,15 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           toolCount: agent.tools.length,
         }, 'info')
         phase = 'running-ollama'
-        const answer = await runNotiaChatReply(state.aiPreferences, {
-          requestId: request.requestId,
+        const replyOptions = {
+          abortSignal: abortController.signal,
+          onThinkingDelta: () => {
+            publishThinkingStarted()
+          },
+          onAgentProgress: publishProgress,
+        }
+        const replyInput = {
           agent,
-          prompt: text,
           image,
           previousMessages: historyRef.current,
           intentContext: {},
@@ -559,17 +574,36 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           streamFinalResponse: false,
           maxRounds: request.attachment ? TELEGRAM_IMAGE_AI_MAX_ROUNDS : undefined,
           diagnosticModule: request.attachment ? TELEGRAM_AI_DIAGNOSTIC_MODULE : undefined,
-        }, {
-          abortSignal: abortController.signal,
-          onThinkingDelta: () => {
-            publishThinkingStarted()
-          },
-          onAgentProgress: publishProgress,
-        })
+        }
+        const answer = await runGlobalAiChat(state.aiPreferences, {
+            request: createGlobalAiRequest({
+              libraryId: state.library.id,
+              requestId: request.requestId ?? createTelegramAgentRequestId(),
+              actor: {
+                ...(agent.actor ?? { libraryUserId: request.actorLibraryUserId ?? 'user-owner' }),
+                externalIdentity: { provider: 'telegram', userId: request.actorUserId, chatId: authorizedChatId },
+              },
+              source: { channel: 'telegram' },
+              workspaceSnapshot: buildWorkspaceAiSnapshot({
+                view: 'chat',
+                scope: 'library',
+                library: state.library,
+                activeDocument: null,
+                openTabs: [],
+              }),
+              requestedScope: request.scope,
+              persistencePolicy: 'ephemeral-no-memory',
+              prompt: text,
+            }),
+            ...replyInput,
+          }, replyOptions)
         if (savedSalary) {
           phase = 'verifying-salary-persistence'
           publishProgress({ type: 'verification-started', operationId: null })
-          await verifyFinanceSalaryPersistence(state.library, savedSalary)
+          await verifyFinanceSalaryPersistence(state.library, savedSalary, {
+            libraryUserId: request.actorLibraryUserId ?? 'user-owner',
+            source: 'telegram',
+          })
         } else if (isUnverifiedTelegramSalarySuccess(answer, savedSalary)) {
           throw new Error('Telegram recibió una respuesta de éxito salarial sin una persistencia verificable.')
         }
@@ -577,23 +611,12 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           durationMs: Math.round(performance.now() - requestStartedAt),
           answerChars: answer.length,
         }, 'info')
-        const previousMessages = historyRef.current
         const nextMessages: StoredChatMessage[] = [
           ...historyRef.current,
           { role: 'user', content: text },
           { role: 'assistant', content: answer },
         ]
         historyRef.current = nextMessages.slice(-20)
-        void loadAgentMemories(state.library).then((existingLongTermMemories) => {
-          scheduleLongTermMemoriesForTurn({
-            library: state.library as NotiaLibrary,
-            aiPreferences: state.aiPreferences,
-            prompt: text,
-            assistantReply: answer,
-            previousMessages,
-            existingLongTermMemories,
-          })
-        })
         phase = 'sending-response'
         publishProgress({ type: 'phase-changed', phase: 'responding', round: null })
         await progressUpdateQueue
@@ -672,7 +695,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       return requestsAhead
     }
 
-    const handleTelegramLinking = async (update: TelegramUpdate): Promise<number | null> => {
+    const handleTelegramLinking = async (update: TelegramUpdate): Promise<string | null> => {
       const state = currentRef.current
       if (!state.library) return null
       if (update.chatType && update.chatType !== 'private') {
@@ -689,7 +712,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       }
       if (linkedUser) {
         authorizedChatId = update.chatId
-        return update.user.id
+        return linkedUser.id
       }
 
       const now = Date.now()
@@ -766,7 +789,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           linkFlows.delete(update.chatId)
           authorizedChatId = update.chatId
           await sendTelegramMessage(state.telegram.botToken, update.chatId, 'Telegram quedó vinculado. Ya podés enviar consultas.')
-          return update.user.id
+          return flow.userId ?? null
         } catch {
           flow = { ...flow, attempts: flow.attempts + 1 }
           if (flow.attempts >= TELEGRAM_LINK_MAX_ATTEMPTS) {
@@ -790,11 +813,11 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       // narrow compatibility branch is only active when the legacy peer is
       // explicitly present in the current configuration.
       const legacyPeer = import.meta.env.MODE === 'test' ? state.telegram.authorizedPeer : null
-      const linkedTelegramUserId = legacyPeer && legacyPeer.chatId === update.chatId && legacyPeer.userId === update.user.id
-        ? update.user.id
+      const linkedLibraryUserId = legacyPeer && legacyPeer.chatId === update.chatId && legacyPeer.userId === update.user.id
+        ? 'user-owner'
         : await handleTelegramLinking(update)
-      if (linkedTelegramUserId === null) return
-      const peer = { chatId: update.chatId, userId: linkedTelegramUserId }
+      if (linkedLibraryUserId === null) return
+      const peer = { chatId: update.chatId, userId: update.user.id }
       if (state.telegram.processedUpdateIds.includes(update.updateId)) return
       const checkpointedUpdate = rememberTelegramUpdate({
         ...state.telegram,
@@ -881,7 +904,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         : update.document
           ? { kind: 'pdf' as const, value: update.document }
           : null
-      const prompt = text || (attachment ? '[Origen: documento de Telegram. Clasifica el documento como ticket de compra, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente.]' : '')
+       const prompt = text || (attachment ? '[Origen: documento de Telegram. Clasifica el documento como ticket de compra, factura o boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente; una factura de servicio debe asociarse a un servicio y no duplicar un gasto.]' : '')
       const scope = attachment || isTelegramFinanceRequest(prompt)
         ? 'finance'
         : resolveTelegramAgentScope(prompt, conversationScopeRef.current)
@@ -895,7 +918,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           pendingRequests: pendingRequestsRef.current.length,
         }, 'info')
       }
-      const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, scope, attachment })
+      const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, actorLibraryUserId: linkedLibraryUserId, scope, attachment })
       if (requestsAhead === null) {
         await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar más de 10 solicitudes pendientes. Esperá a que termine alguna e intentá nuevamente.')
         return

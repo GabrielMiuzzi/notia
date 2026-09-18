@@ -1,3 +1,20 @@
+[2026-09-18 00:51:12 -03:00] Se sincronizó la documentación con el contrato global de IA, Finanzas, conciliación y la vista de Servicios.
+[2026-09-18 00:03:50 -03:00] Se hizo idempotente por centavos el replay nativo de ocurrencias y se sincronizó el vínculo de la compra asociada.
+[2026-09-17 23:42:39 -03:00] Se normalizó por centavos el matching local de pagos y la recuperación de ocurrencias.
+[2026-09-17 23:34:33 -03:00] Se hizo resiliente la carga de Servicios y se normalizaron por centavos los vínculos e idempotencia financiera.
+[2026-09-17 22:50:40 -03:00] Se limitó Telegram Finanzas a una confirmación por mutación y se vinculó de forma segura el pago local único de las ocurrencias.
+[2026-09-17 22:16:58 -03:00] Se reforzó el alta de ocurrencias de servicios y se hicieron terminales seguras sus respuestas de éxito, cancelación y error.
+[2026-09-17 21:47:25 -03:00] Se fijó esbuild 0.27.7 para estabilizar el build multipágina de desarrollo en Windows.
+[2026-09-17 20:19:47 -03:00] Se evitó el panic de la auditoría financiera ante ocurrencias impagas cubiertas por evidencia de tarjeta y se reforzó el manejo de datos incompletos.
+[2026-09-17 19:21:59 -03:00] Se precisó que las ambigüedades financieras no se aplican automáticamente, pero admiten resolución manual explícita por chat y Telegram con confirmación reforzada.
+[2026-09-17 16:20:27 -03:00] Se incorporó el control integral de Finanzas mediante snapshot, lecturas paginadas y CRUD con confirmaciones reforzadas en las tools de IA.
+[2026-09-17 15:11:37 -03:00] Se integraron Servicios debajo del dashboard de Home y se reparan columnas de servicio en bases SQLite v19 incompletas.
+[2026-09-17 13:39:14 -03:00] Se corrigió useTelegramAgentBridge para propagar explícitamente la política efímera sin memoria al construir el agente.
+[2026-09-17 03:30:10 -03:00] Se reforzó la auditoría financiera con acciones estructuradas permitidas, aplicación transaccional nativa, huella vigente, actor/contexto y confirmación individual.
+[2026-09-17 03:04:12 -03:00] Se documentaron los servicios mensuales, las facturas y la auditoría asistida de Finanzas con su migración, contratos, seguridad y límites reales.
+[2026-09-16 23:36:06 -03:00] Se eliminó la referencia documental a la auto-confirmación financiera de Telegram y se mantuvo el ciclo común de confirmación reforzada.
+[2026-09-16 23:19:46 -03:00] Se sincronizó la documentación con el motor global de IA, la autenticación vigente de Task Manager, la autorización financiera por #Confidencial y las validaciones realmente ejecutadas.
+[2026-09-16 19:53:28 -03:00] Se incorporó el motor global de IA versionado con actor estable por biblioteca, autorización exacta por contexto, proyección segura para URL pública/Telegram, memoria exclusiva del Owner y auditoría de actor en Finanzas.
 [2026-09-16 01:20:51 -03:00] Se implementaron roles y usuarios persistidos por biblioteca, contraseñas con PBKDF2, vinculación segura de Telegram y login del Task Manager publicado contra usuarios de SQLite.
 [2026-09-15 22:48:01 -03:00] Graph View volvió a priorizar el contexto vigente del tablero y recalcula su configuración al cambiar de vista, evitando aplicar un contexto antiguo del frontmatter.
 [2026-09-15 22:36:04 -03:00] Graph View ahora respeta el contexto explícito de los tickets en frontmatter y usa el contexto del tablero solo cuando el archivo no declara uno.
@@ -49,3 +66,6 @@
 [2026-09-16 17:20:11 -03:00] Telegram ahora muestra el detalle concreto de cada confirmación y entrega las respuestas del agente directamente en el formato del canal.
 [2026-09-16 17:57:01 -03:00] Las acciones de Usuarios usan iconos compactos y los modales del motor global ocupan el 75% de la ventana.
 [2026-09-16 18:20:12 -03:00] Usuarios admite contextos permitidos con Owner de acceso total; se agrega #Confidencial en rojo y se aplica a la configuración de .agent y chat.
+[2026-09-16 20:57:10 -03:00] Se completó la integración pendiente del contrato global: Android valida el sobre antes del plugin, Finanzas autentica actor/contexto en Tauri, Graph View usa chat en memoria y la URL pública recibe la lista de tableros aprobados desde Rust; `tasks.md` quedó completamente marcado.
+[2026-09-17 00:19:59 -03:00] Se corrigió el chat lateral de Finanzas para reutilizar el historial global y reintentar respuestas nativas vacías transitorias después de tools.
+[2026-09-17 19:57:58 -03:00] Se ajustó la conciliación de servicios con descriptores identificados y el flujo seguro de propuestas de auditoría financiera.

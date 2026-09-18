@@ -81,6 +81,13 @@ export function resolveRightPanelContextScopeKey(
   return null
 }
 
+export function shouldSelectMatchingRightPanelChat(
+  preferredContextScopeKey: string | null,
+  preferredContextPaths: readonly string[],
+): boolean {
+  return Boolean(preferredContextScopeKey || preferredContextPaths.length > 0)
+}
+
 function buildRightPanelChatContextLabel(
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'documents',
   activeDocument: OpenFileDocument | null,

@@ -62,6 +62,8 @@ const PUBLISHED_VAULT_ALIAS: &str = "published-vault";
 #[cfg(target_os = "windows")]
 const PUBLISHED_AI_HOST_REQUEST_EVENT: &str = "notia-task-manager-publication-ai-request";
 const DEFAULT_PUBLICATION_CLIENT_LIMIT: usize = 64;
+#[cfg(target_os = "windows")]
+const PUBLICATION_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[cfg(test)]
 fn hash_task_manager_publication_password(password: String) -> Result<String, String> {
@@ -465,11 +467,79 @@ pub struct TaskManagerPublicationState {
     inner: Arc<Mutex<PublicationRuntime>>,
 }
 
+#[cfg(target_os = "windows")]
+fn encode_authenticated_session(user_id: &str) -> String {
+    let expires_at = SystemTime::now()
+        .checked_add(PUBLICATION_SESSION_TTL)
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_secs())
+        .unwrap_or(u64::MAX);
+    format!("{user_id}\0{expires_at}")
+}
+
+fn authenticated_session_user(value: &str) -> &str {
+    value
+        .split_once('\0')
+        .map(|(user, _)| user)
+        .unwrap_or(value)
+}
+
+#[cfg(target_os = "windows")]
+fn authenticated_session_expired(value: &str) -> bool {
+    let Some((_, expires_at)) = value.split_once('\0') else {
+        // Test fixtures and sessions created by older in-memory versions have
+        // no timestamp. They remain valid until the normal revocation path.
+        return false;
+    };
+    expires_at.parse::<u64>().ok().is_some_and(|seconds| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(true, |now| now.as_secs() >= seconds)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn authenticated_session_active(runtime: &PublicationRuntime, session_id: &str) -> bool {
+    runtime
+        .authenticated_sessions
+        .get(session_id)
+        .is_some_and(|value| !authenticated_session_expired(value))
+}
+
+#[cfg(target_os = "windows")]
+fn prune_expired_authenticated_sessions(runtime_state: &Arc<Mutex<PublicationRuntime>>) {
+    if let Ok(mut runtime) = runtime_state.lock() {
+        let expired_users: HashSet<String> = runtime
+            .authenticated_sessions
+            .values()
+            .filter(|value| authenticated_session_expired(value))
+            .map(|value| authenticated_session_user(value).to_string())
+            .collect();
+        if expired_users.is_empty() {
+            return;
+        }
+        runtime
+            .authenticated_sessions
+            .retain(|_, value| !expired_users.contains(authenticated_session_user(value)));
+        for user_id in expired_users {
+            cancel_publication_ai_streams_for_device(&mut runtime, &user_id);
+            cancel_published_ai_host_requests_for_user(&mut runtime, &user_id);
+            close_websocket_subscribers_for_device(&mut runtime, &user_id, "session-expired");
+        }
+    }
+}
+
 pub fn revoke_library_user_sessions(state: &TaskManagerPublicationState, user_id: &str) {
     if let Ok(mut runtime) = state.inner.lock() {
         runtime
             .authenticated_sessions
-            .retain(|_, session_user_id| session_user_id != user_id);
+            .retain(|_, session_user_id| authenticated_session_user(session_user_id) != user_id);
+        #[cfg(target_os = "windows")]
+        {
+            cancel_publication_ai_streams_for_device(&mut runtime, user_id);
+            cancel_published_ai_host_requests_for_user(&mut runtime, user_id);
+            close_websocket_subscribers_for_device(&mut runtime, user_id, "session-revoked");
+        }
     }
 }
 
@@ -560,7 +630,7 @@ struct PublicationRuntime {
     #[cfg(target_os = "windows")]
     active_ai_streams: HashMap<u64, PublicationAiStream>,
     #[cfg(target_os = "windows")]
-    published_ai_requests: HashMap<String, mpsc::Sender<Value>>,
+    published_ai_requests: HashMap<String, (String, mpsc::Sender<Value>)>,
     #[cfg(target_os = "windows")]
     next_ai_stream_id: u64,
     #[cfg(target_os = "windows")]
@@ -607,7 +677,7 @@ pub fn publish_task_manager_ai_stream_event(
         .map_err(|_| "No se pudo comunicar con la publicación.")?
         .published_ai_requests
         .get(&request_id)
-        .cloned()
+        .map(|(_, sender)| sender.clone())
         .ok_or_else(|| "La solicitud de IA publicada ya no está disponible.".to_string())?;
     sender
         .send(event)
@@ -1585,6 +1655,7 @@ fn serve_publication_connection(
     tls_config: Arc<ServerConfig>,
     peer_address: Option<String>,
 ) {
+    prune_expired_authenticated_sessions(&runtime);
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
     let mut first_byte = [0_u8; 1];
     let is_tls = matches!(stream.peek(&mut first_byte), Ok(1)) && first_byte[0] == 22;
@@ -1678,7 +1749,7 @@ fn serve_request<S: Read + Write + Send + 'static>(
         let authenticated = runtime.lock().ok().is_some_and(|guard| {
             guard.payload.is_some()
                 && request_session_token(&request)
-                    .is_some_and(|session| guard.authenticated_sessions.contains_key(session))
+                    .is_some_and(|session| authenticated_session_active(&guard, session))
         });
         if !authenticated {
             let _ = stream.write_all(&text_response(
@@ -1711,7 +1782,7 @@ fn serve_request<S: Read + Write + Send + 'static>(
             guard.payload.clone()?,
             Arc::clone(guard.assets.as_ref()?),
             request_session_token(&request)
-                .is_some_and(|session| guard.authenticated_sessions.contains_key(session)),
+                .is_some_and(|session| authenticated_session_active(&guard, session)),
         ))
     });
     let Some((publication, assets, authenticated)) = snapshot else {
@@ -1818,9 +1889,9 @@ fn serve_request<S: Read + Write + Send + 'static>(
             Ok(guard) => serde_json::to_value(publication_status_from_runtime(&guard))
                 .map(|status| json_response("200 OK", status))
                 .unwrap_or_else(|_| {
-                    json_error("No se pudo consultar el estado de la publicaciÃ³n.")
+                    json_error("No se pudo consultar el estado de la publicación.")
                 }),
-            Err(_) => json_error("No se pudo consultar el estado de la publicaciÃ³n."),
+            Err(_) => json_error("No se pudo consultar el estado de la publicación."),
         }
     } else if method == "GET" && (path == base || path == format!("{base}/")) {
         serve_library_user_login_page()
@@ -2256,7 +2327,7 @@ fn serve_library_user_login(
         }
         guard
             .authenticated_sessions
-            .insert(session.clone(), user_id);
+            .insert(session.clone(), encode_authenticated_session(&user_id));
         true
     });
     if !inserted {
@@ -2388,7 +2459,7 @@ fn serve_login(
         );
     }
     let Some(input) = serde_json::from_slice::<Value>(body).ok() else {
-        return json_error("IngresÃ¡ las credenciales.");
+        return json_error("Ingresá las credenciales.");
     };
     let username = input
         .get("username")
@@ -2407,7 +2478,7 @@ fn serve_login(
             |((username, user_password), board_password)| (username, user_password, board_password),
         )
     else {
-        return json_error("IngresÃƒÂ¡ usuario y las dos contraseÃ±as.");
+        return json_error("Ingresá usuario y las dos contraseñas.");
     };
     if validate_publication_username(&username).is_err()
         || validate_publication_password(&user_password).is_err()
@@ -2454,9 +2525,10 @@ fn serve_login(
         }) {
             return false;
         }
-        guard
-            .authenticated_sessions
-            .insert(session.clone(), session_device_id);
+        guard.authenticated_sessions.insert(
+            session.clone(),
+            encode_authenticated_session(&session_device_id),
+        );
         true
     });
     if !inserted {
@@ -2580,10 +2652,13 @@ fn current_authenticated_publication(
     runtime: &Arc<Mutex<PublicationRuntime>>,
     session_id: &str,
 ) -> Option<TaskManagerPublicationPayload> {
-    runtime.lock().ok().and_then(|guard| {
-        guard.authenticated_sessions.get(session_id)?;
-        guard.payload.clone()
-    })
+    let mut guard = runtime.lock().ok()?;
+    let value = guard.authenticated_sessions.get(session_id)?.clone();
+    if authenticated_session_expired(&value) {
+        guard.authenticated_sessions.remove(session_id);
+        return None;
+    }
+    guard.payload.clone()
 }
 
 #[cfg(target_os = "windows")]
@@ -2670,7 +2745,12 @@ fn execute_publication_invoke_unlocked(
                 runtime
                     .lock()
                     .ok()
-                    .and_then(|guard| guard.authenticated_sessions.get(session_id).cloned())
+                    .and_then(|guard| {
+                        guard
+                            .authenticated_sessions
+                            .get(session_id)
+                            .map(|value| authenticated_session_user(value).to_string())
+                    })
                     .map(|device_id| safe_publication_actor_id(&device_id))
             });
             let operation_id = request
@@ -3414,7 +3494,14 @@ fn register_websocket_subscriber(
     let mut guard = runtime
         .lock()
         .map_err(|_| "No se pudo registrar la sesión WebSocket.".to_string())?;
-    let Some(device_id) = guard.authenticated_sessions.get(session_id).cloned() else {
+    if !authenticated_session_active(&guard, session_id) {
+        return Err("La sesión ya no está autorizada.".to_string());
+    }
+    let Some(device_id) = guard
+        .authenticated_sessions
+        .get(session_id)
+        .map(|value| authenticated_session_user(value).to_string())
+    else {
         return Err("La sesión ya no está autorizada.".to_string());
     };
     if guard.payload.is_none() {
@@ -3745,6 +3832,27 @@ fn serve_publication_websocket<S>(
             Ok(Some(value)) => value,
             Ok(None) | Err(_) => break,
         };
+        let session_active = runtime
+            .lock()
+            .ok()
+            .is_some_and(|guard| authenticated_session_active(&guard, &session_id));
+        if !session_active {
+            let _ = socket.lock().ok().and_then(|mut guard| {
+                send_websocket_json_recorded(
+                    &mut guard,
+                    &runtime,
+                    serde_json::json!({
+                        "type": "session-expired",
+                        "protocolVersion": PUBLICATION_PROTOCOL_VERSION,
+                        "publicationEpoch": current_publication_epoch(&runtime),
+                        "messageId": generate_session_token(),
+                        "reason": "La sesión publicada expiró.",
+                    }),
+                )
+                .ok()
+            });
+            break;
+        }
         let received_bytes = serialized_json_size(&value);
         if let Ok(mut guard) = runtime.lock() {
             guard.metrics.websocket_frames_received =
@@ -3933,7 +4041,7 @@ where
         let authorized = runtime
             .lock()
             .ok()
-            .is_some_and(|guard| guard.authenticated_sessions.contains_key(session_id));
+            .is_some_and(|guard| authenticated_session_active(&guard, session_id));
         if !authorized || publication.is_none() {
             return false;
         }
@@ -4042,7 +4150,12 @@ where
                     let actor_id = runtime
                         .lock()
                         .ok()
-                        .and_then(|guard| guard.authenticated_sessions.get(session_id).cloned())
+                        .and_then(|guard| {
+                            guard
+                                .authenticated_sessions
+                                .get(session_id)
+                                .map(|value| authenticated_session_user(value).to_string())
+                        })
                         .map(|device_id| safe_publication_actor_id(&device_id));
                     notify_publication_changed(
                         runtime,
@@ -4477,8 +4590,7 @@ fn finalize_abandoned_publication_batch(
             guard
                 .authenticated_sessions
                 .get(session_id)
-                .cloned()
-                .map(|device_id| safe_publication_actor_id(&device_id))
+                .map(|value| safe_publication_actor_id(authenticated_session_user(value)))
         });
         Some((vault_path, actor_id))
     }) else {
@@ -4570,7 +4682,10 @@ fn register_publication_ai_stream(
     session_id: &str,
 ) -> Option<(u64, Arc<AtomicBool>)> {
     let mut guard = runtime.lock().ok()?;
-    let device_id = guard.authenticated_sessions.get(session_id)?.clone();
+    let device_id = guard
+        .authenticated_sessions
+        .get(session_id)
+        .map(|value| authenticated_session_user(value).to_string())?;
     if guard.payload.is_none() {
         return None;
     }
@@ -4602,11 +4717,15 @@ fn register_published_ai_host_request(
     session_id: &str,
 ) -> Result<mpsc::Receiver<Value>, String> {
     let (sender, receiver) = mpsc::channel();
-    let (app_handle, vault_path) = {
+    let (app_handle, vault_path, library_user_id, published_board_names) = {
         let mut guard = runtime
             .lock()
             .map_err(|_| "No se pudo iniciar el chat de IA publicado.".to_string())?;
-        if !guard.authenticated_sessions.contains_key(session_id) {
+        if !guard
+            .authenticated_sessions
+            .get(session_id)
+            .is_some_and(|value| !authenticated_session_expired(value))
+        {
             return Err("La sesión publicada ya no está autorizada.".to_string());
         }
         let app_handle = guard
@@ -4618,19 +4737,36 @@ fn register_published_ai_host_request(
             .as_ref()
             .map(|publication| publication.vault_path.clone())
             .ok_or_else(|| "La publicación ya no está disponible.".to_string())?;
+        let library_user_id = guard
+            .authenticated_sessions
+            .get(session_id)
+            .map(|value| authenticated_session_user(value).to_string())
+            .ok_or_else(|| "La sesión publicada ya no está autorizada.".to_string())?;
         guard
             .published_ai_requests
-            .insert(request_id.to_string(), sender);
-        (app_handle, vault_path)
+            .insert(request_id.to_string(), (library_user_id.clone(), sender));
+        let published_board_names = guard
+            .payload
+            .as_ref()
+            .map(selected_board_names)
+            .unwrap_or_default();
+        (
+            app_handle,
+            vault_path,
+            library_user_id,
+            published_board_names,
+        )
     };
 
     let event = serde_json::json!({
         "requestId": request_id,
         "vaultPath": vault_path,
+        "libraryUserId": library_user_id,
         "prompt": request.prompt,
         "previousMessages": request.previous_messages,
         "taskManagerScopeKey": request.task_manager_scope_key,
         "scopePaths": request.scope_paths,
+        "publishedBoardNames": published_board_names,
     });
     if let Err(error) = app_handle.emit(PUBLISHED_AI_HOST_REQUEST_EVENT, event) {
         unregister_published_ai_host_request(runtime, request_id);
@@ -4655,10 +4791,27 @@ fn cancel_published_ai_host_requests(guard: &mut PublicationRuntime) {
         "type": "error",
         "message": "La publicación ya no está disponible.",
     });
-    for sender in guard.published_ai_requests.values() {
+    for (_, sender) in guard.published_ai_requests.values() {
         let _ = sender.send(cancellation.clone());
     }
     guard.published_ai_requests.clear();
+}
+
+#[cfg(target_os = "windows")]
+fn cancel_published_ai_host_requests_for_user(guard: &mut PublicationRuntime, user_id: &str) {
+    let cancellation = serde_json::json!({
+        "type": "error",
+        "message": "La sesión de IA publicada ya no está autorizada.",
+    });
+    guard
+        .published_ai_requests
+        .retain(|_, (request_user_id, sender)| {
+            if request_user_id != user_id {
+                return true;
+            }
+            let _ = sender.send(cancellation.clone());
+            false
+        });
 }
 
 #[cfg(target_os = "windows")]
@@ -7992,5 +8145,19 @@ mod tests {
             }),
             &publication(),
         ));
+    }
+
+    #[test]
+    fn library_user_sessions_have_server_side_expiration_and_stable_identity() {
+        let encoded = encode_authenticated_session("user-1");
+        assert_eq!(authenticated_session_user(&encoded), "user-1");
+        assert!(!authenticated_session_expired(&encoded));
+
+        let expired = format!(
+            "user-1\0{}",
+            UNIX_EPOCH.elapsed().unwrap().as_secs().saturating_sub(1)
+        );
+        assert_eq!(authenticated_session_user(&expired), "user-1");
+        assert!(authenticated_session_expired(&expired));
     }
 }

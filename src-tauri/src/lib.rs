@@ -11,6 +11,7 @@ use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, Libra
 mod backup;
 mod database;
 mod finance;
+mod finance_reconciliation;
 mod finance_records;
 mod library_users;
 mod user_auth;
@@ -208,6 +209,9 @@ pub fn run() {
             library_users::link_library_user_telegram,
             library_users::unlink_library_user_telegram,
             finance::finance_get_dashboard,
+            finance::finance_get_transaction,
+            finance::finance_list_all_transactions,
+            finance::finance_list_all_savings_movements,
             finance::finance_dev_list_tables,
             finance::finance_dev_query_table,
             finance::finance_dev_query_sql,
@@ -215,6 +219,22 @@ pub fn run() {
             finance::finance_save_account,
             finance::finance_save_category,
             finance::finance_save_transaction,
+            finance::finance_list_services,
+            finance::finance_save_service,
+            finance::finance_set_service_active,
+            finance::finance_list_service_occurrences,
+            finance::finance_list_all_service_occurrences,
+            finance::finance_save_service_occurrence,
+            finance::finance_list_service_occurrence_versions,
+            finance::finance_list_all_service_occurrence_versions,
+            finance::finance_save_service_invoice,
+            finance::finance_list_service_invoices,
+            finance::finance_save_audit_run,
+            finance::finance_run_audit,
+            finance::finance_list_audit_runs,
+            finance::finance_save_audit_proposal,
+            finance::finance_list_audit_proposals,
+            finance::finance_decide_audit_proposal,
             finance::finance_delete_transaction,
             finance::finance_delete_account,
             finance::finance_delete_category,
@@ -231,10 +251,14 @@ pub fn run() {
             finance_records::finance_save_credit_card_statement,
             finance_records::finance_list_credit_card_statements,
             finance_records::finance_save_installment_plan,
+            finance_records::finance_list_installment_plans,
+            finance_records::finance_list_installments,
             finance_records::finance_save_investment,
+            finance_records::finance_list_investments,
             finance_records::finance_get_net_worth,
             finance_records::finance_list_net_worth_history,
             services::finance_extraction::extract_finance_document,
+            services::finance_extraction::list_finance_artifacts,
             commands::ai::check_desktop_ai_health,
             commands::ai::run_desktop_ai_chat,
             commands::ai::run_desktop_ai_tool_chat,

@@ -3,6 +3,7 @@ import { XGRAPH_AGENT_GUIDE } from '../ai/xgraphAgentPrompt'
 import {
   buildChatAgentSystemPrompt,
   buildChatAgentTools,
+  paginateFinanceRecords,
   validateFinanceFinalAnswer,
   buildTicketSectionCorrection,
   buildAgentSearchText,
@@ -147,6 +148,11 @@ describe('chatScopedAgentRuntime', () => {
   })
   it('normalizes accents, punctuation and case for title matching', () => {
     expect(normalizeAgentSearchText('  Migración: AUTENTICACIÓN.md ')).toBe('migracion autenticacion md')
+  })
+
+  it('bounds finance pages and reports deterministic continuation metadata', () => {
+    expect(paginateFinanceRecords(['a', 'b', 'c'], 2, 1)).toEqual({ items: ['b', 'c'], total: 3, limit: 2, offset: 1, hasMore: false })
+    expect(paginateFinanceRecords(['a', 'b', 'c'], 999, -4)).toEqual({ items: ['a', 'b', 'c'], total: 3, limit: 200, offset: 0, hasMore: false })
   })
 
   it('ranks an exact phrase above scattered matching terms', () => {
@@ -381,6 +387,12 @@ describe('chatScopedAgentRuntime', () => {
     expect(names).not.toContain('set_agent_execution_plan')
     expect(names).not.toContain('create_agent_plan')
     expect(names).not.toContain('update_agent_plan')
+    expect(names).not.toContain('search_library_documents')
+    expect(names).not.toContain('read_library_documents')
+    expect(names).not.toContain('create_library_note')
+    expect(names).not.toContain('replace_library_document')
+    expect(names).not.toContain('delete_library_document')
+    expect(names).toContain('search_task_tickets')
   })
 
   it('keeps finance on the common chat facade with typed tools and no library context', () => {
@@ -405,6 +417,29 @@ describe('chatScopedAgentRuntime', () => {
       'list_finance_price_history',
       'get_finance_net_worth',
       'list_finance_net_worth_history',
+      'get_finance_full_snapshot',
+      'get_finance_record',
+      'list_finance_records',
+      'save_finance_account',
+      'save_finance_category',
+      'save_finance_transaction',
+      'save_finance_savings_reserve',
+      'save_finance_savings_movement',
+      'save_finance_savings_exchange',
+      'save_finance_purchase',
+      'save_finance_salary',
+      'save_finance_credit_card_statement',
+      'save_finance_installment_plan',
+      'save_finance_investment',
+      'save_finance_service',
+      'save_finance_service_occurrence',
+      'save_finance_service_invoice',
+      'link_finance_savings_account',
+      'set_finance_service_active',
+      'delete_finance_record',
+      'reverse_finance_transaction',
+      'clear_finance_data',
+      'extract_finance_document',
     ]))
     expect(names).not.toContain('add_agent_rule')
     expect(names).not.toContain('add_agent_memory')
@@ -421,6 +456,7 @@ describe('chatScopedAgentRuntime', () => {
     expect(prompt).toContain('no indicó una cuenta inequívoca')
     expect(prompt).toContain('Orden obligatorio')
     expect(prompt).toContain('create_finance_category')
+    expect(prompt).toContain('nunca requieren search_web')
     const createTransaction = financeTools.find((tool) => tool.function.name === 'create_finance_transaction')
     expect(createTransaction?.function.description).toContain('confirmacion reforzada visible')
     expect(createTransaction?.function.parameters).toMatchObject({
@@ -446,7 +482,22 @@ describe('chatScopedAgentRuntime', () => {
     const createStatement = financeTools.find((tool) => tool.function.name === 'create_finance_credit_card_statement')
     expect(createStatement?.function.description).toContain('total a pagar')
     expect(createStatement?.function.parameters).toMatchObject({
-      required: expect.arrayContaining(['accountId', 'issuer', 'period', 'closingDate', 'dueDate', 'currency', 'totalDue', 'items']),
+       required: expect.arrayContaining(['accountId', 'issuer', 'period', 'closingDate', 'dueDate', 'currency', 'totalDue', 'items']),
+     })
+    expect(financeTools.find((tool) => tool.function.name === 'list_finance_audits')?.function.parameters).toMatchObject({
+      properties: { proposalType: { enum: expect.arrayContaining(['service-card-reconciliation']) } },
+    })
+    expect(financeTools.find((tool) => tool.function.name === 'preview_finance_audit_proposal')?.function.parameters).toMatchObject({
+      properties: { proposalType: { enum: expect.arrayContaining(['service-card-reconciliation']) } },
+    })
+    expect(financeTools.find((tool) => tool.function.name === 'apply_finance_audit_proposal')?.function.parameters).toMatchObject({
+      properties: { proposalType: { enum: expect.arrayContaining(['service-card-reconciliation']) }, expectedDataFingerprint: { description: expect.stringContaining('preview') } },
+    })
+    for (const name of ['save_finance_account', 'save_finance_transaction', 'save_finance_savings_exchange', 'save_finance_purchase', 'save_finance_service', 'delete_finance_record', 'clear_finance_data']) {
+      expect(financeTools.find((tool) => tool.function.name === name)?.function.description).toContain('confirmación reforzada')
+    }
+    expect(financeTools.find((tool) => tool.function.name === 'list_finance_records')?.function.parameters).toMatchObject({
+      properties: { limit: { maximum: 200 }, offset: { minimum: 0 } },
     })
   })
 
@@ -466,6 +517,7 @@ describe('chatScopedAgentRuntime', () => {
     expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('confirmación reforzada real')
     expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('create_finance_salary')
     expect(buildChatAgentSystemPrompt('finance', 'Base', null, 'telegram-html')).toContain('create_finance_credit_card_statement')
+    expect(buildChatAgentSystemPrompt('library', 'Base', null, 'telegram-html', undefined, undefined, true)).toContain('Una pregunta financiera local nunca necesita search_web')
   })
 
   it('normalizes model-emitted finance amounts without repeated correction rounds', () => {
@@ -534,13 +586,67 @@ describe('chatScopedAgentRuntime', () => {
         arguments: { issuer: 'Banco Notia', period: '2026-08', dueDate: '2026-09-08', totalDue: '2250', currency: 'ARS', accountId: 'Visa' },
       },
     }
-    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: true, accountName: 'Visa', createdTransactions: 4, matchedExistingTransactions: 2 }))
-      .toContain('Registré el resumen de tarjeta de Banco Notia')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: true, changed: true, accountName: 'Visa', createdTransactions: 4, matchedExistingTransactions: 2,
+      statement: { period: '2026-08' }, occurrences: [{ id: 'occurrence-1' }],
+      reconciliation: { status: 'partial-applied', assignments: [{ assignmentStatus: 'new' }], ambiguousGroups: [{ lineIds: ['line-2'] }] },
+    })).toEqual(expect.stringContaining('Período real: 2026-08'))
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: true, changed: true, accountName: 'Visa', createdTransactions: 4, matchedExistingTransactions: 2,
+      statement: { period: '2026-08' }, occurrences: [{ id: 'occurrence-1' }],
+      reconciliation: { status: 'partial-applied', assignments: [{ assignmentStatus: 'new' }], ambiguousGroups: [{ lineIds: ['line-2'] }] },
+    })).toEqual(expect.stringContaining('No se aplicaron automáticamente los grupos ambiguos'))
     expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: false, duplicate: true })).toContain('ya estaba registrado')
     expect(resolveFinanceToolResultAnswer(call, { ok: false, error: 'finance-credit-card-statement-save-failed', code: 'validation', message: 'El total no coincide.' }))
       .toContain('no son coherentes')
     expect(resolveFinanceToolResultAnswer(call, { ok: false, error: 'finance-credit-card-statement-save-failed', code: 'storage', message: 'database detail' }))
       .not.toContain('database detail')
+  })
+
+  it('turns a service occurrence result into a terminal factual answer without retrying it', () => {
+    const call = {
+      function: {
+        name: 'create_finance_service_occurrence',
+        arguments: { serviceId: 'service-movistar', period: '2026-09', expectedAmount: '48000', paidAmount: '48000' },
+      },
+    }
+    expect(resolveFinanceToolResultAnswer(call, { ok: true, changed: true, occurrence: {} }))
+      .toContain('Registré la ocurrencia del servicio')
+    expect(resolveFinanceToolResultAnswer(call, { ok: false, error: 'finance-service-not-found' }))
+      .toContain('datos financieros locales')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: false, error: 'native-tool-execution-failed', code: 'storage', message: 'internal database detail',
+    })).toContain('no voy a reintentarla automáticamente')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: false, error: 'native-tool-execution-failed', code: 'storage', message: 'internal database detail',
+    })).not.toContain('internal database detail')
+  })
+
+  it('answers native audit results with the structured period and reconciliation proposal type', () => {
+    const call = { function: { name: 'audit_finance_month', arguments: { period: '2026-09' } } }
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: true,
+      run: { period: '2026-09', status: 'completed' },
+      proposals: [{ proposalType: 'service-card-reconciliation' }],
+    })).toContain('período 2026-09')
+    expect(resolveFinanceToolResultAnswer(call, {
+      ok: true,
+      run: { period: '2026-09', status: 'completed' },
+      proposals: [{ proposalType: 'service-card-reconciliation' }],
+    })).toContain('conciliación de consumos de tarjeta')
+  })
+
+  it('lets the model continue from an audit preview and reports a verified decision', () => {
+    const previewCall = { function: { name: 'preview_finance_audit_proposal', arguments: {} } }
+    expect(resolveFinanceToolResultAnswer(previewCall, {
+      ok: true,
+      proposal: { proposalType: 'service-unpaid', period: '2026-09', reason: 'sin pago' },
+    })).toBeNull()
+
+    const applyCall = { function: { name: 'apply_finance_audit_proposal', arguments: {} } }
+    expect(resolveFinanceToolResultAnswer(applyCall, {
+      ok: true, changed: true, decision: 'accepted', proposalType: 'service-card-reconciliation', period: '2026-09',
+    })).toContain('quedó aplicada')
   })
 
   it('rejects a financial success claim when no mutation actually ran', () => {

@@ -7,6 +7,7 @@ import {
   resolveRightPanelAttachedContextPaths,
   resolveRightPanelContextScopeKey,
   resolveRightPanelPreferredContextMode,
+  shouldSelectMatchingRightPanelChat,
 } from './useRightPanelChatContext'
 
 describe('resolveRightPanelPreferredContextMode', () => {
@@ -84,5 +85,16 @@ describe('resolveGraphAttachedContextPaths', () => {
 describe('resolveRightPanelAgentScope', () => {
   it('uses the finance scope while the Finance workspace is active', () => {
     expect(resolveRightPanelAgentScope('finance', null)).toBe('finance')
+  })
+})
+
+describe('shouldSelectMatchingRightPanelChat', () => {
+  it('allows Finance to reuse the active global chat history', () => {
+    expect(shouldSelectMatchingRightPanelChat(null, [])).toBe(false)
+  })
+
+  it('keeps scoped surfaces restricted to their matching chat', () => {
+    expect(shouldSelectMatchingRightPanelChat('document:C:/vault/note.md', [])).toBe(true)
+    expect(shouldSelectMatchingRightPanelChat(null, ['C:/vault/task-mannager/equipo/ticket.md'])).toBe(true)
   })
 })

@@ -19,6 +19,7 @@ import {
   deleteFinanceAccount,
   deleteFinanceCategory,
   deleteFinanceTransaction,
+  queueFinanceAudit,
 } from "../services/financeService";
 import type {
   FinanceAccount,
@@ -210,18 +211,19 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
 
   async function submitTransaction(transaction: FinanceTransaction) {
     await saveFinanceTransaction(library, transaction);
+    await queueFinanceAudit(library, transaction.effectiveDate.slice(0, 7), `ui:transaction:${transaction.id}`, "Alta de movimiento desde Finanzas");
     setIsFormOpen(false);
     await refresh();
   }
 
   if (isLoading && !data)
     return (
-      <main className="finance-module" role="status">
+      <section className="finance-module" role="status">
         Cargando Finanzas…
-      </main>
+      </section>
     );
   return (
-    <main className="finance-module">
+    <section className="finance-module">
       <header className="finance-header finance-header--compact">
         <div className="finance-actions">
           <label>
@@ -361,8 +363,8 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                         <td>{item.source}</td>
                         <td className="finance-row-actions">
                           <button type="button" onClick={() => setEditingTransaction(item)}>Editar</button>
-                          {item.status === "pending" && <button type="button" onClick={async () => { await saveFinanceTransaction(library, { ...item, status: "confirmed" }); await refresh(); }}>Confirmar</button>}
-                          {item.status !== "discarded" && <button type="button" onClick={async () => { await saveFinanceTransaction(library, { ...item, status: "discarded" }); await refresh(); }}>Descartar</button>}
+                          {item.status === "pending" && <button type="button" onClick={async () => { await saveFinanceTransaction(library, { ...item, status: "confirmed" }); await queueFinanceAudit(library, item.effectiveDate.slice(0, 7), `ui:transaction:${item.id}`, "Confirmación de movimiento desde Finanzas"); await refresh(); }}>Confirmar</button>}
+                          {item.status !== "discarded" && <button type="button" onClick={async () => { await saveFinanceTransaction(library, { ...item, status: "discarded" }); await queueFinanceAudit(library, item.effectiveDate.slice(0, 7), `ui:transaction:${item.id}`, "Descarte de movimiento desde Finanzas"); await refresh(); }}>Descartar</button>}
                           <button type="button" onClick={async () => { if (window.confirm("¿Eliminar lógicamente este movimiento?")) { await deleteFinanceTransaction(library, item.id); await refresh(); } }}>Eliminar</button>
                         </td>
                       </tr>
@@ -441,7 +443,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
         />
       )}
       {editingCategory && <FinanceCategoryForm initial={editingCategory} categories={data?.categories ?? []} onCancel={() => setEditingCategory(null)} onSubmit={async (category) => { await saveFinanceCategory(library, category); setEditingCategory(null); await refresh(); }} />}
-      {editingTransaction && <FinanceTransactionForm initial={editingTransaction} accounts={data?.accounts ?? []} categories={data?.categories ?? []} onCancel={() => setEditingTransaction(null)} onSubmit={async (transaction) => { await saveFinanceTransaction(library, { ...transaction, status: transaction.status === "pending" ? "corrected" : transaction.status }); setEditingTransaction(null); await refresh(); }} />}
+      {editingTransaction && <FinanceTransactionForm initial={editingTransaction} accounts={data?.accounts ?? []} categories={data?.categories ?? []} onCancel={() => setEditingTransaction(null)} onSubmit={async (transaction) => { await saveFinanceTransaction(library, { ...transaction, status: transaction.status === "pending" ? "corrected" : transaction.status }); await queueFinanceAudit(library, transaction.effectiveDate.slice(0, 7), `ui:transaction:${transaction.id}`, "Corrección de movimiento desde Finanzas"); setEditingTransaction(null); await refresh(); }} />}
       {isSavingsFormOpen && (
         <FinanceSavingsForm
           accounts={data?.accounts ?? []}
@@ -462,12 +464,13 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
           onCancel={() => setIsSavingsMovementOpen(false)}
           onSubmit={async (movement) => {
             await saveFinanceSavingsMovement(library, movement);
+            await queueFinanceAudit(library, movement.effectiveDate.slice(0, 7), `ui:savings-movement:${movement.id}`, "Alta de movimiento de ahorro desde Finanzas");
             setIsSavingsMovementOpen(false);
             await refresh();
           }}
         />
       )}
-    </main>
+    </section>
   );
 }
 

@@ -41,6 +41,8 @@ export type TelegramPendingAgentRequestStatus = 'queued' | 'active' | 'interrupt
 export interface TelegramPendingAgentRequest {
   text: string
   actorUserId: number
+  /** Stable library_users identity; actorUserId is retained only as external Telegram metadata. */
+  actorLibraryUserId?: string
   scope: TelegramAgentRequestScope
   attachment: { kind: 'photo'; value: TelegramPhoto } | { kind: 'pdf'; value: TelegramDocument } | null
   requestId?: string
@@ -216,6 +218,9 @@ export function normalizeTelegramPendingAgentRequests(value: unknown): TelegramP
       // user content to localStorage.
       text: typeof candidate.text === 'string' ? candidate.text.slice(0, 50_000) : '',
       actorUserId: candidate.actorUserId as number,
+      ...(typeof candidate.actorLibraryUserId === 'string' && candidate.actorLibraryUserId.trim()
+        ? { actorLibraryUserId: candidate.actorLibraryUserId.trim().slice(0, 128) }
+        : {}),
       scope: candidate.scope,
       attachment,
       ...(requestId ? { requestId } : {}),
