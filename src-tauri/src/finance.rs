@@ -123,6 +123,7 @@ pub struct FinanceDashboard {
     pub accounts: Vec<FinanceAccount>,
     pub categories: Vec<FinanceCategory>,
     pub transactions: Vec<FinanceTransaction>,
+    pub transactions_truncated: bool,
     pub income_total: String,
     pub expense_total: String,
     pub net_total: String,
@@ -134,6 +135,7 @@ pub struct FinanceDashboard {
     pub debt_ratio_history: Vec<FinanceDebtRatioHistoryPoint>,
     pub savings: Vec<FinanceSavingsReserve>,
     pub savings_movements: Vec<FinanceSavingsMovement>,
+    pub savings_movements_truncated: bool,
     pub merchants: Vec<FinanceMerchant>,
 }
 
@@ -247,6 +249,21 @@ pub struct FinanceAuditProposal {
     pub source: String,
     pub created_at: Option<String>,
     pub decided_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceRelationRepair {
+    pub id: String,
+    pub operation_id: String,
+    pub relation_type: String,
+    pub relation_id: String,
+    pub previous_transaction_id: Option<String>,
+    pub new_transaction_id: Option<String>,
+    pub actor_library_user_id: Option<String>,
+    pub source: String,
+    pub reason: Option<String>,
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -393,6 +410,19 @@ pub struct RunFinanceAuditPayload {
     pub context: FinanceContext,
     pub period: String,
     pub trigger_fingerprint: String,
+    pub reason: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairFinanceRelationPayload {
+    pub context: FinanceContext,
+    pub operation_id: String,
+    pub relation_type: String,
+    pub relation_id: String,
+    #[serde(default)]
+    pub new_transaction_id: Option<String>,
+    #[serde(default)]
+    pub expected_transaction_id: Option<String>,
     pub reason: Option<String>,
 }
 
@@ -909,7 +939,7 @@ fn add_currency_total(totals: &mut BTreeMap<String, i128>, currency: &str, amoun
 }
 
 fn apply_savings_movement(balance: &mut i128, movement_type: &str, amount: &str, status: &str) {
-    if status != "confirmed" {
+    if !matches!(status, "confirmed" | "corrected") {
         return;
     }
     let amount = parse_cents(amount).unwrap_or_default();
@@ -1686,6 +1716,250 @@ fn audit_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceAuditR
         created_at: row.get(8)?,
         completed_at: row.get(9)?,
     })
+}
+
+fn relation_repair_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceRelationRepair> {
+    Ok(FinanceRelationRepair {
+        id: row.get(0)?,
+        operation_id: row.get(1)?,
+        relation_type: row.get(2)?,
+        relation_id: row.get(3)?,
+        previous_transaction_id: row.get(4)?,
+        new_transaction_id: row.get(5)?,
+        actor_library_user_id: row.get(6)?,
+        source: row.get(7)?,
+        reason: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+#[tauri::command]
+pub fn finance_repair_relation(
+    app: tauri::AppHandle,
+    payload: RepairFinanceRelationPayload,
+) -> FinanceCommandResult<FinanceRelationRepair> {
+    let relation_type = payload.relation_type.as_str();
+    if !matches!(
+        relation_type,
+        "purchase-transaction" | "statement-item-transaction" | "savings-movement-transaction"
+    ) || payload.operation_id.trim().is_empty()
+        || payload.operation_id.len() > 160
+        || payload.relation_id.trim().is_empty()
+        || payload
+            .new_transaction_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        || payload
+            .reason
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > 500)
+        || !valid_finance_source(&payload.context.source)
+    {
+        return Err("La reparación requiere una relación, operación y origen válidos.".into());
+    }
+    if relation_type == "purchase-transaction" && payload.new_transaction_id.is_none() {
+        return Err("Un ticket no puede quedar sin movimiento; elegí el gasto correcto.".into());
+    }
+
+    let connection = validate_context(&payload.context, &app)?;
+    if let Some(existing) = connection
+        .query_row(
+            "SELECT id,operation_id,relation_type,relation_id,previous_transaction_id,new_transaction_id,actor_library_user_id,source,reason,created_at FROM finance_relation_repairs WHERE operation_id=?1",
+            [&payload.operation_id],
+            relation_repair_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    {
+        if existing.relation_type != payload.relation_type
+            || existing.relation_id != payload.relation_id
+            || existing.new_transaction_id != payload.new_transaction_id
+        {
+            return Err("El operationId ya fue usado para otra reparación.".into());
+        }
+        return Ok(existing);
+    }
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let (current_transaction_id, amount, currency, movement_kind, source) = match relation_type {
+        "purchase-transaction" => transaction
+            .query_row(
+                "SELECT transaction_id,total_amount,currency,'purchase','ticket' FROM finance_purchases WHERE id=?1",
+                [&payload.relation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "El ticket no existe.".to_string())?,
+        "statement-item-transaction" => transaction
+            .query_row(
+                "SELECT transaction_id,amount,currency,item_type,'statement' FROM finance_credit_card_statement_items WHERE id=?1",
+                [&payload.relation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "La línea del resumen no existe.".to_string())?,
+        "savings-movement-transaction" => transaction
+            .query_row(
+                "SELECT linked_transaction_id,amount,currency,movement_type,source FROM finance_savings_movements WHERE id=?1",
+                [&payload.relation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "El movimiento de ahorro no existe.".to_string())?,
+        _ => unreachable!(),
+    };
+    if payload.expected_transaction_id != current_transaction_id {
+        return Err("La relación cambió desde la revisión; volvé a cargar la auditoría.".into());
+    }
+    if let Some(new_transaction_id) = payload.new_transaction_id.as_deref() {
+        let (transaction_type, transaction_amount, transaction_currency, status, _transaction_source): (String, String, String, String, String) = transaction
+            .query_row(
+                "SELECT transaction_type,amount,currency,status,source FROM finance_transactions WHERE id=?1 AND deleted_at IS NULL",
+                [new_transaction_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .map_err(|_| "El movimiento elegido no existe o fue eliminado.".to_string())?;
+        if !matches!(status.as_str(), "confirmed" | "corrected") {
+            return Err("Solo se pueden asociar movimientos confirmados o corregidos.".into());
+        }
+        if relation_type == "statement-item-transaction"
+            && !matches!(
+                movement_kind.as_str(),
+                "purchase" | "fee" | "interest" | "tax"
+            )
+        {
+            return Err("Los pagos y créditos del resumen no son gastos asociables.".into());
+        }
+        let savings_exchange =
+            relation_type == "savings-movement-transaction" && source == "savings_exchange";
+        if !savings_exchange && (transaction_amount != amount || transaction_currency != currency) {
+            return Err(
+                "El importe y la moneda del movimiento no coinciden con la evidencia.".into(),
+            );
+        }
+        if relation_type == "savings-movement-transaction" && !savings_exchange {
+            let expected_type = if movement_kind == "withdrawal" {
+                "expense"
+            } else {
+                "expense"
+            };
+            if transaction_type != expected_type {
+                return Err("El movimiento de ahorro requiere un gasto compatible.".into());
+            }
+        } else if relation_type != "savings-movement-transaction" && transaction_type != "expense" {
+            return Err("La relación financiera requiere un movimiento de gasto.".into());
+        }
+        let (table, column) = match relation_type {
+            "purchase-transaction" => ("finance_purchases", "transaction_id"),
+            "statement-item-transaction" => {
+                ("finance_credit_card_statement_items", "transaction_id")
+            }
+            _ => ("finance_savings_movements", "linked_transaction_id"),
+        };
+        let query = format!("SELECT COUNT(*) FROM {table} WHERE {column}=?1 AND id<>?2");
+        let already_linked: i64 = transaction
+            .query_row(
+                &query,
+                params![new_transaction_id, &payload.relation_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if already_linked > 0 {
+            return Err("El movimiento ya está asociado a otra evidencia del mismo tipo.".into());
+        }
+    }
+    let update = match relation_type {
+        "purchase-transaction" => "UPDATE finance_purchases SET transaction_id=?1,updated_at=?2 WHERE id=?3",
+        "statement-item-transaction" => "UPDATE finance_credit_card_statement_items SET transaction_id=?1 WHERE id=?2",
+        _ => "UPDATE finance_savings_movements SET linked_transaction_id=?1,updated_at=?2 WHERE id=?3",
+    };
+    if relation_type == "statement-item-transaction" {
+        transaction
+            .execute(
+                update,
+                params![payload.new_transaction_id, &payload.relation_id],
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        transaction
+            .execute(
+                update,
+                params![payload.new_transaction_id, now(), &payload.relation_id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let repair = FinanceRelationRepair {
+        id: Uuid::new_v4().to_string(),
+        operation_id: payload.operation_id,
+        relation_type: payload.relation_type,
+        relation_id: payload.relation_id,
+        previous_transaction_id: current_transaction_id,
+        new_transaction_id: payload.new_transaction_id,
+        actor_library_user_id: Some(payload.context.actor_library_user_id.clone()),
+        source: payload.context.source.clone(),
+        reason: payload.reason,
+        created_at: Some(now()),
+    };
+    transaction
+        .execute(
+            "INSERT INTO finance_relation_repairs(id,operation_id,relation_type,relation_id,previous_transaction_id,new_transaction_id,actor_library_user_id,source,reason,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![repair.id, repair.operation_id, repair.relation_type, repair.relation_id, repair.previous_transaction_id, repair.new_transaction_id, repair.actor_library_user_id, repair.source, repair.reason, repair.created_at],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    drop(connection);
+    sync_context(&payload.context, &app)?;
+    Ok(repair)
+}
+
+#[tauri::command]
+pub fn finance_list_relation_repairs(
+    app: tauri::AppHandle,
+    context: FinanceContext,
+    relation_type: Option<String>,
+    relation_id: Option<String>,
+) -> FinanceCommandResult<Vec<FinanceRelationRepair>> {
+    let connection = validate_context(&context, &app)?;
+    let mut statement = connection
+        .prepare("SELECT id,operation_id,relation_type,relation_id,previous_transaction_id,new_transaction_id,actor_library_user_id,source,reason,created_at FROM finance_relation_repairs WHERE (?1 IS NULL OR relation_type=?1) AND (?2 IS NULL OR relation_id=?2) ORDER BY created_at DESC LIMIT 500")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![relation_type, relation_id],
+            relation_repair_from_row,
+        )
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string().into())
 }
 
 fn audit_proposal_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceAuditProposal> {
@@ -2903,6 +3177,16 @@ pub fn finance_get_dashboard(
     let connection = validate_context(&context, &app)?;
     let accounts = finance_list_accounts_inner(&connection)?;
     let categories = finance_list_categories_inner(&connection)?;
+    let transaction_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM finance_transactions WHERE deleted_at IS NULL AND effective_date LIKE ?1 || '%'", [&month], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    let savings_movement_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM finance_savings_movements WHERE effective_date LIKE ?1 || '%'",
+            [&month],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     let mut statement = connection.prepare("SELECT t.id, t.transaction_type, t.amount, t.currency, t.effective_date, t.account_id, t.destination_account_id, t.category_id, t.description, t.source, t.status, t.actor_user_id, t.source_artifact_id, t.service_id, t.merchant_id, t.operation_fingerprint, t.installment_id, a.reference, a.raw_text, t.created_at, t.updated_at, t.actor_library_user_id FROM finance_transactions t LEFT JOIN finance_source_artifacts a ON a.id=t.source_artifact_id WHERE t.deleted_at IS NULL AND t.effective_date LIKE ?1 || '%' ORDER BY t.effective_date DESC, t.created_at DESC LIMIT 500") .map_err(|e| e.to_string())?;
     let transactions = statement
         .query_map([&month], |row| {
@@ -2938,7 +3222,7 @@ pub fn finance_get_dashboard(
     let mut expense_by_currency = BTreeMap::new();
     for transaction in transactions
         .iter()
-        .filter(|item| item.status == "confirmed")
+        .filter(|item| matches!(item.status.as_str(), "confirmed" | "corrected"))
     {
         if transaction.transaction_type == "income" {
             add_currency_total(
@@ -2972,6 +3256,7 @@ pub fn finance_get_dashboard(
         accounts,
         categories,
         transactions,
+        transactions_truncated: transaction_count > 500,
         income_total: income_by_currency
             .iter()
             .map(|(currency, value)| format!("{currency} {}", format_cents(*value)))
@@ -3007,6 +3292,7 @@ pub fn finance_get_dashboard(
         debt_ratio_history: finance_debt_ratio_history(&connection, &month)?,
         savings: finance_list_savings_inner(&connection)?,
         savings_movements: finance_list_savings_movements_inner(&connection, &month)?,
+        savings_movements_truncated: savings_movement_count > 500,
         merchants: finance_list_merchants_inner(&connection)?,
     })
 }
@@ -4112,12 +4398,13 @@ mod tests {
     }
 
     #[test]
-    fn calculates_savings_only_from_confirmed_movements() {
+    fn calculates_savings_from_confirmed_and_corrected_movements_only() {
         let mut balance = parse_cents("100.00").expect("opening balance");
         apply_savings_movement(&mut balance, "contribution", "50.25", "confirmed");
         apply_savings_movement(&mut balance, "withdrawal", "10.00", "confirmed");
         apply_savings_movement(&mut balance, "loss", "5.25", "pending");
-        assert_eq!(format_cents(balance), "140.25");
+        apply_savings_movement(&mut balance, "return", "1.00", "corrected");
+        assert_eq!(format_cents(balance), "141.25");
     }
 
     #[test]

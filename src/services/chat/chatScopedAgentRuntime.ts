@@ -2014,6 +2014,7 @@ export function buildChatAgentSystemPrompt(
   } else if (scope === 'finance') {
     base.push(
       'Estas en Finanzas. Usa exclusivamente las herramientas financieras; no uses SQL ni modifiques saldos directamente.',
+      'Las cuentas son etiquetas de origen/destino y no representan saldos conciliados. Distingue gastos registrados, documentados, conciliados y pendientes; no afirmes dinero disponible real a partir de estas etiquetas.',
       'Para cotizaciones actuales usa get_finance_dollar_quotes (DolarApi). Para IPC mensual o interanual usa get_finance_inflation_indices (ArgentinaDatos), y para el historial del dolar oficial usa get_finance_historical_dollar_quotes (ArgentinaDatos). Informa siempre la fuente y la fecha disponible; si una consulta externa falla, dilo explicitamente.',
       'Para preguntas sobre precios historicos usa list_finance_price_history. Para patrimonio usa get_finance_net_worth o list_finance_net_worth_history. Para recibos, tickets y resumenes usa sus herramientas list_* y aplica filtros cuando el usuario indique un periodo. No afirmes que consultaste todos los registros si una herramienta devuelve un resultado truncado.',
       'Para inventarios, conciliaciones o resúmenes globales usa get_finance_full_snapshot. Para una entidad concreta usa list_finance_records con filtros, limit y offset, y respeta total/hasMore; usa get_finance_record para un ID exacto y no confundas una página con el total.',

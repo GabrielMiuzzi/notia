@@ -235,6 +235,8 @@ pub fn run() {
             finance::finance_save_audit_proposal,
             finance::finance_list_audit_proposals,
             finance::finance_decide_audit_proposal,
+            finance::finance_repair_relation,
+            finance::finance_list_relation_repairs,
             finance::finance_delete_transaction,
             finance::finance_delete_account,
             finance::finance_delete_category,

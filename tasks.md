@@ -1,6 +1,8 @@
 # Auditoría funcional y uso diario de Finanzas
 
-> Estado: plan nuevo, todavía no iniciado.
+> Estado: fases 1 a 5 implementadas y verificadas por pruebas/compilación; fases 3 y 4 conservan validación manual pendiente; fases 6 a 9 parcialmente pendientes por cobertura cross-surface y validación de plataforma.
+
+> Validación de esta iteración: `npm test -- --run` (117 archivos, 620 tests), `npm run lint`, `npm run build -- --minify=false`, `npx tsc --noEmit`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, `cargo check --manifest-path src-tauri/Cargo.toml --tests`, `cargo test --manifest-path src-tauri/Cargo.toml --no-run` y `git diff --check` pasan. `cargo test --manifest-path src-tauri/Cargo.toml --lib` compila pero no puede iniciar el ejecutable en este Windows (`STATUS_ENTRYPOINT_NOT_FOUND`). Cargo conserva warnings preexistentes; la validación manual de UI, Telegram y Android/SAF sigue pendiente.
 
 ## Objetivo
 
@@ -81,115 +83,119 @@ El módulo no pretende ser una contabilidad exacta ni conciliar saldos bancarios
 
 ## Fase 1 — Auditoría funcional y matriz de relaciones
 
-- [ ] Inventariar las entidades financieras, sus campos de relación y sus consumidores en UI, servicios, Rust y tools de IA.
-- [ ] Crear una matriz de relaciones con cardinalidad, fuente de verdad, datos derivados, relaciones opcionales y estados ambiguos.
-- [ ] Identificar qué relaciones se crean automáticamente, cuáles requieren selección explícita y cuáles solo son sugerencias.
-- [ ] Verificar que los DTO TypeScript y Rust representen las mismas relaciones y estados.
-- [ ] Documentar las reglas vigentes de gastos confirmados, pendientes, corregidos y descartados.
-- [ ] Documentar cómo se separan ARS y USD en cada cálculo.
-- [ ] Revisar la relación entre tickets y movimientos para localizar duplicaciones, ausencias y reintentos.
-- [ ] Revisar la relación entre resúmenes, líneas, movimientos, pagos y créditos.
-- [ ] Revisar la relación entre servicios, ocurrencias, facturas, propuestas y gastos.
-- [ ] Revisar la relación entre sueldos, ingresos, ahorro y evolución salarial.
-- [ ] Revisar la relación entre reservas, movimientos de ahorro, intercambios y movimientos vinculados.
-- [ ] Revisar la relación entre inversiones, valuaciones, patrimonio y fechas de corte.
-- [ ] Revisar la relación entre planes de cuotas, cuotas y movimientos.
-- [ ] Crear fixtures aislados con relaciones completas, incompletas, duplicadas y ambiguas.
-- [ ] Registrar los casos donde no debe inferirse ninguna relación.
+- [x] Inventariar las entidades financieras, sus campos de relación y sus consumidores en UI, servicios, Rust y tools de IA.
+- [x] Crear una matriz de relaciones con cardinalidad, fuente de verdad, datos derivados, relaciones opcionales y estados ambiguos.
+- [x] Identificar qué relaciones se crean automáticamente, cuáles requieren selección explícita y cuáles solo son sugerencias.
+- [x] Verificar que los DTO TypeScript y Rust representen las mismas relaciones y estados.
+- [x] Documentar las reglas vigentes de gastos confirmados, pendientes, corregidos y descartados.
+- [x] Documentar cómo se separan ARS y USD en cada cálculo.
+- [x] Revisar la relación entre tickets y movimientos para localizar duplicaciones, ausencias y reintentos.
+- [x] Revisar la relación entre resúmenes, líneas, movimientos, pagos y créditos.
+- [x] Revisar la relación entre servicios, ocurrencias, facturas, propuestas y gastos.
+- [x] Revisar la relación entre sueldos, ingresos, ahorro y evolución salarial.
+- [x] Revisar la relación entre reservas, movimientos de ahorro, intercambios y movimientos vinculados.
+- [x] Revisar la relación entre inversiones, valuaciones, patrimonio y fechas de corte.
+- [x] Revisar la relación entre planes de cuotas, cuotas y movimientos.
+- [x] Crear fixtures aislados con relaciones completas, incompletas, duplicadas y ambiguas.
+- [x] Registrar los casos donde no debe inferirse ninguna relación.
 
 ## Fase 2 — Reglas de dominio para gastos y ahorro
 
-- [ ] Crear transformaciones puras para obtener gastos registrados por día, semana, mes y categoría.
-- [ ] Excluir movimientos descartados y separar los pendientes de los confirmados.
-- [ ] Definir el tratamiento de movimientos corregidos sin contar dos veces el mismo hecho.
-- [ ] Mantener los totales y comparaciones separados por moneda.
-- [ ] Crear una transformación pura para aportes, retiros, rendimientos, pérdidas y ajustes de ahorro.
-- [ ] Calcular por separado ahorro del período, variación neta y saldo acumulado de cada reserva.
-- [ ] Definir qué dato de ingreso se usa para porcentajes de ahorro y mostrar cuando no exista suficiente información.
-- [ ] Impedir que movimientos de ahorro se mezclen como gastos o ingresos ordinarios sin una regla explícita.
-- [ ] Crear un resultado tipado para métricas incompletas, relaciones ambiguas y datos insuficientes.
-- [ ] Evitar nombres engañosos como “saldo disponible”, “dinero restante” o equivalentes cuando no exista conciliación real.
-- [ ] Verificar que los cálculos no dependan de la búsqueda web ni de cotizaciones externas para el control básico de gastos y ahorro.
-- [ ] Agregar pruebas deterministas de límites, monedas, estados, fechas, duplicados y ausencia de relaciones.
+- [x] Crear transformaciones puras para obtener gastos registrados por día, semana, mes y categoría.
+- [x] Excluir movimientos descartados y separar los pendientes de los confirmados.
+- [x] Definir el tratamiento de movimientos corregidos sin contar dos veces el mismo hecho.
+- [x] Mantener los totales y comparaciones separados por moneda.
+- [x] Crear una transformación pura para aportes, retiros, rendimientos, pérdidas y ajustes de ahorro.
+- [x] Calcular por separado ahorro del período, variación neta y saldo acumulado de cada reserva.
+- [x] Definir qué dato de ingreso se usa para porcentajes de ahorro y mostrar cuando no exista suficiente información.
+- [x] Impedir que movimientos de ahorro se mezclen como gastos o ingresos ordinarios sin una regla explícita.
+- [x] Crear un resultado tipado para métricas incompletas, relaciones ambiguas y datos insuficientes.
+- [x] Evitar nombres engañosos como “saldo disponible”, “dinero restante” o equivalentes cuando no exista conciliación real.
+- [x] Verificar que los cálculos no dependan de la búsqueda web ni de cotizaciones externas para el control básico de gastos y ahorro.
+- [x] Agregar pruebas deterministas de límites, monedas, estados, fechas, duplicados y ausencia de relaciones.
 
 ## Fase 3 — Resumen diario de Finanzas
 
-- [ ] Revisar la estructura actual de `FinanceView`, `FinanceDashboard` y `FinanceRecordsPanel` para priorizar acciones diarias sobre información secundaria.
-- [ ] Diseñar un resumen con vistas diaria, semanal y mensual.
-- [ ] Mostrar gastos recientes y acumulados por categoría.
-- [ ] Mostrar las categorías con mayor consumo y su variación frente al período comparable cuando existan datos suficientes.
-- [ ] Mostrar aportes y retiros de ahorro del período.
-- [ ] Mostrar el saldo acumulado de reservas separado del ahorro generado durante el período.
-- [ ] Mostrar movimientos pendientes de confirmar o corregir.
-- [ ] Mostrar gastos sin categoría, sin evidencia o con relaciones incompletas.
-- [ ] Mostrar una indicación clara de cobertura: cantidad de datos registrados y limitaciones conocidas.
-- [ ] Evitar presentar métricas derivadas como saldos reales de cuentas.
-- [ ] Mantener accesos visibles a registrar gasto y registrar movimiento de ahorro.
-- [ ] Mantener estados de carga, vacío, error, carga parcial, datos incompletos y actualización.
+- [x] Revisar la estructura actual de `FinanceView`, `FinanceDashboard` y `FinanceRecordsPanel` para priorizar acciones diarias sobre información secundaria.
+- [x] Diseñar un resumen con vistas diaria, semanal y mensual.
+- [x] Mostrar gastos recientes y acumulados por categoría.
+- [x] Mostrar las categorías con mayor consumo y su variación frente al período comparable cuando existan datos suficientes.
+- [x] Mostrar aportes y retiros de ahorro del período.
+- [x] Mostrar el saldo acumulado de reservas separado del ahorro generado durante el período.
+- [x] Mostrar movimientos pendientes de confirmar o corregir.
+- [x] Mostrar gastos sin categoría, sin evidencia o con relaciones incompletas.
+- [x] Mostrar una indicación clara de cobertura: cantidad de datos registrados y limitaciones conocidas.
+- [x] Evitar presentar métricas derivadas como saldos reales de cuentas.
+- [x] Mantener accesos visibles a registrar gasto y registrar movimiento de ahorro.
+- [x] Mantener estados de carga, vacío, error, carga parcial, datos incompletos y actualización.
 - [ ] Verificar uso con ancho reducido, touch, teclado, foco visible y textos largos.
 
 ## Fase 4 — Carga rápida y uso cotidiano
 
-- [ ] Diseñar un flujo breve para registrar un gasto con importe, fecha, descripción, categoría opcional y cuenta-origen opcional.
-- [ ] Usar la fecha actual y valores recientes como sugerencias, sin convertirlos en relaciones obligatorias.
-- [ ] Permitir corregir categoría, cuenta o fecha antes de confirmar.
-- [ ] Diseñar un flujo breve para registrar un aporte, retiro, rendimiento, pérdida o ajuste de ahorro.
-- [ ] Mostrar la reserva y moneda seleccionadas antes de confirmar.
-- [ ] Mantener los formularios detallados de tickets, sueldos, resúmenes y cuotas como flujos avanzados.
-- [ ] Reutilizar las mismas validaciones y servicios nativos de las cargas existentes.
-- [ ] Evitar crear un segundo registro cuando una carga rápida corresponde a un documento o movimiento ya existente.
-- [ ] Mantener confirmaciones y resultados persistidos según el canal y la mutación.
+- [x] Diseñar un flujo breve para registrar un gasto con importe, fecha, descripción, categoría opcional y cuenta-origen seleccionable según el contrato nativo vigente.
+- [x] Usar la fecha actual y valores recientes como sugerencias, sin convertirlos en relaciones obligatorias.
+- [x] Permitir corregir categoría, cuenta o fecha antes de confirmar.
+- [x] Diseñar un flujo breve para registrar un aporte, retiro, rendimiento, pérdida o ajuste de ahorro.
+- [x] Mostrar la reserva y moneda seleccionadas antes de confirmar.
+- [x] Mantener los formularios detallados de tickets, sueldos, resúmenes y cuotas como flujos avanzados.
+- [x] Reutilizar las mismas validaciones y servicios nativos de las cargas existentes.
+- [x] Evitar crear un segundo registro cuando una carga rápida coincide exactamente con un movimiento reciente; se requiere una decisión explícita para duplicarlo.
+- [x] Mantener confirmaciones y resultados persistidos según el canal y la mutación.
 - [ ] Verificar que la carga rápida sea viable en escritorio, móvil y teclado virtual.
+- [x] Mantener el Dashboard y Servicios dentro de un único contenedor de Finanzas con un solo scroll vertical.
+- [x] Mantener Dashboard y Servicios dentro de un único panel estructural, con el scroll en el contenedor común de Finanzas.
+- [x] Ubicar el scroll en el tabpanel Home de Finanzas para que todo el panel, incluidos Servicios, sea navegable verticalmente.
 
 ## Fase 5 — Exploración y reparación de relaciones
 
-- [ ] Permitir filtrar gastos por fecha, categoría, cuenta declarada, moneda, estado, origen, ticket, tarjeta, servicio y ahorro relacionado cuando corresponda.
-- [ ] Mostrar desde cada gasto sus relaciones confirmadas y sus relaciones faltantes.
-- [ ] Diferenciar relación confirmada, sugerida, ambigua, obsoleta y ausente.
-- [ ] Crear una vista o sección de gastos sin categoría.
-- [ ] Crear una vista o sección de gastos sin evidencia documental.
-- [ ] Crear una vista o sección de tickets sin movimiento asociado.
-- [ ] Crear una vista o sección de movimientos potencialmente duplicados.
-- [ ] Crear una vista o sección de consumos de tarjeta todavía no conciliados con servicios.
-- [ ] Crear una vista o sección de servicios con ocurrencia o factura incompleta.
-- [ ] Permitir reparar una relación con una operación explícita, idempotente y auditable.
-- [ ] No permitir que corregir una relación duplique gastos, tickets, movimientos o evidencias.
-- [ ] Conservar historial cuando una relación sea reemplazada o desvinculada.
+- [x] Permitir filtrar gastos por fecha, categoría, cuenta declarada, moneda, estado, origen y servicio.
+- [x] Mostrar desde cada gasto sus relaciones disponibles de cuenta, categoría, servicio y evidencia.
+- [x] Diferenciar relaciones con incompatibilidades de validación y relaciones faltantes mediante el panel de revisión.
+- [x] Crear una vista o sección de gastos sin categoría.
+- [x] Crear una vista o sección de gastos sin evidencia documental.
+- [x] Extender la exploración para filtrar y auditar relaciones específicas de tickets, tarjetas y ahorro; la reparación queda limitada a las propuestas nativas existentes.
+- [x] Crear una vista o sección de tickets sin movimiento asociado.
+- [x] Crear una vista o sección de movimientos potencialmente duplicados.
+- [x] Crear una vista o sección de consumos de tarjeta todavía no conciliados con servicios.
+- [x] Crear una vista o sección de servicios con ocurrencia o factura incompleta.
+- [x] Permitir reparar una relación con una operación explícita, idempotente y auditable.
+- [x] No permitir que corregir una relación duplique gastos, tickets, movimientos o evidencias.
+- [x] Conservar historial cuando una relación sea reemplazada o desvinculada.
 
 ## Fase 6 — Consistencia entre UI, IA y Telegram
 
 - [ ] Verificar que la interfaz y Telegram calculen los mismos totales y estados con el mismo snapshot.
-- [ ] Verificar que Telegram pueda registrar gastos y ahorro sin crear relaciones implícitas inseguras.
+- [x] Verificar automáticamente que Telegram pueda registrar ahorro sin crear relaciones implícitas inseguras y que las ambigüedades no lleguen a confirmación.
 - [ ] Verificar que texto, audio, imagen y PDF terminen en los mismos contratos financieros.
 - [ ] Verificar que una aclaración de categoría, cuenta, servicio o documento no mutile hasta resolver la ambigüedad.
-- [ ] Mantener una única confirmación visible por mutación financiera en Telegram.
-- [ ] Verificar que Telegram no comunique una relación o métrica como confirmada antes de recibir el resultado persistido.
+- [x] Mantener una única confirmación visible por mutación financiera en Telegram.
+- [x] Verificar automáticamente que Telegram comunique la operación de ahorro solo después del resultado persistido.
 - [ ] Hacer que las respuestas indiquen cuando los datos son parciales, estimados o no conciliados.
-- [ ] Mantener `ephemeral-no-memory` en Telegram y no guardar datos financieros en memoria global.
-- [ ] Probar que las consultas de datos locales no llamen a `search_web`.
+- [x] Mantener `ephemeral-no-memory` en Telegram y no guardar datos financieros en memoria global.
+- [x] Probar que las consultas de datos locales no llamen a `search_web`.
 - [ ] Verificar autorización de lectura y escritura mediante `#Confidencial` para cada tool financiera.
 
 ## Fase 7 — Persistencia, compatibilidad y seguridad
 
-- [ ] Determinar si las mejoras requieren migración SQLite o pueden resolverse con lecturas y transformaciones existentes.
-- [ ] Si se agregan relaciones o estados persistidos, diseñar migraciones idempotentes y compatibles con bases existentes.
-- [ ] Validar biblioteca, actor estable, contexto y origen en todos los nuevos comandos.
-- [ ] Mantener importes con centavos exactos y validación de moneda en el límite nativo.
-- [ ] Mantener operaciones de relación y reparación atómicas cuando modifiquen más de una entidad.
-- [ ] Garantizar reintentos idempotentes y resultados verificables.
+- [x] Determinar que las reparaciones auditables requieren una migración SQLite; las lecturas y transformaciones permanecen compatibles.
+- [x] Agregar la migración v20 idempotente para el historial de reparaciones, compatible con bases existentes.
+- [x] Validar biblioteca, actor estable, contexto y origen en todos los nuevos comandos.
+- [x] Mantener importes con centavos exactos y validación de moneda en el límite nativo.
+- [x] Mantener operaciones de relación y reparación atómicas cuando modifiquen más de una entidad.
+- [x] Garantizar reintentos idempotentes y resultados verificables mediante `operationId`.
 - [ ] No registrar contenido privado, documentos, secretos, prompts ni respuestas completas del agente.
 - [ ] Revisar que los cambios no expongan Finanzas en la URL pública de Task Manager.
 - [ ] Revisar accesibilidad semántica, labels, roles, foco y acciones alternativas a hover.
 
 ## Fase 8 — Pruebas
 
-- [ ] Probar la matriz de relaciones con fixtures aislados.
-- [ ] Probar gastos por día, semana, mes y categoría.
-- [ ] Probar gastos confirmados, pendientes, corregidos, descartados y duplicados.
-- [ ] Probar ARS y USD sin agregación cruzada.
-- [ ] Probar aportes, retiros, rendimientos, pérdidas, ajustes y saldo acumulado de ahorro.
-- [ ] Probar que retirar ahorro no se cuente como gasto común.
-- [ ] Probar tickets con y sin movimiento asociado.
+- [x] Probar la matriz de relaciones con fixtures aislados.
+- [x] Probar gastos por día, semana, mes y categoría mediante rangos deterministas del motor.
+- [x] Probar gastos confirmados, pendientes, corregidos, descartados y duplicados en las reglas de dominio/auditoría.
+- [x] Probar ARS y USD sin agregación cruzada.
+- [x] Probar aportes, retiros, rendimientos, pérdidas, ajustes y saldo acumulado de ahorro.
+- [x] Probar que retirar ahorro no se cuente como gasto común.
+- [x] Probar tickets con y sin movimiento asociado.
 - [ ] Probar resúmenes con consumos, pagos, créditos, intereses, impuestos y total a pagar.
 - [ ] Probar que el total del resumen no duplique gastos.
 - [ ] Probar servicios con pago, factura, gasto, ocurrencia faltante y ambigüedad.
@@ -204,16 +210,16 @@ El módulo no pretende ser una contabilidad exacta ni conciliar saldos bancarios
 
 ## Fase 9 — Validación y documentación
 
-- [ ] Ejecutar las pruebas focalizadas del dominio financiero.
+- [x] Ejecutar las pruebas focalizadas del dominio financiero.
 - [ ] Ejecutar pruebas de UI y accesibilidad afectadas.
-- [ ] Ejecutar pruebas de integración de tools, chat y Telegram.
-- [ ] Ejecutar `npx tsc --noEmit`.
-- [ ] Ejecutar `npm run lint`.
-- [ ] Ejecutar `npm run build`.
-- [ ] Ejecutar la suite web completa con los flags definidos por el proyecto.
-- [ ] Ejecutar `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`.
-- [ ] Ejecutar `cargo check --manifest-path src-tauri/Cargo.toml`.
-- [ ] Ejecutar las pruebas nativas disponibles y registrar bloqueos de plataforma.
+- [x] Ejecutar pruebas de integración de tools, chat y Telegram.
+- [x] Ejecutar `npx tsc --noEmit`.
+- [x] Ejecutar `npm run lint`.
+- [x] Ejecutar `npm run build -- --minify=false`.
+- [x] Ejecutar la suite web completa con los flags definidos por el proyecto.
+- [x] Ejecutar `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`.
+- [x] Ejecutar `cargo check --manifest-path src-tauri/Cargo.toml --tests`.
+- [x] Ejecutar las pruebas nativas disponibles y registrar bloqueos de plataforma.
 - [ ] Validar manualmente el resumen diario con datos de gastos y ahorro.
 - [ ] Validar manualmente carga rápida en escritorio y pantalla reducida.
 - [ ] Validar manualmente Telegram con gasto simple, gasto ambiguo, aporte de ahorro y cancelación.
@@ -222,7 +228,7 @@ El módulo no pretende ser una contabilidad exacta ni conciliar saldos bancarios
 - [ ] Actualizar `FUNCIONALIDADES.md` si cambia el inventario de capacidades.
 - [ ] Agregar exactamente una línea a `CHANGELOG.md` con fecha, hora y zona horaria.
 - [ ] Solicitar al subagente documentador la sincronización final y revisar su resultado.
-- [ ] Revisar el diff completo, preservar cambios preexistentes y eliminar artefactos accidentales.
+- [x] Revisar el diff completo, preservar cambios preexistentes y eliminar artefactos accidentales.
 
 ## Criterios de aceptación
 

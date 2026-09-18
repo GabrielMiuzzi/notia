@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { NotiaLibrary } from '../../../types/notia'
-import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinanceSavingsExchange, FinanceSavedSavingsExchange, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryReceiptInput, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceCreditCardStatementInput, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult, FinanceDevQueryResult, FinanceDevTable, FinanceService, FinanceServiceOccurrence, FinanceServiceOccurrenceVersion, FinanceServiceInvoice, FinanceAuditRun, FinanceAuditProposal, FinanceCardServiceResolution } from '../types/financeTypes'
+import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinanceSavingsExchange, FinanceSavedSavingsExchange, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryReceiptInput, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceCreditCardStatementInput, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult, FinanceDevQueryResult, FinanceDevTable, FinanceService, FinanceServiceOccurrence, FinanceServiceOccurrenceVersion, FinanceServiceInvoice, FinanceAuditRun, FinanceAuditProposal, FinanceCardServiceResolution, FinanceRelationRepair, FinanceRelationRepairType } from '../types/financeTypes'
 import { financeContext } from '../types/financeTypes'
 import { notifyFinanceDataChanged } from './financeDataEvents'
 
@@ -94,6 +94,14 @@ export function listFinanceAuditProposals(library: NotiaLibrary, period?: string
 
 export function decideFinanceAuditProposal(library: NotiaLibrary, proposalId: string, decision: 'accepted' | 'rejected' | 'cancelled', actor?: FinanceActor, expectedDataFingerprint?: string, resolutionAssignments?: FinanceCardServiceResolution[]): Promise<void> {
   return invoke('finance_decide_audit_proposal', { payload: { context: context(library, actor), proposalId, decision, expectedDataFingerprint, resolutionAssignments } })
+}
+
+export function repairFinanceRelation(library: NotiaLibrary, input: { operationId: string; relationType: FinanceRelationRepairType; relationId: string; newTransactionId: string | null; expectedTransactionId: string | null; reason?: string | null }, actor?: FinanceActor): Promise<FinanceRelationRepair> {
+  return invoke<FinanceRelationRepair>('finance_repair_relation', { payload: { context: context(library, actor), operationId: input.operationId, relationType: input.relationType, relationId: input.relationId, newTransactionId: input.newTransactionId, expectedTransactionId: input.expectedTransactionId, reason: input.reason ?? null } })
+}
+
+export function listFinanceRelationRepairs(library: NotiaLibrary, relationType?: FinanceRelationRepairType, relationId?: string, actor?: FinanceActor): Promise<FinanceRelationRepair[]> {
+  return invoke<FinanceRelationRepair[]>('finance_list_relation_repairs', { context: context(library, actor), relationType, relationId })
 }
 
 export function listFinanceDevTables(): Promise<FinanceDevTable[]> {

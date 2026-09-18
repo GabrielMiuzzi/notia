@@ -112,6 +112,8 @@ export interface FinanceExtractionResult {
 
 export interface FinancePurchaseSummary {
   id: string;
+  accountId: string | null;
+  transactionId: string | null;
   serviceId?: string | null;
   merchantName: string;
   observedAt: string;
@@ -275,6 +277,7 @@ export interface FinanceDashboard {
   accounts: FinanceAccount[];
   categories: FinanceCategory[];
   transactions: FinanceTransaction[];
+  transactionsTruncated: boolean;
   incomeTotal: string;
   expenseTotal: string;
   netTotal: string;
@@ -286,6 +289,7 @@ export interface FinanceDashboard {
   debtRatioHistory: FinanceDebtRatioHistoryPoint[];
   savings: FinanceSavingsReserve[];
   savingsMovements: FinanceSavingsMovement[];
+  savingsMovementsTruncated: boolean;
   merchants: FinanceMerchant[];
 }
 
@@ -382,6 +386,21 @@ export interface FinanceAuditProposal {
   source: string;
   createdAt?: string | null;
   decidedAt?: string | null;
+}
+
+export type FinanceRelationRepairType = "purchase-transaction" | "statement-item-transaction" | "savings-movement-transaction";
+
+export interface FinanceRelationRepair {
+  id: string;
+  operationId: string;
+  relationType: FinanceRelationRepairType;
+  relationId: string;
+  previousTransactionId?: string | null;
+  newTransactionId?: string | null;
+  actorLibraryUserId?: string | null;
+  source: string;
+  reason?: string | null;
+  createdAt?: string | null;
 }
 
 export interface FinanceCardServiceAssignment {

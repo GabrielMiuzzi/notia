@@ -1,3 +1,4 @@
+[2026-09-18 02:13:41 -03:00] Se unificó el desplazamiento vertical de Finanzas y se agregaron regresiones para reservas de ahorro y Telegram.
 [2026-09-18 00:51:12 -03:00] Se sincronizó la documentación con el contrato global de IA, Finanzas, conciliación y la vista de Servicios.
 [2026-09-18 00:03:50 -03:00] Se hizo idempotente por centavos el replay nativo de ocurrencias y se sincronizó el vínculo de la compra asociada.
 [2026-09-17 23:42:39 -03:00] Se normalizó por centavos el matching local de pagos y la recuperación de ocurrencias.

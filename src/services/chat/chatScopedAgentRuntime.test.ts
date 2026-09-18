@@ -448,6 +448,7 @@ describe('chatScopedAgentRuntime', () => {
     expect(names).not.toContain('set_agent_execution_plan')
     const prompt = buildChatAgentSystemPrompt('finance', 'Base')
     expect(prompt).toContain('herramientas financieras')
+    expect(prompt).toContain('no representan saldos conciliados')
     expect(prompt).toContain('get_finance_dollar_quotes')
     expect(prompt).toContain('get_finance_inflation_indices')
     expect(prompt).toContain('get_finance_historical_dollar_quotes')

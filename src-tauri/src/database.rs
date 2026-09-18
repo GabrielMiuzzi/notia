@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 20;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -781,6 +781,27 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
         )?;
         transaction.commit()?;
     }
+    if current_version < 20 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS finance_relation_repairs (
+                 id TEXT PRIMARY KEY,
+                 operation_id TEXT NOT NULL UNIQUE,
+                 relation_type TEXT NOT NULL CHECK (relation_type IN ('purchase-transaction','statement-item-transaction','savings-movement-transaction')),
+                 relation_id TEXT NOT NULL,
+                 previous_transaction_id TEXT,
+                 new_transaction_id TEXT,
+                 actor_library_user_id TEXT,
+                 source TEXT NOT NULL,
+                 reason TEXT,
+                 created_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_finance_relation_repairs_target
+                 ON finance_relation_repairs(relation_type, relation_id, created_at);
+             INSERT INTO notia_schema_migrations (version) VALUES (20);",
+        )?;
+        transaction.commit()?;
+    }
     // Some development builds recorded schema version 18/19 before the
     // association columns were present. Repair the invariant independently
     // of the version marker so existing libraries can load their dashboard.
@@ -930,6 +951,7 @@ mod tests {
             "finance_audit_runs",
             "finance_audit_proposals",
             "finance_audit_decisions",
+            "finance_relation_repairs",
         ] {
             let exists: i64 = connection
                 .query_row(

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { clearAllFinanceData, extractFinanceDocument, getFinanceDashboard, listAllFinanceSavingsMovements, listAllFinanceTransactions, listFinanceArtifacts, listFinanceCreditCardStatements, listFinanceInstallmentPlans, listFinanceInstallments, listFinanceInvestments, listFinanceNetWorthHistory, runFinanceAudit, saveFinanceCreditCardStatement, saveFinanceInstallmentPlan, saveFinancePurchase, saveFinanceSalary, saveVerifiedFinanceSalary } from './financeService'
+import { clearAllFinanceData, extractFinanceDocument, getFinanceDashboard, listAllFinanceSavingsMovements, listAllFinanceTransactions, listFinanceArtifacts, listFinanceCreditCardStatements, listFinanceInstallmentPlans, listFinanceInstallments, listFinanceInvestments, listFinanceNetWorthHistory, repairFinanceRelation, runFinanceAudit, saveFinanceCreditCardStatement, saveFinanceInstallmentPlan, saveFinancePurchase, saveFinanceSalary, saveVerifiedFinanceSalary } from './financeService'
 import type { NotiaLibrary } from '../../../types/notia'
 import { formatFinanceAuditProposalPreview, type FinanceAuditProposal } from '../types/financeTypes'
 
@@ -149,6 +149,13 @@ describe('financeService', () => {
     expect(invoke).toHaveBeenCalledWith('finance_run_audit', {
       payload: { context: { libraryPath: library.path, androidDirectoryUri: undefined, actorLibraryUserId: 'user-owner', source: 'app' }, period: '2026-09', triggerFingerprint: 'audit:request-1', reason: null },
     })
+  })
+
+  it('uses an idempotent native command for explicit relation repairs', async () => {
+    vi.mocked(invoke).mockResolvedValue({ id: 'repair-1', operationId: 'operation-1', relationType: 'statement-item-transaction', relationId: 'line-1', newTransactionId: 'transaction-1' })
+    const library: NotiaLibrary = { id: 'library-1', name: 'Personal', path: 'C:/personal' }
+    await repairFinanceRelation(library, { operationId: 'operation-1', relationType: 'statement-item-transaction', relationId: 'line-1', newTransactionId: 'transaction-1', expectedTransactionId: null, reason: 'Revisión manual' })
+    expect(invoke).toHaveBeenCalledWith('finance_repair_relation', { payload: { context: { libraryPath: library.path, androidDirectoryUri: undefined, actorLibraryUserId: 'user-owner', source: 'app' }, operationId: 'operation-1', relationType: 'statement-item-transaction', relationId: 'line-1', newTransactionId: 'transaction-1', expectedTransactionId: null, reason: 'Revisión manual' } })
   })
 
   it('formats reconciliation previews with line evidence and does not hide ambiguous groups', () => {

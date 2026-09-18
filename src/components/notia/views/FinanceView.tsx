@@ -13,7 +13,7 @@ function FinanceViewComponent({ library }: { library: NotiaLibrary | null }) {
       <button type="button" role="tab" aria-selected={activeTab === 'dev'} onClick={() => setActiveTab('dev')}>Dev</button>
     </nav>
     {activeTab === 'home'
-      ? <section className="notia-finance-view" role="tabpanel"><FinanceDashboard library={library} /><FinanceServicesView library={library} /></section>
+      ? <section className="finance-home-tabpanel" role="tabpanel"><div className="notia-finance-view"><div className="finance-home-panel"><FinanceDashboard library={library} /><FinanceServicesView library={library} /></div></div></section>
       : <section role="tabpanel"><FinanceDeveloperView library={library} /></section>}
   </main>
 }

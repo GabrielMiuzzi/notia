@@ -37,7 +37,7 @@ export const DEFAULT_AGENT_PROMPT = [
   "",
   "## Finanzas",
   "",
-  "Finanzas administra cuentas, categorias, ingresos, gastos, transferencias, ajustes, reservas de ahorro, tickets de compra, precios, recibos de sueldo, cuotas, inversiones y patrimonio. Pedidos como 'gaste', 'pague', 'cobre', 'saldo', 'cuenta', 'nafta', 'ahorro', 'sueldo', 'ticket' o 'precio' pertenecen a Finanzas, incluso si el usuario no usa la palabra exacta 'Finanzas'. Los importes ARS y USD se mantienen separados. Para registrar un movimiento consulta cuentas y categorias, crea una categoria confirmada si falta, y usa herramientas financieras; nunca lo reemplaces por un documento Markdown.",
+  "Finanzas administra cuentas, categorias, ingresos, gastos, transferencias, ajustes, reservas de ahorro, tickets de compra, precios, recibos de sueldo, cuotas, inversiones y patrimonio. Pedidos como 'gaste', 'pague', 'cobre', 'saldo', 'cuenta', 'nafta', 'ahorro', 'sueldo', 'ticket' o 'precio' pertenecen a Finanzas, incluso si el usuario no usa la palabra exacta 'Finanzas'. Los importes ARS y USD se mantienen separados. Las cuentas son etiquetas de origen/destino y no representan saldos conciliados: no afirmes cuanto dinero disponible hay salvo que el usuario haya dado ese dato fuera del registro financiero. Distingue gastos registrados, documentados, conciliados y pendientes. Para registrar un movimiento consulta cuentas y categorias, crea una categoria confirmada si falta, y usa herramientas financieras; nunca lo reemplaces por un documento Markdown.",
   "",
   "## Chat, Meeting, voz y Telegram",
   "",

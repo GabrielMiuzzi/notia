@@ -15,11 +15,19 @@ import {
   saveFinanceSalary,
   saveFinanceCreditCardStatement,
   queueFinanceAudit,
-  listFinanceServices,
+  repairFinanceRelation,
+  listFinanceRelationRepairs,
   listFinanceServiceOccurrences,
+  listAllFinanceTransactions,
+  listAllFinanceSavingsMovements,
+  listFinanceServices,
+  listAllFinanceServiceOccurrences,
+  listFinanceServiceInvoices,
+  listFinanceInvestments,
 } from "../services/financeService";
 import type {
   FinanceAccount,
+  FinanceCategory,
   FinanceCreditCardStatement,
   FinanceDebtRatioHistoryPoint,
   FinanceCurrency,
@@ -29,12 +37,17 @@ import type {
   FinancePurchaseRecord,
   FinancePurchaseSummary,
   FinanceSalaryEvolution,
+  FinanceSavingsReserve,
+  FinanceRelationRepairType,
+  FinanceTransaction,
+  FinanceRelationRepair,
 } from "../types/financeTypes";
 import { validateTicketArithmetic } from "../engines/ticketValidation";
 import { parseSalaryExtraction } from "../engines/salaryExtraction";
 import { financeErrorMessage } from "../engines/financeError";
 import { formatFinanceLoadedDate } from "../engines/financeLoadedDate";
 import { reconcileFinanceCardServices } from "../engines/serviceEngine";
+import { auditFinanceRelations, type FinanceRelationAudit, type FinanceRelationEntity, type FinanceRelationIssue } from "../engines/financeRelations";
 import { CreditCardStatementForm } from "./CreditCardStatementForm";
 import { CreditCardEvolutionChart } from "./CreditCardEvolutionChart";
 import { DebtRatioEvolutionChart } from "./DebtRatioEvolutionChart";
@@ -43,6 +56,8 @@ import { SalaryEvolutionChart } from "./SalaryEvolutionChart";
 interface Props {
   library: NotiaLibrary;
   accounts: FinanceAccount[];
+  categories: FinanceCategory[];
+  reserves: FinanceSavingsReserve[];
   debtRatioHistory: FinanceDebtRatioHistoryPoint[];
   historyFrom: string;
   historyTo: string;
@@ -61,7 +76,7 @@ function formatSalaryNet(amount: string, currency: FinanceCurrency): string {
   return new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
 }
 
-export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
+export function FinanceRecordsPanel({ library, accounts, categories, reserves, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
   const { confirm } = useConfirmationEngine();
   const [form, setForm] = useState<FormKind>(null);
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
@@ -70,16 +85,27 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
   const [cardStatements, setCardStatements] = useState<FinanceCreditCardStatement[]>([]);
   const [netWorth, setNetWorth] = useState<FinanceNetWorth | null>(null);
   const [netWorthHistory, setNetWorthHistory] = useState<FinanceNetWorthHistoryPoint[]>([]);
+  const [relationAudit, setRelationAudit] = useState<FinanceRelationAudit | null>(null);
+  const [relationEntityFilter, setRelationEntityFilter] = useState<FinanceRelationEntity | "all">("all");
+  const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
+  const [relationRepairs, setRelationRepairs] = useState<FinanceRelationRepair[]>([]);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
-      const [purchaseRows, priceRows, salaryRows, statementRows, worth, worthHistory] = await Promise.all([
+      const [purchaseRows, priceRows, salaryRows, statementRows, worth, worthHistory, transactions, savingsMovements, services, occurrences, invoices, investments, repairs] = await Promise.all([
         listFinancePurchases(library),
         listFinancePriceHistory(library),
         listFinanceSalaries(library),
         listFinanceCreditCardStatements(library, { from: historyFrom, to: historyTo }),
         getFinanceNetWorth(library, today()),
         listFinanceNetWorthHistory(library),
+        listAllFinanceTransactions(library),
+        listAllFinanceSavingsMovements(library),
+        listFinanceServices(library),
+        listAllFinanceServiceOccurrences(library),
+        listFinanceServiceInvoices(library),
+        listFinanceInvestments(library),
+        listFinanceRelationRepairs(library),
       ]);
       setPurchases(purchaseRows);
       setPrices(priceRows);
@@ -87,11 +113,14 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
       setCardStatements(statementRows);
       setNetWorth(worth);
       setNetWorthHistory(worthHistory);
+      setTransactions(transactions);
+      setRelationRepairs(repairs);
+      setRelationAudit(auditFinanceRelations({ accounts, categories, transactions, services, occurrences, invoices, reserves, savingsMovements, purchases: purchaseRows, statements: statementRows, investments }));
       setError(null);
     } catch (reason) {
       setError(financeErrorMessage(reason));
     }
-  }, [historyFrom, historyTo, library]);
+  }, [accounts, categories, historyFrom, historyTo, library, reserves]);
   useEffect(() => void load(), [load]);
   const saved = async () => {
     setForm(null);
@@ -106,6 +135,13 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
       .map((item) => ({ statement, item })))
     .sort((left, right) => right.item.purchaseDate.localeCompare(left.item.purchaseDate))
     .slice(0, 50);
+  const visibleRelationIssues = relationAudit?.issues.filter((issue) => relationEntityFilter === "all" || issue.entity === relationEntityFilter) ?? [];
+  const relationSections: Array<{ entity: FinanceRelationEntity; label: string }> = [
+    { entity: "purchase", label: "Tickets sin movimiento o duplicados" },
+    { entity: "statement", label: "Líneas de tarjeta sin conciliación" },
+    { entity: "service", label: "Servicios sin ocurrencia" },
+    { entity: "savings-movement", label: "Movimientos de ahorro incompletos" },
+  ];
 
   return (
     <section className="finance-records" aria-labelledby="finance-records-title">
@@ -139,6 +175,17 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
           {latestSalaries.length ? <ul className="finance-category-list">{latestSalaries.map(({ salary }) => { const loadedDate = formatFinanceLoadedDate(salary.createdAt); return <li key={salary.id}><span>{salary.period} · {salary.employer}<small>Cobrado el {salary.paymentDate}{loadedDate && <><br />Cargado el {loadedDate}</>}</small></span><strong>Neto {formatSalaryNet(salary.netAmount, salary.currency)}</strong></li> })}</ul> : <p className="finance-muted">Sin recibos registrados.</p>}
         </article>
       </div>
+       <article className="finance-card" aria-labelledby="finance-record-relations-title">
+         <h3 id="finance-record-relations-title">Relaciones y evidencia</h3>
+         {!relationAudit || relationAudit.incompleteEntityCount === 0 ? <p className="finance-success" role="status">No hay relaciones incompatibles detectadas en los registros consultados.</p> : <>
+           <p className="finance-warning" role="status">{relationAudit.incompleteEntityCount} registro(s) requieren revisión. No se modificaron datos automáticamente.</p>
+           <div className="finance-form-row"><label>Explorar <select value={relationEntityFilter} onChange={(event) => setRelationEntityFilter(event.target.value as FinanceRelationEntity | "all")}><option value="all">Todas las relaciones</option><option value="purchase">Tickets</option><option value="statement">Tarjetas</option><option value="service">Servicios</option><option value="savings-movement">Ahorro</option><option value="transaction">Movimientos</option></select></label></div>
+           <ul className="finance-category-list">{visibleRelationIssues.slice(0, 20).map((issue) => <li key={`${issue.entity}-${issue.entityId}-${issue.relation}-${issue.code}`}><span>{issue.entity} · {issue.relation}<small>{issue.message}</small></span><strong>{issue.severity === "error" ? "Revisar" : "Completar"}</strong>{issue.relation === "transaction" && ["missing-optional", "not-found", "kind-mismatch", "duplicate"].includes(issue.code) && <RelationRepairAction library={library} issue={issue} transactions={transactions} onChanged={saved} />}</li>)}</ul>
+           {visibleRelationIssues.length > 20 && <p className="finance-muted">Hay más relaciones fuera de esta vista.</p>}
+           <div className="finance-grid">{relationSections.map(({ entity, label }) => { const count = relationAudit.issues.filter((issue) => issue.entity === entity).length; return <section className="finance-card" key={entity} aria-label={label}><h4>{label}</h4><p className={count ? "finance-warning" : "finance-success"}>{count ? `${count} hallazgo(s) para revisar.` : "Sin hallazgos."}</p></section> })}</div>
+         </>}
+       </article>
+       <details className="finance-card"><summary>Historial de reparaciones de relaciones ({relationRepairs.length})</summary>{relationRepairs.length === 0 ? <p className="finance-muted">Todavía no hay reparaciones persistidas.</p> : <ul className="finance-category-list">{relationRepairs.slice(0, 20).map((repair) => <li key={repair.id}><span>{repair.relationType} · {repair.relationId}<small>{repair.previousTransactionId ?? "sin vínculo"} → {repair.newTransactionId ?? "sin vínculo"}<br />{repair.reason ?? "Sin motivo"}</small></span><strong>{repair.createdAt ?? ""}</strong></li>)}</ul>}</details>
       <div className="finance-grid">
         <article className="finance-card">
           <h3>Movimientos de tarjetas</h3>
@@ -184,6 +231,37 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
       {form === "investment" && <InvestmentForm accounts={accounts} onCancel={() => setForm(null)} onSave={async (investment) => { await saveFinanceInvestment(library, investment); await saved(); }} />}
     </section>
   );
+}
+
+function relationRepairType(entity: FinanceRelationEntity): FinanceRelationRepairType | null {
+  if (entity === "purchase") return "purchase-transaction"
+  if (entity === "statement") return "statement-item-transaction"
+  if (entity === "savings-movement") return "savings-movement-transaction"
+  return null
+}
+
+function RelationRepairAction({ library, issue, transactions, onChanged }: { library: NotiaLibrary; issue: FinanceRelationIssue; transactions: FinanceTransaction[]; onChanged: () => Promise<void> }) {
+  const { confirm } = useConfirmationEngine()
+  const repairType = relationRepairType(issue.entity)
+  const candidates = transactions.filter((transaction) => ["confirmed", "corrected"].includes(transaction.status) && transaction.transactionType === "expense")
+  const initialCandidate = issue.currentTransactionId && candidates.some((candidate) => candidate.id === issue.currentTransactionId) ? issue.currentTransactionId : candidates[0]?.id ?? ""
+  const [selectedTransactionId, setSelectedTransactionId] = useState(initialCandidate)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (!repairType) return null
+  const allowUnlink = repairType !== "purchase-transaction"
+  const repair = async () => {
+    const newTransactionId = selectedTransactionId || null
+    if (!newTransactionId && !allowUnlink) { setError("Un ticket debe conservar un movimiento asociado."); return }
+    const accepted = await confirm({ title: "Confirmar reparación de relación", message: `Se ${newTransactionId ? "asociará" : "desvinculará"} esta evidencia ${newTransactionId ? `al movimiento ${newTransactionId}` : "del movimiento actual"}. Se conservará el historial de la relación.`, confirmLabel: "Aplicar reparación", tone: "danger" })
+    if (!accepted) return
+    setBusy(true); setError(null)
+    try {
+      await repairFinanceRelation(library, { operationId: crypto.randomUUID(), relationType: repairType, relationId: issue.targetId ?? issue.entityId, newTransactionId, expectedTransactionId: issue.currentTransactionId ?? null, reason: "Reparación explícita desde auditoría de Finanzas" })
+      await onChanged()
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo reparar la relación.") } finally { setBusy(false) }
+  }
+  return <div className="finance-relation-repair"><label>Movimiento <select disabled={busy} value={selectedTransactionId} onChange={(event) => setSelectedTransactionId(event.target.value)}><option value="">Sin asociación</option>{candidates.map((transaction) => <option key={transaction.id} value={transaction.id}>{transaction.effectiveDate} · {transaction.description} · {transaction.currency} {transaction.amount}</option>)}</select></label><button type="button" disabled={busy || (!selectedTransactionId && !allowUnlink)} onClick={() => void repair()}>{busy ? "Guardando…" : "Reparar relación"}</button>{error && <small className="finance-error" role="alert">{error}</small>}</div>
 }
 
 interface FormProps<T> { accounts: FinanceAccount[]; onCancel: () => void; onSave: (value: T) => Promise<void> }

@@ -86,6 +86,8 @@ pub struct ListPeriodPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PurchaseSummary {
     pub id: String,
+    pub account_id: Option<String>,
+    pub transaction_id: Option<String>,
     pub service_id: Option<String>,
     pub merchant_name: String,
     pub observed_at: String,
@@ -390,7 +392,7 @@ pub fn finance_list_purchases(
 ) -> FinanceCommandResult<Vec<PurchaseSummary>> {
     let connection = validate_context(&payload.context, &app)?;
     let mut statement = connection.prepare(
-        "SELECT p.id,p.service_id,m.name,p.observed_at,p.currency,p.total_amount,p.validation_status,COUNT(i.id) FROM finance_purchases p LEFT JOIN finance_merchants m ON m.id=p.merchant_id LEFT JOIN finance_purchase_items i ON i.purchase_id=p.id WHERE (?1 IS NULL OR p.observed_at >= ?1) AND (?2 IS NULL OR p.observed_at <= ?2) AND (?3 IS NULL OR p.merchant_id=?3) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM finance_purchase_items pi WHERE pi.purchase_id=p.id AND pi.product_id=?4)) GROUP BY p.id ORDER BY p.observed_at DESC LIMIT 500"
+        "SELECT p.id,t.account_id,p.transaction_id,p.service_id,m.name,p.observed_at,p.currency,p.total_amount,p.validation_status,COUNT(i.id) FROM finance_purchases p LEFT JOIN finance_transactions t ON t.id=p.transaction_id LEFT JOIN finance_merchants m ON m.id=p.merchant_id LEFT JOIN finance_purchase_items i ON i.purchase_id=p.id WHERE (?1 IS NULL OR p.observed_at >= ?1) AND (?2 IS NULL OR p.observed_at <= ?2) AND (?3 IS NULL OR p.merchant_id=?3) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM finance_purchase_items pi WHERE pi.purchase_id=p.id AND pi.product_id=?4)) GROUP BY p.id ORDER BY p.observed_at DESC LIMIT 500"
     ).map_err(|error| error.to_string())?;
     let purchases = statement
         .query_map(
@@ -403,13 +405,15 @@ pub fn finance_list_purchases(
             |row| {
                 Ok(PurchaseSummary {
                     id: row.get(0)?,
-                    service_id: row.get(1)?,
-                    merchant_name: row.get(2)?,
-                    observed_at: row.get(3)?,
-                    currency: row.get(4)?,
-                    total_amount: row.get(5)?,
-                    status: row.get(6)?,
-                    item_count: row.get(7)?,
+                    account_id: row.get(1)?,
+                    transaction_id: row.get(2)?,
+                    service_id: row.get(3)?,
+                    merchant_name: row.get(4)?,
+                    observed_at: row.get(5)?,
+                    currency: row.get(6)?,
+                    total_amount: row.get(7)?,
+                    status: row.get(8)?,
+                    item_count: row.get(9)?,
                 })
             },
         )

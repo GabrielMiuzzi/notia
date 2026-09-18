@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   listFinanceServices: vi.fn(),
   listFinanceServiceOccurrences: vi.fn(),
   saveFinanceServiceOccurrence: vi.fn(),
+  saveFinanceSavingsExchange: vi.fn(),
   saveFinanceAuditProposal: vi.fn(),
 }))
 
@@ -47,6 +48,7 @@ vi.mock('../../modules/finance/services/financeService', () => ({
   listFinanceServices: mocks.listFinanceServices,
   listFinanceServiceOccurrences: mocks.listFinanceServiceOccurrences,
   saveFinanceServiceOccurrence: mocks.saveFinanceServiceOccurrence,
+  saveFinanceSavingsExchange: mocks.saveFinanceSavingsExchange,
   saveFinanceAuditProposal: mocks.saveFinanceAuditProposal,
 }))
 
@@ -376,6 +378,56 @@ describe('chatScopedAgentRuntime metadata search', () => {
     await expect(agent.executeTool({ function: { name: 'create_finance_service_occurrence', arguments: {
       serviceId: service.id, period: '2026-09', expectedAmount: '82997', paidAmount: '82997',
     } } }, new AbortController().signal)).resolves.toMatchObject({ ok: true, changed: true, recoveredAfterStorageError: true })
+  })
+
+  it('requires an unambiguous reserve and account before confirming a Telegram savings exchange', async () => {
+    const requestConfirmation = vi.fn().mockResolvedValue(true)
+    mocks.getFinanceDashboard.mockResolvedValue({
+      accounts: [{ id: 'account-ars', name: 'Digital', currency: 'ARS', active: true }],
+      savings: [
+        { id: 'reserve-1', name: 'Ahorro', currency: 'USD', active: true },
+        { id: 'reserve-2', name: 'Ahorro', currency: 'USD', active: true },
+      ],
+    })
+
+    const agent = await createChatScopedAgent({
+      scope: 'finance', enableFinanceTools: true, responseFormat: 'telegram-html',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [], persistencePolicy: 'ephemeral-no-memory', requestClarification: vi.fn(), requestConfirmation,
+    })
+
+    await expect(agent.executeTool({ function: { name: 'create_finance_savings_exchange', arguments: {
+      reserve: 'Ahorro', sourceAccount: 'Digital', sourceAmount: '10000', sourceCurrency: 'ARS', savingsAmount: '10', savingsCurrency: 'USD',
+    } } }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: 'finance-savings-reserve-ambiguous', requiresClarification: true })
+    expect(requestConfirmation).not.toHaveBeenCalled()
+    expect(mocks.saveFinanceSavingsExchange).not.toHaveBeenCalled()
+  })
+
+  it('confirms a resolved Telegram savings exchange once and reports the persisted result', async () => {
+    const requestConfirmation = vi.fn().mockResolvedValue(true)
+    const saved = {
+      movement: { id: 'movement-1', reserveId: 'reserve-1', amount: '10', currency: 'USD' },
+      transaction: { id: 'transaction-1', transactionType: 'expense', amount: '10000', currency: 'ARS' },
+    }
+    mocks.getFinanceDashboard.mockResolvedValue({
+      accounts: [{ id: 'account-ars', name: 'Digital', currency: 'ARS', active: true }],
+      savings: [{ id: 'reserve-1', name: 'Ahorro', currency: 'USD', active: true }],
+    })
+    mocks.saveFinanceSavingsExchange.mockResolvedValue(saved)
+
+    const agent = await createChatScopedAgent({
+      scope: 'finance', enableFinanceTools: true, responseFormat: 'telegram-html',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [], persistencePolicy: 'ephemeral-no-memory', requestClarification: vi.fn(), requestConfirmation,
+    })
+
+    await expect(agent.executeTool({ function: { name: 'create_finance_savings_exchange', arguments: {
+      reserve: 'Ahorro', sourceAccount: 'Digital', sourceAmount: '10000', sourceCurrency: 'ARS', savingsAmount: '10', savingsCurrency: 'USD',
+    } } }, new AbortController().signal)).resolves.toMatchObject({ ok: true, changed: true, movement: saved.movement, transaction: saved.transaction })
+    expect(requestConfirmation).toHaveBeenCalledOnce()
+    expect(mocks.saveFinanceSavingsExchange).toHaveBeenCalledOnce()
   })
 
   it('delegates monthly audit generation to the native runtime and returns native reconciliation proposals', async () => {
