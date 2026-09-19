@@ -4391,6 +4391,21 @@
   box-sizing: border-box;
 }
 
+/* Markdown table cells can contain the same block nodes as the document. */
+.notia-markdown-editor-root .milkdown .milkdown-table-block td > * {
+  max-width: 100%;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block td .notia-xgraph-host,
+.notia-markdown-editor-root .milkdown .milkdown-table-block td .notia-mermaid-inline-host {
+  min-width: 180px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block td .notia-xgraph-frame,
+.notia-markdown-editor-root .milkdown .milkdown-table-block td svg {
+  max-width: 100%;
+}
+
 /* The inline LaTeX tooltip contains its own ProseMirror editor. It must not
    inherit the document editor's viewport-sized canvas. */
 .notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit {

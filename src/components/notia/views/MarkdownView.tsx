@@ -14,11 +14,13 @@ import { trailing } from '@milkdown/plugin-trailing'
 import { clipboard } from '@milkdown/plugin-clipboard'
 import { codeBlockConfig } from '@milkdown/kit/component/code-block'
 import { commandsCtx } from '@milkdown/kit/core'
+import { blockConfig } from '@milkdown/kit/plugin/block'
 import {
   codeBlockSchema,
   clearTextInCurrentBlockCommand,
   setBlockTypeCommand,
 } from '@milkdown/kit/preset/commonmark'
+import { tableCellSchema, tableHeaderSchema } from '@milkdown/preset-gfm'
 import {
   parseFrontmatterDocument,
   serializeFrontmatterDocument,
@@ -60,6 +62,12 @@ import '@milkdown/crepe/theme/nord.css'
 import '../../../modules/inkmath/inkmath.css'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 import { loadTaskManagerSettings } from '../../../modules/task-manager/services/taskManagerStorage'
+import {
+  extendTableCellSchemaWithBlocks,
+  tableCellBlocksRemark,
+} from '../../../engines/markdown/tableCellBlocks'
+import { shouldShowMarkdownBlockHandle } from '../../../engines/markdown/markdownBlockHandleEngine'
+import { markdownTableBlockView } from './markdown/markdownTableBlockView'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -666,6 +674,26 @@ function MarkdownViewInner({
           return prev.renderPreview(language, content, applyPreview)
         },
       }))
+      ctx.update(blockConfig.key, (prev) => ({
+        ...prev,
+        filterNodes: (pos, node) => {
+          let hasExcludedAncestor = false
+          let isInsideTable = false
+          for (let depth = pos.depth; depth > 0; depth -= 1) {
+            const ancestor = pos.node(depth)
+            if (ancestor.type.name === 'table') {
+              isInsideTable = true
+            }
+            if (ancestor.type.name === 'blockquote' || ancestor.type.name === 'math_inline') {
+              hasExcludedAncestor = true
+            }
+          }
+
+          return shouldShowMarkdownBlockHandle(node.type.name, hasExcludedAncestor, isInsideTable)
+        },
+      }))
+      ctx.update(tableCellSchema.key, (prev) => () => extendTableCellSchemaWithBlocks(prev(ctx)))
+      ctx.update(tableHeaderSchema.key, (prev) => () => extendTableCellSchemaWithBlocks(prev(ctx)))
     })
 
     crepe.editor.use(
@@ -725,6 +753,8 @@ function MarkdownViewInner({
     )
 
     crepe.editor.use(gfm)
+    crepe.editor.use(tableCellBlocksRemark)
+    crepe.editor.use(markdownTableBlockView)
     crepe.editor.use(emoji)
     crepe.editor.use(cursor)
     crepe.editor.use(indent)

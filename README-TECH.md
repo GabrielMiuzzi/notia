@@ -967,6 +967,89 @@ Flujo completo de lectura, renderizado, edición, autosave y persistencia de un 
 2. **Lectura**: `useDocumentPersist` o `MarkdownView` invoca `filesystemEngine.readTextFile(path)` → `invoke('read_library_file')` → Rust `filesystem::commands::read_library_file` → `desktop::read_library_file` (o `android_saf::read_library_file`) → lectura con `fs::read_to_string` → retorna `{ ok: true, content }`.
 3. **Renderizado**: el contenido se inyecta en el editor **Milkdown Crepe** (`MarkdownView.tsx`). Se parsea frontmatter vía `frontmatterEngine.ts` y se muestra en `MarkdownPropertiesPanel`.
 
+#### Bloques Markdown dentro de celdas de tablas
+
+`MarkdownView` extiende las schemas `table_cell` y `table_header` de Milkdown para aceptar `content: 'block+'`. La extensión conserva los contratos de coincidencia de los runners GFM, pero reemplaza sus runners de parseo y serialización por los de `tableCellBlocks.ts`. El plugin `tableCellBlocksRemark` se registra junto con GFM y solo transforma marcadores que sean hijos directos de nodos `tableCell`; un comentario con el mismo texto fuera de una celda permanece sin modificar.
+
+El flujo de extremo a extremo es:
+
+1. **Parseo de la fuente**: GFM produce el árbol Markdown. `tableCellBlocksRemark` detecta comentarios HTML con el prefijo reservado y los convierte, únicamente dentro de celdas, en nodos internos `notiaTableBlock`.
+2. **Construcción Milkdown**: el runner de la celda agrupa los hijos inline normales en párrafos. Antes de restaurar un bloque vacía ese grupo, agrega el nodo ProseMirror reconstruido y continúa con el texto siguiente; por eso una misma celda puede tener texto antes y después de un bloque.
+3. **Edición**: el documento ProseMirror permite párrafos y cualquier otro nodo de bloque admitido por el schema. Esto incluye `code_block` (también lenguajes `xgraph`, `jsxgraph` y `mermaid`), imágenes u otros bloques válidos.
+4. **Serialización**: los párrafos se entregan al serializador GFM normal. Cada hijo de la celda que no sea un párrafo se serializa como un comentario HTML interno. El autosave de Markdown persiste ese resultado en el mismo archivo `.md`; no se agrega una tabla SQLite, DTO, comando Tauri ni migración.
+5. **Presentación**: las reglas de `notia.css` limitan al 100% del ancho los bloques de la celda y sus gráficos/previews; los hosts de XGraph y Mermaid mantienen un mínimo de 180 px y sus frames/SVG no exceden el ancho disponible.
+
+#### Handles, selección, eliminación y arrastre
+
+La causa raíz del bug era que el filtro de `blockConfig` trataba a `table` como otro nodo estructural excluido. Cuando el selector de Milkdown no encontraba un nodo padre válido desde una celda, terminaba ocultándose, por lo que desaparecían tanto el handle de la tabla como los de los bloques contenidos. Además, la vista estándar de tabla detenía todos los eventos de arrastre y drop, incluidos los movimientos internos de bloques. En la corrección adicional de esta iteración, el mismo filtro marcaba como excluido cualquier descendiente de `blockquote` sin distinguir si también tenía un ancestro `table`; ahora conserva ambos contextos durante el recorrido de `ResolvedPos`.
+
+`markdownBlockHandleEngine.ts` mantiene la decisión en una regla pura:
+
+```ts
+shouldShowMarkdownBlockHandle(nodeTypeName, hasExcludedAncestor, isInsideTable = false): boolean
+```
+
+Devuelve `true` cuando no hay una ancestría excluida o el nodo está dentro de una tabla, siempre que no sea una estructura intermedia excluida. `MarkdownView.tsx` configura `blockConfig.filterNodes` y recorre los ancestros de `ResolvedPos` para calcular `hasExcludedAncestor` y `isInsideTable`. Fuera de tablas, `blockquote`, `math_inline` y cualquier otro ancestro que el filtro marque como excluido siguen ocultando el handle de sus nodos descendientes. Dentro de una tabla, `isInsideTable=true` permite los nodos candidatos aunque tengan uno de esos ancestros; así, una cita y sus bloques anidados en una celda conservan su selector. `table` devuelve `true`, mientras `table_header_row`, `table_row`, `table_header` y `table_cell` devuelven `false` en cualquier contexto. Por eso, cuando el selector encuentra una de esas estructuras intermedias, su lookup puede ascender hasta `table` y conservar el handle de la tabla; los bloques hijos —por ejemplo `code_block` e `image_block`— siguen siendo candidatos válidos y conservan su propio handle.
+
+La vista personalizada `markdownTableBlockView.ts` extiende `TableNodeView` y se registra en `MarkdownView` mediante `markdownTableBlockView` después de GFM y del transformador de celdas. Su contrato de eventos es deliberadamente estrecho: cuando el evento es `drop` o comienza con `drag` y `EditorView.dragging.move` indica un arrastre interno de bloque de Milkdown, `stopEvent` devuelve `false` para que el editor procese la selección y el movimiento, incluso entre posiciones o celdas. Para cualquier otro arrastre o drop conserva `super.stopEvent(event)`, manteniendo el bloqueo normal de operaciones de tabla.
+
+El handle usa entonces las acciones normales de Milkdown/ProseMirror: permite seleccionar el bloque y eliminarlo sin un comando paralelo de Notia. La edición resultante sigue el flujo habitual de serialización y autosave; al quitar o mover un bloque se actualiza el contenido de la celda y se conserva el marcador interno correspondiente, sin cambiar el contrato de persistencia de `tableCellBlocks.ts`.
+
+```mermaid
+flowchart TD
+    Cell[table_cell / table_header con block+] --> Filter[blockConfig.filterNodes]
+    Filter -->|table| TableHandle[Handle de tabla]
+    Filter -->|table_header_row, table_row, table_header o table_cell| Lookup[Lookup asciende al padre]
+    Lookup --> TableHandle
+    Filter -->|bloque hijo sin ancestría excluida| BlockHandle[Handle del bloque]
+    Filter -->|bloque hijo dentro de tabla, incluso con ancestro excluido| BlockHandle
+    Filter -->|blockquote/math_inline u otro ancestro excluido fuera de tabla| Hidden[Sin handle]
+    Event[Evento drag/drop en tabla] --> Move{view.dragging?.move}
+    Move -->|Sí| Milkdown[Milkdown procesa selección y movimiento]
+    Move -->|No| TableGuard[TableNodeView bloquea el evento]
+```
+
+El formato persistido reservado es:
+
+```text
+<!--notia-table-block:<encodeURIComponent(JSON.stringify(node))>-->
+```
+
+`node` es la forma JSON de un nodo ProseMirror: tiene `type` y puede incluir `attrs`, `content`, `marks` o `text`. Por ejemplo, la representación decodificada de un bloque XGraph es:
+
+```json
+{
+  "type": "code_block",
+  "attrs": { "language": "xgraph" },
+  "content": [
+    { "type": "text", "text": "board.create('point', [1, 2])" }
+  ]
+}
+```
+
+El prefijo, el sufijo y la codificación URL forman parte del contrato; el comentario no pretende ser una sintaxis Markdown portable para renderizar el bloque en otros editores. Los párrafos y el texto inline sí permanecen en la sintaxis GFM habitual. Si un editor externo elimina comentarios HTML, los bloques no inline de las celdas no pueden recuperarse al volver a abrir el archivo.
+
+#### Validaciones, errores y límites
+
+- `parseTableCellBlockMarker` rechaza valores que no tengan exactamente el prefijo/sufijo reservado, JSON inválido, nodos sin `type` string, `text` no string, `content` no array de nodos o `marks` no array de marcas con `type` string.
+- El marcador completo está limitado a 500.000 caracteres. Un marcador malformado o sobredimensionado se deja como HTML normal y no se interpreta como bloque.
+- La restauración ignora nodos de nivel superior `doc`/`text`, tipos ausentes del schema y marcas desconocidas; si un nodo válido no puede construirse, no se presenta como restaurado. No existe un límite explícito de profundidad ni de CPU para el JSON o para el bloque que contiene.
+- La transformación está limitada a celdas GFM y no reinterpreta comentarios fuera de tablas. Las celdas sin marcadores siguen el flujo GFM existente; la compatibilidad con archivos Markdown previos no requiere migración.
+- `filterNodes` no agrega estado ni una ruta de error: devuelve `false` para `table_header_row`, `table_row`, `table_header` y `table_cell`; fuera de tablas también devuelve `false` para candidatos bajo `blockquote`, `math_inline` u otro ancestro excluido. Dentro de una tabla, `isInsideTable=true` permite esos candidatos anidados, pero no las estructuras intermedias. El selector de Milkdown puede así ascender desde las estructuras intermedias hasta la tabla. Un arrastre que no sea un movimiento interno reconocido por `EditorView.dragging?.move` conserva el bloqueo de `TableNodeView`.
+- La selección y eliminación usan los comandos normales de Milkdown; si el autosave falla, se mantiene el comportamiento existente de escritura fallida: se muestra el error en la pestaña y el contenido permanece en memoria para reintentar. El bugfix no agrega un límite de cantidad de bloques ni de celdas para el arrastre.
+
+```mermaid
+flowchart LR
+    Source[Archivo Markdown] --> GFM[Milkdown GFM]
+    GFM --> Remark[tableCellBlocksRemark]
+    Remark --> PM[table_cell / table_header con block+]
+    PM --> View[Editor y previews con ancho acotado]
+    View --> Serialize[Runner de serialización]
+    Serialize --> Marker[Comentario HTML con JSON codificado]
+    Marker --> Autosave[Autosave del mismo .md]
+    Autosave --> Source
+```
+
 La selección del editor se transforma en `MarkdownSelectionContext` mediante `selectionEngine.ts`. El contexto incluye posiciones, texto y cada bloque superior seleccionado con su tipo. `NotiaMenu` lo comparte con el chat lateral; en el scope `document`, `createChatScopedAgent` lo incorpora al prompt y expone `read_active_markdown_document`, `replace_active_markdown_document` e `insert_active_markdown_document`. La selección es opcional: el agente relee la fuente actual, puede resolver `targetText` contra cualquier bloque referenciado del archivo (incluidos referencias como «punto a»), reemplazarlo o insertar contenido antes/después de él, y conserva el resto del archivo sin permiso adicional para la lectura y con confirmación visible antes de guardar. Si no se indica un objetivo para una inserción inequívoca, la agrega al final. Tras escribir, el cambio actualiza la pestaña abierta y `MarkdownView` aplica el nuevo cuerpo sin remount ni reapertura; el resultado de la mutación es terminal para evitar lecturas repetidas.
 4. **Wikilinks**: durante la edición, el plugin `wikiLinkPlugin.ts` detecta patrones `[[...]]` y muestra el menú de sugerencias `WikiLinkSuggestionMenu.tsx` con notas existentes.
 5. **Autosave**: `useTextDocumentAutosave.ts` establece un debounce (tipicamente ~1s de inactividad) tras el cual invoca `filesystemEngine.writeTextFile(path, content)`. `useTabManager.persistDirtyTextDocuments` ejecuta un flush inmediato antes de cerrar una pestaña, mover/renombrar entradas, cambiar de libreria o cerrar/salir de la aplicacion; una escritura fallida mantiene la pestaña abierta y su contenido en memoria para reintentar.
@@ -980,9 +1063,25 @@ La selección del editor se transforma en `MarkdownSelectionContext` mediante `s
 
 #### Dependencias
 - **Frontend**: `MarkdownView.tsx`, `useDocumentPersist.ts`, `useTextDocumentAutosave.ts`, `wikiLinkPlugin.ts`, `frontmatterEngine.ts`, `filesystemEngine.ts`.
+- **Bloques de tabla y handles**: `tableCellBlocks.ts`, `tableCellBlocks.test.ts`, `src/components/notia/views/markdown/markdownTableBlockView.ts`, `src/engines/markdown/markdownBlockHandleEngine.ts`, `src/engines/markdown/markdownBlockHandleEngine.test.ts` y las reglas de ancho de tabla en `src/styles/notia.css`.
 - **Redux**: `documentsSlice` (tabs, activeTab, saving states).
 - **Backend**: `read_library_file`, `write_library_file`.
 - Los adjuntos del compositor se procesan en `chatImageAttachment.ts`: las imÃ¡genes se envÃ­an como una pÃ¡gina, los PDF pasan por `pdfDocumentRenderer.ts` —que extrae texto y renderiza hasta 24 pÃ¡ginas como JPEG— y los archivos de texto se agregan como contexto delimitado. Todo viaja por el runtime comÃºn de IA; el agente transcribe los PDF en orden y puede insertar el resultado con las herramientas de Markdown activo. Un PDF mayor se rechaza antes de iniciar la conversaciÃ³n para no producir una inserciÃ³n parcial.
+
+#### Pruebas y estado técnico de esta implementación
+
+`tableCellBlocks.test.ts` cubre el round-trip de un `code_block` mediante marcador, la transformación limitada a celdas con una imagen, el rechazo de JSON inválido y marcadores sobredimensionados, y la extensión de schema conservando los matchers y reemplazando los runners. Esa validación anterior de persistencia fue de 122 archivos y 687 tests. En este bugfix, `markdownBlockHandleEngine.test.ts` agrega regresiones para bloques seleccionables dentro de celdas, exclusión de nodos estructurales y conservación de la exclusión por ancestría fuera de tablas, además de permitir esa ancestría dentro de tablas.
+
+Las validaciones ejecutadas para este bugfix fueron:
+
+- `npx vitest run src/engines/markdown/markdownBlockHandleEngine.test.ts`: 1 archivo y 3 tests aprobados.
+- `npm test -- --run`: 123 archivos y 690 tests aprobados.
+- `npm run lint`: aprobado.
+- `npx tsc --noEmit`: aprobado.
+- `npm run build -- --minify=false`: aprobado; 5856 módulos, con solo warnings existentes de chunks, importaciones y tamaños.
+- `git diff --check`: aprobado; Git mostró únicamente warnings de conversión LF/CRLF.
+
+No se modifican APIs, comandos Tauri ni datos SQLite, por lo que no hay migración ni recuperación de bases que documentar. Queda pendiente la validación manual del flujo completo en la vista real —inserción, edición, render, selección, eliminación, arrastre entre posiciones/celdas y autosave de varios bloques dentro de una celda— y la comprobación específica en un WebView Android físico; las pruebas automatizadas cubren la transformación, el contrato de schema y la regla pura de handles, pero no sustituyen esa cobertura visual multiplataforma.
 
 ---
 

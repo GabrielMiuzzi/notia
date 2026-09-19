@@ -3,6 +3,7 @@
 - Gestión de bibliotecas locales de documentos.
 - Explorador de archivos y carpetas con búsqueda integrada.
 - Editor enriquecido de archivos Markdown.
+- Bloques Markdown, gráficos, imágenes y otros bloques compatibles dentro de celdas de tablas, con selector, selección, eliminación y arrastre entre posiciones o celdas.
 - Propiedades y frontmatter editables en notas Markdown.
 - Wikilinks y enlaces bidireccionales entre notas.
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.

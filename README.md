@@ -205,11 +205,20 @@ Características:
 - **Guardado automático**: los cambios se guardan automáticamente tras un breve período de inactividad y se persisten de inmediato antes de cerrar, salir o cambiar de biblioteca.
 - **Wikilinks**: escribí `[[Nombre de Nota]]` para crear enlaces bidireccionales entre documentos. Al hacer clic en un wikilink, la nota destino se abre en una nueva pestaña.
 - **Frontmatter y propiedades**: cada nota puede tener metadatos (título, etiquetas, fecha, etc.) editables desde el panel de propiedades lateral.
+- **Bloques dentro de tablas Markdown**: una celda puede combinar texto normal con bloques de código (incluidos XGraph y Mermaid), imágenes y otros bloques compatibles con el editor.
 - **Indicadores de estado**: visualización de "Guardando...", "Guardado ✓" o "Error ✗" en la pestaña activa.
 - **Zoom de lectura**: ampliá o reducí el contenido con `Ctrl + rueda del mouse` en Windows, con el gesto de pinza de dos dedos en Android o con el deslizador junto al estado de guardado. El porcentaje visible y el botón **Restablecer** permiten consultar o volver rápidamente al 100%.
 - **Diagramas Mermaid embebidos**: insertá bloques de código con lenguaje `mermaid` dentro de cualquier nota Markdown. El editor renderiza el diagrama con el **mismo motor visual** que los archivos `.mmd` (temas Notia, zoom/pan interactivo, manejo de errores uniforme). Los diagramas embebidos son de **solo lectura**: se pueden explorar (zoom, paneo, exportar a PNG/SVG) pero no se pueden editar nodos ni flechas desde el editor Markdown. Desde la versión 1.0.13, el renderizado embebido es **lazy** (solo renderiza cuando el diagrama entra en el viewport), cancela renders previos al cambiar de archivo y gestiona la memoria mediante una caché LRU con límite de tamaño.
 - **InkMath**: el botón **OCR** de cada bloque Math abre un lienzo compatible con mouse, stylus y touch. Al terminar de escribir, espera el intervalo configurado, rasteriza los trazos y solicita a Ollama la fórmula en LaTeX; una entrada nueva invalida cualquier resultado anterior.
 - **Exportación**: el menú de tres puntos junto a **Restablecer** permite exportar la nota Markdown como PDF o como `.docx` importable en Google Docs. Las fórmulas LaTeX se renderizan con formato matemático en ambos destinos.
+
+#### Bloques dentro de tablas Markdown
+
+Abrí una nota Markdown, colocá el cursor dentro de una celda y usá el menú de bloques de Milkdown para insertar el bloque que necesites. La celda puede conservar texto antes o después del bloque; al guardar, Notia mantiene el contenido y ajusta los bloques, gráficos, imágenes y previsualizaciones al ancho disponible de la tabla. Las celdas de encabezado también admiten este comportamiento.
+
+La tabla conserva su selector/handle de Milkdown y los bloques dentro de celdas también muestran el suyo, incluso si están anidados en una cita (`blockquote`): podés seleccionarlos, eliminarlos con la acción normal del editor y arrastrarlos entre posiciones o celdas. Los nodos intermedios de la estructura (`table_header_row`, `table_row`, `table_header` y `table_cell`) no muestran handles propios; Milkdown asciende hasta la tabla cuando corresponde.
+
+La compatibilidad se conserva mediante comentarios internos que no se muestran en la vista renderizada. No los elimines con un editor externo: si una herramienta elimina esos comentarios, Notia ya no podrá restaurar los bloques no inline de la celda al volver a abrir la nota.
 
 ### Diagramas Mermaid
 

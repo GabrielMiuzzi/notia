@@ -1,3 +1,7 @@
+[2026-09-19 02:32:25 -03:00] Se corrigió la visibilidad de los handles de bloques anidados dentro de tablas Markdown.
+[2026-09-19 02:18:15 -03:00] Se documentó la restauración de handles de tablas y bloques en celdas Milkdown.
+[2026-09-19 02:07:36 -03:00] Se corrigieron los handles de bloques Milkdown dentro de celdas de tablas y su arrastre entre celdas.
+[2026-09-19 01:55:58 -03:00] Se agregaron bloques Markdown dentro de celdas de tablas Milkdown con persistencia reversible y ajuste de ancho.
 [2026-09-19 00:35:59 -03:00] Telegram habilita memoria persistente únicamente para el Owner autorizado y bloquea memoria y rutas protegidas para los demás usuarios.
 [2026-09-18 21:17:45 -03:00] Se corrigió la continuidad de análisis de factibilidad presupuestaria en Telegram conservando salarios y consultando dashboard/cotizaciones cuando corresponde.
 [2026-09-18 20:44:02 -03:00] Se sincroniza `.agent/promps/default.md` como visualizador del prompt default sin usarlo como fuente de ejecución y se preservan los prompts alternativos.
