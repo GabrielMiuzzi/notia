@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { classifyWebSearchNeed, classifyWebSearchTransportError, estimateWebResultConsistency, sanitizeWebResultText, sanitizeWebSearchQuery } from './webSearchRuntime'
+import { classifyWebSearchNeed, classifyWebSearchTransportError, estimateWebResultConsistency, normalizeWebSearchRequestKey, sanitizeWebResultText, sanitizeWebSearchQuery } from './webSearchRuntime'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('../../utils/platform/getRuntimeDevice', () => ({ getRuntimeDevice: () => 'Windows' }))
@@ -10,6 +10,9 @@ describe('webSearchRuntime', () => {
     ['buscá fuentes públicas sobre Rust 2026', 'explicit'],
     ['¿Me darías las fuentes?', 'explicit'],
     ['¿cuál es el precio actual del dólar?', 'freshness'],
+    ['actual', 'none'],
+    ['último', 'none'],
+    ['comparar', 'none'],
     ['explicame qué es un índice invertido', 'none'],
   ] as const)('classifies web search need without creating a query: %s', (prompt, expected) => {
     expect(classifyWebSearchNeed(prompt)).toBe(expected)
@@ -26,6 +29,20 @@ describe('webSearchRuntime', () => {
         domains: ['react.dev'],
       },
     })
+  })
+
+  it('normalizes duplicate identities across query case, URI encoding and filters', () => {
+    expect(normalizeWebSearchRequestKey({
+      query: '%52ust   release notes',
+      maxResults: 50,
+      freshness: 'week',
+      domains: ['B.Example', 'a.example'],
+    })).toBe(normalizeWebSearchRequestKey({
+      query: 'rust release notes',
+      maxResults: 10,
+      freshness: 'week',
+      domains: ['a.example', 'b.example'],
+    }))
   })
 
   it.each([
@@ -123,11 +140,16 @@ describe('webSearchRuntime', () => {
       ollamaUrl: 'https://ollama.com', apiKey: 'native-only-secret', selectedModel: 'qwen3',
       thinkingEnabled: false, thinkingLevel: 'medium',
     }, {
-      query: '%52ust release notes', queryIsSanitized: true, maxResults: 5, freshness: 'any', domains: [],
+      query: '%52ust release notes', queryIsSanitized: true, maxResults: 5, freshness: 'week', domains: ['rust-lang.org'],
     })).resolves.toMatchObject({ searchedQuery: 'Rust release notes' })
 
     expect(invoke).toHaveBeenCalledWith('run_desktop_ai_web_search', {
-      payload: expect.objectContaining({ query: 'Rust release notes', maxResults: 5 }),
+      payload: expect.objectContaining({
+        query: 'Rust release notes',
+        maxResults: 5,
+        freshness: 'week',
+        domains: ['rust-lang.org'],
+      }),
     })
     expect(JSON.stringify(vi.mocked(invoke).mock.calls[0])).not.toContain('private document')
     expect(JSON.stringify(vi.mocked(invoke).mock.calls[0])).toContain('native-only-secret')
@@ -171,6 +193,21 @@ describe('webSearchRuntime', () => {
     }, {
       query: 'mi documento privado: API key=secret', queryIsSanitized: true, maxResults: 5, freshness: 'any', domains: [],
     })).rejects.toThrow('bloqueada')
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('does not invoke the provider after cancellation', async () => {
+    vi.mocked(invoke).mockReset()
+    const controller = new AbortController()
+    controller.abort()
+    const { searchOllamaWeb } = await import('./webSearchRuntime')
+
+    await expect(searchOllamaWeb({
+      ollamaUrl: 'https://ollama.com', apiKey: 'native-only-secret', selectedModel: 'qwen3',
+      thinkingEnabled: false, thinkingLevel: 'medium',
+    }, {
+      query: 'public Rust release notes', queryIsSanitized: true, maxResults: 5, freshness: 'any', domains: [],
+    }, controller.signal)).rejects.toMatchObject({ code: 'timeout', retryable: true })
     expect(invoke).not.toHaveBeenCalled()
   })
 })

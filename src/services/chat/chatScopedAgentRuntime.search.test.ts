@@ -262,6 +262,7 @@ describe('chatScopedAgentRuntime metadata search', () => {
   it.each(['library', 'document', 'graph', 'task-manager'] as const)(
     'routes public web search through the common tool contract from %s',
     async (scope) => {
+      const requestConfirmation = vi.fn().mockResolvedValue(true)
       const agent = await createChatScopedAgent({
         scope,
         library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
@@ -273,22 +274,23 @@ describe('chatScopedAgentRuntime metadata search', () => {
         activeDocumentPath: scope === 'document' ? 'C:/vault/proyecto.md' : null,
         persistencePolicy: 'ephemeral-no-memory',
         requestClarification: vi.fn(),
-        requestConfirmation: vi.fn().mockResolvedValue(true),
+         requestConfirmation,
       })
 
       await expect(agent.executeTool({
-        function: { name: 'search_web', arguments: { query: 'novedades de Rust', maxResults: 5 } },
+         function: { name: 'search_web', arguments: { query: 'novedades de Rust', maxResults: 5, domains: ['rust-lang.org'], freshness: 'week' } },
       }, new AbortController().signal)).resolves.toMatchObject({
         ok: true,
         searchedQuery: 'novedades de Rust',
         results: [expect.objectContaining({ verificationScore: 0 })],
       })
 
-      expect(mocks.searchOllamaWeb).toHaveBeenCalledWith(
+       expect(mocks.searchOllamaWeb).toHaveBeenCalledWith(
         expect.objectContaining({ ollamaUrl: 'https://ollama.com' }),
-        expect.objectContaining({ query: 'novedades de Rust', queryIsSanitized: true }),
-        expect.anything(),
-      )
+         expect.objectContaining({ query: 'novedades de Rust', queryIsSanitized: true, domains: ['rust-lang.org'], freshness: 'week' }),
+         expect.anything(),
+       )
+       expect(requestConfirmation).not.toHaveBeenCalled()
       expect(JSON.stringify(mocks.searchOllamaWeb.mock.calls.at(-1))).not.toContain('Contenido privado')
     },
   )
@@ -324,6 +326,23 @@ describe('chatScopedAgentRuntime metadata search', () => {
   it('does not expose public web search to finance or published Task Manager sessions', () => {
     expect(buildChatAgentTools('finance').map((tool) => tool.function.name)).not.toContain('search_web')
     expect(buildChatAgentTools('task-manager', true).map((tool) => tool.function.name)).not.toContain('search_web')
+  })
+
+  it('rejects direct calls outside the finance scope catalog', async () => {
+    const agent = await createChatScopedAgent({
+      scope: 'finance',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: { ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3', thinkingEnabled: false, thinkingLevel: 'medium' },
+      scopePaths: [],
+      persistencePolicy: 'ephemeral-no-memory',
+      requestClarification: vi.fn(),
+      requestConfirmation: vi.fn(),
+    })
+
+    await expect(agent.executeTool({ function: { name: 'search_web', arguments: { query: 'publico' } } }, new AbortController().signal))
+      .resolves.toMatchObject({ ok: false, error: 'scope-tool-required' })
+    await expect(agent.executeTool({ function: { name: 'search_library_context', arguments: { query: 'privado' } } }, new AbortController().signal))
+      .resolves.toMatchObject({ ok: false, error: 'scope-tool-required' })
   })
 
   it('projects a read-only catalog without mutation or plan tools', async () => {
@@ -370,6 +389,8 @@ describe('chatScopedAgentRuntime metadata search', () => {
       serviceId: service.id, period: '2026-09', expectedAmount: '82997', paidAmount: '82997',
     } } }, new AbortController().signal)).resolves.toMatchObject({ ok: true, changed: true, transactionId: transaction.id })
     expect(requestConfirmation).toHaveBeenCalledOnce()
+    await expect(agent.executeTool({ function: { name: 'create_finance_category', arguments: { name: 'Servicios', kind: 'expense' } } }, new AbortController().signal))
+      .resolves.toMatchObject({ ok: false, error: 'single-finance-mutation-per-turn' })
   })
 
   it('recovers a committed occurrence when native storage reports an equivalent amount format', async () => {

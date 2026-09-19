@@ -6,6 +6,8 @@ import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRu
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { TaskManagerPublicationPreferences } from '../../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
+import type { AgentProgressEvent, AgentProgressPhase } from '../../../types/ai/agentContracts'
+import { describeAiFeedbackError } from '../../../services/ai/aiFeedbackRuntime'
 import { runPublishedTaskManagerHostChatReply } from '../services/publishedTaskManagerChatRuntime'
 
 const PUBLISHED_AI_HOST_REQUEST_EVENT = 'notia-task-manager-publication-ai-request'
@@ -26,7 +28,7 @@ interface PublishedAiHostRequest {
 }
 
 interface PublishedAiHostStreamEvent {
-  type: 'thinking' | 'delta' | 'plan' | 'done' | 'error'
+  type: 'thinking' | 'delta' | 'plan' | 'progress' | 'done' | 'error'
   delta?: string
   answer?: string
   message?: string
@@ -149,7 +151,31 @@ function isAbortError(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'No se pudo ejecutar el chat de IA en la app host.'
+  return describeAiFeedbackError(error, 'No se pudo ejecutar el chat de IA en la app host.')
+}
+
+function publicationProgressLabel(event: AgentProgressEvent): string {
+  if (event.type === 'web-search-started') return 'Buscando fuentes públicas…'
+  if (event.type === 'verification-started') return 'Verificando el resultado…'
+  if (event.type === 'clarification-required') return 'Necesito una aclaración.'
+  if (event.type === 'confirmation-required') return 'Espero tu confirmación.'
+  if (event.type === 'completed') return 'Respuesta preparada.'
+  if (event.type === 'cancelled') return 'Operación cancelada.'
+  if (event.type === 'failed') return 'No pude completar la operación.'
+  if (event.type === 'phase-changed') {
+    const labels: Record<AgentProgressPhase, string> = {
+      preparing: 'Preparando la solicitud…', planning: 'Organizando los pasos…', reading: 'Leyendo la información necesaria…',
+      searching: 'Buscando fuentes públicas…', responding: 'Redactando la respuesta…', executing: 'Ejecutando la operación autorizada…',
+      'waiting-clarification': 'Necesito una aclaración.', 'waiting-confirmation': 'Espero tu confirmación.',
+      verifying: 'Verificando el resultado…', completed: 'Respuesta preparada.', cancelled: 'Operación cancelada.', failed: 'No pude completar la operación.',
+    }
+    return labels[event.phase]
+  }
+  if (event.type === 'plan-created') return 'Organizando los pasos…'
+  if (event.type === 'step-started') return 'Ejecutando el siguiente paso…'
+  if (event.type === 'multimodal-stage') return 'Procesando el archivo recibido…'
+  if (event.type === 'tool-started') return 'Consultando la información autorizada…'
+  return 'Procesando la solicitud…'
 }
 
 export function useTaskManagerPublicationAiHostBridge({
@@ -209,6 +235,7 @@ export function useTaskManagerPublicationAiHostBridge({
           previousMessages: request.previousMessages,
           signal: controller.signal,
           onExecutionPlanChange: (steps) => reportDeliveryFailure(queueEvent({ type: 'plan', steps })),
+          onAgentProgress: (event) => reportDeliveryFailure(queueEvent({ type: 'progress', message: publicationProgressLabel(event) })),
           onThinkingDelta: (delta) => reportDeliveryFailure(queueEvent({ type: 'thinking', delta })),
           onMessageDelta: (delta) => reportDeliveryFailure(queueEvent({ type: 'delta', delta })),
         })

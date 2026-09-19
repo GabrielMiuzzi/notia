@@ -126,6 +126,126 @@ describe('agent execution continuation', () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(3)
   })
 
+  it('does not execute an identical tool call repeatedly in one assistant turn', async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+      .mockResolvedValueOnce({ message: { content: 'El documento contiene los datos solicitados.' } })
+    const executeTool = vi.fn().mockResolvedValue({ ok: true, data: 'contenido autorizado' })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde con la lectura.', prompt: 'Lee el documento.', previousMessages: [], tools,
+      streamFinalResponse: false,
+      executeTool,
+    })).resolves.toBe('El documento contiene los datos solicitados.')
+
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(invoke).toHaveBeenCalledTimes(3)
+  })
+
+  it('reuses the successful result of an identical read call', async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+      .mockResolvedValueOnce({ message: { content: 'Usé la lectura anterior.' } })
+    const executeTool = vi.fn().mockResolvedValue({ ok: true, data: 'evidencia verificable' })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde con la lectura.', prompt: 'Lee el documento.', previousMessages: [], tools,
+      streamFinalResponse: false,
+      executeTool,
+    })).resolves.toBe('Usé la lectura anterior.')
+
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect((vi.mocked(invoke).mock.calls[1]?.[1] as { payload?: { messages?: Array<{ role?: string; content?: string }> } }).payload?.messages)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ role: 'tool', content: expect.stringContaining('evidencia verificable') })]))
+  })
+
+  it('retries an explicitly retryable failure once, without replaying an applied mutation', async () => {
+    const retryableCall: AiNativeToolCall = {
+      function: { name: 'read_active_markdown_document', arguments: { revision: 1 } },
+    }
+    const retryableTools = [retryableCall].map((call) => ({ type: 'function' as const, function: { name: call.function.name, description: 'test', parameters: {} } }))
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [retryableCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [retryableCall] } })
+      .mockResolvedValueOnce({ message: { content: 'Lectura recuperada.' } })
+    const executeTool = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: 'temporarily-unavailable', retryable: true })
+      .mockResolvedValueOnce({ ok: true, data: 'recuperada' })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde.', prompt: 'Lee el documento.', previousMessages: [], tools: retryableTools,
+      streamFinalResponse: false,
+      executeTool,
+    })).resolves.toBe('Lectura recuperada.')
+
+    expect(executeTool).toHaveBeenCalledTimes(2)
+  })
+
+  it('continues after a terminal read callback when the request is compound', async () => {
+    const followUpRead: AiNativeToolCall = {
+      function: { name: 'get_finance_inflation_indices', arguments: { period: '2026-01' } },
+    }
+    const compoundTools = [readCall, followUpRead].map((call) => ({ type: 'function' as const, function: { name: call.function.name, description: 'test', parameters: {} } }))
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [followUpRead] } })
+      .mockResolvedValueOnce({ message: { content: 'Comparación completada con ambas lecturas.' } })
+    const executeTool = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: 'salarios' })
+      .mockResolvedValueOnce({ ok: true, data: 'ipc' })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Analiza el pedido compuesto.', prompt: 'Compará salarios e inflación.', previousMessages: [], tools: compoundTools,
+      streamFinalResponse: false,
+      isCompoundRequest: true,
+      executeTool,
+      resolveToolResultAnswer: (call) => call.function.name === readCall.function.name ? 'Lectura salarial disponible.' : null,
+    })).resolves.toBe('Comparación completada con ambas lecturas.')
+
+    expect(executeTool.mock.calls.map(([call]) => call.function.name)).toEqual([
+      readCall.function.name,
+      followUpRead.function.name,
+    ])
+  })
+
+  it('keeps a salary read intermediate and continues with inflation data', async () => {
+    const salaryCall: AiNativeToolCall = {
+      function: { name: 'list_finance_salaries', arguments: {} },
+    }
+    const inflationCall: AiNativeToolCall = {
+      function: { name: 'get_finance_inflation_indices', arguments: {} },
+    }
+    const financeTools = [salaryCall, inflationCall].map((call) => ({
+      type: 'function' as const,
+      function: { name: call.function.name, description: 'test', parameters: {} },
+    }))
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [salaryCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [inflationCall] } })
+      .mockResolvedValueOnce({ message: { content: 'Comparación salarial contra IPC.' } })
+    const executeTool = vi.fn()
+      .mockResolvedValueOnce({ salaries: [{ salary: { period: '2026-08', paymentDate: '2026-08-31' } }] })
+      .mockResolvedValueOnce({ source: 'ArgentinaDatos', monthly: [], annual: [] })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Analiza salarios e inflación.',
+      prompt: '¿Le estoy ganando a la inflación?',
+      previousMessages: [],
+      tools: financeTools,
+      streamFinalResponse: false,
+      isCompoundRequest: true,
+      executeTool,
+      resolveToolResultAnswer: (call) => call.function.name === salaryCall.function.name ? 'Sueldos disponibles.' : null,
+    })).resolves.toBe('Comparación salarial contra IPC.')
+
+    expect(executeTool.mock.calls.map(([call]) => call.function.name)).toEqual([
+      salaryCall.function.name,
+      inflationCall.function.name,
+    ])
+  })
+
   it('stops with an actionable error after two unsuccessful corrections', async () => {
     vi.mocked(invoke).mockResolvedValue({ message: { content: 'Voy a insertar el gráfico.' } })
     const executeTool = vi.fn()
@@ -146,6 +266,39 @@ describe('agent execution continuation', () => {
       resolveToolResultAnswer: () => 'No hice cambios porque cancelaste la operación.',
     })
     expect(answer).toContain('cancelaste')
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(invoke).toHaveBeenCalledOnce()
+  })
+
+  it('does not retry an applied mutation when the model repeats it', async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: [insertCall] } })
+      .mockResolvedValueOnce({ message: { tool_calls: [insertCall] } })
+      .mockResolvedValueOnce({ message: { content: 'La operación ya fue aplicada.' } })
+    const executeTool = vi.fn().mockResolvedValue({ ok: true, changed: true })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Edita la nota.', prompt: 'Insertá el gráfico.', previousMessages: [], tools: [tools[1]],
+      streamFinalResponse: false,
+      executeTool,
+    })).resolves.toBe('La operación ya fue aplicada.')
+
+    expect(executeTool).toHaveBeenCalledOnce()
+  })
+
+  it('stops without retrying when cancellation occurs during tool execution', async () => {
+    const controller = new AbortController()
+    vi.mocked(invoke).mockResolvedValueOnce({ message: { tool_calls: [readCall] } })
+    const executeTool = vi.fn(async (_call: AiNativeToolCall, signal: AbortSignal) => {
+      controller.abort()
+      expect(signal.aborted).toBe(true)
+      throw new Error('cancelled')
+    })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Lee.', prompt: 'Lee el documento.', previousMessages: [], tools,
+      executeTool,
+    }, { abortSignal: controller.signal })).rejects.toThrow('cancelled')
     expect(executeTool).toHaveBeenCalledOnce()
     expect(invoke).toHaveBeenCalledOnce()
   })
@@ -277,6 +430,59 @@ describe('agent execution continuation', () => {
       streamFinalResponse: false,
     })).rejects.toThrow('No pude verificar la información en la web')
     expect(executeTool).toHaveBeenCalledOnce()
+  })
+
+  it('runs multiple public searches and reuses a normalized duplicate without network', async () => {
+    const calls: AiNativeToolCall[] = [
+      { function: { name: 'search_web', arguments: { query: '%52ust   release notes', maxResults: 5, freshness: 'week', domains: ['b.example', 'A.example'] } } },
+      { function: { name: 'search_web', arguments: { query: 'rust release notes', maxResults: 5, freshness: 'week', domains: ['a.example', 'B.EXAMPLE'] } } },
+      { function: { name: 'search_web', arguments: { query: 'TypeScript release notes', maxResults: 5, freshness: 'week', domains: [] } } },
+    ]
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: calls } })
+      .mockResolvedValueOnce({ message: { content: 'Fuentes: https://a.example/rust y https://a.example/typescript' } })
+    const executeTool = vi.fn(async (call: AiNativeToolCall) => ({
+      ok: true,
+      searchedQuery: String(call.function.arguments.query),
+      results: [{ url: `https://a.example/${String(call.function.arguments.query).includes('TypeScript') ? 'typescript' : 'rust'}` }],
+    }))
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Responde con evidencia.', prompt: 'Investiga las novedades.', previousMessages: [],
+      tools: [{ type: 'function', function: { name: 'search_web', description: 'Busca', parameters: {} } }],
+      executeTool, streamFinalResponse: false,
+    })).resolves.toContain('https://a.example/rust')
+
+    expect(executeTool).toHaveBeenCalledTimes(2)
+  })
+
+  it('counts failed, cancelled and empty searches toward the six-search limit', async () => {
+    const calls = Array.from({ length: 7 }, (_, index) => ({
+      function: { name: 'search_web', arguments: { query: `consulta pública ${index + 1}` } },
+    }))
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ message: { tool_calls: calls.slice(0, 3) } })
+      .mockResolvedValueOnce({ message: { tool_calls: calls.slice(3) } })
+      .mockResolvedValueOnce({ message: { content: 'La investigación quedó incompleta.' } })
+    const executeTool = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: 'provider-unavailable', retryable: true })
+      .mockResolvedValueOnce({ ok: false, error: 'cancelled', retryable: false })
+      .mockResolvedValueOnce({ ok: true, searchedQuery: 'consulta pública 3', results: [] })
+      .mockResolvedValueOnce({ ok: true, searchedQuery: 'consulta pública 4', results: [] })
+      .mockResolvedValueOnce({ ok: true, searchedQuery: 'consulta pública 5', results: [] })
+      .mockResolvedValueOnce({ ok: true, searchedQuery: 'consulta pública 6', results: [] })
+
+    await expect(runNativeToolAgent(preferences, {
+      systemPrompt: 'Investiga sin inventar.', prompt: 'Hacé una investigación amplia.', previousMessages: [],
+      tools: [{ type: 'function', function: { name: 'search_web', description: 'Busca', parameters: {} } }],
+      executeTool, streamFinalResponse: false,
+    })).resolves.toBe('La investigación quedó incompleta.')
+
+    expect(executeTool).toHaveBeenCalledTimes(6)
+    const secondRoundMessages = (vi.mocked(invoke).mock.calls[1]?.[1] as { payload?: { messages?: Array<{ content?: string }> } }).payload?.messages ?? []
+    expect(secondRoundMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: expect.stringContaining('web-search-limit-reached') }),
+    ]))
   })
 
   it('emits a plan and step lifecycle without exposing model thinking', async () => {

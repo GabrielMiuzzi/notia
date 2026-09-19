@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTelegramConfirmationMessage, buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramCurrentNewsRequest, isTelegramFinanceRequest, isTelegramPublicWebRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
+import { buildTelegramConfirmationMessage, buildTelegramFinanceSourceReference, buildTelegramImageRoundMessage, describeTelegramAgentError, enqueueTelegramAgentRequest, isTelegramCurrentNewsRequest, isTelegramFinanceRequest, isTelegramPublicWebRequest, isUnverifiedTelegramSalarySuccess, parseTelegramConfirmationDecision, preserveInterruptedTelegramRequest, resolveTelegramAgentScope, resolveTelegramChoiceReply, resolveTelegramPersistencePolicy, TELEGRAM_AI_TOOL_CALL_TIMEOUT_MS, TELEGRAM_CONFIRMATION_TIMEOUT_MS, TELEGRAM_IMAGE_AI_MAX_ROUNDS, TELEGRAM_IMAGE_PROGRESS_INTERVAL_MS, TELEGRAM_PENDING_REQUEST_LIMIT } from './useTelegramAgentBridge'
 
 describe('Telegram universal scope', () => {
   it('rejects a salary success message without a persisted salary proof', () => {
@@ -30,6 +30,12 @@ describe('Telegram universal scope', () => {
     expect(isTelegramFinanceRequest('Quiero saber con qué están los chicos según Historial sincros')).toBe(false)
     expect(resolveTelegramAgentScope('Digital', 'finance')).toBe('library')
     expect(resolveTelegramAgentScope('Crea una nota sobre este gasto', 'finance')).toBe('library')
+  })
+
+  it('enables persistent memory only for the authorized Owner library user', () => {
+    expect(resolveTelegramPersistencePolicy('user-owner')).toBe('persistent')
+    expect(resolveTelegramPersistencePolicy('user-editor')).toBe('ephemeral-no-memory')
+    expect(resolveTelegramPersistencePolicy(null)).toBe('ephemeral-no-memory')
   })
 
   it('routes current news to the web-enabled library scope even when it mentions finance', () => {
@@ -102,6 +108,14 @@ describe('Telegram universal scope', () => {
     expect(message).not.toContain('C:\\Users\\gabmi')
   })
 
+  it('uses concrete safe outcomes for cancellation, timeout, blocked search and missing evidence', () => {
+    expect(describeTelegramAgentError(new Error('La operación fue cancelada.'))).toContain('cancelada')
+    expect(describeTelegramAgentError({ code: 'timeout' })).toContain('tardó demasiado')
+    expect(describeTelegramAgentError(new Error('La búsqueda web fue bloqueada porque la consulta no es pública y segura.'))).toContain('bloqueada')
+    expect(describeTelegramAgentError({ code: 'provider-unavailable' })).toContain('no está disponible')
+    expect(describeTelegramAgentError(new Error('No pude verificar la información en la web.'))).toContain('evidencia suficiente')
+  })
+
   it('shows the concrete operation while redacting secrets and private paths', () => {
     const message = buildTelegramConfirmationMessage(
       'Vista previa: reemplazar "secreto del documento" en C:\\Users\\gabmi\\Documents\\nota.md. operationId=op-1\n- API key: sk-secret\n+ contenido privado',
@@ -115,12 +129,10 @@ describe('Telegram universal scope', () => {
     expect(message).not.toContain('C:\\Users\\gabmi')
   })
 
-  it('explains why a web search needs confirmation without calling it a change', () => {
-    const message = buildTelegramConfirmationMessage(
-      'Buscar fuentes públicas en internet con esta consulta: "últimas noticias relevantes sobre Milei"',
-    )
-
-    expect(message).toContain('últimas noticias relevantes sobre Milei')
+  it('escapes Telegram HTML in confirmation details while preserving the HTML transport', () => {
+    const message = buildTelegramConfirmationMessage('Cambiar <contenido> & revisar')
+    expect(message).toContain('&lt;contenido&gt; &amp; revisar')
+    expect(message).not.toContain('<contenido>')
   })
 
   it('uses preview metadata instead of leaking the full diff', () => {

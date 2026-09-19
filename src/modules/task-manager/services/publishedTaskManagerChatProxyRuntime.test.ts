@@ -8,6 +8,7 @@ describe('runPublishedTaskManagerChatProxy', () => {
     vi.stubGlobal('window', { location: { pathname: '/task-manager/session/app' } })
     const fetchMock = vi.fn().mockResolvedValue(new Response([
       JSON.stringify({ type: 'thinking', delta: 'Leo archivos…' }),
+      JSON.stringify({ type: 'progress', message: 'Leyendo la información necesaria…' }),
       JSON.stringify({ type: 'plan', steps: [{ id: 'step-1', label: 'Leer', status: 'pending' }] }),
       JSON.stringify({ type: 'delta', delta: 'Respuesta ' }),
       JSON.stringify({ type: 'delta', delta: 'host.' }),
@@ -17,6 +18,7 @@ describe('runPublishedTaskManagerChatProxy', () => {
     const onThinkingDelta = vi.fn()
     const onExecutionPlanChange = vi.fn()
     const onMessageDelta = vi.fn()
+    const onProgress = vi.fn()
 
     await expect(runPublishedTaskManagerChatProxy({
       taskManagerScopeKey: 'task-manager:panel:equipo',
@@ -27,6 +29,7 @@ describe('runPublishedTaskManagerChatProxy', () => {
       onThinkingDelta,
       onExecutionPlanChange,
       onMessageDelta,
+      onProgress,
     })).resolves.toBe('Respuesta host.')
 
     expect(fetchMock).toHaveBeenCalledWith('/task-manager/session/ai/stream', expect.objectContaining({
@@ -40,6 +43,7 @@ describe('runPublishedTaskManagerChatProxy', () => {
       }),
     }))
     expect(onThinkingDelta).toHaveBeenCalledWith('Leo archivos…')
+    expect(onProgress).toHaveBeenCalledWith('Leyendo la información necesaria…')
     expect(onExecutionPlanChange).toHaveBeenCalledWith([{ id: 'step-1', label: 'Leer', status: 'pending' }])
     expect(onMessageDelta).toHaveBeenCalledWith('Respuesta ')
     expect(onMessageDelta).toHaveBeenCalledWith('host.')

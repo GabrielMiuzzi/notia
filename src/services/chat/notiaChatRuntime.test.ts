@@ -141,4 +141,89 @@ describe('notiaChatRuntime', () => {
       systemPrompt: 'Finanzas locales',
     }), {})
   })
+
+  it('does not route loaded salaries to web search when finance tools coexist with the library tools', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('Sueldos cargados en Finanzas')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: false, thinkingLevel: 'medium' as const,
+    }
+    const agent = {
+      systemPrompt: 'Asistente universal',
+      tools: [
+        { type: 'function' as const, function: { name: 'search_web', description: 'Busca', parameters: {} } },
+        { type: 'function' as const, function: { name: 'list_finance_salaries', description: 'Lee sueldos', parameters: {} } },
+      ],
+      executeTool: vi.fn(),
+    }
+
+    await runNotiaChatReply(preferences, {
+      agent,
+      prompt: 'Mis últimos sueldos de los cargados en Finanzas',
+      previousMessages: [],
+      streamFinalResponse: false,
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      requiredToolNames: undefined,
+      systemPrompt: expect.stringContaining('no uses search_web'),
+    }), {})
+  })
+
+  it('marks salary versus inflation as a compound local-finance analysis', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('comparación')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: false, thinkingLevel: 'medium' as const,
+    }
+    const agent = {
+      systemPrompt: 'Finanzas',
+      tools: [
+        { type: 'function' as const, function: { name: 'list_finance_salaries', description: 'Lee', parameters: {} } },
+        { type: 'function' as const, function: { name: 'get_finance_inflation_indices', description: 'IPC', parameters: {} } },
+      ],
+      executeTool: vi.fn(),
+    }
+
+    await runNotiaChatReply(preferences, {
+      agent,
+      prompt: '¿Le estoy ganando a la inflación con mis salarios?',
+      previousMessages: [],
+      streamFinalResponse: false,
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      isCompoundRequest: true,
+      systemPrompt: expect.stringContaining('get_finance_inflation_indices'),
+    }), {})
+  })
+
+  it('keeps a budget scenario open after reading salaries', async () => {
+    vi.mocked(runNativeToolAgent).mockResolvedValue('análisis de presupuesto')
+    const preferences = {
+      ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'modelo',
+      thinkingEnabled: false, thinkingLevel: 'medium' as const,
+    }
+    const agent = {
+      systemPrompt: 'Finanzas',
+      tools: [
+        { type: 'function' as const, function: { name: 'list_finance_salaries', description: 'Lee', parameters: {} } },
+        { type: 'function' as const, function: { name: 'get_finance_dashboard', description: 'Dashboard', parameters: {} } },
+        { type: 'function' as const, function: { name: 'get_finance_dollar_quotes', description: 'Cotizaciones', parameters: {} } },
+      ],
+      executeTool: vi.fn(),
+    }
+
+    await runNotiaChatReply(preferences, {
+      agent,
+      prompt: '¿Es factible alquilar pagando 1.000.000 y ahorrar además 1000 dólares por mes con mi sueldo?',
+      previousMessages: [],
+      streamFinalResponse: false,
+    })
+
+    expect(runNativeToolAgent).toHaveBeenCalledWith(preferences, expect.objectContaining({
+      isCompoundRequest: true,
+      systemPrompt: expect.stringContaining('get_finance_dashboard'),
+    }), {})
+  })
 })

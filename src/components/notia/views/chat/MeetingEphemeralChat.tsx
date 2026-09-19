@@ -11,6 +11,7 @@ import {
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
+import { describeAiFeedbackError } from '../../../../services/ai/aiFeedbackRuntime'
 
 interface MeetingEphemeralChatProps {
   aiPreferences: AiPreferences
@@ -85,9 +86,9 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
       setMessages((current) => [...current, { role: 'assistant', content: answer }])
       onLibraryChanged()
     } catch (submitError) {
-      if (!controller.signal.aborted) {
-        setError(submitError instanceof Error ? submitError.message : 'No se pudo consultar la transcripción.')
-      }
+      setError(controller.signal.aborted
+        ? 'Consulta cancelada.'
+        : describeAiFeedbackError(submitError, 'No se pudo consultar la transcripción.'))
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null
       setStreamingMessage('')

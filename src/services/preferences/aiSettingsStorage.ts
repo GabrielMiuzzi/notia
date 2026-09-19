@@ -50,7 +50,7 @@ function normalizeThinkingLevel(value: unknown): AiThinkingLevel {
 }
 
 function normalizeProgressMode(value: unknown): AiProgressMode {
-  return value === 'minimal' || value === 'detailed' || value === 'off' ? value : 'standard'
+  return value === 'minimal' || value === 'standard' || value === 'detailed' || value === 'off' ? value : 'minimal'
 }
 
 function normalizeOllamaApiUrl(value: unknown): string {
@@ -90,7 +90,7 @@ function normalizeAiPreferences(value: unknown): NormalizedAiPreferences {
       selectedModel: '',
       thinkingEnabled: true,
       thinkingLevel: 'medium',
-      progressMode: 'standard',
+      progressMode: 'minimal',
       showPlan: true,
       showReasoningSummary: true,
       editProgressMessage: true,

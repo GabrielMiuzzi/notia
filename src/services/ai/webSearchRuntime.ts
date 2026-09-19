@@ -36,6 +36,7 @@ export type WebSearchNeed = 'explicit' | 'freshness' | 'none'
 
 const EXPLICIT_SEARCH_PATTERN = /(?:^|\s)(?:busc(?:a|ar|á|ame)|investig(?:a|ar|á)|consult[aá] fuentes?|fuentes?|enlace(?:s)?|links?|urls?|en internet|en la web|web search|ollama web|con citas?|encontr[aá] informaci[oó]n)(?=[\s?!.,;:]|$)/i
 const FRESH_INFORMATION_PATTERN = /(?:^|\s)(?:actual(?:izado)?|hoy|ahora|[uú]ltim[oa]s?|reciente(?:s)?|vigente|cotizaci[oó]n|precio(?:s)?|clima|noticia(?:s)?|versi[oó]n actual|cambi[oó]|regulaci[oó]n|ley vigente)(?=[\s?!.,;:]|$)/i
+const ISOLATED_FRESHNESS_WORD_PATTERN = /^\s*(?:actual|hoy|ahora|[uú]ltim[oa]s?|reciente(?:s)?|vigente)\s*[?!.,;:]*\s*$/i
 
 /**
  * Supplies a deterministic hint to the agent without ever building a query
@@ -46,6 +47,7 @@ export function classifyWebSearchNeed(value: string): WebSearchNeed {
   const normalized = value.normalize('NFKC').trim()
   if (!normalized) return 'none'
   if (EXPLICIT_SEARCH_PATTERN.test(normalized)) return 'explicit'
+  if (ISOLATED_FRESHNESS_WORD_PATTERN.test(normalized)) return 'none'
   return FRESH_INFORMATION_PATTERN.test(normalized) ? 'freshness' : 'none'
 }
 
@@ -121,6 +123,13 @@ function normalizeQuery(value: string): string | null {
       decoded = next
     }
     return decoded
+      .normalize('NFKC')
+      .split('')
+      .map((character) => {
+        const code = character.charCodeAt(0)
+        return code <= 0x1f || code === 0x7f ? ' ' : character
+      })
+      .join('')
       .replace(/\s+/g, ' ')
       .trim()
   } catch {
@@ -132,7 +141,41 @@ function normalizeDomains(domains: readonly string[]): string[] | null {
   const normalized = [...new Set(domains.map((domain) => domain.trim().toLowerCase()).filter(Boolean))]
   if (normalized.length > 5) return null
   if (normalized.some((domain) => !/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(domain))) return null
-  return normalized
+  return normalized.sort((left, right) => left.localeCompare(right, 'en'))
+}
+
+function effectiveMaxResults(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(MAX_RESULTS, Math.max(1, Math.trunc(value as number)))
+    : 5
+}
+
+function effectiveFreshness(value: unknown): WebSearchFreshness {
+  return value === 'day' || value === 'week' || value === 'month' || value === 'year' || value === 'any'
+    ? value
+    : 'any'
+}
+
+/** Builds the operation-local identity without deciding whether the query is safe to send. */
+export function normalizeWebSearchRequestKey(value: {
+  query?: unknown
+  maxResults?: unknown
+  freshness?: unknown
+  domains?: unknown
+}): string | null {
+  if (typeof value.query !== 'string') return null
+  const query = normalizeQuery(value.query)
+  const domainsInput = Array.isArray(value.domains)
+    ? value.domains.filter((domain): domain is string => typeof domain === 'string')
+    : []
+  const domains = normalizeDomains(domainsInput)
+  if (!query || !domains) return null
+  return JSON.stringify({
+    query: query.toLocaleLowerCase('en'),
+    maxResults: effectiveMaxResults(value.maxResults),
+    freshness: effectiveFreshness(value.freshness),
+    domains,
+  })
 }
 
 export function sanitizeWebSearchQuery(
@@ -152,7 +195,7 @@ export function sanitizeWebSearchQuery(
   }
   const domains = normalizeDomains(options.domains ?? [])
   if (!domains) return { ok: false, code: 'invalid-domain' }
-  const maxResults = Math.min(MAX_RESULTS, Math.max(1, Math.trunc(options.maxResults ?? 5)))
+  const maxResults = effectiveMaxResults(options.maxResults)
   return {
     ok: true,
     request: {
@@ -265,6 +308,9 @@ export async function searchOllamaWeb(
   request: WebSearchRequest,
   signal?: AbortSignal,
 ): Promise<WebSearchResponse> {
+  if (signal?.aborted) {
+    throw new WebSearchError('timeout', 'La búsqueda web fue cancelada.', true)
+  }
   const transportPreferences = resolveAiPreferencesForTransport(preferences)
   const sanitized = sanitizeWebSearchQuery(request.query, request)
   if (!sanitized.ok) {
@@ -280,6 +326,8 @@ export async function searchOllamaWeb(
   const payload = {
     query: sanitized.request.query,
     maxResults: sanitized.request.maxResults,
+    freshness: sanitized.request.freshness,
+    domains: sanitized.request.domains,
   }
   if (getRuntimeDevice() !== 'Android') {
     try {
@@ -289,9 +337,12 @@ export async function searchOllamaWeb(
           apiKey: transportPreferences.apiKey,
           query: payload.query,
           maxResults: payload.maxResults,
+          freshness: payload.freshness,
+          domains: payload.domains,
         },
       })
       requireWebSearchResponse(response)
+      if (signal?.aborted) throw new WebSearchError('timeout', 'La búsqueda web fue cancelada.', true)
       return normalizeWebSearchResponse(response, sanitized.request.query)
     } catch (error) {
       if (error instanceof WebSearchError) throw error
@@ -309,9 +360,12 @@ export async function searchOllamaWeb(
           apiKey: transportPreferences.apiKey,
           query: payload.query,
           maxResults: payload.maxResults,
+          freshness: payload.freshness,
+          domains: payload.domains,
         },
       })
       requireWebSearchResponse(response)
+      if (signal?.aborted) throw new WebSearchError('timeout', 'La búsqueda web fue cancelada.', true)
       return normalizeWebSearchResponse(response, sanitized.request.query)
     } catch (error) {
       if (error instanceof WebSearchError) throw error

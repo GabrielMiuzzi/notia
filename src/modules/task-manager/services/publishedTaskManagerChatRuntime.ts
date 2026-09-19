@@ -5,6 +5,7 @@ import { createGlobalAiRequest, type AiActor } from '../../../types/ai/globalAiC
 import { buildWorkspaceAiSnapshot } from '../../../services/ai/workspaceAiSnapshotRuntime'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
+import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
 
 interface PublishedTaskManagerChatInput {
   aiPreferences: AiPreferences
@@ -17,6 +18,7 @@ interface PublishedTaskManagerChatInput {
   onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
+  onAgentProgress?: (event: AgentProgressEvent) => void
   actor?: AiActor
   publishedBoardNames?: readonly string[]
 }
@@ -77,5 +79,6 @@ export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskM
     abortSignal: input.signal,
     onMessageDelta: input.onMessageDelta,
     onThinkingDelta: input.onThinkingDelta,
+    onAgentProgress: input.onAgentProgress,
   })
 }

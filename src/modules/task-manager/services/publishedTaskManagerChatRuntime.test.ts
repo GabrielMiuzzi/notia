@@ -22,6 +22,7 @@ describe('runPublishedTaskManagerChatReply', () => {
     mocks.createChatScopedAgent.mockResolvedValue(agent)
     mocks.runNotiaChatReply.mockResolvedValue('respuesta')
     const signal = new AbortController().signal
+    const onAgentProgress = vi.fn()
     const aiPreferences = {
       ollamaUrl: 'https://127.0.0.1:1', apiKey: '', selectedModel: 'qwen3',
       thinkingEnabled: true, thinkingLevel: 'medium' as const,
@@ -34,8 +35,9 @@ describe('runPublishedTaskManagerChatReply', () => {
        scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
        publishedBoardNames: ['equipo'],
       prompt: 'Move el ticket',
-      previousMessages: [],
-      signal,
+       previousMessages: [],
+       signal,
+       onAgentProgress,
     })).resolves.toBe('respuesta')
 
     expect(mocks.createChatScopedAgent).toHaveBeenCalledWith(expect.objectContaining({
@@ -46,10 +48,10 @@ describe('runPublishedTaskManagerChatReply', () => {
        scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
        publishedBoardNames: ['equipo'],
     }))
-    expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({
+     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({
       agent,
       prompt: 'Move el ticket',
       streamFinalResponse: true,
-    }), expect.objectContaining({ abortSignal: signal }))
+     }), expect.objectContaining({ abortSignal: signal, onAgentProgress }))
   })
 })

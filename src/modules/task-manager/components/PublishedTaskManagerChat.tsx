@@ -5,6 +5,7 @@ import { ChatMarkdownMessage } from '../../../components/notia/views/chat/ChatMa
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
 import { runPublishedTaskManagerChatProxy } from '../services/publishedTaskManagerChatProxyRuntime'
+import { describeAiFeedbackError } from '../../../services/ai/aiFeedbackRuntime'
 
 interface PublishedTaskManagerChatProps {
   taskManagerScopeKey: string | null
@@ -17,6 +18,7 @@ export function PublishedTaskManagerChat({ taskManagerScopeKey, scopePaths }: Pu
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [streamingMessage, setStreamingMessage] = useState('')
   const [thinkingMessage, setThinkingMessage] = useState('')
+  const [progressMessage, setProgressMessage] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [executionPlan, setExecutionPlan] = useState<TaskExecutionStep[]>([])
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -26,7 +28,7 @@ export function PublishedTaskManagerChat({ taskManagerScopeKey, scopePaths }: Pu
   useEffect(() => {
     const thread = threadRef.current
     if (thread) thread.scrollTop = thread.scrollHeight
-  }, [isSubmitting, messages, streamingMessage, thinkingMessage])
+  }, [isSubmitting, messages, streamingMessage, thinkingMessage, progressMessage])
 
   const submitQuestion = async () => {
     const prompt = draft.trim()
@@ -39,6 +41,7 @@ export function PublishedTaskManagerChat({ taskManagerScopeKey, scopePaths }: Pu
     setError(null)
     setStreamingMessage('')
     setThinkingMessage('')
+    setProgressMessage('')
     setExecutionPlan([])
     setIsSubmitting(true)
     try {
@@ -51,17 +54,19 @@ export function PublishedTaskManagerChat({ taskManagerScopeKey, scopePaths }: Pu
         onExecutionPlanChange: setExecutionPlan,
         onMessageDelta: (delta) => setStreamingMessage((current) => current + delta),
         onThinkingDelta: (delta) => setThinkingMessage((current) => current + delta),
+        onProgress: setProgressMessage,
       })
       setMessages((current) => [...current, { role: 'assistant', content: answer }])
     } catch (submitError) {
-      if (!controller.signal.aborted) {
-        setError(submitError instanceof Error ? submitError.message : 'No se pudo consultar el agente de IA.')
-      }
+      setError(controller.signal.aborted
+        ? 'Consulta cancelada.'
+        : describeAiFeedbackError(submitError, 'No se pudo consultar el agente de IA.'))
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null
       setIsSubmitting(false)
       setStreamingMessage('')
       setThinkingMessage('')
+      setProgressMessage('')
     }
   }
 
@@ -108,6 +113,7 @@ export function PublishedTaskManagerChat({ taskManagerScopeKey, scopePaths }: Pu
                   <div className="notia-chat-message-avatar" aria-hidden="true"><Bot size={16} /></div>
                   <div className="notia-chat-message-bubble">
                     <span className="notia-chat-message-role">Asistente</span>
+                    {progressMessage ? <div className="notia-published-chat-thinking-text">{progressMessage}</div> : null}
                     {thinkingMessage ? <div className="notia-published-chat-thinking-text">{thinkingMessage}</div> : null}
                     {streamingMessage ? <ChatMarkdownMessage source={streamingMessage} /> : <div className="notia-chat-thinking" role="status" aria-label="Pensando"><span /><span /><span /></div>}
                   </div>

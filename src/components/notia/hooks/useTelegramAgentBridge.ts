@@ -18,7 +18,8 @@ import { classifyWebSearchNeed } from '../../../services/ai/webSearchRuntime'
 import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
 import { notiaLog, TELEGRAM_AI_DIAGNOSTIC_MODULE } from '../../../services/runtime/notiaLogger'
 import { renderTelegramPdfPages } from '../../../services/telegram/telegramPdfRenderer'
-import { buildTelegramProgressMessage, createTelegramProgressState, isCriticalTelegramProgressEvent, markTelegramProgressThinking, reduceTelegramProgress, shouldPublishTelegramProgress } from '../../../services/telegram/telegramProgressRuntime'
+import { describeAiFeedbackError } from '../../../services/ai/aiFeedbackRuntime'
+import { buildTelegramProgressMessage, createTelegramProgressState, isCriticalTelegramProgressEvent, markTelegramProgressThinking, reduceTelegramProgress, setTelegramProgressOutcome, shouldPublishTelegramProgress } from '../../../services/telegram/telegramProgressRuntime'
 import { findLibraryUser, linkLibraryUserTelegram, resolveLibraryTelegramUser } from '../../../services/libraries/libraryUsers'
 
 interface Params {
@@ -42,6 +43,10 @@ export const TELEGRAM_RECOVERY_COMMAND = '/reanudar'
 export const TELEGRAM_MAX_PROGRESS_MESSAGE_RETRIES = 3
 export const TELEGRAM_LINK_MAX_ATTEMPTS = 5
 export const TELEGRAM_LINK_COOLDOWN_MS = 30_000
+
+export function resolveTelegramPersistencePolicy(actorLibraryUserId?: string | null): 'persistent' | 'ephemeral-no-memory' {
+  return actorLibraryUserId === 'user-owner' ? 'persistent' : 'ephemeral-no-memory'
+}
 
 function createTelegramAgentRequestId(): string {
   return crypto.randomUUID().replaceAll('-', '').slice(0, 24)
@@ -99,24 +104,7 @@ export function buildTelegramFinanceSourceReference(fileId: string, extension = 
 }
 
 export function describeTelegramAgentError(error: unknown, fallback = 'No se pudo completar la consulta.'): string {
-  const redactSensitiveErrorDetails = (value: string): string => value
-    .replace(/bearer\s+[a-z0-9._~+/=-]{8,}/gi, 'Bearer [oculto]')
-    .replace(/\b(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9_-]{12,}|xox[baprs]-[a-z0-9-]{12,}|akia[a-z0-9]{12,})\b/gi, '[secreto oculto]')
-    .replace(/(api[_ -]?key|access[_ -]?token|password|passwd|secret|cookie)\s*[:=]\s*[^\s,;}]+/gi, '$1=[oculto]')
-    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, 'https://[credenciales-ocultas]@')
-    .replace(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|private|appdata|documents)[\\/])[^\s"']+/gi, '[ruta privada]')
-
-  const safe = (value: string): string => redactSensitiveErrorDetails(value).slice(0, 500)
-  if (error instanceof Error && error.message.trim()) return safe(error.message.trim())
-  if (typeof error === 'string' && error.trim()) return safe(error.trim())
-  if (typeof error === 'object' && error !== null) {
-    const errorPayload = error as Record<string, unknown>
-    for (const key of ['message', 'error'] as const) {
-      const value = errorPayload[key]
-      if (typeof value === 'string' && value.trim()) return safe(value.trim())
-    }
-  }
-  return fallback
+  return describeAiFeedbackError(error, fallback)
 }
 
 export function buildTelegramConfirmationMessage(question: string, preview?: MutationPreview): string {
@@ -134,7 +122,7 @@ export function buildTelegramConfirmationMessage(question: string, preview?: Mut
     ].filter(Boolean).join('\n')
     : redactDetail(question)
   const boundedDetail = detail.length > 3_000 ? `${detail.slice(0, 3_000)}\n…` : detail
-  return `Confirmación requerida:\n\n${boundedDetail || 'La IA preparó una operación.'}\n\nRespondé Confirmar para ejecutar o Cancelar para detenerla.`
+  return `Confirmación requerida:\n\n${escapeTelegramHtml(boundedDetail || 'La IA preparó una operación.')}\n\nRespondé Confirmar para ejecutar o Cancelar para detenerla.`
 }
 
 /** Adds an update without losing its order; the active request is tracked separately. */
@@ -332,7 +320,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       void sendTelegramMessageBestEffort(
         token,
         authorizedChatId,
-        question,
+        escapeTelegramHtml(question),
         choices.map((choice, index) => ({ label: choice.slice(0, 48), data: `choice:${index}` })),
         'HTML',
       )
@@ -398,6 +386,8 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       let progressRequestId: string | null = null
       let lastProgressTimestamp = 0
       let progressUpdateQueue: Promise<void> = Promise.resolve()
+      let pendingCompletionEvent: AgentProgressEvent | null = null
+      let failureProgressDelivered = false
       const publishProgress = (event: AgentProgressEvent): void => {
         if (event.requestId) {
           if (progressRequestId && progressRequestId !== event.requestId) return
@@ -423,6 +413,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const critical = isCriticalTelegramProgressEvent(event)
         const message = buildTelegramProgressMessage(progressState, state.aiPreferences)
         if (!message) return
+        if (event.type === 'completed') {
+          pendingCompletionEvent = event
+          return
+        }
         if (progressPublishingDisabled && (!critical || terminalProgressFallbackSent)) return
         if (message === lastProgressMessage) return
         if (!shouldPublishTelegramProgress(lastProgressPublishedAt, now, critical)) return
@@ -448,6 +442,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
             }
             persistAgentRequests()
           }
+          if (progressState.phase === 'failed' && event.type === 'failed') failureProgressDelivered = true
         }).catch((error) => {
           progressMessageRetryCount += 1
           progressMessageId = null
@@ -538,6 +533,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         const agentBuildStartedAt = performance.now()
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent context build started', undefined, 'info')
         const files = await loadLibraryFileOptions(state.library)
+        const persistencePolicy = resolveTelegramPersistencePolicy(request.actorLibraryUserId)
         const agent = await createGlobalAiAgent({
           scope: 'library',
           enableFinanceTools: true,
@@ -558,7 +554,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           aiPreferences: state.aiPreferences,
           promptFileName: loadSelectedAgentPromptFileName(state.library.id),
           responseFormat: 'telegram-html',
-          persistencePolicy: 'ephemeral-no-memory',
+          persistencePolicy,
           financeSourceReference,
           onFinancePurchaseSaved: (sourceReference) => {
             if (pendingFinanceSourceReferenceRef.current === sourceReference) pendingFinanceSourceReferenceRef.current = null
@@ -619,7 +615,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
                 openTabs: [],
               }),
               requestedScope: request.scope,
-              persistencePolicy: 'ephemeral-no-memory',
+              persistencePolicy,
               prompt: text,
             }),
             ...replyInput,
@@ -648,7 +644,7 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
         publishProgress({ type: 'phase-changed', phase: 'responding', round: null })
         await progressUpdateQueue
         await sendTelegramMessage(token, authorizedChatId, answer, [], 'HTML')
-        publishProgress({ type: 'completed', rounds: 0 })
+        publishProgress(pendingCompletionEvent ?? { type: 'completed', rounds: 0 })
         await progressUpdateQueue
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram answer sent', {
           durationMs: Math.round(performance.now() - requestStartedAt),
@@ -662,6 +658,8 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           return
         }
         const message = describeTelegramAgentError(error)
+        progressState = setTelegramProgressOutcome(progressState, message)
+        failureProgressDelivered = false
         publishProgress({ type: 'failed', code: 'internal' })
         await progressUpdateQueue
         notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'agent request failed', {
@@ -671,12 +669,14 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           durationMs: Math.round(performance.now() - requestStartedAt),
           error: message,
         }, 'error')
-        try {
-          await sendTelegramMessage(token, authorizedChatId, message)
-        } catch (sendError) {
-          notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram error message failed', {
-            error: describeTelegramAgentError(sendError, 'No se pudo enviar el error a Telegram.'),
-          }, 'error')
+        if (!failureProgressDelivered) {
+          try {
+            await sendTelegramMessage(token, authorizedChatId, message)
+          } catch (sendError) {
+            notiaLog(TELEGRAM_AI_DIAGNOSTIC_MODULE, 'telegram error message failed', {
+              error: describeTelegramAgentError(sendError, 'No se pudo enviar el error a Telegram.'),
+            }, 'error')
+          }
         }
       } finally {
         if (progressPublisherRef.current === publishProgress) progressPublisherRef.current = null
@@ -710,16 +710,16 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       }
     }
 
-    const enqueueAgentRequest = (request: TelegramAgentRequest): number | null => {
+    const enqueueAgentRequest = (request: TelegramAgentRequest): { requestId: string; requestsAhead: number } | null => {
+      const requestId = createTelegramAgentRequestId()
       const queuedAhead = enqueueTelegramAgentRequest(
         pendingRequestsRef.current,
-        withTelegramRequestStatus({ requestId: createTelegramAgentRequestId(), ...request }, 'queued'),
+        withTelegramRequestStatus({ requestId, ...request }, 'queued'),
       )
       if (queuedAhead === null) return null
       persistAgentRequests()
       const requestsAhead = queuedAhead + (busyRef.current ? 1 : 0)
-      void drainAgentRequests()
-      return requestsAhead
+      return { requestId, requestsAhead }
     }
 
     const handleTelegramLinking = async (update: TelegramUpdate): Promise<string | null> => {
@@ -945,20 +945,31 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
           pendingRequests: pendingRequestsRef.current.length,
         }, 'info')
       }
-      const requestsAhead = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, actorLibraryUserId: linkedLibraryUserId, scope, attachment })
-      if (requestsAhead === null) {
+      const enqueueResult = enqueueAgentRequest({ text: prompt, actorUserId: peer.userId, actorLibraryUserId: linkedLibraryUserId, scope, attachment })
+      if (enqueueResult === null) {
         await sendTelegramMessage(state.telegram.botToken, peer.chatId, 'No puedo aceptar más de 10 solicitudes pendientes. Esperá a que termine alguna e intentá nuevamente.')
         return
       }
-      if (!update.audio && requestsAhead > 0) {
-        await sendTelegramMessage(
+      if (!update.audio && enqueueResult.requestsAhead > 0) {
+        const queueMessageId = await sendTelegramMessage(
           state.telegram.botToken,
           peer.chatId,
           attachment
-            ? `Documento recibido. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`
-            : `Solicitud recibida. Quedó en cola después de ${requestsAhead} solicitud${requestsAhead === 1 ? '' : 'es'}.`,
+            ? `<b>Documento en cola.</b> Hay ${enqueueResult.requestsAhead} solicitud${enqueueResult.requestsAhead === 1 ? '' : 'es'} antes.`
+            : `<b>Solicitud en cola.</b> Hay ${enqueueResult.requestsAhead} solicitud${enqueueResult.requestsAhead === 1 ? '' : 'es'} antes.`,
+          [],
+          'HTML',
         )
+        if (state.aiPreferences.editProgressMessage && queueMessageId !== null) {
+          const queuedRequest = pendingRequestsRef.current.find((candidate) => candidate.requestId === enqueueResult.requestId)
+          if (queuedRequest) {
+            queuedRequest.progressMessageId = queueMessageId
+            queuedRequest.progressMessageRetryCount = 0
+            persistAgentRequests()
+          }
+        }
       }
+      void drainAgentRequests()
       conversationScopeRef.current = scope
     }
 

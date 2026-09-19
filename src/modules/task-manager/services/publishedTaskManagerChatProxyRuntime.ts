@@ -10,6 +10,7 @@ interface PublishedTaskManagerChatProxyInput {
   onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
+  onProgress?: (message: string) => void
 }
 
 interface PublishedTaskManagerChatStreamEvent {
@@ -55,6 +56,10 @@ export async function runPublishedTaskManagerChatProxy(
     const event = JSON.parse(line) as PublishedTaskManagerChatStreamEvent
     if (event.type === 'thinking' && typeof event.delta === 'string') {
       input.onThinkingDelta?.(event.delta)
+      return
+    }
+    if (event.type === 'progress' && typeof event.message === 'string') {
+      input.onProgress?.(event.message)
       return
     }
     if (event.type === 'delta' && typeof event.delta === 'string') {

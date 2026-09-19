@@ -8,6 +8,9 @@ import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { notiaLog } from '../runtime/notiaLogger'
 import { hasPendingAgentAction } from '../../engines/ai/pendingAgentActionEngine'
 import { buildAutomaticPlanGuidance } from '../../engines/ai/agentPlanEngine'
+import { CHAT_AGENT_MAX_ROUNDS } from '../../engines/ai/agentRoundPolicy'
+import { normalizeWebSearchRequestKey } from './webSearchRuntime'
+export { CHAT_AGENT_MAX_ROUNDS } from '../../engines/ai/agentRoundPolicy'
 import type {
   AgentPlan,
   AgentPlanRisk,
@@ -32,6 +35,7 @@ const MAX_CONTEXT_CHARS = AI_CONTEXT_BUDGET.maxContextChars
 const MAX_INDEX_CONTEXT_FILES = AI_CONTEXT_BUDGET.maxIndexContextFiles
 const MAX_INDEX_CONTEXT_CHARS = AI_CONTEXT_BUDGET.maxIndexContextChars
 const PUBLISHED_STREAM_MAX_RECONNECTS = 1
+export const MAX_UNIQUE_WEB_SEARCHES = 6
 
 const PLAN_CONTROL_TOOLS = new Set([
   'set_agent_execution_plan',
@@ -50,6 +54,7 @@ const NON_MUTATING_TOOL_PREFIXES = [
   'read_', 'search_', 'get_', 'find_', 'request_', 'validate_', 'verify_', 'propose_',
   'inspect_', 'check_', 'list_', 'resolve_',
 ]
+const READ_TOOL_PREFIXES = ['read_', 'search_', 'get_', 'find_', 'load_', 'inspect_', 'check_', 'list_']
 
 export function isLikelyMutatingAgentTool(toolName: string): boolean {
   const normalized = toolName.trim().toLocaleLowerCase('en')
@@ -57,6 +62,11 @@ export function isLikelyMutatingAgentTool(toolName: string): boolean {
   if (NON_MUTATING_TOOL_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false
   return ADDITIONAL_MUTATING_TOOL_NAMES.has(normalized)
     || /^(?:create|replace|add|update|delete|move|rename|apply|insert|remove|change|archive|restore|duplicate|clear|save|set)_/.test(normalized)
+}
+
+function isLikelyReadingAgentTool(toolName: string): boolean {
+  const normalized = toolName.trim().toLocaleLowerCase('en')
+  return READ_TOOL_PREFIXES.some((prefix) => normalized.startsWith(prefix))
 }
 
 const INTERNAL_AGENT_DISCLOSURE_PATTERNS = [
@@ -178,6 +188,8 @@ export interface NativeToolAgentInput {
   resolveToolResultAnswer?: (call: AiNativeToolCall, result: unknown) => string | null
   validateFinalAnswer?: (answer: string) => string | null
   maxRounds?: number
+  /** Allows a successful read answer callback to remain an intermediate result. */
+  isCompoundRequest?: boolean
   singleCallToolNames?: string[]
   toolCallTimeoutMs?: number
   streamFinalResponse?: boolean
@@ -1692,12 +1704,28 @@ export function parseLegacyXmlToolCalls(value: string, tools: AiNativeToolDefini
   )) === index)
 }
 
-type RequiredToolFailure = 'failed' | 'declined'
+type RequiredToolFailure = 'failed' | 'declined' | 'limit'
 
 function asToolResultRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null
+}
+
+function toolCallKey(call: AiNativeToolCall): string {
+  return `${call.function.name}:${JSON.stringify(call.function.arguments)}`
+}
+
+function canRetryToolResult(result: unknown): boolean {
+  const record = asToolResultRecord(result)
+  return record?.ok === false
+    && record.declined !== true
+    && record.retryable === true
+}
+
+interface ExecutedToolCall {
+  result: unknown
+  retryCount: number
 }
 
 function isSuccessfulRequiredToolResult(toolName: string, result: unknown): boolean {
@@ -1804,7 +1832,7 @@ export async function runNativeToolAgent(
   ]
 
   try {
-    const maxRounds = Math.min(80, Math.max(1, input.maxRounds ?? 6))
+    const maxRounds = Math.min(80, Math.max(1, input.maxRounds ?? CHAT_AGENT_MAX_ROUNDS))
     diagnosticLog('agent started', {
       model,
       runtime: getRuntimeDevice(),
@@ -1827,6 +1855,9 @@ export async function runNativeToolAgent(
     const failedRequiredToolNames = new Map<string, RequiredToolFailure>()
     const requiredWebSearchUrls = new Set<string>()
     let requiredWebSearchResultCount: number | null = null
+    const executedToolCalls = new Map<string, ExecutedToolCall>()
+    const webSearchResults = new Map<string, unknown>()
+    const uniqueWebSearches = new Set<string>()
     for (let round = 0; round < maxRounds; round += 1) {
       const roundNumber = round + 1
       const roundStartedAt = performance.now()
@@ -1954,9 +1985,11 @@ export async function runNativeToolAgent(
         const requiredToolFailure = requiredToolNames.find((name) => failedRequiredToolNames.has(name))
         if (requiredToolFailure) {
           const failure = failedRequiredToolNames.get(requiredToolFailure)
-          throw new Error(failure === 'declined'
-            ? 'La búsqueda web fue cancelada. No presentaré resultados ni fuentes como si hubieran sido verificados.'
-            : 'No pude verificar la información en la web. No presentaré resultados ni fuentes sin una búsqueda exitosa.')
+          throw new Error(failure === 'limit'
+            ? `La investigación alcanzó el límite de ${MAX_UNIQUE_WEB_SEARCHES} búsquedas web únicas. La consulta pública adicional quedó sin verificar.`
+            : failure === 'declined'
+              ? 'La búsqueda web fue cancelada. No presentaré resultados ni fuentes como si hubieran sido verificados.'
+              : 'No pude verificar la información en la web. No presentaré resultados ni fuentes sin una búsqueda exitosa.')
         }
         if (completedRequiredToolNames.has('search_web') && requiredWebSearchResultCount === 0) {
           throw new Error('La búsqueda web no devolvió fuentes suficientes para verificar esta consulta. No presentaré resultados ni fuentes inventados.')
@@ -2029,6 +2062,8 @@ export async function runNativeToolAgent(
       })
       const acceptedCallSet = new Set(acceptedToolCalls)
       const deferredToolCalls = effectiveToolCalls.filter((call) => !acceptedCallSet.has(call))
+      let repeatedToolCallDetected = false
+      let deferredReadAnswer = false
       for (const call of acceptedToolCalls) {
         const toolStartedAt = performance.now()
         diagnosticLog('native tool started', { round: roundNumber, toolName: call.function.name })
@@ -2059,31 +2094,97 @@ export async function runNativeToolAgent(
         }
         options.onThinkingDelta?.(`${safeProgressSummaryForTool(call.function.name)}\n`)
         let result: unknown
-        if (automaticPlanGuidance && isLikelyMutatingAgentTool(call.function.name) && !planApprovedForRequest) {
+        let toolExecutionAttempted = false
+        const callKey = toolCallKey(call)
+        const previousToolCall = executedToolCalls.get(callKey)
+        const repeatedToolCall = Boolean(previousToolCall)
+        if (repeatedToolCall) repeatedToolCallDetected = true
+        const webSearchKey = call.function.name === 'search_web'
+          ? normalizeWebSearchRequestKey(callArguments)
+          : null
+        const cachedWebSearch = webSearchKey && webSearchResults.has(webSearchKey)
+          ? webSearchResults.get(webSearchKey)
+          : undefined
+        if (webSearchKey && webSearchResults.has(webSearchKey)) {
+          repeatedToolCallDetected = true
+          result = cachedWebSearch
+        } else if (webSearchKey && !uniqueWebSearches.has(webSearchKey) && uniqueWebSearches.size >= MAX_UNIQUE_WEB_SEARCHES) {
           result = {
             ok: false,
-            error: 'execution-plan-required',
-            code: 'validation',
-            requiresPlan: true,
-            instruction: 'Antes de mutar, crea y aprueba un plan con set_agent_execution_plan, set_task_execution_plan, create_agent_plan o update_agent_plan.',
+            changed: false,
+            error: 'web-search-limit-reached',
+            code: 'web-search-limit',
+            retryable: false,
+            limit: MAX_UNIQUE_WEB_SEARCHES,
+            uniqueSearches: uniqueWebSearches.size,
+            unverified: 'La investigación quedó incompleta: la consulta pública adicional no fue verificada.',
           }
+          webSearchResults.set(webSearchKey, result)
         } else {
-          try {
-            result = await input.executeTool(call, controller.signal)
-          } catch (toolError) {
-            if (controller.signal.aborted) throw toolError
-            const describedToolError = describeAiError(toolError, `Fallo la herramienta ${call.function.name}.`)
-            const externalCode = typeof toolError === 'object' && toolError !== null && 'code' in toolError
-              && typeof (toolError as { code?: unknown }).code === 'string'
-              ? (toolError as { code: string }).code
-              : 'execution'
+          if (webSearchKey) uniqueWebSearches.add(webSearchKey)
+          const reusePreviousResult = previousToolCall !== undefined
+            && (!canRetryToolResult(previousToolCall.result) || previousToolCall.retryCount >= 1)
+          if (reusePreviousResult) {
+            result = previousToolCall.result
+          } else if (previousToolCall && canRetryToolResult(previousToolCall.result)) {
+            previousToolCall.retryCount += 1
+            toolExecutionAttempted = true
+            try {
+              result = await input.executeTool(call, controller.signal)
+            } catch (toolError) {
+              if (controller.signal.aborted) throw toolError
+              const describedToolError = describeAiError(toolError, `Fallo la herramienta ${call.function.name}.`)
+              const externalCode = typeof toolError === 'object' && toolError !== null && 'code' in toolError
+                && typeof (toolError as { code?: unknown }).code === 'string'
+                ? (toolError as { code: string }).code
+                : 'execution'
+              result = {
+                ok: false,
+                error: 'native-tool-execution-failed',
+                code: externalCode,
+                message: describedToolError.message,
+                ...(typeof toolError === 'object' && toolError !== null && 'retryable' in toolError
+                  && (toolError as { retryable?: unknown }).retryable === true ? { retryable: true } : {}),
+                instruction: 'Corrige los datos si el mensaje indica validacion; no afirmes que la operacion fue guardada.',
+              }
+            }
+          } else if (automaticPlanGuidance && isLikelyMutatingAgentTool(call.function.name) && !planApprovedForRequest) {
             result = {
               ok: false,
-              error: 'native-tool-execution-failed',
-              code: externalCode,
-              message: describedToolError.message,
-              instruction: 'Corrige los datos si el mensaje indica validacion; no afirmes que la operacion fue guardada.',
+              error: 'execution-plan-required',
+              code: 'validation',
+              requiresPlan: true,
+              instruction: 'Antes de mutar, crea y aprueba un plan con set_agent_execution_plan, set_task_execution_plan, create_agent_plan o update_agent_plan.',
             }
+          } else {
+            toolExecutionAttempted = true
+            try {
+              result = await input.executeTool(call, controller.signal)
+            } catch (toolError) {
+              if (controller.signal.aborted) throw toolError
+              const describedToolError = describeAiError(toolError, `Fallo la herramienta ${call.function.name}.`)
+              const externalCode = typeof toolError === 'object' && toolError !== null && 'code' in toolError
+                && typeof (toolError as { code?: unknown }).code === 'string'
+                ? (toolError as { code: string }).code
+                : 'execution'
+              result = {
+                ok: false,
+                error: 'native-tool-execution-failed',
+                code: externalCode,
+                message: describedToolError.message,
+                ...(typeof toolError === 'object' && toolError !== null && 'retryable' in toolError
+                  && (toolError as { retryable?: unknown }).retryable === true ? { retryable: true } : {}),
+                instruction: 'Corrige los datos si el mensaje indica validacion; no afirmes que la operacion fue guardada.',
+              }
+            }
+          }
+        }
+        if (webSearchKey && toolExecutionAttempted) webSearchResults.set(webSearchKey, result)
+        if (toolExecutionAttempted) {
+          if (previousToolCall) {
+            previousToolCall.result = result
+          } else {
+            executedToolCalls.set(callKey, { result, retryCount: 0 })
           }
         }
         diagnosticLog('native tool completed', {
@@ -2114,14 +2215,21 @@ export async function runNativeToolAgent(
         if (requiredToolNames.includes(call.function.name)) {
           if (isSuccessfulRequiredToolResult(call.function.name, result)) {
             completedRequiredToolNames.add(call.function.name)
+            failedRequiredToolNames.delete(call.function.name)
             if (call.function.name === 'search_web') {
-              requiredWebSearchResultCount = Array.isArray(asToolResultRecord(result)?.results)
+              const resultCount = Array.isArray(asToolResultRecord(result)?.results)
                 ? (asToolResultRecord(result)?.results as unknown[]).length
                 : 0
+              requiredWebSearchResultCount = (requiredWebSearchResultCount ?? 0) + resultCount
               for (const url of extractResultUrls(result)) requiredWebSearchUrls.add(url)
             }
           } else {
-            failedRequiredToolNames.set(call.function.name, toolResultRecord?.declined === true ? 'declined' : 'failed')
+            failedRequiredToolNames.set(
+              call.function.name,
+              toolResultRecord?.code === 'web-search-limit'
+                ? 'limit'
+                : toolResultRecord?.declined === true ? 'declined' : 'failed',
+            )
           }
         }
         if (PLAN_CONTROL_TOOLS.has(call.function.name)
@@ -2162,7 +2270,13 @@ export async function runNativeToolAgent(
         const retryableValidation = typeof result === 'object' && result !== null
           && 'ok' in result && (result as { ok?: unknown }).ok === false
           && 'code' in result && (result as { code?: unknown }).code === 'validation'
-        if (terminalAnswer && !retryableValidation) {
+        const continueCompoundRead = input.isCompoundRequest === true
+          && terminalAnswer.length > 0
+          && isLikelyReadingAgentTool(call.function.name)
+          && toolResultRecord?.ok !== false
+        if (continueCompoundRead) {
+          deferredReadAnswer = true
+        } else if (terminalAnswer && !retryableValidation) {
           if (containsInternalAgentDisclosure(terminalAnswer)) {
             internalAnswerDisclosureDetected = true
             messages.push({
@@ -2199,6 +2313,19 @@ export async function runNativeToolAgent(
             instruction: 'Vuelve a solicitar esta mutacion sola en una ronda posterior. Las busquedas y lecturas si pueden agruparse.',
           }),
         })
+      }
+      if (repeatedToolCallDetected) {
+        messages.push({
+          role: 'system',
+          content: 'No repitas una llamada de herramienta ya ejecutada en esta operación. Usa los resultados disponibles y redacta una respuesta final breve; si los datos no alcanzan, explica exactamente qué falta.',
+        })
+      }
+      if (deferredReadAnswer) {
+        messages.push({
+          role: 'system',
+          content: 'La lectura anterior es evidencia intermedia de un pedido compuesto. Conserva sus datos y continúa con las herramientas necesarias para completar el análisis; no la presentes todavía como respuesta final ni repitas la lectura.',
+        })
+        requiresNativeToolRound = true
       }
     }
 

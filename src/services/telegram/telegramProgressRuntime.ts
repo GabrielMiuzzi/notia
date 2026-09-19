@@ -14,6 +14,7 @@ export interface TelegramProgressState {
   queuePosition: number | null
   plan: TelegramProgressPlan | null
   activePlanStepId: string | null
+  outcomeMessage: string | null
 }
 
 interface TelegramProgressPlan {
@@ -77,13 +78,13 @@ const PHASE_LABELS: Record<AgentProgressPhase, string> = {
   'waiting-clarification': 'Necesito una aclaración',
   'waiting-confirmation': 'Espero tu confirmación',
   verifying: 'Verificando el resultado',
-  completed: 'Listo',
+  completed: 'Respuesta enviada',
   cancelled: 'Operación cancelada',
   failed: 'No pude completar la operación',
 }
 
 export function createTelegramProgressState(queuePosition: number | null = null): TelegramProgressState {
-  return { requestId: null, lastEventTimestamp: null, phase: 'preparing', round: null, thinkingStarted: false, toolLabel: null, reasoningSummary: 'Estoy entendiendo el pedido.', multimodalStage: null, queuePosition, plan: null, activePlanStepId: null }
+  return { requestId: null, lastEventTimestamp: null, phase: 'preparing', round: null, thinkingStarted: false, toolLabel: null, reasoningSummary: 'Estoy preparando la solicitud.', multimodalStage: null, queuePosition, plan: null, activePlanStepId: null, outcomeMessage: null }
 }
 
 const MULTIMODAL_STAGE_LABELS: Record<AgentMultimodalStage, string> = {
@@ -118,6 +119,10 @@ export function setTelegramProgressQueuePosition(state: TelegramProgressState, q
   return { ...state, queuePosition }
 }
 
+export function setTelegramProgressOutcome(state: TelegramProgressState, outcomeMessage: string | null): TelegramProgressState {
+  return { ...state, outcomeMessage: outcomeMessage?.trim() || null }
+}
+
 /** Keeps the initial acknowledgement in the same editable message until the model starts thinking. */
 export function markTelegramProgressThinking(state: TelegramProgressState): TelegramProgressState {
   if (state.thinkingStarted) return state
@@ -145,7 +150,7 @@ export function reduceTelegramProgress(state: TelegramProgressState, event: Agen
   }
   switch (event.type) {
     case 'request-received':
-      return { ...state, phase: 'preparing', toolLabel: null, reasoningSummary: safeReasoningSummary('preparing'), multimodalStage: null, plan: null, activePlanStepId: null }
+      return { ...state, phase: 'preparing', toolLabel: null, reasoningSummary: safeReasoningSummary('preparing'), multimodalStage: null, plan: null, activePlanStepId: null, outcomeMessage: null }
     case 'phase-changed':
       return { ...state, phase: event.phase, round: event.round, toolLabel: null, reasoningSummary: safeReasoningSummary(event.phase) }
     case 'round-started':
@@ -172,9 +177,9 @@ export function reduceTelegramProgress(state: TelegramProgressState, event: Agen
     case 'completed':
       return { ...state, phase: 'completed', round: event.rounds, toolLabel: null, reasoningSummary: safeReasoningSummary('completed') }
     case 'cancelled':
-      return { ...state, phase: 'cancelled', toolLabel: null, reasoningSummary: safeReasoningSummary('cancelled') }
+      return { ...state, phase: 'cancelled', toolLabel: null, reasoningSummary: safeReasoningSummary('cancelled'), outcomeMessage: state.outcomeMessage ?? 'Operación cancelada. No se aplicaron cambios.' }
     case 'failed':
-      return { ...state, phase: 'failed', toolLabel: null, reasoningSummary: safeReasoningSummary('failed') }
+      return { ...state, phase: 'failed', toolLabel: null, reasoningSummary: safeReasoningSummary('failed'), outcomeMessage: state.outcomeMessage ?? 'No pude completar la operación.' }
     case 'plan-created':
       return {
         ...state,
@@ -241,13 +246,14 @@ export function buildTelegramProgressMessage(
   state: TelegramProgressState,
   preferences: TelegramProgressPreferences = {},
 ): string {
-  const progressMode = preferences.progressMode ?? 'standard'
+  const progressMode = preferences.progressMode ?? 'minimal'
   if (progressMode === 'off') return ''
   const waitingForThinking = !state.thinkingStarted
     && (state.phase === 'preparing' || state.phase === 'planning')
     && !state.multimodalStage
     && !state.plan
-  const lines = [`<b>${waitingForThinking ? 'Solicitud recibida y en proceso.' : PHASE_LABELS[state.phase]}</b>`]
+  const phaseLabel = waitingForThinking ? 'Solicitud recibida y en proceso.' : PHASE_LABELS[state.phase]
+  const lines = [`<b>${phaseLabel}</b>`]
   if (progressMode !== 'minimal' && state.toolLabel) lines.push(`• ${state.toolLabel}`)
   if (preferences.showPlan !== false && progressMode !== 'minimal' && state.plan) {
     lines.push(`<b>TO-DO (${state.plan.steps.length} pasos)</b>`)
@@ -258,16 +264,18 @@ export function buildTelegramProgressMessage(
   if (state.queuePosition !== null && state.phase === 'preparing') {
     lines.push(`• Posición en cola: ${state.queuePosition}`)
   }
-  if (progressMode === 'detailed' && preferences.showReasoningSummary !== false && state.round !== null) {
-    lines.push(`• Ronda ${state.round}`)
-  }
   if (progressMode === 'detailed' && preferences.showReasoningSummary !== false && state.multimodalStage) {
     lines.push(`- ${MULTIMODAL_STAGE_LABELS[state.multimodalStage]}`)
   }
   if (progressMode === 'detailed' && preferences.showReasoningSummary !== false && state.reasoningSummary) {
     lines.push(`- ${state.reasoningSummary}`)
   }
+  if (state.outcomeMessage) lines.push(`- ${escapeTelegramHtml(state.outcomeMessage)}`)
   return lines.join('\n')
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
 export function isCriticalTelegramProgressEvent(event: AgentProgressEvent): boolean {

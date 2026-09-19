@@ -1,3 +1,9 @@
+[2026-09-19 00:35:59 -03:00] Telegram habilita memoria persistente únicamente para el Owner autorizado y bloquea memoria y rutas protegidas para los demás usuarios.
+[2026-09-18 21:17:45 -03:00] Se corrigió la continuidad de análisis de factibilidad presupuestaria en Telegram conservando salarios y consultando dashboard/cotizaciones cuando corresponde.
+[2026-09-18 20:44:02 -03:00] Se sincroniza `.agent/promps/default.md` como visualizador del prompt default sin usarlo como fuente de ejecución y se preservan los prompts alternativos.
+[2026-09-18 20:29:54 -03:00] Se corrigió el prompt default del agente de Telegram para usar la fuente embebida y preservar `default.md` legacy.
+[2026-09-18 19:25:04 -03:00] Se sincronizó el runtime común de IA, Finanzas local, búsqueda web pública, prompts, intención y progreso de Telegram.
+[2026-09-18 15:48:27 -03:00] Se enrutan las consultas financieras locales y el historial de sueldos sin búsqueda web, con deduplicación de tools y límite conversacional de 16 rondas.
 [2026-09-18 15:11:09 -03:00] Multichat selecciona por ronda participantes fijados mediante subconjunto y orden aleatorios, con nombres concretos o todos según la dinámica, y agrega pruebas deterministas.
 [2026-09-18 14:58:58 -03:00] Se agregaron regresiones deterministas de Multichat para carga segura, límites, cancelación, resultados obsoletos y contexto aislado, con la validación completa aprobada.
 [2026-09-18 14:43:57 -03:00] Se documentó la coordinación de Multichat por rondas automáticas de uno a cuatro, con espera explícita y reinicio por mensaje.

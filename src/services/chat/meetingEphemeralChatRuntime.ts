@@ -8,6 +8,7 @@ import { loadSelectedAgentPromptFileName } from '../ai/agentPromptRuntime'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../types/notia'
 import { buildWorkspaceAiSnapshot } from '../ai/workspaceAiSnapshotRuntime'
+import type { AgentProgressEvent } from '../../types/ai/agentContracts'
 
 export interface MeetingEphemeralChatReplyInput {
   aiPreferences: AiPreferences
@@ -18,6 +19,7 @@ export interface MeetingEphemeralChatReplyInput {
   signal: AbortSignal
   onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
   onMessageDelta?: (delta: string) => void
+  onAgentProgress?: (event: AgentProgressEvent) => void
 }
 
 /** Meeting usa el runtime común, pero no persiste memoria ni permite escrituras. */
@@ -94,6 +96,7 @@ export async function runMeetingEphemeralChatReply(
     }, {
       abortSignal: input.signal,
       onMessageDelta: input.onMessageDelta,
+      onAgentProgress: input.onAgentProgress,
     })
   }
   return runGlobalAiChat(input.aiPreferences, {
@@ -104,5 +107,6 @@ export async function runMeetingEphemeralChatReply(
   }, {
     abortSignal: input.signal,
     onMessageDelta: input.onMessageDelta,
+    onAgentProgress: input.onAgentProgress,
   })
 }

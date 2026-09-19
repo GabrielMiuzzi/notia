@@ -9,7 +9,7 @@ import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { StoredChatMessage } from './chatDocumentStorage'
 import type { AgentProgressEvent } from '../../types/ai/agentContracts'
 import { createGlobalAiRequest, isGlobalAiChatRequest, type AiAppSurface, type GlobalAiChatRequest } from '../../types/ai/globalAiContract'
-import { buildAgentIntentGuidance, classifyAgentIntent, type AgentIntentContext } from '../../engines/ai/agentIntentEngine'
+import { buildAgentIntentGuidance, classifyAgentIntent, isLocalFinanceRequest, type AgentIntentContext } from '../../engines/ai/agentIntentEngine'
 import { classifyWebSearchNeed } from '../ai/webSearchRuntime'
 import {
   CHAT_AGENT_MAX_ROUNDS,
@@ -94,16 +94,35 @@ function buildSystemPrompt(
   intentContext?: AgentIntentContext,
 ): string {
   const sections = [agent.systemPrompt]
+  const intentAnalysis = classifyAgentIntent(prompt, intentContext)
   if (longTermMemories.length > 0) {
     sections.push(`Memorias de largo plazo relevantes:\n${longTermMemories.map((memory) => `- ${memory}`).join('\n')}`)
   }
   if (intentContext) {
-    const analysis = classifyAgentIntent(prompt, intentContext)
-    sections.push(buildAgentIntentGuidance(analysis))
+    sections.push(buildAgentIntentGuidance(intentAnalysis))
   }
   const webSearchNeed = classifyWebSearchNeed(prompt)
   const hasWebSearchTool = agent.tools.some((tool) => tool.function.name === 'search_web')
-  if (hasWebSearchTool && (webSearchNeed === 'explicit' || webSearchNeed === 'freshness')) {
+  const hasFinanceTools = agent.tools.some((tool) => tool.function.name.startsWith('get_finance_') || tool.function.name.startsWith('list_finance_'))
+  const localFinanceRequest = hasFinanceTools && isLocalFinanceRequest(prompt)
+  if (localFinanceRequest) {
+    sections.push(
+      'Enrutamiento financiero local: esta consulta pide datos cargados en Finanzas. Usa primero la herramienta financiera tipada más específica y responde con sus resultados; no uses search_web ni inventes datos públicos. Para "últimos sueldos", "sueldos cargados" o "recibos de sueldo", llama directamente a list_finance_salaries y no repitas lecturas una vez que devuelve datos. Si el pedido compara salarios con inflación, conserva esa lectura como evidencia intermedia y llama también a get_finance_inflation_indices antes de redactar la comparación.',
+    )
+  }
+  if (localFinanceRequest) {
+    if (intentAnalysis.reasons.includes('budget-feasibility-analysis')) {
+      const hasDashboardTool = agent.tools.some((tool) => tool.function.name === 'get_finance_dashboard')
+      const hasDollarQuotesTool = agent.tools.some((tool) => tool.function.name === 'get_finance_dollar_quotes')
+      sections.push([
+        'Análisis de factibilidad presupuestaria: una lista de sueldos es evidencia intermedia, no la respuesta final. Conserva esos ingresos y continúa con los datos necesarios para evaluar el escenario solicitado; no cierres después de listarlos.',
+        hasDashboardTool ? 'Consulta get_finance_dashboard para conocer los gastos, compromisos y saldos locales relevantes antes de concluir.' : '',
+        hasDollarQuotesTool ? 'Si el objetivo está expresado en USD y hace falta convertirlo, consulta get_finance_dollar_quotes, informa la fecha y separa el tipo de cambio de cualquier inferencia.' : '',
+        'Distingue importes registrados, objetivos indicados por el usuario y estimaciones; si faltan datos críticos, explica qué falta en vez de afirmar que el alquiler es viable o inviable.',
+      ].filter(Boolean).join(' '))
+    }
+  }
+  if (hasWebSearchTool && !localFinanceRequest && (webSearchNeed === 'explicit' || webSearchNeed === 'freshness')) {
     sections.push(
       webSearchNeed === 'explicit'
         ? 'El usuario pidió consultar fuentes públicas. Evalúa search_web; redacta una consulta pública desde ese pedido y deja que la sanitización bloquee cualquier dato privado.'
@@ -119,6 +138,9 @@ export function runNotiaChatReply(
   options: NotiaChatReplyOptions = {},
 ): Promise<string> {
   const hasWebSearchTool = input.agent.tools.some((tool) => tool.function.name === 'search_web')
+  const hasFinanceTools = input.agent.tools.some((tool) => tool.function.name.startsWith('get_finance_') || tool.function.name.startsWith('list_finance_'))
+  const localFinanceRequest = hasFinanceTools && isLocalFinanceRequest(input.prompt)
+  const intentAnalysis = classifyAgentIntent(input.prompt, input.intentContext)
   return runNativeToolAgent(preferences, {
     requestId: input.requestId,
     globalRequest: input.globalRequest,
@@ -128,11 +150,12 @@ export function runNotiaChatReply(
     previousMessages: input.previousMessages,
     tools: input.agent.tools,
     executeTool: input.agent.executeTool,
-    requiredToolNames: hasWebSearchTool && (classifyWebSearchNeed(input.prompt) === 'explicit' || classifyWebSearchNeed(input.prompt) === 'freshness')
+    requiredToolNames: hasWebSearchTool && !localFinanceRequest && (classifyWebSearchNeed(input.prompt) === 'explicit' || classifyWebSearchNeed(input.prompt) === 'freshness')
       ? ['search_web']
       : undefined,
     resolveToolResultAnswer: input.agent.resolveToolResultAnswer,
     validateFinalAnswer: input.agent.validateFinalAnswer,
+    isCompoundRequest: intentAnalysis.isCompound,
     maxRounds: input.maxRounds ?? CHAT_AGENT_MAX_ROUNDS,
     singleCallToolNames: [...CHAT_AGENT_SINGLE_CALL_TOOL_NAMES],
     toolCallTimeoutMs: input.toolCallTimeoutMs,

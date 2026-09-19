@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   markTelegramProgressThinking: vi.fn(),
   isCriticalTelegramProgressEvent: vi.fn(),
   reduceTelegramProgress: vi.fn(),
+  setTelegramProgressOutcome: vi.fn(),
   shouldPublishTelegramProgress: vi.fn(),
 }))
 
@@ -95,6 +96,7 @@ vi.mock('../../../services/telegram/telegramProgressRuntime', () => ({
   markTelegramProgressThinking: mocks.markTelegramProgressThinking,
   isCriticalTelegramProgressEvent: mocks.isCriticalTelegramProgressEvent,
   reduceTelegramProgress: mocks.reduceTelegramProgress,
+  setTelegramProgressOutcome: mocks.setTelegramProgressOutcome,
   shouldPublishTelegramProgress: mocks.shouldPublishTelegramProgress,
 }))
 
@@ -139,6 +141,7 @@ describe('useTelegramAgentBridge integration', () => {
     mocks.markTelegramProgressThinking.mockImplementation((state: Record<string, unknown>) => ({ ...state, thinkingStarted: true }))
     mocks.isCriticalTelegramProgressEvent.mockReturnValue(false)
     mocks.reduceTelegramProgress.mockImplementation((state) => state)
+    mocks.setTelegramProgressOutcome.mockImplementation((state: Record<string, unknown>, message: string) => ({ ...state, outcomeMessage: message }))
     mocks.shouldPublishTelegramProgress.mockReturnValue(false)
     mocks.pollTelegramUpdates.mockImplementationOnce(async () => [{
       updateId: 1,
@@ -148,7 +151,7 @@ describe('useTelegramAgentBridge integration', () => {
     }]).mockImplementationOnce(() => new Promise<never>(() => undefined))
   })
 
-  it('processes text through the common runtime without persistent memory and cleans up the polling surface', async () => {
+  it('processes Owner text through the common runtime with persistent memory and cleans up the polling surface', async () => {
     const onTelegramChange = vi.fn()
     const onLibraryChanged = vi.fn()
     useTelegramAgentBridge({
@@ -175,7 +178,7 @@ describe('useTelegramAgentBridge integration', () => {
         scope: 'library',
         enableFinanceTools: true,
         validateFinanceResponses: false,
-        persistencePolicy: 'ephemeral-no-memory',
+        persistencePolicy: 'persistent',
       }),
     )
     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(

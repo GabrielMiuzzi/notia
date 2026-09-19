@@ -36,6 +36,7 @@ describe('meetingEphemeralChatRuntime', () => {
   it('pasa Meeting por la fachada común como sesión efímera y de solo lectura', async () => {
     const library = { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never
     const controller = new AbortController()
+    const onAgentProgress = vi.fn()
     const answer = await runMeetingEphemeralChatReply({
       aiPreferences: {
         ollamaUrl: 'http://localhost:11434',
@@ -49,6 +50,7 @@ describe('meetingEphemeralChatRuntime', () => {
       prompt: '¿Qué se acordó?',
       previousMessages: [],
       signal: controller.signal,
+      onAgentProgress,
     })
 
     expect(answer).toBe('respuesta')
@@ -67,5 +69,6 @@ describe('meetingEphemeralChatRuntime', () => {
       }),
       expect.objectContaining({ abortSignal: controller.signal }),
     )
+    expect(mocks.runNotiaChatReply.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ onAgentProgress }))
   })
 })

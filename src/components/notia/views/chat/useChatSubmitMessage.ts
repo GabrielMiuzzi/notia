@@ -20,6 +20,7 @@ import type {
   UseChatSubmitMessageState,
 } from './ChatWorkspaceViewTypes'
 import type { AgentProgressEvent } from '../../../../types/ai/agentContracts'
+import { describeAiFeedbackError } from '../../../../services/ai/aiFeedbackRuntime'
 
 function resolveAppAiSurface(scope: string, view: string | undefined): import('../../../../types/ai/globalAiContract').AiAppSurface {
   if (scope === 'document') return 'document'
@@ -462,9 +463,7 @@ export function useChatSubmitMessage(
       setSelectedLibraryFileOptions(previousLibraryFileOptions)
       setSelectedFileContextMode(previousFileContextMode)
       setDialogMessage(
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : 'No se pudo completar la consulta con la IA.',
+        describeAiFeedbackError(error, 'No se pudo completar la consulta con la IA.'),
       )
     } finally {
       if (mountedRef.current) setIsSubmitting(false)

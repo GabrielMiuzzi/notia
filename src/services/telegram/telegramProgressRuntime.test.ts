@@ -29,8 +29,8 @@ describe('telegram progress runtime', () => {
       { type: 'tool-started', round: 1, toolName: 'read_active_markdown_document' },
     )
 
-    expect(buildTelegramProgressMessage(state)).toContain('leyendo el documento activo')
-    expect(buildTelegramProgressMessage(state)).not.toContain('read_active_markdown_document')
+    expect(buildTelegramProgressMessage(state, { progressMode: 'standard' })).toContain('leyendo el documento activo')
+    expect(buildTelegramProgressMessage(state, { progressMode: 'standard' })).not.toContain('read_active_markdown_document')
     expect(telegramToolLabel('compare_documents')).toBe('comparando documentos autorizados')
     expect(telegramToolLabel('link_ticket_document')).toBe('vinculando el ticket con el documento')
     expect(telegramToolLabel('extract_document_facts')).toBe('extrayendo datos explícitos del documento')
@@ -89,7 +89,7 @@ describe('telegram progress runtime', () => {
         ],
       },
     })
-    const message = buildTelegramProgressMessage(planned)
+    const message = buildTelegramProgressMessage(planned, { progressMode: 'standard' })
 
     expect(message).toContain('TO-DO (2 pasos)')
     expect(message).toContain('Paso 1: pendiente')
@@ -100,12 +100,40 @@ describe('telegram progress runtime', () => {
     const running = reduceTelegramProgress(planned, {
       type: 'step-started', planStepId: 'step-private', label: 'C:/private/cliente.md',
     })
-    expect(buildTelegramProgressMessage(running)).toContain('Paso 1: en curso')
+    expect(buildTelegramProgressMessage(running, { progressMode: 'standard' })).toContain('Paso 1: en curso')
 
     const completed = reduceTelegramProgress(running, {
       type: 'step-completed', planStepId: 'step-private', status: 'completed',
     })
-    expect(buildTelegramProgressMessage(completed)).toContain('Paso 1: completado')
+    expect(buildTelegramProgressMessage(completed, { progressMode: 'standard' })).toContain('Paso 1: completado')
+  })
+
+  it('uses short user-facing progress by default and never exposes rounds or raw thinking', () => {
+    const state = reduceTelegramProgress(createTelegramProgressState(), {
+      type: 'phase-changed', phase: 'reading', round: 4,
+    })
+    const detailed = buildTelegramProgressMessage(markTelegramProgressThinking(state), {
+      progressMode: 'detailed',
+      showReasoningSummary: true,
+    })
+
+    const minimal = buildTelegramProgressMessage(state)
+    expect(minimal).toContain('Leyendo la información necesaria')
+    expect(minimal).not.toContain('Ronda')
+    expect(detailed).toContain('Leyendo la información necesaria')
+    expect(detailed).not.toContain('Ronda')
+    expect(detailed).not.toContain('thinking')
+  })
+
+  it('keeps concrete outcomes in the editable HTML status without exposing markup from errors', () => {
+    const state = reduceTelegramProgress(createTelegramProgressState(), {
+      type: 'failed', code: 'timeout',
+    })
+    const withOutcome = { ...state, outcomeMessage: 'No pude verificar <fuentes>.' }
+    const message = buildTelegramProgressMessage(withOutcome)
+
+    expect(message).toContain('No pude verificar &lt;fuentes&gt;.')
+    expect(message).not.toContain('<fuentes>')
   })
 
   it('publishes immediately for critical events and throttles intermediate updates', () => {
