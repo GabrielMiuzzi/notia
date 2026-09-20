@@ -2,6 +2,18 @@
 
 > **Corrección vigente:** Las mutaciones financieras iniciadas en Telegram **NO se auto-confirman**. Requieren una única confirmación visible por mutación, persistencia y verificación nativa antes de informar éxito; Telegram no muestra una segunda confirmación reforzada.
 
+## Estado sincronizado de esta iteración: criterio multiplataforma de desarrollo
+
+Las reglas de implementación del repositorio establecen que cada flujo se diseña, implementa y revisa desde el inicio para Windows y Android. El alcance incluye frontend, comandos y adaptadores Rust del backend, iteración de desarrollo, permisos y ciclo de vida de cada plataforma.
+
+Las interfaces deben responder a ventanas de Windows, teléfonos Android y tabletas Android. Toda acción esencial debe poder ejecutarse mediante toque y gestos de dedo adecuados en Android, sin depender de mouse, hover, clic derecho, teclado físico ni precisión de puntero. Este criterio es una obligación de desarrollo y revisión; no modifica contratos de ejecución, APIs, persistencia ni funcionalidades ya disponibles.
+
+Validación ejecutada en esta iteración:
+
+- `git diff --check`: aprobado. Git informó únicamente warnings existentes de conversión LF/CRLF.
+
+No se ejecutaron pruebas, builds ni validaciones manuales de Windows o Android porque el cambio se limita a las reglas de trabajo y no modifica código. La aplicación práctica de este criterio en cada flujo futuro requiere las validaciones de plataforma que correspondan a su alcance.
+
 ## Estado sincronizado de esta iteración: revisión de mutaciones del documento activo
 
 Se corrigió un conflicto falso al mutar el documento Markdown activo desde el chat. La revisión esperada se obtenía preferentemente de `workspaceSnapshot.activeDocumentRevision`, pero ese snapshot podía quedar obsoleto mientras la fuente activa que el runtime usaba para construir la propuesta seguía siendo la actual. En ese caso, la operación podía informar `revision-conflict` con el mensaje «El documento cambió mientras preparaba la operación» aunque la persona no hubiera editado el archivo.

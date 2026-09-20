@@ -15,6 +15,8 @@ Este archivo define cómo trabajar en el repositorio. No contiene información e
 
 - Priorizar corrección, claridad y facilidad de depuración.
 - Mantener cambios pequeños, enfocados y reversibles.
+- Diseñar, implementar y revisar cada flujo para Windows y Android desde el inicio. Esto incluye el frontend, los comandos y adaptadores Rust del backend, la iteración de desarrollo y las diferencias de plataforma, permisos y ciclo de vida.
+- Mantener las interfaces responsive para teléfonos y tabletas Android, además de las ventanas de Windows. Toda interacción esencial debe poder realizarse con toque y gestos de dedo adecuados en Android; no debe depender de mouse, hover, clic derecho, teclado físico ni precisión de puntero.
 - Resolver la causa raíz sin ocultar errores ni alterar contratos sin justificación.
 - Aplicar KISS, YAGNI y DRY con criterio; tolerar duplicación pequeña antes que una abstracción incorrecta.
 - Mantener alta cohesión y bajo acoplamiento.

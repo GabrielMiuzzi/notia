@@ -1,3 +1,4 @@
+[2026-09-20 00:32:57 -03:00] Se estableció que los flujos e interfaces se diseñen y revisen desde el inicio para Windows y Android, con acciones táctiles esenciales.
 [2026-09-19 03:35:54 -03:00] Se corrigió la revisión esperada de mutaciones del documento activo para evitar conflictos falsos con snapshots obsoletos.
 [2026-09-19 03:14:12 -03:00] Se conservaron y rehidrataron los adjuntos múltiples del chat, incluyendo su reutilización en consultas de seguimiento.
 [2026-09-19 02:32:25 -03:00] Se corrigió la visibilidad de los handles de bloques anidados dentro de tablas Markdown.
