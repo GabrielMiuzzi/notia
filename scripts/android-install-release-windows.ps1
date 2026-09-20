@@ -30,10 +30,10 @@ if (-not $adbPath) {
   throw '[notia] adb is required to install the Android APK.'
 }
 
-$devices = & $adbPath devices | Select-Object -Skip 1 | ForEach-Object {
+$devices = @(& $adbPath devices | Select-Object -Skip 1 | ForEach-Object {
   $parts = $_ -split '\s+'
   if ($parts.Length -ge 2 -and $parts[1] -eq 'device') { $parts[0] }
-} | Where-Object { $_ }
+} | Where-Object { $_ })
 
 if (-not $devices -or $devices.Count -eq 0) {
   throw '[notia] No Android device detected. Connect a device with USB debugging enabled.'
@@ -43,5 +43,15 @@ if (-not (Test-Path $apkPath)) {
   throw "[notia] APK not found: $apkPath"
 }
 
-& $adbPath -s $devices[0] install -r $apkPath
+$device = if ($env:ANDROID_SERIAL -and $devices -contains $env:ANDROID_SERIAL) {
+  $env:ANDROID_SERIAL
+} else {
+  $devices[0]
+}
+
+Write-Host "[notia] Installing on $device using $adbPath"
+& $adbPath -s $device install -r $apkPath
+if ($LASTEXITCODE -ne 0) {
+  throw "[notia] adb install failed with exit code $LASTEXITCODE."
+}
 Write-Host "[notia] Installed APK on device from $apkPath"
