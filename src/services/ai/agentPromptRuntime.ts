@@ -983,16 +983,24 @@ export async function recoverLegacyAgentMemory(library: NotiaLibrary): Promise<n
   return memories.length
 }
 
-export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<string> {
+const agentPromptStructureInFlight = new Map<string, Promise<string>>()
+
+function agentPromptStructureKey(library: NotiaLibrary): string {
+  return `${library.path}\u0000${library.androidTreeUri ?? ''}`
+}
+
+async function ensureAgentPromptFileInternal(library: NotiaLibrary): Promise<string> {
   const agentDirectoryPath = joinLibraryPath(library.path, AGENT_DIRECTORY_NAME)
   const promptsDirectoryPath = resolveAgentPromptsDirectoryPath(library.path)
   const promptPath = resolveDefaultAgentPromptPath(library.path)
 
   await ensureFolder(library.path, AGENT_DIRECTORY_NAME, library)
-  await ensureFolder(agentDirectoryPath, PROMPTS_DIRECTORY_NAME, library)
-  await ensureFolder(agentDirectoryPath, DYNAMICS_DIRECTORY_NAME, library)
-  await ensureFolder(agentDirectoryPath, SKILLS_DIRECTORY_NAME, library)
-  await ensureAgentMemoryStructure(agentDirectoryPath, library)
+  await Promise.all([
+    ensureFolder(agentDirectoryPath, PROMPTS_DIRECTORY_NAME, library),
+    ensureFolder(agentDirectoryPath, DYNAMICS_DIRECTORY_NAME, library),
+    ensureFolder(agentDirectoryPath, SKILLS_DIRECTORY_NAME, library),
+    ensureAgentMemoryStructure(agentDirectoryPath, library),
+  ])
   const options = { androidDirectoryUri: library.androidTreeUri }
   const currentDefaultPrompt = await readTextFile(promptPath, options)
   if (!currentDefaultPrompt.ok) {
@@ -1009,6 +1017,25 @@ export async function ensureAgentPromptFile(library: NotiaLibrary): Promise<stri
   // never the source used to execute the agent.
   await migrateConfidentialAgentFiles(agentDirectoryPath, library)
   return DEFAULT_AGENT_PROMPT
+}
+
+export function ensureAgentPromptFile(library: NotiaLibrary): Promise<string> {
+  const key = agentPromptStructureKey(library)
+  const existing = agentPromptStructureInFlight.get(key)
+  if (existing) return existing
+
+  const pending = ensureAgentPromptFileInternal(library)
+  agentPromptStructureInFlight.set(key, pending)
+  void pending.then(() => {
+    if (agentPromptStructureInFlight.get(key) === pending) {
+      agentPromptStructureInFlight.delete(key)
+    }
+  }, () => {
+    if (agentPromptStructureInFlight.get(key) === pending) {
+      agentPromptStructureInFlight.delete(key)
+    }
+  })
+  return pending
 }
 
 export async function loadAgentDefaultPrompt(library: NotiaLibrary): Promise<string> {

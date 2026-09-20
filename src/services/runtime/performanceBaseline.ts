@@ -3,6 +3,7 @@ import { notiaLog, redactDiagnosticData, redactDiagnosticText } from './notiaLog
 
 const PERFORMANCE_BASELINE_STORAGE_KEY = 'notia.perfBaseline.enabled'
 const PERFORMANCE_BASELINE_MAX_ENTRIES = 400
+const PERFORMANCE_SAFE_META_KEY = /^(?:phase|stage|status|operation|source|viewKind|device|isAndroid|nodeCount|entryCount|fileCount|loadedFileCount|descriptorCount|filesLoaded|edgeCount|sourceCount|nodeTreeSize|durationMs|revision|pageCount|batchSize|batchCount|queueDepth|renderCount|actualDurationMs|baseDurationMs|commitDurationMs|memoryUsedBytes|memoryDeltaBytes)$/
 
 export type NotiaPerformanceMeasurementStatus = 'success' | 'error' | 'canceled'
 
@@ -122,6 +123,19 @@ function normalizeMeta(meta: Record<string, unknown> | undefined): Record<string
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
+function normalizePerformanceMeta(meta: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!meta) {
+    return undefined
+  }
+
+  // Keep only aggregate values and categories. Paths, identifiers, queries
+  // and file contents must never enter the baseline, including relative paths.
+  const safeEntries = Object.entries(meta).filter(([key, value]) => (
+    value !== undefined && PERFORMANCE_SAFE_META_KEY.test(key)
+  ))
+  return safeEntries.length > 0 ? Object.fromEntries(safeEntries) : undefined
+}
+
 function recordEntry(entry: NotiaPerformanceMeasurementEntry): void {
   if (!isPerformanceBaselineEnabled()) {
     return
@@ -193,6 +207,7 @@ export function startPerformanceMeasurement(
   nextMeasurementId += 1
 
   const startedAt = performance.now()
+  const memoryBeforeBytes = readHeapUsageBytes()
   let finished = false
 
   const finish = (
@@ -208,11 +223,16 @@ export function startPerformanceMeasurement(
     const endedAt = performance.now()
     const startedAtMs = performance.timeOrigin + startedAt
     const endedAtMs = performance.timeOrigin + endedAt
+    const memoryAfterBytes = readHeapUsageBytes()
 
-    const normalizedMeta = normalizeMeta({
+    const normalizedMeta = normalizePerformanceMeta(normalizeMeta({
       ...meta,
       ...nextMeta,
-    })
+      memoryUsedBytes: memoryAfterBytes,
+      memoryDeltaBytes: memoryBeforeBytes !== undefined && memoryAfterBytes !== undefined
+        ? memoryAfterBytes - memoryBeforeBytes
+        : undefined,
+    }))
     const normalizedErrorMessage = normalizeErrorMessage(error)
     recordEntry({
       id: measurementId,
@@ -232,6 +252,38 @@ export function startPerformanceMeasurement(
     error: (error, nextMeta) => finish('error', nextMeta, error),
     cancel: (nextMeta) => finish('canceled', nextMeta),
   }
+}
+
+function readHeapUsageBytes(): number | undefined {
+  if (typeof performance === 'undefined') return undefined
+  const memory = (performance as Performance & {
+    memory?: { usedJSHeapSize?: number }
+  }).memory
+  return typeof memory?.usedJSHeapSize === 'number' ? memory.usedJSHeapSize : undefined
+}
+
+export function recordPerformanceSample(
+  name: string,
+  durationMs: number,
+  meta?: Record<string, unknown>,
+): void {
+  if (!canUsePerformanceApi() || !Number.isFinite(durationMs) || durationMs < 0) {
+    return
+  }
+
+  ensurePerformanceBaselineApi()
+  const now = performance.now()
+  const startedAt = Math.max(0, now - durationMs)
+  recordEntry({
+    id: nextMeasurementId++,
+    name,
+    device: resolveRuntimeDeviceSafe(),
+    startedAtMs: roundMilliseconds(performance.timeOrigin + startedAt),
+    endedAtMs: roundMilliseconds(performance.timeOrigin + now),
+    durationMs: roundMilliseconds(durationMs),
+    status: 'success',
+    meta: normalizePerformanceMeta(normalizeMeta(meta)),
+  })
 }
 
 export async function measurePerformanceAsync<T>(

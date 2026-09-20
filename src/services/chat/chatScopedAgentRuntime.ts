@@ -3045,31 +3045,12 @@ Confirmá nuevamente para continuar.`,
   }
 
   const expectedActiveRevision = (active: { path: string; content: string }): number => (
-    options.workspaceSnapshot?.activeDocumentRevision
-      ?? computeWorkspaceDocumentRevision(active.path, active.content)
+    computeWorkspaceDocumentRevision(active.path, active.content)
   )
 
   const currentActiveRevision = (active: { path: string; content: string }): number => (
     computeWorkspaceDocumentRevision(active.path, active.content)
   )
-
-  const activeRevisionConflict = (active: { path: string; content: string }): Record<string, unknown> | null => {
-    const expectedRevision = expectedActiveRevision(active)
-    const actualRevision = currentActiveRevision(active)
-    return expectedRevision === actualRevision
-      ? null
-      : {
-        ok: false,
-        changed: false,
-        error: 'revision-conflict',
-        conflict: {
-          documentPath: active.path,
-          expectedRevision,
-          actualRevision,
-        },
-        retryable: true,
-      }
-  }
 
   const requireAuthorized = (selected: AgentDocument[]): { ok: true } | { ok: false; missing: AgentDocument[] } => {
     const missing = selected.filter((document) => !authorized.has(document.id))
@@ -3371,8 +3352,6 @@ Confirmá nuevamente para continuar.`,
       }
       const active = await loadActiveMarkdownDocument()
       if (!active.ok) return active
-      const conflict = activeRevisionConflict(active)
-      if (conflict) return conflict
       const normalizedEntries = Object.entries(fields).map(([key, value]) => {
         const normalizedKey = key.trim()
         const validKey = /^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(normalizedKey)
@@ -3395,12 +3374,13 @@ Confirmá nuevamente para continuar.`,
       const previousOperation = getAiOperation(operationId)
       if (previousOperation && previousOperation.documentPath !== active.document.option.path) return { ok: false, error: 'operation-id-conflict', retryable: false }
       if (previousOperation) return { ok: true, changed: false, code: 'already-applied', operationId, path: previousOperation.documentPath, revision: previousOperation.nextRevision }
+      const expectedRevision = expectedActiveRevision(active)
       const preview = createMarkdownMutationPreview({
         operationId,
         documentPath: active.document.option.path,
         originalSource: active.content,
         nextSource,
-        expectedRevision: expectedActiveRevision(active),
+        expectedRevision,
         currentRevision: currentActiveRevision(active),
         summary: 'Actualizar metadatos del documento',
         risks: ['Solo se modifican claves de frontmatter; el cuerpo Markdown se conserva.'],
@@ -3414,10 +3394,18 @@ Confirmá nuevamente para continuar.`,
       }
       const latest = await loadActiveMarkdownDocument()
       if (!latest.ok) return latest
-      const latestConflict = activeRevisionConflict(latest)
-      if (latestConflict) {
+      const latestRevision = currentActiveRevision(latest)
+      if (latestRevision !== expectedRevision) {
         updatePlanStep(plannedMutationStep, 'failed')
-        return { ...latestConflict, operationId, preview }
+        return {
+          ok: false,
+          changed: false,
+          error: 'revision-conflict',
+          operationId,
+          preview,
+          conflict: { documentPath: latest.path, expectedRevision, actualRevision: latestRevision },
+          retryable: true,
+        }
       }
       const { writeTextFile } = await import('../files/filesystemEngine')
       const result = await writeTextFile(active.document.option.path, nextSource, { androidDirectoryUri: options.library.androidTreeUri })
@@ -4093,8 +4081,6 @@ Confirmá nuevamente para continuar.`,
       if (mode === 'move' && (!targetText || !destinationText)) return { ok: false, error: 'move-targets-required' }
       const active = await loadActiveMarkdownDocument()
       if (!active.ok) return active
-      const initialConflict = activeRevisionConflict(active)
-      if (initialConflict) return initialConflict
       const occurrence = typeof args.occurrence === 'number' ? args.occurrence : undefined
       let nextSource = active.content
       let summary = mode === 'replace' ? 'Reemplazar bloque del documento' : 'Agregar bloque al documento'
@@ -4296,8 +4282,6 @@ Confirmá nuevamente para continuar.`,
         replacedBlockCount = selectionResult.replacedBlockCount
         targetDescription = `${replacedBlockCount} bloque(s) seleccionado(s)`
       }
-      const initialConflict = activeRevisionConflict(active)
-      if (initialConflict) return initialConflict
       const validation = validateDocumentEdit(active.content, nextSource)
       if (!validation.ok) return { ok: false, changed: false, error: 'validation-failed', issues: validation.issues, retryable: false }
       const operationId = typeof args.operationId === 'string' && args.operationId.trim()
@@ -4407,8 +4391,6 @@ Confirmá nuevamente para continuar.`,
       const targetDescription = targetText
         ? `${position === 'before' ? 'antes' : 'despues'} del bloque referido por "${mutationTextPreview(targetText)}"`
         : 'al final del documento'
-      const initialConflict = activeRevisionConflict(active)
-      if (initialConflict) return initialConflict
       const validation = validateDocumentEdit(active.content, insertionResult.source)
       if (!validation.ok) return { ok: false, changed: false, error: 'validation-failed', issues: validation.issues, retryable: false }
       const operationId = typeof args.operationId === 'string' && args.operationId.trim()

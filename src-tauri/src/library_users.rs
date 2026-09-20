@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::database::open_library_connection;
 #[cfg(target_os = "android")]
 use crate::database::{open_mobile_library_connection, sync_mobile_library_connection};
@@ -236,6 +237,7 @@ fn read_existing_password_hash(
 
 /// Authenticates against the library database without exposing the stored hash.
 /// The publication runtime uses the returned stable user id as its session identity.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn authenticate_library_user(
     library_path: &str,
     username: &str,

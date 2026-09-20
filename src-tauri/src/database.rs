@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 20;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -186,6 +186,64 @@ fn database_path(library_path: &str) -> Result<PathBuf, String> {
         return Err("La ruta de la librería no es un directorio válido.".to_string());
     }
     Ok(library_root.join(NOTIA_DIRECTORY).join(DATABASE_FILE_NAME))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventoryPayload {
+    pub library_path: String,
+    pub android_directory_uri: Option<String>,
+    pub generation: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventoryBatchPayload {
+    #[serde(flatten)]
+    pub context: LibraryInventoryPayload,
+    pub entries: Vec<LibraryInventoryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventorySnapshotPayload {
+    #[serde(flatten)]
+    pub context: LibraryInventoryPayload,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventoryEntry {
+    pub path: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub name: String,
+    pub parent_path: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub modified_at: Option<i64>,
+    pub revision: i64,
+    pub generation: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventoryQueryPayload {
+    #[serde(flatten)]
+    pub context: LibraryInventoryPayload,
+    pub parent_path: Option<String>,
+    pub query: Option<String>,
+    pub offset: i64,
+    pub limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventoryResult {
+    pub ok: bool,
+    pub entries: Vec<LibraryInventoryEntry>,
+    pub upserted: i64,
+    pub generation: i64,
+    pub error: Option<String>,
 }
 
 fn table_has_column(
@@ -802,6 +860,54 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
         )?;
         transaction.commit()?;
     }
+    if current_version < 21 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_inventory (
+                 path TEXT PRIMARY KEY,
+                 entry_type TEXT NOT NULL CHECK (entry_type IN ('folder', 'file')),
+                 name TEXT NOT NULL,
+                 parent_path TEXT,
+                 size_bytes INTEGER,
+                 modified_at INTEGER,
+                 revision INTEGER NOT NULL DEFAULT 0,
+                 generation INTEGER NOT NULL DEFAULT 0,
+                 indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE INDEX IF NOT EXISTS idx_library_inventory_parent ON library_inventory(parent_path);
+             CREATE INDEX IF NOT EXISTS idx_library_inventory_type ON library_inventory(entry_type);
+             CREATE INDEX IF NOT EXISTS idx_library_inventory_generation ON library_inventory(generation);
+             INSERT INTO notia_schema_migrations (version) VALUES (21);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 22 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_inventory_staging (
+                 path TEXT PRIMARY KEY,
+                 entry_type TEXT NOT NULL CHECK (entry_type IN ('folder', 'file')),
+                 name TEXT NOT NULL,
+                 parent_path TEXT,
+                 size_bytes INTEGER,
+                 modified_at INTEGER,
+                 revision INTEGER NOT NULL DEFAULT 0,
+                 generation INTEGER NOT NULL,
+                 indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE INDEX IF NOT EXISTS idx_library_inventory_staging_generation
+                 ON library_inventory_staging(generation);
+             CREATE TABLE IF NOT EXISTS library_inventory_state (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 active_generation INTEGER NOT NULL DEFAULT 0,
+                 staging_generation INTEGER
+             );
+             INSERT OR IGNORE INTO library_inventory_state(id, active_generation)
+                 VALUES (1, 0);
+             INSERT INTO notia_schema_migrations (version) VALUES (22);",
+        )?;
+        transaction.commit()?;
+    }
     // Some development builds recorded schema version 18/19 before the
     // association columns were present. Repair the invariant independently
     // of the version marker so existing libraries can load their dashboard.
@@ -913,6 +1019,465 @@ fn failure(error: String) -> InitializeLibraryDatabaseResult {
     }
 }
 
+fn inventory_failure(error: String, generation: i64) -> LibraryInventoryResult {
+    LibraryInventoryResult {
+        ok: false,
+        entries: Vec::new(),
+        upserted: 0,
+        generation,
+        error: Some(error),
+    }
+}
+
+fn validate_inventory_generation(generation: i64) -> Result<(), String> {
+    if generation < 0 {
+        return Err("La generación del inventario no es válida.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn open_inventory_connection(
+    app: &tauri::AppHandle,
+    library_path: &str,
+    android_directory_uri: Option<&str>,
+) -> Result<Connection, String> {
+    let _ = library_path;
+    let directory_uri = android_directory_uri
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "La librería Android no tiene una URI SAF válida.".to_string())?;
+    open_mobile_library_connection(app, directory_uri)
+}
+
+#[cfg(not(target_os = "android"))]
+fn open_inventory_connection(
+    _app: &tauri::AppHandle,
+    library_path: &str,
+    _android_directory_uri: Option<&str>,
+) -> Result<Connection, String> {
+    open_library_connection(library_path)
+}
+
+fn validate_inventory_entry(entry: &LibraryInventoryEntry) -> Result<(), String> {
+    let has_traversal =
+        |value: &str| value.split(['/', '\\']).any(|part| part == "..") || value.contains('\0');
+    if entry.path.trim().is_empty() || entry.path.len() > 4096 || has_traversal(&entry.path) {
+        return Err("La ruta del inventario no es válida.".to_string());
+    }
+    if entry.name.trim().is_empty() || entry.name.len() > 1024 {
+        return Err("El nombre del inventario no es válido.".to_string());
+    }
+    if entry.entry_type != "file" && entry.entry_type != "folder" {
+        return Err("El tipo del inventario no es válido.".to_string());
+    }
+    if entry.generation < 0 || entry.revision < 0 {
+        return Err("La revisión del inventario no es válida.".to_string());
+    }
+    if entry.parent_path.as_deref().is_some_and(has_traversal) {
+        return Err("La ruta padre del inventario no es válida.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn upsert_library_inventory_batch(
+    app: tauri::AppHandle,
+    payload: LibraryInventoryBatchPayload,
+) -> LibraryInventoryResult {
+    if let Err(error) = validate_inventory_generation(payload.context.generation) {
+        return inventory_failure(error, payload.context.generation);
+    }
+    if payload.entries.len() > 2000 {
+        return inventory_failure(
+            "El lote del inventario supera el límite permitido.".to_string(),
+            payload.context.generation,
+        );
+    }
+    for entry in &payload.entries {
+        if entry.generation != payload.context.generation {
+            return inventory_failure(
+                "La entrada del inventario pertenece a otra generación.".to_string(),
+                payload.context.generation,
+            );
+        }
+        if let Err(error) = validate_inventory_entry(entry) {
+            return inventory_failure(error, payload.context.generation);
+        }
+    }
+
+    let mut connection = match open_inventory_connection(
+        &app,
+        &payload.context.library_path,
+        payload.context.android_directory_uri.as_deref(),
+    ) {
+        Ok(connection) => connection,
+        Err(error) => return inventory_failure(error, payload.context.generation),
+    };
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return inventory_failure(
+                format!("No se pudo iniciar el lote del inventario: {error}"),
+                payload.context.generation,
+            )
+        }
+    };
+    let staging_generation = transaction
+        .query_row(
+            "SELECT staging_generation FROM library_inventory_state WHERE id=1",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten();
+    if staging_generation != Some(payload.context.generation) {
+        return inventory_failure(
+            "El lote del inventario no pertenece a una sincronización activa.".to_string(),
+            payload.context.generation,
+        );
+    }
+    let mut upserted = 0_i64;
+    for entry in &payload.entries {
+        if let Err(error) = transaction.execute(
+            "INSERT INTO library_inventory_staging(path,entry_type,name,parent_path,size_bytes,modified_at,revision,generation,indexed_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,CURRENT_TIMESTAMP)
+             ON CONFLICT(path) DO UPDATE SET entry_type=excluded.entry_type,name=excluded.name,parent_path=excluded.parent_path,
+                 size_bytes=excluded.size_bytes,modified_at=excluded.modified_at,revision=excluded.revision,
+                 generation=excluded.generation,indexed_at=CURRENT_TIMESTAMP",
+            params![
+                entry.path,
+                entry.entry_type,
+                entry.name,
+                entry.parent_path,
+                entry.size_bytes,
+                entry.modified_at,
+                entry.revision,
+                entry.generation,
+            ],
+        ) {
+            return inventory_failure(format!("No se pudo actualizar el inventario: {error}"), payload.context.generation);
+        }
+        upserted += 1;
+    }
+    if let Err(error) = transaction.commit() {
+        return inventory_failure(
+            format!("No se pudo confirmar el inventario: {error}"),
+            payload.context.generation,
+        );
+    }
+
+    #[cfg(target_os = "android")]
+    if let Err(error) = sync_mobile_library_connection(
+        &app,
+        payload
+            .context
+            .android_directory_uri
+            .as_deref()
+            .unwrap_or_default(),
+    ) {
+        return inventory_failure(error, payload.context.generation);
+    }
+
+    LibraryInventoryResult {
+        ok: true,
+        entries: Vec::new(),
+        upserted,
+        generation: payload.context.generation,
+        error: None,
+    }
+}
+
+#[tauri::command]
+pub fn begin_library_inventory_snapshot(
+    app: tauri::AppHandle,
+    payload: LibraryInventorySnapshotPayload,
+) -> LibraryInventoryResult {
+    if let Err(error) = validate_inventory_generation(payload.context.generation) {
+        return inventory_failure(error, payload.context.generation);
+    }
+    let mut connection = match open_inventory_connection(
+        &app,
+        &payload.context.library_path,
+        payload.context.android_directory_uri.as_deref(),
+    ) {
+        Ok(connection) => connection,
+        Err(error) => return inventory_failure(error, payload.context.generation),
+    };
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return inventory_failure(
+                format!("No se pudo iniciar la sincronización del inventario: {error}"),
+                payload.context.generation,
+            )
+        }
+    };
+    if let Err(error) = transaction.execute("DELETE FROM library_inventory_staging", []) {
+        return inventory_failure(
+            format!("No se pudo preparar el inventario: {error}"),
+            payload.context.generation,
+        );
+    }
+    if let Err(error) = transaction.execute(
+        "UPDATE library_inventory_state SET staging_generation=?1 WHERE id=1",
+        params![payload.context.generation],
+    ) {
+        return inventory_failure(
+            format!("No se pudo registrar la generación del inventario: {error}"),
+            payload.context.generation,
+        );
+    }
+    if let Err(error) = transaction.commit() {
+        return inventory_failure(
+            format!("No se pudo confirmar el inicio del inventario: {error}"),
+            payload.context.generation,
+        );
+    }
+    LibraryInventoryResult {
+        ok: true,
+        entries: Vec::new(),
+        upserted: 0,
+        generation: payload.context.generation,
+        error: None,
+    }
+}
+
+#[tauri::command]
+pub fn commit_library_inventory_snapshot(
+    app: tauri::AppHandle,
+    payload: LibraryInventorySnapshotPayload,
+) -> LibraryInventoryResult {
+    if let Err(error) = validate_inventory_generation(payload.context.generation) {
+        return inventory_failure(error, payload.context.generation);
+    }
+    let mut connection = match open_inventory_connection(
+        &app,
+        &payload.context.library_path,
+        payload.context.android_directory_uri.as_deref(),
+    ) {
+        Ok(connection) => connection,
+        Err(error) => return inventory_failure(error, payload.context.generation),
+    };
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return inventory_failure(
+                format!("No se pudo iniciar el commit del inventario: {error}"),
+                payload.context.generation,
+            )
+        }
+    };
+    let staging_generation = transaction
+        .query_row(
+            "SELECT staging_generation FROM library_inventory_state WHERE id=1",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten();
+    if staging_generation != Some(payload.context.generation) {
+        return inventory_failure(
+            "La sincronización del inventario no está preparada.".to_string(),
+            payload.context.generation,
+        );
+    }
+    if let Err(error) = transaction.execute("DELETE FROM library_inventory", []) {
+        return inventory_failure(
+            format!("No se pudo reemplazar el inventario anterior: {error}"),
+            payload.context.generation,
+        );
+    }
+    if let Err(error) = transaction.execute(
+        "INSERT INTO library_inventory(path,entry_type,name,parent_path,size_bytes,modified_at,revision,generation,indexed_at)
+         SELECT path,entry_type,name,parent_path,size_bytes,modified_at,revision,generation,indexed_at
+         FROM library_inventory_staging WHERE generation=?1",
+        params![payload.context.generation],
+    ) {
+        return inventory_failure(
+            format!("No se pudo publicar el inventario: {error}"),
+            payload.context.generation,
+        );
+    }
+    let published: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM library_inventory WHERE generation=?1",
+            params![payload.context.generation],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if let Err(error) = transaction.execute("DELETE FROM library_inventory_staging", []) {
+        return inventory_failure(
+            format!("No se pudo cerrar la sincronización del inventario: {error}"),
+            payload.context.generation,
+        );
+    }
+    if let Err(error) = transaction.execute(
+        "UPDATE library_inventory_state SET active_generation=?1, staging_generation=NULL WHERE id=1",
+        params![payload.context.generation],
+    ) {
+        return inventory_failure(
+            format!("No se pudo registrar la generación publicada: {error}"),
+            payload.context.generation,
+        );
+    }
+    if let Err(error) = transaction.commit() {
+        return inventory_failure(
+            format!("No se pudo confirmar el inventario publicado: {error}"),
+            payload.context.generation,
+        );
+    }
+    LibraryInventoryResult {
+        ok: true,
+        entries: Vec::new(),
+        upserted: published,
+        generation: payload.context.generation,
+        error: None,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInventoryDeletePayload {
+    #[serde(flatten)]
+    pub context: LibraryInventoryPayload,
+    pub path_hint: String,
+}
+
+#[tauri::command]
+pub fn delete_library_inventory_subtree(
+    app: tauri::AppHandle,
+    payload: LibraryInventoryDeletePayload,
+) -> LibraryInventoryResult {
+    if payload.path_hint.trim().is_empty()
+        || payload.path_hint.contains('\0')
+        || payload
+            .path_hint
+            .split(['/', '\\'])
+            .any(|part| part == "..")
+    {
+        return inventory_failure(
+            "La ruta a eliminar es obligatoria.".to_string(),
+            payload.context.generation,
+        );
+    }
+    let connection = match open_inventory_connection(
+        &app,
+        &payload.context.library_path,
+        payload.context.android_directory_uri.as_deref(),
+    ) {
+        Ok(connection) => connection,
+        Err(error) => return inventory_failure(error, payload.context.generation),
+    };
+    let deleted = match connection.execute(
+        "DELETE FROM library_inventory WHERE path=?1 OR substr(path,1,length(?2))=?2",
+        params![
+            payload.path_hint.trim_end_matches('/'),
+            format!("{}/", payload.path_hint.trim_end_matches('/'))
+        ],
+    ) {
+        Ok(count) => count as i64,
+        Err(error) => {
+            return inventory_failure(
+                format!("No se pudo eliminar el subárbol del inventario: {error}"),
+                payload.context.generation,
+            )
+        }
+    };
+    #[cfg(target_os = "android")]
+    if let Err(error) = sync_mobile_library_connection(
+        &app,
+        payload
+            .context
+            .android_directory_uri
+            .as_deref()
+            .unwrap_or_default(),
+    ) {
+        return inventory_failure(error, payload.context.generation);
+    }
+    LibraryInventoryResult {
+        ok: true,
+        entries: Vec::new(),
+        upserted: deleted,
+        generation: payload.context.generation,
+        error: None,
+    }
+}
+
+#[tauri::command]
+pub fn query_library_inventory(
+    app: tauri::AppHandle,
+    payload: LibraryInventoryQueryPayload,
+) -> LibraryInventoryResult {
+    let connection = match open_inventory_connection(
+        &app,
+        &payload.context.library_path,
+        payload.context.android_directory_uri.as_deref(),
+    ) {
+        Ok(connection) => connection,
+        Err(error) => return inventory_failure(error, payload.context.generation),
+    };
+    let offset = payload.offset.max(0);
+    let limit = payload.limit.clamp(1, 2000);
+    let query = payload.query.filter(|value| !value.trim().is_empty());
+    if let Err(error) = validate_inventory_generation(payload.context.generation) {
+        return inventory_failure(error, payload.context.generation);
+    }
+    let mut statement = match connection.prepare(
+        "SELECT path,entry_type,name,parent_path,size_bytes,modified_at,revision,generation
+         FROM library_inventory
+          WHERE generation=?1
+            AND (?2 IS NULL OR parent_path=?2)
+            AND (?3 IS NULL OR lower(name) LIKE '%' || lower(?3) || '%' OR lower(path) LIKE '%' || lower(?3) || '%')
+          ORDER BY path COLLATE NOCASE LIMIT ?4 OFFSET ?5",
+    ) {
+        Ok(statement) => statement,
+        Err(error) => return inventory_failure(format!("No se pudo consultar el inventario: {error}"), payload.context.generation),
+    };
+    let rows = match statement.query_map(
+        params![
+            payload.context.generation,
+            payload.parent_path,
+            query,
+            limit,
+            offset
+        ],
+        |row| {
+            Ok(LibraryInventoryEntry {
+                path: row.get(0)?,
+                entry_type: row.get(1)?,
+                name: row.get(2)?,
+                parent_path: row.get(3)?,
+                size_bytes: row.get(4)?,
+                modified_at: row.get(5)?,
+                revision: row.get(6)?,
+                generation: row.get(7)?,
+            })
+        },
+    ) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return inventory_failure(
+                format!("No se pudo leer el inventario: {error}"),
+                payload.context.generation,
+            )
+        }
+    };
+    let entries: Result<Vec<_>, _> = rows.collect();
+    match entries {
+        Ok(entries) => LibraryInventoryResult {
+            ok: true,
+            entries,
+            upserted: 0,
+            generation: payload.context.generation,
+            error: None,
+        },
+        Err(error) => inventory_failure(
+            format!("No se pudo materializar la página del inventario: {error}"),
+            payload.context.generation,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{migrate, CURRENT_SCHEMA_VERSION};
@@ -952,6 +1517,9 @@ mod tests {
             "finance_audit_proposals",
             "finance_audit_decisions",
             "finance_relation_repairs",
+            "library_inventory",
+            "library_inventory_staging",
+            "library_inventory_state",
         ] {
             let exists: i64 = connection
                 .query_row(

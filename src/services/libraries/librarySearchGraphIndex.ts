@@ -5,6 +5,7 @@ import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPa
 import { notiaTimer } from '../runtime/notiaLogger'
 import { readLibraryFileContent } from './libraryDocumentRuntime'
 import { resolveFileViewKind } from '../views/fileViewResolver'
+import { getLibraryInventoryGeneration, loadLibraryInventoryFileEntries } from './libraryInventoryRuntime'
 
 const INDEX_CACHE_LIMIT = 8
 const INDEX_READ_BATCH_SIZE = 6
@@ -19,7 +20,6 @@ interface SearchGraphDescriptor {
 
 interface SearchGraphEntry extends SearchGraphDescriptor {
   rawContent: string
-  searchContent: string
   normalizedSearchContent: string
   hasGraphContent: boolean
   hasSearchContent: boolean
@@ -42,6 +42,7 @@ interface EnsureLibrarySearchGraphIndexParams {
   androidDirectoryUri?: string
   requireGraphSources?: boolean
   requireSearchableContent?: boolean
+  retainGraphSources?: boolean
 }
 
 interface SearchIndexedLibraryFilesParams {
@@ -248,6 +249,7 @@ function hasRequiredIndexCapabilities(
 async function loadEntriesIntoIndex(
   state: SearchGraphIndexState,
   descriptorsToLoad: SearchGraphDescriptor[],
+  retainGraphSources: boolean,
 ): Promise<void> {
   const timer = notiaTimer('searchIndex', 'loadEntriesIntoIndex', {
     fileCount: descriptorsToLoad.length,
@@ -261,7 +263,6 @@ async function loadEntriesIntoIndex(
           return {
             descriptor,
             rawContent: '',
-            searchContent: '',
             normalizedSearchContent: '',
             hasGraphContent: false,
             hasSearchContent: false,
@@ -276,7 +277,6 @@ async function loadEntriesIntoIndex(
           return {
             descriptor,
             rawContent: existingEntry?.rawContent ?? '',
-            searchContent: existingEntry?.searchContent ?? '',
             normalizedSearchContent: existingEntry?.normalizedSearchContent ?? '',
             hasGraphContent: existingEntry?.hasGraphContent ?? false,
             hasSearchContent: existingEntry?.hasSearchContent ?? false,
@@ -286,16 +286,17 @@ async function loadEntriesIntoIndex(
         const rawContent = result.content
         const searchContent = descriptor.searchableContent
           ? extractSearchableContent(descriptor.path, rawContent)
-          : existingEntry?.searchContent ?? ''
+          : ''
 
         return {
-          descriptor,
-          rawContent,
-          searchContent,
-          normalizedSearchContent: descriptor.searchableContent
-            ? normalizeGraphSearchText(searchContent)
+            descriptor,
+            // Keep raw source only for Graph View. Search retains its
+            // normalized projection and releases the original text.
+            rawContent: descriptor.graphSource && retainGraphSources ? rawContent : '',
+            normalizedSearchContent: descriptor.searchableContent
+              ? normalizeGraphSearchText(searchContent)
             : existingEntry?.normalizedSearchContent ?? '',
-          hasGraphContent: descriptor.graphSource,
+          hasGraphContent: descriptor.graphSource && retainGraphSources,
           hasSearchContent: descriptor.searchableContent,
         }
       }),
@@ -305,8 +306,7 @@ async function loadEntriesIntoIndex(
       const existingEntry = state.entriesByPath.get(entry.descriptor.path)
       state.entriesByPath.set(entry.descriptor.path, {
         ...entry.descriptor,
-        rawContent: entry.descriptor.graphSource ? entry.rawContent : (existingEntry?.rawContent ?? ''),
-        searchContent: entry.descriptor.searchableContent ? entry.searchContent : (existingEntry?.searchContent ?? ''),
+        rawContent: entry.descriptor.graphSource && retainGraphSources ? entry.rawContent : '',
         normalizedSearchContent: entry.descriptor.searchableContent
           ? entry.normalizedSearchContent
           : (existingEntry?.normalizedSearchContent ?? ''),
@@ -326,6 +326,7 @@ async function ensureLibrarySearchGraphIndex({
   androidDirectoryUri,
   requireGraphSources = false,
   requireSearchableContent = false,
+  retainGraphSources = false,
 }: EnsureLibrarySearchGraphIndexParams): Promise<SearchGraphIndexState> {
   // Support either treeNodes (desktop/full tree) or flatFileList (Android background)
   const useFlatList = Boolean(flatFileList && flatFileList.length > 0)
@@ -400,7 +401,7 @@ async function ensureLibrarySearchGraphIndex({
     }
 
     if (descriptorsToLoad.length > 0) {
-      await loadEntriesIntoIndex(state, descriptorsToLoad)
+      await loadEntriesIntoIndex(state, descriptorsToLoad, retainGraphSources)
     }
 
     state.treeSignature = nextTreeSignature
@@ -421,6 +422,20 @@ async function ensureLibrarySearchGraphIndex({
       inFlightLibrarySearchGraphIndexBuilds.delete(cacheKey)
     }
   })
+}
+
+function releaseLibraryGraphSources(libraryPath: string): void {
+  const state = librarySearchGraphIndexCache.get(buildLibraryCacheKey(libraryPath))
+  if (!state) return
+
+  for (const [pathValue, entry] of state.entriesByPath) {
+    if (!entry.graphSource || !entry.rawContent) continue
+    state.entriesByPath.set(pathValue, {
+      ...entry,
+      rawContent: '',
+      hasGraphContent: false,
+    })
+  }
 }
 
 export function invalidateLibrarySearchGraphIndex(libraryPath: string, pathHint?: string): void {
@@ -451,6 +466,7 @@ export async function getIndexedLibraryGraphSourcesByPath({
     flatFileList,
     androidDirectoryUri,
     requireGraphSources: true,
+    retainGraphSources: true,
   })
   const graphSourcesByPath: Record<string, string> = {}
 
@@ -462,12 +478,16 @@ export async function getIndexedLibraryGraphSourcesByPath({
     graphSourcesByPath[entry.path] = entry.rawContent
   }
 
+  // The graph model consumes this snapshot immediately. Do not retain a
+  // second copy of every markdown source in the long-lived index cache.
+  releaseLibraryGraphSources(libraryPath)
   return graphSourcesByPath
 }
 
 export async function searchIndexedLibraryFiles({
   libraryPath,
   treeNodes,
+  flatFileList,
   query,
   androidDirectoryUri,
 }: SearchIndexedLibraryFilesParams): Promise<string[]> {
@@ -479,11 +499,13 @@ export async function searchIndexedLibraryFiles({
   const state = await ensureLibrarySearchGraphIndex({
     libraryPath,
     treeNodes,
+    flatFileList,
     androidDirectoryUri,
     requireSearchableContent: true,
+    retainGraphSources: false,
   })
 
-  return [...state.entriesByPath.values()]
+  const indexedMatches = [...state.entriesByPath.values()]
     .filter((entry) => (
       entry.normalizedLabel.includes(normalizedQuery)
       || (entry.hasSearchContent && entry.normalizedSearchContent.includes(normalizedQuery))
@@ -497,4 +519,28 @@ export async function searchIndexedLibraryFiles({
       return left.path.localeCompare(right.path, undefined, { sensitivity: 'base' })
     })
     .map((entry) => entry.path)
+
+  // Android's visible tree is intentionally shallow. The persistent
+  // inventory supplies complete name/path matches without rebuilding the
+  // whole JavaScript flat list for every query. Content matches still come
+  // from the bounded content index above.
+  if (!flatFileList?.length) {
+    try {
+      const inventoryEntries = await loadLibraryInventoryFileEntries({
+        libraryPath,
+        androidDirectoryUri,
+        generation: getLibraryInventoryGeneration(libraryPath),
+      }, undefined, { query })
+      const matches = new Set(indexedMatches)
+      for (const entry of inventoryEntries) {
+        if (entry.type === 'file') matches.add(entry.path)
+      }
+      return [...matches].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+    } catch {
+      // The index remains a complete fallback on desktop or before the
+      // native inventory is available.
+    }
+  }
+
+  return indexedMatches
 }

@@ -49,7 +49,11 @@ function Get-JavaHome {
     (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
     (Join-Path $env:ProgramFiles 'Android\Android Studio\jre'),
     (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr'),
-    (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jre')
+    (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jre'),
+    (Join-Path $env:ProgramFiles 'Eclipse Adoptium\jdk-21'),
+    (Join-Path $env:ProgramFiles 'Microsoft\jdk-21'),
+    (Join-Path $env:ProgramFiles 'Java\jdk-21'),
+    (Join-Path $env:ProgramFiles 'Java\jdk-17')
   )
 
   foreach ($candidate in $candidates) {
@@ -83,7 +87,7 @@ if (-not $env:TAURI_DEV_HOST) {
 
 Push-Location $projectRoot
 try {
-  & npx.cmd tauri android dev --open @args
+  & npx.cmd tauri android dev --open --target aarch64 @args
 } finally {
   Pop-Location
 }

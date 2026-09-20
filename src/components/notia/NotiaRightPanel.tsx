@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsRightChatPanelOpen, selectIsRightPanelChatMounted } from '../../features/ui/uiSelectors'
@@ -7,6 +7,7 @@ import { selectActiveDocument } from '../../features/documents/documentsSelector
 import { selectAiSettings } from '../../features/preferences/preferencesSelectors'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
+import { PerformanceProfiler } from './PerformanceProfiler'
 import { MeetingEphemeralChat } from './views/chat/MeetingEphemeralChat'
 import type { ChatFileContextMode } from '../../services/chat/chatAttachmentRuntime'
 import type { ChatAgentScope } from '../../services/chat/chatScopedAgentRuntime'
@@ -78,10 +79,12 @@ function NotiaRightPanelComponent({
     return () => window.removeEventListener('resize', handleViewportResize)
   }, [])
 
-  const updatePanelWidth = (nextWidth: number) => {
+  const updatePanelWidth = (nextWidth: number, persist = false) => {
     const clampedWidth = clampRightPanelWidth(nextWidth, window.innerWidth)
     setPanelWidth(clampedWidth)
-    saveRightPanelWidth(clampedWidth)
+    if (persist) {
+      saveRightPanelWidth(clampedWidth)
+    }
   }
 
   const handleResizePointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -101,6 +104,7 @@ function NotiaRightPanelComponent({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
+    updatePanelWidth(window.innerWidth - event.clientX, true)
     setIsResizing(false)
   }
 
@@ -109,13 +113,19 @@ function NotiaRightPanelComponent({
       return
     }
     event.preventDefault()
-    updatePanelWidth(panelWidth + (event.key === 'ArrowLeft' ? 16 : -16))
+    updatePanelWidth(panelWidth + (event.key === 'ArrowLeft' ? 16 : -16), true)
   }
 
   const chatCallbacks = useMemo(() => ({
     onChatCreated: handleChatWorkspaceTreeChanged,
     onChatDeleted: handleChatWorkspaceTreeChanged,
   }), [handleChatWorkspaceTreeChanged])
+
+  const handleTransientContextPathRemove = useCallback((path: string) => {
+    onRightPanelTransientSelectedPathsChange(
+      rightPanelTransientSelectedPaths.filter((selectedPath) => selectedPath !== path),
+    )
+  }, [onRightPanelTransientSelectedPathsChange, rightPanelTransientSelectedPaths])
 
   return (
     <aside
@@ -148,41 +158,39 @@ function NotiaRightPanelComponent({
               onLibraryChanged={handleChatWorkspaceTreeChanged}
             />
           ) : (
-            <ChatWorkspaceView
-              agentCorpusPaths={agentCorpusPaths}
-              agentScope={agentScope}
-              key={rightPanelChatContextKey}
-              library={activeLibrary}
-              aiPreferences={aiPreferences}
-              previousChats={previousChats}
-              title="Chat lateral"
-              description="Acceso rapido a la IA desde el panel derecho."
-              showHistoryPanel={false}
-              composerContextLabel={rightPanelChatContextLabel}
-              preferredContextPaths={rightPanelPreferredContextPaths}
-              preferredContextName={rightPanelPreferredContextName}
-              preferredContextMode={rightPanelPreferredContextMode}
-              preferredContextScopeKey={rightPanelPreferredContextScopeKey}
-              transientContextPaths={rightPanelTransientContextPaths}
-              transientContextMode={rightPanelTransientContextMode}
-               transientContextSummary={rightPanelTransientContextSummary}
-               transientContextContent={rightPanelTransientContextSummary}
-              transientContextDisplayPaths={rightPanelTransientSelectedPaths}
-              onTransientContextPathRemove={(path) => {
-                onRightPanelTransientSelectedPathsChange(
-                  rightPanelTransientSelectedPaths.filter((selectedPath) => selectedPath !== path),
-                )
-              }}
-              persistTransientContext={false}
-               ephemeralChat={agentScope === 'graph' || isMultichatContext}
-               selectMatchingChatOnly={shouldSelectMatchingRightPanelChat(rightPanelPreferredContextScopeKey, rightPanelPreferredContextPaths)}
-              historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
-              onChatCreated={chatCallbacks.onChatCreated}
-              onChatDeleted={chatCallbacks.onChatDeleted}
-              markdownSelection={markdownSelection}
-              activeMarkdownSource={activeDocument?.viewKind === 'markdown' ? activeDocument.source : null}
-              onActiveMarkdownDocumentChanged={onActiveMarkdownDocumentChanged}
-            />
+            <PerformanceProfiler id="chat-right-panel">
+              <ChatWorkspaceView
+                agentCorpusPaths={agentCorpusPaths}
+                agentScope={agentScope}
+                key={rightPanelChatContextKey}
+                library={activeLibrary}
+                aiPreferences={aiPreferences}
+                previousChats={previousChats}
+                title="Chat lateral"
+                description="Acceso rapido a la IA desde el panel derecho."
+                showHistoryPanel={false}
+                composerContextLabel={rightPanelChatContextLabel}
+                preferredContextPaths={rightPanelPreferredContextPaths}
+                preferredContextName={rightPanelPreferredContextName}
+                preferredContextMode={rightPanelPreferredContextMode}
+                preferredContextScopeKey={rightPanelPreferredContextScopeKey}
+                transientContextPaths={rightPanelTransientContextPaths}
+                transientContextMode={rightPanelTransientContextMode}
+                transientContextSummary={rightPanelTransientContextSummary}
+                transientContextContent={rightPanelTransientContextSummary}
+                transientContextDisplayPaths={rightPanelTransientSelectedPaths}
+                 onTransientContextPathRemove={handleTransientContextPathRemove}
+                persistTransientContext={false}
+                ephemeralChat={agentScope === 'graph' || isMultichatContext}
+                selectMatchingChatOnly={shouldSelectMatchingRightPanelChat(rightPanelPreferredContextScopeKey, rightPanelPreferredContextPaths)}
+                historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
+                onChatCreated={chatCallbacks.onChatCreated}
+                onChatDeleted={chatCallbacks.onChatDeleted}
+                markdownSelection={markdownSelection}
+                activeMarkdownSource={activeDocument?.viewKind === 'markdown' ? activeDocument.source : null}
+                onActiveMarkdownDocumentChanged={onActiveMarkdownDocumentChanged}
+              />
+            </PerformanceProfiler>
           )
         ) : (
           <main className="notia-main">

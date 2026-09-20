@@ -98,7 +98,7 @@ export interface ChatComposerState {
 export interface ChatAttachmentState {
   isAttachmentMenuOpen: boolean
   attachmentMenuPosition: AttachmentMenuPosition | null
-  selectedImageAttachment: SelectedImageAttachment | null
+  selectedImageAttachments: SelectedImageAttachment[]
   selectedLibraryFilePaths: string[]
   selectedLibraryFileOptions: ChatLibraryFileOption[]
   selectedFileContextMode: ChatFileContextMode
@@ -162,7 +162,7 @@ export interface UseChatSubmitMessageDependencies {
   effectiveSelectedContextMode: ChatFileContextMode
   selectedLibraryFilePaths: string[]
   selectedLibraryFileOptions: ChatLibraryFileOption[]
-  selectedImageAttachment: SelectedImageAttachment | null
+  selectedImageAttachments: SelectedImageAttachment[]
   selectedFileContextMode: ChatFileContextMode
   showHistoryPanel: boolean
   ephemeralChat?: boolean
@@ -187,7 +187,7 @@ export interface UseChatSubmitMessageState {
   setSelectedChatFilePath: React.Dispatch<React.SetStateAction<string | null>>
   setActiveChatDocument: React.Dispatch<React.SetStateAction<StoredChatDocument | null>>
   setChatTitleOverrides: React.Dispatch<React.SetStateAction<Record<string, string>>>
-  setSelectedImageAttachment: (value: SelectedImageAttachment | null) => void
+  setSelectedImageAttachments: React.Dispatch<React.SetStateAction<SelectedImageAttachment[]>>
   setSelectedLibraryFilePaths: React.Dispatch<React.SetStateAction<string[]>>
   setSelectedLibraryFileOptions: React.Dispatch<React.SetStateAction<ChatLibraryFileOption[]>>
   setSelectedFileContextMode: React.Dispatch<React.SetStateAction<ChatFileContextMode>>
@@ -265,8 +265,8 @@ export interface UseChatStateResult {
   setIsAttachmentMenuOpen: React.Dispatch<React.SetStateAction<boolean>>
   attachmentMenuPosition: { top: number; left: number } | null
   setAttachmentMenuPosition: React.Dispatch<React.SetStateAction<{ top: number; left: number } | null>>
-  selectedImageAttachment: SelectedImageAttachment | null
-  setSelectedImageAttachment: React.Dispatch<React.SetStateAction<SelectedImageAttachment | null>>
+  selectedImageAttachments: SelectedImageAttachment[]
+  setSelectedImageAttachments: React.Dispatch<React.SetStateAction<SelectedImageAttachment[]>>
   selectedLibraryFilePaths: string[]
   setSelectedLibraryFilePaths: React.Dispatch<React.SetStateAction<string[]>>
   selectedLibraryFileOptions: ChatLibraryFileOption[]

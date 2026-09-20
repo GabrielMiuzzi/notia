@@ -52,6 +52,22 @@ Este archivo define cómo trabajar en el repositorio. No contiene información e
 - Evitar bloquear el hilo de interfaz, cargar colecciones completas innecesariamente o repetir I/O sin necesidad.
 - Diseñar para conectividad intermitente, presión de memoria, pérdida de foco, suspensión y recuperación del proceso.
 
+## Política permanente de rendimiento
+
+- Antes de optimizar renders, memoria o I/O, registrar un baseline reproducible de tiempos, cantidad de operaciones, referencias relevantes y consumo aproximado; no aceptar una mejora basada únicamente en una intuición.
+- Reducir el alcance de las suscripciones de estado: preferir selectores específicos y memoizados, evitar propagar estados globales o contextos monolíticos y no hacer que un cambio local invalide componentes no relacionados.
+- Usar `useMemo`, `React.memo`, `useCallback`, `useDeferredValue` y `startTransition` únicamente cuando exista un cálculo, identidad o transición costosa demostrable; mantener dependencias completas y no ocultar cambios legítimos con comparadores incorrectos.
+- Mantener structural sharing en árboles, colecciones y estados anidados: una actualización debe conservar las referencias de las ramas que no cambiaron para que la memoización de componentes pueda funcionar.
+- Virtualizar o cargar de forma lazy las colecciones grandes. Un inventario lógico completo puede residir en un índice persistente y consultarse por lotes; no debe materializarse entero en el estado global o en la memoria de la interfaz sin una justificación contractual.
+- Centralizar las lecturas de filesystem, red, almacenamiento, SAF, JNI y procesos externos en adaptadores con deduplicación de operaciones en vuelo y reutilización segura de resultados finalizados.
+- Toda caché debe declarar propietario, clave, límite de memoria, política de expulsión, TTL o generación, invalidación y comportamiento ante errores. No crear cachés globales sin límite ni retener contenido completo cuando solo se necesitan metadatos.
+- Invalidar la ruta, subárbol o generación mínima que corresponda a una mutación. Asociar cada resultado asíncrono a su generación y descartar respuestas obsoletas, canceladas o pertenecientes a otra biblioteca.
+- Agrupar lecturas independientes, evitar recorridos recursivos completos repetidos y preferir sincronización incremental, lotes acotados e índices persistentes frente a reconstrucciones completas.
+- En Android y SAF, considerar límites de memoria, tamaño de payloads JNI, coste de `readTree`, locks, suspensión, pérdida de foco, permisos revocados y recuperación. No realizar un recorrido recursivo completo para pintar una vista que puede cargarse por subárboles.
+- Toda optimización debe conservar estados de carga, error, vacío, cancelación, foco y accesibilidad, además de los contratos de autorización, persistencia y concurrencia.
+- Incorporar regresiones para identidad referencial, renders observables, deduplicación, TTL, invalidación, límites, cancelación, concurrencia, presión de memoria y resultados obsoletos cuando sea técnicamente viable.
+- Registrar en la entrega el baseline, las métricas comparativas, las validaciones ejecutadas, las plataformas no disponibles y los riesgos pendientes; no afirmar validaciones manuales que no se hayan realizado.
+
 ## Pruebas
 
 - Cada bug debe incluir una prueba de regresión cuando sea técnicamente viable.

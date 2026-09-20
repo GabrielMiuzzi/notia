@@ -50,6 +50,37 @@ interface TreeRowProps {
   isLoading?: boolean
 }
 
+function hasSearchMatch(
+  node: NotiaFileNode,
+  isSearchActive: boolean,
+  searchMatchedFilePaths: ReadonlySet<string>,
+): boolean {
+  return isSearchActive && node.type === 'file' && typeof node.path === 'string'
+    ? searchMatchedFilePaths.has(node.path)
+    : false
+}
+
+function areTreeRowPropsEqual(previous: TreeRowProps, next: TreeRowProps): boolean {
+  return previous.node === next.node
+    && previous.level === next.level
+    && previous.isSearchActive === next.isSearchActive
+    && hasSearchMatch(previous.node, previous.isSearchActive, previous.searchMatchedFilePaths)
+      === hasSearchMatch(next.node, next.isSearchActive, next.searchMatchedFilePaths)
+    && previous.onToggleFolder === next.onToggleFolder
+    && previous.onOpenFile === next.onOpenFile
+    && previous.renamingPath === next.renamingPath
+    && previous.onSubmitRename === next.onSubmitRename
+    && previous.onCancelRename === next.onCancelRename
+    && previous.onNodeContextMenu === next.onNodeContextMenu
+    && previous.draggingPath === next.draggingPath
+    && previous.dropTargetFolderPath === next.dropTargetFolderPath
+    && previous.onDragStartNode === next.onDragStartNode
+    && previous.onDragEndNode === next.onDragEndNode
+    && previous.onDragOverFolder === next.onDragOverFolder
+    && previous.onDropOnFolder === next.onDropOnFolder
+    && previous.isLoading === next.isLoading
+}
+
 type VisibleTreeRow =
   | {
     kind: 'node'
@@ -276,7 +307,7 @@ const TreeRow = memo(function TreeRow({
       )}
     </div>
   )
-})
+}, areTreeRowPropsEqual)
 
 interface PendingCreationRowProps {
   pendingCreation: PendingCreation

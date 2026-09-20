@@ -536,6 +536,43 @@ describe('chatScopedAgentRuntime metadata search', () => {
     expect(onActiveMarkdownDocumentChanged).toHaveBeenCalledWith('C:/vault/proyecto.md', '# Titulo\n\nTexto mejorado')
   })
 
+  it('uses the current active source instead of a stale workspace snapshot revision', async () => {
+    const source = '# Titulo\n\nTexto original'
+    const requestConfirmation = vi.fn().mockResolvedValue(true)
+    const agent = await createChatScopedAgent({
+      scope: 'document',
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: {
+        ollamaUrl: 'https://ollama.com', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: false, thinkingLevel: 'medium',
+      },
+      scopePaths: ['C:/vault/proyecto.md'],
+      activeDocumentPath: 'C:/vault/proyecto.md',
+      activeMarkdownSource: source,
+      getActiveMarkdownSource: () => source,
+      workspaceSnapshot: { activeDocumentRevision: 123 } as never,
+      persistencePolicy: 'ephemeral-no-memory',
+      requestClarification: vi.fn(),
+      requestConfirmation,
+    })
+
+    await expect(agent.executeTool({
+      function: {
+        name: 'insert_active_markdown_document',
+        arguments: { content: 'Teoría de las imágenes' },
+      },
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      changed: true,
+    })
+    expect(requestConfirmation).toHaveBeenCalledOnce()
+    expect(mocks.writeTextFile).toHaveBeenCalledWith(
+      'C:/vault/proyecto.md',
+      '# Titulo\n\nTexto original\n\nTeoría de las imágenes',
+      expect.anything(),
+    )
+  })
+
   it('asks for an explicit target when a document request has no selection or has an ambiguous target', async () => {
     const makeAgent = (source: string, markdownSelection: null | { documentPath: string; from: number; to: number; selectedText: string; blocks: [] } = null) => createChatScopedAgent({
       scope: 'document',

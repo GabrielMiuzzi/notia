@@ -247,8 +247,8 @@ export function ChatWorkspaceViewComponent({
     setIsAttachmentMenuOpen,
     attachmentMenuPosition,
     setAttachmentMenuPosition,
-    selectedImageAttachment,
-    setSelectedImageAttachment,
+    selectedImageAttachments,
+    setSelectedImageAttachments,
     selectedLibraryFilePaths,
     setSelectedLibraryFilePaths,
     selectedLibraryFileOptions,
@@ -526,7 +526,7 @@ export function ChatWorkspaceViewComponent({
       effectiveSelectedContextMode,
       selectedLibraryFilePaths: resolvedSelectedLibraryFilePaths,
       selectedLibraryFileOptions: resolvedSelectedLibraryFileOptions,
-      selectedImageAttachment,
+      selectedImageAttachments,
       selectedFileContextMode,
       showHistoryPanel,
       ephemeralChat,
@@ -554,7 +554,7 @@ export function ChatWorkspaceViewComponent({
       setSelectedChatFilePath,
       setActiveChatDocument,
       setChatTitleOverrides,
-      setSelectedImageAttachment,
+      setSelectedImageAttachments,
       setSelectedLibraryFilePaths,
       setSelectedLibraryFileOptions,
       setSelectedFileContextMode,
@@ -704,11 +704,11 @@ export function ChatWorkspaceViewComponent({
 
   useEffect(() => {
     const key = 'onChatFileSelected'
-    const windowProxy = window as unknown as { [key]?: (file: File) => Promise<void> }
-    windowProxy[key] = async (file: File) => {
+    const windowProxy = window as unknown as { [key]?: (files: File[]) => Promise<void> }
+    windowProxy[key] = async (files: File[]) => {
       try {
-        const attachment = await readChatFileAsAttachment(file)
-        setSelectedImageAttachment(attachment)
+        const attachments = await Promise.all(files.map((file) => readChatFileAsAttachment(file)))
+        setSelectedImageAttachments((current) => [...current, ...attachments])
       } catch (error) {
         setDialogMessage(
           error instanceof Error && error.message.trim()
@@ -926,7 +926,7 @@ export function ChatWorkspaceViewComponent({
               library={library}
               composerContextLabel={composerContextLabel}
               activeModelLabel={resolvedActiveModel}
-              selectedImageAttachment={selectedImageAttachment}
+              selectedImageAttachments={selectedImageAttachments}
               selectedLibraryFileSummary={resolvedSelectedLibraryFileSummary}
               selectedLibraryFilePaths={resolvedSelectedLibraryFilePaths}
               effectiveSelectedContextPaths={resolvedEffectiveContextPaths}
@@ -936,8 +936,8 @@ export function ChatWorkspaceViewComponent({
               hasTransientContext={hasTransientContext}
               isAttachmentMenuOpen={isAttachmentMenuOpen}
               attachmentMenuPosition={attachmentMenuPosition}
-              onRemoveImage={() => {
-                setSelectedImageAttachment(null)
+              onRemoveImage={(index) => {
+                setSelectedImageAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))
               }}
               onRemoveFile={handleRemoveSelectedFile}
               onTransientContextPathRemove={onTransientContextPathRemove}

@@ -3,6 +3,7 @@ import {
   appendChatMessages,
   parseChatDocument,
   serializeChatDocument,
+  type StoredChatAttachment,
   type StoredChatDocument,
 } from './chatDocumentStorage'
 import type { NotiaLibrary } from '../../types/notia'
@@ -103,11 +104,17 @@ describe('appendChatMessages', () => {
   })
 
   it('serializes and parses a document with appended messages consistently', () => {
+    const attachments: StoredChatAttachment[] = [{
+      name: 'teoria.png',
+      mimeType: 'image/png',
+      base64: 'imagen-base64',
+      kind: 'image',
+    }]
     const document: StoredChatDocument = {
       ...buildMockDocument(),
       title: 'Mi chat',
       messages: [
-        { role: 'user', content: 'Hola' },
+        { role: 'user', content: 'Hola', attachments },
         { role: 'assistant', content: 'Hola, ¿en que puedo ayudarte?' },
       ],
     }
@@ -118,6 +125,33 @@ describe('appendChatMessages', () => {
     expect(serialized).toContain('contexto: "#Confidencial"')
     expect(parsed.title).toBe(document.title)
     expect(parsed.messages).toEqual(document.messages)
+  })
+
+  it('keeps attachment metadata hidden in the markdown chat file', () => {
+    const serialized = serializeChatDocument({
+      ...buildMockDocument(),
+      messages: [{
+        role: 'user',
+        content: 'Analiza la imagen.',
+        attachments: [{
+          name: 'apuntes.png',
+          mimeType: 'image/png',
+          base64: 'base64-contenido',
+          kind: 'image',
+        }],
+      }],
+    })
+
+    expect(serialized).toContain('NOTIA_CHAT_ATTACHMENTS:')
+    expect(serialized).not.toContain('base64-contenido')
+    expect(parseChatDocument(serialized, 'Fallback').messages[0]).toEqual(expect.objectContaining({
+      attachments: [{
+        name: 'apuntes.png',
+        mimeType: 'image/png',
+        base64: 'base64-contenido',
+        kind: 'image',
+      }],
+    }))
   })
 
   it('builds append content with correct markers', () => {

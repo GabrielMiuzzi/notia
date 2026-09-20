@@ -1,3 +1,5 @@
+[2026-09-19 03:35:54 -03:00] Se corrigió la revisión esperada de mutaciones del documento activo para evitar conflictos falsos con snapshots obsoletos.
+[2026-09-19 03:14:12 -03:00] Se conservaron y rehidrataron los adjuntos múltiples del chat, incluyendo su reutilización en consultas de seguimiento.
 [2026-09-19 02:32:25 -03:00] Se corrigió la visibilidad de los handles de bloques anidados dentro de tablas Markdown.
 [2026-09-19 02:18:15 -03:00] Se documentó la restauración de handles de tablas y bloques en celdas Milkdown.
 [2026-09-19 02:07:36 -03:00] Se corrigieron los handles de bloques Milkdown dentro de celdas de tablas y su arrastre entre celdas.
@@ -87,3 +89,4 @@
 [2026-09-16 20:57:10 -03:00] Se completó la integración pendiente del contrato global: Android valida el sobre antes del plugin, Finanzas autentica actor/contexto en Tauri, Graph View usa chat en memoria y la URL pública recibe la lista de tableros aprobados desde Rust; `tasks.md` quedó completamente marcado.
 [2026-09-17 00:19:59 -03:00] Se corrigió el chat lateral de Finanzas para reutilizar el historial global y reintentar respuestas nativas vacías transitorias después de tools.
 [2026-09-17 19:57:58 -03:00] Se ajustó la conciliación de servicios con descriptores identificados y el flujo seguro de propuestas de auditoría financiera.
+[2026-09-19 02:46:37 -03:00] Se habilitaron adjuntos locales múltiples en el chat con contexto de texto separado y colección visual ordenada para Ollama.

@@ -30,6 +30,8 @@ export function useVirtualList({
   const [viewportHeight, setViewportHeight] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null)
+  const scrollFrameRef = useRef<number | null>(null)
+  const lastScrollTopRef = useRef(0)
 
   const containerRef = useCallback((node: HTMLDivElement | null) => {
     containerElementRef.current = node
@@ -43,14 +45,32 @@ export function useVirtualList({
     }
 
     const syncViewport = () => {
-      requestAnimationFrame(() => {
-        setViewportHeight(container.clientHeight)
-        setScrollTop(container.scrollTop)
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current)
+      }
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null
+        const nextViewportHeight = container.clientHeight
+        const nextScrollTop = container.scrollTop
+        setViewportHeight((current) => current === nextViewportHeight ? current : nextViewportHeight)
+        lastScrollTopRef.current = nextScrollTop
+        setScrollTop((current) => current === nextScrollTop ? current : nextScrollTop)
       })
     }
 
     const handleScroll = () => {
-      setScrollTop(container.scrollTop)
+      if (scrollFrameRef.current !== null) {
+        return
+      }
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null
+        const nextScrollTop = container.scrollTop
+        if (lastScrollTopRef.current === nextScrollTop) {
+          return
+        }
+        lastScrollTopRef.current = nextScrollTop
+        setScrollTop(nextScrollTop)
+      })
     }
 
     syncViewport()
@@ -66,6 +86,10 @@ export function useVirtualList({
     return () => {
       container.removeEventListener('scroll', handleScroll)
       resizeObserver?.disconnect()
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current)
+        scrollFrameRef.current = null
+      }
     }
   }, [containerElement])
 
@@ -129,6 +153,7 @@ export function useVirtualList({
     }
 
     container.scrollTop = Math.max(0, nextScrollTop)
+    lastScrollTopRef.current = container.scrollTop
     setScrollTop(container.scrollTop)
   }, [itemCount, itemSize])
 

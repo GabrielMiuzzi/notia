@@ -250,8 +250,8 @@ export interface UseChatStateResult {
   setIsAttachmentMenuOpen: React.Dispatch<React.SetStateAction<boolean>>
   attachmentMenuPosition: { top: number; left: number } | null
   setAttachmentMenuPosition: React.Dispatch<React.SetStateAction<{ top: number; left: number } | null>>
-  selectedImageAttachment: SelectedImageAttachment | null
-  setSelectedImageAttachment: React.Dispatch<React.SetStateAction<SelectedImageAttachment | null>>
+  selectedImageAttachments: SelectedImageAttachment[]
+  setSelectedImageAttachments: React.Dispatch<React.SetStateAction<SelectedImageAttachment[]>>
   selectedLibraryFilePaths: string[]
   setSelectedLibraryFilePaths: React.Dispatch<React.SetStateAction<string[]>>
   selectedLibraryFileOptions: ChatLibraryFileOption[]
@@ -347,7 +347,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   const [selectedLibraryFilePaths, setSelectedLibraryFilePaths] = useState<string[]>([])
   const [selectedLibraryFileOptions, setSelectedLibraryFileOptions] = useState<ChatLibraryFileOption[]>([])
   const [selectedFileContextMode, setSelectedFileContextMode] = useState<ChatFileContextMode>('direct')
-  const [selectedImageAttachment, setSelectedImageAttachment] = useState<SelectedImageAttachment | null>(null)
+  const [selectedImageAttachments, setSelectedImageAttachments] = useState<SelectedImageAttachment[]>([])
   const [chatContextMenuState, setChatContextMenuState] = useState<{
     chatId: string
     filePath: string
@@ -999,8 +999,8 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     setIsAttachmentMenuOpen,
     attachmentMenuPosition,
     setAttachmentMenuPosition,
-    selectedImageAttachment,
-    setSelectedImageAttachment,
+    selectedImageAttachments,
+    setSelectedImageAttachments,
     selectedLibraryFilePaths,
     setSelectedLibraryFilePaths,
     selectedLibraryFileOptions,

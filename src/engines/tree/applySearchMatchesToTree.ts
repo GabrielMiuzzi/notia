@@ -53,5 +53,11 @@ export function applySearchMatchesToTree(
     return nodes
   }
 
-  return nodes.map((node) => decorateNodeForSearch(node, matchedFilePaths).node)
+  let hasChanges = false
+  const nextNodes = nodes.map((node) => {
+    const decorated = decorateNodeForSearch(node, matchedFilePaths)
+    hasChanges = hasChanges || decorated.node !== node
+    return decorated.node
+  })
+  return hasChanges ? nextNodes : nodes
 }

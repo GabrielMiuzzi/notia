@@ -10,6 +10,7 @@ import { buildLibraryGraphModel } from '../../engines/graph/libraryGraphEngine'
 import { buildLinkCacheMermaidCode } from '../../engines/graph/linkCacheMermaidEngine'
 import { getIndexedLibraryGraphSourcesByPath } from './librarySearchGraphIndex'
 import { notiaTimer } from '../runtime/notiaLogger'
+import { startPerformanceMeasurement } from '../runtime/performanceBaseline'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 
@@ -89,6 +90,13 @@ export interface RebuildLibraryLinkCacheParams {
   treeNodes: NotiaFileNode[]
   flatFileList?: NotiaFlatFileEntry[]
   androidDirectoryUri?: string
+  signal?: AbortSignal
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('La regeneración del cache fue cancelada.', 'AbortError')
+  }
 }
 
 /**
@@ -101,17 +109,22 @@ export async function rebuildLibraryLinkCache(
   const { libraryPath, treeNodes, flatFileList, androidDirectoryUri } = params
 
   const timer = notiaTimer('libraries', 'rebuildLibraryLinkCache', {
-    libraryPath,
+    nodeCount: treeNodes.length,
+  })
+  const measurement = startPerformanceMeasurement('link_cache.rebuild', {
+    operation: 'rebuild-link-cache',
     nodeCount: treeNodes.length,
   })
 
   try {
+    throwIfAborted(params.signal)
     const graphSourcesByPath = await getIndexedLibraryGraphSourcesByPath({
       libraryPath,
       treeNodes,
       flatFileList,
       androidDirectoryUri,
     })
+    throwIfAborted(params.signal)
 
     const graphModel = buildLibraryGraphModel(
       treeNodes,
@@ -124,14 +137,21 @@ export async function rebuildLibraryLinkCache(
     const filteredModel = filterLinkCacheFromGraphModel(graphModel, libraryPath)
 
     const { code } = buildLinkCacheMermaidCode(filteredModel, libraryPath)
+    throwIfAborted(params.signal)
 
     const wrappedCode = `<!-- Notia link cache - auto-generated, do not edit manually -->\n\n\`\`\`mermaid\n${code}\n\`\`\``
 
     const result = await writeLibraryLinkCache(libraryPath, wrappedCode, { androidDirectoryUri })
     timer.success({ nodeCount: graphModel.nodes.length, edgeCount: graphModel.edges.length })
+    if (result.ok) {
+      measurement.success({ nodeCount: graphModel.nodes.length, edgeCount: graphModel.edges.length })
+    } else {
+      measurement.error(result.error ?? 'link-cache-write-failed')
+    }
     return result
   } catch (error) {
     timer.error(error)
+    measurement.error(error)
     return {
       ok: false,
       error: error instanceof Error ? error.message : 'Error al regenerar linkCache.',

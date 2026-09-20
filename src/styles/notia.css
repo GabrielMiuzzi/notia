@@ -5923,6 +5923,25 @@
   color: var(--color-subtle-text);
 }
 
+.notia-chat-message-attachments {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  margin: 6px 0 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+}
+
+.notia-chat-message-attachments span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notia-chat-agent-confirmation {
   border-color: var(--color-border-strong);
   border-left: 2px solid var(--color-active-border);

@@ -8,7 +8,7 @@ import { getIndexedLibraryGraphSourcesByPath } from '../services/libraries/libra
 import { startPerformanceMeasurement } from '../services/runtime/performanceBaseline'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../types/notia'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
-import { scheduleLibraryLinkCacheRebuild } from '../services/libraries/libraryLinkCacheSchedule'
+import { getLibraryInventoryGeneration, loadLibraryInventoryFileEntries } from '../services/libraries/libraryInventoryRuntime'
 import type { LibraryContext } from '../services/contexts/libraryContexts'
 
 const EMPTY_GRAPH_MODEL: LibraryGraphModel = {
@@ -43,6 +43,8 @@ export function useLibraryGraphData({
   const [graphModel, setGraphModel] = useState<LibraryGraphModel>(EMPTY_GRAPH_MODEL)
   const [isGraphSourcesPending, setIsGraphSourcesPending] = useState(false)
   const [isGraphModelPending, setIsGraphModelPending] = useState(false)
+  const [inventoryFlatFileList, setInventoryFlatFileList] = useState<NotiaFlatFileEntry[]>([])
+  const effectiveFlatFileList = flatFileList.length > 0 ? flatFileList : inventoryFlatFileList
   const pendingGraphModelMeasurementRef = useRef<{
     measurement: ReturnType<typeof startPerformanceMeasurement>
   } | null>(null)
@@ -63,12 +65,12 @@ export function useLibraryGraphData({
     }
 
     // On Android with a flat file list, use it for a more complete signature
-    if (flatFileList.length > 0) {
-      return buildGraphFileStructureSignatureFromFlatList(flatFileList)
+    if (effectiveFlatFileList.length > 0) {
+      return buildGraphFileStructureSignatureFromFlatList(effectiveFlatFileList)
     }
 
     return buildGraphFileStructureSignature(treeNodes)
-  }, [enabled, treeNodes, flatFileList])
+  }, [effectiveFlatFileList, enabled, treeNodes])
 
   const graphTreeNodes = useMemo(() => treeNodes, [treeNodes])
 
@@ -76,6 +78,24 @@ export function useLibraryGraphData({
     enabled && (libraryPath || rootPath) && graphFileStructureSignature
       ? `${libraryPath ?? rootPath}::${graphFileStructureSignature}::${JSON.stringify(contexts)}::${JSON.stringify(boardContextsByName)}`
       : ''
+
+  useEffect(() => {
+    if (!enabled || !libraryPath || !libraryAndroidTreeUri || flatFileList.length > 0) {
+      setInventoryFlatFileList([])
+      return
+    }
+    const controller = new AbortController()
+    void loadLibraryInventoryFileEntries({
+      libraryPath,
+      androidDirectoryUri: libraryAndroidTreeUri,
+      generation: getLibraryInventoryGeneration(libraryPath),
+    }, controller.signal).then((entries) => {
+      if (!controller.signal.aborted) setInventoryFlatFileList(entries)
+    }).catch(() => {
+      if (!controller.signal.aborted) setInventoryFlatFileList([])
+    })
+    return () => controller.abort()
+  }, [enabled, flatFileList.length, libraryAndroidTreeUri, libraryPath])
 
   useEffect(() => {
     if (enabled) {
@@ -129,8 +149,8 @@ export function useLibraryGraphData({
     })
     void getIndexedLibraryGraphSourcesByPath({
       libraryPath,
-      treeNodes: flatFileList.length > 0 ? undefined : graphTreeNodes,
-      flatFileList: flatFileList.length > 0 ? flatFileList : undefined,
+      treeNodes: effectiveFlatFileList.length > 0 ? undefined : graphTreeNodes,
+      flatFileList: effectiveFlatFileList.length > 0 ? effectiveFlatFileList : undefined,
       androidDirectoryUri: libraryAndroidTreeUri,
     }).then((nextSourcesByPath) => {
       if (!isCurrent) {
@@ -157,7 +177,7 @@ export function useLibraryGraphData({
       setIsGraphSourcesPending(false)
       graphLoadMeasurement.cancel()
     }
-  }, [enabled, graphTreeNodes, libraryAndroidTreeUri, libraryPath, revision, flatFileList])
+  }, [enabled, effectiveFlatFileList, graphTreeNodes, libraryAndroidTreeUri, libraryPath, revision])
 
   useEffect(() => {
     if (!enabled) {
@@ -186,7 +206,7 @@ export function useLibraryGraphData({
         graphTreeNodes,
         rootPath,
         graphSourcesByPath,
-        flatFileList.length > 0 ? flatFileList : undefined,
+        effectiveFlatFileList.length > 0 ? effectiveFlatFileList : undefined,
         { contexts, boardContextsByName },
       )
       graphModelMeasurement.success({
@@ -199,15 +219,6 @@ export function useLibraryGraphData({
         setIsGraphModelPending(false)
       })
 
-      // --- Trigger linkCache.md regeneration in background ---
-      if (libraryPath) {
-        scheduleLibraryLinkCacheRebuild({
-          libraryPath,
-          treeNodes: graphTreeNodes,
-          flatFileList: flatFileList.length > 0 ? flatFileList : undefined,
-          androidDirectoryUri: libraryAndroidTreeUri,
-        })
-      }
     } catch (error) {
       graphModelMeasurement.error(error, {
         libraryPath: libraryPath ?? undefined,
@@ -228,7 +239,7 @@ export function useLibraryGraphData({
     revision,
     rootPath,
     libraryAndroidTreeUri,
-    flatFileList,
+    effectiveFlatFileList,
     contexts,
     boardContextsByName,
   ])

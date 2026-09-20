@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   buildAutoCreateChatPayload: vi.fn(),
   normalizeChatTitle: vi.fn(),
   buildChatAttachmentPrompt: vi.fn(),
+  buildChatImageAttachment: vi.fn(),
 }))
 
 vi.mock('react', async () => {
@@ -73,6 +74,7 @@ vi.mock('./useChatState', () => ({
 }))
 vi.mock('./chatImageAttachment', () => ({
   buildChatAttachmentPrompt: mocks.buildChatAttachmentPrompt,
+  buildChatImageAttachment: mocks.buildChatImageAttachment,
 }))
 
 import { useChatSubmitMessage } from './useChatSubmitMessage'
@@ -93,6 +95,7 @@ describe('useChatSubmitMessage lifecycle', () => {
     mocks.buildChatMemoryWindow.mockReturnValue([])
     mocks.resolvePersistedChatTitle.mockReturnValue('Chat')
     mocks.buildChatAttachmentPrompt.mockImplementation((value: string) => value)
+    mocks.buildChatImageAttachment.mockReturnValue(null)
     mocks.startPerformanceMeasurement.mockReturnValue({
       success: vi.fn(),
       error: vi.fn(),
@@ -142,7 +145,7 @@ describe('useChatSubmitMessage lifecycle', () => {
       effectiveSelectedContextMode: 'direct',
       selectedLibraryFilePaths: [],
       selectedLibraryFileOptions: [],
-      selectedImageAttachment: null,
+      selectedImageAttachments: [],
       selectedFileContextMode: 'direct',
       showHistoryPanel: true,
       preferredContextScopeKey: null,
@@ -161,7 +164,7 @@ describe('useChatSubmitMessage lifecycle', () => {
       setSelectedChatFilePath: setState,
       setActiveChatDocument: setState,
       setChatTitleOverrides: setState,
-      setSelectedImageAttachment: setState,
+      setSelectedImageAttachments: setState,
       setSelectedLibraryFilePaths: setState,
       setSelectedLibraryFileOptions: setState,
       setSelectedFileContextMode: setState,
@@ -182,5 +185,88 @@ describe('useChatSubmitMessage lifecycle', () => {
     expect(mocks.saveChatDocument).not.toHaveBeenCalled()
     expect(mocks.scheduleAiChatTitle).not.toHaveBeenCalled()
     expect(mocks.scheduleLongTermMemoriesForTurn).not.toHaveBeenCalled()
+  })
+
+  it('rehydrates attachments from previous messages for a follow-up query', async () => {
+    const attachment = {
+      name: 'teoria.png',
+      mimeType: 'image/png',
+      base64: 'base64-fixture',
+      kind: 'image' as const,
+    }
+    const activeChatDocument = {
+      title: 'Chat',
+      longTermMemoryEnabled: false,
+      contextMemoryEnabled: true,
+      contextMemoryMessageCount: 10,
+      contextScopeKey: null,
+      selectedContextMode: 'direct' as const,
+      selectedContextFiles: [],
+      messages: [
+        { role: 'user' as const, content: 'Analiza esta teoria.', attachments: [attachment] },
+        { role: 'assistant' as const, content: 'Voy a revisarla.' },
+      ],
+    }
+    const setState = vi.fn()
+    mocks.buildChatMemoryWindow.mockReturnValue(activeChatDocument.messages)
+    mocks.startNotiaChatReply.mockReturnValue({
+      abort: vi.fn(),
+      promise: Promise.resolve('Listo.'),
+    })
+
+    const { submitMessage } = useChatSubmitMessage({
+      agentCorpusPaths: [],
+      agentScope: 'document',
+      agentPromptFileName: 'default.md',
+      requestAgentClarification: vi.fn(),
+      requestAgentConfirmation: vi.fn(),
+      agentExecutionPlan: [],
+      onAgentExecutionPlanChange: vi.fn(),
+      requestAgentExecutionPlanApproval: vi.fn(),
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: {
+        ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: false, thinkingLevel: 'medium',
+      },
+      activeChatDocument,
+      selectedChatFilePath: 'C:/vault/chat.md',
+      effectiveSelectedContextPaths: [],
+      effectiveSelectedContextMode: 'direct',
+      selectedLibraryFilePaths: [],
+      selectedLibraryFileOptions: [],
+      selectedImageAttachments: [],
+      selectedFileContextMode: 'direct',
+      showHistoryPanel: true,
+      preferredContextScopeKey: null,
+      persistTransientContext: false,
+      hasTransientContext: false,
+      markdownSelection: null,
+      activeMarkdownSource: '# Borrador',
+      workspaceSnapshot: null,
+    }, {
+      draft: '',
+      setDraft: setState,
+      isSubmitting: false,
+      setStreamingThinking: setState,
+      setStreamingAssistantMessage: setState,
+      setOptimisticThreadMessages: setState,
+      setSelectedChatFilePath: setState,
+      setActiveChatDocument: setState,
+      setChatTitleOverrides: setState,
+      setSelectedImageAttachments: setState,
+      setSelectedLibraryFilePaths: setState,
+      setSelectedLibraryFileOptions: setState,
+      setSelectedFileContextMode: setState,
+      setPendingAutoCreatedChatFilePath: setState,
+      setIsAttachmentMenuOpen: setState,
+      setDialogMessage: setState,
+      setIsSubmitting: setState,
+    })
+
+    await submitMessage('Hacelo')
+
+    expect(mocks.buildChatAttachmentPrompt).toHaveBeenCalledWith('Hacelo', [attachment])
+    expect(mocks.buildChatImageAttachment).toHaveBeenCalledWith([attachment])
+    expect(mocks.startNotiaChatReply).toHaveBeenCalled()
   })
 })

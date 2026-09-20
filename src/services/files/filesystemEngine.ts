@@ -104,31 +104,6 @@ function isTaskManagerPublicationMutationError(error: unknown): error is Error {
   return error instanceof Error && error.name === 'TaskManagerPublicationMutationError'
 }
 
-function updateHashWithString(currentHash: number, value: string): number {
-  let nextHash = currentHash
-  for (let index = 0; index < value.length; index += 1) {
-    nextHash ^= value.charCodeAt(index)
-    nextHash = Math.imul(nextHash, 16777619)
-  }
-
-  return nextHash
-}
-
-function buildFilesystemTreeSignature(nodes: FilesystemTreeNode[]): string {
-  let hash = 2166136261
-  const visit = (currentNodes: FilesystemTreeNode[]) => {
-    for (const node of currentNodes) {
-      hash = updateHashWithString(hash, `${node.type}|${node.path ?? ''}|${node.name}`)
-      if (node.children && node.children.length > 0) {
-        visit(node.children)
-      }
-    }
-  }
-
-  visit(nodes)
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
 function resolveParentDirectoryPath(pathValue: string): string {
   const normalized = pathValue.replace(/[\\/]+$/, '')
   const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
@@ -567,6 +542,7 @@ export async function readLibraryTreeSignature(
   directoryPath: string,
   options?: ReadLibraryTreeOptions,
 ): Promise<string> {
+  void options
   const normalizedDirectoryPath = normalizePath(directoryPath)
   if (!normalizedDirectoryPath.trim()) {
     return ''
@@ -587,19 +563,19 @@ export async function readLibraryTreeSignature(
         return signature
       }
     } catch {
-      // Fall back to a client-side signature for compatibility.
+      // Do not replace a cheap probe with a recursive read.
     }
   }
 
-  notiaLog('filesystem', 'readLibraryTreeSignature falling back to client-side (full tree read)', {
-    path: normalizedDirectoryPath,
+  // A signature probe must not silently turn into a recursive tree read:
+  // callers use it for cheap change detection and Android deliberately keeps
+  // the Explorer lazy. An empty result means that platform-specific watcher
+  // or explicit refresh remains the source of truth.
+  notiaLog('filesystem', 'readLibraryTreeSignature unavailable without backend signature', {
     isAndroid: getRuntimeDevice() === 'Android',
   })
-
-  const treeNodes = await readLibraryTree(normalizedDirectoryPath, options)
-  const result = buildFilesystemTreeSignature(treeNodes)
-  timer.success({ source: 'client', nodeCount: treeNodes.length })
-  return result
+  timer.success({ source: 'unavailable' })
+  return ''
 }
 
 export async function searchLibraryFiles(

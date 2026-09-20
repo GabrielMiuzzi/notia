@@ -1,6 +1,5 @@
 import type { NotiaLibrary } from '../../types/notia'
-import { readLibraryTree, readLibraryDirectory, createLibraryEntry } from '../libraries/libraryRuntime'
-import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { readLibraryDirectory, createLibraryEntry } from '../libraries/libraryRuntime'
 import { ensureConfidentialContext } from '../contexts/confidentialContextFiles'
 import { readLibraryFileContent, writeLibraryFileContent } from '../libraries/libraryDocumentRuntime'
 
@@ -30,9 +29,8 @@ export function resolveLongTermMemoryFilePath(libraryPath: string): string {
 }
 
 /**
- * Check if the chat directory exists by looking at the library tree.
- * This is much faster than individual `pathExists` calls on Android SAF
- * because it reuses the already-fetched tree and avoids extra cache refreshes.
+ * Check if the chat directory exists from a shallow library listing.
+ * This avoids a recursive read and can reuse the library runtime cache.
  */
 function findDirectoryInTree(
   nodes: Array<{ name: string; type: string; hasChildren?: boolean; children?: Array<{ name: string; type: string }> }>,
@@ -61,30 +59,22 @@ async function ensureFolder(parentDirectoryPath: string, folderName: string, lib
   void result
 }
 
-export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise<void> {
-  // Optimisation: on Android, use readLibraryDirectory (shallow, ls-style)
-  // instead of readLibraryTree (full recursive traversal) to check if the
-  // chat directory exists in the root-level nodes. This avoids the expensive
-  // full tree traversal on large libraries.
-  const isAndroid = getRuntimeDevice() === 'Android'
-
+async function ensureChatLibraryStructureInternal(library: NotiaLibrary): Promise<void> {
   try {
-    const treeNodes = isAndroid
-      ? await readLibraryDirectory(library.path, {
-          androidDirectoryUri: library.androidTreeUri,
-        })
-      : await readLibraryTree(library.path, {
-          androidDirectoryUri: library.androidTreeUri,
-        })
+    // The structure only needs root-level entries. A recursive tree read here
+    // duplicated the Explorer bootstrap and scaled with the whole library.
+    const treeNodes = await readLibraryDirectory(library.path, {
+      androidDirectoryUri: library.androidTreeUri,
+    })
 
     const chatResult = findDirectoryInTree(treeNodes, CHAT_ROOT_DIRECTORY_NAME)
     if (chatResult.exists) {
       // chat/ exists — but children may not be loaded (lazy loading on Android).
-      // If children are null (not loaded), load them with a directory read.
-      let chatChildren = chatResult.children
-      if (!chatChildren && isAndroid) {
-        try {
-          const chatDirNodes = await readLibraryDirectory(
+        // If children are null (not loaded), load them with a shallow read.
+        let chatChildren = chatResult.children
+        if (!chatChildren) {
+          try {
+            const chatDirNodes = await readLibraryDirectory(
             resolveChatRootDirectoryPath(library.path),
             { androidDirectoryUri: library.androidTreeUri },
           )
@@ -126,12 +116,29 @@ export async function ensureChatLibraryStructure(library: NotiaLibrary): Promise
   await migrateConfidentialChatFiles(library)
 }
 
+const chatStructureInFlight = new Map<string, Promise<void>>()
+
+export function ensureChatLibraryStructure(library: NotiaLibrary): Promise<void> {
+  const key = `${library.path}\u0000${library.androidTreeUri ?? ''}`
+  const existing = chatStructureInFlight.get(key)
+  if (existing) return existing
+
+  const pending = ensureChatLibraryStructureInternal(library)
+  chatStructureInFlight.set(key, pending)
+  void pending.then(() => {
+    if (chatStructureInFlight.get(key) === pending) chatStructureInFlight.delete(key)
+  }, () => {
+    if (chatStructureInFlight.get(key) === pending) chatStructureInFlight.delete(key)
+  })
+  return pending
+}
+
 async function migrateConfidentialChatFiles(library: NotiaLibrary): Promise<void> {
   const chatRootPath = resolveChatRootDirectoryPath(library.path)
   const options = { androidDirectoryUri: library.androidTreeUri }
-  let nodes: Awaited<ReturnType<typeof readLibraryTree>>
+  let nodes: Awaited<ReturnType<typeof readLibraryDirectory>>
   try {
-    nodes = await readLibraryTree(chatRootPath, options)
+    nodes = await readLibraryDirectory(chatRootPath, options)
   } catch {
     return
   }

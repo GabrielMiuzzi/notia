@@ -8,7 +8,7 @@ import {
   TOP_TOOLBAR_ACTIONS,
 } from '../../constants/notiaMenu'
 import { controlWindow, exitApplication } from '../../services/window/windowRuntime'
-import { NotiaActionsContext } from '../../context/notiaActions/NotiaActionsContext'
+import { NotiaActionsProvider } from '../../context/notiaActions/NotiaActionsContext'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { NotiaSidebar } from './NotiaSidebar'
 import { NotiaWorkspace } from './NotiaWorkspace'
@@ -51,6 +51,7 @@ import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manage
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../services/contexts/libraryContexts'
 import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
+import { PerformanceProfiler } from './PerformanceProfiler'
 
 // --- Pure helper function ---
 
@@ -554,7 +555,7 @@ function NotiaMenuComponent() {
   ])
 
   return (
-    <NotiaActionsContext.Provider value={actionsValue}>
+    <NotiaActionsProvider actions={actionsValue}>
       <div
         className={`notia-app-shell ${theme === 'dark' ? 'notia-theme-dark' : 'notia-theme-light'} ${
           isAndroidRuntime ? 'notia-app-shell--android' : ''
@@ -568,47 +569,53 @@ function NotiaMenuComponent() {
           showRightPanelToggle={activeWorkspaceView !== 'chat'}
         />
         <div className="notia-workspace" data-notia-prevent-menu-close>
-          <NotiaSidebar />
-          <NotiaWorkspace
-            mountedHeavyWorkspaceView={mountedHeavyWorkspaceView}
-            isAndroidRuntime={isAndroidRuntime}
-            coldPassEntries={coldPassEntries}
-            coldPassSession={coldPassSession}
-            activeTaskManagerVault={activeTaskManagerVault}
-            libraryContexts={libraryContexts}
-            graphModel={graphModel}
-            graphSourcesByPath={graphSourcesByPath}
-            isGraphLoading={isGraphLoading}
-            graphChatSelectedPaths={graphChatSelectedPaths}
-            setGraphChatSelectedPaths={setGraphChatSelectedPaths}
-            previousChatFiles={previousChatFiles}
-            setTaskManagerActivePanelId={setTaskManagerActivePanelId}
-            setTaskManagerChatContext={setTaskManagerChatContext}
-            isImportingVault={isImportingVault}
-            onMarkdownSelectionChange={setMarkdownSelection}
-            markdownExternalUpdate={markdownExternalUpdate}
-          />
-          <NotiaRightPanel
-            isMeetingContext={activeWorkspaceView === 'meeting'}
-            isMultichatContext={activeWorkspaceView === 'multichat'}
-            agentCorpusPaths={rightPanelAgentCorpusPaths}
-            agentScope={rightPanelAgentScope}
-            previousChats={previousChatFiles}
-            rightPanelChatContextKey={rightPanelChatContextKey}
-            rightPanelChatContextLabel={rightPanelChatContextLabel}
-            rightPanelPreferredContextPaths={rightPanelPreferredContextPaths}
-            rightPanelPreferredContextName={rightPanelPreferredContextName}
-            rightPanelPreferredContextMode={rightPanelPreferredContextMode}
-            rightPanelPreferredContextScopeKey={rightPanelPreferredContextScopeKey}
-            rightPanelTransientContextPaths={rightPanelTransientContextPaths}
-            rightPanelTransientContextMode={rightPanelTransientContextMode}
-            rightPanelTransientContextSummary={rightPanelTransientContextSummary}
-            rightPanelTransientSelectedPaths={graphChatSelectedPaths}
-            onRightPanelTransientSelectedPathsChange={setGraphChatSelectedPaths}
-            isAndroidRuntime={isAndroidRuntime}
-            markdownSelection={markdownSelection}
-            onActiveMarkdownDocumentChanged={handleActiveMarkdownDocumentChanged}
-          />
+          <PerformanceProfiler id="explorer">
+            <NotiaSidebar />
+          </PerformanceProfiler>
+          <PerformanceProfiler id="workspace">
+            <NotiaWorkspace
+              mountedHeavyWorkspaceView={mountedHeavyWorkspaceView}
+              isAndroidRuntime={isAndroidRuntime}
+              coldPassEntries={coldPassEntries}
+              coldPassSession={coldPassSession}
+              activeTaskManagerVault={activeTaskManagerVault}
+              libraryContexts={libraryContexts}
+              graphModel={graphModel}
+              graphSourcesByPath={graphSourcesByPath}
+              isGraphLoading={isGraphLoading}
+              graphChatSelectedPaths={graphChatSelectedPaths}
+              setGraphChatSelectedPaths={setGraphChatSelectedPaths}
+              previousChatFiles={previousChatFiles}
+              setTaskManagerActivePanelId={setTaskManagerActivePanelId}
+              setTaskManagerChatContext={setTaskManagerChatContext}
+              isImportingVault={isImportingVault}
+              onMarkdownSelectionChange={setMarkdownSelection}
+              markdownExternalUpdate={markdownExternalUpdate}
+            />
+          </PerformanceProfiler>
+          <PerformanceProfiler id="right-panel">
+            <NotiaRightPanel
+              isMeetingContext={activeWorkspaceView === 'meeting'}
+              isMultichatContext={activeWorkspaceView === 'multichat'}
+              agentCorpusPaths={rightPanelAgentCorpusPaths}
+              agentScope={rightPanelAgentScope}
+              previousChats={previousChatFiles}
+              rightPanelChatContextKey={rightPanelChatContextKey}
+              rightPanelChatContextLabel={rightPanelChatContextLabel}
+              rightPanelPreferredContextPaths={rightPanelPreferredContextPaths}
+              rightPanelPreferredContextName={rightPanelPreferredContextName}
+              rightPanelPreferredContextMode={rightPanelPreferredContextMode}
+              rightPanelPreferredContextScopeKey={rightPanelPreferredContextScopeKey}
+              rightPanelTransientContextPaths={rightPanelTransientContextPaths}
+              rightPanelTransientContextMode={rightPanelTransientContextMode}
+              rightPanelTransientContextSummary={rightPanelTransientContextSummary}
+              rightPanelTransientSelectedPaths={graphChatSelectedPaths}
+              onRightPanelTransientSelectedPathsChange={setGraphChatSelectedPaths}
+              isAndroidRuntime={isAndroidRuntime}
+              markdownSelection={markdownSelection}
+              onActiveMarkdownDocumentChanged={handleActiveMarkdownDocumentChanged}
+            />
+          </PerformanceProfiler>
         </div>
       <NotiaModals
           onAiPreferencesChange={handleAiPreferencesChange}
@@ -636,7 +643,7 @@ function NotiaMenuComponent() {
           handleCloseColdPassCredentialModal={handleCloseColdPassCredentialModal}
         />
       </div>
-    </NotiaActionsContext.Provider>
+    </NotiaActionsProvider>
   )
 }
 

@@ -20,7 +20,7 @@ interface ChatComposerProps {
   library: import('../../../../types/notia').NotiaLibrary | null
   composerContextLabel?: string
   activeModelLabel: string
-  selectedImageAttachment: SelectedImageAttachment | null
+  selectedImageAttachments: SelectedImageAttachment[]
   selectedLibraryFileSummary: ChatLibraryFileOption[]
   selectedLibraryFilePaths: string[]
   effectiveSelectedContextPaths: string[]
@@ -30,7 +30,7 @@ interface ChatComposerProps {
   hasTransientContext: boolean
   isAttachmentMenuOpen: boolean
   attachmentMenuPosition: AttachmentMenuPosition | null
-  onRemoveImage: () => void
+  onRemoveImage: (index: number) => void
   onRemoveFile: (path: string) => void
   onTransientContextPathRemove?: (path: string) => void
   onToggleAttachmentMenu: () => void
@@ -55,7 +55,7 @@ function ChatComposerComponent({
   library,
   composerContextLabel,
   activeModelLabel,
-  selectedImageAttachment,
+  selectedImageAttachments,
   selectedLibraryFileSummary,
   selectedLibraryFilePaths,
   effectiveSelectedContextPaths,
@@ -147,7 +147,7 @@ function ChatComposerComponent({
   // the legacy handlers isolated until the dedicated call surface is removed.
   void stopConversation
   void startConversation
-  const hasAnyAttachment = selectedImageAttachment
+  const hasAnyAttachment = selectedImageAttachments.length > 0
     || selectedLibraryFileSummary.length > 0
     || transientContextSummaryLabel
     || effectiveSelectedContextPaths.length > 0
@@ -164,18 +164,20 @@ function ChatComposerComponent({
         ref={imageInputRef}
         type="file"
         accept="*/*"
+        multiple
         className="notia-chat-image-input"
         onChange={(event) => {
           const inputElement = event.currentTarget
-          const nextFile = event.target.files?.[0] ?? null
-          if (!nextFile) {
+          const nextFiles = Array.from(event.target.files ?? [])
+          if (nextFiles.length === 0) {
             return
           }
 
           const { onChatFileSelected } = window as unknown as {
-            onChatFileSelected?: (file: File) => Promise<void>
+            onChatFileSelected?: (files: File[]) => Promise<void>
           }
-          void onChatFileSelected?.(nextFile).finally(() => {
+          const selectionPromise = onChatFileSelected?.(nextFiles)
+          void selectionPromise?.finally(() => {
             inputElement.value = ''
           })
         }}
@@ -193,19 +195,19 @@ function ChatComposerComponent({
           aria-label="Archivos adjuntos"
           tabIndex={0}
         >
-          {selectedImageAttachment ? (
-            <div className="notia-chat-attachment-pill">
-              {selectedImageAttachment.kind === 'image' ? <FileImage size={14} /> : <FileText size={14} />}
-              <span>{selectedImageAttachment.name}</span>
+          {selectedImageAttachments.map((attachment, index) => (
+            <div className="notia-chat-attachment-pill" key={`${attachment.name}-${index}`}>
+              {attachment.kind === 'image' ? <FileImage size={14} /> : <FileText size={14} />}
+              <span>{attachment.name}</span>
               <button
                 type="button"
-                aria-label={selectedImageAttachment.kind === 'image' ? 'Quitar imagen' : 'Quitar archivo'}
-                onClick={onRemoveImage}
+                aria-label={`Quitar ${attachment.name}`}
+                onClick={() => onRemoveImage(index)}
               >
                 <X size={12} />
               </button>
             </div>
-          ) : null}
+          ))}
           {transientContextSummaryLabel ? (
             <div className="notia-chat-attachment-pill">
               <Files size={14} />

@@ -7,7 +7,7 @@ import { selectAiSettings, selectInkMathPreferences, selectExplorerRefreshInterv
 import { selectLibraries, selectSelectedLibraryId } from '../../features/library/librarySelectors'
 import { selectContextMenu, selectDialogState, selectClipboardEntry } from '../../features/documents/documentsSelectors'
 import { setDialogState, setPendingCreation, setRenamingPath, setClipboardEntry, setContextMenu, setTreeNodes } from '../../features/documents/documentsSlice'
-import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
+import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import { SettingsModal } from './SettingsModal'
 import { LibraryManagerModal } from './LibraryManagerModal'
@@ -111,7 +111,10 @@ function NotiaModalsComponent({
   handleCloseColdPassCredentialModal,
 }: NotiaModalsProps) {
   const dispatch = useAppDispatch()
-  const actions = useNotiaActions()
+  const closeTab = useNotiaAction('closeTab')
+  const chatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
+  const libraryAdded = useNotiaAction('libraryAdded')
+  const libraryRemoved = useNotiaAction('libraryRemoved')
   const { confirm } = useConfirmationEngine()
 
   const isSettingsOpen = useAppSelector(selectIsSettingsOpen)
@@ -191,11 +194,11 @@ function NotiaModalsComponent({
       if (!pasteResult.ok) {
         dispatch(setDialogState({ type: 'info', title: 'No se pudo pegar', message: pasteResult.error ?? 'No se pudo pegar el elemento.' }))
       } else if (currentClipboardEntry.mode === 'move') {
-        actions.closeTab(currentClipboardEntry.path)
+        closeTab(currentClipboardEntry.path)
         dispatch(setClipboardEntry(null))
       }
       dispatch(setContextMenu(null))
-      actions.chatWorkspaceTreeChanged(targetDirectory || currentClipboardEntry.path)
+      chatWorkspaceTreeChanged(targetDirectory || currentClipboardEntry.path)
       return
     }
     if (actionId === 'delete') {
@@ -213,9 +216,9 @@ function NotiaModalsComponent({
         dispatch(setContextMenu(null))
         return
       }
-      actions.closeTab(targetPath)
+      closeTab(targetPath)
       dispatch(setContextMenu(null))
-      actions.chatWorkspaceTreeChanged(targetPath)
+      chatWorkspaceTreeChanged(targetPath)
       return
     }
     if (actionId === 'rename') {
@@ -245,7 +248,7 @@ function NotiaModalsComponent({
       return
     }
     dispatch(setContextMenu(null))
-  }, [activeLibrary, activeLibraryAndroidDirectoryUri, actions, confirm, dispatch])
+  }, [activeLibrary, activeLibraryAndroidDirectoryUri, chatWorkspaceTreeChanged, closeTab, confirm, dispatch])
 
   const handleCloseSettings = useMemo(() => () => dispatch(setSettingsOpen(false)), [dispatch])
   const handleCloseLibraryManager = useMemo(() => () => dispatch(setLibraryManagerOpen(false)), [dispatch])
@@ -320,8 +323,8 @@ function NotiaModalsComponent({
         open={isLibraryManagerOpen}
         libraries={libraries}
         activeLibraryId={activeLibraryId}
-        onLibraryAdded={actions.libraryAdded}
-        onLibraryRemoved={actions.libraryRemoved}
+        onLibraryAdded={libraryAdded}
+        onLibraryRemoved={libraryRemoved}
         onClose={handleCloseLibraryManager}
       />
       <FileTreeContextMenu

@@ -6,6 +6,8 @@ const REBUILD_DEBOUNCE_MS = 1500
 let scheduledTimeout: number | null = null
 let latestParams: RebuildLibraryLinkCacheParams | null = null
 let visibilityListenerAttached = false
+let activeRebuildController: AbortController | null = null
+let scheduleGeneration = 0
 
 function isDocumentVisible(): boolean {
   return typeof document === 'undefined' || document.visibilityState === 'visible'
@@ -26,18 +28,26 @@ function scheduleVisibleRebuild(): void {
       return
     }
 
-    const paramsToRun = latestParams
-    latestParams = null
+     const paramsToRun = latestParams
+     latestParams = null
     detachVisibilityListener()
     if (!paramsToRun) return
 
-    void rebuildLibraryLinkCache(paramsToRun).then((result) => {
-      if (!result.ok) {
+     const controller = new AbortController()
+     activeRebuildController = controller
+     const rebuildGeneration = scheduleGeneration
+     void rebuildLibraryLinkCache({ ...paramsToRun, signal: controller.signal }).then((result) => {
+       if (rebuildGeneration !== scheduleGeneration) return
+       if (!result.ok) {
         notiaLog('libraries', 'linkCache rebuild failed', { error: result.error }, 'warn')
       } else {
         notiaLog('libraries', 'linkCache rebuilt', { libraryPath: paramsToRun.libraryPath }, 'info')
       }
-    })
+     }).finally(() => {
+       if (activeRebuildController === controller) {
+         activeRebuildController = null
+       }
+     })
   }, REBUILD_DEBOUNCE_MS)
 }
 
@@ -57,7 +67,9 @@ function attachVisibilityListener(): void {
  * using the most recently provided parameters.
  */
 export function scheduleLibraryLinkCacheRebuild(params: RebuildLibraryLinkCacheParams): void {
-  latestParams = params
+  scheduleGeneration += 1
+  activeRebuildController?.abort()
+  latestParams = { ...params }
 
   if (scheduledTimeout !== null) {
     window.clearTimeout(scheduledTimeout)
@@ -78,5 +90,8 @@ export function cancelScheduledLibraryLinkCacheRebuild(): void {
     scheduledTimeout = null
   }
   latestParams = null
+  scheduleGeneration += 1
+  activeRebuildController?.abort()
+  activeRebuildController = null
   detachVisibilityListener()
 }

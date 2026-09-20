@@ -10,7 +10,7 @@ import { setSearchQuery } from '../../features/documents/documentsSlice'
 import { selectIsSidebarOpen, selectIsRightChatPanelOpen, selectIsSearchMenuOpen, selectActiveHeaderAction } from '../../features/ui/uiSelectors'
 import { selectTheme } from '../../features/preferences/preferencesSelectors'
 import { selectActiveTabPath, selectSearchQuery, selectIsSearchLoading, selectSearchMatchedCount, selectTitleBarTabs } from '../../features/documents/documentsSelectors'
-import { useNotiaActions } from '../../context/notiaActions/NotiaActionsContext'
+import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 
 interface WindowTitleBarProps {
   tabIcon: ComponentType<{ size?: number }>
@@ -27,7 +27,6 @@ function WindowTitleBarComponent({
   rightActions,
   showRightPanelToggle = true,
 }: WindowTitleBarProps) {
-  const actions = useNotiaActions()
   const dispatch = useAppDispatch()
 
   // Self-subscribed Redux selectors (previously passed as props from NotiaMenu)
@@ -43,15 +42,15 @@ function WindowTitleBarComponent({
   const isRightPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
 
   // Stable dispatchers from context
-  const onActivateTab = actions.activateTab
-  const onCloseTab = actions.closeTab
-  const onToggleSidebar = actions.toggleSidebar
-  const onExplorerActionClick = actions.headerActionClick
-  const onExplorerToolClick = actions.explorerToolClick
-  const onSearchMenuClose = actions.closeSearchMenu
-  const onToggleTheme = actions.toggleTheme
-  const onToggleRightPanel = actions.toggleRightChatPanel
-  const onWindowAction = actions.windowAction
+  const onActivateTab = useNotiaAction('activateTab')
+  const onCloseTab = useNotiaAction('closeTab')
+  const onToggleSidebar = useNotiaAction('toggleSidebar')
+  const onExplorerActionClick = useNotiaAction('headerActionClick')
+  const onExplorerToolClick = useNotiaAction('explorerToolClick')
+  const onSearchMenuClose = useNotiaAction('closeSearchMenu')
+  const onToggleTheme = useNotiaAction('toggleTheme')
+  const onToggleRightPanel = useNotiaAction('toggleRightChatPanel')
+  const onWindowAction = useNotiaAction('windowAction')
 
   const onSearchQueryChange = useCallback((value: string) => { dispatch(setSearchQuery(value)) }, [dispatch])
 

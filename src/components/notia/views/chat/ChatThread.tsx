@@ -1,5 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, Circle, LoaderCircle, OctagonX, User2 } from 'lucide-react'
+import { Bot, Check, Circle, Files, LoaderCircle, OctagonX, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
@@ -155,6 +155,12 @@ function ChatThreadComponent({
                 <span className="notia-chat-message-role">
                   {message.role === 'assistant' ? 'Asistente' : 'Vos'}
                 </span>
+                {message.attachments?.length ? (
+                  <div className="notia-chat-message-attachments" role="status" aria-label="Archivos adjuntos conservados en este mensaje">
+                    <Files size={14} />
+                    <span>{message.attachments.map((attachment) => attachment.name).join(', ')}</span>
+                  </div>
+                ) : null}
                 <ChatMarkdownMessage source={message.content} />
               </div>
             </article>

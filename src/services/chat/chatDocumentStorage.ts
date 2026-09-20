@@ -8,6 +8,18 @@ import { CONFIDENTIAL_CONTEXT_TAG } from '../contexts/libraryContexts'
 export interface StoredChatMessage {
   role: 'user' | 'assistant'
   content: string
+  attachments?: StoredChatAttachment[]
+}
+
+export interface StoredChatAttachment {
+  name: string
+  mimeType: string
+  base64: string
+  additionalBase64?: string[]
+  kind: 'image' | 'pdf' | 'text'
+  extractedText?: string
+  textContent?: string
+  pageCount?: number
 }
 
 export interface StoredChatDocument {
@@ -23,6 +35,56 @@ export interface StoredChatDocument {
 
 const CHAT_MESSAGE_MARKER_PREFIX = '<!-- NOTIA_CHAT_MESSAGE role:'
 const CHAT_MESSAGE_MARKER_SUFFIX = ' -->'
+const CHAT_ATTACHMENTS_MARKER_PREFIX = '<!-- NOTIA_CHAT_ATTACHMENTS:'
+const CHAT_ATTACHMENTS_MARKER_SUFFIX = ' -->'
+
+function encodeAttachmentMetadata(attachments: StoredChatAttachment[]): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(attachments))
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+function decodeAttachmentMetadata(encoded: string): StoredChatAttachment[] | null {
+  try {
+    const binary = atob(encoded)
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
+    if (!Array.isArray(parsed)) return null
+
+    const attachments = parsed.filter((item): item is Record<string, unknown> => (
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+    )).map((item) => {
+      const kind = item.kind === 'pdf' || item.kind === 'text' ? item.kind : item.kind === 'image' ? 'image' : null
+      if (!kind || typeof item.name !== 'string' || typeof item.mimeType !== 'string' || typeof item.base64 !== 'string') {
+        return null
+      }
+
+      const additionalBase64 = Array.isArray(item.additionalBase64)
+        ? item.additionalBase64.filter((value): value is string => typeof value === 'string')
+        : undefined
+      const pageCount = typeof item.pageCount === 'number' && Number.isFinite(item.pageCount)
+        ? Math.max(0, Math.round(item.pageCount))
+        : undefined
+      return {
+        name: item.name,
+        mimeType: item.mimeType,
+        base64: item.base64,
+        ...(additionalBase64 && additionalBase64.length > 0 ? { additionalBase64 } : {}),
+        kind,
+        ...(typeof item.extractedText === 'string' ? { extractedText: item.extractedText } : {}),
+        ...(typeof item.textContent === 'string' ? { textContent: item.textContent } : {}),
+        ...(pageCount !== undefined ? { pageCount } : {}),
+      } satisfies StoredChatAttachment
+    }).filter((item): item is StoredChatAttachment => item !== null)
+
+    return attachments
+  } catch {
+    return null
+  }
+}
 
 function clampContextMemoryMessageCount(value: unknown): number {
   const numericValue = Number(value)
@@ -62,19 +124,26 @@ function extractChatMessages(body: string): StoredChatMessage[] {
 
   let activeRole: StoredChatMessage['role'] | null = null
   let buffer: string[] = []
+  let activeAttachments: StoredChatAttachment[] = []
 
   const flushMessage = () => {
     if (!activeRole) {
       buffer = []
+      activeAttachments = []
       return
     }
 
     const content = buffer.join('\n').trim()
-    if (content) {
-      messages.push({ role: activeRole, content })
+    if (content || activeAttachments.length > 0) {
+      messages.push({
+        role: activeRole,
+        content,
+        ...(activeAttachments.length > 0 ? { attachments: activeAttachments } : {}),
+      })
     }
     activeRole = null
     buffer = []
+    activeAttachments = []
   }
 
   for (const line of lines) {
@@ -86,6 +155,13 @@ function extractChatMessages(body: string): StoredChatMessage[] {
         .trim()
         .toLowerCase()
       activeRole = roleToken === 'assistant' ? 'assistant' : roleToken === 'user' ? 'user' : null
+      continue
+    }
+
+    if (activeRole && trimmedLine.startsWith(CHAT_ATTACHMENTS_MARKER_PREFIX) && trimmedLine.endsWith(CHAT_ATTACHMENTS_MARKER_SUFFIX)) {
+      const encoded = trimmedLine.slice(CHAT_ATTACHMENTS_MARKER_PREFIX.length, -CHAT_ATTACHMENTS_MARKER_SUFFIX.length)
+      const decoded = decodeAttachmentMetadata(encoded)
+      if (decoded) activeAttachments = decoded
       continue
     }
 
@@ -101,6 +177,9 @@ function extractChatMessages(body: string): StoredChatMessage[] {
 function buildMessageBlock(message: StoredChatMessage): string {
   return [
     `${CHAT_MESSAGE_MARKER_PREFIX}${message.role}${CHAT_MESSAGE_MARKER_SUFFIX}`,
+    ...(message.attachments && message.attachments.length > 0
+      ? [`${CHAT_ATTACHMENTS_MARKER_PREFIX}${encodeAttachmentMetadata(message.attachments)}${CHAT_ATTACHMENTS_MARKER_SUFFIX}`]
+      : []),
     message.content.trim(),
     '',
   ].join('\n')

@@ -7,6 +7,7 @@ import { selectActiveLibraryName, selectActiveLibrary } from '../../features/lib
 import { selectAiSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { MainView } from './MainView'
+import { PerformanceProfiler } from './PerformanceProfiler'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
 import { MeetingView } from './views/MeetingView'
@@ -152,31 +153,35 @@ function NotiaWorkspaceComponent({
   if (activeWorkspaceView === 'graph') {
     return (
       <Suspense fallback={<WorkspaceFallback label="Preparando graph view" />}>
-        <GraphView
-          graphModel={graphModel}
-          graphSourcesByPath={graphSourcesByPath}
-          libraryName={libraryName}
-          contexts={libraryContexts}
-          isLoading={isGraphLoading}
-          onOpenFile={handleOpenFileFromView}
-          chatSelectedPaths={graphChatSelectedPaths}
-          onChatSelectedPathsChange={setGraphChatSelectedPaths}
-        />
+        <PerformanceProfiler id="graph-view">
+          <GraphView
+            graphModel={graphModel}
+            graphSourcesByPath={graphSourcesByPath}
+            libraryName={libraryName}
+            contexts={libraryContexts}
+            isLoading={isGraphLoading}
+            onOpenFile={handleOpenFileFromView}
+            chatSelectedPaths={graphChatSelectedPaths}
+            onChatSelectedPathsChange={setGraphChatSelectedPaths}
+          />
+        </PerformanceProfiler>
       </Suspense>
     )
   }
 
   if (activeWorkspaceView === 'chat') {
     return (
-      <ChatWorkspaceView
-        agentScope="library"
-        library={activeLibrary}
-        aiPreferences={aiPreferences}
-        previousChats={previousChatFiles}
-        historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
-        onChatCreated={chatCallbacks.onChatCreated}
-        onChatDeleted={chatCallbacks.onChatDeleted}
-      />
+      <PerformanceProfiler id="chat">
+        <ChatWorkspaceView
+          agentScope="library"
+          library={activeLibrary}
+          aiPreferences={aiPreferences}
+          previousChats={previousChatFiles}
+          historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
+          onChatCreated={chatCallbacks.onChatCreated}
+          onChatDeleted={chatCallbacks.onChatDeleted}
+        />
+      </PerformanceProfiler>
     )
   }
 

@@ -55,8 +55,22 @@ fn should_emit_tree_change_event(event: &notify::Event) -> bool {
         notify::EventKind::Create(_)
             | notify::EventKind::Remove(_)
             | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+            | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
+            | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
             | notify::EventKind::Modify(notify::event::ModifyKind::Any)
     )
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_internal_notia_path(watched_path: &str, changed_path: &std::path::Path) -> bool {
+    let watched = std::path::Path::new(watched_path);
+    let Ok(relative) = changed_path.strip_prefix(watched) else {
+        return false;
+    };
+    relative
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == std::ffi::OsStr::new(".notia"))
 }
 
 #[tauri::command]
@@ -89,20 +103,25 @@ pub fn start_library_tree_watch(
                     return;
                 }
 
-                let changed_path_hint = event.paths.iter().find_map(|path| {
+                let Some(changed_path_hint) = event.paths.iter().find_map(|path| {
+                    if is_internal_notia_path(&watched_path_for_events, path) {
+                        return None;
+                    }
                     let path_value = path.to_string_lossy().trim().to_string();
                     if path_value.is_empty() {
                         None
                     } else {
                         Some(path_value)
                     }
-                });
+                }) else {
+                    return;
+                };
 
                 let _ = app_handle.emit(
                     LIBRARY_TREE_CHANGED_EVENT,
                     LibraryTreeChangedEventPayload {
                         watched_path: watched_path_for_events.clone(),
-                        changed_path_hint,
+                        changed_path_hint: Some(changed_path_hint),
                     },
                 );
             },

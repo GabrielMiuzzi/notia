@@ -24,7 +24,7 @@
     "dev:tauri:wayland": "NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=0 ./scripts/tauri-dev-linux.sh",
     "dev:tauri:wayland:fallback": "NOTIA_TAURI_BACKEND=wayland NOTIA_TAURI_FALLBACK_X11=1 ./scripts/tauri-dev-linux.sh",
     "dev:android": "node ./scripts/android-dev.mjs",
-    "build:android:debug": "node ./scripts/tauri-cli.mjs android build --apk --debug --target aarch64",
+    "build:android:debug": "node ./scripts/android-build-debug.mjs",
     "build:android:release": "node ./scripts/android-build-release.mjs",
     "build:android:aab": "node ./scripts/android-build-release.mjs --aab",
     "install:android:release": "node ./scripts/android-install-release.mjs",

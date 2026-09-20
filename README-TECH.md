@@ -2,6 +2,110 @@
 
 > **Corrección vigente:** Las mutaciones financieras iniciadas en Telegram **NO se auto-confirman**. Requieren una única confirmación visible por mutación, persistencia y verificación nativa antes de informar éxito; Telegram no muestra una segunda confirmación reforzada.
 
+## Estado sincronizado de esta iteración: revisión de mutaciones del documento activo
+
+Se corrigió un conflicto falso al mutar el documento Markdown activo desde el chat. La revisión esperada se obtenía preferentemente de `workspaceSnapshot.activeDocumentRevision`, pero ese snapshot podía quedar obsoleto mientras la fuente activa que el runtime usaba para construir la propuesta seguía siendo la actual. En ese caso, la operación podía informar `revision-conflict` con el mensaje «El documento cambió mientras preparaba la operación» aunque la persona no hubiera editado el archivo.
+
+`loadActiveMarkdownDocument` continúa resolviendo la fuente en este orden: `getActiveMarkdownSource()`, `activeMarkdownSource` y, como último respaldo, el archivo cargado desde la biblioteca. Para las mutaciones del documento activo, `expectedActiveRevision` calcula ahora la revisión esperada con esa fuente cargada en el momento, usando `computeWorkspaceDocumentRevision(path, source)`; no toma como autoridad la revisión independiente del snapshot. Esto mantiene alineados el contenido usado para generar el preview y su precondición de escritura.
+
+La comprobación de concurrencia posterior se conserva deliberadamente. Después de la confirmación, el runtime vuelve a cargar la fuente activa, calcula su revisión más reciente y la compara con la revisión esperada del preview o de la operación pendiente. Si difieren, devuelve `revision-conflict` con `retryable: true`, no escribe el archivo y exige releerlo para generar una nueva propuesta. Si coinciden, persisten las validaciones Markdown, la escritura, la notificación del editor y el registro idempotente de la operación. `apply_document_edit` además conserva la comprobación de anchors del patch antes de pedir la confirmación final.
+
+```mermaid
+sequenceDiagram
+    participant A as Agente
+    participant R as chatScopedAgentRuntime
+    participant S as Fuente activa
+    participant F as Filesystem
+    A->>R: Proponer mutación
+    R->>S: Cargar fuente actual
+    S-->>R: source vigente
+    R->>R: Calcular expectedRevision desde path + source
+    R-->>A: Preview y confirmación
+    A->>R: Confirmar
+    R->>S: Volver a cargar fuente
+    S-->>R: source más reciente
+    R->>R: Comparar revisión actual con expectedRevision
+    alt Cambio real detectado
+        R-->>A: revision-conflict; no escribir
+    else Sin cambio
+        R->>F: Escribir documento
+        F-->>R: Resultado persistido
+        R-->>A: Éxito verificable
+    end
+```
+
+La regresión de `src/services/chat/chatScopedAgentRuntime.search.test.ts` usa una fuente activa actual con `workspaceSnapshot.activeDocumentRevision` obsoleta; comprueba que `insert_active_markdown_document` confirma y escribe el contenido esperado en lugar de producir un conflicto falso. La suite dirigida quedó en 21/21 pruebas.
+
+Validaciones finales de esta iteración:
+
+- `npx vitest run src/services/chat/chatScopedAgentRuntime.search.test.ts`: 21/21 pruebas aprobadas.
+- `npx tsc --noEmit`.
+- `npm run lint`.
+- `npm test -- --run`: 123 archivos y 695 tests aprobados.
+- `npm run build -- --minify=false`: build exitoso; permanecen warnings existentes de chunks e importaciones dinámicas.
+- `git diff --check`.
+
+No cambia el formato persistido, los DTO, los comandos Tauri ni el contrato visible de confirmación. No se reportó una validación manual adicional de la UI en esta iteración.
+
+## Estado sincronizado de esta iteración: adjuntos locales múltiples y persistentes en el chat
+
+El chat lateral derecho permite seleccionar varios archivos locales en una sola apertura del selector. `ChatComposer` usa un `<input type="file" multiple>` y entrega el lote completo a `ChatWorkspaceView`; cada archivo se transforma mediante `readChatFileAsAttachment` y se agrega al estado `selectedImageAttachments` conservando el orden de selección. El compositor muestra un chip por archivo, permite quitarlo individualmente y mantiene visible el campo de mensaje mediante desplazamiento interno cuando hay muchos adjuntos. La selección de la librería continúa siendo un contexto independiente y no se mezcla con estos adjuntos locales.
+
+### Flujo y contrato
+
+1. La persona abre **Adjuntar archivo → Seleccionar archivo** y el selector puede devolver cero o más `File`.
+2. `ChatWorkspaceView` procesa el lote con `Promise.all`. Si todas las lecturas terminan correctamente, concatena el resultado al array existente; el valor del input se limpia al terminar para permitir volver a elegir el mismo archivo. Si falla un archivo, el lote no se agrega y se muestra el error en el diálogo, conservando los adjuntos que ya estaban en el compositor.
+3. `SelectedImageAttachment`/`StoredChatAttachment` contiene `name`, `mimeType`, `kind`, `base64` y, según el tipo, `additionalBase64`, `extractedText`, `textContent` y `pageCount`. `kind` distingue `image`, `pdf` y `text`.
+4. `buildChatAttachmentPrompt` recibe la consulta y el array completo. Cada texto se incorpora como un bloque independiente `<attached_file name="...">...</attached_file>` y se marca como referencia, no como instrucciones. Cada PDF agrega una descripción de procesamiento ordenado y, si existe, su extracción en `<pdf_text>`; las imágenes no agregan texto al prompt.
+5. `buildChatImageAttachment` aplana en orden todos los `base64` visuales: primero la imagen o página inicial de cada adjunto y después sus páginas adicionales. Devuelve un único `AiImageAttachment`; `aiRuntime` convierte `base64` más `additionalBase64` en la colección ordenada `images` que recibe Ollama. Los archivos de texto no ocupan posiciones visuales.
+6. `useChatSubmitMessage` construye un único prompt y un único adjunto visual para la misma consulta, incorpora los adjuntos actuales al mensaje de usuario, limpia la selección al comenzar el envío y la restaura junto con el borrador si la solicitud o la persistencia fallan.
+7. `useChatSubmitMessage` también toma los adjuntos de los mensajes incluidos en `buildChatMemoryWindow`. Por eso una consulta posterior puede reutilizar un adjunto conservado, mientras el límite de `contextMemoryMessageCount` determina cuánto historial y qué adjuntos se reenvían al modelo.
+
+### Persistencia y rehidratación
+
+`chatDocumentStorage.ts` conserva los adjuntos dentro del mensaje de usuario y los serializa en el Markdown del chat mediante el comentario HTML oculto `NOTIA_CHAT_ATTACHMENTS`. El marcador contiene un array JSON UTF-8 codificado en Base64, ubicado después del marcador de rol:
+
+```text
+<!-- NOTIA_CHAT_MESSAGE role:user -->
+<!-- NOTIA_CHAT_ATTACHMENTS:<metadata-base64> -->
+Pregunta de la persona
+```
+
+`serializeChatDocument` y `appendChatMessages` escriben el marcador; `parseChatDocument` lo decodifica y valida la forma básica de cada elemento al cargar el archivo. Los chats anteriores que no tienen el marcador siguen cargándose con mensajes sin adjuntos. Si la metadata no se puede decodificar, se conserva el contenido del mensaje y se ignora esa metadata. `ChatThread` muestra los nombres de los adjuntos conservados sin renderizar sus datos codificados. No hay migración de SQLite: el cambio es compatible con el formato Markdown existente y la rehidratación ocurre al volver a cargar el chat.
+
+```mermaid
+flowchart LR
+    Picker[Selector local multiple] --> Read[readChatFileAsAttachment por archivo]
+    Read --> State[selectedImageAttachments en orden]
+    State --> Prompt[Texto: bloques attached_file separados]
+    State --> Visual[Imágenes y páginas PDF: colección visual ordenada]
+    Prompt --> Request[Una consulta del agente]
+    Visual --> Request
+    Request --> Ollama[Ollama images + prompt]
+```
+
+### Validaciones, errores y límites
+
+- Se aceptan imágenes reconocidas por MIME o extensión, PDF por MIME o extensión y archivos de texto por MIME o por extensiones de texto/código configuradas (`txt`, `md`, `csv`, `json`, `xml`, `html`, `css`, JavaScript/TypeScript, Python, Rust, Java, C/C++, YAML, TOML, INI, log y TeX, entre otras). Otros tipos muestran que solo se pueden procesar imágenes, PDF o texto.
+- Cada archivo tiene un límite de 40 MB. Un archivo de texto vacío se rechaza y cada archivo de texto admite como máximo 120.000 caracteres. Los límites del lote deben contemplar tamaño total, tamaño individual y cantidad de imágenes antes de enviar; en el código revisado de esta iteración sí se verifica de forma explícita el tamaño individual, pero no se encontró una constante ni una validación ejecutable para el tamaño agregado o una cantidad máxima de imágenes. Esos dos límites quedan como discrepancia técnica pendiente y no se presentan aquí como garantía implementada.
+- Los PDF se renderizan localmente mediante `renderPdfForAi`: se conservan todas las páginas dentro del límite de 24 páginas, se convierten a JPEG para la colección visual y se extraen como máximo 40.000 caracteres de texto. Un PDF vacío, de más de 24 páginas o con un fallo de renderizado interrumpe la carga de ese lote antes de iniciar el chat; un PDF escaneado puede continuar aunque no tenga texto extraíble porque sus páginas renderizadas siguen siendo la fuente visual.
+- Un archivo binario sin Base64 utilizable también se rechaza. Los errores de lectura, formato, tamaño y procesamiento llegan a `ChatWorkspaceView` como un mensaje seguro; no se inicia una consulta parcial.
+- El envío sigue requiriendo texto no vacío en el compositor; adjuntar archivos por sí solo no habilita el botón. El modelo configurado debe admitir visión cuando el lote contiene imágenes o páginas de PDF; los textos continúan formando parte del prompt.
+
+### Pruebas, compatibilidad y pendientes
+
+Las regresiones de `chatImageAttachment.test.ts` cubren detección por MIME/extensión, extracción de PDF, exclusión de texto PDF en imágenes, varios textos como bloques separados y la combinación ordenada de una imagen, un PDF de varias páginas y otra imagen. `chatDocumentStorage.test.ts` cubre parsing, round-trip, marcador HTML oculto y metadata Base64 sin exponer el contenido codificado. `useChatSubmitMessage.test.ts` cubre la cancelación por desmontaje, evita persistir una respuesta tardía y verifica que una consulta de seguimiento reutilice los adjuntos del historial.
+
+Validaciones ejecutadas para esta iteración:
+
+- `npx tsc --noEmit`.
+- `npm test -- --run`: 123 archivos y 694 tests aprobados.
+- `npm run lint`.
+- `npm run build -- --minify=false`: build exitoso; solo warnings existentes de chunks e importaciones dinámicas.
+- `git diff --check`.
+
+No se modifican APIs, comandos Tauri, DTO de SQLite ni datos financieros. Sí cambia el formato de los archivos Markdown de chat al agregar metadata opcional de adjuntos, con compatibilidad hacia atrás para chats sin marcador. Queda pendiente la validación manual en la UI real y con un modelo Ollama multimodal: selección de lotes mixtos, eliminación individual, rehidratación tras recarga, reutilización en una consulta de seguimiento, PDF de varias páginas, límites y cancelación en desktop y Android/WebView. El build no presentó fallos; sus warnings existentes no fueron tratados como parte de esta iteración.
+
 ## Continuación de acciones anunciadas por el agente
 
 `runNativeToolAgent` valida también si una respuesta sin tool calls anuncia una acción pendiente. `pendingAgentActionEngine` detecta en la prosa anuncios explícitos en primera persona como «voy a analizar» o «ahora insertaré», excluyendo código cercado, código inline y citas Markdown. Se aplica cuando el turno tiene herramientas, antes de aceptar la respuesta final y junto con los validadores existentes de cada scope. Es una heurística acotada, no un clasificador universal de intenciones.
@@ -232,7 +336,7 @@ Los rechazos usan errores seguros como `missing-actor`, `invalid-source`, `unaut
 
 Validación registrada para una iteración anterior del runtime: `npm test` pasó con 115 archivos y 606 tests, junto con `npm run lint`, `npm run build -- --minify=false` (5843 módulos), `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, `cargo check --manifest-path src-tauri/Cargo.toml --tests` y `git diff --check`. Permanecen warnings existentes de bundles/tamaños del build y de código Rust no usado. Quedan pendientes las validaciones manuales de UI, Telegram real y Android/SAF; la validación vigente de Multichat se registra en su sección.
 
-Las ediciones del documento activo cuentan con `propose_document_edit` y `apply_document_edit` para separar preview de escritura. Los aliases `replace_active_markdown_document` e `insert_active_markdown_document` también calculan un `MutationPreview` con hunk acotado, revisan la hash de la fuente dirty antes y después de la confirmación, registran un `operationId` idempotente y notifican al editor mediante `onActiveMarkdownDocumentChanged`. `undo_ai_operation` usa un journal en memoria y rechaza restaurar si el documento cambió después; el journal no persiste contenido privado ni habilita restauración ciega.
+Las ediciones del documento activo cuentan con `propose_document_edit` y `apply_document_edit` para separar preview de escritura. Los aliases `replace_active_markdown_document` e `insert_active_markdown_document` también calculan un `MutationPreview` con hunk acotado y una revisión esperada derivada de la fuente activa cargada; después de la confirmación vuelven a cargarla y rechazan la escritura si la revisión más reciente difiere. Todas las mutaciones registran un `operationId` idempotente y notifican al editor mediante `onActiveMarkdownDocumentChanged`. `undo_ai_operation` usa un journal en memoria y rechaza restaurar si el documento cambió después; el journal no persiste contenido privado ni habilita restauración ciega.
 
 El catálogo común incorpora `search_library_exact`, `get_document_metadata` y `find_document_references`. Las búsquedas devuelven únicamente coincidencias, rutas, líneas y metadata autorizada; la búsqueda exacta no incorpora el cuerpo completo al resultado. `validateDocumentEdit` rechaza fences, fórmulas, enlaces estructurales rotos y cambios de frontmatter en una mutación de cuerpo.
 
@@ -1066,7 +1170,7 @@ La selección del editor se transforma en `MarkdownSelectionContext` mediante `s
 - **Bloques de tabla y handles**: `tableCellBlocks.ts`, `tableCellBlocks.test.ts`, `src/components/notia/views/markdown/markdownTableBlockView.ts`, `src/engines/markdown/markdownBlockHandleEngine.ts`, `src/engines/markdown/markdownBlockHandleEngine.test.ts` y las reglas de ancho de tabla en `src/styles/notia.css`.
 - **Redux**: `documentsSlice` (tabs, activeTab, saving states).
 - **Backend**: `read_library_file`, `write_library_file`.
-- Los adjuntos del compositor se procesan en `chatImageAttachment.ts`: las imÃ¡genes se envÃ­an como una pÃ¡gina, los PDF pasan por `pdfDocumentRenderer.ts` —que extrae texto y renderiza hasta 24 pÃ¡ginas como JPEG— y los archivos de texto se agregan como contexto delimitado. Todo viaja por el runtime comÃºn de IA; el agente transcribe los PDF en orden y puede insertar el resultado con las herramientas de Markdown activo. Un PDF mayor se rechaza antes de iniciar la conversaciÃ³n para no producir una inserciÃ³n parcial.
+- Los adjuntos del compositor se procesan en `chatImageAttachment.ts`: las imágenes se envían como una colección visual ordenada, los PDF pasan por `pdfDocumentRenderer.ts` —que extrae texto y renderiza hasta 24 páginas como JPEG— y cada archivo de texto se agrega como un bloque de contexto delimitado. El flujo admite varios archivos locales en una misma consulta; el mensaje de usuario conserva la metadata y `chatDocumentStorage.ts` la serializa en el marcador HTML oculto `NOTIA_CHAT_ATTACHMENTS`, por lo que el archivo Markdown puede rehidratarla en una recarga y una consulta posterior puede reutilizarla dentro de la ventana de contexto. Un PDF mayor se rechaza antes de iniciar la conversación para no producir una inserción parcial.
 
 #### Pruebas y estado técnico de esta implementación
 
@@ -1150,7 +1254,7 @@ La fachada versionada `globalAiChatRuntime.ts` es el límite único para los ada
 
 La URL pública recibe desde Rust el `libraryUserId` de la sesión autenticada y expone solamente la proyección publicada del Task Manager. El runtime vuelve a comprobar biblioteca, actor, contexto y herramientas antes de leer o mutar. Los errores de autorización se serializan con códigos seguros (`unauthorized-context`, `unauthorized-tool`, `session-revoked`, entre otros), sin revelar rutas, usuarios ni contenido privado. Finanzas persiste además el actor estable en sus movimientos y transacciones; la migración de SQLite vigente es la versión 20 e incluye servicios, auditoría, referencias de origen, la unicidad de asociación de ocurrencias y el historial de reparaciones.
 
-El contexto de los chats persistentes se materializa además en `workspaceAiSnapshotRuntime.ts`. `useWorkspaceAiSnapshot` captura vista, scope, biblioteca, documento activo, buffer dirty actual, hash de revisión estable, selección y metadata de pestañas; nunca incluye el árbol completo ni el contenido de pestañas no autorizadas. El snapshot se invalida al cambiar cualquiera de sus dependencias y `createChatScopedAgent` lo usa como respaldo para ruta, fuente y selección del documento activo. La fuente dirty se conserva solo para el scope documento y se utiliza para localizar y editar el buffer que el usuario realmente está viendo.
+El contexto de los chats persistentes se materializa además en `workspaceAiSnapshotRuntime.ts`. `useWorkspaceAiSnapshot` captura vista, scope, biblioteca, documento activo, buffer dirty actual, hash de revisión estable, selección y metadata de pestañas; nunca incluye el árbol completo ni el contenido de pestañas no autorizadas. El snapshot se invalida al cambiar cualquiera de sus dependencias y `createChatScopedAgent` lo usa como respaldo para ruta, fuente y selección del documento activo. La fuente dirty se conserva solo para el scope documento y se utiliza para localizar y editar el buffer que el usuario realmente está viendo; al preparar una mutación, la revisión esperada se recalcula desde esa fuente cargada y no desde una revisión potencialmente obsoleta del snapshot.
 
 El agente dispone además de `get_workspace_context`, `get_active_document_outline` y `read_active_document_range`. La primera devuelve únicamente metadata estructural y capabilities; las otras dos leen, respectivamente, encabezados o una ventana acotada por sección, bloque, líneas o selección. El engine detecta referencias ambiguas, devuelve alternativas con líneas sin seleccionar una por conveniencia y limita la salida para no cargar documentos completos innecesariamente.
 
@@ -1174,7 +1278,7 @@ La síntesis de respuestas largas conserva fragmentos acotados para limitar memo
 - Graph View usa selección explícita como contexto autorizado; sin selección emplea búsqueda por título, ruta o carpeta, o RAG. El texto puntuado por el RAG combina `relativePath`, nombre y fragmento, de modo que una consulta por carpeta recupera los documentos contenidos aunque el término no aparezca dentro del archivo.
 - `runNativeToolAgent` informa estados de progreso mediante `onThinkingDelta` antes de cada inferencia y ejecución de herramienta. El ciclo completo tiene un presupuesto de 600 segundos y cada request desktop de tool calling usa el mismo límite en `run_ollama_tool_chat`; el chat convencional conserva su límite de 180 segundos. Las superficies del chat común entran por `notiaChatRuntime`, que establece `CHAT_AGENT_MAX_ROUNDS = 16` cuando no recibe `maxRounds`. Una superficie puede solicitar otro límite de forma explícita —por ejemplo, el flujo de imágenes de Telegram usa 12 rondas—; ese valor pasa por el techo defensivo global de 80 de `runNativeToolAgent`. No existe un límite especial de 64 rondas para Task Manager: comparte el valor predeterminado de 16 salvo que su adaptador pase explícitamente otro valor. `singleCallToolNames` limita a una llamada por ronda las herramientas marcadas, en especial los planes y las mutaciones; si el modelo agrupa mutaciones, solo se ejecuta la primera y las demás reciben `mutation-must-run-independently`. Las búsquedas y lecturas admitidas en el mismo lote sí se ejecutan, mientras que una llamada idéntica ya ejecutada en la operación se rechaza mediante la deduplicación documentada arriba. Así cada check representa exactamente una escritura confirmada y aplicada.
 - En un documento, únicamente el archivo activo está autorizado inicialmente. `request_file_read_permission` muestra una confirmación antes de habilitar otros IDs dentro de esa ejecución.
-- En el chat lateral de un documento, un adjunto de imagen, PDF o texto permanece en el mensaje que recibe `runNativeToolAgent`; el PDF aporta todas sus páginas renderizadas y el texto extraído como contexto auxiliar, mientras el texto se delimita dentro del prompt. Si el pedido es insertarlo, el prompt del scope documento exige transcribirlo en el mismo orden, conservar texto como Markdown y escribir cada fórmula como bloque `$$...$$`; `insert_active_markdown_document` muestra la vista previa y persiste solo ese contenido, y `onActiveMarkdownDocumentChanged` refresca el editor abierto.
+- En el chat lateral de un documento, uno o varios adjuntos locales de imagen, PDF o texto permanecen en el mensaje que recibe `runNativeToolAgent`; las imágenes y todas las páginas renderizadas de los PDF se combinan en una colección visual ordenada, el PDF aporta además el texto extraído como contexto auxiliar y cada texto se delimita en su propio bloque dentro del prompt. La metadata del mensaje se guarda en el Markdown del chat mediante `NOTIA_CHAT_ATTACHMENTS`, se rehidrata al recargar y se vuelve a enviar en seguimientos cuando el mensaje está dentro de `buildChatMemoryWindow`. Si el pedido es insertarlos, el prompt del scope documento exige transcribirlos en el mismo orden, conservar texto como Markdown y escribir cada fórmula como bloque `$$...$$`; `insert_active_markdown_document` muestra la vista previa y persiste solo ese contenido, y `onActiveMarkdownDocumentChanged` refresca el editor abierto.
 - Los IDs entregados al modelo son opacos y se revalidan contra el catálogo y el vault activos antes de cada lectura.
 
 ```mermaid

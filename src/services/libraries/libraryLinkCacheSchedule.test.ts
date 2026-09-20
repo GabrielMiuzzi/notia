@@ -63,7 +63,7 @@ describe('libraryLinkCacheSchedule', () => {
     visibilityListeners[0]?.()
     await vi.advanceTimersByTimeAsync(1_500)
 
-    expect(rebuildLibraryLinkCache).toHaveBeenCalledWith({ libraryPath: 'library', treeNodes: [] })
+    expect(rebuildLibraryLinkCache).toHaveBeenCalledWith(expect.objectContaining({ libraryPath: 'library', treeNodes: [] }))
     expect(visibilityListeners).toHaveLength(0)
   })
 
@@ -74,7 +74,7 @@ describe('libraryLinkCacheSchedule', () => {
     await vi.advanceTimersByTimeAsync(1_500)
 
     expect(rebuildLibraryLinkCache).toHaveBeenCalledTimes(1)
-    expect(rebuildLibraryLinkCache).toHaveBeenCalledWith({ libraryPath: 'latest', treeNodes: [] })
+    expect(rebuildLibraryLinkCache).toHaveBeenCalledWith(expect.objectContaining({ libraryPath: 'latest', treeNodes: [] }))
   })
 
   it('cancels deferred work and its visibility listener', async () => {

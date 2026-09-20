@@ -52,7 +52,11 @@ function Get-JavaHome {
     (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
     (Join-Path $env:ProgramFiles 'Android\Android Studio\jre'),
     (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr'),
-    (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jre')
+    (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jre'),
+    (Join-Path $env:ProgramFiles 'Eclipse Adoptium\jdk-21'),
+    (Join-Path $env:ProgramFiles 'Microsoft\jdk-21'),
+    (Join-Path $env:ProgramFiles 'Java\jdk-21'),
+    (Join-Path $env:ProgramFiles 'Java\jdk-17')
   )
 
   foreach ($candidate in $candidates) {
@@ -167,11 +171,7 @@ function Repair-TauriAndroidBuildTask {
   }
 
   $content = Get-Content $buildTaskPath -Raw
-  $updated = $content -replace 'val executable = """npm""";[\s\S]*?runTauriCli\(executable\)\s*\n\s*\}', @'
-        val executable = if (Os.isFamily(Os.FAMILY_WINDOWS)) "npm.cmd" else "npm"
-        runTauriCli(executable)
-    }
-'@
+  $updated = $content -replace 'val executable = """npm""";', 'val executable = if (Os.isFamily(Os.FAMILY_WINDOWS)) "npm.cmd" else "npm";'
 
   if ($updated -ne $content) {
     Set-Content -Path $buildTaskPath -Value $updated

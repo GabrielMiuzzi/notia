@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildChatAttachmentPrompt,
+  buildChatImageAttachment,
   isPdfFile,
   isTextFile,
   type SelectedImageAttachment,
@@ -56,5 +57,34 @@ describe('chatImageAttachment', () => {
 
     expect(prompt).toContain('<attached_file name="notas.md">')
     expect(prompt).toContain('# Notas')
+  })
+
+  it('keeps several text attachments together in the same prompt', () => {
+    const attachments: SelectedImageAttachment[] = [
+      { name: 'uno.md', mimeType: 'text/markdown', base64: '', kind: 'text', textContent: 'Contenido uno.' },
+      { name: 'dos.txt', mimeType: 'text/plain', base64: '', kind: 'text', textContent: 'Contenido dos.' },
+    ]
+
+    const prompt = buildChatAttachmentPrompt('Compará estos archivos.', attachments)
+
+    expect(prompt).toContain('<attached_file name="uno.md">')
+    expect(prompt).toContain('<attached_file name="dos.txt">')
+    expect(prompt.indexOf('Contenido uno.')).toBeLessThan(prompt.indexOf('Contenido dos.'))
+  })
+
+  it('sends visual pages from several attachments as one ordered image collection', () => {
+    const image = buildChatImageAttachment([
+      { name: 'primera.png', mimeType: 'image/png', base64: 'image-one', kind: 'image' },
+      { name: 'documento.pdf', mimeType: 'application/pdf', base64: 'page-one', additionalBase64: ['page-two'], kind: 'pdf' },
+      { name: 'notas.md', mimeType: 'text/markdown', base64: '', kind: 'text', textContent: 'texto' },
+      { name: 'segunda.jpg', mimeType: 'image/jpeg', base64: 'image-two', kind: 'image' },
+    ])
+
+    expect(image).toEqual({
+      name: 'primera.png',
+      mimeType: 'image/png',
+      base64: 'image-one',
+      additionalBase64: ['page-one', 'page-two', 'image-two'],
+    })
   })
 })

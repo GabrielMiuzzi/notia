@@ -140,6 +140,7 @@ export function useFileTreeActions({
         await reconcileBoardMarkdownContext(activeLibrary.path, boardName, boardContext)
       }
       await closeTabsByPath(normalizedSourcePath)
+      notifyLibraryTreeChanged(normalizedSourcePath)
       notifyLibraryTreeChanged(normalizedTargetDirectoryPath)
     })()
   }, [activeLibrary, closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments, resolveActiveLibraryAndroidDirectoryUri])

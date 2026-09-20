@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { appendChatMessages, loadChatDocument, saveChatDocument, type StoredChatDocument } from '../../../../services/chat/chatDocumentStorage'
+import { appendChatMessages, loadChatDocument, saveChatDocument, type StoredChatDocument, type StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import { buildChatMemoryWindow, resolvePersistedChatTitle } from '../../../../services/chat/chatConversationRuntime'
 import { createChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatLongTermMemorySync'
@@ -14,7 +14,7 @@ import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgen
 import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
-import { buildChatAttachmentPrompt } from './chatImageAttachment'
+import { buildChatAttachmentPrompt, buildChatImageAttachment } from './chatImageAttachment'
 import type {
   UseChatSubmitMessageDependencies,
   UseChatSubmitMessageState,
@@ -56,7 +56,7 @@ export function useChatSubmitMessage(
     effectiveSelectedContextMode,
     selectedLibraryFilePaths,
     selectedLibraryFileOptions,
-    selectedImageAttachment,
+    selectedImageAttachments,
     selectedFileContextMode,
     showHistoryPanel,
     ephemeralChat = false,
@@ -82,7 +82,7 @@ export function useChatSubmitMessage(
     setSelectedChatFilePath,
     setActiveChatDocument,
     setChatTitleOverrides,
-    setSelectedImageAttachment,
+    setSelectedImageAttachments,
     setSelectedLibraryFilePaths,
     setSelectedLibraryFileOptions,
     setSelectedFileContextMode,
@@ -127,7 +127,7 @@ export function useChatSubmitMessage(
     const submitMeasurement = startPerformanceMeasurement('chat.submit_message', {
       chatFilePath: selectedChatFilePath ?? undefined,
       contextFileCount: effectiveSelectedContextPaths.length,
-      hasImage: Boolean(selectedImageAttachment),
+      hasImage: selectedImageAttachments.length > 0,
       libraryId: library.id,
       messageLength: trimmedMessage.length,
     })
@@ -214,10 +214,11 @@ export function useChatSubmitMessage(
     const userMessage = {
       role: 'user',
       content: trimmedMessage,
-    } as const
+      ...(selectedImageAttachments.length > 0 ? { attachments: selectedImageAttachments } : {}),
+    } satisfies StoredChatMessage
 
     let longTermMemories: string[] = []
-    const previousImageAttachment = selectedImageAttachment
+    const previousImageAttachments = selectedImageAttachments
     const previousLibraryFilePaths = selectedLibraryFilePaths
     const previousLibraryFileOptions = selectedLibraryFileOptions
     const previousFileContextMode = selectedFileContextMode
@@ -241,6 +242,8 @@ export function useChatSubmitMessage(
 
     const previousMessages = targetChatDocument.messages
     const chatMemory = buildChatMemoryWindow(targetChatDocument)
+    const memoryAttachments = chatMemory.flatMap((message) => message.attachments ?? [])
+    const conversationAttachments = [...memoryAttachments, ...selectedImageAttachments]
     const optimisticMessages = [...previousMessages, userMessage]
     const previousDraft = draft
     const nextChatDocumentBase: StoredChatDocument = {
@@ -261,12 +264,12 @@ export function useChatSubmitMessage(
     setIsAttachmentMenuOpen(false)
     setStreamingThinking('')
     setStreamingAssistantMessage('')
-    setSelectedImageAttachment(null)
+    setSelectedImageAttachments([])
     setActiveChatDocument(nextChatDocumentBase)
 
     const aiReplyMeasurement = startPerformanceMeasurement('chat.ai_reply', {
       contextFileCount: effectiveSelectedContextPaths.length,
-      hasImage: Boolean(selectedImageAttachment),
+      hasImage: selectedImageAttachments.length > 0,
       libraryId: library.id,
       messageLength: trimmedMessage.length,
     })
@@ -320,14 +323,14 @@ export function useChatSubmitMessage(
           requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
         })
       const globalPrompt = [
-        buildChatAttachmentPrompt(trimmedMessage, selectedImageAttachment),
+        buildChatAttachmentPrompt(trimmedMessage, conversationAttachments),
         transientContextContent?.trim()
           ? `Contexto auxiliar de la sala o vista activa (solo consulta; no sos participante de esa sala):\n${transientContextContent.trim()}`
           : null,
       ].filter(Boolean).join('\n\n')
       const replyInput = {
         agent,
-        image: selectedImageAttachment,
+        image: buildChatImageAttachment(conversationAttachments),
         previousMessages: chatMemory,
         longTermMemories,
         intentContext: {
@@ -458,7 +461,7 @@ export function useChatSubmitMessage(
       setActiveChatDocument(targetChatDocument)
       setStreamingThinking('')
       setStreamingAssistantMessage('')
-      setSelectedImageAttachment(previousImageAttachment)
+      setSelectedImageAttachments(previousImageAttachments)
       setSelectedLibraryFilePaths(previousLibraryFilePaths)
       setSelectedLibraryFileOptions(previousLibraryFileOptions)
       setSelectedFileContextMode(previousFileContextMode)
