@@ -175,6 +175,8 @@ export interface UseChatSubmitMessageDependencies {
   workspaceSnapshot: WorkspaceAiSnapshot | null
   onActiveMarkdownDocumentChanged?: (documentPath: string, source: string) => void | Promise<void>
   onChatCreated?: (filePath: string) => void | Promise<void>
+  /** Registers a tap-to-mount window so a phantom native click cannot close a modal right after it opened. */
+  beginPhantomClickSuppression?: (element: Element | null) => void
 }
 
 export interface UseChatSubmitMessageState {

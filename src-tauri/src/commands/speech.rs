@@ -2,6 +2,7 @@ use crate::dto::speech::{
     SherpaRuntimeStatusDto, SpeechAudioInputStatusDto, SpeechCapabilitiesDto, SpeechModelStatusDto,
     SpeechSessionPayload, StartSpeechSessionPayload, StartSpeechSessionResultDto,
 };
+use crate::mobile_continuity;
 use crate::mobile_speech_permission::AndroidSpeechPermissionState;
 use crate::services::sherpa_runtime;
 use crate::services::speech_audio;
@@ -131,6 +132,17 @@ pub async fn start_speech_session(
         crate::mobile_speech_permission::ensure_microphone_permission(&permission_state)?;
         #[cfg(not(target_os = "android"))]
         let _ = permission_state;
+        // La captura de voz continúa aunque el WebView pase a segundo plano:
+        // se declara el trabajo en un servicio en primer plano con el tipo
+        // `microphone`. Si el sistema rechaza el servicio, la sesión sigue
+        // igualmente y solo se pierde la garantía de continuidad.
+        #[cfg(target_os = "android")]
+        let continuity_started = {
+            let continuity_state = app.state::<mobile_continuity::ContinuityState>();
+            mobile_continuity::begin_android_work(continuity_state.inner(), Some("microphone"))
+        };
+        #[cfg(not(target_os = "android"))]
+        let continuity_started = true;
         let session_id = uuid::Uuid::new_v4().to_string();
         {
             let mut phase = state
@@ -179,6 +191,11 @@ pub async fn start_speech_session(
                 if let Ok(mut phase) = state.phase.lock() {
                     *phase = SpeechPhase::Idle;
                 }
+                if continuity_started {
+                    mobile_continuity::end_android_work(
+                        app.state::<mobile_continuity::ContinuityState>().inner(),
+                    );
+                }
                 return Err(format!(
                     "El worker de inicio de voz finalizo inesperadamente: {error}"
                 ));
@@ -187,6 +204,11 @@ pub async fn start_speech_session(
         if let Err(error) = result {
             if let Ok(mut phase) = state.phase.lock() {
                 *phase = SpeechPhase::Idle;
+            }
+            if continuity_started {
+                mobile_continuity::end_android_work(
+                    app.state::<mobile_continuity::ContinuityState>().inner(),
+                );
             }
             return Err(error);
         }
@@ -331,7 +353,13 @@ pub async fn stop_speech_session(
     .await
     .map_err(|error| {
         format!("El worker de finalizacion de voz finalizo inesperadamente: {error}")
-    })?
+    })?;
+    #[cfg(target_os = "android")]
+    {
+        let continuity_state = app.state::<mobile_continuity::ContinuityState>();
+        let _ = mobile_continuity::end_android_work(continuity_state.inner());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -361,9 +389,17 @@ pub fn consume_speech_turn(
 #[tauri::command]
 pub fn cancel_speech_session(
     payload: SpeechSessionPayload,
+    app: AppHandle,
     state: State<'_, SpeechRuntimeState>,
 ) -> Result<(), String> {
     validate_session_command(&payload)?;
     speech_service::validate_active_session(&state, &payload.session_id)?;
-    speech_service::cancel_platform_audio(&state)
+    let result = speech_service::cancel_platform_audio(&state);
+    #[cfg(target_os = "android")]
+    {
+        let continuity_state = app.state::<mobile_continuity::ContinuityState>();
+        let _ = mobile_continuity::end_android_work(continuity_state.inner());
+    }
+    let _ = app;
+    result
 }

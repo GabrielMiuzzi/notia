@@ -5,6 +5,8 @@ interface OpenFileDocumentBase {
   name: string
   extension: string
   viewKind: NotiaFileViewKind
+  /** Real Android SAF document URI, kept separate from the logical library path. */
+  androidDocumentUri?: string
 }
 
 export interface OpenTextFileDocument extends OpenFileDocumentBase {

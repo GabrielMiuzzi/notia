@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GitGraph } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GitGraph, MoreVertical } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
 import { useVirtualList } from '../../hooks/useVirtualList'
+import { useCoarsePointer } from '../../hooks/useCoarsePointer'
 import { joinFileName, splitFileName } from '../../utils/files/splitFileName'
+import { isSafDocumentUri } from '../../utils/files/safUri'
 
 interface PendingCreation {
   id: string
@@ -17,7 +19,7 @@ interface FileTreeProps {
   isSearchActive: boolean
   searchMatchedFilePaths: ReadonlySet<string>
   onToggleFolder: (folderId: string) => void
-  onOpenFile: (filePath: string) => void
+  onOpenFile: (filePath: string, androidDocumentUri?: string) => void
   pendingCreation: PendingCreation | null
   onSubmitPendingCreation: (name: string) => void
   onCancelPendingCreation: () => void
@@ -28,6 +30,7 @@ interface FileTreeProps {
   onEmptyContextMenu: (position: { x: number; y: number }) => void
   onMoveNode: (sourcePath: string, targetDirectoryPath: string) => void
   loadingFolderIds?: ReadonlySet<string>
+  folderLoadError?: { folderId: string; message: string } | null
 }
 
 interface TreeRowProps {
@@ -36,7 +39,7 @@ interface TreeRowProps {
   isSearchActive: boolean
   searchMatchedFilePaths: ReadonlySet<string>
   onToggleFolder: (folderId: string) => void
-  onOpenFile: (filePath: string) => void
+  onOpenFile: (filePath: string, androidDocumentUri?: string) => void
   renamingPath: string | null
   onSubmitRename: (path: string, name: string) => void
   onCancelRename: () => void
@@ -48,6 +51,8 @@ interface TreeRowProps {
   onDragOverFolder: (targetPath: string) => boolean
   onDropOnFolder: (targetPath: string) => void
   isLoading?: boolean
+  loadError?: string | null
+  showTouchRowMenu?: boolean
 }
 
 function hasSearchMatch(
@@ -79,6 +84,8 @@ function areTreeRowPropsEqual(previous: TreeRowProps, next: TreeRowProps): boole
     && previous.onDragOverFolder === next.onDragOverFolder
     && previous.onDropOnFolder === next.onDropOnFolder
     && previous.isLoading === next.isLoading
+    && previous.loadError === next.loadError
+    && previous.showTouchRowMenu === next.showTouchRowMenu
 }
 
 type VisibleTreeRow =
@@ -133,6 +140,8 @@ const TreeRow = memo(function TreeRow({
   onDragOverFolder,
   onDropOnFolder,
   isLoading: isLoading,
+  loadError,
+  showTouchRowMenu = false,
 }: TreeRowProps) {
   const isFolder = node.type === 'folder'
   const hasChildren = Boolean(node.children?.length) || Boolean(node.hasChildren)
@@ -174,7 +183,7 @@ const TreeRow = memo(function TreeRow({
     }
     if (!canToggle) {
       if (canOpenFile && node.path) {
-        onOpenFile(node.path)
+        onOpenFile(node.path, isSafDocumentUri(node.id) ? node.id : undefined)
       }
       return
     }
@@ -192,6 +201,16 @@ const TreeRow = memo(function TreeRow({
       return
     }
     onSubmitRename(node.path, joinFileName(normalized, extension))
+  }
+
+  const handleOpenRowMenu = (event: MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    onNodeContextMenu(node, {
+      x: rect.left,
+      y: rect.bottom,
+    })
   }
 
   return (
@@ -250,7 +269,22 @@ const TreeRow = memo(function TreeRow({
     >
       {isFolder ? (
          <>
-          {isLoadingFolder ? (
+          {loadError ? (
+            <span
+              role="button"
+              tabIndex={-1}
+              aria-label={`Error al cargar ${baseName}. Toca para reintentar.`}
+              title={loadError}
+              className="notia-tree-chevron notia-tree-folder-error"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onToggleFolder(node.id)
+              }}
+            >
+              !
+            </span>
+          ) : isLoadingFolder ? (
             <span className="notia-tree-chevron notia-tree-chevron--loading" title="Cargando..." />
           ) : hasChildren && isExpanded ? (
             <ChevronDown size={13} className="notia-tree-chevron" />
@@ -301,6 +335,24 @@ const TreeRow = memo(function TreeRow({
           {extension ? (
             <span className="notia-tree-extension" title={`Formato ${extension}`}>
               {extension}
+            </span>
+          ) : null}
+          {showTouchRowMenu && !isRenaming ? (
+            <span
+              role="button"
+              tabIndex={-1}
+              aria-label={`Acciones de ${baseName}`}
+              title="Acciones"
+              className="notia-tree-row-menu"
+              onClick={handleOpenRowMenu}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  handleOpenRowMenu(event as unknown as MouseEvent<HTMLDivElement>)
+                }
+              }}
+            >
+              <MoreVertical size={15} />
             </span>
           ) : null}
         </>
@@ -438,9 +490,11 @@ function FileTreeComponent({
   onEmptyContextMenu,
   onMoveNode,
   loadingFolderIds,
+  folderLoadError,
 }: FileTreeProps) {
   const [draggingEntry, setDraggingEntry] = useState<{ path: string } | null>(null)
   const [dropTargetFolderPath, setDropTargetFolderPath] = useState<string | null>(null)
+  const isCoarsePointer = useCoarsePointer()
   const visibleRows = useMemo(
     () => buildVisibleTreeRows(nodes, pendingCreation, rootPath),
     [nodes, pendingCreation, rootPath],
@@ -576,6 +630,8 @@ function FileTreeComponent({
                   onDragOverFolder={handleDragOverFolder}
                   onDropOnFolder={handleDropOnFolder}
                   isLoading={loadingFolderIds?.has(row.node.id) ?? false}
+                  loadError={folderLoadError && folderLoadError.folderId === row.node.id ? folderLoadError.message : null}
+                  showTouchRowMenu={isCoarsePointer}
                 />
               )}
             </div>

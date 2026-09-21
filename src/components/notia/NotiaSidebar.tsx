@@ -4,7 +4,7 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsSidebarOpen, selectActiveRailActionId } from '../../features/ui/uiSelectors'
 import { selectLibraries, selectSelectedLibraryId, selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
-import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes, selectLoadingFolderIds } from '../../features/documents/documentsSelectors'
+import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes, selectLoadingFolderIds, selectFolderLoadError } from '../../features/documents/documentsSelectors'
 import { LEFT_RAIL_ACTIONS } from '../../constants/notiaMenu'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { FileTree } from './FileTree'
@@ -25,6 +25,7 @@ function NotiaSidebarComponent() {
   const searchMatchedPaths = useAppSelector(selectSearchMatchedPaths)
   const treeNodes = useAppSelector(selectTreeNodes)
   const loadingFolderIdsList = useAppSelector(selectLoadingFolderIds)
+  const folderLoadError = useAppSelector(selectFolderLoadError)
 
   const rootPath = activeLibrary?.path ?? null
 
@@ -93,6 +94,7 @@ function NotiaSidebarComponent() {
               onEmptyContextMenu={handleEmptyContextMenu}
               onMoveNode={handleMoveNode}
               loadingFolderIds={loadingFolderIdSet}
+              folderLoadError={folderLoadError}
             />
             <div data-notia-prevent-menu-close>
               <WorkspaceFooter

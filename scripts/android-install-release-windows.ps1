@@ -24,6 +24,9 @@ function Get-AdbPath {
 }
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scriptDir 'android-build-release-windows.ps1') @args
+if ($LASTEXITCODE -ne 0) {
+  throw "[notia] Android build failed with exit code $LASTEXITCODE. APK installation was not attempted."
+}
 
 $adbPath = Get-AdbPath
 if (-not $adbPath) {

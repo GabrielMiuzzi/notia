@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { store } from '../../../store/index'
-import { setTreeNodes, setPendingCreation, setSearchQuery, setSearchMatchedPaths, setIsSearchLoading, setContextMenu, setDialogState, setRenamingPath, addLoadingFolderId, removeLoadingFolderId } from '../../../features/documents/documentsSlice'
+import { setTreeNodes, setPendingCreation, setSearchQuery, setSearchMatchedPaths, setIsSearchLoading, setContextMenu, setDialogState, setRenamingPath, addLoadingFolderId, removeLoadingFolderId, setFolderLoadError } from '../../../features/documents/documentsSlice'
 import { selectIsSidebarOpen, selectIsRightChatPanelOpen } from '../../../features/ui/uiSelectors'
 import { setSearchMenuOpen, setActiveHeaderAction } from '../../../features/ui/uiSlice'
 import { selectIsSearchActive, selectActiveWorkspaceView, selectActiveTabPath } from '../../../features/documents/documentsSelectors'
@@ -458,15 +458,14 @@ export function useLibraryTreeSync({
       if (folder && folder.type === 'folder' && folder.hasChildren && !folder.children?.length) {
         // This folder hasn't loaded its children yet — fetch them lazily.
         const folderPath = folder.path
-        // On Android, use the folder's content URI (node.id) as the directory URI
-        // for the read call. This ensures we read the correct subdirectory, not
-        // the library root. Fall back to the library tree URI only for the root.
+        // Always pass the owning library's tree grant. A child document URI is
+        // an I/O result, not a library grant, and must never become the context
+        // for another command or another library.
         const library = store.getState().library.libraries.find((l) => l.id === libraryId)
-        const androidUri = folder.id?.startsWith('content://')
-          ? folder.id
-          : library?.androidTreeUri
+        const androidUri = library?.androidTreeUri
 
         if (folderPath) {
+          store.dispatch(setFolderLoadError(null))
           store.dispatch(addLoadingFolderId(folderId))
           void readLibraryDirectory(folderPath, { androidDirectoryUri: androidUri })
             .then((children) => {
@@ -501,7 +500,17 @@ export function useLibraryTreeSync({
               setTreeNodesForLibrary(libraryId, (current) => injectChildren(current))
             })
             .catch((error) => {
-              console.error('[notia] failed to load folder children:', folderPath, error)
+              notiaLog('useLibraryTreeSync', 'failed to load folder children', {
+                folderPath,
+              }, 'error')
+              if (store.getState().library.selectedLibraryId === libraryId) {
+                store.dispatch(setFolderLoadError({
+                  folderId,
+                  message: error instanceof Error && error.message.trim()
+                    ? error.message
+                    : 'No se pudo leer el contenido de la carpeta. Toca para reintentar.',
+                }))
+              }
             })
             .finally(() => {
               store.dispatch(removeLoadingFolderId(folderId))

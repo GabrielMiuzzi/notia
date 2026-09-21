@@ -88,6 +88,7 @@ function FileViewHostComponent({
           key={document.path}
           source={document.source}
           documentPath={document.path}
+          androidDocumentUri={document.androidDocumentUri}
           onSourceChange={onTextSourceChange}
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}

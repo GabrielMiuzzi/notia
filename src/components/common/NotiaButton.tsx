@@ -9,6 +9,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
+import { beginPhantomClickSuppression } from '../../utils/interactions/phantomClickSuppression'
 
 type NotiaButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
 type NotiaButtonSize = 'sm' | 'md' | 'icon'
@@ -161,6 +162,11 @@ export const NotiaButton = memo(forwardRef<HTMLButtonElement, NotiaButtonProps>(
     // Android WebView can drop trusted clicks when the finger drifts slightly.
     // Trigger the activation explicitly once we know the gesture ended as a tap.
     event.preventDefault()
+    // The platform still dispatches its own trusted click for this tap; a
+    // modal mounted inside this handler would otherwise receive it on the
+    // freshly rendered backdrop and close immediately. Consumers register
+    // the suppression window, so keep the window armed here as well.
+    beginPhantomClickSuppression(buttonElement)
     buttonElement.click()
   }, [clearDuplicateClickResetTimeout, clearTouchPointerState, disabled, onPointerUp])
 

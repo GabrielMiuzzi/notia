@@ -132,6 +132,8 @@ pub struct PathExistsPayload {
 pub struct WriteBinaryFilePayload {
     pub(crate) file_path: String,
     pub(crate) data: Vec<u8>,
+    #[serde(default)]
+    pub(crate) directory_uri: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

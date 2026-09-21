@@ -120,6 +120,10 @@ const ANDROID_AI_MODEL_LIST_COMMANDS = [
   'list_android_ai_models',
   'mobile_ai_bridge::list_android_ai_models',
 ] as const
+const ANDROID_AI_MODEL_DETAILS_COMMANDS = [
+  'inspect_android_ai_model',
+  'mobile_ai_bridge::inspect_android_ai_model',
+] as const
 
 export interface AiHealthCheckResult {
   ok: boolean
@@ -629,9 +633,30 @@ async function invokeDesktopAiModelDetails(
   throw describeAiError(lastError, 'No se pudieron consultar las capacidades del modelo de IA.')
 }
 
+async function invokeAndroidAiModelDetails(
+  preferences: AiPreferences,
+  model: string,
+): Promise<string[]> {
+  let lastError: unknown = null
+  for (const command of ANDROID_AI_MODEL_DETAILS_COMMANDS) {
+    try {
+      const response = await invoke<BridgeAiModelDetailsResponse>(command, {
+        payload: { ...normalizeAiSettingsInput(preferences), model },
+      })
+      return Array.isArray(response.capabilities)
+        ? response.capabilities.filter((capability): capability is string => typeof capability === 'string')
+        : []
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw describeAiError(lastError, 'No se pudieron consultar las capacidades del modelo de IA.')
+}
+
 export async function checkModelSupportsVision(preferences: AiPreferences, model: string): Promise<boolean> {
-  if (getRuntimeDevice() === 'Android') return isLikelyMultimodalModelName(model)
-  const capabilities = await invokeDesktopAiModelDetails(preferences, model)
+  const capabilities = getRuntimeDevice() === 'Android'
+    ? await invokeAndroidAiModelDetails(preferences, model)
+    : await invokeDesktopAiModelDetails(preferences, model)
   return capabilities.includes('vision')
 }
 
@@ -645,17 +670,27 @@ async function loadAiModelOption(preferences: AiPreferences, name: string): Prom
   }
 
   try {
-    const capabilities = getRuntimeDevice() === 'Android'
-      ? []
+    const isAndroid = getRuntimeDevice() === 'Android'
+    const capabilities = isAndroid
+      ? await invokeAndroidAiModelDetails(preferences, name)
       : await invokeDesktopAiModelDetails(preferences, name)
     return {
       name,
-      supportsThinking: capabilities.includes('thinking') || fallback.supportsThinking,
-      supportsThinkingLevels: fallback.supportsThinkingLevels,
-      supportsVision: capabilities.includes('vision') || fallback.supportsVision,
-      supportsTools: capabilities.includes('tools') || fallback.supportsTools,
+      supportsThinking: isAndroid ? capabilities.includes('thinking') : capabilities.includes('thinking') || fallback.supportsThinking,
+      supportsThinkingLevels: isAndroid ? false : fallback.supportsThinkingLevels,
+      supportsVision: isAndroid ? capabilities.includes('vision') : capabilities.includes('vision') || fallback.supportsVision,
+      supportsTools: isAndroid ? capabilities.includes('tools') : capabilities.includes('tools') || fallback.supportsTools,
     }
   } catch {
+    if (getRuntimeDevice() === 'Android') {
+      return {
+        name,
+        supportsThinking: false,
+        supportsThinkingLevels: false,
+        supportsVision: false,
+        supportsTools: false,
+      }
+    }
     return fallback
   }
 }

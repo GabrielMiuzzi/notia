@@ -1,9 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectIndexRevision } from '../../../features/library/librarySelectors'
-import { selectFlatFileList, selectTreeNodes } from '../../../features/documents/documentsSelectors'
+import { selectFlatFileList, selectTreeNodes, selectActiveWorkspaceView } from '../../../features/documents/documentsSelectors'
 import { selectActiveLibrary } from '../../../features/library/librarySelectors'
-import { scheduleLibraryLinkCacheRebuild } from '../../../services/libraries/libraryLinkCacheSchedule'
+import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
+import {
+  cancelScheduledLibraryLinkCacheRebuild,
+  scheduleLibraryLinkCacheRebuild,
+} from '../../../services/libraries/libraryLinkCacheSchedule'
 import { readLibraryLinkCache } from '../../../services/libraries/libraryLinkCacheRuntime'
 
 /**
@@ -16,6 +20,8 @@ export function useLibraryLinkCacheAutoRebuild(): void {
   const treeNodes = useAppSelector(selectTreeNodes)
   const flatFileList = useAppSelector(selectFlatFileList)
   const revision = useAppSelector(selectIndexRevision)
+  const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
+  const isAndroidRuntime = getRuntimeDevice() === 'Android'
   const latestTreeNodesRef = useRef(treeNodes)
   const latestFlatFileListRef = useRef(flatFileList)
 
@@ -29,6 +35,14 @@ export function useLibraryLinkCacheAutoRebuild(): void {
       return
     }
 
+    // Task Manager may create or reconcile several Markdown files during its
+    // Android bootstrap. Defer the graph cache until the user returns to a
+    // view that needs it instead of rebuilding once per bootstrap revision.
+    if (isAndroidRuntime && activeWorkspaceView === 'task-manager') {
+      cancelScheduledLibraryLinkCacheRebuild()
+      return
+    }
+
     scheduleLibraryLinkCacheRebuild({
       libraryPath: activeLibrary.path,
       treeNodes: latestTreeNodesRef.current,
@@ -38,12 +52,18 @@ export function useLibraryLinkCacheAutoRebuild(): void {
   }, [
     activeLibrary?.path,
     activeLibrary?.androidTreeUri,
+    activeWorkspaceView,
+    isAndroidRuntime,
     revision,
   ])
 
   // --- Ensure linkCache exists when a library becomes active ---
   useEffect(() => {
     if (!activeLibrary?.path) {
+      return
+    }
+
+    if (isAndroidRuntime && activeWorkspaceView === 'task-manager') {
       return
     }
 
@@ -81,5 +101,7 @@ export function useLibraryLinkCacheAutoRebuild(): void {
   }, [
     activeLibrary?.path,
     activeLibrary?.androidTreeUri,
+    activeWorkspaceView,
+    isAndroidRuntime,
   ])
 }

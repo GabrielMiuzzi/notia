@@ -3,6 +3,7 @@ import { getLibraryConfigDir } from './libraryConfig'
 import {
   readTextFile,
   writeTextFile,
+  createFile,
   createDirectory,
   pathExists,
 } from '../files/filesystemEngine'
@@ -11,6 +12,7 @@ import { buildLinkCacheMermaidCode } from '../../engines/graph/linkCacheMermaidE
 import { getIndexedLibraryGraphSourcesByPath } from './librarySearchGraphIndex'
 import { notiaTimer } from '../runtime/notiaLogger'
 import { startPerformanceMeasurement } from '../runtime/performanceBaseline'
+import { isSafTreeUri } from '../../utils/files/safUri'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 
@@ -46,6 +48,18 @@ export async function writeLibraryLinkCache(
   const cachePath = buildLibraryLinkCachePath(libraryPath)
 
   try {
+    // A hidden `.notia` directory may be omitted from an Android SAF tree
+    // refresh. Create the complete path from the persisted tree grant first;
+    // the native command seeds the exact document URI so the following write
+    // does not depend on that directory appearing in the tree cache.
+    if (isSafTreeUri(androidDirectoryUri)) {
+      const createResult = await createFile(cachePath, mermaidCode, { androidDirectoryUri })
+      if (!createResult.ok) {
+        return createResult
+      }
+      return await writeTextFile(cachePath, mermaidCode, { androidDirectoryUri })
+    }
+
     const dirExists = await pathExists(configDir, options)
     if (!dirExists) {
       const createResult = await createDirectory(configDir, options)
@@ -150,6 +164,11 @@ export async function rebuildLibraryLinkCache(
     }
     return result
   } catch (error) {
+    if (params.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      timer.success({ status: 'canceled' })
+      measurement.cancel({ status: 'canceled' })
+      return { ok: false, error: 'La regeneración del cache fue cancelada.' }
+    }
     timer.error(error)
     measurement.error(error)
     return {

@@ -79,6 +79,7 @@ const INLINE_LATEX_BUTTON_SELECTOR = '[data-notia-inkmath-inline-button]'
 interface MarkdownViewProps {
   source: string
   documentPath: string
+  androidDocumentUri?: string
   onSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
@@ -331,6 +332,7 @@ function replaceInlineLatexEditorText(editorElement: HTMLElement, latex: string)
 function MarkdownViewInner({
   source,
   documentPath,
+  androidDocumentUri,
   onSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
@@ -948,7 +950,7 @@ function MarkdownViewInner({
 
       const readSource = async (path: string): Promise<string | null> => {
         try {
-          const result = await readLibraryFileContent(path)
+          const result = await readLibraryFileContent(path === documentPath ? androidDocumentUri ?? path : path)
           return result.ok ? result.content : null
         } catch {
           return null
@@ -957,7 +959,7 @@ function MarkdownViewInner({
 
       const writeSource = async (path: string, source: string): Promise<void> => {
         try {
-          const result = await writeLibraryFileContent(path, source)
+          const result = await writeLibraryFileContent(path === documentPath ? androidDocumentUri ?? path : path, source)
           if (!result.ok) {
             import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
               notiaLog('markdown', 'writeSource failed', { path, error: result.error }, 'error')

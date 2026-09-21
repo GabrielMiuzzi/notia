@@ -1,3 +1,6 @@
+use crate::mobile_continuity::ContinuityState;
+#[cfg(target_os = "android")]
+use crate::mobile_continuity::{begin_android_work, end_android_work};
 use crate::notia_timer::NotiaTimer;
 #[cfg(target_os = "android")]
 use crate::services::ai_service::contains_sensitive_web_query_data;
@@ -119,6 +122,15 @@ pub struct CheckAndroidAiHealthPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InspectAndroidAiModelPayload {
+    ollama_url: String,
+    #[serde(default)]
+    api_key: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunAndroidAiChatPayload {
     ollama_url: String,
     #[serde(default)]
@@ -207,6 +219,13 @@ struct AndroidAiModelListResponse {
     models: Option<Vec<String>>,
 }
 
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidAiModelDetailsResponse {
+    capabilities: Option<Vec<String>>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AndroidAiHealthResult {
@@ -226,6 +245,12 @@ pub struct AndroidAiChatResult {
 #[serde(rename_all = "camelCase")]
 pub struct AndroidAiModelListResult {
     pub models: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidAiModelDetailsResult {
+    pub capabilities: Vec<String>,
 }
 
 #[tauri::command]
@@ -283,6 +308,7 @@ pub fn check_android_ai_health(
 #[tauri::command]
 pub fn run_android_ai_chat(
     state: State<'_, AndroidAiBridgeState>,
+    continuity: State<'_, ContinuityState>,
     payload: RunAndroidAiChatPayload,
 ) -> Result<AndroidAiChatResult, String> {
     #[cfg(target_os = "android")]
@@ -307,6 +333,7 @@ pub fn run_android_ai_chat(
             return Err("El bridge AI de Android no esta disponible.".to_string());
         };
 
+        let continuity_started = begin_android_work(continuity.inner(), Some("dataSync"));
         let response = handle
             .run_mobile_plugin::<AndroidAiChatResponse>(
                 "chat",
@@ -323,7 +350,11 @@ pub fn run_android_ai_chat(
                     "selectedContextMode": payload.selected_context_mode,
                 }),
             )
-            .map_err(|error| format!("No se pudo ejecutar el chat AI en Android: {error}"))?;
+            .map_err(|error| format!("No se pudo ejecutar el chat AI en Android: {error}"));
+        if continuity_started {
+            end_android_work(continuity.inner());
+        }
+        let response = response?;
 
         if let Some(error_message) = response.error.filter(|value| !value.trim().is_empty()) {
             return Err(error_message);
@@ -340,7 +371,7 @@ pub fn run_android_ai_chat(
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = state;
+        let _ = (state, continuity);
         let RunAndroidAiChatPayload {
             ollama_url,
             api_key,
@@ -381,6 +412,7 @@ fn emit_ai_stream_event(window: &tauri::Window, request_id: &str, event: AiStrea
 pub async fn run_android_ai_chat_streaming(
     window: tauri::Window,
     state: State<'_, AndroidAiBridgeState>,
+    continuity: State<'_, ContinuityState>,
     payload: RunAndroidAiChatStreamingPayload,
 ) -> Result<(), String> {
     #[cfg(target_os = "android")]
@@ -420,23 +452,30 @@ pub async fn run_android_ai_chat_streaming(
             return Err("No hay prompt para enviar a la IA.".to_string());
         }
 
-        let guard = state
-            .handle
-            .lock()
-            .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
-        let Some(handle) = guard.as_ref() else {
-            emit_ai_stream_event(
-                &window,
-                &request_id,
-                AiStreamEvent::Error {
-                    message: "El bridge AI de Android no esta disponible.".to_string(),
-                },
-            );
-            return Err("El bridge AI de Android no esta disponible.".to_string());
+        // Clonar el handle y liberar el mutex antes del I/O: la cancelación
+        // (`cancel_android_ai_chat_streaming`) necesita el mismo lock y de lo
+        // contrario queda bloqueada hasta que el streaming termine.
+        let handle_clone = {
+            let guard = state
+                .handle
+                .lock()
+                .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
+            let Some(handle) = guard.as_ref() else {
+                emit_ai_stream_event(
+                    &window,
+                    &request_id,
+                    AiStreamEvent::Error {
+                        message: "El bridge AI de Android no esta disponible.".to_string(),
+                    },
+                );
+                return Err("El bridge AI de Android no esta disponible.".to_string());
+            };
+            handle.clone()
         };
 
-        let response = handle
-            .run_mobile_plugin::<AndroidAiChatResponse>(
+        let continuity_started = begin_android_work(continuity.inner(), Some("dataSync"));
+        let response = handle_clone
+            .run_mobile_plugin_async::<AndroidAiChatResponse>(
                 "chatStreaming",
                 serde_json::json!({
                     "requestId": payload.request_id,
@@ -452,6 +491,7 @@ pub async fn run_android_ai_chat_streaming(
                     "selectedContextMode": payload.selected_context_mode,
                 }),
             )
+            .await
             .map_err(|error| {
                 emit_ai_stream_event(
                     &window,
@@ -461,7 +501,11 @@ pub async fn run_android_ai_chat_streaming(
                     },
                 );
                 format!("No se pudo iniciar el streaming en Android: {error}")
-            })?;
+            });
+        if continuity_started {
+            end_android_work(continuity.inner());
+        }
+        let response = response?;
 
         if let Some(error_message) = response.error.filter(|value| !value.trim().is_empty()) {
             emit_ai_stream_event(
@@ -482,7 +526,7 @@ pub async fn run_android_ai_chat_streaming(
     #[cfg(not(target_os = "android"))]
     {
         let _ = window;
-        let _ = state;
+        let _ = (state, continuity);
         let RunAndroidAiChatStreamingPayload {
             request_id,
             ollama_url,
@@ -596,8 +640,50 @@ pub fn list_android_ai_models(
 }
 
 #[tauri::command]
+pub fn inspect_android_ai_model(
+    state: State<'_, AndroidAiBridgeState>,
+    payload: InspectAndroidAiModelPayload,
+) -> Result<AndroidAiModelDetailsResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        if payload.ollama_url.trim().is_empty() || payload.model.trim().is_empty() {
+            return Err("La URL y el modelo de Ollama son obligatorios.".to_string());
+        }
+        let guard = state
+            .handle
+            .lock()
+            .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
+        let Some(handle) = guard.as_ref() else {
+            return Err("El bridge AI de Android no esta disponible.".to_string());
+        };
+        let response = handle
+            .run_mobile_plugin::<AndroidAiModelDetailsResponse>(
+                "inspectModel",
+                serde_json::json!({
+                    "ollamaUrl": payload.ollama_url,
+                    "apiKey": payload.api_key,
+                    "model": payload.model,
+                }),
+            )
+            .map_err(|error| {
+                format!("No se pudieron consultar las capacidades del modelo Android: {error}")
+            })?;
+        return Ok(AndroidAiModelDetailsResult {
+            capabilities: response.capabilities.unwrap_or_default(),
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (state, payload);
+        Err("La inspeccion de modelos Android solo esta disponible en Android.".to_string())
+    }
+}
+
+#[tauri::command]
 pub fn run_android_ai_tool_chat(
     state: State<'_, AndroidAiBridgeState>,
+    continuity: State<'_, ContinuityState>,
     payload: RunAndroidAiToolChatPayload,
 ) -> Result<serde_json::Value, String> {
     #[cfg(target_os = "android")]
@@ -636,7 +722,8 @@ pub fn run_android_ai_tool_chat(
             return Err("El bridge AI de Android no esta disponible.".to_string());
         };
 
-        return handle
+        let continuity_started = begin_android_work(continuity.inner(), Some("dataSync"));
+        let result = handle
             .run_mobile_plugin::<serde_json::Value>(
                 "toolChat",
                 serde_json::json!({
@@ -659,11 +746,15 @@ pub fn run_android_ai_tool_chat(
             .map_err(|error| {
                 format!("No se pudo ejecutar la ronda de herramientas en Android: {error}")
             });
+        if continuity_started {
+            end_android_work(continuity.inner());
+        }
+        return result;
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (state, payload);
+        let _ = (state, continuity, payload);
         Err("La ronda de herramientas de Android solo esta disponible en Android.".to_string())
     }
 }
@@ -671,6 +762,7 @@ pub fn run_android_ai_tool_chat(
 #[tauri::command]
 pub fn run_android_ai_web_search(
     state: State<'_, AndroidAiBridgeState>,
+    continuity: State<'_, ContinuityState>,
     payload: RunAndroidAiWebSearchPayload,
 ) -> Result<serde_json::Value, String> {
     #[cfg(target_os = "android")]
@@ -690,7 +782,8 @@ pub fn run_android_ai_web_search(
         let Some(handle) = guard.as_ref() else {
             return Err("El bridge AI de Android no esta disponible.".to_string());
         };
-        return handle
+        let continuity_started = begin_android_work(continuity.inner(), Some("dataSync"));
+        let result = handle
             .run_mobile_plugin::<serde_json::Value>(
                 "webSearch",
                 serde_json::json!({
@@ -701,11 +794,15 @@ pub fn run_android_ai_web_search(
                 }),
             )
             .map_err(|error| format!("No se pudo completar la busqueda web en Android: {error}"));
+        if continuity_started {
+            end_android_work(continuity.inner());
+        }
+        return result;
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (state, payload);
+        let _ = (state, continuity, payload);
         Err("La busqueda web Android solo esta disponible en Android.".to_string())
     }
 }
@@ -742,10 +839,10 @@ pub fn init() -> TauriPlugin<Wry> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AiStreamEvent, AiStreamEventPayload, AndroidAiModelListResult,
-        CancelAndroidAiChatStreamingPayload, CheckAndroidAiHealthPayload, RunAndroidAiChatPayload,
-        RunAndroidAiChatStreamingPayload, RunAndroidAiToolChatPayload,
-        RunAndroidAiWebSearchPayload,
+        AiStreamEvent, AiStreamEventPayload, AndroidAiModelDetailsResult, AndroidAiModelListResult,
+        CancelAndroidAiChatStreamingPayload, CheckAndroidAiHealthPayload,
+        InspectAndroidAiModelPayload, RunAndroidAiChatPayload, RunAndroidAiChatStreamingPayload,
+        RunAndroidAiToolChatPayload, RunAndroidAiWebSearchPayload,
     };
 
     #[test]
@@ -793,6 +890,17 @@ mod tests {
 
         assert!(tool_payload.timeout_seconds.is_none());
         assert_eq!(web_payload.max_results, 5);
+    }
+
+    #[test]
+    fn android_model_details_fixture_requires_only_connection_and_model() {
+        let payload: InspectAndroidAiModelPayload = serde_json::from_value(serde_json::json!({
+            "ollamaUrl": "https://ollama.com",
+            "model": "qwen3:test",
+        }))
+        .expect("android model details payload should deserialize");
+        assert!(payload.api_key.is_empty());
+        assert_eq!(payload.model, "qwen3:test");
     }
 
     #[test]
@@ -848,6 +956,12 @@ mod tests {
         })
         .expect("android model list should serialize");
         assert_eq!(models["models"][0], "qwen3:test");
+
+        let details = serde_json::to_value(AndroidAiModelDetailsResult {
+            capabilities: vec!["vision".to_string(), "tools".to_string()],
+        })
+        .expect("android model details should serialize");
+        assert_eq!(details["capabilities"][1], "tools");
 
         let events = [
             AiStreamEvent::Thinking {

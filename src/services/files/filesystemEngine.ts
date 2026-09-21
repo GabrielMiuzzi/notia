@@ -4,6 +4,7 @@ import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPa
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { notiaLog, notiaTimer } from '../runtime/notiaLogger'
 import { sortFilesystemTreeNodesWithPageLinks } from '../../engines/tree/pageLinkSortEngine'
+import { isSafTreeUri } from '../../utils/files/safUri'
 
 export interface FilesystemOperationResult {
   ok: boolean
@@ -104,6 +105,12 @@ function isTaskManagerPublicationMutationError(error: unknown): error is Error {
   return error instanceof Error && error.name === 'TaskManagerPublicationMutationError'
 }
 
+function getSafeErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  if (typeof error === 'string' && error.trim()) return error
+  return fallback
+}
+
 function resolveParentDirectoryPath(pathValue: string): string {
   const normalized = pathValue.replace(/[\\/]+$/, '')
   const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
@@ -134,8 +141,12 @@ function normalizeDirectorySelection(value: unknown): FilesystemPickDirectoryRes
 
   const normalizedPath = normalizePath(candidate.path)
   const uri = typeof candidate.uri === 'string' && candidate.uri.trim()
-    ? candidate.uri
+    ? candidate.uri.trim()
     : undefined
+
+  if (getRuntimeDevice() === 'Android' && (!uri || !isSafTreeUri(uri) || normalizedPath !== uri)) {
+    return null
+  }
 
   return {
     path: normalizedPath,
@@ -234,12 +245,10 @@ export async function pathExists(pathValue: string, options?: AndroidFilesystemO
     })
     return Boolean(result.exists)
   } catch (error) {
-    console.error('[filesystemEngine] pathExists failed:', {
-      path: normalizedPath,
+    notiaLog('filesystem', 'pathExists failed', {
       isAndroid: getRuntimeDevice() === 'Android',
-      androidUri: options?.androidDirectoryUri,
-      error,
-    })
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error')
     return false
   }
 }
@@ -271,7 +280,10 @@ async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | n
       const normalized = normalizeDirectorySelection(selected)
       return normalized
     } catch (error) {
-      console.error('[filesystemEngine] Android command failed:', command, error)
+      notiaLog('filesystem', 'Android directory command failed', {
+        command,
+        error: error instanceof Error ? error.message : String(error),
+      }, 'error')
       fallbackError = error
     }
   }
@@ -288,7 +300,9 @@ export async function pickDirectory(title: string): Promise<FilesystemPickDirect
     try {
       return await pickAndroidDirectory()
     } catch (error) {
-      console.error('[filesystemEngine] Android picker error:', error)
+      notiaLog('filesystem', 'Android picker error', {
+        error: error instanceof Error ? error.message : String(error),
+      }, 'error')
       if (
         error instanceof Error
         && (
@@ -412,13 +426,7 @@ export async function readLibraryTree(
     return nodes
   } catch (error) {
     timer.error(error)
-    console.error('[filesystemEngine] Failed to read library tree:', {
-      directoryPath: normalizedDirectoryPath,
-      isAndroid: getRuntimeDevice() === 'Android',
-      androidUri: options?.androidDirectoryUri,
-      error,
-    })
-    return []
+    throw new Error(getSafeErrorMessage(error, 'No se pudo leer el árbol de la biblioteca.'))
   }
 }
 
@@ -471,12 +479,7 @@ export async function readLibraryFlatFileList(
     return files
   } catch (error) {
     timer.error(error)
-    console.error('[filesystemEngine] Failed to read library flat file list:', {
-      directoryPath: normalizedDirectoryPath,
-      androidUri: options?.androidDirectoryUri,
-      error,
-    })
-    return []
+    throw new Error(getSafeErrorMessage(error, 'No se pudo leer el inventario de la biblioteca.'))
   }
 }
 
@@ -528,13 +531,9 @@ export async function readLibraryDirectory(
     return shallowNodes
   } catch (error) {
     timer.error(error)
-    console.error('[filesystemEngine] Failed to read library directory:', {
-      directoryPath: normalizedDirectoryPath,
-      isAndroid: getRuntimeDevice() === 'Android',
-      androidUri: options?.androidDirectoryUri,
-      error,
-    })
-    return []
+    throw error instanceof Error
+      ? error
+      : new Error('No se pudo leer el contenido de la carpeta.')
   }
 }
 
@@ -610,10 +609,27 @@ export async function searchLibraryFiles(
 
 export async function readMarkdownDocuments(
   directoryPath: string,
+  options?: AndroidFilesystemOptions,
 ): Promise<FilesystemMarkdownDocument[]> {
   const normalizedDirectoryPath = normalizePath(directoryPath)
   if (!normalizedDirectoryPath.trim()) {
     return []
+  }
+
+  if (getRuntimeDevice() === 'Android') {
+    const entries = await readLibraryFlatFileList(normalizedDirectoryPath, options)
+    const markdownPaths = entries
+      .filter((entry) => entry.type === 'file' && entry.name.toLowerCase().endsWith('.md'))
+      .map((entry) => entry.path)
+
+    const documents = await Promise.all(markdownPaths.map(async (path) => {
+      const result = await readTextFile(path, options)
+      if (!result.ok) {
+        throw new Error(result.error || 'No se pudo leer un documento Markdown.')
+      }
+      return { path, content: result.content }
+    }))
+    return documents
   }
 
   const response = await invoke<FilesystemMarkdownDocument[]>('read_markdown_files', {
@@ -652,7 +668,11 @@ export async function readTextFile(
     return result
   } catch (error) {
     timer.error(error)
-    return { ok: false, content: '', error: 'Could not read file.' }
+    return {
+      ok: false,
+      content: '',
+      error: getSafeErrorMessage(error, 'Could not read file.'),
+    }
   }
 }
 
@@ -684,7 +704,10 @@ export async function writeTextFile(
     if (isTaskManagerPublicationMutationError(error)) {
       throw error
     }
-    return { ok: false, error: 'Could not write file.' }
+    return {
+      ok: false,
+      error: getSafeErrorMessage(error, 'Could not write file.'),
+    }
   }
 }
 
@@ -712,7 +735,10 @@ export async function createLibraryEntry(
     if (isTaskManagerPublicationMutationError(error)) {
       throw error
     }
-    return { ok: false, error: 'Could not create entry.' }
+    return {
+      ok: false,
+      error: getSafeErrorMessage(error, 'Could not create entry.'),
+    }
   }
 }
 
@@ -738,7 +764,10 @@ export async function createFile(
     if (isTaskManagerPublicationMutationError(error)) {
       throw error
     }
-    return { ok: false, error: 'Could not create file.' }
+    return {
+      ok: false,
+      error: getSafeErrorMessage(error, 'Could not create file.'),
+    }
   }
 }
 
@@ -758,14 +787,18 @@ export async function createDirectory(
         directoryUri: options?.androidDirectoryUri,
       },
     })
-  } catch {
-    return { ok: false, error: 'Could not create directory.' }
+  } catch (error) {
+    return {
+      ok: false,
+      error: getSafeErrorMessage(error, 'Could not create directory.'),
+    }
   }
 }
 
 export async function writeBinaryFile(
   filePath: string,
   data: Uint8Array,
+  options?: AndroidFilesystemOptions,
 ): Promise<FilesystemOperationResult> {
   const normalizedPath = normalizePath(filePath)
   if (!normalizedPath.trim()) {
@@ -777,10 +810,14 @@ export async function writeBinaryFile(
       payload: {
         filePath: normalizedPath,
         data: Array.from(data),
+        directoryUri: options?.androidDirectoryUri,
       },
     })
-  } catch {
-    return { ok: false, error: 'Could not write file.' }
+  } catch (error) {
+    return {
+      ok: false,
+      error: getSafeErrorMessage(error, 'Could not write file.'),
+    }
   }
 }
 
@@ -808,6 +845,9 @@ export async function performLibraryEntryOperation(
     if (isTaskManagerPublicationMutationError(error)) {
       throw error
     }
-    return { ok: false, error: 'Could not perform operation.' }
+    return {
+      ok: false,
+      error: getSafeErrorMessage(error, 'Could not perform operation.'),
+    }
   }
 }

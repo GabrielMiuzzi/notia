@@ -55,24 +55,27 @@ describe('Android AI bridge contract fake', () => {
     vi.restoreAllMocks()
   })
 
-  it('cubre health y lista de modelos sin sacar la credencial del payload nativo', async () => {
+  it('cubre health y capacidades reales de modelos sin sacar la credencial del payload nativo', async () => {
     vi.mocked(invoke)
       .mockResolvedValueOnce({ ok: true, message: 'Ollama disponible', defaultModel: 'qwen3:test' })
       .mockResolvedValueOnce({ models: ['qwen3:test', 'llama3.2'] })
+      .mockResolvedValueOnce({ capabilities: ['vision', 'tools'] })
+      .mockResolvedValueOnce({ capabilities: ['thinking'] })
 
     await expect(checkAiHealth(preferences)).resolves.toEqual({
       ok: true,
       message: 'Ollama disponible',
       defaultModel: 'qwen3:test',
     })
-    await expect(listAiModels(preferences)).resolves.toEqual([
-      expect.objectContaining({ name: 'llama3.2' }),
-      expect.objectContaining({ name: 'qwen3:test' }),
-    ])
+    await expect(listAiModels(preferences)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'llama3.2', supportsVision: true, supportsTools: true }),
+      expect.objectContaining({ name: 'qwen3:test', supportsThinking: true }),
+    ]))
 
     const calls = vi.mocked(invoke).mock.calls
     expect(calls[0]?.[0]).toBe('check_android_ai_health')
     expect(calls[0]?.[1]).toEqual({ payload: expect.objectContaining({ apiKey: preferences.apiKey }) })
+    expect(calls.filter(([command]) => command === 'inspect_android_ai_model')).toHaveLength(2)
   })
 
   it('transporta thinking, deltas y done, y limpia ambos listeners', async () => {

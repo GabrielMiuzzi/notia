@@ -1,3 +1,15 @@
+[2026-09-21 01:54:09 -03:00] Se hizo seguro el cierre del callback SAF Android y se agregó timeout de 60 segundos al selector de bibliotecas, con regresión automatizada.
+[2026-09-21 01:28:35 -03:00] Se corrigió el paso de androidTreeUri vacío en el alta Android, se agregó logging NotiaSAF en createPathEntry, se unificó la creación de .notia/notiaConfig.json en un solo comando y se mejoró el detalle de errores de SAF.
+[2026-09-21 00:34:11 -03:00] Se creó la configuración SAF por ruta desde el grant raíz sin depender de que readTree enumere los directorios intermedios.
+[2026-09-20 23:59:55 -03:00] Se normalizó el padre SAF y se hizo idempotente la creación de entradas Android sin sobrescribir archivos existentes.
+[2026-09-20 22:32:05 -03:00] Se reforzó la resolución y escritura SAF de Android, incluida la configuración de bibliotecas y archivos binarios.
+[2026-09-20 22:17:23 -03:00] Se corrigió la resolución Android de URI SAF sintéticas para evitar falsos positivos y escrituras sobre documentos inexistentes.
+[2026-09-20 22:06:56 -03:00] Se preservaron las URI content:// al normalizar y unir rutas SAF para crear la configuración Android.
+[2026-09-20 21:38:25 -03:00] Se corrigió la resolución SAF de rutas anidadas y la creación de la configuración inicial de bibliotecas Android.
+[2026-09-20 21:18:16 -03:00] Se aseguró el alta Android de bibliotecas esperando la persistencia y validando la escritura de configuración SAF antes de cerrar el modal.
+[2026-09-20 21:08:02 -03:00] Se ignoró el pointerdown no mouse en modales para preservar la apertura táctil del selector SAF.
+[2026-09-20 20:53:37 -03:00] Se evitó que el retargeting de coordenadas táctiles del WebView desmonte modales antes de abrir el selector SAF.
+[2026-09-20 19:20:53 -03:00] Se evitó el cierre inmediato de modales por clics fantasma tras activar botones táctiles en Android.
 [2026-09-20 00:32:57 -03:00] Se estableció que los flujos e interfaces se diseñen y revisen desde el inicio para Windows y Android, con acciones táctiles esenciales.
 [2026-09-19 03:35:54 -03:00] Se corrigió la revisión esperada de mutaciones del documento activo para evitar conflictos falsos con snapshots obsoletos.
 [2026-09-19 03:14:12 -03:00] Se conservaron y rehidrataron los adjuntos múltiples del chat, incluyendo su reutilización en consultas de seguimiento.
@@ -91,3 +103,4 @@
 [2026-09-17 00:19:59 -03:00] Se corrigió el chat lateral de Finanzas para reutilizar el historial global y reintentar respuestas nativas vacías transitorias después de tools.
 [2026-09-17 19:57:58 -03:00] Se ajustó la conciliación de servicios con descriptores identificados y el flujo seguro de propuestas de auditoría financiera.
 [2026-09-19 02:46:37 -03:00] Se habilitaron adjuntos locales múltiples en el chat con contexto de texto separado y colección visual ordenada para Ollama.
+[2026-09-20 23:01:46 -03:00] Se conservaron en la LRU las URI SAF devueltas al crear directorios y archivos para resolver operaciones inmediatas.

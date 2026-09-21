@@ -5,6 +5,9 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "android")]
+use tauri::Manager;
+
 use crate::finance::{now, sync_context, validate_context, FinanceCommandResult, FinanceContext};
 
 const MAX_DOCUMENT_BYTES: u64 = 15 * 1024 * 1024;
@@ -53,12 +56,18 @@ struct LlamaCloudAdapter {
     api_key: String,
 }
 impl LlamaCloudAdapter {
-    fn from_environment() -> Result<Self, String> {
-        let api_key = std::env::var("LLAMA_CLOUD_API_KEY")
-            .ok()
+    /// Resolves the credential from the library config first and falls back to
+    /// the Windows-only environment variable. The key never reaches logs,
+    /// prompts or persistence other than notiaConfig.json.
+    fn from_credential_or_environment(api_key_from_config: Option<&str>) -> Result<Self, String> {
+        let api_key = api_key_from_config
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("LLAMA_CLOUD_API_KEY").ok())
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| {
-                "Configurá LLAMA_CLOUD_API_KEY en el entorno nativo para extraer documentos."
+                "Configurá la clave de LlamaCloud en la configuración de la biblioteca para extraer documentos."
                     .to_string()
             })?;
         let client = reqwest::Client::builder()
@@ -147,18 +156,137 @@ pub async fn extract_document_bytes(
     name: &str,
     mime_type: &str,
     bytes: Vec<u8>,
+    api_key_from_config: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_DOCUMENT_BYTES {
         return Err("El documento debe pesar entre 1 byte y 15 MB.".to_string());
     }
-    LlamaCloudAdapter::from_environment()?
+    LlamaCloudAdapter::from_credential_or_environment(api_key_from_config)?
         .extract(name, mime_type, bytes)
         .await
 }
 
-fn validated_document(
+fn parse_library_credential(config: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(config).ok()?;
+    value
+        .get("llamacloud")?
+        .get("apiKey")?
+        .as_str()
+        .map(str::trim)
+        .filter(|key| !key.is_empty() && key.len() <= 256)
+        .map(str::to_string)
+}
+
+fn read_library_llamacloud_credential(
+    app: &tauri::AppHandle,
+    context: &FinanceContext,
+) -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let directory_uri = context
+            .android_directory_uri
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "La biblioteca Android no tiene un permiso SAF válido.".to_string())?;
+        let config_path = format!(
+            "{}/.notia/notiaConfig.json",
+            context.library_path.trim_end_matches(['/', '\\'])
+        );
+        let picker_state =
+            app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>();
+        let result = crate::filesystem::android_saf::read_library_file(
+            picker_state.inner(),
+            &config_path,
+            Some(directory_uri),
+        )
+        .ok_or_else(|| "No se pudo leer la configuración de la biblioteca Android.".to_string())?;
+        return if result.ok {
+            Ok(parse_library_credential(&result.content))
+        } else {
+            Err("No se pudo leer la configuración de la biblioteca Android.".to_string())
+        };
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let config_path = Path::new(context.library_path.trim())
+            .join(".notia")
+            .join("notiaConfig.json");
+        match std::fs::read_to_string(config_path) {
+            Ok(config) => Ok(parse_library_credential(&config)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("No se pudo leer la configuración de la biblioteca.".to_string()),
+        }
+    }
+}
+
+/// Android-only SAF reader for finance extraction. The logical path is
+/// resolved with the same directory picker state used by the rest of the
+/// library boundary, so documents are validated and read without a local
+/// filesystem path.
+#[cfg(target_os = "android")]
+fn read_saf_document(
+    app: &tauri::AppHandle,
     payload: &ExtractFinanceDocumentPayload,
 ) -> Result<(String, String, Vec<u8>), String> {
+    if payload.file_path.trim().is_empty() {
+        return Err("El documento no existe.".into());
+    }
+    let extension = Path::new(payload.file_path.trim())
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = match extension.as_str() {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return Err("Solo se admiten PDF, PNG, JPG y WEBP.".into()),
+    };
+    let picker_state = app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>();
+    let content_uri = {
+        let root_tree_uri = payload.context.android_directory_uri.as_deref();
+        match crate::filesystem::android_saf::read_library_file_bytes(
+            picker_state.inner(),
+            payload.file_path.trim(),
+            root_tree_uri,
+        ) {
+            Some(result) => result,
+            None => return Err("El documento no existe.".into()),
+        }
+    };
+    let (name, bytes) = match content_uri {
+        Ok(result) => result,
+        Err(error) => return Err(error),
+    };
+    if bytes.is_empty() || bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err("El documento debe pesar entre 1 byte y 15 MB.".into());
+    }
+    Ok((name, mime.to_string(), bytes))
+}
+
+/// Resolves the document bytes for extraction: SAF in Android, canonicalized
+/// local path on desktop. Authorization must already be validated.
+#[allow(unused_variables)]
+fn resolve_extraction_document(
+    app: &tauri::AppHandle,
+    payload: &ExtractFinanceDocumentPayload,
+) -> Result<(String, String, Vec<u8>), String> {
+    validate_document_identity(payload)?;
+    #[cfg(target_os = "android")]
+    {
+        read_saf_document(app, payload)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        validated_document(payload)
+    }
+}
+
+fn validate_document_identity(payload: &ExtractFinanceDocumentPayload) -> Result<(), String> {
     if !matches!(
         payload.document_type.as_str(),
         "ticket" | "salary" | "credit_card_statement" | "service_invoice"
@@ -169,7 +297,15 @@ fn validated_document(
                 .into(),
         );
     }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+fn validated_document(
+    payload: &ExtractFinanceDocumentPayload,
+) -> Result<(String, String, Vec<u8>), String> {
+    validate_document_identity(payload)?;
+    #[cfg(target_os = "ios")]
     {
         let _ = payload;
         return Err("En mobile seleccioná el documento mediante el flujo SAF de archivos.".into());
@@ -221,7 +357,7 @@ pub async fn extract_finance_document(
     // file reads and the external adapter must never run for an unauthorized
     // actor or an invalid source.
     let connection = validate_context(&payload.context, &app)?;
-    let (name, mime, bytes) = validated_document(&payload)?;
+    let (name, mime, bytes) = resolve_extraction_document(&app, &payload)?;
     let content_hash = format!("{:x}", Sha256::digest(&bytes));
     if let Some((stored_hash, stored_type, stored_reference)) = connection
         .query_row(
@@ -259,7 +395,8 @@ pub async fn extract_finance_document(
         }
     }
     drop(connection);
-    let adapter = LlamaCloudAdapter::from_environment()?;
+    let library_credential = read_library_llamacloud_credential(&app, &payload.context)?;
+    let adapter = LlamaCloudAdapter::from_credential_or_environment(library_credential.as_deref())?;
     let raw_result = adapter.extract(&name, &mime, bytes).await?;
     let raw_json = serde_json::to_string(&raw_result)
         .map_err(|_| "No se pudo serializar la extracción.".to_string())?;

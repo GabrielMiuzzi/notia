@@ -286,10 +286,10 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
       activeRequestRef.current = null
       persistAgentRequests()
     }
-    const cancelOnVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') interruptActiveRequest()
-    }
-    document.addEventListener('visibilitychange', cancelOnVisibilityChange)
+    // La solicitud activa vive en el runtime nativo de IA y puede continuar
+    // aunque el WebView pase a segundo plano; ocultar la app ya no interrumpe
+    // el trabajo en curso ni lo marca con estado desconocido. Solo el
+    // desmontaje del puente o una cancelación explícita la interrumpe.
     if (interruptedRequestsRef.current.length > 0) {
       const count = interruptedRequestsRef.current.length
       void sendTelegramMessageBestEffort(
@@ -994,7 +994,6 @@ export function useTelegramAgentBridge({ library, aiPreferences, telegram, onTel
     void loop()
     return () => {
       cancelled = true
-      document.removeEventListener('visibilitychange', cancelOnVisibilityChange)
       interruptActiveRequest()
       persistAgentRequests()
     }

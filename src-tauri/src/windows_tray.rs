@@ -39,52 +39,61 @@ fn request_application_exit<R: Runtime>(app: &AppHandle<R>) {
 }
 
 pub fn configure(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    builder
-        .setup(|app| {
-            let open_item =
-                MenuItem::with_id(app, OPEN_MENU_ID, "Abrir Notia", true, None::<&str>)?;
-            let exit_item = MenuItem::with_id(app, EXIT_MENU_ID, "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open_item, &exit_item])?;
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
+    // Bandeja del sistema exclusiva de Windows: en Android no existe el
+    // concepto de tray y la actividad sigue su ciclo de vida estándar.
+    #[cfg(not(target_os = "windows"))]
+    {
+        builder
+    }
+    #[cfg(target_os = "windows")]
+    {
+        builder
+            .setup(|app| {
+                let open_item =
+                    MenuItem::with_id(app, OPEN_MENU_ID, "Abrir Notia", true, None::<&str>)?;
+                let exit_item = MenuItem::with_id(app, EXIT_MENU_ID, "Salir", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&open_item, &exit_item])?;
+                let icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
 
-            TrayIconBuilder::new()
-                .icon(icon)
-                .tooltip("Notia")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    OPEN_MENU_ID => show_main_window(app),
-                    EXIT_MENU_ID => request_application_exit(app),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if matches!(
-                        event,
-                        TrayIconEvent::DoubleClick {
-                            button: MouseButton::Left,
-                            ..
+                TrayIconBuilder::new()
+                    .icon(icon)
+                    .tooltip("Notia")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        OPEN_MENU_ID => show_main_window(app),
+                        EXIT_MENU_ID => request_application_exit(app),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if matches!(
+                            event,
+                            TrayIconEvent::DoubleClick {
+                                button: MouseButton::Left,
+                                ..
+                            }
+                        ) {
+                            show_main_window(tray.app_handle());
                         }
-                    ) {
-                        show_main_window(tray.app_handle());
-                    }
-                })
-                .build(app)?;
+                    })
+                    .build(app)?;
 
-            Ok(())
-        })
-        .on_window_event(|window, event| {
-            if window.label() != MAIN_WINDOW_LABEL {
-                return;
-            }
-
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                if let Err(error) = window.hide() {
-                    log::error!("[notia:tray] failed to hide main window: {error}");
+                Ok(())
+            })
+            .on_window_event(|window, event| {
+                if window.label() != MAIN_WINDOW_LABEL {
+                    return;
                 }
-            }
-        })
+
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        log::error!("[notia:tray] failed to hide main window: {error}");
+                    }
+                }
+            })
+    }
 }

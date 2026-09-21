@@ -35,12 +35,9 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
   const threadRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
-    const cancelOnVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') abortControllerRef.current?.abort()
-    }
-    document.addEventListener('visibilitychange', cancelOnVisibilityChange)
     return () => {
-      document.removeEventListener('visibilitychange', cancelOnVisibilityChange)
+      // La sesión continúa en el runtime nativo aunque el WebView pase a
+      // segundo plano; solo se cancela al desmontar el componente.
       abortControllerRef.current?.abort()
     }
   }, [])

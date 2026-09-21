@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { beginPhantomClickSuppression } from '../utils/interactions/phantomClickSuppression'
 
 interface UseSubmenuEngineOptions {
   open: boolean
@@ -47,6 +48,18 @@ export function useSubmenuEngine<
       window.removeEventListener('keydown', handleEscape)
     }
   }, [onClose, open])
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    // Opening from a tap mounts the panel synchronously; the Android WebView
+    // then dispatches the tap's native click. Without the suppression window
+    // that click falls outside trigger/panel and closes the submenu right
+    // after it opened.
+    beginPhantomClickSuppression(triggerRef.current ?? panelRef.current)
+  }, [open])
 
   return {
     triggerRef,

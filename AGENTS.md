@@ -25,6 +25,18 @@ Este archivo define cómo trabajar en el repositorio. No contiene información e
 - Evitar código muerto, valores mágicos, casts amplios, estados imposibles y abstracciones de una sola implementación sin una frontera real.
 - No editar artefactos generados, dependencias vendorizadas ni archivos derivados salvo solicitud explícita.
 
+### Reglas específicas para archivos y filesystem en Android
+
+- Tratar las URI SAF `content://` como identificadores opacos: no normalizarlas como rutas, no colapsar sus barras, no decodificar ni reordenar sus segmentos y conservar la codificación recibida.
+- Diferenciar siempre la URI raíz `tree` (`/tree/`) de la URI de documento (`/document/`). La raíz representa el grant de la biblioteca; las lecturas y escrituras deben resolver un documento hijo real mediante SAF. Nunca enviar una URI `tree`, una ruta lógica o una URI sintética al comando que abre un archivo.
+- Mantener separadas la ruta lógica visible de la biblioteca y la URI SAF real. Los nodos Android pueden exponer la URI de documento como identificador; al abrir un archivo, conservar esa URI durante la vida de la pestaña y usarla también para guardar, sin reemplazar la ruta lógica usada por pestañas, enlaces, búsqueda o estado.
+- Validar en el límite toda URI y toda ruta lógica: exigir `content://`, autoridad válida, grant de árbol cuando corresponda y segmentos sin `.`/`..`, separadores embebidos ni traversal. Comprobar que el destino pertenece al árbol autorizado; nunca usar la raíz como fallback para una ruta anidada desconocida.
+- Centralizar la resolución Android en los adaptadores SAF. Las cachés de ruta lógica a URI deben tener límite, invalidarse después de crear, renombrar, mover o eliminar, y descartar resultados obsoletos; preferir resolución lazy por subárbol y consultas acotadas frente a reconstrucciones recursivas completas.
+- Solicitar y conservar permisos SAF de lectura y escritura cuando se selecciona una biblioteca. Traducir la revocación (`SecurityException`), cancelación, suspensión y pérdida de foco en errores recuperables que permitan volver a seleccionar la biblioteca; no ocultar el error ni continuar con una URI vacía.
+- Mantener contratos explícitos entre frontend, Rust y Kotlin para `directoryUri`, URI de documento y rutas lógicas. Si existe una fuente Kotlin y una copia Android generada, verificar su sincronización mediante el mecanismo del proyecto y no editar la copia manualmente salvo solicitud explícita.
+- No registrar URI completas, grants, tokens ni contenido privado. Los diagnósticos solo pueden indicar presencia, tipo, autoridad anonimizada o longitudes seguras.
+- Incorporar regresiones para preservar URI `content://`, distinguir tree/document, resolver archivos abiertos desde el árbol, guardar usando la URI real, invalidar cachés y manejar permisos revocados o URI inválidas.
+
 ## Contratos y límites
 
 - Tratar toda entrada externa como no confiable y validarla en el límite correspondiente.

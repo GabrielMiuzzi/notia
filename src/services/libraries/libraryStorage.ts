@@ -1,5 +1,6 @@
 import type { NotiaLibrary } from '../../types/notia'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
+import { getSafTreeDisplayName, isSafTreeUri } from '../../utils/files/safUri'
 
 const LIBRARIES_STORAGE_KEY = 'notia:libraries'
 const ACTIVE_LIBRARY_STORAGE_KEY = 'notia:active-library-id'
@@ -14,7 +15,7 @@ function isValidLibrary(value: unknown): value is NotiaLibrary {
     typeof candidate.id === 'string' &&
     typeof candidate.name === 'string' &&
     typeof candidate.path === 'string' &&
-    (typeof candidate.androidTreeUri === 'undefined' || typeof candidate.androidTreeUri === 'string')
+    (typeof candidate.androidTreeUri === 'undefined' || isSafTreeUri(candidate.androidTreeUri))
   )
 }
 
@@ -29,13 +30,18 @@ export function loadLibraries(): NotiaLibrary[] {
     if (!Array.isArray(parsed)) {
       return []
     }
-    return parsed.filter(isValidLibrary).map((library) => ({
-      ...library,
-      path: normalizeFilesystemPath(library.path),
-      androidTreeUri: typeof library.androidTreeUri === 'string' && library.androidTreeUri.trim()
-        ? library.androidTreeUri
-        : undefined,
-    }))
+    return parsed.filter(isValidLibrary).map((library) => {
+      const androidTreeUri = isSafTreeUri(library.androidTreeUri)
+        ? library.androidTreeUri.trim()
+        : undefined
+
+      return {
+        ...library,
+        name: getSafTreeDisplayName(androidTreeUri) ?? library.name,
+        path: normalizeFilesystemPath(library.path),
+        androidTreeUri,
+      }
+    })
   } catch {
     return []
   }

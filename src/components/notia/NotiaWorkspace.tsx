@@ -241,6 +241,7 @@ function NotiaWorkspaceComponent({
       onOpenLinkedFile={handleOpenFileFromView}
       theme={appTheme}
       contexts={libraryContexts}
+      activeLibrary={activeLibrary}
     />
   )
 }

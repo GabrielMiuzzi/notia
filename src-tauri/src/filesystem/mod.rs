@@ -1,4 +1,4 @@
-mod android_saf;
+pub(crate) mod android_saf;
 pub mod commands;
 pub(crate) mod desktop;
 mod helpers;

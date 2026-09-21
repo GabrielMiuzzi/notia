@@ -4,6 +4,7 @@ fn main() {
     prepare_android_directory_picker_plugin();
     prepare_android_database_plugin();
     prepare_android_ai_plugin();
+    prepare_android_continuity_plugin();
     tauri_build::build()
 }
 
@@ -90,6 +91,37 @@ fn prepare_android_database_plugin() {
     std::fs::copy(source, destination).expect("failed to install Android database plugin source");
 }
 
+fn prepare_android_continuity_plugin() {
+    if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(std::ffi::OsStr::new("android")) {
+        return;
+    }
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let source = manifest_dir
+        .join("resources")
+        .join("continuity")
+        .join("android")
+        .join("ContinuityPlugin.kt");
+    let destination = manifest_dir
+        .join("gen")
+        .join("android")
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("gabriel")
+        .join("notia")
+        .join("ContinuityPlugin.kt");
+    println!("cargo:rerun-if-changed={}", source.display());
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .expect("failed to create Android continuity plugin directory");
+    }
+    std::fs::copy(source, destination).expect("failed to install Android continuity plugin source");
+}
+
 /// Los modelos base se distribuyen dentro del bundle de la aplicación. Fallar
 /// durante el build evita generar un APK/EXE que luego pida una instalación
 /// manual en AppData.
@@ -153,18 +185,35 @@ fn prepare_android_speech_runtime() {
         .join("main")
         .join("AndroidManifest.xml");
     if let Ok(contents) = std::fs::read_to_string(&manifest_path) {
-        if !contents.contains("android.permission.RECORD_AUDIO") {
-            if let Some(manifest_start) = contents.find("<manifest") {
-                if let Some(relative_end) = contents[manifest_start..].find('>') {
-                    let mut updated = contents;
-                    updated.insert_str(
-                        manifest_start + relative_end + 1,
-                        "\n    <uses-permission android:name=\"android.permission.RECORD_AUDIO\" />",
-                    );
-                    std::fs::write(&manifest_path, updated)
-                        .expect("failed to add RECORD_AUDIO to the generated Android manifest");
+        let mut updated = contents.clone();
+        let permissions = [
+            "\n    <uses-permission android:name=\"android.permission.RECORD_AUDIO\" />",
+            "\n    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />",
+            "\n    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_MICROPHONE\" />",
+            "\n    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_DATA_SYNC\" />",
+            "\n    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />",
+        ];
+        for permission_tag in permissions {
+            let permission_name = permission_tag
+                .replace("\n    <uses-permission android:name=\"", "")
+                .replace("\" />", "");
+            if !updated.contains(&permission_name) {
+                if let Some(manifest_start) = updated.find("<manifest") {
+                    if let Some(relative_end) = updated[manifest_start..].find('>') {
+                        updated.insert_str(manifest_start + relative_end + 1, permission_tag);
+                    }
                 }
             }
+        }
+        let service_declaration = "\n        <service\n            android:name=\".ContinuityPlugin$ContinuityService\"\n            android:exported=\"false\"\n            android:foregroundServiceType=\"microphone|dataSync\" />";
+        if !updated.contains("ContinuityService") {
+            if let Some(application_start) = updated.find("</application>") {
+                updated.insert_str(application_start, service_declaration);
+            }
+        }
+        if updated != contents {
+            std::fs::write(&manifest_path, updated)
+                .expect("failed to add continuity permissions to the generated Android manifest");
         }
     }
     let source_dir = manifest_dir

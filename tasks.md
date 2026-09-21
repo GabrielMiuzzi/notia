@@ -1,207 +1,142 @@
-# Optimización global de rendimiento, memoria e I/O
+# Estabilización integral del filesystem Android (SAF)
 
-> Estado: Fase 1 implementada según el estado preexistente; las fases 2–7 tienen implementación parcial y validaciones automatizadas en curso. Se cerró la reconciliación transaccional del inventario y la invalidación de cambios conocidos, pero siguen pendientes las validaciones manuales de plataforma y varios criterios de medición.
+> Estado: implementación automatizada avanzada; quedan pendientes la validación manual en Android/Windows y varias comprobaciones de ciclo de vida y proveedor SAF. Este documento reemplaza los planes parciales anteriores y define el trabajo necesario para corregir el alta de bibliotecas y consolidar toda la frontera SAF Android sin regresiones en Windows.
 >
-> Este plan reemplaza el plan anterior del motor global de IA por decisión explícita de la persona usuaria.
+> Contexto de reproducción confirmado: Lenovo Yoga Tab Plus, almacenamiento interno. La APK se ejecutó desde `npm run dev:android` y Android Studio después de las correcciones SAF previas. La versión exacta de Android y el proveedor DocumentsUI quedan pendientes de identificar.
+
+## Incidente principal
+
+En Android, desde **Administrar librerías → Agregar nueva librería**, el selector permite elegir una carpeta y confirmar **Usar esta carpeta**, pero la biblioteca no se agrega. El log disponible muestra `readTree`, seguido de `createPathEntry rootUri=` vacío y el rechazo `No se recibió una URI SAF válida.`.
+
+El contrato que debe mantenerse es:
+
+```text
+Selección SAF (URI tree persistida)
+  → selection.androidTreeUri
+  → NotiaLibrary.androidTreeUri
+  → filesystemEngine.directoryUri
+  → payload.directory_uri Rust
+  → android_saf.root_tree_uri
+  → createPathEntry.rootUri Kotlin
+```
+
+La ruta lógica de una biblioteca Android conserva la URI tree `content://.../tree/...`; los documentos reales SAF son URI `content://.../document/...`. No se debe tratar una ruta sintética construida bajo una URI tree como si fuera un documento real.
+
+### Seguimiento del incidente — 21 de septiembre de 2026
+
+- **Causa confirmada:** en Tauri 2.10.3, `DirectoryPickerPlugin.runSaf` usaba `invoke.parseArgs(JSONObject::class.java)`. Jackson ignoraba las claves del payload y entregaba un objeto vacío, perdiendo `rootUri`, `segments` y `content`. La reproducción se ejecutó en JVM con Robolectric, el `Invoke` real y el mapper construido por `PluginManager` de Tauri.
+- **Corrección focalizada:** `runSaf` usa `invoke.getArgs()`. `normalizeToDocumentUri` distingue `DocumentsContract.isDocumentUri(activity, uri)` de `isTreeUri` y convierte el tree puro con `getTreeDocumentId`, conservando documentos existentes sin inventar un grant tree para un documento puro. Los listados normalizan la URI antes de consultar `getDocumentId`. La fuente autoritativa sigue en `src-tauri/resources/directory-picker/android/DirectoryPickerPlugin.kt`; la copia generada se sincronizó únicamente mediante `build.rs`.
+- **Regresión ejecutada:** `src-tauri/resources/directory-picker/tests/DirectoryPickerPluginTest.kt`, mediante `saf-tests.init.gradle`: antes del fix, 10 tests con **7 fallos**; después, **10 aprobados y 0 fallos**. Cubre conservación de los tres campos, tree puro, documento hijo, documento puro y consultas de `readTree`, `readDirectory` y `readFlatFileList` con un proveedor vacío de prueba.
+- **Validaciones aprobadas:** compilación Kotlin normal `:app:compileArm64DebugKotlin --no-daemon`, `cargo check --target aarch64-linux-android` tras configurar explícitamente los compiladores y el archivador del NDK, y `git diff --check`.
+- **Pendientes:** no se verificó el alta completa ni la escritura en un proveedor SAF real; no hay una APK validada para este fix ni validación manual en dispositivo. La comprobación completa de permisos por operación sigue pendiente y `pathExists` todavía captura errores y devuelve `false`. Este seguimiento no completa ninguna fase ni cierra el alcance restante de estabilización SAF.
 
 ## Objetivo
 
-Reducir al máximo los renders innecesarios, las lecturas repetidas del filesystem y el consumo de memoria de Notia en toda la aplicación, priorizando el Explorer/árbol y Android. La aplicación debe seguir funcionando con bibliotecas extremadamente grandes y conservar un inventario lógico completo sin materializar simultáneamente todo el árbol, todas las entradas planas y todo el contenido en la memoria del WebView.
+Dejar una única frontera SAF consistente, segura y observable para todas las operaciones de archivos Android:
 
-## Decisiones confirmadas
+- selección y persistencia de bibliotecas;
+- lectura de árbol, directorio, inventario plano y archivos de texto/binarios;
+- creación, escritura, borrado, renombrado, copia y movimiento;
+- configuración `.notia/notiaConfig.json`, exportaciones y documentos financieros;
+- permisos revocados, cachés obsoletas, suspensión, reinicio y recuperación;
+- interacción touch y estados de error/reintento visibles.
 
-- Incluir toda la aplicación, con prioridad en Explorer/árbol y Android.
-- Evaluar `useMemo`, `React.memo`, `useCallback`, selectores Redux memoizados, `useDeferredValue`, `startTransition`, virtualización y mecanismos equivalentes.
-- Se permiten cachés en memoria, siempre que tengan propietario, límites, TTL o generación e invalidación explícitos.
-- El inventario lógico de la biblioteca debe ser completo y consultable.
-- El inventario completo no debe mantenerse necesariamente entero en Redux o RAM; puede residir en un índice persistente y consultarse por lotes.
-- Mantener las capacidades actuales de búsqueda, Graph View, edición, mutaciones, watcher de escritorio y refresco Android.
-- Priorizar un funcionamiento estable en dispositivos Android con al menos 8 GB de RAM.
-- No asumir que una biblioteca tiene un tamaño máximo pequeño.
-- El código fuente del plugin Android `DirectoryPickerPlugin` no está presente en este repositorio; su frontera Rust y cualquier dependencia externa deben quedar documentadas y validadas cuando sea posible.
+Windows debe conservar los contratos y el comportamiento actuales. No se modifican ColdPass ni capacidades exclusivas de Windows.
 
-## Fuera de alcance
+## Criterios transversales
 
-- Cambiar capacidades funcionales sin justificación y validación explícita.
-- Eliminar el inventario completo para resolver el consumo de memoria.
-- Cargar datos privados, rutas privadas o contenido de bibliotecas en servicios externos.
-- Ejecutar builds de release, firma, publicación o instalación en dispositivos sin solicitud explícita.
-- Editar documentación funcional o técnica durante la planificación. La documentación se actualizará al finalizar la implementación mediante el flujo obligatorio.
+- [x] Conservar la URI SAF completa, incluida la doble barra de `content://`, sin normalizarla como ruta local.
+- [ ] Validar datos externos en cada límite TypeScript, Rust y Kotlin; rechazar URI vacía, no `content://`, rutas fuera del grant, traversal y segmentos inválidos.
+- [x] Usar URI tree únicamente como grant raíz y URI document únicamente para I/O sobre una entrada existente.
+- [x] No registrar URI completas, contenido de archivos ni credenciales. Los diagnósticos solo pueden registrar presencia, tipo, tamaño, hash no reversible o códigos de error seguros.
+- [ ] No ocultar errores SAF devolviendo una colección vacía; preservar un error recuperable hasta la interfaz con una acción visible de reintento.
+- [ ] Centralizar el mapeo ruta lógica ↔ URI document, con caché limitada, invalidación de subárbol, TTL, resultados obsoletos y permisos revocados explícitos.
+- [ ] No asumir que una operación concluyó tras suspensión, destrucción de Activity o revocación de permiso; comunicar el resultado verificable al volver.
+- [x] Mantener operaciones esenciales accesibles con touch, teclado y mouse; no depender de clic derecho, hover ni precisión del puntero.
 
-## Hallazgos iniciales
+## Fase 0 — Línea base, trazabilidad y sincronización de artefactos
 
-- `NotiaMenu` concentra muchos selectores Redux, hooks, callbacks y contextos; cambios locales pueden provocar renders en gran parte de la aplicación.
-- `NotiaActionsContext` es monolítico. `useNotiaAction` estabiliza la función devuelta, pero los consumidores siguen suscritos al valor completo del contexto.
-- `toggleFolderNodeExpanded` y `setFolderExpandedByPath` reconstruyen más nodos de los necesarios; esto reduce el beneficio de `React.memo` en `TreeRow`.
-- `FileTree` ya usa virtualización, pero los cambios de identidad del árbol, el estado de drag and drop y el scroll pueden producir renders adicionales.
-- `useLibraryTreeSync` coordina la carga del árbol, estructuras auxiliares, SQLite, watcher, firma, búsqueda y lista plana; hay oportunidades de coalescer operaciones.
-- El runtime de biblioteca deduplica lecturas en vuelo, pero no mantiene un caché finalizado común con generaciones e invalidación por subárbol.
-- En Android, la activación inicial puede leer estructuras auxiliares, el árbol visible y una lista plana recursiva completa; la lista plana se guarda además en Redux.
-- `librarySearchGraphIndex` puede mantener descriptores y contenido completo por biblioteca, duplicando memoria con `treeNodes`, `flatFileList` y `graphSourcesByPath`.
-- `ensureChatLibraryStructure` y `ensureAgentPromptFile` realizan comprobaciones y lecturas auxiliares durante el cambio de biblioteca que deben coordinarse con el bootstrap general.
-- La regeneración de `linkCache.md` puede volver a cargar fuentes y construir modelos completos en segundo plano.
-- La implementación Android de `DirectoryPickerPlugin` no aparece en el árbol del repositorio; solo está disponible la integración nativa Rust.
+- [x] Revisar el diff preexistente y no sobrescribir cambios ajenos; identificar qué partes de la frontera SAF ya fueron modificadas y cuáles siguen siendo inconsistentes.
+- [x] Verificar que `src-tauri/resources/directory-picker/android/DirectoryPickerPlugin.kt` sea la fuente autoritativa y que la copia bajo `src-tauri/gen/android/...` coincida exactamente antes de construir.
+- [x] Confirmar el recorrido real de `npm run dev:android`, Android Studio y Gradle para asegurar que la APK instalada contiene el plugin y Rust actuales; documentar cómo comprobar la versión/build sin exponer datos privados.
+- [x] Añadir instrumentación temporal, segura y acotada para distinguir: URI ausente en selector, pérdida de `androidTreeUri` en frontend, pérdida de `directoryUri` en payload, `root_tree_uri` vacío en Rust y `rootUri` vacío en Kotlin.
+- [ ] Eliminar o reducir la instrumentación diagnóstica antes de entrega, conservando solo logs seguros y accionables.
+- [ ] Registrar baseline reproducible: flujo de alta, cantidad de invocaciones SAF (`readTree`, `createPathEntry`), resultado y mensajes de error sin URI completa.
 
-## Contratos y criterios transversales
+## Fase 1 — Corrección del alta de biblioteca SAF
 
-- Una lectura debe tener una única fuente de verdad por sesión de biblioteca y una generación identificable.
-- Una respuesta de filesystem asociada a una generación obsoleta no puede sobrescribir el estado actual.
-- Las mutaciones deben invalidar únicamente la ruta o subárbol afectado cuando sea seguro; las operaciones que no puedan acotarse deben invalidar la generación completa.
-- Las lecturas concurrentes idénticas deben compartir la misma promesa.
-- Las lecturas ya finalizadas deben reutilizarse cuando su TTL o generación continúe vigente.
-- Toda caché debe tener límites de memoria, política de expulsión y dueño claro.
-- El inventario completo debe poder consultarse sin exponerlo entero al estado global del WebView.
-- Las operaciones largas deben ser cancelables, tener timeout, cleanup y descarte de resultados obsoletos.
-- Las optimizaciones no deben confiar únicamente en memoización: primero deben medirse renders, identidad de referencias, I/O, tiempos y memoria.
-- No se deben registrar contenidos, secretos, credenciales ni rutas privadas en métricas o logs.
+- [x] Inspeccionar y corregir la propagación completa `pickDirectoryTree → pick_android_directory_tree → filesystemEngine → libraryRuntime → LibraryManagerModal → ensureLibraryConfigExists → create_library_file`.
+- [x] Exigir que una selección Android válida entregue una única URI tree no vacía y `content://`; no continuar si `path` y `uri` son inconsistentes.
+- [x] Asegurar que `NotiaLibrary.path` y `NotiaLibrary.androidTreeUri` conserven el contrato definido, incluso tras serialización, Redux, cambio de biblioteca y reinicio de WebView.
+- [x] Asegurar que la creación inicial de `.notia/notiaConfig.json` pase explícitamente el grant raíz a Rust y Kotlin, sin depender de que `readTree` descubra primero `.notia`.
+- [x] Crear de forma idempotente `.notia` y `notiaConfig.json` desde la raíz seleccionada, sin sobrescribir una configuración compatible existente y rechazando colisiones de tipo.
+- [x] Mantener el modal abierto ante cancelación o error, restaurar el estado de carga y mostrar un mensaje recuperable; cerrarlo únicamente cuando la configuración y el alta persistida finalicen correctamente.
+- [x] Añadir regresiones TypeScript para URI ausente, URI preservada, payload de creación con `directoryUri`, configuración existente, configuración ausente y error recuperable del backend.
+- [x] Añadir pruebas Rust puras para derivación de segmentos relativos, coincidencia de raíz exacta, rechazo de rutas fuera del grant y propagación del error original.
 
-## Fase 1 — Baseline, instrumentación y contratos
+## Fase 2 — Contrato único de URI, rutas y cachés SAF
 
-- [x] Revisar los consumidores de `treeNodes`, `flatFileList`, `indexRevision`, `activeLibrary` y `NotiaActionsContext`.
-- [x] Inventariar todos los puntos que leen árboles, directorios, listas planas, firmas y contenidos.
-- [x] Medir renders con React Profiler en Explorer, workspace, panel derecho, Graph View, chat y vistas pesadas.
-- [x] Contabilizar lecturas por operación: cambio de biblioteca, expansión, búsqueda, apertura, mutación, Graph View y regeneración del cache de enlaces.
-- [x] Medir duración, cantidad de nodos, cantidad de entradas, tamaño de payloads y memoria aproximada sin registrar datos privados.
-- [x] Definir escenarios reproducibles con bibliotecas pequeñas, grandes, muchas carpetas y estructuras profundamente anidadas.
-- [x] Definir el contrato de generación, invalidación y cancelación del futuro runtime de inventario.
-- [x] Registrar el baseline antes de alterar comportamiento.
+- [x] Definir y aplicar un contrato único para claves de caché: ruta lógica bajo la URI tree normalizada y URI document real como valor; no usar URI sintéticas como destinos de I/O.
+- [x] Corregir la normalización y unión de rutas para `content://`, barras finales, backslashes, caracteres codificados y prefijos; no permitir coincidencias por prefijo ambiguas entre bibliotecas.
+- [x] Revisar `resolve_entry_uri`, `resolve_android_tree_uri`, `roots`, `paths` y LRU para que una ruta desconocida nunca se resuelva erróneamente a la raíz.
+- [x] Sembrar la URI document devuelta por una creación y actualizar/invalidate solo las claves afectadas; preservar entradas hermanas válidas.
+- [x] Establecer límites verificables para TTL, capacidad LRU, profundidad y traversal; descartar respuestas asociadas a otra biblioteca, a una generación obsoleta o a un permiso revocado.
+- [x] Evitar recorridos recursivos completos para pintar directorios expandibles; usar `readDirectory` para subárboles y reservar `readTree`/inventario plano para consumidores que realmente lo requieren.
+- [ ] Añadir regresiones para aislamiento de dos bibliotecas, rutas sintéticas, URI document directa, rutas anidadas desconocidas, invalidación selectiva y resultados obsoletos.
 
-## Fase 2 — Reducción de renders en la aplicación
+## Fase 3 — Operaciones SAF de lectura y escritura
 
-- [ ] Separar `NotiaMenu` en contenedores de Explorer, workspace, panel derecho, toolbar y modales cuando el profiling demuestre beneficio.
-- [ ] Reducir suscripciones amplias a Redux mediante selectores específicos y `createSelector` con igualdad de resultado.
-- [x] Dividir `NotiaActionsContext` por dominios o introducir un mecanismo selector-based sin añadir una dependencia innecesaria.
-- [ ] Revisar comparadores de `React.memo` en `NotiaSidebar`, `NotiaWorkspace`, `FileTree`, `TreeRow`, `WindowTitleBar`, panel derecho y vistas pesadas.
-- [ ] Estabilizar arrays, sets, objetos de contexto y callbacks enviados como props.
-- [ ] Aplicar `useMemo` solo a transformaciones costosas y con dependencias reales; eliminar memoizaciones que no aporten valor.
-- [ ] Revisar `useDeferredValue` y `startTransition` para que búsqueda, Graph View y cambios pesados no bloqueen el hilo de interfaz.
-- [x] Actualizar el scroll de `useVirtualList` de forma agrupada con `requestAnimationFrame` y evitar actualizaciones redundantes.
-- [ ] Conservar estados de carga, error, vacío, foco, selección, cancelación y accesibilidad.
-- [ ] Agregar pruebas o mediciones de regresión para demostrar qué componentes dejan de renderizarse.
+- [x] Revisar y completar el contrato Kotlin/Rust para `readTree`, `readDirectory`, `readFlatFileList`, `readFile`, `readFileBinary`, `writeFile`, `statEntry`, `createEntry`, `createPathEntry`, `deleteEntry`, `renameEntry`, `copyEntry` y `moveEntry`.
+- [ ] Normalizar URI tree a URI document antes de abrir streams o consultar hijos, y comprobar permisos de lectura/escritura antes de cada operación relevante. Reabierto el 21 de septiembre: normalización corregida y cubierta por regresiones JVM; sigue pendiente la comprobación completa de permisos por operación.
+- [x] Corregir texto y binarios para que Base64 se decodifique exactamente una vez; verificar Markdown UTF-8, PDF, DOCX e imágenes sin corrupción ni escritura literal de Base64.
+- [x] Mantener la semántica de creación: contenido inicial solo en archivo nuevo; no truncar un archivo compatible existente; limpiar best-effort un destino nuevo si falla su contenido inicial.
+- [x] Hacer que creación binaria/exportación cree el destino dentro del grant cuando falta, con validación de padre y nombre, y devuelva el error específico si no puede hacerlo.
+- [x] Verificar éxito de borrado, renombrado, copia y movimiento; rechazar duplicados, mover una carpeta dentro de sí misma, operaciones fuera del árbol y proveedores que no soporten la operación.
+- [ ] Propagar el detalle seguro de errores del plugin a Rust y TypeScript; no sustituir un permiso revocado, URI inválida o proveedor rechazado por `[]`, `false` o un mensaje genérico. Reabierto el 21 de septiembre: `pathExists` todavía captura errores y devuelve `false`.
+- [ ] Añadir pruebas Kotlin unitarias cuando el proyecto lo permita, y pruebas Rust/TypeScript para los contratos serializados de cada comando.
 
-## Fase 3 — Structural sharing del árbol y virtualización
+## Fase 4 — Consumidores del filesystem y recuperación visible
 
-- [x] Reescribir `toggleFolderNodeExpanded` para clonar únicamente el camino hasta la carpeta objetivo.
-- [x] Reescribir `setFolderExpandedByPath` con la misma estrategia de referencias compartidas.
-- [ ] Revisar `setAllFoldersExpanded`, selección, renombrado, movimientos, inserción de hijos y decoración de búsqueda.
-- [ ] Mantener idénticas las referencias de nodos y ramas no afectadas.
-- [ ] Evitar que una expansión o selección reconstruya toda la lista visible si no cambió su contenido.
-- [x] Revisar las props de `TreeRow` y, si corresponde, agregar un comparador observable que ignore cambios irrelevantes.
-- [ ] Mantener la virtualización para árboles grandes y ajustar overscan con mediciones en Android.
-- [ ] Agregar pruebas de identidad referencial y comportamiento para expandir, contraer, seleccionar, buscar y mover nodos.
+- [ ] Auditar todos los consumidores TypeScript de `filesystemEngine`, incluidos explorador, apertura/guardado de documentos, configuración, inventario/búsqueda, Task Manager, memoria del agente, exportación Markdown y extracción financiera.
+- [ ] Asegurar que cada llamada Android reciba el `androidDirectoryUri` correcto de la biblioteca dueña, nunca el URI de una subcarpeta o de otra biblioteca.
+- [ ] Corregir los flujos que capturan errores de lectura y devuelven `[]`, de modo que la UI diferencie carpeta vacía de fallo SAF y permita reintentar.
+- [ ] Ofrecer en el explorador acciones táctiles visibles para crear, renombrar, mover, copiar, pegar, eliminar y reintentar, conservando mouse, teclado y menú contextual de Windows.
+- [x] Revisar exportación PDF/DOCX para Android: seleccionar un destino permitido, crear el documento SAF cuando corresponda, escribir bytes mediante la frontera común y mostrar resultado/error verificable.
+- [ ] Revisar extracción financiera: leer el binario mediante la frontera SAF común, aplicar límites de tamaño/memoria y conservar errores recuperables sin registrar ni mutar entidades automáticamente.
+- [ ] Verificar que `.notia`, archivos del agente, inventario y archivos de usuario usan el mismo contrato y no generan recorridos completos repetidos.
 
-## Fase 4 — Runtime único de inventario y lecturas de filesystem
+## Fase 5 — Permisos, ciclo de vida y persistencia Android
 
-- [x] Diseñar un runtime de inventario por biblioteca que centralice lecturas, caché, generaciones, deduplicación, timeout y cancelación.
-- [x] Añadir caché de resultados finalizados para árbol visible, directorios y metadatos, con TTL o generación explícita.
-- [x] Coalescer lecturas concurrentes de la misma biblioteca, carpeta o archivo.
-- [ ] Compartir resultados entre bootstrap, Explorer, búsqueda, Graph View, chat y estructuras auxiliares cuando el contrato lo permita.
-- [x] Evitar que `readLibraryTreeSignature` provoque un recorrido completo como fallback sin una decisión de coste documentada.
-- [x] Coordinar `ensureChatLibraryStructure`, `ensureAgentPromptFile`, SQLite y carga del Explorer para evitar lecturas repetidas durante el cambio de biblioteca.
-- [x] Invalidar únicamente el subárbol afectado por crear, renombrar, eliminar, copiar o mover.
-- [x] Invalidar por generación completa cuando una operación externa no aporte una ruta fiable.
-- [x] Descartar resultados de bibliotecas anteriores o requests canceladas.
-- [ ] Mantener compatibilidad entre Windows, macOS, Linux y Android.
-- [x] Agregar pruebas de deduplicación, TTL, invalidación, generaciones, errores, timeout y cancelación.
+- [x] Revisar la persistencia del grant con `takePersistableUriPermission`, flags realmente concedidos y tratamiento de `SecurityException`/permiso revocado.
+- [ ] Definir la recuperación al volver desde suspensión, cambio de aplicación, bloqueo/desbloqueo, reinicio de proceso y revocación/reconcesión de permisos.
+- [ ] Invalidar de forma segura caches y referencias en memoria al recuperar, sin borrar archivos de usuario ni afirmar éxito de operaciones interrumpidas.
+- [ ] Revisar la base SQLite Android relacionada con bibliotecas: identidad estable por URI grant, migración al inicializar, temporales, reemplazo recuperable/atómico y limpieza tras fallos.
+- [ ] Validar que Finanzas, usuarios, roles e inventario sobreviven a reinicio y a una interrupción durante sincronización sin pérdida silenciosa.
+- [ ] Añadir pruebas deterministas de validadores, transiciones de estado y recuperación donde no se requiera un proveedor SAF real.
 
-## Fase 5 — Inventario completo persistente y acotado en memoria
+## Fase 6 — Validación automatizada y de plataforma
 
-- [x] Definir el DTO estable del inventario completo: ruta, tipo, nombre, padre, metadatos disponibles, revisión y generación.
-- [x] Elegir la persistencia nativa adecuada, priorizando la base SQLite existente y evitando duplicar formatos sin necesidad.
-- [ ] Crear una migración versionada, idempotente y reversible para el inventario.
-- [x] Implementar sincronización inicial incremental y transaccional por lotes.
-- [x] Implementar upsert y eliminación por subárbol después de mutaciones o cambios externos.
-- [x] Permitir consultas completas, filtradas, ordenadas y paginadas desde el runtime sin cargar toda la respuesta en Redux.
-- [x] Mantener en Redux solo la proyección visible del árbol, selección, expansión y resultados necesarios para la pantalla activa.
-- [ ] Evitar mantener simultáneamente el inventario completo en `flatFileList`, el árbol Redux y varios índices JavaScript.
-- [x] Diseñar límites para colas, lotes, buffers y operaciones concurrentes.
-- [ ] Cubrir interrupción del proceso, base incompleta, migración fallida, reanudación y cambio de biblioteca.
+- [ ] Ejecutar las pruebas dirigidas TypeScript/Rust/Kotlin de los módulos modificados y añadir regresiones por cada bug corregido.
+- [x] Ejecutar `npx tsc --noEmit`, `npm run lint`, `npm test -- --run`, `npm run build -- --minify=false`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, `cargo check --manifest-path src-tauri/Cargo.toml --tests` y `git diff --check`.
+- [ ] Compilar una APK debug actual con el flujo documentado, sin firmar, publicar ni instalar automáticamente.
+- [ ] Validar manualmente en la Lenovo Yoga Tab Plus: seleccionar almacenamiento interno, agregar biblioteca, cerrar/reabrir aplicación, cambiar de app, bloquear/desbloquear y retirar/reconceder permiso.
+- [ ] Validar manualmente lectura, creación de carpetas/notas, guardado, renombrado, copia, movimiento, eliminación, exportación PDF/DOCX y error/reintento en Android.
+- [ ] Validar Windows para apertura de modales, selección de bibliotecas, árbol, edición, exportación y operaciones de archivos afectadas.
+- [ ] Registrar proveedor SAF y versión Android al ejecutar QA; si no están disponibles, declararlos como limitación explícita.
 
-## Fase 6 — Android SAF y frontera nativa
+## Fase 7 — Cierre y documentación
 
-- [x] Mantener el árbol Android lazy por carpeta expandida, sin leer recursivamente toda la biblioteca para pintar el Explorer.
-- [x] Sustituir la carga inicial completa de `read_android_flat_file_list` en Redux por sincronización del inventario persistente.
-- [ ] Evitar recorridos repetidos de `readTree` y reutilizar la caché de URI existente.
-- [ ] Resolver solo rutas Android desconocidas y conservar las rutas ya resueltas mientras la generación sea válida.
-- [ ] Actualizar inventario y caché de URI después de crear, eliminar, renombrar, copiar y mover.
-- [ ] Verificar el contrato real de `DirectoryPickerPlugin` o registrar formalmente la dependencia externa si no puede incorporarse al repositorio.
-- [ ] Revisar límites JNI, tamaño de payloads, locks, cleanup y errores SAF.
-- [ ] Validar manualmente en Android 8 GB o documentar explícitamente la falta de dispositivo disponible.
-
-## Fase 7 — Búsqueda, Graph View e índices de contenido
-
-- [x] Hacer que la búsqueda consulte el inventario completo sin materializar toda la biblioteca en JavaScript.
-- [ ] Mantener cobertura completa de nombres, rutas y contenido permitido mediante consultas o índices por lotes.
-- [ ] Evitar que cada búsqueda reconstruya el índice completo.
-- [ ] Revisar `librarySearchGraphIndex` para limitar entradas, contenido crudo, contenido normalizado y duplicaciones.
-- [x] Compartir descriptores y resultados entre búsqueda y Graph View sin retener buffers innecesarios.
-- [ ] Construir modelos de Graph View por lotes y liberar fuentes temporales después de procesarlas.
-- [ ] Mantener el grafo completo cuando el usuario lo solicite, documentando que el modelo visual final crece con nodos y enlaces.
-- [x] Evitar que cambios de UI o renders disparen `linkCache.md` nuevamente.
-- [x] Mantener la regeneración del cache de enlaces cancelable, debounced y basada en una generación estable.
-- [ ] Agregar pruebas de cobertura completa, cambios incrementales, archivos faltantes, contenido grande, cancelación y memoria.
-
-## Fase 8 — Validación funcional, rendimiento y multiplataforma
-
-- [x] Ejecutar pruebas unitarias y de integración de los módulos modificados.
-- [x] Ejecutar `npm test -- --run`.
-- [x] Ejecutar `npx tsc --noEmit`.
-- [x] Ejecutar `npm run lint`.
-- [x] Ejecutar `npm run build -- --minify=false`.
-- [x] Ejecutar `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`.
-- [x] Ejecutar `cargo check --manifest-path src-tauri/Cargo.toml --tests`.
-- [x] Ejecutar `git diff --check`.
-- [ ] Comparar renders, lecturas, duración y memoria contra el baseline.
-- [ ] Validar cambio de biblioteca, expansión repetida, búsqueda, Graph View, mutaciones, watcher y recuperación.
-- [ ] Validar Android/SAF con biblioteca grande, pérdida de foco, suspensión, cancelación y reanudación.
-- [ ] Registrar plataformas no disponibles y no afirmar validaciones manuales no ejecutadas.
-
-## Fase 9 — Política permanente para futuros desarrollos
-
-- [x] Actualizar `AGENTS.md` con reglas obligatorias para preservar esta política:
-  - [x] Medir renders, lecturas, tiempos y memoria antes de optimizar.
-  - [x] Evitar suscripciones Redux amplias y renders derivados innecesarios.
-  - [x] Usar `useMemo`, `React.memo`, `useCallback` y selectores memoizados solo con dependencias y beneficio justificados.
-  - [x] Mantener structural sharing en árboles y estados anidados.
-  - [x] No cargar inventarios completos en memoria cuando puedan consultarse desde un índice persistente.
-  - [x] Usar cachés con propietario, límites, TTL, generación e invalidación explícitos.
-  - [x] Coalescer lecturas y evitar I/O repetido.
-  - [x] Diseñar para presión de memoria, SAF, Android, suspensión, pérdida de foco y recuperación.
-  - [x] Agregar regresiones para renders, cachés, invalidación, cancelación y límites.
-  - [x] Registrar baseline, métricas, validaciones ejecutadas y pendientes.
-- [x] Revisar que las nuevas reglas no contradigan `README-TECH.md` ni `AGENTS-DOC.md`.
-
-## Fase 10 — Documentación y entrega
-
-- [ ] Revisar el diff completo y preservar cambios preexistentes.
-- [ ] Verificar que no existan logs temporales, archivos accidentales, secretos ni artefactos generados.
-- [ ] Actualizar `README-TECH.md` con la arquitectura de inventario, cachés, generaciones, límites, contratos, migraciones y validaciones reales.
-- [ ] Actualizar `README.md` si cambia el comportamiento visible del Explorer, búsqueda o Graph View.
-- [ ] Actualizar `FUNCIONALIDADES.md` únicamente si cambia una capacidad visible.
-- [ ] Agregar exactamente una línea nueva a `CHANGELOG.md` con fecha, hora, zona horaria y resumen.
-- [ ] Solicitar al subagente documentador la sincronización final con resumen de cambios, archivos y validaciones.
-- [ ] Revisar el resultado del subagente documentador y corregir contradicciones.
-- [ ] Marcar en este archivo únicamente tareas implementadas y verificadas.
+- [ ] Revisar el diff final completo, eliminar diagnósticos temporales y confirmar que no se modificaron artefactos generados salvo mediante el flujo de build correspondiente.
+- [ ] Actualizar los checkboxes de este archivo solo después de implementar y validar cada tarea.
+- [ ] Invocar al subagente `documentador` al completar las fases técnicas, entregándole cambios, archivos modificados, validaciones aprobadas, pruebas manuales realizadas y pendientes.
+- [ ] Esperar y revisar el resultado de `documentador`; no editar directamente `README.md`, `README-TECH.md`, `FUNCIONALIDADES.md` ni `CHANGELOG.md`.
 
 ## Criterios de aceptación
 
-- [ ] Una expansión no relee innecesariamente el mismo subárbol.
-- [ ] Las lecturas idénticas concurrentes y recientemente completadas se reutilizan.
-- [ ] Las mutaciones invalidan solo los datos afectados cuando existe una ruta fiable.
-- [ ] El inventario completo continúa disponible aunque no esté entero en Redux o RAM.
-- [ ] Explorer no carga simultáneamente árbol completo, lista plana completa y contenido completo duplicado.
-- [ ] Los componentes no afectados no se renderizan ante cambios locales del Explorer.
-- [ ] Búsqueda y Graph View conservan cobertura completa del inventario.
-- [ ] Las respuestas obsoletas o canceladas no sobrescriben el estado vigente.
-- [ ] El comportamiento visible actual se conserva.
-- [ ] El consumo de memoria y la cantidad de lecturas mejoran respecto del baseline, especialmente en Android.
-- [ ] Todas las validaciones aplicables pasan y las pendientes quedan documentadas.
-
-## Riesgos, límites y bloqueos conocidos
-
-- [ ] Graph View completo puede requerir memoria proporcional a la cantidad final de nodos y enlaces; el procesamiento debe ser incremental, pero no puede eliminar el coste del modelo visual que se muestra.
-- [ ] Una biblioteca ilimitada en la práctica requiere límites operativos para colas, lotes, contenido simultáneo y renderizado, aunque el inventario lógico siga siendo completo.
-- [ ] La precisión de cambios externos depende de los eventos disponibles en cada plataforma.
-- [ ] SAF puede no ofrecer eventos fiables; Android necesitará refresco por generación, intervalo o acción manual según el contrato vigente.
-- [ ] El plugin Android `DirectoryPickerPlugin` no está disponible en el repositorio, por lo que su validación completa queda bloqueada hasta localizarlo o documentar su fuente.
-- [ ] No se debe afirmar validación física de Android mientras no exista un dispositivo disponible.
+- [ ] En Android, una selección SAF válida crea/reutiliza `.notia/notiaConfig.json`, agrega la biblioteca y no recibe `rootUri` vacío.
+- [x] Ninguna operación SAF usa una URI tree sintética como URI document de I/O.
+- [ ] Las operaciones de lectura, texto, binarios, creación, escritura, borrado, renombrado, copia, movimiento y exportación tienen errores recuperables y no corrompen datos.
+- [ ] La UI distingue un directorio vacío de un fallo SAF y ofrece reintento accesible con touch.
+- [ ] Revocar permisos, suspender, reiniciar o cambiar de biblioteca no causa pérdida silenciosa ni cruza datos entre grants.
+- [ ] Las pruebas automatizadas aplicables pasan y las validaciones manuales no ejecutadas quedan declaradas.
+- [ ] Windows conserva su comportamiento en los flujos compartidos.

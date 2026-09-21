@@ -1,5 +1,7 @@
 #[cfg(target_os = "android")]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "android", test))]
+use std::path::PathBuf;
 
 #[cfg(target_os = "android")]
 use crate::mobile_directory_picker;
@@ -16,7 +18,7 @@ use super::types::{
 #[cfg(target_os = "android")]
 use crate::mobile_directory_picker::AndroidDirectoryPickerState;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 fn map_already_exists_error(error_message: String, fallback: &str) -> OperationResult {
     let lowered = error_message.to_lowercase();
     if lowered.contains("already exists")
@@ -30,8 +32,39 @@ fn map_already_exists_error(error_message: String, fallback: &str) -> OperationR
     } else {
         OperationResult {
             ok: false,
-            error: Some(fallback.to_string()),
+            error: Some(format!("{fallback} {error_message}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::map_already_exists_error;
+
+    #[test]
+    fn preserves_android_creation_error_details() {
+        let result = map_already_exists_error(
+            "No se pudo crear la ruta Android: escritura rechazada".to_string(),
+            "Could not create file.",
+        );
+
+        assert_eq!(
+            result.error.as_deref(),
+            Some("Could not create file. No se pudo crear la ruta Android: escritura rechazada")
+        );
+    }
+
+    #[test]
+    fn keeps_the_stable_duplicate_error() {
+        let result = map_already_exists_error(
+            "Ya existe una entrada incompatible con ese nombre.".to_string(),
+            "Could not create file.",
+        );
+
+        assert_eq!(
+            result.error.as_deref(),
+            Some("An entry with that name already exists.")
+        );
     }
 }
 
@@ -65,25 +98,19 @@ fn refresh_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: O
     });
 
     if !should_refresh {
-        log::debug!(
-            "[notia:saf] refresh_root_tree_cache throttled uri={}",
-            tree_uri
-        );
+        log::debug!("[notia:saf] refresh_root_tree_cache throttled");
         return;
     }
 
     let is_fresh = mobile_directory_picker::is_cache_fresh(state, tree_uri);
     if is_fresh {
-        log::debug!("[notia:saf] cache hit uri={}", tree_uri);
+        log::debug!("[notia:saf] cache hit");
     } else {
         // Instead of eagerly doing a full readTree, just invalidate the
         // cache. The next operation that truly needs to resolve a path
         // will trigger a lazy refresh. This avoids the expensive full
         // tree traversal that refresh_android_tree_path_cache would do.
-        log::info!(
-            "[notia:saf] cache stale, invalidating (lazy refresh) uri={}",
-            tree_uri
-        );
+        log::info!("[notia:saf] cache stale, invalidating (lazy refresh)");
         mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
     }
 }
@@ -128,23 +155,126 @@ fn has_android_resolution_context(root_tree_uri: Option<&str>, path: &str) -> bo
         || path.starts_with("content://")
 }
 
+#[cfg(any(target_os = "android", test))]
+fn is_android_document_uri(path: &str) -> bool {
+    path.starts_with("content://") && path.contains("/document/")
+}
+
+#[cfg(any(target_os = "android", test))]
+fn is_android_tree_uri(path: &str) -> bool {
+    path.starts_with("content://") && path.contains("/tree/") && !is_android_document_uri(path)
+}
+
+#[cfg(any(target_os = "android", test))]
+fn is_document_under_tree(document_uri: &str, tree_uri: &str) -> bool {
+    let document = normalize_android_path(document_uri);
+    let tree = normalize_android_path(tree_uri);
+    is_android_document_uri(&document)
+        && is_android_tree_uri(&tree)
+        && document.starts_with(&format!("{tree}/document/"))
+}
+
+#[cfg(any(target_os = "android", test))]
+fn normalize_android_path(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+#[cfg(any(target_os = "android", test))]
+fn android_parent_path(path: &str) -> Option<String> {
+    let normalized = normalize_android_path(path);
+    let separator = normalized.rfind('/')?;
+    if separator == 0 {
+        return Some("/".to_string());
+    }
+    Some(normalized[..separator].to_string())
+}
+
+#[cfg(target_os = "android")]
+fn android_file_name(path: &str) -> Option<String> {
+    normalize_android_path(path)
+        .rsplit('/')
+        .next()
+        .map(ToString::to_string)
+}
+
+#[cfg(any(target_os = "android", test))]
+fn android_relative_segments(path: &str, root_tree_uri: &str) -> Option<Vec<String>> {
+    let normalized_path = normalize_android_path(path);
+    let normalized_root = normalize_android_path(root_tree_uri);
+    if !is_android_tree_uri(&normalized_root) {
+        return None;
+    }
+    if !is_same_or_nested_android_path(&normalized_root, &normalized_path)
+        || normalized_path == normalized_root
+    {
+        return None;
+    }
+    let relative = normalized_path.strip_prefix(&normalized_root)?;
+    let relative = relative.strip_prefix('/')?;
+    if relative.is_empty() {
+        return None;
+    }
+
+    let segments = relative
+        .split('/')
+        .map(str::trim)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if segments.len() > 24
+        || segments.iter().any(|segment| {
+            segment.is_empty()
+                || segment == "."
+                || segment == ".."
+                || segment.len() > 255
+                || segment
+                    .chars()
+                    .any(|character| character.is_control() || character == '\\')
+        })
+    {
+        return None;
+    }
+    Some(segments)
+}
+
 #[cfg(target_os = "android")]
 fn resolve_entry_uri(
     state: &AndroidDirectoryPickerState,
     path: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<String> {
-    if path.starts_with("content://") {
-        log::debug!(
-            "[notia:saf] resolve_entry_uri direct content:// path={}",
-            path
-        );
+    // A document URI returned by SAF is directly addressable. A tree URI with
+    // appended logical segments (for example `tree/.../.notia/config.json`)
+    // is not a document URI and must go through the path cache/tree refresh;
+    // treating it as direct would make pathExists report a false positive and
+    // make writeFile target a non-existent synthetic URI.
+    if is_android_document_uri(path) {
+        if let Some(tree_uri) = root_tree_uri {
+            if !is_document_under_tree(path, tree_uri) {
+                return None;
+            }
+        }
+        log::debug!("[notia:saf] resolve_entry_uri direct document");
         return Some(path.to_string());
+    }
+
+    // The selected tree itself is a valid SAF parent URI. Keep this explicit
+    // instead of relying on the path cache: the first create/read operation
+    // may happen before the initial tree refresh has populated it.
+    if let Some(tree_uri) = root_tree_uri
+        .map(str::trim)
+        .filter(|value| is_android_tree_uri(value))
+    {
+        if normalize_android_path(path) == normalize_android_path(tree_uri) {
+            return Some(tree_uri.to_string());
+        }
     }
 
     // 1. Fast Rust-only LRU lookup (no JNI).
     if let Some(lru_hit) = mobile_directory_picker::resolve_android_path_lru(state, path) {
-        log::debug!("[notia:saf] resolve_entry_uri lru_hit path={}", path);
+        log::debug!("[notia:saf] resolve_entry_uri lru_hit");
         return Some(lru_hit);
     }
 
@@ -153,7 +283,7 @@ fn resolve_entry_uri(
         .ok()
         .flatten();
     if let Some(uri) = resolved {
-        log::debug!("[notia:saf] resolve_entry_uri cache_hit path={}", path);
+        log::debug!("[notia:saf] resolve_entry_uri cache_hit");
         mobile_directory_picker::put_android_path_lru(state, path.to_string(), uri.clone());
         return Some(uri);
     }
@@ -162,34 +292,26 @@ fn resolve_entry_uri(
     // as context for resolution. This is critical for multi-library setups
     // where the paths HashMap may not have been populated yet for the new
     // library.
-    if let Some(tree_uri) = root_tree_uri.map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(tree_uri) = root_tree_uri
+        .map(str::trim)
+        .filter(|v| is_android_tree_uri(v))
+    {
         // Lazy cache refresh: if the cache is stale and we can't resolve
         // the path, try refreshing the cache once via a full readTree,
         // then retry the resolution.
         if !mobile_directory_picker::is_cache_fresh(state, tree_uri) {
-            log::info!(
-                "[notia:saf] resolve_entry_uri cache stale, lazy refresh path={} tree_uri={}",
-                path,
-                tree_uri
-            );
+            log::info!("[notia:saf] resolve_entry_uri cache stale, lazy refresh");
             let refresh_result =
                 mobile_directory_picker::refresh_android_tree_path_cache(state, tree_uri, false);
             if let Err(ref e) = refresh_result {
-                log::warn!(
-                    "[notia:saf] lazy cache refresh failed uri={} error={}",
-                    tree_uri,
-                    e
-                );
+                log::warn!("[notia:saf] lazy cache refresh failed error={}", e);
             } else {
                 // Retry resolution after cache refresh
                 let retry = mobile_directory_picker::resolve_android_tree_uri(state, path, None)
                     .ok()
                     .flatten();
                 if let Some(uri) = retry {
-                    log::info!(
-                        "[notia:saf] resolve_entry_uri resolved after refresh path={}",
-                        path
-                    );
+                    log::info!("[notia:saf] resolve_entry_uri resolved after refresh");
                     mobile_directory_picker::put_android_path_lru(
                         state,
                         path.to_string(),
@@ -200,33 +322,62 @@ fn resolve_entry_uri(
             }
         }
 
-        let fallback =
-            mobile_directory_picker::resolve_android_tree_uri(state, path, Some(tree_uri))
-                .ok()
-                .flatten();
-        if let Some(uri) = fallback {
-            log::info!(
-                "[notia:saf] resolve_entry_uri root_fallback path={} tree_uri={}",
-                path,
-                tree_uri
-            );
-            mobile_directory_picker::put_android_path_lru(state, path.to_string(), uri.clone());
-            return Some(uri);
-        }
-
-        log::warn!(
-            "[notia:saf] resolve_entry_uri failed path={} tree_uri={}",
-            path,
-            tree_uri
-        );
+        log::warn!("[notia:saf] resolve_entry_uri failed");
         return None;
     }
 
-    log::warn!(
-        "[notia:saf] resolve_entry_uri failed no_context path={}",
-        path
-    );
+    log::warn!("[notia:saf] resolve_entry_uri failed no_context");
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        android_parent_path, android_relative_segments, is_android_document_uri,
+        is_android_tree_uri, is_same_or_nested_android_path,
+    };
+
+    #[test]
+    fn only_document_uris_bypass_saf_path_resolution() {
+        assert!(is_android_document_uri(
+            "content://com.android.externalstorage.documents/tree/primary%3ANotas/document/primary%3ANotas%2Fnota.md"
+        ));
+        assert!(!is_android_document_uri(
+            "content://com.android.externalstorage.documents/tree/primary%3ANotas/.notia/notiaConfig.json"
+        ));
+        assert_eq!(
+            android_parent_path(
+                "content://com.android.externalstorage.documents/tree/primary%3ANotas/.notia"
+            ),
+            Some(
+                "content://com.android.externalstorage.documents/tree/primary%3ANotas".to_string(),
+            )
+        );
+        assert!(is_android_tree_uri(
+            "content://com.android.externalstorage.documents/tree/primary%3ANotas"
+        ));
+        assert!(!is_android_tree_uri(
+            "content://com.android.externalstorage.documents/tree/primary%3ANotas/document/primary%3ANotas%2Fnota.md"
+        ));
+    }
+
+    #[test]
+    fn derives_only_real_children_of_the_granted_tree() {
+        let root = "content://provider/tree/root";
+        assert_eq!(
+            android_relative_segments("content://provider/tree/root/.notia/config.json", root),
+            Some(vec![".notia".to_string(), "config.json".to_string()])
+        );
+        assert_eq!(android_relative_segments(root, root), None);
+        assert_eq!(
+            android_relative_segments("content://provider/tree/root-other/file", root),
+            None
+        );
+        assert!(!is_same_or_nested_android_path(
+            root,
+            "content://provider/tree/root-other"
+        ));
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -235,12 +386,11 @@ fn resolve_parent_uri(
     path: &str,
     root_tree_uri: Option<&str>,
 ) -> Option<String> {
-    let path = PathBuf::from(path);
-    let parent_path = path.parent()?.to_string_lossy().to_string();
+    let parent_path = android_parent_path(path)?;
     resolve_entry_uri(state, &parent_path, root_tree_uri)
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 fn normalize_comparable_path(path: &str) -> PathBuf {
     let trimmed = path.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -250,12 +400,16 @@ fn normalize_comparable_path(path: &str) -> PathBuf {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 fn is_same_or_nested_android_path(parent_path: &str, child_path: &str) -> bool {
     let normalized_parent = normalize_comparable_path(parent_path);
     let normalized_child = normalize_comparable_path(child_path);
 
-    normalized_child == normalized_parent || normalized_child.starts_with(&normalized_parent)
+    normalized_child == normalized_parent
+        || normalized_child.to_string_lossy().starts_with(&format!(
+            "{}/",
+            normalized_parent.to_string_lossy().trim_end_matches('/')
+        ))
 }
 
 #[cfg(target_os = "android")]
@@ -287,11 +441,11 @@ pub(crate) fn read_library_file(
                 content,
                 error: None,
             },
-            Err(_) => ReadLibraryFileResult {
+            Err(error) => ReadLibraryFileResult {
                 ok: false,
                 revision: None,
                 content: String::new(),
-                error: Some("Could not read file.".to_string()),
+                error: Some(error),
             },
         },
     )
@@ -303,6 +457,41 @@ pub(crate) fn read_library_file<T>(
     _file_path: &str,
     _root_tree_uri: Option<&str>,
 ) -> Option<ReadLibraryFileResult> {
+    None
+}
+
+/// Reads a binary SAF document (PDF/images) for finance extraction. Returns
+/// `(name, bytes)` on success, `Err(message)` on a resolvable read failure and
+/// `None` when the path cannot be resolved at all (no Android context).
+#[cfg(target_os = "android")]
+pub(crate) fn read_library_file_bytes(
+    state: &AndroidDirectoryPickerState,
+    file_path: &str,
+    root_tree_uri: Option<&str>,
+) -> Option<Result<(String, Vec<u8>), String>> {
+    let _timer =
+        NotiaTimer::new("saf.read_library_file_bytes").with_meta(format!("path={}", file_path));
+    refresh_root_tree_cache(state, root_tree_uri);
+    let content_uri = match resolve_entry_uri(state, file_path, root_tree_uri) {
+        Some(content_uri) => content_uri,
+        None if has_android_resolution_context(root_tree_uri, file_path) => {
+            return Some(Err("Could not resolve Android file.".to_string()))
+        }
+        None => return None,
+    };
+
+    Some(
+        mobile_directory_picker::read_android_content_bytes(state, &content_uri)
+            .map_err(|error| format!("Could not read document: {error}")),
+    )
+}
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn read_library_file_bytes<T>(
+    _state: &T,
+    _file_path: &str,
+    _root_tree_uri: Option<&str>,
+) -> Option<Result<(String, Vec<u8>), String>> {
     None
 }
 
@@ -353,9 +542,9 @@ pub(crate) fn write_library_file(
                 error: None,
                 conflict: None,
             },
-            Err(_) => WriteLibraryFileResult {
+            Err(error) => WriteLibraryFileResult {
                 ok: false,
-                error: Some("Could not write file.".to_string()),
+                error: Some(error),
                 conflict: None,
             },
         },
@@ -382,7 +571,46 @@ pub(crate) fn create_library_file(
 ) -> Option<OperationResult> {
     let _timer =
         NotiaTimer::new("saf.create_library_file").with_meta(format!("path={}", file_path));
+
+    // Creation below a granted tree must not depend on readTree observing an
+    // intermediate directory. Traverse/create the exact relative path in the
+    // Android plugin, starting from the authoritative root grant.
+    if let Some((tree_uri, segments)) = root_tree_uri
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|tree_uri| {
+            android_relative_segments(file_path, tree_uri).map(|segments| (tree_uri, segments))
+        })
+    {
+        return Some(
+            match mobile_directory_picker::create_android_path_entry(
+                state,
+                tree_uri,
+                &segments,
+                "file",
+                Some(content),
+            ) {
+                Ok(created_uri) => {
+                    invalidate_paths_for_entry(state, file_path, root_tree_uri);
+                    mobile_directory_picker::put_android_path_lru(
+                        state,
+                        file_path.to_string(),
+                        created_uri,
+                    );
+                    OperationResult {
+                        ok: true,
+                        error: None,
+                    }
+                }
+                Err(error_message) => {
+                    map_already_exists_error(error_message, "Could not create file.")
+                }
+            },
+        );
+    }
+
     refresh_root_tree_cache(state, root_tree_uri);
+
     let parent_uri = match resolve_parent_uri(state, file_path, root_tree_uri) {
         Some(parent_uri) => parent_uri,
         None if has_android_resolution_context(root_tree_uri, file_path) => {
@@ -393,18 +621,28 @@ pub(crate) fn create_library_file(
         }
         None => return None,
     };
-    let file_name = Path::new(file_path).file_name()?.to_str()?;
+    let file_name = android_file_name(file_path)?;
 
     Some(
         match mobile_directory_picker::create_android_tree_entry(
             state,
             &parent_uri,
-            file_name,
+            &file_name,
             "file",
             Some(content),
         ) {
-            Ok(_) => {
+            Ok(created_uri) => {
                 invalidate_paths_for_entry(state, file_path, root_tree_uri);
+                // SAF providers may not expose a newly-created entry in the
+                // immediately following readTree. Keep the authoritative URI
+                // returned by createEntry so the next operation can address
+                // this exact file without treating its synthetic path as a
+                // document URI.
+                mobile_directory_picker::put_android_path_lru(
+                    state,
+                    file_path.to_string(),
+                    created_uri,
+                );
                 OperationResult {
                     ok: true,
                     error: None,
@@ -433,7 +671,40 @@ pub(crate) fn create_library_directory(
 ) -> Option<OperationResult> {
     let _timer = NotiaTimer::new("saf.create_library_directory")
         .with_meta(format!("path={}", directory_path));
+
+    if let Some((tree_uri, segments)) = root_tree_uri
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|tree_uri| {
+            android_relative_segments(directory_path, tree_uri).map(|segments| (tree_uri, segments))
+        })
+    {
+        return Some(
+            match mobile_directory_picker::create_android_path_entry(
+                state, tree_uri, &segments, "folder", None,
+            ) {
+                Ok(created_uri) => {
+                    invalidate_paths_for_entry(state, directory_path, root_tree_uri);
+                    mobile_directory_picker::put_android_path_lru(
+                        state,
+                        directory_path.to_string(),
+                        created_uri,
+                    );
+                    OperationResult {
+                        ok: true,
+                        error: None,
+                    }
+                }
+                Err(error_message) => OperationResult {
+                    ok: false,
+                    error: Some(format!("Could not create directory: {}", error_message)),
+                },
+            },
+        );
+    }
+
     refresh_root_tree_cache(state, root_tree_uri);
+
     let parent_uri = match resolve_parent_uri(state, directory_path, root_tree_uri) {
         Some(parent_uri) => parent_uri,
         None if has_android_resolution_context(root_tree_uri, directory_path) => {
@@ -444,13 +715,22 @@ pub(crate) fn create_library_directory(
         }
         None => return None,
     };
-    let directory_name = Path::new(directory_path).file_name()?.to_str()?;
+    let directory_name = android_file_name(directory_path)?;
 
     Some(
-        match mobile_directory_picker::create_android_directory(state, &parent_uri, directory_name)
+        match mobile_directory_picker::create_android_directory(state, &parent_uri, &directory_name)
         {
-            Ok(_) => {
+            Ok(created_uri) => {
                 invalidate_paths_for_entry(state, directory_path, root_tree_uri);
+                // Do not rely on an immediate tree refresh after creation:
+                // some SAF providers return stale children briefly. The URI
+                // from createEntry is the exact parent for a file created in
+                // this directory during the same library-add transaction.
+                mobile_directory_picker::put_android_path_lru(
+                    state,
+                    directory_path.to_string(),
+                    created_uri,
+                );
                 OperationResult {
                     ok: true,
                     error: None,
@@ -526,6 +806,89 @@ pub(crate) fn is_directory_path<T>(
     IsDirectoryPathResult {
         is_directory: false,
     }
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn write_binary_file(
+    state: &AndroidDirectoryPickerState,
+    file_path: &str,
+    data: &[u8],
+    root_tree_uri: Option<&str>,
+) -> Option<OperationResult> {
+    use std::io::Write;
+
+    let _timer = NotiaTimer::new("saf.write_binary_file").with_meta(format!("path={}", file_path));
+    refresh_root_tree_cache(state, root_tree_uri);
+    let content_uri = match resolve_entry_uri(state, file_path, root_tree_uri) {
+        Some(content_uri) => content_uri,
+        None if has_android_resolution_context(root_tree_uri, file_path) => {
+            let normalized_path = file_path.replace('\\', "/");
+            let Some((parent_path, file_name)) = normalized_path.rsplit_once('/') else {
+                return Some(OperationResult {
+                    ok: false,
+                    error: Some("Could not resolve Android destination directory.".to_string()),
+                });
+            };
+            if file_name.trim().is_empty() {
+                return Some(OperationResult {
+                    ok: false,
+                    error: Some("Could not resolve Android destination file.".to_string()),
+                });
+            }
+            let Some(parent_uri) = resolve_entry_uri(state, parent_path, root_tree_uri) else {
+                return Some(OperationResult {
+                    ok: false,
+                    error: Some("Could not resolve Android destination directory.".to_string()),
+                });
+            };
+            match mobile_directory_picker::create_android_tree_entry(
+                state,
+                &parent_uri,
+                file_name,
+                "file",
+                None,
+            ) {
+                Ok(created_uri) => {
+                    mobile_directory_picker::put_android_path_lru(
+                        state,
+                        file_path.to_string(),
+                        created_uri.clone(),
+                    );
+                    created_uri
+                }
+                Err(error) => {
+                    return Some(OperationResult {
+                        ok: false,
+                        error: Some(error),
+                    });
+                }
+            }
+        }
+        None => return None,
+    };
+
+    Some(
+        match mobile_directory_picker::write_android_content_bytes(state, &content_uri, data) {
+            Ok(()) => OperationResult {
+                ok: true,
+                error: None,
+            },
+            Err(error) => OperationResult {
+                ok: false,
+                error: Some(error),
+            },
+        },
+    )
+}
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn write_binary_file<T>(
+    _state: &T,
+    _file_path: &str,
+    _data: &[u8],
+    _root_tree_uri: Option<&str>,
+) -> Option<OperationResult> {
+    None
 }
 
 #[cfg(target_os = "android")]
@@ -617,9 +980,9 @@ pub(crate) fn delete_entry(
                     error: None,
                 }
             }
-            Err(_) => OperationResult {
+            Err(error) => OperationResult {
                 ok: false,
-                error: Some("Could not delete entry.".to_string()),
+                error: Some(error),
             },
         },
     )

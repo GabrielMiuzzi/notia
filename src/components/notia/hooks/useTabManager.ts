@@ -163,7 +163,7 @@ export function useTabManager({
         return true
       }
       dispatch(updateTabSaveStatus({ path: targetPath, status: 'saving' }))
-      const result = await writeLibraryFileContent(targetPath, targetSource, {
+      const result = await writeLibraryFileContent(currentTab.document.androidDocumentUri ?? targetPath, targetSource, {
         androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
       })
       const latestTab = store.getState().documents.openTabs.find((tab) => tab.document.path === targetPath)

@@ -19,7 +19,9 @@ export function useLibraryManagerActions({
   const { confirm } = useConfirmationEngine()
 
   const handleLibraryAdded = useCallback(async (library: NotiaLibrary) => {
-    if (!(await persistDirtyTextDocuments())) { return }
+    if (!(await persistDirtyTextDocuments())) {
+      throw new Error('No se pudieron guardar los cambios pendientes antes de agregar la libreria.')
+    }
 
     const existingLibrary = store.getState().library.libraries.find((item) => {
       // On Android, the path may be a display name shared by multiple folders,

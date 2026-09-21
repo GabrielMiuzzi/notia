@@ -16,6 +16,7 @@ export const selectClipboardEntry = (state: RootState) => state.documents.clipbo
 export const selectContextMenu = (state: RootState) => state.documents.contextMenu
 export const selectDialogState = (state: RootState) => state.documents.dialogState
 export const selectLoadingFolderIds = (state: RootState) => state.documents.loadingFolderIds
+export const selectFolderLoadError = (state: RootState) => state.documents.folderLoadError
 export const selectFlatFileList = (state: RootState) => state.documents.flatFileList
 
 export const selectActiveTab = createSelector(

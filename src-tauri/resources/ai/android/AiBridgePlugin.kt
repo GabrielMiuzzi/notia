@@ -56,6 +56,24 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun inspectModel(invoke: Invoke) {
+        run(invoke) {
+            val args = arguments(invoke)
+            val model = args.string("model")
+            if (model.isBlank()) error("El modelo de Ollama es obligatorio.")
+            val response = request(
+                args.string("ollamaUrl"),
+                args.string("apiKey"),
+                "/api/show",
+                "POST",
+                JSONObject().put("name", model),
+            )
+            val capabilities = response.optJSONArray("capabilities") ?: JSONArray()
+            JSObject().put("capabilities", capabilities)
+        }
+    }
+
+    @Command
     fun chat(invoke: Invoke) = completeChat(invoke)
 
     @Command
@@ -99,7 +117,14 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
                 .put("messages", JSONArray(args.string("messagesJson")))
                 .put("tools", JSONArray(args.string("toolsJson")))
             args.value("think")?.let { body.put("think", JSONObject.wrap(it)) }
-            val response = request(args.string("ollamaUrl"), args.string("apiKey"), "/api/chat", "POST", body)
+            val response = request(
+                args.string("ollamaUrl"),
+                args.string("apiKey"),
+                "/api/chat",
+                "POST",
+                body,
+                args.number("timeoutSeconds", DEFAULT_TOOL_TIMEOUT_SECONDS)
+            )
             toJsObject(response)
         }
     }
@@ -119,19 +144,7 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
     private fun completeChat(invoke: Invoke) {
         run(invoke) {
             val args = arguments(invoke)
-            val messages = JSONArray()
-            val previous = args.value("previousMessages") as? List<*>
-            previous.orEmpty().forEach { value ->
-                val map = value as? Map<*, *> ?: return@forEach
-                val message = JSONObject()
-                    .put("role", map["role"]?.toString().orEmpty())
-                    .put("content", map["content"]?.toString().orEmpty())
-                (map["images"] as? List<*>)?.let { images ->
-                    message.put("images", JSONArray(images.mapNotNull { it?.toString() }))
-                }
-                messages.put(message)
-            }
-            messages.put(JSONObject().put("role", "user").put("content", args.string("prompt")))
+            val messages = buildChatMessages(args)
             val body = JSONObject()
                 .put("model", args.string("model"))
                 .put("stream", false)
@@ -145,8 +158,13 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun streamChat(args: ArgumentMap): JSObject {
-        val requestId = args.string("requestId")
+    /**
+     * Builds the `/api/chat` message array from the shared payload contract:
+     * previous messages (with their images), inline file contents and, when
+     * present, the visual attachment sent as `image`. Desktop assembles the
+     * same content in TypeScript; this keeps Android equivalent.
+     */
+    private fun buildChatMessages(args: ArgumentMap): JSONArray {
         val messages = JSONArray()
         val previous = args.value("previousMessages") as? List<*>
         previous.orEmpty().forEach { value ->
@@ -159,7 +177,48 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
             }
             messages.put(message)
         }
-        messages.put(JSONObject().put("role", "user").put("content", args.string("prompt")))
+        val prompt = StringBuilder()
+        val longTermMemories = args.value("longTermMemories") as? List<*>
+        longTermMemories.orEmpty().forEach { value ->
+            val memory = value?.toString()?.trim().orEmpty()
+            if (memory.isNotEmpty()) prompt.appendLine("- $memory")
+        }
+        val userPrompt = args.string("prompt").trim()
+        if (userPrompt.isNotEmpty()) {
+            if (prompt.isNotEmpty()) prompt.appendLine()
+            prompt.append(userPrompt)
+        }
+        val files = args.value("files") as? List<*>
+        files.orEmpty().forEach { value ->
+            val map = value as? Map<*, *> ?: return@forEach
+            val name = map["name"]?.toString().orEmpty()
+            val content = map["content"]?.toString().orEmpty()
+            if (name.isNotEmpty() && content.isNotEmpty()) {
+                prompt.appendLine()
+                prompt.append("<attached_file name=\"$name\">")
+                prompt.appendLine()
+                prompt.append(content)
+                prompt.appendLine()
+                prompt.append("</attached_file>")
+            }
+        }
+        val image = args.value("image") as? Map<*, *>
+        val imageBase64 = image?.get("base64")?.toString()?.trim().orEmpty()
+        val additionalImages = image?.get("additionalBase64") as? List<*>
+        val images = listOf(imageBase64).filter { it.isNotEmpty() } + additionalImages.orEmpty().mapNotNull { value ->
+            value?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        }
+        val userMessage = JSONObject().put("role", "user").put("content", prompt.toString().trim())
+        if (images.isNotEmpty()) {
+            userMessage.put("images", JSONArray(images))
+        }
+        messages.put(userMessage)
+        return messages
+    }
+
+    private fun streamChat(args: ArgumentMap): JSObject {
+        val requestId = args.string("requestId")
+        val messages = buildChatMessages(args)
         val body = JSONObject()
             .put("model", args.string("model"))
             .put("stream", true)
@@ -212,8 +271,15 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         trigger("stream", payload)
     }
 
-    private fun request(baseUrl: String, apiKey: String, path: String, method: String, body: JSONObject?): JSONObject {
-        val connection = openConnection(baseUrl, apiKey, path, method, body)
+    private fun request(
+        baseUrl: String,
+        apiKey: String,
+        path: String,
+        method: String,
+        body: JSONObject?,
+        readTimeoutSeconds: Int = DEFAULT_STREAM_TIMEOUT_SECONDS,
+    ): JSONObject {
+        val connection = openConnection(baseUrl, apiKey, path, method, body, readTimeoutSeconds)
         try {
             body?.let { connection.outputStream.use { output -> output.write(it.toString().toByteArray(Charsets.UTF_8)) } }
             val status = connection.responseCode
@@ -226,13 +292,20 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun openConnection(baseUrl: String, apiKey: String, path: String, method: String, body: JSONObject?): HttpURLConnection {
+    private fun openConnection(
+        baseUrl: String,
+        apiKey: String,
+        path: String,
+        method: String,
+        body: JSONObject?,
+        readTimeoutSeconds: Int = DEFAULT_STREAM_TIMEOUT_SECONDS,
+    ): HttpURLConnection {
         val normalizedBase = baseUrl.trim().trimEnd('/')
         if (normalizedBase.isEmpty()) error("La URL de Ollama es obligatoria.")
         return (URL("$normalizedBase$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15_000
-            readTimeout = 600_000
+            readTimeout = readTimeoutSeconds.coerceIn(1, 600) * 1_000
             setRequestProperty("Accept", "application/json")
             if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
             if (body != null) {
@@ -270,5 +343,12 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
             is Number -> value.toInt()
             else -> value?.toString()?.toIntOrNull() ?: fallback
         }
+    }
+
+    private companion object {
+        /** Default read timeout for tool rounds, matching the Rust 600 s cap. */
+        const val DEFAULT_TOOL_TIMEOUT_SECONDS = 600
+        /** Default read timeout for full streaming completions. */
+        const val DEFAULT_STREAM_TIMEOUT_SECONDS = 600
     }
 }

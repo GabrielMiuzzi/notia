@@ -229,7 +229,14 @@ export function SettingsModal({
   const [isCheckingAiHealth, setIsCheckingAiHealth] = useState(false)
   const projectVersion = getAppVersion()
   const runtimeDevice = getRuntimeDevice()
-  const visibleSections = runtimeDevice === 'Windows' ? SECTIONS : SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar')
+  const isAndroidRuntime = runtimeDevice === 'Android'
+  const visibleSections = runtimeDevice === 'Windows'
+    ? SECTIONS
+    : SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar' && (!isAndroidRuntime || section !== 'Telegram'))
+
+  useEffect(() => {
+    if (isAndroidRuntime && activeSection === 'Telegram') setActiveSection('General')
+  }, [activeSection, isAndroidRuntime])
   const taskManagerSettings = loadTaskManagerSettings()
   const publishedBoardNames = new Set(taskManagerPublicationPreferences.publishedBoardNames)
   const refreshBounds = getExplorerRefreshIntervalBounds()

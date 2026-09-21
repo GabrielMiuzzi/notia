@@ -1,0 +1,20 @@
+// Opt-in JVM regression harness; leaves the generated Gradle project untouched.
+// From the repository root (use gradlew on Unix):
+// src-tauri/gen/android/gradlew.bat -p src-tauri/gen/android -I ../../resources/directory-picker/tests/saf-tests.init.gradle :app:testArm64DebugUnitTest --tests com.gabriel.notia.DirectoryPickerPluginTest --no-daemon
+// Compiles the authoritative plugin directly. Use this init script only for
+// these JVM tests, not APK assembly; normal builds synchronize via build.rs.
+gradle.afterProject { project, state ->
+    if (project.path == ':app') {
+        def sources = new File(project.rootDir, '../../resources/directory-picker')
+        project.android.sourceSets.main.java.setSrcDirs([new File(sources, 'android')])
+        project.android.sourceSets.test.java.srcDir(new File(sources, 'tests'))
+        project.dependencies.add('testImplementation', 'org.robolectric:robolectric:4.14.1')
+        project.dependencies.add('testImplementation', 'com.fasterxml.jackson.core:jackson-databind:2.15.3')
+        project.tasks.withType(Test).configureEach {
+            testLogging {
+                events 'passed', 'failed', 'skipped'
+                exceptionFormat 'full'
+            }
+        }
+    }
+}

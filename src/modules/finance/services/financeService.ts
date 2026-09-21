@@ -281,7 +281,7 @@ export function listFinanceNetWorthHistory(library: NotiaLibrary, actorLibraryUs
   return invoke<FinanceNetWorthHistoryPoint[]>('finance_list_net_worth_history', { context: context(library, actorLibraryUserId) })
 }
 
-export function extractFinanceDocument(library: NotiaLibrary, artifactId: string, filePath: string, documentType: 'ticket' | 'salary' | 'credit_card_statement' | 'service_invoice', actor?: FinanceActor): Promise<FinanceExtractionResult> {
+export async function extractFinanceDocument(library: NotiaLibrary, artifactId: string, filePath: string, documentType: 'ticket' | 'salary' | 'credit_card_statement' | 'service_invoice', actor?: FinanceActor): Promise<FinanceExtractionResult> {
   return invoke<FinanceExtractionResult>('extract_finance_document', { payload: { context: context(library, actor), artifactId, filePath, documentType } })
 }
 

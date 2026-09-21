@@ -26,6 +26,7 @@ import {
   type LibraryInventoryReadScope,
 } from './libraryInventoryContract'
 import { advanceLibraryInventoryGeneration } from './libraryInventoryRuntime'
+import { getSafTreeDisplayName, isSafTreeUri } from '../../utils/files/safUri'
 
 interface PickedLibrary {
   name: string
@@ -256,7 +257,7 @@ export function invalidateLibraryRuntimeCache(libraryPath: string, pathHint?: st
 }
 
 function buildLibraryNameFromPath(directoryPath: string): string {
-  return getPathBaseName(directoryPath)
+  return getSafTreeDisplayName(directoryPath) ?? getPathBaseName(directoryPath)
 }
 
 function resolveParentDirectoryPath(pathValue: string): string {
@@ -284,10 +285,20 @@ async function resolveLibraryDirectoryFromSelection(selectedPath: string): Promi
 
 export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
   let selected: { path: string; uri?: string } | null = null
+  const runtimeDevice = getRuntimeDevice()
   try {
-    selected = await pickDirectory('Seleccionar libreria')
+    const pickerPromise = pickDirectory('Seleccionar libreria')
+    selected = runtimeDevice === 'Android'
+      ? await withTimeout(
+        pickerPromise,
+        ANDROID_SAF_TIMEOUT_MS,
+        'El selector de carpetas tardó demasiado. Intenta nuevamente.',
+      )
+      : await pickerPromise
   } catch (error) {
-    console.error('[libraryRuntime] pick directory failed:', error)
+    notiaLog('libraryRuntime', 'pick directory failed', {
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error')
     if (error instanceof Error && error.message.trim()) {
       throw new Error(error.message)
     }
@@ -298,10 +309,22 @@ export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
     return null
   }
 
+  if (runtimeDevice === 'Android') {
+    const selectedPath = selected.path.trim()
+    const androidTreeUri = selected.uri?.trim()
+    if (!isSafTreeUri(androidTreeUri) || selectedPath !== androidTreeUri) {
+      throw new Error('El selector Android no devolvio una URI SAF valida.')
+    }
+
+    return {
+      path: androidTreeUri,
+      name: buildLibraryNameFromPath(androidTreeUri),
+      androidTreeUri,
+    }
+  }
+
   const selectedPath = normalizeFilesystemPath(selected.path)
-  const resolvedPath = getRuntimeDevice() === 'Android'
-    ? selectedPath
-    : await resolveLibraryDirectoryFromSelection(selectedPath)
+  const resolvedPath = await resolveLibraryDirectoryFromSelection(selectedPath)
   if (!resolvedPath) {
     throw new Error('No se pudo resolver una carpeta valida desde la seleccion.')
   }
@@ -325,7 +348,7 @@ export async function filterExistingLibraries(libraries: NotiaLibrary[]): Promis
       return false
     }
 
-    if (runtimeDevice === 'Android' && library.androidTreeUri) {
+    if (runtimeDevice === 'Android' && library.androidTreeUri && isSafTreeUri(library.androidTreeUri)) {
       // Android SAF paths may not be directly resolvable through regular path checks.
       return true
     }
@@ -357,10 +380,7 @@ export async function readLibraryTree(
 
   const inFlightRead = inFlightTreeReadByRequestKey.get(requestKey)
   if (inFlightRead) {
-    notiaLog('libraryRuntime', 'readLibraryTree dedup hit', {
-      path: normalizedDirectoryPath,
-      requestKey,
-    })
+    notiaLog('libraryRuntime', 'readLibraryTree dedup hit')
     return withAbort(inFlightRead, options?.signal)
   }
 
@@ -429,10 +449,7 @@ export async function readLibraryDirectory(
 
   const inFlightRead = inFlightDirectoryReadByRequestKey.get(requestKey)
   if (inFlightRead) {
-    notiaLog('libraryRuntime', 'readLibraryDirectory dedup hit', {
-      path: normalizedDirectoryPath,
-      requestKey,
-    })
+    notiaLog('libraryRuntime', 'readLibraryDirectory dedup hit')
     return withAbort(inFlightRead, options?.signal)
   }
 
@@ -501,10 +518,7 @@ export async function readLibraryTreeSignature(
 
   const inFlightRead = inFlightTreeSignatureReadByRequestKey.get(requestKey)
   if (inFlightRead) {
-    notiaLog('libraryRuntime', 'readLibraryTreeSignature dedup hit', {
-      path: normalizedDirectoryPath,
-      requestKey,
-    })
+    notiaLog('libraryRuntime', 'readLibraryTreeSignature dedup hit')
     return withAbort(inFlightRead, options?.signal)
   }
 
@@ -664,10 +678,7 @@ export async function readLibraryFlatFileList(
 
   const inFlightRead = inFlightFlatFileListReadByRequestKey.get(requestKey)
   if (inFlightRead) {
-    notiaLog('libraryRuntime', 'readLibraryFlatFileList dedup hit', {
-      path: normalizedDirectoryPath,
-      requestKey,
-    })
+    notiaLog('libraryRuntime', 'readLibraryFlatFileList dedup hit')
     return withAbort(inFlightRead, options?.signal)
   }
 

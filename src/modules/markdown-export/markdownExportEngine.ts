@@ -1,4 +1,6 @@
 import { parseFrontmatterDocument } from '../../engines/markdown/frontmatterEngine'
+import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
+import { writeBinaryFile } from '../../services/files/filesystemEngine'
 
 const MATH_TOKEN_PREFIX = 'NOTIA_MATH_TOKEN_'
 
@@ -100,16 +102,46 @@ function downloadBlobInBrowser(blob: Blob, fileName: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
 }
 
-async function persistExportBlob(blob: Blob, fileName: string): Promise<boolean> {
+export interface MarkdownExportContext {
+  /** Active library path; required to persist exports inside the library on Android. */
+  libraryPath?: string | null
+  /** SAF tree URI of the active library when the runtime is Android. */
+  androidDirectoryUri?: string | null
+  /** Path of the exported source document, used as the export destination folder. */
+  sourceDocumentPath?: string | null
+}
+
+async function persistExportBlob(blob: Blob, fileName: string, context?: MarkdownExportContext): Promise<boolean> {
   const { isTauri } = await import('@tauri-apps/api/core')
   if (!isTauri()) {
     downloadBlobInBrowser(blob, fileName)
     return true
   }
 
-  const [{ save }, { writeBinaryFile }] = await Promise.all([
+  // Android SAF: the native save dialog would return a content URI that the
+  // binary writer cannot open, so exports persist next to the source
+  // document through the same file boundary used by the library.
+  if (getRuntimeDevice() === 'Android') {
+    const libraryPath = context?.libraryPath?.trim()
+    const androidDirectoryUri = context?.androidDirectoryUri?.trim() || undefined
+    const sourceDocumentPath = context?.sourceDocumentPath?.trim() || ''
+    if (!libraryPath || !sourceDocumentPath) {
+      throw new Error('No se pudo resolver la biblioteca activa para exportar el documento.')
+    }
+    const separatorIndex = Math.max(sourceDocumentPath.lastIndexOf('/'), sourceDocumentPath.lastIndexOf('\\'))
+    const parentDirectory = separatorIndex > 0 ? sourceDocumentPath.slice(0, separatorIndex) : libraryPath
+    const exportPath = `${parentDirectory}/${fileName}`
+    const result = await writeBinaryFile(exportPath, new Uint8Array(await blob.arrayBuffer()), {
+      androidDirectoryUri,
+    })
+    if (!result.ok) {
+      throw new Error(result.error || 'No se pudo escribir el archivo exportado.')
+    }
+    return true
+  }
+
+  const [{ save }] = await Promise.all([
     import('@tauri-apps/plugin-dialog'),
-    import('../../services/files/filesystemEngine'),
   ])
   const extension = fileName.split('.').pop() ?? ''
   const selectedPath = await save({
@@ -139,7 +171,7 @@ async function renderElementToPng(element: HTMLElement, scale = 2): Promise<HTML
   })
 }
 
-async function exportPdf(source: string, documentName: string): Promise<boolean> {
+async function exportPdf(source: string, documentName: string, context?: MarkdownExportContext): Promise<boolean> {
   const element = await createExportElement(source)
   const unmount = mountExportElement(element)
   try {
@@ -164,13 +196,13 @@ async function exportPdf(source: string, documentName: string): Promise<boolean>
     }
 
     const output = pdf.output('arraybuffer')
-    return persistExportBlob(new Blob([output], { type: 'application/pdf' }), `${getExportBaseName(documentName)}.pdf`)
+    return persistExportBlob(new Blob([output], { type: 'application/pdf' }), `${getExportBaseName(documentName)}.pdf`, context)
   } finally {
     unmount()
   }
 }
 
-async function exportGoogleDocs(source: string, documentName: string): Promise<boolean> {
+async function exportGoogleDocs(source: string, documentName: string, context?: MarkdownExportContext): Promise<boolean> {
   const element = await createExportElement(source)
   const unmount = mountExportElement(element)
   try {
@@ -200,7 +232,7 @@ async function exportGoogleDocs(source: string, documentName: string): Promise<b
 
     const document = new Document({ sections: [{ children }] })
     const blob = await Packer.toBlob(document)
-    return persistExportBlob(blob, `${getExportBaseName(documentName)}.docx`)
+    return persistExportBlob(blob, `${getExportBaseName(documentName)}.docx`, context)
   } finally {
     unmount()
   }
@@ -210,10 +242,11 @@ export async function exportMarkdownDocument(
   source: string,
   documentName: string,
   format: MarkdownExportFormat,
+  context?: MarkdownExportContext,
 ): Promise<boolean> {
   const exportableSource = getExportableMarkdownBody(source)
   if (format === 'pdf') {
-    return exportPdf(exportableSource, documentName)
+    return exportPdf(exportableSource, documentName, context)
   }
-  return exportGoogleDocs(exportableSource, documentName)
+  return exportGoogleDocs(exportableSource, documentName, context)
 }

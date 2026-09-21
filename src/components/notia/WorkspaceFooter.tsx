@@ -1,8 +1,9 @@
-import { memo, useEffect, useRef, useState, type ComponentType } from 'react'
+import { memo, useState, type ComponentType, type MouseEvent } from 'react'
 import { BookOpen, CircleHelp, Settings } from 'lucide-react'
 import type { NotiaLibrary } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
+import { beginPhantomClickSuppression } from '../../utils/interactions/phantomClickSuppression'
 
 interface WorkspaceFooterProps {
   name: string
@@ -24,31 +25,18 @@ function WorkspaceFooterComponent({
   onOpenSettings,
 }: WorkspaceFooterProps) {
   const [isLibraryMenuOpen, setIsLibraryMenuOpen] = useState(false)
-  const openLibraryManagerTimeoutRef = useRef<number | null>(null)
   const { triggerRef, panelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
     open: isLibraryMenuOpen,
     onClose: () => setIsLibraryMenuOpen(false),
   })
 
-  useEffect(() => () => {
-    if (openLibraryManagerTimeoutRef.current !== null) {
-      window.clearTimeout(openLibraryManagerTimeoutRef.current)
-    }
-  }, [])
-
-  const handleOpenLibraryManagerFromMenu = () => {
+  const handleOpenLibraryManagerFromMenu = (event: MouseEvent<HTMLButtonElement>) => {
     setIsLibraryMenuOpen(false)
-
-    if (openLibraryManagerTimeoutRef.current !== null) {
-      window.clearTimeout(openLibraryManagerTimeoutRef.current)
-    }
-
-    // On Android WebView, opening the modal in the same tap that closes the
-    // submenu can cause the modal to close immediately.
-    openLibraryManagerTimeoutRef.current = window.setTimeout(() => {
-      openLibraryManagerTimeoutRef.current = null
-      onOpenLibraryManager()
-    }, 0)
+    // On Android WebView the tap that closes this submenu still dispatches a
+    // phantom native click; suppressing it keeps the modal mounted. The
+    // modal itself also closes on pointerdown, so no timing hack is needed.
+    beginPhantomClickSuppression(event.currentTarget)
+    onOpenLibraryManager()
   }
 
   return (

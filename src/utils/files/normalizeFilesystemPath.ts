@@ -14,6 +14,13 @@ export function normalizeFilesystemPath(pathValue: string): string {
     return trimmed
   }
 
+  // SAF tree/document URIs are opaque identifiers. Collapsing repeated
+  // slashes would turn `content://` into `content:/` and make the URI
+  // impossible to resolve on Android.
+  if (trimmed.startsWith('content://')) {
+    return trimmed
+  }
+
   if (!trimmed.startsWith('file://')) {
     return normalizeSlashSeparators(trimmed)
   }

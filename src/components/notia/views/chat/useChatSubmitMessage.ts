@@ -96,18 +96,16 @@ export function useChatSubmitMessage(
 
   useEffect(() => {
     mountedRef.current = true
+    // La solicitud de IA vive en el runtime nativo y puede continuar aunque la
+    // interfaz pase a segundo plano (pantalla bloqueada, cambio de app). La
+    // cancelación solo ocurre al desmontar o por pedido explícito de la persona.
     const cancelOnPageHide = () => {
       activeReplyRef.current?.abort()
       activeReplyRef.current = null
     }
-    const cancelOnVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') cancelOnPageHide()
-    }
     window.addEventListener('pagehide', cancelOnPageHide)
-    document.addEventListener('visibilitychange', cancelOnVisibilityChange)
     return () => {
       window.removeEventListener('pagehide', cancelOnPageHide)
-      document.removeEventListener('visibilitychange', cancelOnVisibilityChange)
       mountedRef.current = false
       cancelOnPageHide()
     }
@@ -469,7 +467,12 @@ export function useChatSubmitMessage(
         describeAiFeedbackError(error, 'No se pudo completar la consulta con la IA.'),
       )
     } finally {
-      if (mountedRef.current) setIsSubmitting(false)
+      if (mountedRef.current) {
+        setIsSubmitting(false)
+        // The submit button ended a tap; registering the window here lets the
+        // tap-to-mount path suppress the phantom native click that follows.
+        deps.beginPhantomClickSuppression?.(document.activeElement)
+      }
     }
   }
 

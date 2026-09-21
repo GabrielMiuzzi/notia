@@ -29,6 +29,7 @@ mod dto {
 }
 mod filesystem;
 mod mobile_ai_bridge;
+mod mobile_continuity;
 mod mobile_directory_picker;
 mod mobile_speech_permission;
 mod notia_timer;
@@ -330,6 +331,7 @@ pub fn run() {
             task_manager_publication::notify_task_manager_publication_changed,
         ])
         .plugin(mobile_ai_bridge::init())
+        .plugin(mobile_continuity::init())
         .plugin(mobile_directory_picker::init())
         .plugin(mobile_speech_permission::init())
         .run(tauri::generate_context!())

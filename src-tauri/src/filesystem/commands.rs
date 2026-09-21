@@ -158,6 +158,14 @@ pub fn create_library_file(
 ) -> OperationResult {
     let _timer =
         NotiaTimer::new("cmd.create_library_file").with_meta(format!("path={}", payload.file_path));
+    log::info!(
+        "[notia:saf] create_library_file input directory_uri_present={} directory_uri_len={}",
+        payload
+            .directory_uri
+            .as_deref()
+            .is_some_and(|uri| !uri.trim().is_empty()),
+        payload.directory_uri.as_deref().map_or(0, str::len)
+    );
     if payload.file_path.trim().is_empty() {
         return OperationResult {
             ok: false,
@@ -266,13 +274,34 @@ pub fn is_directory_path(
 }
 
 #[tauri::command]
-pub fn write_binary_file(payload: WriteBinaryFilePayload) -> OperationResult {
+pub fn write_binary_file(
+    payload: WriteBinaryFilePayload,
+    android_picker_state: State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> OperationResult {
+    let _timer = NotiaTimer::new("cmd.write_binary_file").with_meta(format!(
+        "path={} bytes={}",
+        payload.file_path,
+        payload.data.len()
+    ));
     if payload.file_path.trim().is_empty() {
         return OperationResult {
             ok: false,
             error: Some("Invalid file data.".to_string()),
         };
     }
+
+    #[cfg(target_os = "android")]
+    if let Some(result) = android_saf::write_binary_file(
+        android_picker_state.inner(),
+        &payload.file_path,
+        &payload.data,
+        payload.directory_uri.as_deref(),
+    ) {
+        return result;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    let _ = android_picker_state;
 
     desktop::write_binary_file(payload)
 }

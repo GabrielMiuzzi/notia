@@ -40,10 +40,12 @@ impl NotiaTimer {
         }
         self.finished = true;
         let elapsed_ms = self.start.elapsed().as_millis();
-        let meta_suffix = match (&self.extra_meta, meta.is_empty()) {
-            (Some(existing), false) => format!(" {} {}", existing, meta),
+        let safe_meta = redact_saf_uris(meta);
+        let safe_existing = self.extra_meta.as_deref().map(redact_saf_uris);
+        let meta_suffix = match (safe_existing.as_deref(), safe_meta.is_empty()) {
+            (Some(existing), false) => format!(" {} {}", existing, safe_meta),
             (Some(existing), true) => format!(" {}", existing),
-            (None, false) => format!(" {}", meta),
+            (None, false) => format!(" {}", safe_meta),
             (None, true) => String::new(),
         };
         log::info!(
@@ -54,6 +56,19 @@ impl NotiaTimer {
         );
         elapsed_ms
     }
+}
+
+fn redact_saf_uris(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|token| {
+            token.find("content://").map_or_else(
+                || token.to_string(),
+                |index| format!("{}[saf-uri-redacted]", &token[..index]),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl Drop for NotiaTimer {

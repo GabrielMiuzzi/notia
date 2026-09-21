@@ -1,5 +1,5 @@
 import { join } from '../../utils/files/pathUtils'
-import { readTextFile, writeTextFile, createDirectory, pathExists } from '../files/filesystemEngine'
+import { readTextFile, writeTextFile, createDirectory, createFile, pathExists } from '../files/filesystemEngine'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { InkMathPreferences } from '../preferences/inkMathSettingsStorage'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../preferences/telegramSettingsStorage'
@@ -18,10 +18,32 @@ export interface NotiaLibraryConfig {
   ia?: AiPreferences
   telegram?: TelegramPreferences
   contexts?: LibraryContext[]
+  /** LlamaCloud credential for finance document extraction, normalized per library. */
+  llamacloud?: {
+    apiKey: string
+  }
 }
 
 interface LibraryConfigOptions {
   androidDirectoryUri?: string
+}
+
+const MAX_LLAMACLOUD_API_KEY_LENGTH = 256
+
+/** Never store an empty/whitespace credential; the key is a secret. */
+function normalizeLlamacloudCredential(value: unknown): { apiKey: string } | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+  const candidate = value as { apiKey?: unknown }
+  if (typeof candidate.apiKey !== 'string') {
+    return undefined
+  }
+  const apiKey = candidate.apiKey.trim()
+  if (!apiKey || apiKey.length > MAX_LLAMACLOUD_API_KEY_LENGTH) {
+    return undefined
+  }
+  return { apiKey }
 }
 
 const DEFAULT_LIBRARY_CONFIG: NotiaLibraryConfig = {
@@ -49,6 +71,7 @@ function normalizeLibraryConfig(value: unknown): NotiaLibraryConfig {
     contexts: candidate.contextDefaultsVersion === 1
       ? normalizeLibraryContexts(candidate.contexts)
       : ensureDefaultLibraryContexts(candidate.contexts),
+    llamacloud: normalizeLlamacloudCredential(candidate.llamacloud),
   }
 }
 
@@ -101,21 +124,18 @@ export async function writeLibraryConfig(
   const configPath = getLibraryConfigPath(libraryPath)
   
   try {
-    // Only check for directory existence if the caller hasn't confirmed it.
-    // When called from ensureLibraryConfigExists, the directory is created
-    // in the same flow, so we can skip the redundant pathExists check.
-    if (!assumeDirectoryExists) {
-      const exists = await libraryConfigExists(libraryPath, options)
-      if (!exists) {
-        const dirResult = await createDirectory(configDir, options)
-        if (!dirResult.ok) {
-          return { ok: false, error: 'No se pudo crear el directorio de configuracion.' }
-        }
+    const configExists = await libraryConfigExists(libraryPath, options)
+    if (!configExists && !assumeDirectoryExists) {
+      const dirResult = await createDirectory(configDir, options)
+      if (!dirResult.ok) {
+        return { ok: false, error: 'No se pudo crear el directorio de configuracion.' }
       }
     }
     
     const content = JSON.stringify(config, null, 2)
-    const result = await writeTextFile(configPath, content, options)
+    const result = configExists
+      ? await writeTextFile(configPath, content, options)
+      : await createFile(configPath, content, options)
     
     return result
   } catch (error) {
@@ -140,15 +160,18 @@ export async function ensureLibraryConfigExists(
     return
   }
 
-  // Config file does not exist — create the directory first, then write
-  // the default config. We pass assumeDirectoryExists=true because we
-  // just created the directory in the line above.
-  const dirResult = await createDirectory(configDir, options)
-  if (!dirResult.ok) {
-    // If the directory already exists, createDirectory may fail — try
-    // to write the config file anyway.
+  // Android SAF creates the complete relative path in one native command.
+  // Splitting `.notia` and the config file into separate commands forces the
+  // provider to enumerate the just-created hidden directory between calls.
+  if (!options?.androidDirectoryUri) {
+    // If the directory already exists, createDirectory may fail; the file
+    // creation below remains authoritative, as in the previous flow.
+    await createDirectory(configDir, options)
   }
-  await writeLibraryConfig(libraryPath, DEFAULT_LIBRARY_CONFIG, options, true)
+  const writeResult = await writeLibraryConfig(libraryPath, DEFAULT_LIBRARY_CONFIG, options, true)
+  if (!writeResult.ok) {
+    throw new Error(writeResult.error ?? 'No se pudo crear la configuracion de la libreria.')
+  }
 }
 
 export async function updateLibraryConfig(

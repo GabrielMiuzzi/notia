@@ -23,6 +23,7 @@ import { readChatFileAsAttachment } from './chatImageAttachment'
 import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
 import { useChatAttachmentMenu } from './useChatAttachmentMenu'
+import { beginPhantomClickSuppression } from '../../../../utils/interactions/phantomClickSuppression'
 import { notiaTimer } from '../../../../services/runtime/notiaLogger'
 import {
   listAgentPrompts,
@@ -419,6 +420,7 @@ export function ChatWorkspaceViewComponent({
       agentCorpusPaths,
       agentScope,
       agentPromptFileName,
+      beginPhantomClickSuppression,
       requestAgentClarification: (question, signal, choices = []) => new Promise<string>((resolve, reject) => {
         const handleAbort = () => {
           clarificationResolverRef.current = null

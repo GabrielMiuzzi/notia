@@ -11,7 +11,7 @@ interface LibraryManagerModalProps {
   open: boolean
   libraries: NotiaLibrary[]
   activeLibraryId: string | null
-  onLibraryAdded: (library: NotiaLibrary) => void
+  onLibraryAdded: (library: NotiaLibrary) => Promise<void>
   onLibraryRemoved: (library: NotiaLibrary) => Promise<void>
   onClose: () => void
 }
@@ -44,6 +44,14 @@ export function LibraryManagerModal({
       }
 
       setAddPhase('config')
+      if (selection.androidTreeUri) {
+        console.info('[notia:saf] library config context', {
+          androidTreeUriPresent: true,
+          androidTreeUriLength: selection.androidTreeUri.length,
+        })
+      } else {
+        console.info('[notia:saf] library config context', { androidTreeUriPresent: false })
+      }
       await ensureLibraryConfigExists(selection.path, {
         androidDirectoryUri: selection.androidTreeUri,
       })
@@ -55,10 +63,9 @@ export function LibraryManagerModal({
         androidTreeUri: selection.androidTreeUri,
       }
       setAddPhase('loading')
-      onLibraryAdded(newLibrary)
+      await onLibraryAdded(newLibrary)
       onClose()
     } catch (error) {
-      console.error('[LibraryManager] Error adding library:', error)
       const fallbackMessage = 'No se pudo abrir el selector de carpetas en este dispositivo.'
       if (error instanceof Error && error.message.trim()) {
         setAddErrorMessage(error.message)

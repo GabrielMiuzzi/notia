@@ -2,6 +2,341 @@
 
 > **Corrección vigente:** Las mutaciones financieras iniciadas en Telegram **NO se auto-confirman**. Requieren una única confirmación visible por mutación, persistencia y verificación nativa antes de informar éxito; Telegram no muestra una segunda confirmación reforzada.
 
+## Estado sincronizado de esta iteración: finalización segura del selector SAF Android y timeout de selección
+
+El flujo de alta de bibliotecas Android ahora tiene límites explícitos tanto en el callback nativo del selector como en la espera del frontend. La fuente `src-tauri/resources/directory-picker/android/DirectoryPickerPlugin.kt` y su copia generada `src-tauri/gen/android/app/src/main/java/com/gabriel/notia/DirectoryPickerPlugin.kt` permanecen sincronizadas.
+
+### Flujo y contratos vigentes
+
+1. `pickDirectoryTree` abre `ACTION_OPEN_DOCUMENT_TREE` solicitando los permisos de lectura, escritura, persistencia y prefijo necesarios para el grant SAF. `directoryTreeResult` registra con el tag `NotiaSAF` el `resultCode` y si la respuesta contiene datos.
+2. El callback rechaza un resultado distinto de `Activity.RESULT_OK` con `No se seleccionó ninguna carpeta.`; un resultado exitoso sin `data` o sin `data.data` se rechaza con `No se pudo resolver la carpeta seleccionada.`. Si DocumentsUI no concedió ninguno de los flags READ/WRITE, devuelve `El selector no concedió permisos para la carpeta seleccionada.`.
+3. El callback conserva únicamente los flags READ/WRITE presentes en `ActivityResult.data.flags` y pasa esos flags reales a `takePersistableUriPermission`. En éxito resuelve el `Invoke` con `{ path: string, uri: string }`, ambos con la URI seleccionada.
+4. `SecurityException` se traduce a un rechazo que explica que no se pudo conservar el permiso; las demás excepciones se registran como error `NotiaSAF` y también rechazan el `Invoke`, usando el mensaje de la excepción o un fallback seguro. No queda un `Invoke` pendiente por una respuesta inválida o una excepción del callback.
+5. `libraryRuntime.pickLibraryDirectory()` aplica el timeout de `60_000` ms únicamente cuando `getRuntimeDevice()` devuelve `Android`; en desktop conserva la espera original de `pickDirectory()` sin ese timeout. Si vence en Android, rechaza con `El selector de carpetas tardó demasiado. Intenta nuevamente.`; otros errores se propagan cuando tienen mensaje y, si no, usan `No se pudo abrir el selector de carpetas.`. En Android, una selección válida sigue exigiendo una URI `content://` antes de construir `{ path, name, androidTreeUri }`.
+6. `LibraryManagerModal` muestra el error recuperable, restablece el estado de selección y conserva el modal abierto; el botón vuelve a estar disponible para reintentar. Una selección válida mantiene el flujo previo: configura la biblioteca, espera `onLibraryAdded` y recién después cierra el modal.
+
+```mermaid
+sequenceDiagram
+    participant U as Usuario Android
+    participant M as LibraryManagerModal
+    participant R as libraryRuntime
+    participant P as DirectoryPickerPlugin
+    participant D as DocumentsUI
+    U->>M: Agregar nueva libreria
+    M->>R: pickLibraryDirectory()
+    R->>P: pickDirectoryTree
+    P->>D: ACTION_OPEN_DOCUMENT_TREE
+    alt Resultado válido antes de 60 s
+        D-->>P: RESULT_OK + URI + flags reales
+        P-->>R: { path, uri }
+        R-->>M: { path, name, androidTreeUri }
+        M->>M: Configurar y agregar biblioteca
+        M-->>U: Cerrar tras onLibraryAdded
+    else Cancelación, datos/permisos inválidos o excepción
+        D-->>P: Resultado no válido
+        P-->>R: Rechazo seguro
+        R-->>M: Error recuperable
+        M-->>U: Mostrar error y permitir reintento
+    else Timeout
+        R-->>M: Rechazo a los 60 s
+        M-->>U: Mostrar timeout y permitir reintento
+    end
+```
+
+### Límites, errores y pendientes
+
+- El timeout limita la espera del `Promise` en el frontend; no constituye una cancelación explícita de la actividad nativa ya iniciada. Si el proveedor SAF o DocumentsUI permanece bloqueado, la validación del comportamiento posterior depende de la plataforma y del WebView.
+- La URI seleccionada debe ser `content://` para que `pickLibraryDirectory()` la acepte en Android. Una URI ausente, un resultado cancelado, un grant sin READ/WRITE, un permiso no persistible o una revocación posterior se informan como error y no agregan una biblioteca incompleta.
+- No cambia el formato persistido de las bibliotecas, el contrato `androidTreeUri`, los comandos Tauri ni los permisos requeridos por operaciones posteriores. La sincronización entre la fuente Kotlin y la copia generada es necesaria para que el build Android ejecute el callback documentado.
+
+### Regresiones y validaciones ejecutadas
+
+`src/services/libraries/libraryRuntime.test.ts` verifica que una promesa del selector que nunca termina rechace después de 60 segundos con el mensaje de timeout. La suite dirigida junto con `src/components/notia/LibraryManagerModal.test.tsx` aprobó 4 tests.
+
+Validaciones ejecutadas en esta iteración:
+
+- `npx vitest run src/services/libraries/libraryRuntime.test.ts src/components/notia/LibraryManagerModal.test.tsx`: 2 archivos, 4 tests aprobados.
+- `npm test -- --run`: 133 archivos, 732 tests aprobados.
+- `npm run lint`: aprobado.
+- `npx tsc --noEmit`: aprobado.
+- `cargo fmt --check`: aprobado.
+- `cargo check`: aprobado; permanecen warnings existentes.
+- `git diff --check`: aprobado; solo se informaron warnings existentes de LF/CRLF.
+- `gradlew.bat :app:compileArm64DebugKotlin --no-daemon`: `BUILD SUCCESSFUL`.
+- `npm run build -- --minify=false`: aprobado; permanecen warnings existentes de chunks e importaciones dinámicas.
+- `npm run build:android:debug`: completado y produjo `builds/android/notia-debug.apk`.
+
+No se instaló ni probó el APK en un dispositivo y no hubo prueba manual con `adb`; esa verificación queda pendiente. La compilación Kotlin y la generación del APK no sustituyen la comprobación del selector SAF real, sus permisos, la respuesta de DocumentsUI ni el comportamiento tras suspensión, revocación o timeout.
+
+## Estado sincronizado de esta iteración: creación SAF directa por ruta desde el grant raíz
+
+Los logs de dispositivo mostraron que el error `No se recibió una URI SAF válida.` aparecía en el primer `createPathEntry` del alta cuando `rootUri` llegaba vacío o no se propagaba correctamente desde el frontend. Esta iteración corrige el paso de `selection.androidTreeUri`, agrega logging nativo en `DirectoryPickerPlugin.createPathEntry`, unifica la creación de `.notia/notiaConfig.json` en un solo comando `createPathEntry`, mejora el mapeo de errores de SAF para conservar el detalle original y ajusta el orden de invalidación de la caché del árbol para no descartar una LRU recién poblada por `readTree`.
+
+### Flujo y contratos vigentes
+
+1. `create_library_directory` y `create_library_file` reciben la ruta lógica y la URI tree raíz. `android_relative_segments` solo deriva segmentos cuando la ruta normalizada está realmente debajo de esa raíz: exige el prefijo completo seguido por `/`, rechaza una ruta igual a la raíz y descarta segmentos vacíos, `.` o `..`.
+2. Cuando la derivación es válida, Rust llama directamente a `create_android_path_entry(state, rootUri, segments, entryType, content)` antes de intentar resolver el padre mediante las cachés o el resultado de `readTree`. El bridge invoca el comando móvil `createPathEntry` y exige una URI de respuesta no vacía.
+3. `DirectoryPickerPlugin.createPathEntry` recibe `rootUri`, el array `segments`, `entryType` y el contenido inicial opcional. Registra el `rootUri` recibido y la raíz normalizada en `android.util.Log` con tag `NotiaSAF` para diagnóstico en dispositivo. Normaliza la raíz tree a document URI y recorre cada segmento como hijo inmediato; todos los segmentos intermedios se resuelven o crean como directorios y el último se crea con el tipo solicitado.
+4. El plugin admite entre 1 y 24 segmentos. Después de aplicar `trim`, rechaza segmentos vacíos, `.`, `..` o que contengan `/` o `\`; los errores son `La ruta Android tiene una profundidad inválida.` o `La ruta Android contiene un segmento inválido.`. Una URI que no comienza por `content://` se rechaza como URI SAF inválida con `No se recibió una URI SAF válida.`.
+5. Cada paso conserva la creación idempotente por nombre exacto y tipo. El plugin consulta únicamente los hijos inmediatos mediante `COLUMN_DOCUMENT_ID`, `COLUMN_DISPLAY_NAME` y `COLUMN_MIME_TYPE`; reutiliza una entrada compatible, rechaza una colisión archivo/directorio con `Ya existe una entrada incompatible con ese nombre.` y, si el proveedor rechaza la creación, vuelve a consultar antes de devolver el error.
+6. El contenido inicial se escribe únicamente al crear un archivo nuevo en el segmento final, sin truncar un archivo compatible ya existente. Si la escritura del contenido inicial falla, el plugin intenta eliminar el documento creado como _best-effort cleanup_ y propaga la excepción original excepto `SecurityException`, que se traduce al error recuperable `El permiso de la carpeta fue revocado. Volvé a seleccionar la biblioteca.`.
+7. Al recibir la URI real del destino, `android_saf.rs` invalida las rutas afectadas y siembra la LRU con `ruta lógica exacta → URI real`. El resultado público sigue siendo `OperationResult { ok, error? }`; los fallos del nuevo comando se encapsulan como error de creación de archivo o directorio.
+8. Si no hay una raíz utilizable o la ruta no está realmente bajo ella, se conserva el flujo anterior de resolución del padre. Las lecturas, reemplazos y demás operaciones siguen usando la LRU, el mapa de paths y `readTree` lazy; una ruta anidada desconocida no usa la URI raíz como fallback.
+
+En el frontend, `ensureLibraryConfigExists` omite ahora la llamada separada `createDirectory(configDir)` cuando existe `androidDirectoryUri`, delegando la creación de `.notia` y `notiaConfig.json` en un solo `createFile(configPath, content, options)`. Esto evita forzar al proveedor SAF a enumerar el directorio `.notia` recién creado entre dos comandos.
+
+Así, la creación inicial de `.notia/notiaConfig.json` parte del grant raíz, resuelve o crea `.notia` y luego resuelve o crea `notiaConfig.json` dentro del mismo comando móvil. Ya no requiere que `readTree` actualizado enumere `.notia` entre ambos pasos.
+
+```mermaid
+flowchart LR
+    Picker[Selector SAF entrega path + androidTreeUri] --> Frontend[ensureLibraryConfigExists]
+    Frontend -->|Android| Single[createFile configPath con androidDirectoryUri]
+    Single --> Logical[Ruta lógica bajo la raíz]
+    Logical --> Segments[Derivar y validar 1..24 segmentos]
+    Segments --> Bridge[create_android_path_entry]
+    Bridge --> Plugin[createPathEntry]
+    Plugin --> Log[Log NotiaSAF rootUri normalizado]
+    Log --> Root[Normalizar raíz a document URI]
+    Root --> Child{Hijo inmediato compatible}
+    Child -->|Sí| Next[Reutilizar URI]
+    Child -->|No| Create[Crear directorio o destino]
+    Child -->|Tipo incompatible| Error[Rechazar colisión]
+    Create --> Next
+    Next -->|Quedan segmentos| Child
+    Next -->|Destino final| Cache[Invalidar y sembrar LRU]
+```
+
+### Cachés, límites, errores y recuperación
+
+- La nueva vía no elimina `readTree`: deja de depender de su resultado para crear una ruta bajo un grant raíz válido. Las lecturas y la resolución de operaciones no cubiertas por esta creación directa conservan la caché de árbol y la LRU existentes.
+- El recorrido hace una consulta de hijos inmediatos por nivel y tiene una profundidad máxima de 24. No acepta traversal ni separadores embebidos en un segmento, no reemplaza tipos incompatibles y no sobrescribe archivos existentes.
+- `create_library_file` y `create_library_directory` ahora usan `createPathEntry` antes de cualquier `refresh_root_tree_cache` previo y siembran la LRU **después** de la creación. La versión anterior invocaba `refresh_root_tree_cache` al inicio de la función, lo que podía invalidar una caché recién poblada por `readTree` justo antes de la creación. La implementación actual evita ese orden inválido.
+- `map_already_exists_error` fue corregido para que, cuando el mensaje no es un error de duplicado, preserve el detalle del error original con el formato `{fallback} {error_message}`. Las pruebas unitarias Rust bajo `#[cfg(any(target_os = "android", test))]` cubren ambas ramas: duplicados devuelven `An entry with that name already exists.` y otros errores conservan el mensaje original.
+- La URI sembrada en la LRU vive solo en memoria. Reiniciar el proceso, revocar el grant o recibir un rechazo del proveedor obliga a recuperar o volver a seleccionar la biblioteca según el error correspondiente.
+- La configuración puede quedar creada aunque falle posteriormente `onLibraryAdded` o la persistencia de documentos pendientes: el alta no tiene rollback de `.notia/notiaConfig.json`.
+- No se agregó una prueba Kotlin unitaria específica para `createPathEntry` ni se comprobó todavía esta APK en una tablet. Los casos reales de proveedor con árbol obsoleto, colisión de tipo, permisos revocados y suspensión/recuperación siguen pendientes de validación manual.
+
+Validaciones ejecutadas:
+
+- `npm test -- --run`: 132 archivos / 731 tests aprobados.
+- `npm run lint`: aprobado.
+- `npx tsc --noEmit`: aprobado.
+- `cargo fmt`: aprobado.
+- `cargo check` para el host: aprobado; permanecen 50 warnings existentes, sin nuevos.
+- `gradlew :app:assembleArm64Debug --no-daemon`: no se completó en este ciclo; el CLI de Tauri rechazó la conexión WebSocket (`ConnectionRefused`) de forma transitoria, no por código. Una ejecución anterior del script `npm run build:android:debug` sí finalizó exitosa y produjo la APK en `builds/android/notia-debug.apk`.
+
+El build Android por Gradle falló transitoriamente por conexión WebSocket rechazada del CLI de Tauri; queda pendiente recompilar e instalar la APK para verificar el alta real de una biblioteca y la creación de `.notia/notiaConfig.json` en dispositivo.
+
+## Estado sincronizado de esta iteración: resolución de URI SAF sintéticas en Android
+
+El backend Android conserva el motor global de filesystem: `src/services/files/filesystemEngine.ts` invoca los comandos Tauri, Rust delega en `src-tauri/src/filesystem/android_saf.rs`, y esa capa usa `mobile_directory_picker.rs` y el plugin Kotlin para acceder al Storage Access Framework (SAF). No se creó un motor Android alternativo ni cambió el contrato de `androidDirectoryUri`.
+
+### Contrato, resolución y errores
+
+- `resolve_entry_uri` solo trata como documento SAF directo una URI `content://` que contiene `/document/`. Es la única forma que bypassa la resolución de paths.
+- Una URI raíz/tree (`content://.../tree/...`) y cualquier ruta lógica construida sobre ella —por ejemplo `content://tree/.../.notia/notiaConfig.json`— son URI sintéticas, no documentos SAF. Pasan por la LRU, el mapa de paths y, si la caché está vencida, el refresh lazy mediante `readTree` antes de resolverse con la entrada real.
+- `pathExists`, `read_library_file`, `write_library_file` y las mutaciones distintas de la creación directa por ruta usan la URI resuelta. Una ruta sintética que no aparece en la caché ni en el árbol no se considera existente y no se entrega al plugin Kotlin como destino directo; devuelve el error seguro correspondiente, como `Could not resolve Android file.`. `create_library_directory` y `create_library_file` son la excepción: si derivan una ruta relativa válida desde el grant raíz, usan `createPathEntry` sin depender de esa resolución.
+- Las URI de documento reales mantienen el bypass directo. Esto conserva el acceso eficiente a entradas SAF ya entregadas como documentos sin confundirlas con una ruta lógica agregada a una URI tree.
+
+Para lecturas, reemplazos y mutaciones no cubiertas por la creación directa, el flujo efectivo es: `filesystemEngine` normaliza y envía `path` más `directoryUri` → comandos Tauri/Rust validan y delegan → `android_saf::resolve_entry_uri` distingue documento directo de URI sintética → `mobile_directory_picker` consulta la caché o actualiza el árbol SAF → el plugin Kotlin opera sobre la URI de documento real. La corrección evita que `pathExists` informe un falso positivo y que `write_library_file` intente escribir una URI inexistente.
+
+```mermaid
+flowchart LR
+    Engine[filesystemEngine.ts] --> Commands[Comandos Tauri/Rust]
+    Commands --> Saf[android_saf.rs]
+    Saf --> Direct{¿content:// con /document/?}
+    Direct -->|Sí| Document[Documento SAF directo]
+    Direct -->|No| Cache[Caché / refresh readTree]
+    Cache --> Resolved[URI de documento real]
+    Document --> Picker[mobile_directory_picker.rs / plugin Kotlin]
+    Resolved --> Picker
+```
+
+La regresión Android en `src-tauri/src/filesystem/android_saf.rs` comprueba que solo una URI con `/document/` bypassa la resolución y que una ruta sintética sobre `/tree/` continúa por SAF. No hay migración, cambio de persistencia, permisos nuevos, DTO ni cambio de comandos.
+
+### Validaciones y pendientes
+
+Validaciones ejecutadas en esta iteración:
+
+- `cargo check`: aprobado; permanecen warnings existentes.
+- `cargo fmt --check`: aprobado.
+- `npm test -- --run`: 132 archivos y 730 tests aprobados.
+- `npx tsc --noEmit`: aprobado.
+- `npm run lint`: aprobado.
+- `git diff --check`: aprobado.
+
+No se probó manualmente un APK ni el flujo SAF en un dispositivo Android real. Esa validación queda pendiente; las pruebas automatizadas no sustituyen la comprobación en WebView/dispositivo, permisos revocados y ciclos de suspensión o recuperación.
+
+## Estado sincronizado de esta iteración: preservación de URI SAF en rutas Android
+
+El error `Could not resolve Android directory` del alta de bibliotecas Android tenía una causa concreta en el frontend: `normalizeFilesystemPath` trataba la URI opaca `content://...` como una ruta común y colapsaba sus barras a `content:/...`. Después, `pathUtils.join` podía volver a corromper el esquema al construir `.notia/notiaConfig.json`. La evidencia de logcat mostró varios `readTree` antes del error, consistente con esa resolución fallida. Los mensajes de Settings relacionados con APK corresponden a una instalación anterior ya eliminada y no al flujo Tauri actual.
+
+### Contrato y corrección implementada
+
+- `normalizeFilesystemPath` recorta espacios como antes, pero devuelve sin modificar cualquier valor que empiece por `content://`; las rutas locales y `file://` mantienen su normalización de separadores existente.
+- `pathUtils.join` reconoce una URI `content://` en el primer segmento, quita solo sus barras finales y normaliza los segmentos posteriores sin tocar el esquema. Por ejemplo, `join(treeUri, '.notia', 'notiaConfig.json')` produce `content://.../.notia/notiaConfig.json`, no `content:/...`.
+- La ruta de configuración inicial conserva así la URI de árbol SAF que entrega el selector y puede ser resuelta por la capa Android. No cambia el formato persistido de la configuración, el contrato de `androidDirectoryUri`, los comandos Tauri ni los permisos SAF.
+- La corrección es defensiva: una URI ausente, inválida o que no pueda resolver el backend sigue produciendo un error seguro como `Could not resolve Android directory.`; no se usa otra URI como fallback.
+
+El flujo vigente es: el selector SAF entrega `path` y `androidTreeUri`; el frontend normaliza la ruta sin alterar la URI `content://`; al asegurar la configuración, une la URI con `.notia/notiaConfig.json`; las comprobaciones de existencia pueden consultar `readTree`, pero la creación deriva los segmentos y los recorre directamente desde el grant raíz. Solo después continúa el alta de la biblioteca. El APK actualizado fue ensamblado, pero su verificación en dispositivo real sigue pendiente.
+
+```mermaid
+flowchart LR
+    Picker[Selector SAF] --> Uri[URI content:// sin alterar]
+    Uri --> Normalize[normalizeFilesystemPath]
+    Normalize --> Join[pathUtils.join]
+    Join --> Config[.notia/notiaConfig.json]
+    Config --> Resolve[Resolución Android exacta]
+    Resolve -->|Correcta| Add[Continuar alta de biblioteca]
+    Resolve -->|Error| Safe[Could not resolve Android directory.]
+```
+
+### Regresiones, validaciones y pendientes
+
+`src/utils/files/pathUtils.test.ts` agrega regresiones para conservar una URI `content://` durante la normalización y para unir `.notia/notiaConfig.json` sin corromper el esquema. La suite dirigida también conserva las regresiones de `src/services/libraries/libraryConfig.test.ts` sobre creación de una configuración ausente mediante `createFile`, propagación de `{ ok: false, error }` y compatibilidad de lectura.
+
+Validaciones ejecutadas en esta iteración:
+
+- `npx vitest run src/utils/files/pathUtils.test.ts src/services/libraries/libraryConfig.test.ts`: 7 tests aprobados.
+- `npm test -- --run`: 132 archivos y 730 tests aprobados.
+- `npx tsc --noEmit`.
+- `npm run lint`.
+- `npm run build -- --minify=false`: build aprobado; permanecen warnings existentes de chunks.
+- `git diff --check`.
+
+El APK actualizado ya fue ensamblado. Queda pendiente instalarlo y validar en un dispositivo Android real el alta de una biblioteca SAF y la creación de su configuración; no se afirma que ese flujo haya sido comprobado manualmente.
+
+## Estado sincronizado de esta iteración: resolución SAF exacta y creación segura de configuración Android
+
+El alta desde `LibraryManagerModal` conserva el modal hasta completar la selección SAF, la configuración y `onLibraryAdded`. La selección entrega `path` y `androidTreeUri` a `ensureLibraryConfigExists`; una cancelación vuelve al estado inactivo y cualquier error mantiene el modal abierto para reintentar.
+
+### Flujo, contratos y persistencia
+
+1. `LibraryManagerModal` inicia `pickLibraryDirectory()`. Para una selección válida llama a `ensureLibraryConfigExists(selection.path, { androidDirectoryUri: selection.androidTreeUri })` antes de crear el `NotiaLibrary`.
+2. En Android, `android_saf::resolve_entry_uri` resuelve directamente solo una URI `content://` con `/document/`; las URI tree y las rutas sintéticas pasan luego por las cachés LRU y de rutas, y finalmente por una actualización lazy mediante `readTree` si la caché está vencida. `resolve_android_tree_uri` solo acepta coincidencias exactas de la ruta solicitada en `paths` o `roots`; una ruta anidada desconocida no recibe la URI de la raíz como fallback. Esto evita que la lectura o escritura de `.notia/notiaConfig.json` termine apuntando al documento raíz seleccionado o a una URI sintética inexistente.
+3. Si la configuración no existe, `ensureLibraryConfigExists` intenta crear `.notia` y después `writeLibraryConfig` consulta nuevamente la existencia. Cuando el archivo falta, usa `createFile`, que invoca `create_library_file`; Android deriva la ruta relativa al grant y usa `createPathEntry` para resolver o crear todos sus segmentos con el contenido inicial. `writeTextFile`/`write_library_file` queda reservado para reemplazar documentos existentes; no se usa para crear la configuración nueva.
+4. `writeLibraryConfig` devuelve `{ ok, error? }` y conserva el error de creación. `ensureLibraryConfigExists` lanza un `Error` con ese mensaje o con `No se pudo crear la configuracion de la libreria.` cuando `ok` es `false`; la selección no continúa como un alta válida.
+5. Tras configurar la carpeta, el modal crea el `NotiaLibrary`, muestra `Cargando archivos...` y espera `onLibraryAdded(newLibrary)`. `useLibraryManagerActions.handleLibraryAdded` persiste primero los documentos pendientes; si ese flush falla, no agrega ni selecciona la biblioteca.
+6. La configuración se escribe antes de `onLibraryAdded`; si luego falla el flush no se registra la biblioteca en Redux y no hay rollback de la configuración ya creada. Las configuraciones existentes no se reemplazan durante el alta. No hay migración de formato ni cambio en el contrato de la URI de árbol SAF.
+
+```mermaid
+sequenceDiagram
+    participant U as Usuario Android
+    participant M as LibraryManagerModal
+    participant P as Selector SAF
+    participant R as Resolución SAF exacta
+    participant C as ensureLibraryConfigExists
+    participant A as useLibraryManagerActions
+    participant F as Persistencia de documentos
+    U->>M: Agregar nueva libreria
+    M->>P: pickLibraryDirectory()
+    alt Cancelación
+        P-->>M: null
+        M-->>U: Modal abierto y listo para reintentar
+    else Selección válida
+        P-->>M: path, nombre y androidTreeUri
+        M->>C: Asegurar .notia/notiaConfig.json
+        C->>R: Resolver lectura/creación por path
+        alt Ruta anidada desconocida
+            R-->>C: Error; no usa la URI raíz
+            C-->>M: Error de configuración
+            M-->>U: Mensaje; modal permanece abierto
+        else Configuración inexistente
+            C->>R: Derivar segmentos desde el grant raíz
+            R->>P: createPathEntry por ruta relativa
+            P-->>C: Resultado de creación
+            C-->>M: Configuración lista
+            M->>A: await onLibraryAdded(library)
+            A->>F: await persistDirtyTextDocuments()
+            alt Flush fallido
+                F-->>A: false
+                A-->>M: Error; no agrega biblioteca
+                M-->>U: Mensaje; modal permanece abierto
+            else Flush correcto
+                A-->>M: Promise resuelta
+                M-->>U: Cierra modal después del alta
+            end
+        end
+    end
+```
+
+La caché de rutas SAF conserva hasta 500 entradas LRU y usa una vigencia de 30 segundos; una mutación invalida las rutas afectadas y la resolución puede reconstruir el árbol de forma lazy. Si existe contexto Android pero no se resuelve la entrada, las operaciones devuelven errores seguros como `Could not resolve Android file.` o `Could not resolve Android directory.` en lugar de operar sobre otra URI.
+
+### Regresiones, validaciones y pendientes
+
+`src/services/libraries/libraryConfig.test.ts` cubre que un archivo ausente use `createFile` y no `writeTextFile`, y que `{ ok: false, error }` se propague como error de `ensureLibraryConfigExists`. La regresión Android de `src-tauri/src/mobile_directory_picker.rs` comprueba que una ruta anidada desconocida no se resuelva a la URI raíz. `src/components/notia/LibraryManagerModal.test.tsx` conserva las regresiones de modal pendiente, persistencia antes del cierre y error de configuración.
+
+Validaciones ejecutadas:
+
+- `npm test -- --run`: 131 archivos y 728 tests aprobados.
+- `npm run lint`.
+- `npx tsc --noEmit`.
+- `npm run build -- --minify=false`: build exitoso; permanecen warnings existentes de chunks.
+- `cargo fmt --check`.
+- `git diff --check`.
+- `cargo test` compiló, pero no pudo ejecutar por `STATUS_ENTRYPOINT_NOT_FOUND` del entorno Windows.
+- `cargo check --target aarch64-linux-android` no pudo completar porque faltan `aarch64-linux-android-clang` y el NDK.
+
+La compilación Android y el APK debug ya se completaron mediante Gradle/Tauri. Queda pendiente instalar esta nueva APK y repetir el flujo SAF en un dispositivo Android sin HMR; no se afirma validación manual en dispositivo.
+
+## Estado sincronizado de esta iteración: tercera corrección de interacción táctil en modales Android
+
+En Android, `NotiaButton` puede activar una acción táctil en `pointerup` y ejecutar un `click()` programático. Algunos WebView todavía emiten después un `click` confiable para el mismo toque y pueden reportar un `pointerdown` sobre el backdrop aunque el dedo siga activando un control interno. Si la acción monta un modal durante el handler —por ejemplo, al tocar **Agregar nueva libreria** en `LibraryManagerModal`— esa secuencia podía desmontarlo antes de abrir o completar el selector SAF. La corrección vigente mantiene la supresión de clicks confiables fantasma y la validación geométrica para mouse, y agrega una regla explícita: `NotiaModalShell` ignora todo `pointerdown` cuyo `pointerType` no sea `mouse`.
+
+### Flujo y contrato vigente
+
+1. `NotiaButton` registra un puntero no mouse, conserva la posición inicial y considera tap un gesto con desplazamiento máximo de 16 px. En `pointerup`, para un tap válido, llama a `preventDefault()`, arma la supresión global y ejecuta una única activación programática mediante `button.click()`.
+2. `phantomClickSuppression` instala una sola escucha de `click` en la captura del documento y mantiene una ventana global de 450 ms asociada al elemento que recibió el tap. Durante esa ventana bloquea únicamente eventos confiables cuyo target quede fuera de ese elemento; la compuerta no intercepta eventos no confiables ni clicks confiables sobre el elemento dueño. `NotiaButton` conserva además su guard local para que el click nativo duplicado no ejecute dos veces el handler. La ventana se limpia al vencer el tiempo o cuando corresponde al click del elemento dueño.
+3. `NotiaModalShell` retorna sin cerrar ante cualquier `pointerdown` cuyo `pointerType` no sea `mouse`, incluido un evento táctil retargeteado al backdrop. Por tanto, el backdrop no es un mecanismo de cierre táctil: la interacción touch esencial no depende de que el WebView informe un target de backdrop confiable.
+4. Para mouse, el shell exige que `event.target === event.currentTarget` y conserva la comprobación de `panel.getBoundingClientRect()` contra `clientX`/`clientY`; si las coordenadas están dentro del panel, no desmonta el modal aunque el mouse haya sido retargeteado al backdrop. Solo un `pointerdown` de mouse directo y fuera del rectángulo del panel ejecuta `preventDefault()` y `onClose()`.
+5. El shell conserva el cierre mediante Escape, el foco inicial en el panel y la restauración del foco previo al desmontar, además de `tabIndex="-1"`, `role="dialog"` y `aria-modal="true"`. `LibraryManagerModal` expone además una X visible que continúa siendo una acción explícita disponible con touch.
+6. En `LibraryManagerModal`, la selección SAF puede permanecer abierta mientras el selector está activo. Cancelar o recibir un error deja el modal disponible para reintentar; una selección válida configura y agrega la librería antes de cerrar.
+
+```mermaid
+sequenceDiagram
+    participant U as Usuario Android
+    participant B as NotiaButton
+    participant G as phantomClickSuppression
+    participant M as LibraryManagerModal
+    participant S as NotiaModalShell
+    U->>B: pointerdown / pointerup (tap)
+    B->>G: Registrar ventana global de 450 ms
+    B->>M: click() programático
+    M->>S: Montar modal y backdrop
+    U-->>G: click confiable pendiente del WebView
+    G-->>S: Bloquear si el target está fuera del botón dueño
+    U->>S: pointerdown reportado en backdrop
+    alt pointerType no es mouse
+        S-->>M: Ignorar y mantener modal montado
+        U->>B: pointerup sobre control interno
+        B->>M: Abrir selector SAF
+    else pointerType mouse
+        S->>S: Comparar clientX/clientY con getBoundingClientRect() del panel
+        alt Coordenadas dentro del panel
+            S-->>M: Mantener modal montado
+        else Coordenadas fuera del panel
+            S-->>M: Cerrar modal
+        end
+    end
+```
+
+La corrección no cambia comandos Tauri, DTO, persistencia, permisos SAF ni el contrato de selección de bibliotecas. El límite de 450 ms es una protección de interacción global, no una garantía sobre eventos emitidos fuera de esa ventana. La comprobación geométrica usa las coordenadas del evento y el rectángulo vigente del panel, pero solo participa en la ruta de mouse; la validación de la secuencia real depende del WebView y del dispositivo. El cierre por backdrop queda intencionalmente disponible para mouse, no para pointerdown táctil o de otro tipo.
+
+### Regresiones y validación
+
+`src/components/common/NotiaButton.modal.test.tsx` cubre la activación táctil única, la compatibilidad con mouse/teclado, el cierre por backdrop con mouse, la ignorancia de `pointerdown` touch retargeteado al backdrop, la validación geométrica del panel, Escape, foco y la compuerta global. `src/components/notia/LibraryManagerModal.test.tsx` comprueba que el modal siga montado mientras el selector de directorios está pendiente y que cancelar no invoque `onClose`. En conjunto, las pruebas dirigidas de esta iteración suman 10 casos.
+
+Validaciones ejecutadas en esta iteración:
+
+- `npx vitest run src/components/common/NotiaButton.modal.test.tsx src/components/notia/LibraryManagerModal.test.tsx`: 10 tests aprobados.
+- `npx tsc --noEmit`.
+- `npm run lint`.
+- `npm test -- --run`: 131 archivos y 724 tests aprobados.
+- `npm run build -- --minify=false`: build exitoso; permanecen únicamente warnings existentes de chunks e importaciones dinámicas.
+- `git diff --check`: aprobado; Git informó únicamente warnings existentes de conversión LF/CRLF.
+
+No hay dispositivo Android ni `adb` disponible. No se ejecutó validación manual ni build o instalación Android. La reproducción real en WebView físico, distintas versiones de Android y ciclos de suspensión/reanudación queda pendiente.
+
 ## Estado sincronizado de esta iteración: criterio multiplataforma de desarrollo
 
 Las reglas de implementación del repositorio establecen que cada flujo se diseña, implementa y revisa desde el inicio para Windows y Android. El alcance incluye frontend, comandos y adaptadores Rust del backend, iteración de desarrollo, permisos y ciclo de vida de cada plataforma.
@@ -874,7 +1209,7 @@ La URL prioriza la interfaz IPv4 de la ruta local y, si no existe una ruta de sa
 - Evento `notia-library-tree-changed` (desktop) — payload con `watchedPath` y `changedPathHint`.
 
 #### Validaciones
-- **Frontend**: `normalizeFilesystemPath` sanitiza separadores (`\` → `/`). Rechaza strings vacíos.
+- **Frontend**: `normalizeFilesystemPath` sanitiza separadores (`\` → `/`) en rutas locales, pero conserva intactas las URI opacas `content://`. Rechaza strings vacíos.
 - **Backend**: `validation.rs` rechaza nombres con `/`, `\\`, `.`, `..`, strings vacíos.
 - **Backend**: canonicalización con `fs::canonicalize` (fallback al path original).
 
@@ -889,7 +1224,7 @@ La URL prioriza la interfaz IPv4 de la ruta local y, si no existe una ruta de sa
 
 #### Pasos del proceso (Android)
 
-1. **Selección de carpeta**: `filesystemEngine.pickDirectory()` → `invoke('pick_android_directory_tree')` → Rust `mobile_directory_picker` → intent SAF nativo → retorna `path` + `uri`.
+1. **Selección de carpeta**: `filesystemEngine.pickDirectory()` → `invoke('pick_android_directory_tree')` → Rust `mobile_directory_picker` → intent SAF nativo → retorna `path` + `uri`; `libraryRuntime.pickLibraryDirectory()` valida la URI `content://` y la usa como `path` y `androidTreeUri` de la librería.
 2. **Lectura del árbol**: `invoke('read_android_library_tree')` → Rust `mobile_directory_picker::read_android_library_tree` → recorrido SAF recursivo → `FileNode[]`.
 3. **Polling (opcional)**: en Settings se configura `explorer-refresh-interval-ms`. El hook `useLibraryTreeSync` re-lee la firma periódicamente y compara con la anterior; si difiere, re-carga el árbol completo.
 4. **Flat file list**: para indexado de búsqueda y grafo, `readLibraryFlatFileList()` invoca `read_android_flat_file_list` (comando exclusivo de Android) para obtener lista plana sin recursión de árbol.
@@ -921,6 +1256,9 @@ Creación, lectura, actualización y eliminación de archivos y carpetas dentro 
 | `library_entry_operation` | Síncrono | `LibraryEntryOperationPayload` | `OperationResult` |
 | `read_library_file` | Síncrono | `ReadLibraryFilePayload` | `ReadLibraryFileResult` |
 | `write_library_file` | Síncrono | `WriteLibraryFilePayload` | `WriteLibraryFileResult` |
+| `create_library_file` | Síncrono | `CreateLibraryFilePayload` | `OperationResult` |
+| `create_library_directory` | Síncrono | `CreateLibraryDirectoryPayload` | `OperationResult` |
+| `write_binary_file` | Síncrono | `WriteBinaryFilePayload` | `OperationResult` |
 | `path_exists` | Síncrono | `PathExistsPayload` | `PathExistsResult` |
 | `is_directory_path` | Síncrono | `PathExistsPayload` | `IsDirectoryPathResult` |
 
@@ -1010,15 +1348,18 @@ Creación, lectura, actualización y eliminación de archivos y carpetas dentro 
 
 #### Pasos del proceso
 
-1. **Crear entrada**: frontend `filesystemEngine.createLibraryEntry()` → `invoke('create_library_entry')` → Rust valida nombre → determina extensión según `kind` (`.md`, `.mmd`, sin extensión para carpetas) → crea en desktop con `fs::create_dir`/`fs::write` o en Android SAF.
+1. **Crear entrada**: frontend `filesystemEngine.createLibraryEntry()` → `invoke('create_library_entry')` → Rust valida nombre → determina extensión según `kind` (`.md`, `.mmd`, sin extensión para carpetas) → crea en desktop con `fs::create_dir`/`fs::write` o en Android SAF. Para una ruta sintética Android, `android_saf` resuelve el directorio padre por la ruta cacheada y llama a `createEntry`; no entrega la URI tree sintética al proveedor como documento.
 2. **Eliminar**: `invoke('library_entry_operation')` con `action: 'delete'` → Rust valida → `desktop::delete_entry` (o SAF) → `fs::remove_file`/`remove_dir_all`.
 3. **Renombrar**: `action: 'rename'` → `desktop::rename_entry` → `fs::rename`.
 4. **Copiar/Mover**: `action: 'paste'` con `mode: 'copy'` o `'move'` → lectura del source → escritura en target → si es move, eliminación del source.
+5. **Binarios**: `filesystemEngine.writeBinaryFile(path, data, { androidDirectoryUri })` → `invoke('write_binary_file')` → Rust resuelve la URI SAF exacta, crea el destino ausente mediante `createEntry` cuando corresponde y el plugin escribe los bytes a través de Base64. La lectura binaria para extracción usa `readFileBinary` y decodificación Base64 en Rust.
 
 #### Comportamiento ante errores
 - Nombre inválido: retorna inmediatamente `OperationResult` con error descriptivo en español.
 - Path no existe: error de filesystem propagado como string al frontend.
 - Operación en Android sin `directoryUri`: puede fallar si SAF no tiene permiso persistido.
+- Una ruta anidada desconocida no se considera la raíz: devuelve un error seguro de resolución y no puede redirigir la operación a otro documento.
+- `readLibraryDirectory` propaga el error de lectura; las lecturas completas del árbol y del listado plano mantienen su fallback de lista vacía.
 
 #### Dependencias
 - **Frontend**: `filesystemEngine.ts`, `useFileTreeActions.ts`, `FileTreeContextMenu.tsx`.
@@ -1074,13 +1415,13 @@ Flujo completo de lectura, renderizado, edición, autosave y persistencia de un 
 - Estado local del documento (Milkdown editor) y pestañas abiertas en Redux.
 
 #### Validaciones
-- **Frontend**: path vacío rechazado antes de invocar.
-- **Backend**: path vacío retorna `{ ok: false, error: "Invalid file path." }`. En Android, intenta SAF primero; si falla, retorna error sin tocar desktop.
+- **Frontend**: path vacío rechazado antes de invocar; en Android, `directoryUri` acompaña toda lectura/escritura SAF.
+- **Backend**: path vacío retorna `{ ok: false, error: "Invalid file path." }`. En Android, intenta SAF primero; si falla, retorna error sin tocar desktop. Una URI `content://.../document/...` puede usarse directamente; una URI tree y sus rutas sintéticas deben resolverse mediante el mapa de paths/`readTree`.
 
 #### Pasos del proceso
 
 1. **Apertura**: el usuario hace clic en un archivo `.md` en `FileTree` → `useDocumentOpener` verifica si ya está abierto (evita duplicados) → dispatch `documentsSlice.actions.openDocument({ path, title })`.
-2. **Lectura**: `useDocumentPersist` o `MarkdownView` invoca `filesystemEngine.readTextFile(path)` → `invoke('read_library_file')` → Rust `filesystem::commands::read_library_file` → `desktop::read_library_file` (o `android_saf::read_library_file`) → lectura con `fs::read_to_string` → retorna `{ ok: true, content }`.
+2. **Lectura**: `useDocumentPersist` o `MarkdownView` invoca `filesystemEngine.readTextFile(path)` → `invoke('read_library_file')` → Rust `filesystem::commands::read_library_file` → `desktop::read_library_file` (o `android_saf::read_library_file`) → lectura con `fs::read_to_string` o `readFile` SAF → retorna `{ ok: true, content }`; si falla, conserva `{ ok: false, content: '', error }`.
 3. **Renderizado**: el contenido se inyecta en el editor **Milkdown Crepe** (`MarkdownView.tsx`). Se parsea frontmatter vía `frontmatterEngine.ts` y se muestra en `MarkdownPropertiesPanel`.
 
 #### Bloques Markdown dentro de celdas de tablas
@@ -1169,13 +1510,14 @@ flowchart LR
 La selección del editor se transforma en `MarkdownSelectionContext` mediante `selectionEngine.ts`. El contexto incluye posiciones, texto y cada bloque superior seleccionado con su tipo. `NotiaMenu` lo comparte con el chat lateral; en el scope `document`, `createChatScopedAgent` lo incorpora al prompt y expone `read_active_markdown_document`, `replace_active_markdown_document` e `insert_active_markdown_document`. La selección es opcional: el agente relee la fuente actual, puede resolver `targetText` contra cualquier bloque referenciado del archivo (incluidos referencias como «punto a»), reemplazarlo o insertar contenido antes/después de él, y conserva el resto del archivo sin permiso adicional para la lectura y con confirmación visible antes de guardar. Si no se indica un objetivo para una inserción inequívoca, la agrega al final. Tras escribir, el cambio actualiza la pestaña abierta y `MarkdownView` aplica el nuevo cuerpo sin remount ni reapertura; el resultado de la mutación es terminal para evitar lecturas repetidas.
 4. **Wikilinks**: durante la edición, el plugin `wikiLinkPlugin.ts` detecta patrones `[[...]]` y muestra el menú de sugerencias `WikiLinkSuggestionMenu.tsx` con notas existentes.
 5. **Autosave**: `useTextDocumentAutosave.ts` establece un debounce (tipicamente ~1s de inactividad) tras el cual invoca `filesystemEngine.writeTextFile(path, content)`. `useTabManager.persistDirtyTextDocuments` ejecuta un flush inmediato antes de cerrar una pestaña, mover/renombrar entradas, cambiar de libreria o cerrar/salir de la aplicacion; una escritura fallida mantiene la pestaña abierta y su contenido en memoria para reintentar.
-6. **Persistencia**: `invoke('write_library_file')` → Rust `filesystem::commands::write_library_file` → valida path no vacío → `desktop::write_library_file` (o SAF) → `fs::write` → retorna `{ ok: true }`.
+6. **Persistencia**: `invoke('write_library_file')` → Rust `filesystem::commands::write_library_file` → valida path no vacío → `desktop::write_library_file` (o SAF) → `fs::write`/`writeFile` → retorna `{ ok: true }`. En Android, `directoryUri` se conserva hasta la resolución de la URI de documento real.
 7. **Indicadores**: el slice `documentsSlice` actualiza el flag `isSaving` / `saveError` para mostrar el indicador visual en la pestaña.
 
 #### Comportamiento ante errores
 - Lectura fallida: el editor se abre vacío o con mensaje de error; no se bloquea la UI.
 - Escritura fallida: indicador de error ✗ en la pestaña; el contenido modificado permanece en memoria (Redux + estado local del editor), permitiendo reintentar.
 - Path vacío: rechazo inmediato en frontend y backend con mensaje en inglés técnico ("Invalid file path.") que el frontend traduce a contexto amigable.
+- Una resolución SAF sintética ausente, un permiso revocado o una escritura Base64 inválida devuelve un error recuperable; no se utiliza la URI tree raíz como sustituto.
 
 #### Dependencias
 - **Frontend**: `MarkdownView.tsx`, `useDocumentPersist.ts`, `useTextDocumentAutosave.ts`, `wikiLinkPlugin.ts`, `frontmatterEngine.ts`, `filesystemEngine.ts`.
@@ -2203,7 +2545,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 **Response:**
 ```json
 {
-  "path": "/tree/primary:Notas",
+  "path": "content://com.android.externalstorage.documents/tree/primary%3ANotas",
   "uri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
 }
 ```
@@ -2213,7 +2555,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 ```json
 {
   "payload": {
-    "directoryPath": "/tree/primary:Notas",
+    "directoryPath": "content://com.android.externalstorage.documents/tree/primary%3ANotas",
     "directoryUri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
   }
 }
@@ -2224,7 +2566,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
   {
     "id": "file-1",
     "name": "Ideas.md",
-    "path": "/tree/primary:Notas/Ideas.md",
+    "path": "content://com.android.externalstorage.documents/tree/primary%3ANotas/Ideas.md",
     "type": "file",
     "expanded": false,
     "hasChildren": false,
@@ -2238,7 +2580,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 ```json
 {
   "payload": {
-    "directoryPath": "/tree/primary:Notas",
+    "directoryPath": "content://com.android.externalstorage.documents/tree/primary%3ANotas",
     "directoryUri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
   }
 }
@@ -2246,8 +2588,8 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 **Response:**
 ```json
 [
-  { "path": "Ideas.md", "type": "file", "name": "Ideas.md" },
-  { "path": "Proyectos", "type": "folder", "name": "Proyectos" }
+  { "path": "content://com.android.externalstorage.documents/tree/primary%3ANotas/Ideas.md", "type": "file", "name": "Ideas.md" },
+  { "path": "content://com.android.externalstorage.documents/tree/primary%3ANotas/Proyectos", "type": "folder", "name": "Proyectos" }
 ]
 ```
 
@@ -2256,7 +2598,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 ```json
 {
   "payload": {
-    "directoryPath": "/tree/primary:Notas/Proyectos",
+    "directoryPath": "content://com.android.externalstorage.documents/tree/primary%3ANotas/Proyectos",
     "directoryUri": "content://com.android.externalstorage.documents/tree/primary%3ANotas"
   }
 }
@@ -2267,7 +2609,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
   {
     "id": "file-2",
     "name": "README.md",
-    "path": "/tree/primary:Notas/Proyectos/README.md",
+    "path": "content://com.android.externalstorage.documents/tree/primary%3ANotas/Proyectos/README.md",
     "type": "file"
   }
 ]

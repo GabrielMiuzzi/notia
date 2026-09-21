@@ -365,7 +365,10 @@ function NotiaMenuComponent() {
   useTelegramAgentBridge({
     library: activeLibraryForToolbar,
     aiPreferences,
-    telegram: telegramPreferences,
+    // Telegram's agent runtime is not durable outside the React process on
+    // Android. Do not start the integration there until a native runtime owns
+    // its complete lifecycle.
+    telegram: isAndroidRuntime ? { ...telegramPreferences, enabled: false } : telegramPreferences,
     onTelegramChange: handleTelegramPreferencesChange,
     onLibraryChanged: () => notifyLibraryTreeChanged(activeLibraryPath ?? undefined),
   })

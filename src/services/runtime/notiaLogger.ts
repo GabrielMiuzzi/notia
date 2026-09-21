@@ -5,6 +5,7 @@ const SENSITIVE_KEY_PATTERN = /(?:api.?key|access.?token|auth(?:orization)?|pass
 const SECRET_PATTERN = /(?:api.?key|access.?token|password|passwd|secret|cookie|authorization)\s*[:=]\s*[^\s,;}]+|bearer\s+[a-z0-9._~+/=-]{8,}|\b(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9_-]{12,}|xox[baprs]-[a-z0-9-]{12,}|akia[a-z0-9]{12,})\b|-----begin\s+(?:rsa|openssh|ec|private)\s+key-----/gi
 const JWT_PATTERN = /\bey[a-z0-9_-]{10,}\.[a-z0-9._-]{3,}\.[a-z0-9._-]{3,}\b/gi
 const PRIVATE_PATH_PATTERN = /(?:[a-z]:[\\/]|\\\\|\/(?:users|home|private|appdata|documents)(?:\/|$))[^\s,;)}\]]+/gi
+const SAF_URI_PATTERN = /content:\/\/[^\s,;)}\]]+/gi
 const EMAIL_PATTERN = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi
 
 export function redactDiagnosticText(value: string): string {
@@ -12,6 +13,7 @@ export function redactDiagnosticText(value: string): string {
     .replace(SECRET_PATTERN, '[secret-redacted]')
     .replace(JWT_PATTERN, '[token-redacted]')
     .replace(PRIVATE_PATH_PATTERN, '[private-path-redacted]')
+    .replace(SAF_URI_PATTERN, '[saf-uri-redacted]')
     .replace(EMAIL_PATTERN, '[email-redacted]')
     .slice(0, 1_000)
 }

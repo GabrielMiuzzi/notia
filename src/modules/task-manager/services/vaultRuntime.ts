@@ -262,7 +262,9 @@ export async function readMarkdownFiles(directoryPath: string): Promise<Markdown
       }
     }
 
-    return await readMarkdownDocuments(normalizeFilesystemPath(directoryPath))
+    return await readMarkdownDocuments(normalizeFilesystemPath(directoryPath), {
+      androidDirectoryUri: resolveAndroidDirectoryUri(directoryPath),
+    })
   } catch (error) {
     console.error('[task-manager] read_markdown_files failed', error)
     throw error

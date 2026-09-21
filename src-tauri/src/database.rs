@@ -926,6 +926,7 @@ pub fn open_library_connection(library_path: &str) -> Result<Connection, String>
 
 #[tauri::command]
 pub fn initialize_library_database(
+    app: tauri::AppHandle,
     payload: InitializeLibraryDatabasePayload,
     state: State<'_, LibraryDatabaseState>,
 ) -> InitializeLibraryDatabaseResult {
@@ -938,27 +939,30 @@ pub fn initialize_library_database(
         else {
             return failure("La librería Android no tiene una URI SAF válida.".to_string());
         };
-        let guard = match state.handle.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return failure("No se pudo acceder al adaptador SQLite Android.".to_string())
-            }
+        // Opening the mobile connection copies the SAF database into the app
+        // cache and runs the schema migration on that copy, so the very first
+        // initialization leaves the cache prepared and the schema current.
+        let connection = match open_mobile_library_connection(&app, directory_uri) {
+            Ok(connection) => connection,
+            Err(error) => return failure(error),
         };
-        let Some(handle) = guard.as_ref() else {
-            return failure("El adaptador SQLite Android no está disponible.".to_string());
+        let schema_version = match migrate(&connection) {
+            Ok(version) => version,
+            Err(error) => return failure(format!("No se pudo migrar la base SQLite: {error}")),
         };
-        return match handle.run_mobile_plugin::<InitializeLibraryDatabaseResult>(
-            "initializeDatabase",
-            serde_json::json!({ "libraryUri": directory_uri }),
-        ) {
-            Ok(result) => result,
-            Err(error) => failure(format!("No se pudo inicializar SQLite en Android: {error}")),
+        let database_path = connection.path().map(str::to_owned);
+        drop(connection);
+        return InitializeLibraryDatabaseResult {
+            ok: true,
+            database_path,
+            schema_version: Some(schema_version),
+            error: None,
         };
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = state;
+        let _ = (app, state);
         let path = match database_path(&payload.library_path) {
             Ok(path) => path,
             Err(error) => return failure(error),

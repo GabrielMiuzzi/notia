@@ -45,5 +45,6 @@ export interface DocumentsState {
     | null
   dialogState: { type: 'info'; title: string; message: string } | null
   loadingFolderIds: string[]
+  folderLoadError: { folderId: string; message: string } | null
   flatFileList: NotiaFlatFileEntry[]
 }

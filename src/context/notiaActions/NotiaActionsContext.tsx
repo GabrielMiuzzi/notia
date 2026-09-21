@@ -4,7 +4,7 @@ import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 
 export interface NotiaActions {
   openFile: (filePath: string) => Promise<void>
-  openFileFromView: (filePath: string) => void
+  openFileFromView: (filePath: string, androidDocumentUri?: string) => void
   closeTab: (tabPath: string) => void
   closeActiveTab: () => void
   cycleToNextTab: () => void
@@ -27,7 +27,7 @@ export interface NotiaActions {
   nodeContextMenu: (node: NotiaFileNode, position: { x: number; y: number }) => void
   emptyContextMenu: (position: { x: number; y: number }) => void
   moveNode: (sourcePath: string, targetDirectoryPath: string) => void
-  libraryAdded: (library: NotiaLibrary) => void
+  libraryAdded: (library: NotiaLibrary) => Promise<void>
   libraryRemoved: (library: NotiaLibrary) => Promise<void>
   textDocumentChange: (nextSource: string) => void
   chatWorkspaceTreeChanged: (pathHint?: string) => void

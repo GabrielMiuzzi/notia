@@ -56,13 +56,41 @@ impl Clone for AndroidDirectoryPickerState {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 fn normalize_android_root_key(value: &str) -> String {
     value
         .trim()
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string()
+}
+
+#[cfg(any(target_os = "android", test))]
+fn is_same_or_nested_path(base: &str, candidate: &str) -> bool {
+    let normalized_base = normalize_android_root_key(base);
+    let normalized_candidate = normalize_android_root_key(candidate);
+    !normalized_base.is_empty()
+        && (normalized_candidate == normalized_base
+            || normalized_candidate.starts_with(&format!("{normalized_base}/")))
+}
+
+#[cfg(target_os = "android")]
+fn is_saf_tree_uri(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("content://")
+        && trimmed.contains("/tree/")
+        && !trimmed.contains("/document/")
+        && !trimmed.chars().any(char::is_whitespace)
+}
+
+#[cfg(target_os = "android")]
+fn validate_tree_context(uri: Option<&str>) -> Result<(), String> {
+    if let Some(value) = uri {
+        if !is_saf_tree_uri(value) {
+            return Err("La referencia Android no es una URI tree SAF válida.".to_string());
+        }
+    }
+    Ok(())
 }
 
 impl AndroidDirectoryPickerState {
@@ -240,7 +268,7 @@ pub fn invalidate_paths_by_prefix(state: &AndroidDirectoryPickerState, path_pref
         Ok(p) => p,
         Err(_) => return,
     };
-    paths.retain(|key, _| !key.starts_with(&normalized_prefix) && !key.starts_with(path_prefix));
+    paths.retain(|key, _| !is_same_or_nested_path(&normalized_prefix, key));
     drop(paths);
     invalidate_android_path_lru(state, path_prefix);
     invalidate_android_path_lru(state, &normalized_prefix);
@@ -266,7 +294,7 @@ pub fn invalidate_android_path_lru(state: &AndroidDirectoryPickerState, path_pre
     if let Ok(mut lru) = state.saf_path_lru.lock() {
         let keys_to_remove: Vec<String> = lru
             .iter()
-            .filter(|(key, _)| key.starts_with(path_prefix))
+            .filter(|(key, _)| is_same_or_nested_path(path_prefix, key))
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys_to_remove {
@@ -474,11 +502,7 @@ pub fn pick_android_directory_tree(
                 log::error!("[notia:directory_picker] plugin call failed: {}", error);
                 format!("No se pudo abrir el selector de carpetas: {error}")
             })?;
-        log::info!(
-            "[notia:directory_picker] plugin response: path={:?}, uri={:?}",
-            response.path,
-            response.uri
-        );
+        log::info!("[notia:directory_picker] plugin response received");
         let Some(path) = response.path else {
             log::warn!("[notia:directory_picker] no path in response");
             return Err("No se pudo resolver la carpeta seleccionada.".to_string());
@@ -488,8 +512,13 @@ pub fn pick_android_directory_tree(
             return Err("No se pudo resolver la carpeta seleccionada.".to_string());
         }
 
-        let selected_uri = response.uri.clone();
-        if let Some(uri) = selected_uri.clone() {
+        let selected_uri = response
+            .uri
+            .clone()
+            .filter(|uri| is_saf_tree_uri(uri) && uri.trim() == path.trim())
+            .ok_or_else(|| "El selector no devolvió una URI tree SAF válida.".to_string())?;
+        {
+            let uri = selected_uri.clone();
             let mut roots = state
                 .roots
                 .lock()
@@ -504,7 +533,8 @@ pub fn pick_android_directory_tree(
             invalidate_tree_cache(state.inner(), &uri);
         }
 
-        if let Some(uri) = selected_uri.as_deref() {
+        {
+            let uri = selected_uri.as_str();
             let mut paths = state
                 .paths
                 .lock()
@@ -516,7 +546,7 @@ pub fn pick_android_directory_tree(
 
         return Ok(PickAndroidDirectoryTreeResult {
             path,
-            uri: selected_uri,
+            uri: Some(selected_uri),
         });
     }
 
@@ -538,11 +568,9 @@ pub async fn read_android_library_tree(
         if payload.directory_path.trim().is_empty() {
             return Ok(Vec::new());
         }
+        validate_tree_context(payload.directory_uri.as_deref())?;
 
-        log::info!(
-            "[notia:directory_picker] read_android_library_tree path={}",
-            payload.directory_path
-        );
+        log::info!("[notia:directory_picker] read_android_library_tree started");
 
         let uri = {
             let normalized_key = normalize_android_root_key(&payload.directory_path);
@@ -556,10 +584,7 @@ pub async fn read_android_library_tree(
                 })?;
                 roots.insert(payload.directory_path.clone(), uri.clone());
                 roots.insert(normalized_key, uri.clone());
-                log::info!(
-                    "[notia:directory_picker] uri resolved from payload uri={}",
-                    uri
-                );
+                log::info!("[notia:directory_picker] uri resolved from payload");
                 Some(uri)
             } else {
                 let exact_path_uri = {
@@ -590,8 +615,11 @@ pub async fn read_android_library_tree(
                                 .iter()
                                 .filter(|(root_path, _)| {
                                     let norm_root = normalize_android_root_key(root_path);
-                                    payload.directory_path.starts_with(root_path.as_str())
-                                        || payload.directory_path.starts_with(norm_root.as_str())
+                                    is_same_or_nested_path(root_path, &payload.directory_path)
+                                        || is_same_or_nested_path(
+                                            &norm_root,
+                                            &payload.directory_path,
+                                        )
                                 })
                                 .max_by_key(|(root_path, _)| root_path.len())
                                 .map(|(_, uri)| uri.clone())
@@ -601,19 +629,13 @@ pub async fn read_android_library_tree(
         };
 
         let Some(uri) = uri else {
-            log::warn!(
-                "[notia:directory_picker] uri resolution failed path={}",
-                payload.directory_path
-            );
+            log::warn!("[notia:directory_picker] uri resolution failed");
             return Err(
                 "No se encontro la referencia Android de la carpeta seleccionada.".to_string(),
             );
         };
 
-        log::info!(
-            "[notia:directory_picker] calling readTree plugin uri={} ...",
-            uri
-        );
+        log::info!("[notia:directory_picker] calling readTree plugin");
 
         // Fetch the tree and update the cache in one pass — no second readTree.
         // This is an async command so the Tauri runtime can process other events
@@ -642,7 +664,7 @@ pub async fn read_android_library_tree(
         let mut nodes = response.nodes;
         sort_android_tree_nodes(&mut nodes);
         let node_count = nodes.len();
-        timer.finish_with_meta(&format!("uri={} node_count={}", uri, node_count));
+        timer.finish_with_meta(&format!("node_count={node_count}"));
 
         Ok(nodes)
     }
@@ -675,11 +697,9 @@ pub async fn read_android_directory(
         if payload.directory_path.trim().is_empty() {
             return Ok(Vec::new());
         }
+        validate_tree_context(payload.directory_uri.as_deref())?;
 
-        log::info!(
-            "[notia:directory_picker] read_android_directory path={}",
-            payload.directory_path
-        );
+        log::info!("[notia:directory_picker] read_android_directory started");
 
         // Resolve the URI for this directory.
         // Priority: cached paths > directory_uri payload > roots fallback.
@@ -702,7 +722,9 @@ pub async fn read_android_directory(
             };
 
             if exact_path_uri.is_some() {
-                log::info!("[notia:directory_picker] read_android_directory uri resolved from paths cache path={}", payload.directory_path);
+                log::info!(
+                    "[notia:directory_picker] read_android_directory uri resolved from paths cache"
+                );
                 exact_path_uri
             } else if let Some(uri) = payload
                 .directory_uri
@@ -735,7 +757,9 @@ pub async fn read_android_directory(
                     roots.insert(payload.directory_path.clone(), uri.clone());
                     roots.insert(normalized_key, uri.clone());
                 }
-                log::info!("[notia:directory_picker] read_android_directory uri resolved from payload uri={}", uri);
+                log::info!(
+                    "[notia:directory_picker] read_android_directory uri resolved from payload"
+                );
                 Some(uri)
             } else {
                 // 3. Fallback: check roots for exact match or prefix match.
@@ -751,8 +775,8 @@ pub async fn read_android_directory(
                             .iter()
                             .filter(|(root_path, _)| {
                                 let norm_root = normalize_android_root_key(root_path);
-                                payload.directory_path.starts_with(root_path.as_str())
-                                    || payload.directory_path.starts_with(norm_root.as_str())
+                                is_same_or_nested_path(root_path, &payload.directory_path)
+                                    || is_same_or_nested_path(&norm_root, &payload.directory_path)
                             })
                             .max_by_key(|(root_path, _)| root_path.len())
                             .map(|(_, uri)| uri.clone())
@@ -761,19 +785,13 @@ pub async fn read_android_directory(
         };
 
         let Some(uri) = uri else {
-            log::warn!(
-                "[notia:directory_picker] read_android_directory uri resolution failed path={}",
-                payload.directory_path
-            );
+            log::warn!("[notia:directory_picker] read_android_directory uri resolution failed");
             return Err(
                 "No se encontro la referencia Android de la carpeta seleccionada.".to_string(),
             );
         };
 
-        log::info!(
-            "[notia:directory_picker] calling readDirectory plugin uri={} ...",
-            uri
-        );
+        log::info!("[notia:directory_picker] calling readDirectory plugin");
 
         // Call the Kotlin readDirectory command (shallow, non-recursive)
         let response = {
@@ -817,7 +835,7 @@ pub async fn read_android_directory(
         let mut nodes = response.nodes;
         sort_android_tree_nodes(&mut nodes);
         let node_count = nodes.len();
-        timer.finish_with_meta(&format!("uri={} node_count={}", uri, node_count));
+        timer.finish_with_meta(&format!("node_count={node_count}"));
 
         Ok(nodes)
     }
@@ -850,11 +868,9 @@ pub async fn read_android_flat_file_list(
         if payload.directory_path.trim().is_empty() {
             return Ok(Vec::new());
         }
+        validate_tree_context(payload.directory_uri.as_deref())?;
 
-        log::info!(
-            "[notia:directory_picker] read_android_flat_file_list path={}",
-            payload.directory_path
-        );
+        log::info!("[notia:directory_picker] read_android_flat_file_list started");
 
         let uri = {
             let normalized_key = normalize_android_root_key(&payload.directory_path);
@@ -868,10 +884,7 @@ pub async fn read_android_flat_file_list(
                 })?;
                 roots.insert(payload.directory_path.clone(), uri.clone());
                 roots.insert(normalized_key, uri.clone());
-                log::info!(
-                    "[notia:directory_picker] uri resolved from payload uri={}",
-                    uri
-                );
+                log::info!("[notia:directory_picker] uri resolved from payload");
                 Some(uri)
             } else {
                 let exact_path_uri = {
@@ -900,8 +913,11 @@ pub async fn read_android_flat_file_list(
                                 .iter()
                                 .filter(|(root_path, _)| {
                                     let norm_root = normalize_android_root_key(root_path);
-                                    payload.directory_path.starts_with(root_path.as_str())
-                                        || payload.directory_path.starts_with(norm_root.as_str())
+                                    is_same_or_nested_path(root_path, &payload.directory_path)
+                                        || is_same_or_nested_path(
+                                            &norm_root,
+                                            &payload.directory_path,
+                                        )
                                 })
                                 .max_by_key(|(root_path, _)| root_path.len())
                                 .map(|(_, uri)| uri.clone())
@@ -912,18 +928,14 @@ pub async fn read_android_flat_file_list(
 
         let Some(uri) = uri else {
             log::warn!(
-                "[notia:directory_picker] read_android_flat_file_list uri resolution failed path={}",
-                payload.directory_path
+                "[notia:directory_picker] read_android_flat_file_list uri resolution failed"
             );
             return Err(
                 "No se encontro la referencia Android de la carpeta seleccionada.".to_string(),
             );
         };
 
-        log::info!(
-            "[notia:directory_picker] calling readFlatFileList plugin uri={} ...",
-            uri
-        );
+        log::info!("[notia:directory_picker] calling readFlatFileList plugin");
 
         let response = {
             let guard = state
@@ -950,7 +962,7 @@ pub async fn read_android_flat_file_list(
         // cache staleness check to trigger a lazy `readTree` refresh when needed.
 
         let file_count = response.files.len();
-        timer.finish_with_meta(&format!("uri={} file_count={}", uri, file_count));
+        timer.finish_with_meta(&format!("file_count={file_count}"));
 
         Ok(response.files)
     }
@@ -994,11 +1006,22 @@ pub fn read_android_content_text(
 }
 
 #[cfg(target_os = "android")]
-pub fn write_android_content_text(
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadFileBinaryResponse {
+    name: Option<String>,
+    base64: Option<String>,
+}
+
+/// Reads the raw bytes of a SAF document, Base64-decoded by Rust. Used for
+/// binary documents (PDF/images) that must not go through text decoding.
+#[cfg(target_os = "android")]
+pub fn read_android_content_bytes(
     state: &AndroidDirectoryPickerState,
     content_uri: &str,
-    content: &str,
-) -> Result<(), String> {
+) -> Result<(String, Vec<u8>), String> {
+    use base64::Engine as _;
+
     let guard = state
         .handle
         .lock()
@@ -1008,9 +1031,58 @@ pub fn write_android_content_text(
     };
 
     let response = handle
+        .run_mobile_plugin::<ReadFileBinaryResponse>(
+            "readFileBinary",
+            serde_json::json!({ "uri": content_uri }),
+        )
+        .map_err(|error| format!("No se pudo leer el archivo Android: {error}"))?;
+    let Some(base64_payload) = response.base64 else {
+        return Err("No se pudo leer el contenido del archivo Android.".to_string());
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_payload.trim())
+        .map_err(|_| "El contenido binario del documento es inválido.".to_string())?;
+    Ok((
+        response
+            .name
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "documento".to_string()),
+        bytes,
+    ))
+}
+
+#[cfg(target_os = "android")]
+pub fn write_android_content_text(
+    state: &AndroidDirectoryPickerState,
+    content_uri: &str,
+    content: &str,
+) -> Result<(), String> {
+    write_android_content_bytes(state, content_uri, content.as_bytes())
+}
+
+#[cfg(target_os = "android")]
+pub fn write_android_content_bytes(
+    state: &AndroidDirectoryPickerState,
+    content_uri: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let payload_base64 = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(data)
+    };
+
+    let response = handle
         .run_mobile_plugin::<WriteFileResponse>(
             "writeFile",
-            serde_json::json!({ "uri": content_uri, "content": content }),
+            serde_json::json!({ "uri": content_uri, "base64": payload_base64 }),
         )
         .map_err(|error| format!("No se pudo escribir el archivo Android: {error}"))?;
 
@@ -1090,6 +1162,54 @@ pub fn create_android_tree_entry(
         return Err("No se pudo crear la entrada Android.".to_string());
     }
 
+    Ok(path)
+}
+
+#[cfg(target_os = "android")]
+pub fn create_android_path_entry(
+    state: &AndroidDirectoryPickerState,
+    root_uri: &str,
+    segments: &[String],
+    entry_type: &str,
+    content: Option<&str>,
+) -> Result<String, String> {
+    if segments.is_empty() {
+        return Err("No se recibió una ruta Android válida.".to_string());
+    }
+
+    log::info!(
+        "[notia:directory_picker] createPathEntry input root_uri_present={} root_uri_len={} segments={}",
+        !root_uri.trim().is_empty(),
+        root_uri.len(),
+        segments.len()
+    );
+
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<CreateEntryResponse>(
+            "createPathEntry",
+            serde_json::json!({
+                "rootUri": root_uri,
+                "segments": segments,
+                "entryType": entry_type,
+                "content": content,
+            }),
+        )
+        .map_err(|error| format!("No se pudo crear la ruta Android: {error}"))?;
+
+    let Some(path) = response.path else {
+        return Err("No se pudo crear la ruta Android.".to_string());
+    };
+    if path.trim().is_empty() {
+        return Err("No se pudo crear la ruta Android.".to_string());
+    }
     Ok(path)
 }
 
@@ -1313,24 +1433,59 @@ pub fn resolve_android_tree_uri(
         .roots
         .lock()
         .map_err(|_| "No se pudo acceder a las carpetas Android seleccionadas.".to_string())?;
+    // Only exact entries are valid here. Returning a root URI for an unknown
+    // nested path makes a missing file look like the library root and causes
+    // reads/writes to target the wrong SAF document. Callers that have a root
+    // context refresh the tree before retrying this exact lookup.
     let resolved = roots
         .get(directory_path)
         .cloned()
-        .or_else(|| roots.get(&normalized_key).cloned())
-        .or_else(|| {
-            // Multi-root fallback: find the root whose normalized path is a
-            // prefix of the requested normalized path (longest prefix wins).
-            roots
-                .iter()
-                .filter(|(root_path, _)| {
-                    let norm_root = normalize_android_root_key(root_path);
-                    normalized_key.starts_with(norm_root.as_str())
-                        || normalized_key.starts_with(root_path.as_str())
-                })
-                .max_by_key(|(root_path, _)| root_path.len())
-                .map(|(_, uri)| uri.clone())
-        });
+        .or_else(|| roots.get(&normalized_key).cloned());
     Ok(resolved)
+}
+
+#[cfg(all(test, target_os = "android"))]
+mod tests {
+    use super::{resolve_android_tree_uri, AndroidDirectoryPickerState};
+
+    #[test]
+    fn does_not_resolve_unknown_nested_paths_to_the_tree_root() {
+        let state = AndroidDirectoryPickerState::unavailable();
+        let root_path = "content://com.android.externalstorage.documents/tree/primary%3ADocuments";
+        let root_uri = root_path.to_string();
+
+        state
+            .roots
+            .lock()
+            .expect("roots lock")
+            .insert(root_path.to_string(), root_uri.clone());
+
+        assert_eq!(
+            resolve_android_tree_uri(&state, root_path, None).expect("root lookup"),
+            Some(root_uri)
+        );
+        assert_eq!(
+            resolve_android_tree_uri(
+                &state,
+                &format!("{root_path}/.notia/notiaConfig.json"),
+                None
+            )
+            .expect("nested lookup"),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod path_scope_tests {
+    use super::is_same_or_nested_path;
+
+    #[test]
+    fn prefix_matching_requires_a_segment_boundary() {
+        assert!(is_same_or_nested_path("/library", "/library/notes"));
+        assert!(is_same_or_nested_path("/library", "/library"));
+        assert!(!is_same_or_nested_path("/library", "/library-old"));
+    }
 }
 
 pub fn init() -> TauriPlugin<Wry> {

@@ -31,7 +31,7 @@ export function useDocumentOpener({
   const dispatch = useAppDispatch()
   const openingDocumentPathsRef = useRef<Set<string>>(new Set())
 
-  const handleOpenFile = useCallback(async (filePath: string) => {
+  const handleOpenFile = useCallback(async (filePath: string, androidDocumentUri?: string) => {
     const openTimer = notiaTimer('document', 'useDocumentOpener.handleOpenFile', { filePath })
     const existingTab = store.getState().documents.openTabs.find((tab) => tab.document.path === filePath)
     if (existingTab) { dispatch(setActiveTabPath(filePath)); openTimer.success({ stage: 'existing_tab' }); return }
@@ -50,7 +50,7 @@ export function useDocumentOpener({
       try {
         const isMarkdown = extension === 'md'
         const readFn = isMarkdown ? readMarkdownWithDefaults : readLibraryFileContent
-        const result = await readFn(filePath, {
+        const result = await readFn(androidDocumentUri ?? filePath, {
           androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
         })
         if (!result.ok) {
@@ -63,7 +63,14 @@ export function useDocumentOpener({
           return
         }
         const name = filePath.split('/').pop() ?? filePath
-        const nextDocument: OpenFileDocument = { path: filePath, name, extension, viewKind, source: result.content }
+        const nextDocument: OpenFileDocument = {
+          path: filePath,
+          name,
+          extension,
+          viewKind,
+          source: result.content,
+          androidDocumentUri,
+        }
         openDocumentInTab(nextDocument, result.content)
         openFileMeasurement.success({ sourceLength: result.content.length })
         openTimer.success({ stage: 'textual_loaded', sourceLength: result.content.length })
@@ -79,7 +86,10 @@ export function useDocumentOpener({
     openTimer.success({ stage: 'binary_loaded' })
   }, [dispatch, openDocumentInTab, resolveActiveLibraryAndroidDirectoryUri])
 
-  const handleOpenFileFromView = useCallback((filePath: string) => { void handleOpenFile(filePath) }, [handleOpenFile])
+  const handleOpenFileFromView = useCallback(
+    (filePath: string, androidDocumentUri?: string) => { void handleOpenFile(filePath, androidDocumentUri) },
+    [handleOpenFile],
+  )
 
   return {
     handleOpenFile,

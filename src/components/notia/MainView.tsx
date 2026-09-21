@@ -9,6 +9,7 @@ import { MarkdownExportModal } from './MarkdownExportModal'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
+import type { NotiaLibrary } from '../../types/notia'
 
 const DEFAULT_MARKDOWN_ZOOM = 1
 
@@ -22,6 +23,7 @@ interface MainViewProps {
   externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
   contexts?: readonly LibraryContext[]
+  activeLibrary?: NotiaLibrary | null
 }
 
 function getSaveStatusLabel(status: NotiaDocumentSaveStatus): string {
@@ -46,6 +48,7 @@ function MainViewComponent({
   externalSourceUpdate,
   theme,
   contexts = [],
+  activeLibrary = null,
 }: MainViewProps) {
   const [markdownZoom, setMarkdownZoom] = useState(DEFAULT_MARKDOWN_ZOOM)
   const [isDocumentMenuOpen, setIsDocumentMenuOpen] = useState(false)
@@ -95,14 +98,21 @@ function MainViewComponent({
     setExportError(null)
     try {
       const { exportMarkdownDocument } = await import('../../modules/markdown-export/markdownExportEngine')
-      const exported = await exportMarkdownDocument(activeDocument.source, activeDocument.name, format)
+      // On Android the native save dialog returns content URIs that the
+      // desktop binary writer cannot open; exports persist next to the
+      // source document through the SAF boundary instead.
+      const exported = await exportMarkdownDocument(activeDocument.source, activeDocument.name, format, {
+        libraryPath: activeLibrary?.path ?? null,
+        androidDirectoryUri: activeLibrary?.androidTreeUri ?? null,
+        sourceDocumentPath: activeDocument.path,
+      })
       if (exported) setIsExportModalOpen(false)
     } catch (error) {
       setExportError(error instanceof Error ? error.message : 'No se pudo exportar el documento.')
     } finally {
       setExportingFormat(null)
     }
-  }, [activeDocument])
+  }, [activeDocument, activeLibrary])
 
   if (!activeDocument) {
     return (

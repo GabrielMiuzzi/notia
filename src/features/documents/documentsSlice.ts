@@ -38,6 +38,7 @@ const initialState: DocumentsState = {
   contextMenu: null,
   dialogState: null,
   loadingFolderIds: [],
+  folderLoadError: null,
   flatFileList: [],
 }
 
@@ -156,6 +157,7 @@ const documentsSlice = createSlice({
       state.searchQuery = ''
       state.searchMatchedPaths = []
       state.isSearchLoading = false
+      state.folderLoadError = null
       invalidateMermaidCache()
     },
     closeAllTextDocuments(state) {
@@ -169,6 +171,7 @@ const documentsSlice = createSlice({
       state.renamingPath = null
       state.contextMenu = null
       state.dialogState = null
+      state.folderLoadError = null
       state.searchQuery = ''
       state.searchMatchedPaths = []
       state.isSearchLoading = false
@@ -181,6 +184,9 @@ const documentsSlice = createSlice({
     },
     removeLoadingFolderId(state, action: PayloadAction<string>) {
       state.loadingFolderIds = state.loadingFolderIds.filter((id) => id !== action.payload)
+    },
+    setFolderLoadError(state, action: PayloadAction<DocumentsState['folderLoadError']>) {
+      state.folderLoadError = action.payload
     },
     setFlatFileList(state, action: PayloadAction<NotiaFlatFileEntry[]>) {
       state.flatFileList = action.payload
@@ -214,6 +220,7 @@ export const {
   resetForLibrarySwitch,
   addLoadingFolderId,
   removeLoadingFolderId,
+  setFolderLoadError,
   setFlatFileList,
 } = documentsSlice.actions
 
