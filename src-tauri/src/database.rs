@@ -12,7 +12,7 @@ use tauri::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 23;
+pub const CURRENT_SCHEMA_VERSION: i64 = 24;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -910,6 +910,54 @@ pub fn migrate(connection: &Connection) -> Result<i64, rusqlite::Error> {
              CREATE INDEX IF NOT EXISTS idx_backend_operation_journal_updated
                  ON backend_operation_journal(updated_at);
              INSERT INTO notia_schema_migrations (version) VALUES (23);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 24 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS routine_routines (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                 position INTEGER NOT NULL,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_routine_routines_owner
+                 ON routine_routines(owner_user_id, position);
+             CREATE TABLE IF NOT EXISTS routine_tasks (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 routine_id TEXT NOT NULL REFERENCES routine_routines(id) ON DELETE CASCADE,
+                 name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                 category TEXT NOT NULL,
+                 days TEXT NOT NULL,
+                 notes TEXT NOT NULL DEFAULT '',
+                 status TEXT NOT NULL CHECK (status IN ('active', 'paused')),
+                 position INTEGER NOT NULL,
+                 deleted_at TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_routine_tasks_owner
+                 ON routine_tasks(owner_user_id, routine_id, position);
+             CREATE TABLE IF NOT EXISTS routine_completions (
+                 task_id TEXT NOT NULL REFERENCES routine_tasks(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 completed_at TEXT NOT NULL,
+                 PRIMARY KEY (task_id, date)
+             );
+             CREATE INDEX IF NOT EXISTS idx_routine_completions_date
+                 ON routine_completions(date);
+             CREATE TABLE IF NOT EXISTS routine_goals (
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 category TEXT NOT NULL,
+                 goal INTEGER NOT NULL CHECK (goal BETWEEN 1 AND 10),
+                 updated_at TEXT NOT NULL,
+                 PRIMARY KEY (owner_user_id, category)
+             );
+             INSERT INTO notia_schema_migrations (version) VALUES (24);",
         )?;
         transaction.commit()?;
     }

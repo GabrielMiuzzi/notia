@@ -17,6 +17,7 @@ import {
   Mic,
   WalletCards,
   CalendarDays,
+  CalendarCheck,
   UsersRound,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
@@ -35,6 +36,7 @@ export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
   { id: 'finance', label: 'Finanzas', icon: WalletCards },
   { id: 'calendar', label: 'Calendario', icon: CalendarDays },
   { id: 'multichat', label: 'Multichat', icon: UsersRound },
+  { id: 'routine', label: 'Rutina', icon: CalendarCheck },
 ]
 
 export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [

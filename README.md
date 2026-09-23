@@ -284,6 +284,16 @@ La sala comienza vacía y no se guarda como chat ni se recupera al cerrar la pes
 
 El chat del panel derecho puede consultar la sala activa como contexto auxiliar —incluidos la dinámica, los agentes, el contexto adicional y los últimos 40 mensajes—, pero funciona como un único asistente y no participa en los turnos ni publica mensajes dentro de la sala. El panel conserva sus permisos normales, independientes de Multichat, y su contexto desaparece al cerrar la sala o cambiar de biblioteca.
 
+### Rutina
+
+El acceso **Rutina** aparece debajo de **Multichat** en la barra izquierda y abre un panel para convertir tareas en hábitos.
+
+- **Rutinas**: agrupá las tareas en rutinas con su propio checklist (Mañana, Noche, Fin de semana...). Podés crearlas, renombrarlas y eliminarlas cuando están vacías; siempre queda al menos una.
+- **Tareas**: cada tarea tiene nombre, rutina, categoría de la rueda de la vida, días en que aplica (todos o algunos) y una nota opcional. Se pueden pausar sin perder el historial, editar, eliminar con **Deshacer** y ordenar arrastrando el asa o con las flechas del teclado.
+- **Seguimiento**: panel de hábitos con la racha de cada tarea, calendario del mes, evolución diaria comparada con el mes pasado, progreso semanal, rueda de la vida con metas por categoría y la semana actual para marcar lo hecho, con la pestaña **Todos** (cada tarea indica su rutina) o una pestaña por rutina. Solo se puede marcar hoy o días anteriores.
+- **Datos**: se guardan en la base de la biblioteca, separados por usuario.
+- **IA**: desde el chat principal, el chat lateral (también en Finanzas) o Telegram podés hacer lo mismo que en la pantalla: consultar tu rutina, rachas, progreso e informes de este mes o de meses anteriores; crear, renombrar o eliminar rutinas; crear, editar, mover, pausar, reordenar, eliminar o recuperar tareas; marcar hábitos hechos (por ejemplo «ayer hice yoga») y ajustar metas. Cada cambio pide confirmación antes de guardarse. En Telegram, la rutina que ves y modificás es la del usuario de la biblioteca vinculado a tu cuenta.
+
 ### ColdPass
 
 Gestor de credenciales cifradas integrado en Notia.
@@ -408,6 +418,17 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Entradas esperadas** | Servicio: nombre, categoría de gasto, importe esperado, moneda y modalidad; opcionalmente vencimiento, cuenta habitual y proveedor. Pago: importe y fecha efectiva, con un ID de gasto existente opcional. Factura: período, importe y moneda, con servicio, vencimiento, gasto o comprobante opcionales. Chat: una consulta o cambio financiero con datos inequívocos; la IA solicita aclaración si falta una cuenta, categoría o ID. |
 | **Salidas / Resultado** | El servicio queda activo o inactivo, la ocurrencia mensual conserva su versión anterior al reemplazarse y la factura queda diferenciada del gasto. Una auditoría puede terminar sin propuestas, quedar pendiente para reintento o mostrar propuestas individuales con estado. El preview de auditoría no escribe; al aplicar, la aplicación realiza únicamente la acción permitida que se muestra: conciliar consumos `purchase` del resumen con ocurrencias mensuales, descartar o crear la ocurrencia sin pago, cambiar su importe esperado sin cambiar el gasto, o quitar el vínculo con un servicio inexistente conservando el gasto. Las mutaciones del chat y Telegram devuelven un resultado verificable; extraer un documento no crea entidades automáticamente. Si el preview deja de coincidir con los datos actuales, la propuesta se marca obsoleta y no se aplica. La evidencia de tarjeta que cubre una ocurrencia sin importe pagado no genera una propuesta de servicio impago y la auditoría continúa sin abortar la aplicación. |
 | **Errores comunes** | **"La categoría no existe o está inactiva"**: elegir una categoría de gasto activa. **"La cuenta ... debe usar la moneda"**: seleccionar una cuenta de la misma moneda. **"Servicio/factura duplicado"**: revisar el servicio, período o comprobante existente. **"Propuesta obsoleta"**: volver a cargar la auditoría y obtener un preview nuevo. **"Registro no encontrado"**: volver a listar y usar el ID devuelto. Una acción libre, incompatible o sin `#Confidencial` se rechaza. Si no hay IA, el dato confirmado se conserva y la auditoría queda pendiente. Ante evidencia incompleta, Finanzas devuelve un resultado o error concreto para revisar y reintentar, sin cerrar la aplicación. |
+
+### Rutina: hábitos, rachas y rueda de la vida
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | Organiza hábitos en rutinas, registra qué hiciste cada día y calcula rachas, porcentajes diarios, semanales y mensuales y el puntaje de cada categoría de la rueda de la vida. |
+| **Cuándo usarlo** | Para sostener hábitos diarios o de ciertos días, revisar cómo viene la semana o el mes y equilibrar áreas de tu vida con metas por categoría. |
+| **Pasos para consumir** | 1. Abrir **Rutina** en la barra izquierda. 2. Crear o renombrar rutinas en **Tus rutinas**. 3. En **Sumar a la rutina**, escribir la tarea, elegir rutina, categoría y días, y tocar **Añadir**. 4. Marcar lo hecho en **Semana actual**, eligiendo la rutina en las pestañas. 5. Ajustar las metas en **Rueda de la vida**. 6. Opcional: pedirle a la IA, por ejemplo, «marcá tomar agua y estirar como hechas hoy» y confirmar. |
+| **Entradas esperadas** | Nombre de rutina (hasta 30 caracteres), nombre de tarea (hasta 60), una de las 8 categorías, días de la semana, nota opcional (hasta 80) y metas de 1 a 10. |
+| **Salidas / Resultado** | El panel se actualiza al instante. Si la IA hace cambios desde el chat o Telegram, la vista abierta se recarga sola. Una tarea eliminada puede recuperarse con **Deshacer** o pidiéndoselo a la IA. |
+| **Errores comunes** | **«Elegí al menos un día»**: marcá algún día o elegí **Todos los días**. **«Necesitás al menos una rutina»** o **«vaciala antes de eliminarla»**: mové o eliminá sus tareas primero. **«No se pueden marcar días futuros»**, **«no aplica el…»** o **«está pausada»**: marcá solo hoy o días anteriores, en días que correspondan a la tarea y con la tarea activa. **«Hay varias tareas llamadas…»**: indicá a la IA de qué rutina se trata. |
 
 ### ColdPass (Credenciales Cifradas)
 

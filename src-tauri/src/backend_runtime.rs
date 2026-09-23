@@ -1055,6 +1055,19 @@ impl TauriBackendToolExecutor {
             "audit_finance_month",
             "preview_finance_audit_proposal",
             "apply_finance_audit_proposal",
+            "get_routine_dashboard",
+            "get_routine_day",
+            "list_routine_history",
+            "get_routine_month_report",
+            "save_routine",
+            "delete_routine",
+            "save_routine_task",
+            "set_routine_task_status",
+            "delete_routine_task",
+            "restore_routine_task",
+            "reorder_routine_tasks",
+            "set_routine_completions",
+            "set_routine_goal",
         ]
     }
 
@@ -1468,13 +1481,14 @@ impl TauriBackendToolExecutor {
         }))
     }
 
-    fn finance_context(
+    /// Desktop root path or Android tree URI of the request's library.
+    fn library_location(
         &self,
         context: &BackendRequestContext,
-    ) -> Result<crate::finance::FinanceContext, BackendError> {
+    ) -> Result<(String, Option<String>), BackendError> {
         let registry = self.app.state::<LibraryBindingRegistry>();
         let binding = registry.lookup(&context.library_id)?;
-        let (library_path, android_directory_uri) = match binding.root {
+        Ok(match binding.root {
             Some(LibraryBindingRoot::Desktop { canonical_root }) => {
                 (canonical_root.to_string_lossy().to_string(), None)
             }
@@ -1488,7 +1502,42 @@ impl TauriBackendToolExecutor {
                     true,
                 ))
             }
+        })
+    }
+
+    fn routine_context(
+        &self,
+        context: &BackendRequestContext,
+    ) -> Result<crate::routine::RoutineContext, BackendError> {
+        let (library_path, android_directory_uri) = self.library_location(context)?;
+        let source = match context.channel {
+            notia_backend_core::BackendChannel::Telegram => "telegram",
+            _ => "app",
         };
+        Ok(crate::routine::RoutineContext {
+            library_path,
+            android_directory_uri,
+            actor_library_user_id: context.actor.library_user_id.clone(),
+            source: source.to_string(),
+        })
+    }
+
+    fn routine_error(error: crate::routine::RoutineCommandError) -> BackendError {
+        use crate::routine::RoutineErrorCode;
+        let code = match error.code {
+            RoutineErrorCode::Validation => BackendErrorCode::InvalidInput,
+            RoutineErrorCode::NotFound => BackendErrorCode::NotFound,
+            RoutineErrorCode::Conflict => BackendErrorCode::Conflict,
+            RoutineErrorCode::Storage => BackendErrorCode::Storage,
+        };
+        BackendError::new(code, error.message, code == BackendErrorCode::Storage)
+    }
+
+    fn finance_context(
+        &self,
+        context: &BackendRequestContext,
+    ) -> Result<crate::finance::FinanceContext, BackendError> {
+        let (library_path, android_directory_uri) = self.library_location(context)?;
         let source = match context.channel {
             notia_backend_core::BackendChannel::Telegram => "telegram",
             notia_backend_core::BackendChannel::Published => "public-url",
@@ -2212,6 +2261,38 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 allowed_actions: vec![
                     MutationPreviewAction::ApplyAll,
                     MutationPreviewAction::ApplySelected,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
+        if crate::routine_tools::is_routine_write_tool(&call.name) {
+            // Resolution and validation run in a rolled-back transaction; any
+            // rejection other than storage goes back to the model.
+            let summary = crate::routine_tools::preview_tool(
+                &self.app,
+                &self.routine_context(context)?,
+                &call.name,
+                &call.arguments,
+            )
+            .map_err(|error| match error.code {
+                crate::routine::RoutineErrorCode::Storage => Self::routine_error(error),
+                _ => BackendError::invalid_input(error.message),
+            })?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.lines().next().unwrap_or("Actualizar Rutina").to_string(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("routine:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
                     MutationPreviewAction::Reject,
                     MutationPreviewAction::Cancel,
                 ],
@@ -3682,6 +3763,13 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     &call.arguments,
                 )?
             }
+            name if crate::routine_tools::is_routine_tool(name) => crate::routine_tools::execute_tool(
+                &self.app,
+                &self.routine_context(context)?,
+                name,
+                &call.arguments,
+            )
+            .map_err(Self::routine_error)?,
             _ => {
                 return Err(BackendError::new(
                     BackendErrorCode::Unsupported,
@@ -3702,7 +3790,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -3758,7 +3846,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "restore_task"
                     | "create_task_group"
                     | "delete_task_group"
-            ),
+            )),
             data: Some(data),
             error: None,
             preview: None,

@@ -20,6 +20,7 @@ export interface OpenWorkspaceSpecialTabs {
   finance: boolean
   calendar: boolean
   multichat: boolean
+  routine: boolean
 }
 
 export interface DocumentsState {

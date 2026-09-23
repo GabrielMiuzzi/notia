@@ -3564,5 +3564,314 @@
       "type": "object",
       "properties": {}
     }
+  },
+  "get_routine_dashboard": {
+    "description": "Lectura del panel de Rutina del usuario actual: fecha local de hoy, rutinas, tareas/hábitos con categoría, días, notas, estado y racha, progreso de hoy con pendientes, semana actual (total y por rutina), porcentaje de cada semana del mes comparado con el mes pasado, totales del mes, mejor racha, mejor día, rueda de la vida (puntaje 0-10 por categoría vs. mes pasado y metas) y tareas eliminadas recientemente. Fuente de verdad: SQLite de la biblioteca. Usala antes de modificar para obtener ids.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "get_routine_day": {
+    "description": "Lectura del checklist de Rutina de un día: tareas activas que aplican a esa fecha, si están hechas y el total. Aceptá date o daysAgo (0 hoy, 1 ayer). Solo lectura.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "description": "Fecha YYYY-MM-DD en la zona local. Si se omite, se usa hoy."
+        },
+        "routine": {
+          "type": "string",
+          "description": "Opcional: limita el checklist a una rutina (id o nombre)."
+        },
+        "daysAgo": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 730,
+          "description": "Días hacia atrás desde hoy en la fecha local: 0 hoy, 1 ayer, 2 anteayer. Usalo para fechas relativas en lugar de date; no envíes ambos."
+        }
+      }
+    }
+  },
+  "list_routine_history": {
+    "description": "Lectura del historial de Rutina por día en un rango de hasta 92 días (por defecto los últimos 7). Sin task devuelve hechas/total y los nombres completados por día; con task devuelve si aplicaba y si se completó cada día. Solo lectura.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Inicio YYYY-MM-DD; por defecto seis días antes de to."
+        },
+        "to": {
+          "type": "string",
+          "description": "Fin YYYY-MM-DD; por defecto hoy."
+        },
+        "task": {
+          "type": "string",
+          "description": "Opcional: id o nombre de una tarea."
+        },
+        "routine": {
+          "type": "string",
+          "description": "Opcional: limita el resumen diario a una rutina."
+        }
+      }
+    }
+  },
+  "save_routine": {
+    "description": "Mutación de Rutina: crea una rutina (agrupador de tareas como Mañana, Noche o Fin de semana) o renombra una existente si se indica routine. Los nombres son únicos por usuario y tienen hasta 30 caracteres. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "Solo para renombrar: id o nombre actual de la rutina. Omitir para crear."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Nombre nuevo de la rutina."
+        }
+      }
+    }
+  },
+  "delete_routine": {
+    "description": "Mutación de Rutina: elimina una rutina vacía. No se puede eliminar la única rutina ni una con tareas; nunca muevas ni borres tareas para lograrlo sin pedido explícito. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "routine"
+      ],
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "Id de la rutina o su nombre exacto (sin distinguir mayúsculas)."
+        }
+      }
+    }
+  },
+  "save_routine_task": {
+    "description": "Mutación de Rutina: crea una tarea/hábito o, si se indica task, actualiza solo los campos enviados de una existente (incluido moverla de rutina). Al crear requiere name y category; routine es obligatoria si el usuario tiene más de una rutina. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Solo para editar: id o nombre de la tarea existente. Omitir para crear."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "routine": {
+          "type": "string",
+          "description": "Id de la rutina o su nombre exacto (sin distinguir mayúsculas)."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Salud y deporte",
+            "Familia y amor",
+            "Trabajo y finanzas",
+            "Ocio y amistad",
+            "Tiempo para mí",
+            "Emocional",
+            "Educativa y cultura",
+            "Espiritual y ética"
+          ],
+          "description": "Categoría de la rueda de la vida."
+        },
+        "days": {
+          "description": "\"all\" para todos los días o lista de días de la semana: 0 lunes, 1 martes, 2 miércoles, 3 jueves, 4 viernes, 5 sábado, 6 domingo.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "all"
+              ]
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 7,
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 6
+              }
+            }
+          ]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Nota opcional, por ejemplo duración o momento."
+        }
+      }
+    }
+  },
+  "set_routine_task_status": {
+    "description": "Mutación de Rutina: pausa una tarea (sale de los checklists sin perder historial) o la reanuda. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task",
+        "status"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea o su nombre exacto (sin distinguir mayúsculas). Si hay nombres repetidos, usá el id devuelto por get_routine_dashboard."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "paused"
+          ]
+        }
+      }
+    }
+  },
+  "delete_routine_task": {
+    "description": "Mutación de Rutina: elimina una tarea de la rutina. Se conserva su historial y puede restaurarse con restore_routine_task. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea o su nombre exacto (sin distinguir mayúsculas). Si hay nombres repetidos, usá el id devuelto por get_routine_dashboard."
+        }
+      }
+    }
+  },
+  "restore_routine_task": {
+    "description": "Mutación de Rutina: restaura una tarea eliminada, con su historial. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id o nombre de la tarea eliminada."
+        }
+      }
+    }
+  },
+  "reorder_routine_tasks": {
+    "description": "Mutación de Rutina: define la prioridad (orden) de las tareas de una rutina. tasks debe incluir exactamente todas las tareas de esa rutina en el orden deseado. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "routine",
+        "tasks"
+      ],
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "Id de la rutina o su nombre exacto (sin distinguir mayúsculas)."
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Ids o nombres de todas las tareas de la rutina, en el orden nuevo."
+        }
+      }
+    }
+  },
+  "set_routine_completions": {
+    "description": "Mutación de Rutina: marca o desmarca tareas como hechas en días concretos (hasta 31 marcas por vez). Solo hoy o días pasados, en tareas activas que aplican ese día de la semana. Se aplica todo o nada. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 31,
+          "items": {
+            "type": "object",
+            "required": [
+              "task"
+            ],
+            "properties": {
+              "task": {
+                "type": "string",
+                "description": "Id de la tarea o su nombre exacto (sin distinguir mayúsculas). Si hay nombres repetidos, usá el id devuelto por get_routine_dashboard."
+              },
+              "date": {
+                "type": "string",
+                "description": "Fecha YYYY-MM-DD en la zona local. Si se omite, se usa hoy."
+              },
+              "completed": {
+                "type": "boolean",
+                "description": "true marca como hecha (por defecto); false la desmarca."
+              },
+              "daysAgo": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 730,
+                "description": "Días hacia atrás desde hoy en la fecha local: 0 hoy, 1 ayer, 2 anteayer. Usalo para fechas relativas en lugar de date; no envíes ambos."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "set_routine_goal": {
+    "description": "Mutación de Rutina: fija la meta (1 a 10) de una categoría de la rueda de la vida. Requiere confirmación.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "category",
+        "goal"
+      ],
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": [
+            "Salud y deporte",
+            "Familia y amor",
+            "Trabajo y finanzas",
+            "Ocio y amistad",
+            "Tiempo para mí",
+            "Emocional",
+            "Educativa y cultura",
+            "Espiritual y ética"
+          ]
+        },
+        "goal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        }
+      }
+    }
+  },
+  "get_routine_month_report": {
+    "description": "Lectura de un informe mensual de Rutina (mes actual hasta hoy o un mes anterior dentro de los últimos 730 días): porcentaje total, mejor día, porcentaje de cada día y de cada semana, cumplimiento de cada tarea (días aplicables y hechos) y puntaje de cada categoría de la rueda de la vida con su meta. Solo lectura.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "month": {
+          "type": "string",
+          "description": "Mes YYYY-MM; por defecto el mes actual."
+        }
+      }
+    }
   }
 }

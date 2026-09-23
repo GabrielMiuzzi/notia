@@ -13,6 +13,7 @@ import { ColdPassView } from './views/ColdPassView'
 import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
 import { CalendarView } from './views/CalendarView'
+import { RoutineView } from './views/RoutineView'
 import { MultichatView } from './views/MultichatView'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import type { ColdPassEntry } from '../../types/coldpass'
@@ -225,6 +226,10 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'calendar') {
     return <CalendarView />
+  }
+
+  if (activeWorkspaceView === 'routine') {
+    return <RoutineView library={activeLibrary} />
   }
 
   if (activeWorkspaceView === 'multichat') {

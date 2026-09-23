@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useAppDispatch } from '../../../store/hooks'
 import { store } from '../../../store/index'
 import { toggleSidebar, setActiveHeaderAction, setSearchMenuOpen } from '../../../features/ui/uiSlice'
-import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
+import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
 
 interface UseToolbarActionsParams {
   activeLibrary: { path: string } | null
@@ -66,6 +66,11 @@ export function useToolbarActions({
     if (actionId === 'multichat') {
       if (!specialTabs.multichat) { dispatch(activateSpecialTab('multichat')) }
       dispatch(setActiveTabPath(MULTICHAT_WORKSPACE_TAB_PATH))
+      return
+    }
+    if (actionId === 'routine') {
+      if (!specialTabs.routine) { dispatch(activateSpecialTab('routine')) }
+      dispatch(setActiveTabPath(ROUTINE_WORKSPACE_TAB_PATH))
     }
   }, [dispatch])
 

@@ -24,6 +24,9 @@ mod finance_agent_inputs;
 mod finance_reconciliation;
 mod finance_records;
 mod finance_views;
+mod routine;
+mod routine_dashboard;
+mod routine_tools;
 mod coldpass;
 mod agent_history;
 mod agent_knowledge;
@@ -313,6 +316,8 @@ pub fn run() {
             library_users::link_library_user_telegram,
             library_users::unlink_library_user_telegram,
             finance::finance_get_dashboard,
+            routine::routine_get_dashboard,
+            routine::routine_apply_mutation,
             finance::finance_get_transaction,
             finance::finance_list_all_transactions,
             finance::finance_list_all_savings_movements,

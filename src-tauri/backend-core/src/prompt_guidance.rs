@@ -56,7 +56,10 @@ pub fn scope_guidance(
     match context.scope {
         BackendScope::TaskManager => task_manager(&mut guidance),
         BackendScope::Graph => graph(&mut guidance),
-        BackendScope::Finance => finance(&mut guidance, today),
+        BackendScope::Finance => {
+            finance(&mut guidance, today);
+            routine_tools(&mut guidance);
+        }
         BackendScope::Library => library(&mut guidance, context, today),
         BackendScope::Document => document(&mut guidance, snapshot),
     }
@@ -130,7 +133,7 @@ fn graph(guidance: &mut Guidance) {
 }
 
 fn finance(guidance: &mut Guidance, today: &str) {
-    guidance.push("Estás en Finanzas. Usá exclusivamente las herramientas financieras; no modifiques saldos directamente.");
+    guidance.push("Estás en Finanzas. Para datos financieros usá exclusivamente las herramientas financieras; no modifiques saldos directamente.");
     guidance.push("Las cuentas son etiquetas de origen/destino y no representan saldos conciliados. Distinguí gastos registrados, documentados, conciliados y pendientes.");
     finance_tools(guidance, today);
 }
@@ -163,11 +166,20 @@ fn library(guidance: &mut Guidance, context: &BackendRequestContext, today: &str
     guidance.push("Reutilizá los resultados obtenidos: no repitas una búsqueda ni una lectura con los mismos argumentos. Cuando tengas evidencia suficiente, respondé.");
     guidance.push_if(&["replace_library_document"], "Podés crear, reemplazar o eliminar documentos, pero cada escritura requiere una confirmación individual. Identificá el documento de forma unívoca (documentId de una búsqueda) antes de modificarlo o eliminarlo.");
     guidance.push_if(&["add_task_comment"], "Si el usuario pide comentar un ticket de Task Manager, usá add_task_comment; nunca reemplaces el documento para simular un comentario.");
+    routine_tools(guidance);
     let transversal = guidance.has("create_finance_transaction") || guidance.has("list_finance_records");
     if transversal {
         guidance.push("Esta conversación tiene acceso transversal: además de la biblioteca y Task Manager, podés consultar y operar Finanzas con sus herramientas tipadas. Si el pedido mezcla áreas, consultá ambas fuentes.");
         finance_tools(guidance, today);
     }
+}
+
+fn routine_tools(guidance: &mut Guidance) {
+    guidance.push_if(&["get_routine_dashboard"], "Rutina guarda los hábitos del usuario actual agrupados en rutinas, con categoría de la rueda de la vida, días de la semana, marcas diarias y metas. Para preguntas sobre hábitos, rachas, progreso o la rueda de la vida usá get_routine_dashboard; para un día concreto get_routine_day y para rangos list_routine_history.");
+    guidance.push_if(&["get_routine_month_report"], "Para informes de un mes (el actual o uno anterior) usá get_routine_month_report: trae el porcentaje por día y por semana, el cumplimiento de cada tarea y el puntaje de cada categoría; comparalo con otro mes pidiendo ambos informes.");
+    guidance.push_if(&["set_routine_completions"], "Para registrar hábitos hechos usá set_routine_completions con todas las marcas del pedido en una sola llamada; solo se puede marcar hoy o días pasados y la fecha por defecto es hoy. Para fechas relativas (hoy, ayer, anteayer) usá daysAgo en lugar de calcular la fecha. Identificá tareas y rutinas por nombre o id devueltos por las herramientas y, si un nombre es ambiguo, preguntá cuál es.");
+    guidance.push_if(&["restore_routine_task"], "Las tareas eliminadas recientemente aparecen en deletedTasks de get_routine_dashboard y se recuperan con restore_routine_task.");
+    guidance.push_if(&["save_routine_task"], "Para crear una tarea de Rutina se necesitan nombre, categoría de la rueda de la vida y rutina (si hay más de una); si falta la categoría o la rutina y no surge del pedido, pedí una aclaración en lugar de elegirla.");
 }
 
 fn document(guidance: &mut Guidance, snapshot: Option<&BackendSnapshot>) {
@@ -264,6 +276,20 @@ mod tests {
             "2026-09-22",
         );
         assert!(writable.contains("2026-09-22"));
+    }
+
+    #[test]
+    fn routine_guidance_only_names_available_tools() {
+        let with_tools = scope_guidance(
+            &context(BackendScope::Library, BackendChannel::App),
+            &tools(&["get_routine_dashboard", "set_routine_completions"]),
+            None,
+            "2026-09-23",
+        );
+        assert!(with_tools.contains("set_routine_completions"));
+        assert!(!with_tools.contains("save_routine_task"));
+        let without = scope_guidance(&context(BackendScope::Library, BackendChannel::App), &tools(&[]), None, "2026-09-23");
+        assert!(!without.contains("Rutina"));
     }
 
     #[test]

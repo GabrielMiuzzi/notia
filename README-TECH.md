@@ -17,6 +17,75 @@ Este cambio define la arquitectura exigida para el desarrollo, pero no migró c�
 - No se ejecutaron tests ni builds porque la intervención solo cambia reglas y documentación.
 - Queda pendiente migrar y validar cada flujo heredado que aún conserve lógica funcional en React o TypeScript; cada migración deberá cubrir sus contratos Rust, errores, límites y regresiones en Windows y Android. No se verificó en esta iteración que el runtime completo funcione sin React/WebView ni que se hayan eliminado todos los fallbacks funcionales del frontend.
 
+## Estado sincronizado de esta iteración: Rutina (hábitos) en SQLite con tools de IA
+
+Se agregó el módulo **Rutina**, basado en el panel semanal de hábitos provisto como HTML, con un botón propio en la barra izquierda (ícono `CalendarCheck`) que abre la pestaña especial `__workspace_routine__`. Toda la lógica vive en Rust: persistencia, validaciones, resolución de referencias y el cálculo de rachas, porcentajes, heatmap, calendario, evolución, barras semanales, rueda de la vida y semana actual. React solo representa el DTO y envía intenciones.
+
+### Módulos
+
+- `src-tauri/src/routine.rs`: contexto (`RoutineContext`), apertura de la base (desktop o copia SAF en Android), dominio (`TaskDays`, `RoutineTaskStatus`), carga (`load_data`), resolución por id o nombre (`resolve_routine`, `resolve_task`), mutaciones (`RoutineMutation`, `apply_mutation`), transacción con commit o rollback (`with_transaction`) y los comandos Tauri.
+- `src-tauri/src/routine_dashboard.rs`: derivación pura del `RoutineDashboard`.
+- `src-tauri/src/routine_tools.rs`: adaptador de las 13 tools del agente.
+- `src/modules/routine/`: tipos del contrato, servicio `invoke`, hook `useRoutineDashboard` y componentes; `src/components/notia/views/RoutineView.tsx` monta la vista.
+
+### Persistencia: esquema SQLite v24
+
+`CURRENT_SCHEMA_VERSION` pasa a `24` (reemplaza la mención histórica de `20` en la sección de Servicios mensuales). La migración es transaccional e idempotente (`CREATE ... IF NOT EXISTS`) y crea:
+
+- `routine_routines(id, owner_user_id → library_users ON DELETE CASCADE, name, position, created_at, updated_at)`.
+- `routine_tasks(id, owner_user_id, routine_id → routine_routines ON DELETE CASCADE, name, category, days, notes, status IN ('active','paused'), position, deleted_at, created_at, updated_at)`. `days` es `all` o una lista `0,2,4` (lunes = 0).
+- `routine_completions(task_id → routine_tasks ON DELETE CASCADE, date YYYY-MM-DD, completed_at, PK(task_id, date))`: solo se guardan los días cumplidos.
+- `routine_goals(owner_user_id, category, goal 1..10, updated_at, PK(owner_user_id, category))`.
+
+Los datos pertenecen al usuario de biblioteca que actúa (`actorLibraryUserId`): la app usa el Owner y Telegram el usuario vinculado. Eliminar una tarea es un borrado lógico (`deleted_at`) que conserva el historial para «Deshacer» o `restore_routine_task`; eliminar una rutina vacía borra físicamente sus tareas eliminadas y sus marcas. Si el usuario no tiene rutinas, `routine_get_dashboard` crea «Rutina» y sincroniza la base.
+
+### Contratos Tauri
+
+- `routine_get_dashboard({ context })` → `RoutineDashboard`.
+- `routine_apply_mutation({ payload: { context, mutation } })` → `{ outcome: { changed, entityId, summary }, dashboard }`.
+
+`context` es `{ libraryPath, androidDirectoryUri?, actorLibraryUserId, source: "app" | "telegram" }`; el actor debe existir en `library_users`. `mutation` es una unión etiquetada por `type`:
+
+```json
+{ "type": "saveTask", "id": null, "routineId": "…", "name": "Estirar", "category": "Salud y deporte", "days": [0, 2, 4], "notes": "10 min" }
+```
+
+Variantes: `saveRoutine {id?, name}`, `deleteRoutine {id}`, `saveTask`, `setTaskStatus {id, status}`, `deleteTask {id}`, `restoreTask {id}`, `reorderTasks {routineId, orderedTaskIds}`, `setCompletion {taskId, date, completed}` y `setGoal {category, goal}`. Los errores son `{ code: "validation" | "notFound" | "conflict" | "storage", message }`.
+
+`RoutineDashboard` contiene `today`, `monthLabel`, `categories`, `nav` (contadores del menú rápido y porcentaje del mes), `routines` (con `accent` y `deleteBlockedReason`), `tasks` (con `daysLabel`, `color` y `streak`), `heatmap`, `calendar` (`leadingBlanks` y `level` 1–5), `evolution` (mes actual hasta hoy, mes anterior completo y `bestDay`), `weekly`, `wheel` (puntaje 0–10 por categoría, mes anterior, meta y `goalPct`) y `currentWeek` (`all` con todas las rutinas juntas y `routines` con una semana por rutina; cada día trae `isEditable` y cada tarea su `routineId`). Los colores se envían como claves de paleta (`urgent`, `high`, `medium`, `low`, `slate`, `teal`, `gold`, `violet`) que la vista resuelve con tokens del tema claro u oscuro.
+
+### Validaciones y reglas
+
+- Nombre de rutina de 1 a 30 caracteres y único por usuario sin distinguir mayúsculas; nombre de tarea de 1 a 60 y nota de hasta 80, sin caracteres de control.
+- Categoría obligatoria entre las 8 de la rueda de la vida, normalizada sin distinguir mayúsculas. Días: `null` equivale a todos; una lista vacía o fuera de 0–6 se rechaza y los siete días se guardan como `all`.
+- No se puede eliminar la única rutina ni una con tareas visibles.
+- Una marca solo se registra hoy o en días pasados, en una tarea activa y en un día de la semana que le corresponde. Marcar y desmarcar son idempotentes (`changed: false` cuando no hay cambio).
+- El reordenamiento debe incluir exactamente las tareas visibles de la rutina.
+- Métricas: el porcentaje diario considera solo tareas activas que aplican ese día. La racha cuenta días aplicables consecutivos cumplidos hasta hoy; si hoy todavía no está marcado, no corta la racha (diferencia deliberada con el HTML original, donde el día en curso la reiniciaba). El puntaje de la rueda es `round(hechas / aplicables × 10)` del mes, y la meta por defecto es 10.
+
+### Tools de IA
+
+Catálogo canónico (`backend-core/src/catalog.rs`), esquemas en `defaults/tool_schemas.json` y ejecución en `backend_runtime.rs`, con scopes `library` y `finance`: chat principal, chat lateral (la vista Rutina usa `library`, el chat de Finanzas usa `finance`) y Telegram en cualquiera de sus modos. El scope `finance` se incluye porque Telegram enruta a Finanzas cualquier mensaje con términos como «cuenta», «pago», «servicio», «ahorro» o «gas» (`is_finance_request`), y un pedido de hábitos con esas palabras quedaba sin acceso a Rutina. Política `RoutineRead`/`RoutineWrite`: autorizada para cualquier usuario de la biblioteca porque los datos son del actor; se rechaza en otros scopes y queda excluida de la publicación de Task Manager.
+
+- Lectura, sin confirmación: `get_routine_dashboard` (incluye fecha local, semana actual total y por rutina, porcentaje de cada semana del mes contra el mes pasado y las últimas 20 tareas eliminadas), `get_routine_day` (fecha o `daysAgo` y rutina opcionales), `list_routine_history` (rango de hasta 92 días dentro de los últimos 730; por defecto, los últimos 7) y `get_routine_month_report` (`month` YYYY-MM dentro de los últimos 730 días, por defecto el actual: total, mejor día, porcentaje por día y por semana, cumplimiento por tarea y puntaje por categoría con su meta; un mes futuro se rechaza).
+- Escritura, con confirmación individual: `save_routine`, `delete_routine`, `save_routine_task` (crear o actualizar parcialmente), `set_routine_task_status`, `delete_routine_task`, `restore_routine_task`, `reorder_routine_tasks`, `set_routine_completions` (hasta 31 marcas en una transacción, todo o nada) y `set_routine_goal`.
+
+Las tools aceptan tareas y rutinas por id o por nombre exacto sin distinguir mayúsculas; un nombre ambiguo devuelve los ids candidatos. Las fechas de `get_routine_day` y de cada marca aceptan `date` o `daysAgo` (0 hoy, 1 ayer; no ambos), resuelto con la fecha local del dispositivo: la fecha del prompt es UTC y, desde las 21:00 en Argentina, ya corresponde al día siguiente. El preview resuelve y valida la mutación en una transacción que se revierte y muestra el resumen exacto que se aplicará; los rechazos de validación, inexistencia o conflicto vuelven al modelo como `invalid-input` sin pedir confirmación. Tras aplicar, el resultado informa `changed` real por marca y Rust emite `notia:routine-data-changed` para que la vista abierta recargue. `prompt_guidance.rs` agrega las reglas de Rutina en los scopes `library` y `finance`, solo cuando esas tools están en el catálogo proyectado; en Finanzas la regla de usar exclusivamente herramientas financieras quedó limitada a datos financieros. Telegram muestra estados específicos («consultando tu rutina», «registrando tus hábitos»).
+
+### Interfaz
+
+La vista reproduce las secciones del HTML: hero con el porcentaje del mes, menú rápido fijo con estado activo, rutinas (crear, renombrar y eliminar con motivo de bloqueo), alta y edición de tareas, lista agrupada con pausa, edición, eliminación con «Deshacer» y reordenamiento por arrastre del asa (puntero o toque) o con las flechas del teclado, heatmap, calendario, evolución, barras semanales, rueda de la vida con metas editables y semana actual con checklist (los días futuros quedan deshabilitados), con la pestaña «Todos» seleccionada por defecto y una pestaña por rutina; en «Todos», cada tarea muestra el nombre y el color de su rutina. Se reemplazaron los colores del HTML fuera de paleta (`rgba(255,106,69,…)`) por tokens teal. Los estados de carga, error con reintento y vacío están cubiertos; los controles llegan a 44 px con puntero táctil y el diseño se apila por debajo de 560 px. La vista recarga el panel al volver el foco a la ventana.
+
+Layout: `.notia-main` fija `overflow: hidden` y la misma especificidad que `.routine-view` hacía que, según el orden de carga del CSS, el contenedor quedara sin scroll vertical. La vista usa `.notia-main.routine-view` como contenedor de desplazamiento (`display: block`, `height: 100%`, `overflow-y: auto`, scrollbar visible con los tokens del tema) y ocupa el 100 % del ancho del área de trabajo, con un margen lateral fluido (`--routine-gutter`, de 16 a 40 px) que también usa el menú rápido fijo. Las celdas del calendario tienen una altura acotada en lugar de ser cuadradas, y el gráfico de evolución ocupa el ancho disponible con un alto máximo; en pantallas angostas conserva su ancho mínimo y se desplaza en horizontal.
+
+### Validaciones ejecutadas y pendientes
+
+- `cargo check --offline`, `cargo check --offline --tests` y `cargo check --offline --target aarch64-linux-android` (con el NDK 30): aprobados; solo quedan warnings preexistentes.
+- `cargo test` en `backend-core`: 178 aprobados y 5 fallos preexistentes (`coldpass`, `markdown_editing`, `paths`, `prompt`, `speech_text`), que también fallan sin estos cambios. Las nuevas pruebas de catálogo y guía pasan.
+- Las 19 pruebas nuevas de `routine`, `routine_dashboard` y `routine_tools` no pueden ejecutarse en el crate Tauri por `STATUS_ENTRYPOINT_NOT_FOUND`; se ejecutaron y aprobaron compilando esos mismos archivos junto con la función `migrate` real de `database.rs` en un crate temporal sin Tauri. También se comparó el JSON serializado del dashboard con los tipos TypeScript.
+- `npx tsc --noEmit -p tsconfig.app.json`, ESLint sobre los archivos tocados, `npm run build -- --minify=false` y `git diff --check`: aprobados. `npx vitest run`: 376 aprobados y 6 fallos preexistentes, idénticos sin estos cambios.
+- Pendiente: prueba manual de la vista en Windows y en Android (toque, arrastre, teclado virtual, tema claro), confirmación de tools desde chat y Telegram reales, y ejecución de la suite Rust nativa en un entorno que pueda iniciar el binario de tests.
+
 ## Estado sincronizado de esta iteración: runtime de aplicación en Rust y correcciones del store de Task Manager
 
 Esta iteración implementa las Fases 0 a 11 del plan de migración: el runtime de la aplicación pasa al backend Rust y React queda como cáscara visual que envía intents y representa resultados. Donde las secciones anteriores de este documento describen lógica, persistencia o coordinación en TypeScript para los flujos listados abajo, esta sección las reemplaza; en particular quedan superadas las descripciones de `useTelegramAgentBridge`, `chatScopedAgentRuntime.ts`, la ejecución de tools en `aiRuntime.ts`, los journals TypeScript de operaciones, la preferencia `notia:ai-auto-apply-low-risk:v1` y los checkpoints de Telegram en `localStorage`.

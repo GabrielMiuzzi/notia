@@ -12,6 +12,7 @@ export type WorkspaceAiView =
   | 'finance'
   | 'multichat'
   | 'calendar'
+  | 'routine'
 
 export type WorkspaceAiScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance' | 'published'
 
@@ -319,6 +320,7 @@ function isWorkspaceAiView(value: unknown): value is WorkspaceAiView {
     || value === 'finance'
     || value === 'multichat'
     || value === 'calendar'
+    || value === 'routine'
 }
 
 function isWorkspaceAiScope(value: unknown): value is WorkspaceAiScope {

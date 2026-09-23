@@ -110,3 +110,7 @@
 [2026-09-22 03:45:00 -03:00] Se integraron las mutaciones de la UI embebida de Task Manager con el backend Rust en desktop, conservando fallback explícito para Android/vaults sin identidad y validación de identidad Owner.
 [2026-09-22 18:07:32 -03:00] Se estableció Rust como única capa de lógica de aplicación y React como cáscara visual limitada a contratos explícitos del backend.
 [2026-09-23 02:35:04 -03:00] Se movió el runtime de la aplicación (agente, chats, Finanzas, Telegram, preferencias, historial y publicación de Task Manager) a Rust y se corrigieron en el store de Task Manager los conflictos de archivado, el frontmatter de varias líneas, los índices con nombres inseguros, el formato de comentarios y la vista previa de las tarjetas.
+[2026-09-23 11:05:15 -03:00] Se agregó Rutina: panel de hábitos en una pestaña propia de la barra izquierda, persistido por usuario en SQLite (esquema v24), con métricas calculadas en Rust y tools de IA de lectura y escritura confirmada.
+[2026-09-23 11:10:52 -03:00] Se corrigió el scroll vertical de Rutina y la vista pasó a ocupar todo el ancho del área de trabajo, manteniendo el diseño responsive en móviles.
+[2026-09-23 11:20:29 -03:00] Se ampliaron las tools de IA de Rutina: informe mensual, fechas relativas locales, progreso por rutina y por semana, tareas eliminadas y disponibilidad también en el modo Finanzas de Telegram.
+[2026-09-23 11:44:11 -03:00] Se agregó a la semana actual de Rutina la pestaña «Todos», que combina las tareas de todas las rutinas e indica la rutina de cada una.

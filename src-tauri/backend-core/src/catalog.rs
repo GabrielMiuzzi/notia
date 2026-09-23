@@ -16,6 +16,8 @@ pub enum ToolPolicy {
     TaskWrite,
     FinanceRead,
     FinanceWrite,
+    RoutineRead,
+    RoutineWrite,
     Memory,
 }
 
@@ -148,6 +150,29 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         ],
         BackendScope::Finance,
         true,
+    ));
+    catalog.extend(routine_tools(
+        &[
+            "get_routine_dashboard",
+            "get_routine_day",
+            "list_routine_history",
+            "get_routine_month_report",
+        ],
+        true,
+    ));
+    catalog.extend(routine_tools(
+        &[
+            "save_routine",
+            "delete_routine",
+            "save_routine_task",
+            "set_routine_task_status",
+            "delete_routine_task",
+            "restore_routine_task",
+            "reorder_routine_tasks",
+            "set_routine_completions",
+            "set_routine_goal",
+        ],
+        false,
     ));
     catalog.extend(alias_tools(
         ["undo_ai_operation"],
@@ -284,6 +309,22 @@ fn alias_tools<const N: usize>(
         .collect()
 }
 
+/// Rutina is reachable from the library chat and from Finanzas, because
+/// Telegram routes a message to Finanzas by its wording ("pagué la cuenta").
+fn routine_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
+    names
+        .iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Tool versionada del catálogo backend.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![BackendScope::Library, BackendScope::Finance],
+            read_only,
+            requires_confirmation: !read_only,
+        })
+        .collect()
+}
+
 fn document_mutation_alias_tools<const N: usize>(names: [&str; N]) -> Vec<ToolDefinition> {
     names
         .into_iter()
@@ -358,6 +399,19 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "set_task_execution_plan"
         | "create_agent_plan"
         | "update_agent_plan" => ToolPolicy::TaskWrite,
+        "get_routine_dashboard"
+        | "get_routine_day"
+        | "list_routine_history"
+        | "get_routine_month_report" => ToolPolicy::RoutineRead,
+        "save_routine"
+        | "delete_routine"
+        | "save_routine_task"
+        | "set_routine_task_status"
+        | "delete_routine_task"
+        | "restore_routine_task"
+        | "reorder_routine_tasks"
+        | "set_routine_completions"
+        | "set_routine_goal" => ToolPolicy::RoutineWrite,
         name if name.starts_with("list_finance_") || name.starts_with("get_finance_") => {
             ToolPolicy::FinanceRead
         }
@@ -443,6 +497,18 @@ pub fn authorize_tool_call(
         ToolPolicy::TaskRead | ToolPolicy::TaskWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta no está autorizada para este scope.",
+            false,
+        )),
+        // Routine data is always scoped to the acting library user, so any
+        // authorized user may read and write their own routine.
+        ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite
+            if matches!(context.scope, BackendScope::Library | BackendScope::Finance) =>
+        {
+            Ok(())
+        }
+        ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La herramienta de Rutina no está autorizada para este scope.",
             false,
         )),
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite
@@ -578,6 +644,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["read_task_tickets"]
         );
+    }
+
+    #[test]
+    fn routine_tools_are_library_scoped_and_confirm_writes() {
+        let catalog = canonical_tool_catalog();
+        let write = catalog
+            .iter()
+            .find(|tool| tool.name == "set_routine_completions")
+            .expect("tool");
+        assert!(write.requires_confirmation && !write.read_only);
+        assert_eq!(tool_policy("get_routine_day"), ToolPolicy::RoutineRead);
+        assert!(write.scopes.contains(&BackendScope::Finance));
+        assert!(authorize_tool_call(
+            &context(BackendScope::TaskManager),
+            &principal(),
+            &tool("get_routine_day", BackendScope::TaskManager, true),
+            ToolCatalogProjection::Full,
+        )
+        .is_err());
+        let mut principal = principal();
+        principal.allowed_contexts.clear();
+        let tools = project_tool_catalog(
+            &context(BackendScope::Library),
+            &principal,
+            &[tool("get_routine_day", BackendScope::Library, true)],
+            ToolCatalogProjection::Full,
+        )
+        .expect("catalog projects");
+        assert_eq!(tools.len(), 1);
     }
 
     #[test]
