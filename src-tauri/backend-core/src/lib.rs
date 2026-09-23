@@ -41,6 +41,7 @@ pub mod speech_text;
 pub mod task_manager_tool_input;
 pub mod task_manager_tools;
 pub mod telegram_bot;
+pub mod tool_call_recovery;
 pub mod web_search;
 
 pub use agent::{

@@ -16,6 +16,7 @@ use notia_backend_core::{
     AgentProvider, BackendError, BackendErrorCode, ProviderMessage, ProviderMessageRole,
     ProviderRequest, ProviderResponse, ProviderStreamDelta, ProviderToolCall, RequestControl,
 };
+use notia_backend_core::tool_call_recovery;
 use serde_json::{json, Value};
 
 use crate::services::ai_service::{
@@ -505,7 +506,7 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
         Ok(ProviderResponse {
             message: ProviderMessage {
                 role: ProviderMessageRole::Assistant,
-                content: answer.answer,
+                content: tool_call_recovery::clean_answer_text(&answer.answer),
                 images: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_name: None,
@@ -536,10 +537,13 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
             },
         )?;
         control.check()?;
+        // A streamed answer may carry leaked thinking or a call written as
+        // text; an answer that was only markup comes back empty so the agent
+        // asks the round again with its tools.
         Ok(ProviderResponse {
             message: ProviderMessage {
                 role: ProviderMessageRole::Assistant,
-                content: answer,
+                content: tool_call_recovery::clean_answer_text(&answer),
                 images: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_name: None,
@@ -568,7 +572,8 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
             control,
         )?;
         control.check()?;
-        translate_tool_response(response).map_err(map_service_error)
+        let tool_names = request.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>();
+        translate_tool_response(response, &tool_names).map_err(map_service_error)
     }
 }
 
@@ -620,7 +625,10 @@ fn translate_tools(tools: &[notia_backend_core::ToolDefinition]) -> Value {
     )
 }
 
-fn translate_tool_response(payload: Value) -> Result<ProviderResponse, String> {
+/// Structured response of a tool round. When the server returned no
+/// `tool_calls` but the model wrote them as text (or inside its thinking),
+/// the calls to `tool_names` are recovered and the markup removed.
+fn translate_tool_response(payload: Value, tool_names: &[&str]) -> Result<ProviderResponse, String> {
     if payload
         .get("error")
         .and_then(Value::as_str)
@@ -679,6 +687,22 @@ fn translate_tool_response(payload: Value) -> Result<ProviderResponse, String> {
         })
         .transpose()?
         .unwrap_or_default();
+
+    let (content, tool_calls) = if tool_calls.is_empty() {
+        let thinking = message.get("thinking").and_then(Value::as_str).unwrap_or_default();
+        let recovered = tool_call_recovery::recover_tool_calls(&format!("{thinking}\n{content}"), tool_names)
+            .into_iter()
+            .enumerate()
+            .map(|(index, call)| ProviderToolCall {
+                id: format!("recovered-call-{}", index + 1),
+                name: call.name,
+                arguments: call.arguments,
+            })
+            .collect::<Vec<_>>();
+        (tool_call_recovery::clean_answer_text(&content), recovered)
+    } else {
+        (content, tool_calls)
+    };
 
     Ok(ProviderResponse {
         message: ProviderMessage {
@@ -978,6 +1002,28 @@ mod tests {
                 ProviderStreamDelta::Content("respuesta".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn recovers_tool_calls_written_as_text_by_local_models() {
+        let response = translate_tool_response(
+            json!({ "message": {
+                "content": "Busco.\n<function=search_library><parameter=query>ticket</parameter></function>",
+                "thinking": ""
+            }}),
+            &["search_library"],
+        )
+        .expect("response");
+        assert_eq!(response.message.content, "Busco.");
+        assert_eq!(response.message.tool_calls[0].name, "search_library");
+        assert_eq!(response.message.tool_calls[0].arguments, json!({ "query": "ticket" }));
+
+        let untouched = translate_tool_response(
+            json!({ "message": { "content": "<function=other><parameter=a>1</parameter></function>" } }),
+            &["search_library"],
+        )
+        .expect("response");
+        assert!(untouched.message.tool_calls.is_empty());
     }
 
     #[test]
