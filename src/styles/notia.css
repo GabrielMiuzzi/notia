@@ -4,75 +4,75 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
-  --color-app-bg: #282a36;
-  --color-app-text: #cfd3ff;
-  --color-titlebar-bg: #21222c;
-  --color-border-strong: #44475a;
-  --color-surface-tab: #303241;
-  --color-border-soft: #44475a;
-  --color-tab-text: #f8f8f2;
-  --color-titlebar-center: #f8f8f2;
-  --color-icon-muted: #6272a4;
-  --color-hover-surface: #44475a;
-  --color-hover-text: #f8f8f2;
-  --color-close-hover-bg: #ff5555;
-  --color-close-hover-text: #fff7f7;
-  --color-sidebar-bg: #21222c;
-  --color-accent-text: #bd93f9;
-  --color-accent-bg: #3a3452;
-  --color-scrollbar: #44475a;
-  --color-tree-hover: #343746;
-  --color-tree-selected: #44475a;
-  --color-focus-ring: #8be9fd;
-  --color-tree-chevron: #6272a4;
-  --color-tree-folder: #ffb86c;
-  --color-tree-folder-open: #ffd18a;
-  --color-tree-file: #8be9fd;
-  --color-footer-text: #f8f8f2;
+  --color-app-bg: #0f1420;
+  --color-app-text: #edf0f5;
+  --color-titlebar-bg: #161d2e;
+  --color-border-strong: #29334a;
+  --color-surface-tab: #1b2438;
+  --color-border-soft: #29334a;
+  --color-tab-text: #edf0f5;
+  --color-titlebar-center: #edf0f5;
+  --color-icon-muted: #8892a6;
+  --color-hover-surface: #29334a;
+  --color-hover-text: #edf0f5;
+  --color-close-hover-bg: #ff6b6b;
+  --color-close-hover-text: #0f1420;
+  --color-sidebar-bg: #161d2e;
+  --color-accent-text: #4fd1c5;
+  --color-accent-bg: rgba(79, 209, 197, 0.14);
+  --color-scrollbar: #29334a;
+  --color-tree-hover: #1b2438;
+  --color-tree-selected: #29334a;
+  --color-focus-ring: #4fd1c5;
+  --color-tree-chevron: #8892a6;
+  --color-tree-folder: #ffb86b;
+  --color-tree-folder-open: #ffcf9a;
+  --color-tree-file: #6c8eff;
+  --color-footer-text: #edf0f5;
   --color-footer-hover-text: #ffffff;
-  --color-menu-shadow: rgba(0, 0, 0, 0.38);
-  --color-menu-text: #cfd3ff;
-  --color-menu-hover-bg: #44475a;
+  --color-menu-shadow: rgba(0, 0, 0, 0.45);
+  --color-menu-text: #edf0f5;
+  --color-menu-hover-bg: #29334a;
   --color-menu-hover-text: #ffffff;
-  --color-subtle-text: #6272a4;
-  --color-main-bg: #282a36;
-  --color-modal-backdrop: rgba(0, 0, 0, 0.56);
-  --color-modal-bg: #282a36;
-  --color-modal-shadow: rgba(0, 0, 0, 0.45);
+  --color-subtle-text: #8892a6;
+  --color-main-bg: #0f1420;
+  --color-modal-backdrop: rgba(5, 8, 14, 0.62);
+  --color-modal-bg: #161d2e;
+  --color-modal-shadow: rgba(0, 0, 0, 0.5);
   --modal-engine-backdrop: var(--color-modal-backdrop);
   --modal-engine-surface: var(--color-modal-bg);
   --modal-engine-surface-alt: color-mix(in srgb, var(--color-modal-bg) 92%, var(--color-card-bg) 8%);
   --modal-engine-border: var(--color-border-soft);
   --modal-engine-shadow: var(--color-modal-shadow);
-  --color-heading-text: #f8f8f2;
-  --color-body-text: #cfd3ff;
-  --color-card-bg: #303241;
-  --color-menu-panel-bg: #21222c;
-  --color-muted-text: #a6accd;
-  --color-menu-panel-hover-bg: #44475a;
-  --color-path-text: #bd93f9;
-  --color-active-border: #bd93f9;
-  --color-active-item-bg: #3a3452;
-  --color-icon-search: #8be9fd;
-  --color-icon-new-note: #50fa7b;
-  --color-icon-new-folder: #ffb86c;
-  --color-icon-collapse-folders: #ff9f68;
-  --color-icon-expand-folders: #8be9fd;
-  --color-icon-layout: #bd93f9;
-  --color-icon-graph-view: #8be9fd;
-  --color-icon-chat: #50fa7b;
-  --color-graph-bg: #1f2230;
-  --color-graph-edge: #6f7398;
-  --color-graph-node: #8be9fd;
-  --color-graph-node-border: #bd93f9;
-  --color-graph-label: #d9dcff;
-  --color-graph-edge-glow: rgba(139, 233, 253, 0.32);
-  --color-graph-node-glow-connected: rgba(139, 233, 253, 0.4);
-  --color-graph-node-glow-hub: rgba(189, 147, 249, 0.5);
-  --color-graph-node-glow-isolated: rgba(255, 184, 108, 0.34);
-  --color-graph-search-accent: #ffb86c;
-  --color-graph-search-glow: rgba(255, 184, 108, 0.52);
-  --notia-milkdown-handle-ink: #aeb6db;
+  --color-heading-text: #edf0f5;
+  --color-body-text: #edf0f5;
+  --color-card-bg: #1b2438;
+  --color-menu-panel-bg: #161d2e;
+  --color-muted-text: #8892a6;
+  --color-menu-panel-hover-bg: #29334a;
+  --color-path-text: #4fd1c5;
+  --color-active-border: #4fd1c5;
+  --color-active-item-bg: rgba(79, 209, 197, 0.14);
+  --color-icon-search: #4fd1c5;
+  --color-icon-new-note: #6fcf97;
+  --color-icon-new-folder: #ffb86b;
+  --color-icon-collapse-folders: #ffb86b;
+  --color-icon-expand-folders: #4fd1c5;
+  --color-icon-layout: #6c8eff;
+  --color-icon-graph-view: #4fd1c5;
+  --color-icon-chat: #6fcf97;
+  --color-graph-bg: #0f1420;
+  --color-graph-edge: #3a4660;
+  --color-graph-node: #4fd1c5;
+  --color-graph-node-border: #6c8eff;
+  --color-graph-label: #edf0f5;
+  --color-graph-edge-glow: rgba(79, 209, 197, 0.3);
+  --color-graph-node-glow-connected: rgba(79, 209, 197, 0.4);
+  --color-graph-node-glow-hub: rgba(108, 142, 255, 0.5);
+  --color-graph-node-glow-isolated: rgba(255, 184, 107, 0.34);
+  --color-graph-search-accent: #ffb86b;
+  --color-graph-search-glow: rgba(255, 184, 107, 0.5);
+  --notia-milkdown-handle-ink: #8892a6;
   height: 100vh;
   height: 100dvh;
   background: var(--color-app-bg);
@@ -86,70 +86,70 @@
 }
 
 .notia-theme-light {
-  --color-app-bg: #f5f4ff;
-  --color-app-text: #3b3d57;
-  --color-titlebar-bg: #eceafd;
-  --color-border-strong: #d1cce8;
+  --color-app-bg: #eef1f6;
+  --color-app-text: #16202e;
+  --color-titlebar-bg: #f7f9fc;
+  --color-border-strong: #dce1ea;
   --color-surface-tab: #ffffff;
-  --color-border-soft: #d1cce8;
-  --color-tab-text: #2e3046;
-  --color-titlebar-center: #2e3046;
-  --color-icon-muted: #7a7ea8;
-  --color-hover-surface: #e4e0f6;
-  --color-hover-text: #2e3046;
-  --color-close-hover-bg: #ff8c8c;
-  --color-close-hover-text: #3a1010;
-  --color-sidebar-bg: #efedfb;
-  --color-accent-text: #bd93f9;
-  --color-accent-bg: #ece0ff;
-  --color-scrollbar: #c7c2e0;
-  --color-tree-hover: #e8e5f7;
-  --color-tree-selected: #ddd7f2;
-  --color-focus-ring: #7bdff6;
-  --color-tree-chevron: #7a7ea8;
-  --color-tree-folder: #d28c1b;
-  --color-tree-folder-open: #e7a842;
-  --color-tree-file: #5ecce6;
-  --color-footer-text: #2e3046;
-  --color-footer-hover-text: #1f2135;
-  --color-menu-shadow: rgba(48, 34, 89, 0.2);
-  --color-menu-text: #3b3d57;
-  --color-menu-hover-bg: #e5e1f5;
-  --color-menu-hover-text: #23253a;
-  --color-subtle-text: #7a7ea8;
-  --color-main-bg: #f9f8ff;
-  --color-modal-backdrop: rgba(48, 34, 89, 0.22);
-  --color-modal-bg: #faf9ff;
-  --color-modal-shadow: rgba(48, 34, 89, 0.22);
-  --color-heading-text: #2e3046;
-  --color-body-text: #4d5070;
+  --color-border-soft: #dce1ea;
+  --color-tab-text: #16202e;
+  --color-titlebar-center: #16202e;
+  --color-icon-muted: #6b7686;
+  --color-hover-surface: #e6eaf1;
+  --color-hover-text: #16202e;
+  --color-close-hover-bg: #dc2626;
+  --color-close-hover-text: #ffffff;
+  --color-sidebar-bg: #f7f9fc;
+  --color-accent-text: #0d9488;
+  --color-accent-bg: rgba(13, 148, 136, 0.1);
+  --color-scrollbar: #c9d0dc;
+  --color-tree-hover: #e9edf3;
+  --color-tree-selected: #dce1ea;
+  --color-focus-ring: #0d9488;
+  --color-tree-chevron: #6b7686;
+  --color-tree-folder: #d97706;
+  --color-tree-folder-open: #f59e0b;
+  --color-tree-file: #3b5fe0;
+  --color-footer-text: #16202e;
+  --color-footer-hover-text: #0b1220;
+  --color-menu-shadow: rgba(22, 32, 46, 0.14);
+  --color-menu-text: #16202e;
+  --color-menu-hover-bg: #e6eaf1;
+  --color-menu-hover-text: #0b1220;
+  --color-subtle-text: #6b7686;
+  --color-main-bg: #eef1f6;
+  --color-modal-backdrop: rgba(22, 32, 46, 0.28);
+  --color-modal-bg: #f7f9fc;
+  --color-modal-shadow: rgba(22, 32, 46, 0.16);
+  --color-heading-text: #16202e;
+  --color-body-text: #16202e;
   --color-card-bg: #ffffff;
-  --color-menu-panel-bg: #f1effb;
-  --color-muted-text: #6f7398;
-  --color-menu-panel-hover-bg: #e5e1f5;
-  --color-path-text: #bd93f9;
-  --color-active-border: #bd93f9;
-  --color-active-item-bg: #ebe2ff;
-  --color-icon-search: #3aa8c3;
-  --color-icon-new-note: #2ea555;
-  --color-icon-new-folder: #d28c1b;
-  --color-icon-collapse-folders: #be6d1d;
-  --color-icon-expand-folders: #3aa8c3;
-  --color-icon-layout: #8d6bc9;
-  --color-icon-graph-view: #3aa8c3;
-  --color-icon-chat: #2ea555;
-  --color-graph-bg: #ebe9f9;
-  --color-graph-edge: #9da3c7;
-  --color-graph-node: #6db8ce;
-  --color-graph-node-border: #8d6bc9;
-  --color-graph-label: #2f3151;
-  --color-graph-edge-glow: rgba(109, 184, 206, 0.28);
-  --color-graph-node-glow-connected: rgba(109, 184, 206, 0.34);
-  --color-graph-node-glow-hub: rgba(141, 107, 201, 0.42);
-  --color-graph-node-glow-isolated: rgba(210, 140, 27, 0.28);
-  --color-graph-search-accent: #d28c1b;
-  --color-graph-search-glow: rgba(210, 140, 27, 0.42);
-  --notia-milkdown-handle-ink: #5f678d;
+  --color-menu-panel-bg: #f7f9fc;
+  --color-muted-text: #6b7686;
+  --color-menu-panel-hover-bg: #e6eaf1;
+  --color-path-text: #0d9488;
+  --color-active-border: #0d9488;
+  --color-active-item-bg: rgba(13, 148, 136, 0.1);
+  --color-icon-search: #0d9488;
+  --color-icon-new-note: #16a34a;
+  --color-icon-new-folder: #d97706;
+  --color-icon-collapse-folders: #d97706;
+  --color-icon-expand-folders: #0d9488;
+  --color-icon-layout: #3b5fe0;
+  --color-icon-graph-view: #0d9488;
+  --color-icon-chat: #16a34a;
+  --color-graph-bg: #eef1f6;
+  --color-graph-edge: #b8c0cd;
+  --color-graph-node: #0d9488;
+  --color-graph-node-border: #3b5fe0;
+  --color-graph-label: #16202e;
+  --color-graph-edge-glow: rgba(13, 148, 136, 0.22);
+  --color-graph-node-glow-connected: rgba(13, 148, 136, 0.3);
+  --color-graph-node-glow-hub: rgba(59, 95, 224, 0.34);
+  --color-graph-node-glow-isolated: rgba(217, 119, 6, 0.26);
+  --color-graph-search-accent: #d97706;
+  --color-graph-search-glow: rgba(217, 119, 6, 0.36);
+  --notia-milkdown-handle-ink: #6b7686;
 }
 
 .notia-theme-dark {
@@ -952,13 +952,13 @@
 }
 
 .notia-publication-status--connected {
-  color: #50fa7b;
+  color: #6fcf97;
 }
 
 .notia-publication-status--syncing,
 .notia-publication-status--connecting,
 .notia-publication-status--paused {
-  color: #f1fa8c;
+  color: #ffb86b;
 }
 
 .notia-publication-status--offline,
@@ -966,7 +966,7 @@
 .notia-publication-status--revoked,
 .notia-publication-status--stopped,
 .notia-publication-status--reconfigured {
-  color: #ff6e6e;
+  color: #ff6b6b;
 }
 
 .notia-publication-terminal {
@@ -975,8 +975,8 @@
   justify-content: center;
   gap: 12px;
   padding: 8px 14px;
-  color: #282a36;
-  background: #f1fa8c;
+  color: #0f1420;
+  background: #ffb86b;
   font-size: 12px;
   font-weight: 700;
   text-align: center;
@@ -985,9 +985,9 @@
 .notia-publication-terminal button {
   min-height: 36px;
   padding: 5px 12px;
-  border: 1px solid #282a36;
+  border: 1px solid #0f1420;
   border-radius: 7px;
-  color: #282a36;
+  color: #0f1420;
   background: transparent;
   font: inherit;
   font-size: 12px;
@@ -996,7 +996,7 @@
 }
 
 .notia-publication-terminal button:focus-visible {
-  outline: 2px solid #282a36;
+  outline: 2px solid #0f1420;
   outline-offset: 2px;
 }
 

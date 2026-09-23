@@ -55,6 +55,41 @@ Este archivo define cómo trabajar en el repositorio. No contiene información e
 - Toda acción esencial debe tener una alternativa visible para touch y no depender exclusivamente de hover, menú contextual, rueda, precisión del cursor o teclado físico.
 - Verificar tamaños reducidos, textos largos, zoom, orientación, split-screen y teclado virtual cuando correspondan.
 
+### Paleta de colores obligatoria
+
+Toda la interfaz usa exclusivamente esta paleta. Los colores se aplican mediante los tokens CSS de cada tema (`.notia-app-shell` para el oscuro y `.notia-theme-light` para el claro); no agregar colores fuera de la paleta ni valores escritos a mano cuando exista un token. Los colores semánticos de error, grabación o calendario solo se conservan cuando no tienen equivalente en la paleta.
+
+| Rol | Tema oscuro | Tema claro |
+|---|---|---|
+| Fondo general (Ink / Página) | `#0F1420` | `#EEF1F6` (gris azulado frío, no blanco puro) |
+| Panel (columnas) | `#161D2E` | `#F7F9FC` |
+| Panel elevado (tarjetas, encabezados de columna) | `#1B2438` | `#FFFFFF` |
+| Hairline (bordes y divisores) | `#29334A` | `#DCE1EA` |
+| Texto primario | `#EDF0F5` | `#16202E` |
+| Texto muted | `#8892A6` | `#6B7686` |
+| Teal (marca y acción principal) | `#4FD1C5` | `#0D9488` (más oscuro porque `#4FD1C5` no cumple contraste sobre blanco) |
+
+Chips de prioridad de las tarjetas (fondo del chip con el mismo color al ~18% en oscuro y al ~10% en claro):
+
+| Prioridad | Tema oscuro | Tema claro |
+|---|---|---|
+| Urgente | `#FF6B6B` (coral) | `#DC2626` |
+| Alta | `#FFB86B` (ámbar) | `#D97706` |
+| Media | `#6C8EFF` (periwinkle) | `#3B5FE0` |
+| Baja | `#6FCF97` (verde salvia) | `#16A34A` |
+
+Acentos de columna de Task Manager (franja superior de 3px):
+
+| Columna | Tema oscuro | Tema claro |
+|---|---|---|
+| Anotadores | `#64748B` (slate neutro) | `#64748B` |
+| Próximo Q | `#6C8EFF` | `#3B5FE0` |
+| A refinar | `#FFB86B` | `#D97706` |
+| Sprint actual | `#4FD1C5` | `#0D9488` |
+| Sprint siguiente | `#D9B44A` (oro) | `#B08900` |
+| En revisión | `#A78BFA` (violeta) | `#7C3AED` |
+| Bloqueado | `#FF6B6B` | `#DC2626` |
+
 ## Documentación obligatoria
 
 Después de cada desarrollo, funcionalidad, bugfix, refactor o cambio de contrato:

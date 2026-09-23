@@ -8,7 +8,7 @@ import type { Board, Group, TaskManagerSettings } from '../types/taskManagerType
 import { isRecord } from './guards'
 import { DEFAULT_CONTEXT_TAG, normalizeContextTag } from '../../../services/contexts/libraryContexts'
 
-const FALLBACK_COLORS = ['#d97a1e', '#2e6db0', '#00b894', '#e17055', '#fd79a8', '#636e72']
+const FALLBACK_COLORS = ['#64748b', '#6c8eff', '#ffb86b', '#4fd1c5', '#d9b44a', '#a78bfa']
 
 export function createDefaultTaskManagerSettings(): TaskManagerSettings {
   return {

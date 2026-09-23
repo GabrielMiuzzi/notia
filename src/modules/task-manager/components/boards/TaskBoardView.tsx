@@ -580,7 +580,8 @@ export function TaskBoardView({
               <div key={getGroupKey(group)} className="tareas-group" data-group={group.name}>
                 <div
                   className={`tareas-group-header${draggedGroupName === group.name ? ' is-dragging' : ''}${groupDropTargetName === group.name ? ' is-drop-target' : ''}`}
-                  style={{ '--tareas-group-color': group.color } as CSSProperties}
+                  data-group-color={group.color.toLowerCase()}
+                  style={{ '--tareas-group-color-base': group.color } as CSSProperties}
                   onClick={() => toggleGroup(group)}
                   draggable
                   onDragStart={() => setDraggedGroupName(group.name)}
@@ -840,8 +841,9 @@ export function TaskBoardView({
             <div className="tareas-group" data-group="Sin grupo">
               <div
                 className="tareas-group-header"
-                style={{ '--tareas-group-color': '#607d8b' } as CSSProperties}
-                onClick={() => toggleGroup({ name: 'Sin grupo', color: '#607d8b', board: boardName })}
+                data-group-color="#64748b"
+                style={{ '--tareas-group-color-base': '#64748b' } as CSSProperties}
+                onClick={() => toggleGroup({ name: 'Sin grupo', color: '#64748b', board: boardName })}
                 onDragOver={(event) => {
                   event.preventDefault()
                   if (event.dataTransfer) {
@@ -850,7 +852,7 @@ export function TaskBoardView({
                   if (!draggedTaskPathRef.current || draggedSubtaskPath) {
                     return
                   }
-                  const ungroupedGroup = { name: 'Sin grupo', color: '#607d8b', board: boardName }
+                  const ungroupedGroup = { name: 'Sin grupo', color: '#64748b', board: boardName }
                   const groupKey = getGroupKey(ungroupedGroup)
                   setExpandedGroups((previous) => {
                     if (previous.has(groupKey)) {
@@ -871,7 +873,7 @@ export function TaskBoardView({
                 }}
               >
                 <span className="tareas-toggle">
-                  {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName }))
+                  {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#64748b', board: boardName }))
                     ? <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={13} />
                     : <TaskManagerIcon name={TASK_ICON_NAME.chevronRight} size={13} />}
                 </span>
@@ -879,7 +881,7 @@ export function TaskBoardView({
                 <span className="tareas-count">{groupedTopLevelTasks['Sin grupo'].length}</span>
               </div>
 
-              {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#607d8b', board: boardName })) ? (
+              {expandedGroups.has(getGroupKey({ name: 'Sin grupo', color: '#64748b', board: boardName })) ? (
                 <div
                   className="tareas-card-list"
                   onDragOver={(event) => {
@@ -1300,6 +1302,39 @@ function TaskCardComponent({
           {task.title}
         </a>
 
+        <div className="tareas-card-meta-tag-wrap">
+          <NotiaButton
+            ref={priorityTagTriggerRef}
+            variant="ghost"
+            size="sm"
+            className={`tareas-card-meta-tag-trigger tareas-prioridad tareas-prioridad-${toClassName(resolvedPriority)}${isPriorityMenuOpen ? ' is-open' : ''}`}
+            title="Cambiar prioridad"
+            aria-haspopup="menu"
+            aria-expanded={isPriorityMenuOpen}
+            onClick={() => {
+              setActiveMetaMenu((current) => (current === 'priority' ? null : 'priority'))
+            }}
+          >
+            <span>{resolvedPriority}</span>
+            <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={11} />
+          </NotiaButton>
+          {isPriorityMenuOpen ? (
+            <div className="tareas-card-meta-menu" ref={priorityTagPanelRef} role="menu" aria-label="Opciones de prioridad">
+              {TASK_PRIORITIES.map((priorityOption) => (
+                <NotiaButton
+                  key={`${task.filePath}-priority-${priorityOption}`}
+                  variant={resolvedPriority === priorityOption ? 'primary' : 'ghost'}
+                  size="sm"
+                  className={`tareas-card-meta-menu-option${resolvedPriority === priorityOption ? ' is-selected' : ''}`}
+                  onClick={() => handlePrioritySelection(priorityOption)}
+                >
+                  {priorityOption}
+                </NotiaButton>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
         <NotiaButton
           size="icon"
           className="tareas-card-header-edit-btn"
@@ -1344,38 +1379,6 @@ function TaskCardComponent({
           ) : null}
         </div>
 
-        <div className="tareas-card-meta-tag-wrap">
-          <NotiaButton
-            ref={priorityTagTriggerRef}
-            variant="ghost"
-            size="sm"
-            className={`tareas-card-meta-tag-trigger tareas-prioridad tareas-prioridad-${toClassName(resolvedPriority)}${isPriorityMenuOpen ? ' is-open' : ''}`}
-            title="Cambiar prioridad"
-            aria-haspopup="menu"
-            aria-expanded={isPriorityMenuOpen}
-            onClick={() => {
-              setActiveMetaMenu((current) => (current === 'priority' ? null : 'priority'))
-            }}
-          >
-            <span>{resolvedPriority}</span>
-            <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={11} />
-          </NotiaButton>
-          {isPriorityMenuOpen ? (
-            <div className="tareas-card-meta-menu" ref={priorityTagPanelRef} role="menu" aria-label="Opciones de prioridad">
-              {TASK_PRIORITIES.map((priorityOption) => (
-                <NotiaButton
-                  key={`${task.filePath}-priority-${priorityOption}`}
-                  variant={resolvedPriority === priorityOption ? 'primary' : 'ghost'}
-                  size="sm"
-                  className={`tareas-card-meta-menu-option${resolvedPriority === priorityOption ? ' is-selected' : ''}`}
-                  onClick={() => handlePrioritySelection(priorityOption)}
-                >
-                  {priorityOption}
-                </NotiaButton>
-              ))}
-            </div>
-          ) : null}
-        </div>
       </div>
 
       <div className="tareas-card-detail-row">
@@ -1533,7 +1536,7 @@ function TaskCardComponent({
                   }}
                 />
                 <span>/{formatHours(task.estimatedHours)}</span>
-                <span className="tareas-card-progress-band-text-deviation"> +-&gt; {formatHours(task.deviationHours)}</span>
+                <span className="tareas-card-progress-band-text-deviation" aria-label={`desvío ${formatHours(task.deviationHours)}`}>→ {formatHours(task.deviationHours)}</span>
               </span>
             ) : (
               <span onDoubleClick={(event) => {
@@ -1542,7 +1545,7 @@ function TaskCardComponent({
               }}
               >
                 {formatHours(task.dedicatedHours)}/{formatHours(task.estimatedHours)}
-                <span className="tareas-card-progress-band-text-deviation"> +-&gt; {formatHours(task.deviationHours)}</span>
+                <span className="tareas-card-progress-band-text-deviation" aria-label={`desvío ${formatHours(task.deviationHours)}`}>→ {formatHours(task.deviationHours)}</span>
               </span>
             )}
           </div>
@@ -1559,7 +1562,7 @@ function TaskCardComponent({
 
       <div className="tareas-card-status-row">
         <div className="tareas-status-actions">
-          {STATUS_ACTIONS.map((action) => {
+          {orderedStatusActions(task.state).map((action, index) => {
             const nextState = action.id === 'start-stop'
               ? task.state === 'En progreso'
                 ? 'Pendiente'
@@ -1575,7 +1578,7 @@ function TaskCardComponent({
             return (
               <NotiaButton
                 key={`${task.filePath}-${action.id}`}
-                className={`tareas-status-action-btn ${action.cls}${task.state === nextState ? ' is-active' : ''}`}
+                className={`tareas-status-action-btn ${action.cls}${index === 0 ? ' is-primary' : ''}${task.state === nextState ? ' is-active' : ''}`}
                 onClick={() => {
                   if (task.state !== nextState) {
                     void onChangeTaskState(task, nextState)
@@ -1597,6 +1600,14 @@ TaskCard.displayName = 'TaskCard'
 
 function getGroupKey(group: Group): string {
   return `${group.board ?? 'default'}::${group.name}`
+}
+
+/** Actions in display order: the one that moves the task forward goes first. */
+function orderedStatusActions(state: string) {
+  const byId = Object.fromEntries(STATUS_ACTIONS.map((action) => [action.id, action]))
+  return state === 'En progreso'
+    ? [byId.finish, byId['start-stop'], byId.dismiss]
+    : [byId['start-stop'], byId.finish, byId.dismiss]
 }
 
 function toClassName(value: string): string {

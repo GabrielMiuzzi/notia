@@ -61,7 +61,7 @@ function getNodePath(value: string | ForceNode | undefined): string | undefined 
 
 function getContextColor(node: ForceNode, appTheme: string): string {
   if (node.contextColor) return node.contextColor
-  return appTheme === 'dark' ? '#8be9fd' : '#2762d8'
+  return appTheme === 'dark' ? '#4fd1c5' : '#0d9488'
 }
 
 function escapeTooltipHtml(value: string): string {
@@ -260,12 +260,12 @@ function GraphViewComponent({
     const isNeighbor = hoveredNeighborPaths.has(node.path)
 
     if (isHovered) return '#ffffff'
-    if (isNeighbor) return node.contextColor ?? (appTheme === 'dark' ? '#8be9fd' : '#4ca7ff')
+    if (isNeighbor) return node.contextColor ?? (appTheme === 'dark' ? '#4fd1c5' : '#0d9488')
     if (selectedPaths.has(node.path)) return '#ff79c6'
-    if (hoveredPath) return appTheme === 'dark' ? '#243447' : '#b9c3d0'
-    if (node.path === focusedPath) return appTheme === 'dark' ? '#f1fa8c' : '#7d5a00'
-    if (matchedPaths.has(node.path)) return appTheme === 'dark' ? '#f1fa8c' : '#7d5a00'
-    if (hasSearch) return appTheme === 'dark' ? '#4b5563' : '#a7b0bd'
+    if (hoveredPath) return appTheme === 'dark' ? '#29334a' : '#dce1ea'
+    if (node.path === focusedPath) return appTheme === 'dark' ? '#ffb86b' : '#d97706'
+    if (matchedPaths.has(node.path)) return appTheme === 'dark' ? '#ffb86b' : '#d97706'
+    if (hasSearch) return appTheme === 'dark' ? '#29334a' : '#c9d0dc'
     return getContextColor(node, appTheme)
   }, [appTheme, focusedPath, hoveredNeighborPaths, hoveredPath, matchedPaths, searchQuery, selectedPaths])
 
@@ -283,10 +283,10 @@ function GraphViewComponent({
         ? '#bffcff'
         : isFocused
           ? '#fff2b6'
-          : (appTheme === 'dark' ? '#f8f8f2' : '#20232a')
+          : (appTheme === 'dark' ? '#edf0f5' : '#16202e')
     const x = node.x
     const y = node.y
-    const strokeColor = appTheme === 'dark' ? 'rgba(5, 16, 29, 0.95)' : 'rgba(255, 255, 255, 0.92)'
+    const strokeColor = appTheme === 'dark' ? 'rgba(15, 20, 32, 0.95)' : 'rgba(255, 255, 255, 0.92)'
 
     context.save()
     context.beginPath()
@@ -294,7 +294,7 @@ function GraphViewComponent({
     context.fillStyle = nodeColor
     context.fill()
     context.lineWidth = (isHovered ? 2 : isNeighbor ? 1.2 : 0.8) / globalScale
-    context.strokeStyle = isHovered || isNeighbor ? '#8be9fd' : strokeColor
+    context.strokeStyle = isHovered || isNeighbor ? '#4fd1c5' : strokeColor
     context.stroke()
 
     if (isHovered || isNeighbor) {
@@ -327,8 +327,8 @@ function GraphViewComponent({
   const graphBackground = settings.gridEnabled
     ? {
         backgroundImage: appTheme === 'dark'
-          ? 'linear-gradient(rgba(139, 233, 253, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(139, 233, 253, 0.06) 1px, transparent 1px)'
-          : 'linear-gradient(rgba(39, 98, 216, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(39, 98, 216, 0.08) 1px, transparent 1px)',
+          ? 'linear-gradient(rgba(79, 209, 197, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(79, 209, 197, 0.06) 1px, transparent 1px)'
+          : 'linear-gradient(rgba(13, 148, 136, 0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(13, 148, 136, 0.07) 1px, transparent 1px)',
         backgroundSize: '24px 24px',
       }
     : undefined
@@ -464,8 +464,8 @@ function GraphViewComponent({
               const targetPath = getNodePath(link.target)
               if (isHoveredConnection(link)) return '#82dfe8'
               const isRelated = Boolean(sourcePath && targetPath && (matchedPaths.has(sourcePath) || matchedPaths.has(targetPath) || selectedPaths.has(sourcePath) || selectedPaths.has(targetPath)))
-              if (hoveredPath) return appTheme === 'dark' ? '#17304c' : '#9aa9bb'
-              return isRelated ? (appTheme === 'dark' ? '#6272a4' : '#7a8db5') : (appTheme === 'dark' ? '#2f7aa0' : '#4c82bb')
+              if (hoveredPath) return appTheme === 'dark' ? '#1b2438' : '#dce1ea'
+              return isRelated ? (appTheme === 'dark' ? '#8892a6' : '#6b7686') : (appTheme === 'dark' ? '#3a4660' : '#b8c0cd')
             }}
             linkWidth={(link) => {
               const sourcePath = getNodePath(link.source)
@@ -477,7 +477,7 @@ function GraphViewComponent({
             linkDirectionalParticles={(link) => isHoveredConnection(link) ? 2 : 0}
             linkDirectionalParticleSpeed={(link) => isHoveredConnection(link) ? 0.008 : 0}
             linkDirectionalParticleWidth={(link) => isHoveredConnection(link) ? 1.4 : 0}
-            linkDirectionalParticleColor={(link) => isHoveredConnection(link) ? '#d7fbff' : '#8be9fd'}
+            linkDirectionalParticleColor={(link) => isHoveredConnection(link) ? '#c9f3ef' : '#4fd1c5'}
             onNodeClick={handleNodeClick}
             onNodeHover={handleNodeHover}
             onBackgroundClick={() => {

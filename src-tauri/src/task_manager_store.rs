@@ -1342,7 +1342,8 @@ fn build_file_changes(
             state_changed,
         )?;
         let moved = old_path.as_deref().is_some_and(|old_path| old_path != path);
-        let path = if moved {
+        // A new or moved ticket never takes over an existing file.
+        let path = if moved || old_path.is_none() {
             available_ticket_path(path, &changes)
         } else {
             path
@@ -1506,7 +1507,8 @@ fn render_shared_metadata(snapshot: &TaskManagerLibrarySnapshotDto) -> Result<St
 fn route_map(routes: &[TaskDocumentRouteDto]) -> Result<HashMap<String, String>, BackendError> {
     let mut result = HashMap::new();
     for route in routes {
-        if route.entity_type != "ticket" {
+        // A ticket created in this commit has no file yet: no route.
+        if route.entity_type != "ticket" || route.logical_path.is_empty() {
             continue;
         }
         if route.logical_path.contains('\\')
@@ -2920,6 +2922,22 @@ mod tests {
             cancelled: root.join(CANCELLED),
             root,
         }
+    }
+
+    #[test]
+    fn tickets_created_in_the_commit_have_no_route_yet() {
+        let route = |entity_id: &str, logical_path: &str| TaskDocumentRouteDto {
+            entity_type: "ticket".into(),
+            entity_id: entity_id.into(),
+            logical_path: logical_path.into(),
+        };
+        let routes = route_map(&[
+            route("new", ""),
+            route("old", "task-mannager/default/a.md"),
+        ])
+        .expect("routes");
+        assert_eq!(routes.len(), 1);
+        assert!(route_map(&[route("bad", "task-mannager//a.md")]).is_err());
     }
 
     #[test]

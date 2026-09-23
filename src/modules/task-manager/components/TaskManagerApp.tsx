@@ -27,9 +27,11 @@ export type { TaskManagerChatContext } from '../types/taskManagerTypes'
 const theme = createTheme({
   palette: {
     mode: 'dark',
-    primary: { main: '#bd93f9' },
-    secondary: { main: '#8be9fd' },
-    background: { default: '#282a36', paper: '#303241' },
+    primary: { main: '#4fd1c5' },
+    secondary: { main: '#6c8eff' },
+    background: { default: '#0f1420', paper: '#1b2438' },
+    text: { primary: '#edf0f5', secondary: '#8892a6' },
+    divider: '#29334a',
   },
   shape: {
     borderRadius: 8,
@@ -267,13 +269,18 @@ function TaskManagerAppComponent({
     <ThemeProvider theme={theme}>
       <div className={`tareas-root${embedded ? ' is-embedded' : ''}`}>
         <div className="tareas-header">
-          <div className="tareas-header-path">
-            {manager.settings.activeVaultPath || 'Selecciona un vault para empezar'}
+          <div className="tareas-header-heading">
+            <h2 className="tareas-header-title">Tareas</h2>
+            <div className="tareas-header-path">
+              {manager.settings.activeVaultPath || 'Selecciona un vault para empezar'}
+            </div>
           </div>
 
-          <h2 className="tareas-header-title">Tareas</h2>
-
           <div className="tareas-header-actions">
+            <span className="tareas-header-summary">
+              <strong>{finishedTasks.length}</strong> completadas · <strong>{cancelledTasks.length}</strong> canceladas
+            </span>
+
             {!manager.isVaultExternallyControlled ? (
               <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.selectVault()}>
                 <TaskManagerIcon name={TASK_ICON_NAME.folderKanban} size={14} />
@@ -310,6 +317,15 @@ function TaskManagerAppComponent({
                 </NotiaButton>
               </>
             ) : null}
+
+            <NotiaButton
+              className="tareas-btn-new-task"
+              onClick={() => manager.openTaskCreateDialog({ kind: 'task' })}
+              disabled={!activeTabIsBoard}
+            >
+              <TaskManagerIcon name={TASK_ICON_NAME.plus} size={14} />
+              Nueva tarea
+            </NotiaButton>
           </div>
         </div>
 
@@ -343,7 +359,7 @@ function TaskManagerAppComponent({
               onClick={() => manager.setActiveTab(board.name)}
             >
               {board.name}
-              {board.name === activeBoard ? ` ${activeBoardTasksCount}` : ''}
+              {board.name === activeBoard ? <span className="tareas-tab-count">{activeBoardTasksCount}</span> : null}
             </NotiaButton>
           ))}
 
@@ -351,14 +367,14 @@ function TaskManagerAppComponent({
             className={`tareas-tab-btn${manager.settings.activeTab === FINISHED_TAB_ID ? ' is-active' : ''}`}
             onClick={() => manager.setActiveTab(FINISHED_TAB_ID)}
           >
-            Completadas {finishedTasks.length}
+            Completadas
           </NotiaButton>
 
           <NotiaButton
             className={`tareas-tab-btn${manager.settings.activeTab === CANCELLED_TAB_ID ? ' is-active' : ''}`}
             onClick={() => manager.setActiveTab(CANCELLED_TAB_ID)}
           >
-            Canceladas {cancelledTasks.length}
+            Canceladas
           </NotiaButton>
 
           <NotiaButton

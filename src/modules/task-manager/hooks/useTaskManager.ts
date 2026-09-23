@@ -190,7 +190,7 @@ function isTransientPublishedEmptySnapshot(
     && nextSnapshot.documents.length === 0
 }
 
-const AUTO_COLOR_PALETTE = ['#2e6db0', '#00b894', '#7c5ce7', '#e17055', '#fd79a8', '#d97a1e', '#4caf50', '#636e72']
+const AUTO_COLOR_PALETTE = ['#64748b', '#6c8eff', '#ffb86b', '#4fd1c5', '#d9b44a', '#a78bfa', '#ff6b6b', '#6fcf97']
 const FINISHED_TAB_ID = '__finished__'
 const CANCELLED_TAB_ID = '__cancelled__'
 const POMODORO_TAB_ID = '__pomodoro__'
