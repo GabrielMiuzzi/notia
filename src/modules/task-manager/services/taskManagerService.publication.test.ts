@@ -5,6 +5,7 @@ const vaultRuntime = vi.hoisted(() => ({
   deleteEntry: vi.fn(),
   directoryExists: vi.fn(),
   ensureFolderPath: vi.fn(),
+  getActiveTaskManagerVaultContext: vi.fn(() => null),
   moveEntry: vi.fn(),
   readFileContent: vi.fn(),
   readMarkdownFiles: vi.fn(),
@@ -12,8 +13,13 @@ const vaultRuntime = vi.hoisted(() => ({
   taskManagerPathExists: vi.fn(),
   writeFileContent: vi.fn(),
 }))
+const snapshotRuntime = vi.hoisted(() => ({
+  mapTaskManagerSnapshotTickets: vi.fn(),
+  readTaskManagerSnapshot: vi.fn(),
+}))
 
 vi.mock('./vaultRuntime', () => vaultRuntime)
+vi.mock('./taskManagerSnapshotRuntime', () => snapshotRuntime)
 
 import { createTask, loadTaskManagerSnapshot, resolveTaskManagerRuntimePath, updateTaskFrontmatter } from './taskManagerService'
 
@@ -57,6 +63,30 @@ describe('published Task Manager filesystem flow', () => {
     vaultRuntime.readMarkdownFiles.mockRejectedValue(new Error('429 Too Many Requests'))
 
     await expect(loadTaskManagerSnapshot('published-vault')).rejects.toThrow('429 Too Many Requests')
+  })
+
+  it('loads an identified published snapshot through the backend command', async () => {
+    vi.stubGlobal('window', { __NOTIA_PUBLISHED_TASK_MANAGER__: true })
+    vaultRuntime.getActiveTaskManagerVaultContext.mockReturnValue({
+      path: 'published-vault',
+      libraryId: 'library-1',
+      libraryUserId: 'user-1',
+    } as never)
+    snapshotRuntime.readTaskManagerSnapshot.mockResolvedValue({
+      snapshot: { tickets: [{ summary: { logicalPath: 'task.md' }, content: '# Task' }] },
+    })
+    snapshotRuntime.mapTaskManagerSnapshotTickets.mockReturnValue([{ id: 'ticket-1' }])
+
+    await expect(loadTaskManagerSnapshot('published-vault')).resolves.toEqual({
+      documents: [{ path: 'task.md', content: '# Task' }],
+      tasks: [{ id: 'ticket-1' }],
+      pomodoroEntries: [],
+    })
+    expect(snapshotRuntime.readTaskManagerSnapshot).toHaveBeenCalledWith({
+      libraryId: 'library-1',
+      libraryUserId: 'user-1',
+    })
+    expect(vaultRuntime.readMarkdownFiles).not.toHaveBeenCalled()
   })
 
   it('resolves the published task path through the opaque vault alias', async () => {

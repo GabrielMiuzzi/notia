@@ -4,7 +4,7 @@ import ForceGraph2D from 'react-force-graph-2d'
 import { useAppSelector } from '../../../store/hooks'
 import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { NotiaButton } from '../../common/NotiaButton'
-import { buildGraphSearchResults } from '../../../engines/graph/graphSearchEngine'
+import type { GraphSearchResult } from '../../../hooks/useLibraryGraphData'
 import { buildGraphContextLegend } from '../../../engines/graph/graphLegendEngine'
 import type { LibraryGraphModel, LibraryGraphNode } from '../../../types/graph/libraryGraph'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
@@ -79,7 +79,8 @@ function escapeTooltipHtml(value: string): string {
 
 interface GraphViewProps {
   graphModel: LibraryGraphModel
-  graphSourcesByPath: Record<string, string>
+  /** Title and content search resolved by the backend. */
+  searchGraph: (query: string) => Promise<GraphSearchResult[]>
   libraryName: string
   contexts: readonly LibraryContext[]
   isLoading: boolean
@@ -94,7 +95,7 @@ function areGraphViewPropsEqual(
 ): boolean {
   return (
     previous.graphModel === next.graphModel &&
-    previous.graphSourcesByPath === next.graphSourcesByPath &&
+    previous.searchGraph === next.searchGraph &&
     previous.libraryName === next.libraryName &&
     previous.contexts === next.contexts &&
     previous.isLoading === next.isLoading &&
@@ -106,7 +107,7 @@ function areGraphViewPropsEqual(
 
 function GraphViewComponent({
   graphModel,
-  graphSourcesByPath,
+  searchGraph,
   contexts,
   isLoading,
   onOpenFile,
@@ -154,15 +155,23 @@ function GraphViewComponent({
     return () => resizeObserver.disconnect()
   }, [])
 
-  const searchResults = useMemo(
-    () => buildGraphSearchResults(
-      graphModel,
-      graphSourcesByPath,
-      searchQuery,
-      graphModel.nodes.length,
-    ),
-    [graphModel, graphSourcesByPath, searchQuery],
-  )
+  const [searchResults, setSearchResults] = useState<GraphSearchResult[]>([])
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([])
+      return
+    }
+    let isCurrent = true
+    const timer = window.setTimeout(() => {
+      searchGraph(searchQuery)
+        .then((results) => { if (isCurrent) setSearchResults(results) })
+        .catch(() => { if (isCurrent) setSearchResults([]) })
+    }, 150)
+    return () => {
+      isCurrent = false
+      window.clearTimeout(timer)
+    }
+  }, [searchGraph, searchQuery])
   const matchedPaths = useMemo(
     () => new Set(searchResults.map((searchResult) => searchResult.path)),
     [searchResults],

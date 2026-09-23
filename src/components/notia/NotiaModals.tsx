@@ -15,7 +15,7 @@ import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { AppDialogModal } from './AppDialogModal'
 import { ColdPassPasskeyModal } from './ColdPassPasskeyModal'
 import { ColdPassCredentialModal } from './ColdPassCredentialModal'
-import { performLibraryEntryOperation } from '../../services/libraries/libraryRuntime'
+import { mutateLibraryEntry } from '../../services/libraries/libraryRuntime'
 import { setFolderExpandedByPath } from '../../utils/tree/setFolderExpandedByPath'
 import { store } from '../../store/index'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
@@ -23,7 +23,6 @@ import type { AiPreferences } from '../../services/preferences/aiSettingsStorage
 import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { ColdPassEntry } from '../../types/coldpass'
-import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 
@@ -42,8 +41,6 @@ interface NotiaModalsProps {
   onExplorerRefreshIntervalMsChange: (value: number) => void
   onInkMathPreferencesChange: (value: InkMathPreferences) => void
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
-  backupPreferences: BackupPreferences
-  onBackupPreferencesChange: (value: BackupPreferences) => void
   taskManagerPublicationPreferences: TaskManagerPublicationPreferences
   onTaskManagerPublicationPreferencesChange: (value: TaskManagerPublicationPreferences) => void
   contexts: LibraryContext[]
@@ -62,7 +59,7 @@ interface NotiaModalsProps {
   }
   coldPassImportPromptState: {
     open: boolean
-    pendingImport: { importedEntries: ColdPassEntry[]; sourceFileName: string; skippedRowCount: number } | null
+    pendingImport: { importedCount: number; sourceFileName: string; skippedRowCount: number } | null
     errorMessage: string | null
     isSubmitting: boolean
     isSelectingFile: boolean
@@ -74,7 +71,7 @@ interface NotiaModalsProps {
     errorMessage: string | null
     isSubmitting: boolean
   }
-  coldPassSession: { entries: ColdPassEntry[]; filePath: string; passkey: string; markdown: string } | null
+  coldPassSession: { entries: ColdPassEntry[] } | null
   handleSubmitColdPassPasskey: (passkey: string) => void
   handleCloseColdPassPrompt: () => void
   handleSubmitColdPassDeletePasskey: (passkey: string) => void
@@ -90,8 +87,6 @@ function NotiaModalsComponent({
   onExplorerRefreshIntervalMsChange,
   onInkMathPreferencesChange,
   onTelegramPreferencesChange,
-  backupPreferences,
-  onBackupPreferencesChange,
   taskManagerPublicationPreferences,
   onTaskManagerPublicationPreferencesChange,
   contexts,
@@ -131,11 +126,6 @@ function NotiaModalsComponent({
   const activeLibrary = useAppSelector(selectActiveLibrary)
 
   // --- Context menu action handler (self-contained, no longer passed from NotiaMenu) ---
-  const activeLibraryAndroidDirectoryUri = useCallback((pathValue?: string | null): string | undefined => {
-    if (!activeLibrary?.androidTreeUri) { return undefined }
-    if (!pathValue) { return activeLibrary.androidTreeUri }
-    return activeLibrary.androidTreeUri
-  }, [activeLibrary])
 
   const handleContextMenuAction = useCallback(async (actionId: string) => {
     const currentContextMenu = store.getState().documents.contextMenu
@@ -184,12 +174,9 @@ function NotiaModalsComponent({
     if (actionId === 'paste') {
       const currentClipboardEntry = store.getState().documents.clipboardEntry
       if (!currentClipboardEntry) { dispatch(setContextMenu(null)); return }
-      const pasteResult = await performLibraryEntryOperation({
+      const pasteResult = await mutateLibraryEntry(activeLibrary, {
         action: 'paste', sourcePath: currentClipboardEntry.path,
         targetDirectoryPath: targetDirectory || activeLibrary.path, mode: currentClipboardEntry.mode,
-      }, {
-        androidDirectoryUri: activeLibraryAndroidDirectoryUri(targetDirectory || activeLibrary.path)
-          ?? activeLibraryAndroidDirectoryUri(currentClipboardEntry.path),
       })
       if (!pasteResult.ok) {
         dispatch(setDialogState({ type: 'info', title: 'No se pudo pegar', message: pasteResult.error ?? 'No se pudo pegar el elemento.' }))
@@ -208,9 +195,7 @@ function NotiaModalsComponent({
         confirmLabel: 'Eliminar', cancelLabel: 'Cancelar', tone: 'danger',
       })
       if (!shouldDelete) { dispatch(setContextMenu(null)); return }
-      const deleteResult = await performLibraryEntryOperation({
-        action: 'delete', targetPath,
-      }, { androidDirectoryUri: activeLibraryAndroidDirectoryUri(targetPath) })
+      const deleteResult = await mutateLibraryEntry(activeLibrary, { action: 'delete', targetPath })
       if (!deleteResult.ok) {
         dispatch(setDialogState({ type: 'info', title: 'No se pudo eliminar', message: deleteResult.error ?? 'No se pudo eliminar el elemento.' }))
         dispatch(setContextMenu(null))
@@ -248,7 +233,7 @@ function NotiaModalsComponent({
       return
     }
     dispatch(setContextMenu(null))
-  }, [activeLibrary, activeLibraryAndroidDirectoryUri, chatWorkspaceTreeChanged, closeTab, confirm, dispatch])
+  }, [activeLibrary, chatWorkspaceTreeChanged, closeTab, confirm, dispatch])
 
   const handleCloseSettings = useMemo(() => () => dispatch(setSettingsOpen(false)), [dispatch])
   const handleCloseLibraryManager = useMemo(() => () => dispatch(setLibraryManagerOpen(false)), [dispatch])
@@ -312,8 +297,6 @@ function NotiaModalsComponent({
         onAiPreferencesChange={onAiPreferencesChange}
         telegramPreferences={telegramPreferences}
         onTelegramPreferencesChange={onTelegramPreferencesChange}
-        backupPreferences={backupPreferences}
-        onBackupPreferencesChange={onBackupPreferencesChange}
         taskManagerPublicationPreferences={taskManagerPublicationPreferences}
         onTaskManagerPublicationPreferencesChange={onTaskManagerPublicationPreferencesChange}
         contexts={contexts}
@@ -367,7 +350,7 @@ function NotiaModalsComponent({
         open={coldPassImportPromptState.open}
         title="Confirmar importacion"
         message={coldPassImportPromptState.pendingImport
-          ? `Se validaron ${coldPassImportPromptState.pendingImport.importedEntries.length} credenciales desde ${coldPassImportPromptState.pendingImport.sourceFileName}. Ingresá la passkey de ColdPass para importarlas dentro de la bóveda cifrada.`
+          ? `Se validaron ${coldPassImportPromptState.pendingImport.importedCount} credenciales desde ${coldPassImportPromptState.pendingImport.sourceFileName}. Ingresá la passkey de ColdPass para importarlas dentro de la bóveda cifrada.`
           : 'Ingresá la passkey de ColdPass para confirmar la importacion del vault.'}
         errorMessage={coldPassImportPromptState.errorMessage}
         isSubmitting={coldPassImportPromptState.isSubmitting}

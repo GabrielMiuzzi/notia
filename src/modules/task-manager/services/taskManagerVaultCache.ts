@@ -19,7 +19,7 @@ export function resolveTaskManagerVaultCacheKey(vault: TaskManagerVaultRef | nul
     return null
   }
 
-  return `${vault.path}::${vault.androidTreeUri ?? ''}`
+  return `${vault.libraryId ?? ''}::${vault.path}::${vault.androidTreeUri ?? ''}`
 }
 
 export function readTaskManagerVaultCache(vault: TaskManagerVaultRef | null): TaskManagerVaultCacheEntry | null {

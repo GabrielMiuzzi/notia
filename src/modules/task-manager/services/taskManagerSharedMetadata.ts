@@ -3,6 +3,7 @@ import { normalizeTaskManagerSettings } from '../utils/settings'
 import {
   createFileContent,
   readFileContent,
+  hasTaskManagerBackendIdentity,
   writeFileContent,
 } from './vaultRuntime'
 import { resolveTaskManagerSharedMetadataPath } from './taskManagerService'
@@ -64,6 +65,8 @@ export function writeTaskManagerSharedMetadata(
   vaultPath: string,
   settings: Pick<TaskManagerSettings, 'boards' | 'groups'>,
 ): Promise<void> {
+  // The Rust store derives this file from every commit.
+  if (hasTaskManagerBackendIdentity()) return Promise.resolve()
   const queueKey = vaultPath.trim().toLowerCase()
   const previousWrite = pendingWrites.get(queueKey) ?? Promise.resolve()
   const nextWrite = previousWrite

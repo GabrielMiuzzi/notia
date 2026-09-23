@@ -17,10 +17,10 @@ export type {
 } from './taskManagerPublicationProtocol'
 
 const MUTATING_COMMAND_NAMES = [
-  'write_library_file',
-  'append_task_comment',
-  'create_library_entry',
-  'library_entry_operation',
+  'task_manager_preview_mutation',
+  'task_manager_apply_mutation',
+  'task_manager_write_ticket_source',
+  'task_manager_append_pomodoro',
   'begin_task_manager_publication_batch',
   'end_task_manager_publication_batch',
   'update_task_manager_publication_settings',
@@ -38,34 +38,24 @@ const MAX_PROTOCOL_TEXT_LENGTH = 2_000
 export type TaskManagerPublicationMutationCommand = typeof MUTATING_COMMAND_NAMES[number]
 
 export interface TaskManagerPublicationMutationArgs {
-  write_library_file: {
+  task_manager_preview_mutation: {
+    request: Record<string, unknown>
+  }
+  task_manager_apply_mutation: {
+    request: Record<string, unknown>
+  }
+  task_manager_write_ticket_source: {
     payload: {
-      filePath: string
+      logicalPath: string
       content: string
-      expectedRevision?: string
+      expectedRevision: string
     }
   }
-  append_task_comment: {
+  task_manager_append_pomodoro: {
     payload: {
-      filePath: string
-      comment: string
-    }
-  }
-  create_library_entry: {
-    payload: {
-      directoryPath: string
-      name: string
-      kind: 'folder' | 'note'
-    }
-  }
-  library_entry_operation: {
-    payload: {
-      action: 'delete' | 'rename' | 'paste'
-      targetPath?: string
-      newName?: string
-      sourcePath?: string
-      targetDirectoryPath?: string
-      mode?: 'move'
+      localDate: string
+      localTime: string
+      entry: Record<string, unknown>
     }
   }
   begin_task_manager_publication_batch: Record<string, never>

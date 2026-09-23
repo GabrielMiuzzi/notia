@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { formatMarkdownSourceSize } from '../../../engines/markdown/markdownEditorLimits'
 import { TextView } from './TextView'
+import { ChatAttachmentImages } from './ChatAttachmentImages'
 
 const LARGE_DOCUMENT_PREVIEW_LENGTH = 12_000
 
@@ -40,6 +41,7 @@ export function LargeMarkdownView({ source, onSourceChange }: LargeMarkdownViewP
         <p>
           La nota sigue disponible y no fue modificada. Podés abrirla como texto para revisarla o corregirla.
         </p>
+        <ChatAttachmentImages source={source} />
         <div className="notia-large-markdown-card__actions">
           <button type="button" onClick={() => setIsTextEditorOpen(true)}>
             Editar como texto

@@ -17,6 +17,7 @@ import {
 import type { Group, MarkdownFileDocument, TaskFormData, TaskFrontmatter, TaskItem } from '../types/taskManagerTypes'
 import { parseMarkdownFrontmatter } from './frontmatterEngine'
 import { normalizeTaskState } from '../utils/status'
+import { generateUUID } from '../../../utils/uuid'
 
 const BOARD_TASK_INDEX_SUFFIX = 'TaskIndex'
 
@@ -77,6 +78,7 @@ export function getTasks(documents: MarkdownFileDocument[]): TaskItem[] {
     const parsedOrder = Number(frontmatter.order)
 
     tasks.push({
+      id: frontmatter.id?.trim() || undefined,
       filePath: document.path,
       fileName: basename,
       title: frontmatter.tarea?.trim() || basename,
@@ -147,6 +149,7 @@ export function buildTaskContent(data: TaskFormData, order: number): string {
 
   return [
     '---',
+    `id: "${generateUUID()}"`,
     `tarea: "${safeTitle}"`,
     `detalle: "${safeDetail}"`,
     `estado: "${data.state}"`,

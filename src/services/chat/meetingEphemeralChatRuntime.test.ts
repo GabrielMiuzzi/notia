@@ -2,38 +2,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runMeetingEphemeralChatReply } from './meetingEphemeralChatRuntime'
 
 const mocks = vi.hoisted(() => ({
-  loadLibraryFileOptions: vi.fn(),
-  createChatScopedAgent: vi.fn(),
-  runNotiaChatReply: vi.fn(),
+  runGlobalAiChat: vi.fn(),
 }))
 
-vi.mock('./chatAttachmentRuntime', () => ({
-  loadLibraryFileOptions: mocks.loadLibraryFileOptions,
-}))
-vi.mock('./chatScopedAgentRuntime', () => ({
-  createChatScopedAgent: mocks.createChatScopedAgent,
-}))
 vi.mock('./notiaChatRuntime', () => ({
-  runNotiaChatReply: mocks.runNotiaChatReply,
+  runGlobalAiChat: mocks.runGlobalAiChat,
+  runNotiaChatReply: vi.fn(),
+  createAppAiRequest: vi.fn((input: Record<string, unknown>) => ({ ...input, version: 1, source: { channel: 'app', appSurface: input.appSurface } })),
 }))
 vi.mock('../ai/agentPromptRuntime', () => ({
-  loadSelectedAgentPromptFileName: vi.fn(() => 'default.md'),
+  loadSelectedAgentPromptFileName: vi.fn(async () => 'default.md'),
 }))
 vi.mock('../ai/workspaceAiSnapshotRuntime', () => ({
   buildWorkspaceAiSnapshot: vi.fn(() => ({ snapshotVersion: 1 })),
 }))
 
+// Meeting runs in the Rust runtime with channel `meeting`, no memory and no
+// writes; the client only sends the transcript with the question.
 describe('meetingEphemeralChatRuntime', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.loadLibraryFileOptions.mockResolvedValue([
-      { path: 'C:/vault/meeting.md', name: 'meeting.md', relativePath: 'meeting.md' },
-    ])
-    mocks.createChatScopedAgent.mockResolvedValue({ systemPrompt: 'meeting', tools: [], executeTool: vi.fn() })
-    mocks.runNotiaChatReply.mockResolvedValue('respuesta')
+    mocks.runGlobalAiChat.mockResolvedValue('respuesta')
   })
 
-  it('pasa Meeting por la fachada común como sesión efímera y de solo lectura', async () => {
+  it('pasa Meeting por la fachada común como sesión efímera', async () => {
     const library = { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never
     const controller = new AbortController()
     const onAgentProgress = vi.fn()
@@ -54,21 +46,13 @@ describe('meetingEphemeralChatRuntime', () => {
     })
 
     expect(answer).toBe('respuesta')
-    expect(mocks.createChatScopedAgent).toHaveBeenCalledWith(expect.objectContaining({
-      scope: 'library',
-      persistencePolicy: 'ephemeral-no-memory',
-      readOnly: true,
-      scopePaths: ['C:/vault/meeting.md'],
-    }))
-    expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(
+    expect(mocks.runGlobalAiChat).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        agent: expect.anything(),
-        prompt: expect.stringContaining('Se acordó revisar el documento.'),
+        agent: expect.objectContaining({ libraryId: 'library-1', promptName: 'default.md' }),
         previousMessages: [],
       }),
-      expect.objectContaining({ abortSignal: controller.signal }),
+      expect.objectContaining({ abortSignal: controller.signal, onAgentProgress }),
     )
-    expect(mocks.runNotiaChatReply.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ onAgentProgress }))
   })
 })

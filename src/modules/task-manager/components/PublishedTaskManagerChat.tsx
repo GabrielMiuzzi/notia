@@ -3,7 +3,7 @@ import { Bot, Send, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import { ChatMarkdownMessage } from '../../../components/notia/views/chat/ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
-import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
+import type { TaskExecutionStep } from '../../../services/chat/chatAgentTypes'
 import { runPublishedTaskManagerChatProxy } from '../services/publishedTaskManagerChatProxyRuntime'
 import { describeAiFeedbackError } from '../../../services/ai/aiFeedbackRuntime'
 

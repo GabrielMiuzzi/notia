@@ -1,41 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectIndexRevision } from '../../../features/library/librarySelectors'
-import { selectFlatFileList } from '../../../features/documents/documentsSelectors'
 import { useLibraryGraphData } from '../../../hooks/useLibraryGraphData'
-import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
-import type { LibraryContext } from '../../../services/contexts/libraryContexts'
+import type { NotiaLibrary } from '../../../types/notia'
 
 interface UseGraphWorkspaceParams {
   activeLibrary: NotiaLibrary | null
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'documents'
-  treeNodes: NotiaFileNode[]
-  contexts: readonly LibraryContext[]
-  boardContextsByName: Readonly<Record<string, string>>
 }
 
 export function useGraphWorkspace({
   activeLibrary,
   activeWorkspaceView,
-  treeNodes,
-  contexts,
-  boardContextsByName,
 }: UseGraphWorkspaceParams) {
   const graphRevision = useAppSelector(selectIndexRevision)
-  const flatFileList = useAppSelector(selectFlatFileList)
   const [graphChatSelectedPaths, setGraphChatSelectedPaths] = useState<string[]>([])
 
   const isGraphViewActive = activeWorkspaceView === 'graph'
-  const { graphModel, graphSourcesByPath, isGraphLoading } = useLibraryGraphData({
+  const { graphModel, searchGraph, isGraphLoading } = useLibraryGraphData({
     enabled: isGraphViewActive,
+    libraryId: activeLibrary?.id,
     libraryPath: activeLibrary?.path ?? null,
-    libraryAndroidTreeUri: activeLibrary?.androidTreeUri,
-    rootPath: activeLibrary?.path ?? null,
-    treeNodes,
-    flatFileList,
     revision: graphRevision,
-    contexts,
-    boardContextsByName,
   })
 
   const graphChatAvailablePaths = useMemo(
@@ -75,7 +61,7 @@ export function useGraphWorkspace({
     graphChatEffectivePaths,
     graphChatSelectedPaths,
     graphModel,
-    graphSourcesByPath,
+    searchGraph,
     isGraphLoading,
     isGraphViewActive,
     setGraphChatSelectedPaths,

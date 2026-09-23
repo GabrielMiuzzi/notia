@@ -2,8 +2,8 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Bot, Check, Circle, Files, LoaderCircle, OctagonX, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
-import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
-import { telegramToolLabel } from '../../../../services/telegram/telegramProgressRuntime'
+import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
+import { agentToolLabel } from '../../../../services/ai/agentToolLabels'
 import type { MutationPreview } from '../../../../types/ai/agentContracts'
 import type { AiOperationHistoryEntry } from '../../../../services/ai/aiOperationHistory'
 
@@ -27,7 +27,6 @@ interface ChatThreadProps {
   onApproveAgentExecutionPlan?: (steps?: TaskExecutionStep[]) => void
   onSuggestAgentExecutionPlanChanges?: () => void
   onResumeAgentExecutionPlan?: () => void
-  onRetryAgentExecutionPlan?: () => void
   onCancelAgentExecutionPlan?: () => void
   lastAppliedOperationId?: string | null
   onUndoLastAiOperation?: () => void
@@ -75,7 +74,6 @@ function ChatThreadComponent({
   onApproveAgentExecutionPlan,
   onSuggestAgentExecutionPlanChanges,
   onResumeAgentExecutionPlan,
-  onRetryAgentExecutionPlan,
   onCancelAgentExecutionPlan,
   lastAppliedOperationId = null,
   onUndoLastAiOperation,
@@ -181,7 +179,7 @@ function ChatThreadComponent({
                         {step.description ? <small>{step.description}</small> : null}
                         {step.affectedPaths?.length ? <small>Archivos: {step.affectedPaths.join(', ')}</small> : null}
                         {step.dependsOn?.length ? <small>Depende de: {step.dependsOn.join(', ')}</small> : null}
-                        <small>{step.risk ? `Riesgo: ${step.risk}` : ''}{step.plannedToolName ? ` · ${telegramToolLabel(step.plannedToolName)}` : ''}</small>
+                        <small>{step.risk ? `Riesgo: ${step.risk}` : ''}{step.plannedToolName ? ` · ${agentToolLabel(step.plannedToolName)}` : ''}</small>
                       </span>
                     </li>
                   ))}
@@ -241,11 +239,6 @@ function ChatThreadComponent({
                 ) : null}
                 {!isSubmitting && !awaitingAgentExecutionPlanApproval ? (
                   <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Continuar plan de ejecución">
-                    {agentExecutionPlan.some((step) => step.status === 'failed' && step.canRetry !== false) ? (
-                      <button type="button" className="notia-chat-agent-confirmation-button is-primary" onClick={onRetryAgentExecutionPlan}>
-                        Reintentar paso fallido
-                      </button>
-                    ) : null}
                     {agentExecutionPlan.some((step) => step.status === 'pending' || step.status === 'in-progress' || step.status === 'blocked') ? (
                       <button type="button" className="notia-chat-agent-confirmation-button is-primary" onClick={onResumeAgentExecutionPlan}>
                         Continuar TO-DO

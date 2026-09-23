@@ -1,19 +1,19 @@
-import { createFile, createDirectory, pathExists } from '../files/filesystemEngine'
-import { readLibraryFileContent, writeLibraryFileContent } from '../libraries/libraryDocumentRuntime'
-import type { NotiaLibrary } from '../../types/notia'
+import { invoke } from '@tauri-apps/api/core'
 import type { ColdPassEntry } from '../../types/coldpass'
-import { createEmptyColdPassMarkdown, parseColdPassMarkdown, stringifyColdPassMarkdown } from './coldpassMarkdown'
-import { decryptColdPassMarkdown, encryptColdPassMarkdown } from './coldpassCrypto'
 
 const COLDPASS_DIRECTORY_NAME = 'ColdPass'
 const COLDPASS_FILE_NAME = 'ColdPass.md'
 
+/** Unlocked vault as rendered by the UI. The passkey stays in the backend. */
 export interface ColdPassSessionData {
-  directoryPath: string
-  filePath: string
-  markdown: string
   entries: ColdPassEntry[]
-  passkey: string
+}
+
+/** CSV parsed by the backend and waiting for the passkey confirmation. */
+export interface ColdPassImportPreview {
+  sourceFileName: string
+  importedCount: number
+  skippedRowCount: number
 }
 
 function joinPath(basePath: string, childName: string): string {
@@ -24,86 +24,59 @@ function joinPath(basePath: string, childName: string): string {
   return `${basePath}${separator}${childName}`
 }
 
+/** Visible location of the vault, used only to tell first use apart. */
 export function resolveColdPassPaths(libraryPath: string): { directoryPath: string; filePath: string } {
   const directoryPath = joinPath(libraryPath, COLDPASS_DIRECTORY_NAME)
   const filePath = joinPath(directoryPath, COLDPASS_FILE_NAME)
   return { directoryPath, filePath }
 }
 
-async function ensureColdPassDirectory(directoryPath: string, androidDirectoryUri?: string): Promise<void> {
-  if (await pathExists(directoryPath, { androidDirectoryUri })) {
-    return
-  }
-
-  const result = await createDirectory(directoryPath, { androidDirectoryUri })
-  if (!result.ok) {
-    throw new Error(result.error ?? 'Could not create ColdPass directory.')
+async function invokeColdPass<T>(command: string, payload: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, { payload })
+  } catch (error) {
+    if (error instanceof Error) throw error
+    const message = error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
+      ? (error as { message: string }).message
+      : 'No se pudo completar la operación de ColdPass.'
+    throw new Error(message)
   }
 }
 
-async function ensureEncryptedColdPassFile(
-  filePath: string,
-  passkey: string,
-  androidDirectoryUri?: string,
-): Promise<string> {
-  const defaultMarkdown = createEmptyColdPassMarkdown()
-  const encryptedContent = await encryptColdPassMarkdown(defaultMarkdown, passkey)
-
-  if (await pathExists(filePath, { androidDirectoryUri })) {
-    return encryptedContent
-  }
-
-  const createResult = await createFile(filePath, encryptedContent, { androidDirectoryUri })
-  if (!createResult.ok) {
-    throw new Error(createResult.error ?? 'Could not create ColdPass file.')
-  }
-
-  return encryptedContent
+export async function unlockColdPassSession(libraryId: string, passkey: string): Promise<ColdPassSessionData> {
+  return invokeColdPass<ColdPassSessionData>('coldpass_unlock', { libraryId, passkey })
 }
 
-export async function unlockColdPassSession(
-  library: NotiaLibrary,
+export async function lockColdPassSession(libraryId: string): Promise<void> {
+  await invokeColdPass('coldpass_lock', { libraryId })
+}
+
+/** Adds a credential, or edits `entryId` keeping its password history. */
+export async function saveColdPassEntry(
+  libraryId: string,
+  entry: ColdPassEntry,
+  entryId?: string,
+): Promise<ColdPassSessionData> {
+  return invokeColdPass<ColdPassSessionData>('coldpass_save_entry', {
+    libraryId,
+    entry,
+    ...(entryId ? { entryId } : {}),
+  })
+}
+
+export async function deleteColdPassEntry(
+  libraryId: string,
+  entryId: string,
   passkey: string,
 ): Promise<ColdPassSessionData> {
-  const { directoryPath, filePath } = resolveColdPassPaths(library.path)
-  await ensureColdPassDirectory(directoryPath, library.androidTreeUri)
-
-  let encryptedContent = ''
-  if (await pathExists(filePath, { androidDirectoryUri: library.androidTreeUri })) {
-    const readResult = await readLibraryFileContent(filePath, {
-      androidDirectoryUri: library.androidTreeUri,
-    })
-    if (!readResult.ok) {
-      throw new Error(readResult.error ?? 'Could not read ColdPass file.')
-    }
-    encryptedContent = readResult.content
-  } else {
-    encryptedContent = await ensureEncryptedColdPassFile(filePath, passkey, library.androidTreeUri)
-  }
-
-  const markdown = await decryptColdPassMarkdown(encryptedContent, passkey)
-  return {
-    directoryPath,
-    filePath,
-    markdown,
-    entries: parseColdPassMarkdown(markdown),
-    passkey,
-  }
+  return invokeColdPass<ColdPassSessionData>('coldpass_delete_entry', { libraryId, entryId, passkey })
 }
 
-export async function saveColdPassEntries(
-  filePath: string,
-  passkey: string,
-  entries: ColdPassEntry[],
-  androidDirectoryUri?: string,
-): Promise<{ ok: boolean; error?: string; markdown: string }> {
-  const markdown = stringifyColdPassMarkdown(entries)
-  const encryptedContent = await encryptColdPassMarkdown(markdown, passkey)
-  const result = await writeLibraryFileContent(filePath, encryptedContent, { androidDirectoryUri })
+/** Opens the native picker in the backend; `null` when cancelled. */
+export async function pickColdPassCsvImport(libraryId: string): Promise<ColdPassImportPreview | null> {
+  return invokeColdPass<ColdPassImportPreview | null>('coldpass_pick_csv_import', { libraryId })
+}
 
-  if (!result.ok) {
-    return { ok: false, error: result.error ?? 'Could not write ColdPass file.', markdown }
-  }
-
-  return { ok: true, markdown }
+export async function confirmColdPassImport(libraryId: string, passkey: string): Promise<ColdPassSessionData> {
+  return invokeColdPass<ColdPassSessionData>('coldpass_confirm_import', { libraryId, passkey })
 }

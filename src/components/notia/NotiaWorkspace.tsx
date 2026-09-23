@@ -16,10 +16,11 @@ import { CalendarView } from './views/CalendarView'
 import { MultichatView } from './views/MultichatView'
 import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
 import type { ColdPassEntry } from '../../types/coldpass'
-import type { TaskManagerChatContext } from '../../modules/task-manager/types/taskManagerTypes'
+import type { TaskManagerChatContext, TaskManagerVaultRef } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
+import type { GraphSearchResult } from '../../hooks/useLibraryGraphData'
 
 const GraphView = lazy(async () => {
   const module = await import('./views/GraphView')
@@ -35,10 +36,10 @@ interface NotiaWorkspaceProps {
   isAndroidRuntime: boolean
   coldPassEntries: ColdPassEntry[]
   coldPassSession: object | null
-  activeTaskManagerVault: { path: string; androidTreeUri?: string } | null
+  activeTaskManagerVault: TaskManagerVaultRef | null
   libraryContexts: LibraryContext[]
   graphModel: LibraryGraphModel
-  graphSourcesByPath: Record<string, string>
+  searchGraph: (query: string) => Promise<GraphSearchResult[]>
   isGraphLoading: boolean
   graphChatSelectedPaths: string[]
   setGraphChatSelectedPaths: (paths: string[]) => void
@@ -71,7 +72,7 @@ function NotiaWorkspaceComponent({
   activeTaskManagerVault,
   libraryContexts,
   graphModel,
-  graphSourcesByPath,
+  searchGraph,
   isGraphLoading,
   graphChatSelectedPaths,
   setGraphChatSelectedPaths,
@@ -156,7 +157,7 @@ function NotiaWorkspaceComponent({
         <PerformanceProfiler id="graph-view">
           <GraphView
             graphModel={graphModel}
-            graphSourcesByPath={graphSourcesByPath}
+            searchGraph={searchGraph}
             libraryName={libraryName}
             contexts={libraryContexts}
             isLoading={isGraphLoading}

@@ -13,13 +13,10 @@ import {
   readLibraryTree,
   readLibraryTreeSignature,
   readLibraryDirectory,
-  readLibraryFlatFileList,
   invalidateLibraryRuntimeCache,
+  registerLibraryBinding,
 } from '../../../services/libraries/libraryRuntime'
 import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
-import {
-  invalidateLibrarySearchGraphIndex,
-} from '../../../services/libraries/librarySearchGraphIndex'
 import {
   startDesktopLibraryTreeWatch,
   stopDesktopLibraryTreeWatch,
@@ -37,7 +34,7 @@ import { reconcileTreeNodes } from '../../../utils/tree/reconcileTreeNodes'
 import { ensureChatLibraryStructure } from '../../../services/chat/chatLibraryStructure'
 import { ensureAgentPromptFile } from '../../../services/ai/agentPromptRuntime'
 import { initializeLibraryDatabase } from '../../../services/libraries/libraryDatabase'
-import { getLibraryInventoryGeneration, syncLibraryInventoryFromFlatFiles, syncLibraryInventoryFromTree } from '../../../services/libraries/libraryInventoryRuntime'
+import { reindexLibrary } from '../../../services/libraries/libraryInventoryRuntime'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
 import type { NotiaFileNode } from '../../../types/notia'
 import type { SetStateAction } from 'react'
@@ -277,36 +274,23 @@ export function useLibraryTreeSync({
     store.dispatch(setTreeNodes(next))
   }, [persistExplorerFolderState])
 
+  // The backend walks the library and publishes the inventory used by the
+  // agent tools, search and Graph View; the explorer snapshot is not sent.
   const synchronizeLibraryInventory = useCallback(async (
     library: NonNullable<typeof activeLibrary>,
     signal?: AbortSignal,
-    snapshot?: NotiaFileNode[],
   ) => {
     try {
-      if (!isAndroidRuntime && snapshot) {
-        await syncLibraryInventoryFromTree({
-          libraryPath: library.path,
-          androidDirectoryUri: library.androidTreeUri,
-          generation: getLibraryInventoryGeneration(library.path),
-        }, snapshot, signal)
-        return
+      const result = await reindexLibrary(library.id, signal)
+      if (!result.ok) {
+        console.warn('[notia] failed to reindex library:', result.error)
       }
-      const flatFiles = await readLibraryFlatFileList(library.path, {
-        androidDirectoryUri: library.androidTreeUri,
-        signal,
-      })
-      if (store.getState().library.selectedLibraryId !== library.id) {
-        return
-      }
-      await syncLibraryInventoryFromFlatFiles({
-        libraryPath: library.path,
-        androidDirectoryUri: library.androidTreeUri,
-        generation: getLibraryInventoryGeneration(library.path),
-      }, flatFiles, signal)
     } catch (error) {
-      console.warn('[notia] failed to synchronize library inventory:', error)
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        console.warn('[notia] failed to reindex library:', error)
+      }
     }
-  }, [isAndroidRuntime])
+  }, [])
 
   const commitTreeNodesSnapshot = useCallback((libraryId: string, nodes: NotiaFileNode[]) => {
     lastKnownTreeSignatureRef.current = buildTreeNodesStructureSignature(nodes)
@@ -353,7 +337,7 @@ export function useLibraryTreeSync({
         return
       }
       commitTreeNodesSnapshot(activeLibrary.id, refreshedNodes)
-      void synchronizeLibraryInventory(activeLibrary, undefined, refreshedNodes)
+      void synchronizeLibraryInventory(activeLibrary)
       refreshMeasurement.success({ nodeCount: countTreeNodes(refreshedNodes) })
       refreshTimer.success({ nodeCount: countTreeNodes(refreshedNodes) })
     } catch (error) {
@@ -584,6 +568,13 @@ export function useLibraryTreeSync({
     })
     void (async () => {
       try {
+        // The backend only reads and writes inside registered libraries, so
+        // the binding must exist before the first structure/tree access.
+        try {
+          await registerLibraryBinding(activeLibrary)
+        } catch (error) {
+          console.warn('[notia] could not register the active library binding', error)
+        }
         try {
           await Promise.all([
             ensureChatLibraryStructure(activeLibrary),
@@ -628,7 +619,7 @@ export function useLibraryTreeSync({
         // projection is never dispatched to Redux; the Explorer keeps only
         // its visible tree while search/Graph View query the runtime index.
         if (isCurrent) {
-          void synchronizeLibraryInventory(activeLibrary, inventoryAbortController.signal, nodes)
+          void synchronizeLibraryInventory(activeLibrary, inventoryAbortController.signal)
         }
       } catch (error) {
         if (!isCurrent) {
@@ -711,7 +702,6 @@ export function useLibraryTreeSync({
         window.clearTimeout(libraryTreeRefreshTimerRef.current)
       }
 
-      invalidateLibrarySearchGraphIndex(currentActiveLibraryPath, changedPathHint ?? currentActiveLibraryPath)
       invalidateLibraryRuntimeCache(currentActiveLibraryPath, changedPathHint ?? currentActiveLibraryPath)
 
       libraryTreeRefreshTimerRef.current = window.setTimeout(() => {
@@ -745,7 +735,6 @@ export function useLibraryTreeSync({
       if (!shouldRefreshActiveLibraryTree) { return }
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') { return }
       if (isAndroidRuntime) {
-        invalidateLibrarySearchGraphIndex(activeLibrary.path)
         invalidateLibraryRuntimeCache(activeLibrary.path)
         void refreshActiveLibraryTree()
         return

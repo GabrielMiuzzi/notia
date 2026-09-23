@@ -1,3 +1,6 @@
+[2026-09-22 11:43:15 -03:00] Se separó la validación de títulos visibles y nombres de rutas en Task Manager, permitiendo separadores en títulos de tickets sin relajar las validaciones de rutas.
+[2026-09-22 00:38:58 -03:00] Se separaron los límites de lectura y mutación de documentos y se agregaron previews raster acotados para imágenes persistidas en chats Markdown.
+[2026-09-21 21:09:15 -03:00] Se enrutan las lecturas y escrituras Markdown existentes del agente por la identidad de biblioteca y su revisión segura, conservando filesystemEngine para operaciones no documentales y de árbol.
 [2026-09-21 01:54:09 -03:00] Se hizo seguro el cierre del callback SAF Android y se agregó timeout de 60 segundos al selector de bibliotecas, con regresión automatizada.
 [2026-09-21 01:28:35 -03:00] Se corrigió el paso de androidTreeUri vacío en el alta Android, se agregó logging NotiaSAF en createPathEntry, se unificó la creación de .notia/notiaConfig.json en un solo comando y se mejoró el detalle de errores de SAF.
 [2026-09-21 00:34:11 -03:00] Se creó la configuración SAF por ruta desde el grant raíz sin depender de que readTree enumere los directorios intermedios.
@@ -104,3 +107,5 @@
 [2026-09-17 19:57:58 -03:00] Se ajustó la conciliación de servicios con descriptores identificados y el flujo seguro de propuestas de auditoría financiera.
 [2026-09-19 02:46:37 -03:00] Se habilitaron adjuntos locales múltiples en el chat con contexto de texto separado y colección visual ordenada para Ollama.
 [2026-09-20 23:01:46 -03:00] Se conservaron en la LRU las URI SAF devueltas al crear directorios y archivos para resolver operaciones inmediatas.
+[2026-09-22 03:45:00 -03:00] Se integraron las mutaciones de la UI embebida de Task Manager con el backend Rust en desktop, conservando fallback explícito para Android/vaults sin identidad y validación de identidad Owner.
+[2026-09-22 18:07:32 -03:00] Se estableció Rust como única capa de lógica de aplicación y React como cáscara visual limitada a contratos explícitos del backend.

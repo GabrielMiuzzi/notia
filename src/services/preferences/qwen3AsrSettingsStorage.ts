@@ -26,6 +26,7 @@ export function normalizeQwen3AsrPreferences(value: Partial<Qwen3AsrPreferences>
   }
 }
 
+/** Copy kept by older versions in the WebView; read once to migrate it. */
 export function loadQwen3AsrPreferences(): Qwen3AsrPreferences {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -35,6 +36,12 @@ export function loadQwen3AsrPreferences(): Qwen3AsrPreferences {
   }
 }
 
-export function saveQwen3AsrPreferences(value: Qwen3AsrPreferences): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeQwen3AsrPreferences(value)))
+
+/** Removes the WebView copy after the backend holds the preferences. */
+export function clearLegacyQwen3AsrPreferences(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    // A stale copy is ignored once the backend is initialized.
+  }
 }

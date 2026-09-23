@@ -35,6 +35,7 @@ export function normalizeQwen3TtsPreferences(value: Partial<Qwen3TtsPreferences>
   }
 }
 
+/** Copy kept by older versions in the WebView; read once to migrate it. */
 export function loadQwen3TtsPreferences(): Qwen3TtsPreferences {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY)
@@ -42,6 +43,13 @@ export function loadQwen3TtsPreferences(): Qwen3TtsPreferences {
   } catch { return DEFAULT_QWEN3_TTS_PREFERENCES }
 }
 
-export function saveQwen3TtsPreferences(value: Qwen3TtsPreferences): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeQwen3TtsPreferences(value)))
+
+/** Removes the WebView copy after the backend holds the preferences. */
+export function clearLegacyQwen3TtsPreferences(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
+  } catch {
+    // A stale copy is ignored once the backend is initialized.
+  }
 }

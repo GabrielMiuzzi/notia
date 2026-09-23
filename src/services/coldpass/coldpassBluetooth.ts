@@ -49,14 +49,16 @@ export async function submitColdPassBluetoothPin(pin: string): Promise<ColdPassB
   }))
 }
 
-export async function authenticateColdPassBluetooth(packet: string): Promise<ColdPassBluetoothStatus> {
+/** The backend encrypts the challenge and keeps the passkey for the session. */
+export async function authenticateColdPassBluetooth(challenge: string, passkey: string): Promise<ColdPassBluetoothStatus> {
   return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_authenticate', {
-    payload: { packet },
+    payload: { challenge, passkey },
   }))
 }
 
-export async function sendColdPassBluetoothMessage(packet: string): Promise<ColdPassBluetoothStatus> {
+/** The backend encrypts the message with the session passkey. */
+export async function sendColdPassBluetoothMessage(message: string): Promise<ColdPassBluetoothStatus> {
   return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_send_message', {
-    payload: { packet },
+    payload: { message },
   }))
 }

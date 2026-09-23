@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
 
+use crate::backend::{AuthorizationPrincipal, BackendError, BackendErrorCode};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::database::open_library_connection;
+use crate::database::{open_existing_library_connection, open_library_connection};
 #[cfg(target_os = "android")]
 use crate::database::{open_mobile_library_connection, sync_mobile_library_connection};
+use crate::library_registry::{LibraryBindingRegistry, LibraryBindingRoot};
 use crate::user_auth::{hash_password, verify_password};
 
 const OWNER_USER_ID: &str = "user-owner";
@@ -259,6 +261,282 @@ pub(crate) fn authenticate_library_user(
     let (id, hash) = row?;
     hash.filter(|value| verify_password(password, value))
         .map(|_| id)
+}
+
+fn validate_library_user_id(library_user_id: &str) -> Result<&str, BackendError> {
+    let library_user_id = library_user_id.trim();
+    if library_user_id.is_empty()
+        || library_user_id.chars().count() > 128
+        || library_user_id
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+    {
+        return Err(BackendError::invalid_input(
+            "La identidad de usuario de la biblioteca no es válida.",
+        ));
+    }
+    Ok(library_user_id)
+}
+
+fn authorize_user_in_connection(
+    connection: &Connection,
+    library_user_id: &str,
+) -> Result<(), BackendError> {
+    let library_user_id = validate_library_user_id(library_user_id)?;
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM library_users WHERE id=?1)",
+            params![library_user_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudo verificar la identidad de la biblioteca.",
+                true,
+            )
+        })?;
+    if !exists {
+        return Err(BackendError::new(
+            BackendErrorCode::Unauthorized,
+            "La identidad de usuario no está autorizada para esta biblioteca.",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+/// Verifies Task Manager identity against the database owned by the registered
+/// library binding without exposing password hashes or database paths.
+pub(crate) fn authorize_task_manager_user(
+    app: &AppHandle,
+    registry: &LibraryBindingRegistry,
+    library_id: &str,
+    library_user_id: &str,
+) -> Result<(), BackendError> {
+    let library_user_id = validate_library_user_id(library_user_id)?;
+    let binding = registry.lookup(library_id)?;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = app;
+        let Some(LibraryBindingRoot::Desktop { canonical_root }) = binding.root else {
+            return Err(BackendError::new(
+                BackendErrorCode::Unsupported,
+                "La biblioteca no tiene una raíz de filesystem disponible.",
+                true,
+            ));
+        };
+        let connection = open_existing_library_connection(&canonical_root).map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudo abrir la base de datos de la biblioteca.",
+                true,
+            )
+        })?;
+        return authorize_user_in_connection(&connection, library_user_id);
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let Some(LibraryBindingRoot::Android { tree_uri }) = binding.root else {
+            return Err(BackendError::new(
+                BackendErrorCode::Unsupported,
+                "La biblioteca no tiene un grant SAF Android.",
+                true,
+            ));
+        };
+        let connection = open_mobile_library_connection(app, tree_uri.as_str()).map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::ProviderUnavailable,
+                "El adaptador SAF de la biblioteca no está disponible. Volvé a seleccionar la biblioteca.",
+                true,
+            )
+        })?;
+        return authorize_user_in_connection(&connection, library_user_id);
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        let _ = (app, binding, library_user_id);
+        Err(BackendError::new(
+            BackendErrorCode::Unsupported,
+            "La autenticación de usuarios de biblioteca no está disponible en iOS.",
+            false,
+        ))
+    }
+}
+
+/// Display names of the library users by id, for documents that show who
+/// wrote something. Best effort: an unreadable database yields no names and
+/// callers fall back to the id.
+pub(crate) fn library_user_names(
+    app: &AppHandle,
+    registry: &LibraryBindingRegistry,
+    library_id: &str,
+) -> std::collections::HashMap<String, String> {
+    let Ok(binding) = registry.lookup(library_id) else {
+        return Default::default();
+    };
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let connection = {
+        let _ = app;
+        match binding.root {
+            Some(LibraryBindingRoot::Desktop { canonical_root }) => {
+                open_existing_library_connection(&canonical_root).ok()
+            }
+            _ => None,
+        }
+    };
+    #[cfg(target_os = "android")]
+    let connection = match binding.root {
+        Some(LibraryBindingRoot::Android { tree_uri }) => {
+            open_mobile_library_connection(app, tree_uri.as_str()).ok()
+        }
+        _ => None,
+    };
+    #[cfg(target_os = "ios")]
+    let connection: Option<Connection> = {
+        let _ = (app, binding);
+        None
+    };
+    let Some(connection) = connection else {
+        return Default::default();
+    };
+    let Ok(mut statement) = connection.prepare("SELECT id, name FROM library_users") else {
+        return Default::default();
+    };
+    statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// Resolves the native authorization principal for a backend request. The
+/// request may identify a user, but it cannot supply that user's role or
+/// contexts; those values always come from the library database bound to the
+/// registered library.
+pub(crate) fn backend_authorization_principal(
+    app: &AppHandle,
+    registry: &LibraryBindingRegistry,
+    library_id: &str,
+    library_user_id: &str,
+) -> Result<AuthorizationPrincipal, BackendError> {
+    let library_user_id = validate_library_user_id(library_user_id)?.to_string();
+    let binding = registry.lookup(library_id)?;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let connection = {
+        let _ = app;
+        let Some(LibraryBindingRoot::Desktop { canonical_root }) = binding.root else {
+            return Err(BackendError::new(
+                BackendErrorCode::Unsupported,
+                "La biblioteca no tiene una raíz de filesystem disponible.",
+                true,
+            ));
+        };
+        open_existing_library_connection(&canonical_root).map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudo abrir la base de datos de la biblioteca.",
+                true,
+            )
+        })?
+    };
+
+    #[cfg(target_os = "android")]
+    let connection = {
+        let Some(LibraryBindingRoot::Android { tree_uri }) = binding.root else {
+            return Err(BackendError::new(
+                BackendErrorCode::Unsupported,
+                "La biblioteca no tiene un grant SAF Android.",
+                true,
+            ));
+        };
+        open_mobile_library_connection(app, tree_uri.as_str()).map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::ProviderUnavailable,
+                "El adaptador SAF de la biblioteca no está disponible. Volvé a seleccionar la biblioteca.",
+                true,
+            )
+        })?
+    };
+
+    #[cfg(target_os = "ios")]
+    {
+        let _ = (app, binding, library_user_id);
+        return Err(BackendError::new(
+            BackendErrorCode::Unsupported,
+            "La autorización backend no está disponible en iOS.",
+            false,
+        ));
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    {
+    let user = connection
+        .query_row(
+            "SELECT id, role_id FROM library_users WHERE id=?1",
+            params![library_user_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudo verificar la identidad de la biblioteca.",
+                true,
+            )
+        })?
+        .ok_or_else(|| {
+            BackendError::new(
+                BackendErrorCode::Unauthorized,
+                "La identidad de usuario no está autorizada para esta biblioteca.",
+                false,
+            )
+        })?;
+    let mut contexts = Vec::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT context_tag FROM library_user_contexts WHERE user_id=?1 ORDER BY context_tag COLLATE NOCASE",
+        )
+        .map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudieron leer los contextos autorizados.",
+                true,
+            )
+        })?;
+    let rows = statement
+        .query_map(params![user.0], |row| row.get::<_, String>(0))
+        .map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudieron leer los contextos autorizados.",
+                true,
+            )
+        })?;
+    for row in rows {
+        contexts.push(row.map_err(|_| {
+            BackendError::new(
+                BackendErrorCode::Storage,
+                "No se pudieron leer los contextos autorizados.",
+                true,
+            )
+        })?);
+    }
+    Ok(AuthorizationPrincipal {
+        library_id: library_id.to_string(),
+        library_user_id: user.0,
+        allowed_contexts: contexts,
+        all_contexts: user.1 == OWNER_ROLE_ID,
+    })
+    }
 }
 
 fn list_roles(connection: &Connection) -> CommandResult<Vec<LibraryRoleDto>> {
@@ -699,7 +977,9 @@ pub fn unlink_library_user_telegram(
 mod tests {
     use rusqlite::Connection;
 
-    use super::{normalize_name, read_existing_password_hash};
+    use notia_backend_core::BackendErrorCode;
+
+    use super::{authorize_user_in_connection, normalize_name, read_existing_password_hash};
 
     #[test]
     fn names_are_trimmed_and_empty_names_are_rejected() {
@@ -727,5 +1007,28 @@ mod tests {
         assert!(read_existing_password_hash(&transaction, "user-1")
             .expect("password hash")
             .is_none());
+    }
+
+    #[test]
+    fn authorizes_any_existing_library_user_but_rejects_arbitrary_ids() {
+        let connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute(
+                "CREATE TABLE library_users (id TEXT PRIMARY KEY, password_hash TEXT)",
+                [],
+            )
+            .expect("schema");
+        connection
+            .execute(
+                "INSERT INTO library_users (id, password_hash) VALUES ('user-family', 'private-hash')",
+                [],
+            )
+            .expect("user");
+
+        assert!(authorize_user_in_connection(&connection, "user-family").is_ok());
+        let error = authorize_user_in_connection(&connection, "invented-user")
+            .expect_err("arbitrary identity");
+        assert_eq!(error.code, BackendErrorCode::Unauthorized);
+        assert!(!error.message.contains("private-hash"));
     }
 }

@@ -1,22 +1,17 @@
+import { invoke } from '@tauri-apps/api/core'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { getLibraryConfigDir } from './libraryConfig'
+import type { FilesystemOperationResult } from '../files/filesystemEngine'
 import {
-  readTextFile,
-  writeTextFile,
-  createFile,
-  createDirectory,
-  pathExists,
-} from '../files/filesystemEngine'
-import { buildLibraryGraphModel } from '../../engines/graph/libraryGraphEngine'
-import { buildLinkCacheMermaidCode } from '../../engines/graph/linkCacheMermaidEngine'
-import { getIndexedLibraryGraphSourcesByPath } from './librarySearchGraphIndex'
-import { notiaTimer } from '../runtime/notiaLogger'
+  readLibraryFileContent,
+  writeLibraryFileContent,
+  type LibraryDocumentOptions,
+} from './libraryDocumentRuntime'
 import { startPerformanceMeasurement } from '../runtime/performanceBaseline'
-import { isSafTreeUri } from '../../utils/files/safUri'
-import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { NotiaFileNode, NotiaFlatFileEntry } from '../../types/notia'
 
 const LINK_CACHE_FILENAME = 'linkCache.md'
+const LINK_CACHE_LOGICAL_PATH = `.notia/${LINK_CACHE_FILENAME}`
 
 export function buildLibraryLinkCachePath(libraryPath: string): string {
   return `${normalizeFilesystemPath(getLibraryConfigDir(libraryPath))}/${LINK_CACHE_FILENAME}`
@@ -35,82 +30,67 @@ export function isLinkCachePath(filePath: string, libraryPath?: string): boolean
   return true
 }
 
-export interface WriteLibraryLinkCacheOptions {
-  androidDirectoryUri?: string
+export interface WriteLibraryLinkCacheOptions extends Pick<LibraryDocumentOptions, 'androidDirectoryUri' | 'libraryId'> {
+  expectedRevision?: string
 }
 
+export type ReadLibraryLinkCacheOptions = Pick<LibraryDocumentOptions, 'androidDirectoryUri' | 'libraryId'>
+
+function getLibraryLinkCacheDocumentOptions(
+  options?: WriteLibraryLinkCacheOptions | ReadLibraryLinkCacheOptions,
+): LibraryDocumentOptions | undefined {
+  if (typeof options?.libraryId !== 'string' || !options.libraryId.trim()) {
+    return undefined
+  }
+
+  return {
+    libraryId: options.libraryId,
+    logicalPath: LINK_CACHE_LOGICAL_PATH,
+  }
+}
+
+const MISSING_LIBRARY_IDENTITY = 'No se pudo resolver la biblioteca del cache de enlaces.'
+
+/**
+ * Writes `.notia/linkCache.md` through the backend by library identity. The
+ * backend creates the file (and `.notia/`) when missing, on desktop and SAF.
+ */
 export async function writeLibraryLinkCache(
   libraryPath: string,
   mermaidCode: string,
   options?: WriteLibraryLinkCacheOptions,
-): Promise<{ ok: boolean; error?: string }> {
-  const configDir = getLibraryConfigDir(libraryPath)
-  const cachePath = buildLibraryLinkCachePath(libraryPath)
-
-  try {
-    // A hidden `.notia` directory may be omitted from an Android SAF tree
-    // refresh. Create the complete path from the persisted tree grant first;
-    // the native command seeds the exact document URI so the following write
-    // does not depend on that directory appearing in the tree cache.
-    if (isSafTreeUri(androidDirectoryUri)) {
-      const createResult = await createFile(cachePath, mermaidCode, { androidDirectoryUri })
-      if (!createResult.ok) {
-        return createResult
-      }
-      return await writeTextFile(cachePath, mermaidCode, { androidDirectoryUri })
-    }
-
-    const dirExists = await pathExists(configDir, options)
-    if (!dirExists) {
-      const createResult = await createDirectory(configDir, options)
-      if (!createResult.ok) {
-        return { ok: false, error: 'No se pudo crear el directorio .notia.' }
-      }
-    }
-
-    const result = await writeTextFile(cachePath, mermaidCode, options)
-    return result
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : 'No se pudo escribir el cache de enlaces.',
-    }
+): Promise<FilesystemOperationResult> {
+  const documentOptions = getLibraryLinkCacheDocumentOptions(options)
+  if (!documentOptions) {
+    return { ok: false, error: MISSING_LIBRARY_IDENTITY }
   }
-}
-
-export interface ReadLibraryLinkCacheOptions {
-  androidDirectoryUri?: string
+  return writeLibraryFileContent(buildLibraryLinkCachePath(libraryPath), mermaidCode, {
+    ...documentOptions,
+    ...(options?.expectedRevision !== undefined
+      ? { expectedRevision: options.expectedRevision }
+      : { createIfMissing: true }),
+  })
 }
 
 export async function readLibraryLinkCache(
   libraryPath: string,
   options?: ReadLibraryLinkCacheOptions,
 ): Promise<string | null> {
-  const cachePath = buildLibraryLinkCachePath(libraryPath)
-
-  try {
-    const result = await readTextFile(cachePath, options)
-    if (!result.ok) {
-      return null
-    }
-    return result.content
-  } catch {
+  const documentOptions = getLibraryLinkCacheDocumentOptions(options)
+  if (!documentOptions) {
     return null
   }
+  const result = await readLibraryFileContent(buildLibraryLinkCachePath(libraryPath), documentOptions)
+  return result.ok ? result.content : null
 }
 
 export interface RebuildLibraryLinkCacheParams {
   libraryPath: string
+  libraryId?: string
   treeNodes: NotiaFileNode[]
   flatFileList?: NotiaFlatFileEntry[]
   androidDirectoryUri?: string
   signal?: AbortSignal
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    throw new DOMException('La regeneración del cache fue cancelada.', 'AbortError')
-  }
 }
 
 /**
@@ -119,80 +99,26 @@ function throwIfAborted(signal?: AbortSignal): void {
  */
 export async function rebuildLibraryLinkCache(
   params: RebuildLibraryLinkCacheParams,
-): Promise<{ ok: boolean; error?: string }> {
-  const { libraryPath, treeNodes, flatFileList, androidDirectoryUri } = params
-
-  const timer = notiaTimer('libraries', 'rebuildLibraryLinkCache', {
-    nodeCount: treeNodes.length,
-  })
-  const measurement = startPerformanceMeasurement('link_cache.rebuild', {
-    operation: 'rebuild-link-cache',
-    nodeCount: treeNodes.length,
-  })
-
-  try {
-    throwIfAborted(params.signal)
-    const graphSourcesByPath = await getIndexedLibraryGraphSourcesByPath({
-      libraryPath,
-      treeNodes,
-      flatFileList,
-      androidDirectoryUri,
-    })
-    throwIfAborted(params.signal)
-
-    const graphModel = buildLibraryGraphModel(
-      treeNodes,
-      libraryPath,
-      graphSourcesByPath,
-      flatFileList,
-    )
-
-    // Exclude the linkCache.md node itself (it shouldn't appear, but just in case)
-    const filteredModel = filterLinkCacheFromGraphModel(graphModel, libraryPath)
-
-    const { code } = buildLinkCacheMermaidCode(filteredModel, libraryPath)
-    throwIfAborted(params.signal)
-
-    const wrappedCode = `<!-- Notia link cache - auto-generated, do not edit manually -->\n\n\`\`\`mermaid\n${code}\n\`\`\``
-
-    const result = await writeLibraryLinkCache(libraryPath, wrappedCode, { androidDirectoryUri })
-    timer.success({ nodeCount: graphModel.nodes.length, edgeCount: graphModel.edges.length })
-    if (result.ok) {
-      measurement.success({ nodeCount: graphModel.nodes.length, edgeCount: graphModel.edges.length })
-    } else {
-      measurement.error(result.error ?? 'link-cache-write-failed')
-    }
-    return result
-  } catch (error) {
-    if (params.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
-      timer.success({ status: 'canceled' })
-      measurement.cancel({ status: 'canceled' })
-      return { ok: false, error: 'La regeneración del cache fue cancelada.' }
-    }
-    timer.error(error)
-    measurement.error(error)
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : 'Error al regenerar linkCache.',
-    }
+): Promise<FilesystemOperationResult> {
+  if (params.signal?.aborted) {
+    return { ok: false, error: 'La regeneración del cache fue cancelada.' }
   }
-}
-
-function filterLinkCacheFromGraphModel(
-  graphModel: LibraryGraphModel,
-  libraryPath: string,
-): LibraryGraphModel {
-  const cachePath = buildLibraryLinkCachePath(libraryPath)
-
-  const filteredNodes = graphModel.nodes.filter((node) => node.path !== cachePath)
-  const filteredNodePaths = new Set(filteredNodes.map((n) => n.path))
-
-  const filteredEdges = graphModel.edges.filter(
-    (edge) => filteredNodePaths.has(edge.sourcePath) && filteredNodePaths.has(edge.targetPath),
-  )
-
-  return {
-    nodes: filteredNodes,
-    edges: filteredEdges,
+  if (!params.libraryId) {
+    return { ok: false, error: MISSING_LIBRARY_IDENTITY }
+  }
+  const measurement = startPerformanceMeasurement('link_cache.rebuild', { operation: 'rebuild-link-cache' })
+  try {
+    // The backend builds the graph from the inventory and writes the file.
+    await invoke('backend_rebuild_link_cache', { payload: { libraryId: params.libraryId } })
+    measurement.success()
+    return { ok: true }
+  } catch (error) {
+    measurement.error(error instanceof Error ? error : new Error('link-cache-write-failed'))
+    const message = error instanceof Error
+      ? error.message
+      : error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
+        ? (error as { message: string }).message
+        : 'Error al regenerar linkCache.'
+    return { ok: false, error: message }
   }
 }

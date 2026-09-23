@@ -10,7 +10,7 @@ import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { PerformanceProfiler } from './PerformanceProfiler'
 import { MeetingEphemeralChat } from './views/chat/MeetingEphemeralChat'
 import type { ChatFileContextMode } from '../../services/chat/chatAttachmentRuntime'
-import type { ChatAgentScope } from '../../services/chat/chatScopedAgentRuntime'
+import type { ChatAgentScope } from '../../services/chat/chatAgentTypes'
 import type { MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import {
   clampRightPanelWidth,
@@ -38,7 +38,7 @@ interface NotiaRightPanelProps {
   onRightPanelTransientSelectedPathsChange: (paths: string[]) => void
   isAndroidRuntime: boolean
   markdownSelection: MarkdownSelectionContext | null
-  onActiveMarkdownDocumentChanged: (documentPath: string, source: string) => void | Promise<void>
+  onActiveMarkdownDocumentChanged: (documentPath: string, source: string, revision?: string) => void | Promise<void>
 }
 
 function NotiaRightPanelComponent({

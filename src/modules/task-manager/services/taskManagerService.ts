@@ -13,6 +13,7 @@ import {
   appendPomodoroLogEntry,
   deletePomodoroLogEntry,
   readPomodoroLogEntries,
+  toLocalDateText,
   type AppendPomodoroLogEntryInput,
 } from '../engines/pomodoroLogEngine'
 import { buildRebalancedEndDates } from '../engines/scheduleEngine'
@@ -26,14 +27,18 @@ import type {
   TaskItem,
 } from '../types/taskManagerTypes'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
+import { generateUUID } from '../../../utils/uuid'
 import { getBaseName, getBasenameWithoutExtension, getParentDirectory, toAbsoluteVaultPath, toRelativeVaultPath } from '../utils/path'
-import { createMarkdownFile, deleteEntry, directoryExists, ensureFolderPath, moveEntry, readFileContent, readMarkdownFiles, renameEntry, taskManagerPathExists, writeFileContent } from './vaultRuntime'
+import { createMarkdownFile, deleteEntry, directoryExists, ensureFolderPath, getActiveTaskManagerVaultContext, hasTaskManagerBackendIdentity, moveEntry, readFileContent, readMarkdownFiles, renameEntry, taskManagerPathExists, writeFileContent } from './vaultRuntime'
 import { listPendingTaskManagerMutations } from './taskManagerMutationJournal'
 import {
   parseFrontmatterDocument as parseLibraryFrontmatterDocument,
   serializeFrontmatterDocument as serializeLibraryFrontmatterDocument,
   setFrontmatterValue as setLibraryFrontmatterValue,
 } from '../../../engines/markdown/frontmatterEngine'
+import { mapTaskManagerSnapshotTickets, readTaskManagerSnapshot } from './taskManagerSnapshotRuntime'
+import { executeTaskManagerRustMutation } from './taskManagerRustMutationAdapter'
+import { invoke as invokeTauri } from '@tauri-apps/api/core'
 
 const ALTERNATE_TASKS_ROOT_FOLDER = 'task-manager'
 const forcedTasksRootInsideVaultPaths = new Set<string>()
@@ -226,6 +231,7 @@ export function setTaskManagerRuntimeRootPolicy(vaultPath: string | null, option
 }
 
 export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): Promise<void> {
+  if (hasTaskManagerBackendIdentity()) return
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   await runWorkspaceStep('ensure-root-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(TASKS_ROOT_FOLDER)))
@@ -233,6 +239,7 @@ export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): P
   await runWorkspaceStep('ensure-finished-subtasks-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(`${FINISHED_TASKS_FOLDER}/subTasks`)))
   await runWorkspaceStep('ensure-cancelled-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(CANCELLED_TASKS_FOLDER)))
   await runWorkspaceStep('ensure-cancelled-subtasks-folder', () => ensureFolderPath(vaultPath, runtimeRoot.toRuntimeRelativePath(`${CANCELLED_TASKS_FOLDER}/subTasks`)))
+  await runWorkspaceStep('migrate-task-frontmatter-ids', () => ensureTaskFrontmatterIds(vaultPath, runtimeRoot))
 
   const boardNames = Array.from(new Set([DEFAULT_BOARD_NAME, ...boards.map((board) => board.name.trim().toLowerCase())]))
   for (const boardName of boardNames) {
@@ -253,6 +260,7 @@ export async function ensureTaskWorkspace(vaultPath: string, boards: Board[]): P
 }
 
 export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames: string[]): Promise<void> {
+  if (hasTaskManagerBackendIdentity()) return
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const normalizedBoards = Array.from(new Set(boardNames.map((boardName) => normalizeBoardName(boardName))))
@@ -270,7 +278,56 @@ export async function cleanupEmptyWorkspaceBoards(vaultPath: string, boardNames:
   }
 }
 
+/** Tauri rejects with the backend error object; surface its message. */
+async function invoke<T = unknown>(command: string, args: Record<string, unknown>): Promise<T> {
+  try {
+    return await invokeTauri<T>(command, args)
+  } catch (error) {
+    if (error instanceof Error) throw error
+    const message = error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
+      ? (error as { message: string }).message
+      : 'No se pudo completar la operación de Task Manager.'
+    throw new Error(message)
+  }
+}
+
+interface TaskManagerBackendIdentity {
+  libraryId: string
+  libraryUserId: string
+}
+
+function isPublishedTaskManager(): boolean {
+  return typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
+}
+
+/**
+ * Library identity of the active vault. With it, the Rust store is the only
+ * authority for reads and writes; the WebView never touches the workspace
+ * files directly.
+ */
+function getTaskManagerBackendIdentity(): TaskManagerBackendIdentity | null {
+  const activeVault = getActiveTaskManagerVaultContext()
+  const libraryId = activeVault?.libraryId?.trim()
+  const libraryUserId = activeVault?.libraryUserId?.trim()
+  return libraryId && libraryUserId ? { libraryId, libraryUserId } : null
+}
+
 export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskManagerSnapshot> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    const [backendSnapshot, pomodoroEntries] = await Promise.all([
+      readTaskManagerSnapshot(identity),
+      readPomodoroEntries(vaultPath),
+    ])
+    return {
+      documents: backendSnapshot.snapshot.tickets.map((ticket) => ({
+        path: ticket.summary.logicalPath,
+        content: ticket.content,
+      })),
+      tasks: mapTaskManagerSnapshotTickets(backendSnapshot),
+      pomodoroEntries,
+    }
+  }
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
   const absoluteDocuments = await readMarkdownFiles(runtimeRoot.rootPath)
   const relativeDocuments = absoluteDocuments.map((document) => ({
@@ -285,6 +342,28 @@ export async function loadTaskManagerSnapshot(vaultPath: string): Promise<TaskMa
     documents: relativeDocuments,
     tasks,
     pomodoroEntries,
+  }
+}
+
+async function ensureTaskFrontmatterIds(
+  vaultPath: string,
+  runtimeRoot: TaskWorkspaceRuntimeRoot,
+): Promise<void> {
+  const documents = await readMarkdownFiles(runtimeRoot.rootPath)
+  for (const document of documents) {
+    const relativePath = runtimeRoot.toCanonicalRelativePath(toRelativeVaultPath(vaultPath, document.path))
+    if (!isTaskMarkdownFile(relativePath)) {
+      continue
+    }
+
+    const parsed = parseMarkdownFrontmatter(document.content)
+    if (!parsed.frontmatter || parsed.frontmatter.id?.trim()) {
+      continue
+    }
+
+    await updateTaskFrontmatter(vaultPath, relativePath, {
+      id: generateUUID(),
+    })
   }
 }
 
@@ -426,6 +505,12 @@ export async function updateTaskFrontmatter(
   updates: Record<string, unknown>,
   options?: { baseContent?: string },
 ): Promise<void> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    // The backend maps the frontmatter keys, checks revisions and writes.
+    await executeTaskManagerRustMutation({ kind: 'update-fields', taskPath, fields: updates }, identity)
+    return
+  }
   const absolutePath = await resolveTaskManagerRuntimePath(vaultPath, taskPath)
   const snapshotRevision = options?.baseContent !== undefined
     && typeof window !== 'undefined'
@@ -571,6 +656,7 @@ export async function syncTaskIndexesAndMetadata(
   boardNamesInput: string[],
   boardConfigsInput: Board[] = [],
 ): Promise<void> {
+  if (hasTaskManagerBackendIdentity()) return
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
   const snapshot = await loadTaskManagerSnapshot(vaultPath)
   const documentsByPath = new Map(snapshot.documents.map((document) => [document.path, document.content]))
@@ -677,6 +763,16 @@ export async function syncTaskIndexesAndMetadata(
 }
 
 export async function appendPomodoroEntry(vaultPath: string, input: AppendPomodoroLogEntryInput): Promise<void> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    const { timestampMs, ...entry } = input
+    const at = new Date(timestampMs)
+    const localTime = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+    await invoke('task_manager_append_pomodoro', {
+      payload: { context: identity, localDate: toLocalDateText(at), localTime, entry },
+    })
+    return
+  }
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   await ensurePomodoroLogFile(runtimeRoot)
@@ -695,6 +791,10 @@ export async function appendPomodoroEntry(vaultPath: string, input: AppendPomodo
 }
 
 export async function readPomodoroEntries(vaultPath: string): Promise<PomodoroLogEntry[]> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    return invoke<PomodoroLogEntry[]>('task_manager_pomodoro_entries', { payload: identity })
+  }
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   await ensurePomodoroLogFile(runtimeRoot)
@@ -708,6 +808,13 @@ export async function readPomodoroEntries(vaultPath: string): Promise<PomodoroLo
 }
 
 export async function deletePomodoroEntry(vaultPath: string, entryId: string): Promise<boolean> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    if (isPublishedTaskManager()) return false
+    return invoke<boolean>('task_manager_delete_pomodoro', {
+      payload: { context: identity, entryId },
+    })
+  }
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   await ensurePomodoroLogFile(runtimeRoot)
@@ -758,6 +865,7 @@ export async function reconcileBoardMarkdownContext(
   boardName: string,
   contexto: string,
 ): Promise<void> {
+  if (hasTaskManagerBackendIdentity()) return
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
   const boardPath = runtimeRoot.toAbsolutePath(getBoardFolder(normalizeBoardName(boardName)))
   const documents = await readMarkdownFiles(boardPath)
@@ -1008,6 +1116,12 @@ export async function readTaskMarkdownSourceWithRevision(
   vaultPath: string,
   taskPath: string,
 ): Promise<{ content: string; revision?: string }> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    return invoke<{ content: string; revision: string }>('task_manager_read_ticket_source', {
+      payload: { context: identity, logicalPath: taskPath },
+    })
+  }
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const absolutePath = runtimeRoot.toAbsolutePath(taskPath)
@@ -1025,6 +1139,16 @@ export async function writeTaskMarkdownSource(
   content: string,
   expectedRevision?: string,
 ): Promise<void> {
+  const identity = getTaskManagerBackendIdentity()
+  if (identity) {
+    if (!expectedRevision) {
+      throw new Error('La tarea cambió en otra sesión. Recargá el ticket antes de guardar.')
+    }
+    await invoke('task_manager_write_ticket_source', {
+      payload: { context: identity, logicalPath: taskPath, content, expectedRevision },
+    })
+    return
+  }
   const runtimeRoot = await resolveTaskWorkspaceRuntimeRoot(vaultPath)
 
   const absolutePath = runtimeRoot.toAbsolutePath(taskPath)

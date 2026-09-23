@@ -10,6 +10,8 @@ import {
 } from '../services/taskManagerPublicationClient'
 
 export interface PublishedTaskManagerBootstrap {
+  libraryId: string
+  libraryUserId: string
   vaultPath: string
   taskRootAtVault?: boolean
   taskRootFolder?: 'task-mannager' | 'task-manager'
@@ -41,7 +43,7 @@ export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: Pu
       {isTerminal ? <div className="notia-publication-terminal" role="alert"><span>{statusLabel}. Volvé a iniciar sesión para solicitar acceso nuevamente.</span><button type="button" onClick={() => window.location.assign(window.location.pathname.replace(/\/app\/?$/, '') || '/')}>Volver a iniciar sesión</button></div> : null}
       <div className="notia-workspace notia-published-workspace">
         <div className="notia-published-task-content">
-          <TaskManagerApp embedded vault={{ path: bootstrapData.vaultPath }} publishedBoardNames={bootstrapData.settings.boards.map((board) => board.name)} canManageBoards={false} onPublishedChatContextChange={setChatContext} />
+          <TaskManagerApp embedded vault={{ path: bootstrapData.vaultPath, libraryId: bootstrapData.libraryId, libraryUserId: bootstrapData.libraryUserId }} publishedBoardNames={bootstrapData.settings.boards.map((board) => board.name)} canManageBoards={false} onPublishedChatContextChange={setChatContext} />
         </div>
         <aside className={`notia-right-panel ${isChatOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`} aria-hidden={!isChatOpen}>
           {isChatOpen ? <PublishedTaskManagerChat taskManagerScopeKey={chatContext?.scopeKey ?? null} scopePaths={chatContext?.filePaths ?? []} /> : null}

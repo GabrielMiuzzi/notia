@@ -2,7 +2,11 @@ import { parseFrontmatterDocument } from '../../engines/markdown/frontmatterEngi
 import { join } from '../../utils/files/pathUtils'
 import type { NotiaLibrary } from '../../types/notia'
 import { readLibraryDirectory } from '../libraries/libraryRuntime'
-import { readTextFile } from '../files/filesystemEngine'
+import {
+  readLibraryFileContent,
+  resolveLibraryDocumentLogicalPath,
+  type LibraryDocumentOptions,
+} from '../libraries/libraryDocumentRuntime'
 import { ensureAgentPromptFile, loadAgentPrompt, listAgentPrompts } from '../ai/agentPromptRuntime'
 import type { AgentPromptOption } from '../ai/agentPromptRuntime'
 import type { MultichatAgent, MultichatDynamic } from '../../types/multichat'
@@ -35,6 +39,20 @@ function filePath(directory: string, name: string): string {
   return join(directory, name)
 }
 
+function getMultichatDocumentOptions(library: NotiaLibrary, targetPath: string): LibraryDocumentOptions {
+  const options: LibraryDocumentOptions = {
+    androidDirectoryUri: library.androidTreeUri,
+  }
+  if (typeof library.id !== 'string' || !library.id.trim()) return options
+
+  const logicalPath = resolveLibraryDocumentLogicalPath(library.path, targetPath)
+  if (logicalPath) {
+    options.libraryId = library.id
+    options.logicalPath = logicalPath
+  }
+  return options
+}
+
 export async function ensureMultichatDynamicsDirectory(library: NotiaLibrary): Promise<void> {
   // The existing agent initializer creates the parent and the dynamics folder
   // idempotently, while preserving every user-created Markdown file.
@@ -48,7 +66,8 @@ export async function listMultichatDynamics(library: NotiaLibrary): Promise<Mult
   const files = entries
     .filter((entry) => entry.type === 'file' && isValidMultichatMarkdownFileName(entry.name))
   return Promise.all(files.map(async (entry) => {
-    const result = await readTextFile(filePath(directory, entry.name), { androidDirectoryUri: library.androidTreeUri })
+    const targetPath = filePath(directory, entry.name)
+    const result = await readLibraryFileContent(targetPath, getMultichatDocumentOptions(library, targetPath))
     return {
       fileName: entry.name,
       name: entry.name.replace(/\.md$/i, ''),
@@ -60,7 +79,8 @@ export async function listMultichatDynamics(library: NotiaLibrary): Promise<Mult
 export async function loadMultichatDynamic(library: NotiaLibrary, fileName: string): Promise<MultichatDynamic> {
   if (!isValidMultichatMarkdownFileName(fileName)) throw new Error('La dinámica seleccionada no es válida.')
   await ensureMultichatDynamicsDirectory(library)
-  const result = await readTextFile(filePath(resolveMultichatDynamicsPath(library.path), fileName), { androidDirectoryUri: library.androidTreeUri })
+  const targetPath = filePath(resolveMultichatDynamicsPath(library.path), fileName)
+  const result = await readLibraryFileContent(targetPath, getMultichatDocumentOptions(library, targetPath))
   if (!result.ok) throw new Error('No se pudo leer la dinámica seleccionada.')
   const content = stripMultichatFrontmatter(result.content)
   if (!content) throw new Error('La dinámica seleccionada está vacía.')
@@ -74,9 +94,10 @@ export async function listMultichatAgentPrompts(library: NotiaLibrary): Promise<
 export async function loadMultichatAgent(library: NotiaLibrary, fileName: string, index: number): Promise<MultichatAgent> {
   if (!isValidMultichatMarkdownFileName(fileName)) throw new Error('El prompt seleccionado no es válido.')
   await ensureAgentPromptFile(library)
+  const targetPath = filePath(resolveMultichatPromptsPath(library.path), fileName)
   const promptResult = fileName.toLocaleLowerCase() === 'default.md'
     ? { ok: true as const, content: await loadAgentPrompt(library, fileName) }
-    : await readTextFile(filePath(resolveMultichatPromptsPath(library.path), fileName), { androidDirectoryUri: library.androidTreeUri })
+    : await readLibraryFileContent(targetPath, getMultichatDocumentOptions(library, targetPath))
   if (!promptResult.ok) throw new Error('No se pudo leer el prompt seleccionado.')
   const prompt = stripMultichatFrontmatter(promptResult.content)
   if (!prompt) throw new Error('El prompt seleccionado está vacío.')

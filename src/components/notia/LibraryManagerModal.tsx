@@ -36,8 +36,9 @@ export function LibraryManagerModal({
     setAddErrorMessage(null)
     setIsAdding(true)
     setAddPhase('picker')
+    const newLibraryId = generateUUID()
     try {
-      const selection = await pickLibraryDirectory()
+      const selection = await pickLibraryDirectory(newLibraryId)
       if (!selection) {
         setAddPhase(null)
         return
@@ -52,12 +53,10 @@ export function LibraryManagerModal({
       } else {
         console.info('[notia:saf] library config context', { androidTreeUriPresent: false })
       }
-      await ensureLibraryConfigExists(selection.path, {
-        androidDirectoryUri: selection.androidTreeUri,
-      })
+      await ensureLibraryConfigExists(newLibraryId)
       
       const newLibrary: NotiaLibrary = {
-        id: generateUUID(),
+        id: newLibraryId,
         name: selection.name,
         path: selection.path,
         androidTreeUri: selection.androidTreeUri,

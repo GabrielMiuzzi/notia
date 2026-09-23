@@ -8,7 +8,7 @@ import type {
   ChatFileContextMode,
   ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
-import type { ChatAgentScope, TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import type { ChatAgentScope, TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import type { MarkdownSelectionContext } from '../../../../types/views/markdownSelection'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview, WorkspaceAiSnapshot } from '../../../../types/ai/agentContracts'
 
@@ -45,7 +45,7 @@ export interface ChatWorkspaceViewProps {
   onChatDeleted?: (filePath: string) => void | Promise<void>
   markdownSelection?: MarkdownSelectionContext | null
   activeMarkdownSource?: string | null
-  onActiveMarkdownDocumentChanged?: (documentPath: string, source: string) => void | Promise<void>
+  onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
 }
 
 export interface SelectedImageAttachment {
@@ -147,7 +147,6 @@ export interface UseChatSubmitMessageDependencies {
   agentPromptFileName: string
   requestAgentClarification: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestAgentConfirmation: (question: string, signal: AbortSignal, preview?: MutationPreview) => Promise<boolean | AgentConfirmationDecision>
-  agentExecutionPlan: TaskExecutionStep[]
   onAgentExecutionPlanChange: (steps: TaskExecutionStep[]) => void
   onAgentProgress?: (event: AgentProgressEvent) => void
   requestAgentExecutionPlanApproval: (
@@ -173,7 +172,7 @@ export interface UseChatSubmitMessageDependencies {
   markdownSelection: MarkdownSelectionContext | null
   activeMarkdownSource: string | null
   workspaceSnapshot: WorkspaceAiSnapshot | null
-  onActiveMarkdownDocumentChanged?: (documentPath: string, source: string) => void | Promise<void>
+  onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
   onChatCreated?: (filePath: string) => void | Promise<void>
   /** Registers a tap-to-mount window so a phantom native click cannot close a modal right after it opened. */
   beginPhantomClickSuppression?: (element: Element | null) => void

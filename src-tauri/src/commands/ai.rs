@@ -5,7 +5,6 @@ use tauri::Emitter;
 use crate::services::ai_service::AiHttpSettings;
 use crate::services::ai_service::{
     AiChatMessage, AiChatResult, AiHealthResult, AiModelDetailsResult, AiModelListResult,
-    AiWebSearchResponse,
 };
 
 #[derive(Debug, Deserialize)]
@@ -43,21 +42,6 @@ pub struct RunDesktopAiChatStreamingPayload {
     messages: Vec<AiChatMessage>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunDesktopAiToolChatPayload {
-    ollama_url: String,
-    #[serde(default)]
-    api_key: String,
-    model: String,
-    #[serde(default)]
-    think: serde_json::Value,
-    messages: serde_json::Value,
-    tools: serde_json::Value,
-    #[serde(default)]
-    timeout_seconds: Option<u64>,
-}
-
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DesktopAiStreamEventPayload {
@@ -89,21 +73,6 @@ pub struct InspectDesktopAiModelPayload {
     #[serde(default)]
     api_key: String,
     model: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunDesktopAiWebSearchPayload {
-    ollama_url: String,
-    #[serde(default)]
-    api_key: String,
-    query: String,
-    #[serde(default = "default_web_search_max_results")]
-    max_results: u32,
-}
-
-fn default_web_search_max_results() -> u32 {
-    5
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -160,41 +129,6 @@ pub async fn run_desktop_ai_chat(payload: RunDesktopAiChatPayload) -> Result<AiC
         } = payload;
         let _ = (ollama_url, api_key, model, think, messages);
         Err("El chat AI de desktop no esta disponible en esta plataforma.".to_string())
-    }
-}
-
-#[tauri::command]
-pub async fn run_desktop_ai_tool_chat(
-    payload: RunDesktopAiToolChatPayload,
-) -> Result<serde_json::Value, String> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let timeout_seconds = payload.timeout_seconds.unwrap_or(600);
-        if !(1..=600).contains(&timeout_seconds) {
-            return Err(
-                "El tiempo de espera de herramientas debe estar entre 1 y 600 segundos."
-                    .to_string(),
-            );
-        }
-        let settings = build_ai_settings(payload.ollama_url, payload.api_key);
-        return crate::services::ai_service::run_ollama_tool_chat(
-            &settings,
-            &payload.model,
-            &payload.messages,
-            &payload.tools,
-            &payload.think,
-            timeout_seconds,
-        )
-        .await;
-    }
-
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        let _ = payload;
-        Err(
-            "El chat con herramientas de desktop no esta disponible en esta plataforma."
-                .to_string(),
-        )
     }
 }
 
@@ -289,35 +223,12 @@ pub async fn inspect_desktop_ai_model(
     }
 }
 
-#[tauri::command]
-pub async fn run_desktop_ai_web_search(
-    payload: RunDesktopAiWebSearchPayload,
-) -> Result<AiWebSearchResponse, String> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let settings = build_ai_settings(payload.ollama_url, payload.api_key);
-        return crate::services::ai_service::search_ollama_web(
-            &settings,
-            &payload.query,
-            payload.max_results,
-        )
-        .await;
-    }
-
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        let _ = payload;
-        Err("La busqueda web nativa de desktop no esta disponible en esta plataforma.".to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         CheckDesktopAiHealthPayload, DesktopAiStreamEvent, DesktopAiStreamEventPayload,
         InspectDesktopAiModelPayload, ListDesktopAiModelsPayload, RunDesktopAiChatPayload,
-        RunDesktopAiChatStreamingPayload, RunDesktopAiToolChatPayload,
-        RunDesktopAiWebSearchPayload,
+        RunDesktopAiChatStreamingPayload,
     };
 
     #[test]
@@ -363,34 +274,6 @@ mod tests {
         assert!(models.api_key.is_empty());
         assert_eq!(inspect.model, "qwen3:test");
         assert_eq!(chat.model, "qwen3:test");
-    }
-
-    #[test]
-    fn desktop_tool_fixture_keeps_optional_timeout_and_json_fields() {
-        let payload: RunDesktopAiToolChatPayload = serde_json::from_value(serde_json::json!({
-            "ollamaUrl": "https://ollama.com",
-            "model": "qwen3:test",
-            "messages": [{"role": "user", "content": "hola"}],
-            "tools": [],
-            "timeoutSeconds": 90,
-        }))
-        .expect("tool payload should deserialize");
-
-        assert_eq!(payload.timeout_seconds, Some(90));
-        assert!(payload.messages.is_array());
-        assert!(payload.tools.is_array());
-    }
-
-    #[test]
-    fn desktop_web_search_fixture_defaults_and_clamps_at_service_boundary() {
-        let payload: RunDesktopAiWebSearchPayload = serde_json::from_value(serde_json::json!({
-            "ollamaUrl": "https://ollama.com",
-            "query": "public Rust release notes",
-        }))
-        .expect("web search payload should deserialize");
-
-        assert_eq!(payload.max_results, 5);
-        assert_eq!(payload.query, "public Rust release notes");
     }
 
     #[test]

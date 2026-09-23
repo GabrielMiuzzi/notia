@@ -15,4 +15,8 @@ pub struct ColdPassBluetoothState {
     #[cfg(target_os = "linux")]
     pub gatt_connection:
         Mutex<Option<crate::services::bluetooth_service::LinuxColdPassGattConnection>>,
+    /// Passkey of the authenticated application channel; it encrypts the
+    /// following messages and never reaches the interface.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub session_passkey: Mutex<Option<String>>,
 }

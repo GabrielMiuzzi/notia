@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   getLibraryInventoryGeneration,
   loadLibraryInventoryFileEntries,
-  syncLibraryInventoryFromFlatFiles,
+  reindexLibrary,
 } from './libraryInventoryRuntime'
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -15,74 +15,34 @@ describe('libraryInventoryRuntime', () => {
     vi.mocked(invoke).mockReset()
   })
 
-  it('uploads the complete inventory in bounded batches', async () => {
-    vi.mocked(invoke).mockImplementation(async (command, args) => {
-      if (command === 'upsert_library_inventory_batch') {
-        const payload = (args as { payload: { entries: unknown[] } }).payload
-        return { ok: true, entries: [], upserted: payload.entries.length, generation: 3 }
-      }
-      return { ok: true, entries: [], upserted: 0, generation: 3 }
-    })
-    const files = Array.from({ length: 501 }, (_, index) => ({
-      path: `/library/${index}.md`,
-      type: 'file' as const,
-      name: `${index}.md`,
-    }))
+  it('asks the backend to reindex by library identity without sending entries', async () => {
+    vi.mocked(invoke).mockResolvedValue({ ok: true, indexed: 3, generation: 2 })
 
-    const result = await syncLibraryInventoryFromFlatFiles({ libraryPath: '/library', generation: 3 }, files)
+    await expect(reindexLibrary('library-1')).resolves.toMatchObject({ ok: true, indexed: 3 })
 
-    expect(result).toMatchObject({ ok: true, upserted: 501 })
-    expect(invoke).toHaveBeenCalledTimes(4)
-    expect(vi.mocked(invoke).mock.calls[1]?.[1]).toMatchObject({ payload: { entries: expect.any(Array) } })
-    expect((vi.mocked(invoke).mock.calls[1]?.[1] as { payload: { entries: unknown[] } }).payload.entries).toHaveLength(500)
-    expect(vi.mocked(invoke).mock.calls[3]?.[0]).toBe('commit_library_inventory_snapshot')
+    expect(invoke).toHaveBeenCalledWith('backend_reindex_library', { payload: { libraryId: 'library-1' } })
   })
 
-  it('commits an empty snapshot so deleted files are removed', async () => {
-    vi.mocked(invoke).mockResolvedValue({ ok: true, entries: [], upserted: 0, generation: 3 })
+  it('shares one backend run between concurrent requests for the same library', async () => {
+    let resolveRun: ((value: unknown) => void) | undefined
+    vi.mocked(invoke).mockReturnValue(new Promise((resolve) => { resolveRun = resolve }))
 
-    const result = await syncLibraryInventoryFromFlatFiles({ libraryPath: '/library', generation: 3 }, [])
+    const first = reindexLibrary('library-1')
+    const second = reindexLibrary('library-1')
+    resolveRun?.({ ok: true, indexed: 0, generation: 1 })
 
-    expect(result).toMatchObject({ ok: true, upserted: 0 })
-    expect(invoke).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual([
-      'begin_library_inventory_snapshot',
-      'commit_library_inventory_snapshot',
-    ])
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    expect(invoke).toHaveBeenCalledTimes(1)
   })
 
-  it('does not start a snapshot after cancellation', async () => {
+  it('stops waiting when the caller cancels', async () => {
+    vi.mocked(invoke).mockReturnValue(new Promise(() => {}))
     const controller = new AbortController()
+
+    const request = reindexLibrary('library-2', controller.signal)
     controller.abort()
 
-    await expect(syncLibraryInventoryFromFlatFiles({ libraryPath: '/cancelled-library', generation: 0 }, [], controller.signal))
-      .rejects.toMatchObject({ name: 'AbortError' })
-    expect(invoke).not.toHaveBeenCalled()
-  })
-
-  it('deduplicates concurrent snapshots for the same library generation', async () => {
-    vi.mocked(invoke).mockImplementation(async (command, args) => {
-      if (command === 'upsert_library_inventory_batch') {
-        const payload = (args as { payload: { entries: unknown[] } }).payload
-        return { ok: true, entries: [], upserted: payload.entries.length, generation: 4 }
-      }
-      return { ok: true, entries: [], upserted: 0, generation: 4 }
-    })
-    const context = { libraryPath: '/deduplicated-library', generation: 4 }
-    const files = [{ path: '/deduplicated-library/note.md', type: 'file' as const, name: 'note.md' }]
-
-    const [first, second] = await Promise.all([
-      syncLibraryInventoryFromFlatFiles(context, files),
-      syncLibraryInventoryFromFlatFiles(context, files),
-    ])
-
-    expect(first.ok).toBe(true)
-    expect(second.ok).toBe(true)
-    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual([
-      'begin_library_inventory_snapshot',
-      'upsert_library_inventory_batch',
-      'commit_library_inventory_snapshot',
-    ])
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('loads persistent inventory pages without exposing a full response to each call', async () => {

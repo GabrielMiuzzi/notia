@@ -3,7 +3,7 @@ import { Bot, Send, User2, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import { runMeetingEphemeralChatReply } from '../../../../services/chat/meetingEphemeralChatRuntime'
-import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import {
   getMeetingTranscriptContext,
   subscribeMeetingTranscriptContext,

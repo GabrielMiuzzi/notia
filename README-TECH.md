@@ -2,6 +2,136 @@
 
 > **Corrección vigente:** Las mutaciones financieras iniciadas en Telegram **NO se auto-confirman**. Requieren una única confirmación visible por mutación, persistencia y verificación nativa antes de informar éxito; Telegram no muestra una segunda confirmación reforzada.
 
+## Regla técnica vigente: Rust como única capa de aplicación
+
+`CLAUDE.md` establece como frontera obligatoria que toda lógica de aplicación reside en Rust: dominio, casos de uso, validaciones autoritativas, autorización, coordinación, persistencia, filesystem, integraciones y decisiones de plataforma. React queda limitado a renderizar, capturar interacciones, mantener estado efímero de presentación y llamar contratos tipados del backend. Toda operación que consulte, derive o modifique estado debe recibir del frontend una intención y sus datos mediante un contrato Rust explícito, y devolver datos, progreso o errores que la UI se limita a representar.
+
+Hooks, servicios y stores TypeScript pueden coordinar únicamente comportamiento visual —por ejemplo, modales, selección, foco, carga y presentación de errores—. No deben contener reglas de negocio, validaciones autoritativas, transformaciones de dominio, acceso directo a persistencia o filesystem, coordinación funcional ni fallbacks que decidan resultados. Las validaciones visuales no sustituyen las de Rust. Al modificar un flujo existente, cualquier lógica funcional detectada en React o TypeScript debe migrarse a Rust; las excepciones admisibles son locales y puramente visuales, sin efecto sobre datos, permisos ni resultados.
+
+Este cambio define la arquitectura exigida para el desarrollo, pero no migró código ni modificó comandos, DTO, persistencia, validaciones de ejecución o política de errores. Las secciones de este documento que describen lógica o fallbacks funcionales TypeScript continúan registrando el estado real heredado y señalan deuda técnica frente a esta frontera; no implican una excepción autorizada ni permiten afirmar que la migración completa ya terminó.
+
+### Validación y pendientes
+
+- Se leyó y revisó el bloque «Frontera obligatoria entre Rust y React» agregado a `CLAUDE.md`.
+- `git diff --no-index --check -- NUL CLAUDE.md`: aprobado; únicamente informó el warning de conversión LF/CRLF.
+- No se ejecutaron tests ni builds porque la intervención solo cambia reglas y documentación.
+- Queda pendiente migrar y validar cada flujo heredado que aún conserve lógica funcional en React o TypeScript; cada migración deberá cubrir sus contratos Rust, errores, límites y regresiones en Windows y Android. No se verificó en esta iteración que el runtime completo funcione sin React/WebView ni que se hayan eliminado todos los fallbacks funcionales del frontend.
+
+## Estado sincronizado de esta iteración: validación separada de títulos visibles en Task Manager
+
+`src-tauri/backend-core/src/task_manager_tools.rs` separa ahora la validación de texto visible de la validación de nombres de rutas. `validate_title` exige un título no vacío, dentro de `MAX_TASK_TITLE_CHARS` y sin caracteres de control, pero permite `/` y `\`. `validate_name` conserva el rechazo de separadores para nombres que pueden convertirse en entradas del filesystem, como tableros y grupos; los validadores de IDs y rutas mantienen sus propios límites y no aceptan separadores ni traversal.
+
+La separación se aplica en la creación y actualización de tickets, duplicados, subtareas y la validación de summaries leídos desde snapshots. El flujo de lectura puede rehidratar y devolver un ticket cuyo título visible contiene separadores sin interpretarlos como parte de `logical_path`; la ruta física continúa validándose con `validate_logical_path`. Los nombres de tablero y grupo siguen usando `validate_name`, por lo que esta corrección no relaja la frontera de filesystem ni cambia el formato persistido.
+
+La regresión `read_snapshot_accepts_display_titles_with_path_separators` crea y lee un ticket con el título `API v2 / Windows\\Android` y comprueba que el texto se conserve en el snapshot. Los errores de título vacío, sobredimensionado o con controles continúan siendo `InvalidInput`; los separadores inválidos en nombres, IDs o rutas siguen produciendo el error de validación correspondiente.
+
+### Validaciones y pendientes
+
+- `cargo test --manifest-path src-tauri/backend-core/Cargo.toml`: 94 tests aprobados.
+- `npx vitest run src/modules/task-manager/services/taskManagerSnapshotRuntime.test.ts src/modules/task-manager/services/taskManagerRustMutationAdapter.test.ts src/modules/task-manager/services/taskManagerAgentMutationService.test.ts`: 16 tests aprobados.
+- `npx tsc --noEmit`: aprobado.
+- `npm run lint`: aprobado.
+- `cargo check --manifest-path src-tauri/Cargo.toml --tests`: aprobado; permanecen warnings preexistentes.
+- `git diff --check`: aprobado.
+
+El chequeo de formato del backend core continúa mostrando diferencias preexistentes en `task_manager_tools.rs`; no se reformateó masivamente el archivo. El checkbox 227 de `tasks.md` permanece pendiente porque todavía faltan la ejecución de las regresiones nativas condicionadas a Windows y las validaciones LAN/E2E de aislamiento, autorización, sesiones, desconexión, reintento y conflictos. No se afirma validación manual nativa ni LAN en esta iteración.
+
+## Estado sincronizado de esta iteración: mutaciones embebidas de Task Manager en desktop
+
+La UI embebida de Task Manager reutiliza `executeTaskManagerAgentMutation`, que a su vez usa `taskManagerRustMutationAdapter` para leer snapshot, solicitar preview, aplicar con `confirmed: true`, validar el receipt, recargar el snapshot y notificar la publicación. El hook no contiene una segunda implementación de esa secuencia.
+
+### Routing y contrato
+
+- `TaskManagerVaultRef` propaga `libraryId` y `libraryUserId`. La aplicación local solo tiene actor Owner por ahora y envía explícitamente `user-owner`; Rust verifica que ese usuario exista en la base de la biblioteca registrada antes de aceptar el intent. No se deriva ni se acepta un identificador arbitrario como autorización.
+- Crear/editar tickets, estado, prioridad, horas, urgencia, comentarios, eliminación, movimiento, tableros, grupos y arreglo emiten `TaskManagerAgentMutation` en desktop cuando el vault tiene ambas identidades. La eliminación usa `delete-ticket`; los campos avanzados usan la actualización tipada del backend y el arreglo emite una actualización por ticket para conservar órdenes distintos.
+- Cada operación pasa por el journal y el lote de publicación de `executeTaskManagerAgentMutation`. Después del receipt, la UI fuerza una recarga completa y conserva sus estados de carga, error, conflicto y recuperación.
+- Si falta `libraryId` o `libraryUserId`, el hook usa explícitamente el flujo TypeScript existente (`runSync`), con sus journals, sincronización y publicación. Android también conserva ese fallback por SAF. La superficie publicada nunca entra en el adaptador Rust ni importa `invoke`; usa exclusivamente el cliente de publicación.
+- El DTO Rust valida además fechas, horas, orden, padre, grupos, eliminación y actualización de grupos dentro de la biblioteca y del alcance autorizado. Preview y apply deben coincidir en biblioteca, usuario, operación y clave de idempotencia.
+
+### Regresiones y validaciones
+
+`taskManagerAgentMutationService.test.ts` cubre backend identificado, fallback sin identidad, Android, published y la expectativa de que el ID Owner sea validado por Rust. `taskManagerRustMutationAdapter.test.ts` cubre el mapeo de las mutaciones de la UI, campos avanzados, preview/apply y receipt. No se modificó `tasks.md` ni se marcaron tareas documentales.
+
+Validaciones ejecutadas en esta iteración:
+
+- `npm test -- --run`: 138 archivos y 776 tests aprobados.
+- `npx tsc --noEmit`: aprobado.
+- `npm run lint`: aprobado.
+- `cargo check --manifest-path src-tauri/backend-core/Cargo.toml`: aprobado.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: aprobado; permanecen warnings preexistentes.
+- `cargo test --manifest-path src-tauri/backend-core/Cargo.toml`: 93 tests aprobados.
+- `git diff --check`: aprobado; Git solo informó advertencias de conversión LF/CRLF.
+
+No se ejecutó una prueba manual en Windows ni en un dispositivo Android; tampoco se ejecutó build Android o release. La validación de SAF, suspensión y permisos revocados queda pendiente.
+
+## Estado sincronizado de esta iteración: lectura ampliada y previews seguros de imágenes de chats Markdown
+
+El límite de lectura de documentos quedó separado del límite de escritura y mutación en el core Rust. `MAX_DOCUMENT_CHARS` continúa en `500_000` caracteres para altas, previews y escrituras de documentos; `MAX_READ_DOCUMENT_CHARS` fija en `16 * 1024 * 1024` caracteres el máximo de una lectura. `src-tauri/backend-core/src/lib.rs` reexporta ambas constantes y `src-tauri/src/library_document_adapter.rs` aplica exclusivamente el segundo límite al contenido que abre desde la biblioteca. Esto permite abrir chats Markdown cuyo marcador oculto de adjuntos contiene imágenes codificadas y supera el límite de mutación, sin convertir ese límite ampliado en permiso para escribir documentos más grandes.
+
+### Flujo y contrato
+
+1. `loadChatDocument` obtiene el archivo mediante `readLibraryFileContent`; el adaptador de lectura verifica que sea Markdown, lo lee desde la biblioteca autorizada y rechaza el contenido que supera `MAX_READ_DOCUMENT_CHARS` con un `BackendError` `InvalidInput`. La revisión se calcula sobre el contenido leído.
+2. `parseChatDocument` decodifica, cuando existe, el marcador oculto `NOTIA_CHAT_ATTACHMENTS` y conserva la compatibilidad con chats sin marcador o con metadata ilegible. `extractChatImageAttachmentPreviews` recorre los mensajes y las páginas (`base64` y `additionalBase64`) en su orden persistido.
+3. La extracción solo acepta los MIME raster exactos `image/avif`, `image/bmp`, `image/gif`, `image/jpeg`, `image/png` e `image/webp`. Quita un prefijo `data:...;base64,`, elimina espacios y exige una cadena Base64 con forma válida; los payloads inválidos, SVG, texto, PDF y otros MIME se omiten sin insertar una imagen.
+4. El límite predeterminado de la extracción es de 24 previews. `ChatAttachmentImages` usa ese valor y crea elementos `<img>` con `data:` URLs, texto alternativo y, cuando corresponde, número de página. `LargeMarkdownView` lo muestra en la tarjeta de documento grande y `MarkdownView` lo muestra encima de las propiedades y del editor Milkdown.
+
+```mermaid
+flowchart LR
+    Chat[Chat Markdown persistido] --> Read[readLibraryFileContent]
+    Read --> Bound{¿Hasta 16 MiB de caracteres?}
+    Bound -->|No| Error[InvalidInput; no abrir]
+    Bound -->|Sí| Parse[parseChatDocument]
+    Parse --> Marker[Marcadores ocultos de adjuntos]
+    Marker --> Filter[MIME raster + Base64 válido]
+    Filter --> Limit[Hasta 24 previews en la UI]
+    Limit --> Views[LargeMarkdownView y MarkdownView]
+```
+
+### Límites, seguridad, errores y compatibilidad
+
+- El límite ampliado se mide con `chars().count()`; no es un límite de bytes. Es el límite aceptado por la fachada de lectura, pero `ensure_content_bound` se ejecuta después de `read_locator`; un archivo todavía mayor puede llegar a materializarse antes de ser rechazado. No se materializa un corpus completo, aunque queda pendiente un límite de lectura previo o streaming si se necesita contener también esa asignación transitoria.
+- `MAX_DOCUMENT_CHARS` permanece vigente para `InMemoryLibrary::add_document`, previews de reemplazo y `write_atomic`, así como para los adaptadores de mutación. Si una edición o guardado genera más de 500.000 caracteres, se rechaza con el error seguro de documento sobredimensionado; leerlo no autoriza a mutarlo.
+- La extracción no registra ni envía el Base64 a servicios externos. La lista cerrada de MIME impide que SVG u otros payloads se interpreten como contenido renderizable, y el filtrado sintáctico de Base64 evita construir una URL para valores vacíos o con caracteres no permitidos. Un adjunto rechazado no invalida el resto de la conversación: simplemente no obtiene preview.
+- El marcador de adjuntos continúa siendo un comentario HTML oculto con metadata JSON UTF-8 codificada en Base64. No hay migración de SQLite ni cambio de contrato para chats anteriores; los chats sin marcador siguen cargándose y la metadata que no se puede decodificar se ignora conservando el texto.
+- Si el archivo supera el límite de lectura, la fachada devuelve `InvalidInput` con el mensaje técnico seguro `El documento supera el limite de tamano.`. Si falla la lectura de la biblioteca, se conserva el error recuperable del adaptador y no se intenta usar otra ruta o URI como fallback.
+
+### Regresiones, validaciones y pendientes
+
+`src/services/chat/chatDocumentStorage.test.ts` cubre la extracción de una imagen raster, la exclusión de texto y SVG y la preservación del marcador oculto. La regresión de `src-tauri/src/library_document_adapter.rs` acepta un Markdown por encima de 500.000 caracteres para lectura y rechaza uno por encima de 16 MiB. No se agregó una prueba manual del renderizado de la UI ni de un dispositivo Android; tampoco se midió un baseline nuevo de memoria o tiempo.
+
+Validaciones ejecutadas en esta iteración:
+
+- `npx vitest run src/services/chat/chatDocumentStorage.test.ts src/engines/markdown/markdownEditorLimits.test.ts`: 9 tests aprobados.
+- `npm test -- --run`: 136 archivos y 762 tests aprobados.
+- `npx tsc --noEmit`.
+- `npm run lint`.
+- `npm run build -- --minify=false`.
+- `cargo test --manifest-path src-tauri/backend-core/Cargo.toml`: 87 tests aprobados.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib library_document_adapter`: compiló, pero la ejecución falló por `STATUS_ENTRYPOINT_NOT_FOUND` del enlazador Windows, ya preexistente.
+- `cargo fmt backend-core --check`: aprobado.
+- `cargo fmt src-tauri --check`: continúa mostrando diferencias preexistentes en `src/lib.rs`, `src/library_registry.rs` y, cuando corresponde, el orden de imports de `library_document_adapter.rs`.
+- `git diff --check`: aprobado; Git mostró advertencias de conversión LF/CRLF.
+
+Queda pendiente la validación manual en la UI de escritorio y Android/WebView, incluida la apertura de chats grandes, el renderizado de las 24 previews, el comportamiento con imágenes corruptas y el guardado posterior de documentos que exceden el límite de mutación. También queda pendiente, si la presión de memoria lo exige, adelantar el rechazo del adaptador antes de materializar un archivo mayor al límite. No se probó un dispositivo Android.
+
+## Estado sincronizado de esta iteración: routing documental del agente por identidad de biblioteca
+
+`chatScopedAgentRuntime.ts` ya no accede directamente al filesystem para leer o escribir documentos Markdown existentes cuando recibe una biblioteca con `id` y una ruta lógica segura. `getLibraryMarkdownDocumentOptions` deriva la ruta relativa bajo la raíz, rechaza rutas externas, traversal, URI y extensiones no Markdown, y conserva `androidTreeUri` únicamente para el fallback del motor de filesystem. Las lecturas y escrituras identificadas pasan por `readLibraryFileContent` y `writeLibraryFileContent` con `libraryId`, `logicalPath` y, cuando la lectura lo entrega, `expectedRevision`.
+
+Las lecturas Markdown usadas por `chatAttachmentRuntime` conservan la revisión nativa para que las mutaciones posteriores puedan aplicar la precondición del documento. Los adjuntos no Markdown, las rutas sin identidad válida y las operaciones genuinamente no documentales continúan usando `filesystemEngine`. La creación de archivos, creación de directorios, eliminación, renombrado y demás operaciones de árbol no fueron redirigidas. Los rollback conservan su orden y comportamiento best-effort existente; las escrituras de rollback no inventan una revisión cuando el resultado previo no expone una nueva revisión.
+
+La regresión de `libraryDocumentRuntime.test.ts` cubre el routing de una nota segura y el rechazo de texto, rutas externas y traversal. `chatScopedAgentRuntime.search.test.ts` verifica que la edición de una nota existente use la identidad de biblioteca y `expectedRevision`, sin enviar la raíz Android ni una URI al backend.
+
+Validaciones ejecutadas en esta iteración:
+
+- `npx vitest run src/services/chat`: 6 archivos, 102 tests aprobados.
+- `npx vitest run src/services/chat/chatScopedAgentRuntime.test.ts src/services/chat/chatScopedAgentRuntime.search.test.ts src/services/chat/chatDocumentStorage.test.ts src/services/libraries/libraryDocumentRuntime.test.ts`: 4 archivos, 94 tests aprobados.
+- `npx tsc --noEmit`: aprobado.
+- `npm run lint`: aprobado.
+- `git diff --check`: aprobado; permanecen únicamente warnings existentes de conversión LF/CRLF.
+
+No se ejecutaron build Android, `cargo check` ni una prueba manual en dispositivo para esta iteración. `README.md` y `FUNCIONALIDADES.md` no requieren cambios porque no cambia una capacidad visible ni su uso.
+
 ## Estado sincronizado de esta iteración: finalización segura del selector SAF Android y timeout de selección
 
 El flujo de alta de bibliotecas Android ahora tiene límites explícitos tanto en el callback nativo del selector como en la espera del frontend. La fuente `src-tauri/resources/directory-picker/android/DirectoryPickerPlugin.kt` y su copia generada `src-tauri/gen/android/app/src/main/java/com/gabriel/notia/DirectoryPickerPlugin.kt` permanecen sincronizadas.

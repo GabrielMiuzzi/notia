@@ -10,6 +10,8 @@ export interface FilesystemOperationResult {
   ok: boolean
   error?: string
   conflict?: FilesystemConflict
+  /** Revision of the content the backend wrote. */
+  revision?: string
 }
 
 export interface FilesystemConflict {
@@ -271,12 +273,14 @@ async function resolveDirectoryFromSelection(selectedPath: string): Promise<stri
   return (await isDirectoryPath(parentPath)) ? parentPath : null
 }
 
-async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | null> {
+async function pickAndroidDirectory(libraryId?: string): Promise<FilesystemPickDirectoryResult | null> {
   let fallbackError: unknown = null
 
   for (const command of ANDROID_PICK_DIRECTORY_COMMANDS) {
     try {
-      const selected = await invoke<unknown>(command)
+      const selected = await (libraryId
+        ? invoke<unknown>(command, { payload: { libraryId } })
+        : invoke<unknown>(command))
       const normalized = normalizeDirectorySelection(selected)
       return normalized
     } catch (error) {
@@ -295,10 +299,10 @@ async function pickAndroidDirectory(): Promise<FilesystemPickDirectoryResult | n
   return null
 }
 
-export async function pickDirectory(title: string): Promise<FilesystemPickDirectoryResult | null> {
+export async function pickDirectory(title: string, libraryId?: string): Promise<FilesystemPickDirectoryResult | null> {
   if (getRuntimeDevice() === 'Android') {
     try {
-      return await pickAndroidDirectory()
+      return await pickAndroidDirectory(libraryId)
     } catch (error) {
       notiaLog('filesystem', 'Android picker error', {
         error: error instanceof Error ? error.message : String(error),
@@ -317,6 +321,10 @@ export async function pickDirectory(title: string): Promise<FilesystemPickDirect
       }
       throw new Error(String(error))
     }
+  }
+
+  if (libraryId) {
+    return invoke<FilesystemPickDirectoryResult | null>('pick_library_directory', { payload: { libraryId } })
   }
 
   let selectedPath: string | string[] | null = null
@@ -346,19 +354,6 @@ export async function pickDirectory(title: string): Promise<FilesystemPickDirect
   }
 
   return { path: resolvedPath }
-}
-
-export async function createWindowsLibraryBackup(libraryPath: string, backupDirectory: string): Promise<FilesystemOperationResult> {
-  if (getRuntimeDevice() !== 'Windows' || !libraryPath.trim() || !backupDirectory.trim()) {
-    return { ok: false, error: 'Los backups solo están disponibles en Windows.' }
-  }
-  try {
-    return await invoke<FilesystemOperationResult>('create_windows_library_backup', {
-      payload: { libraryPath: normalizePath(libraryPath), backupDirectory: normalizePath(backupDirectory) },
-    })
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'No se pudo crear el backup.' }
-  }
 }
 
 export async function pickFile(
@@ -795,28 +790,27 @@ export async function createDirectory(
   }
 }
 
-export async function writeBinaryFile(
-  filePath: string,
-  data: Uint8Array,
-  options?: AndroidFilesystemOptions,
-): Promise<FilesystemOperationResult> {
-  const normalizedPath = normalizePath(filePath)
-  if (!normalizedPath.trim()) {
-    return { ok: false, error: 'Invalid file data.' }
-  }
+/** Library entry mutation addressed by `libraryId` + logical paths; the
+ * backend maps them through the registered library binding. */
+export interface BackendLibraryEntryPayload {
+  libraryId: string
+  action: 'create' | 'delete' | 'rename' | 'paste'
+  logicalPath: string
+  name?: string
+  kind?: FilesystemCreateEntryKind
+  sourceLogicalPath?: string
+  mode?: FilesystemEntryOperationMode
+}
 
+export async function performBackendLibraryEntryOperation(
+  payload: BackendLibraryEntryPayload,
+): Promise<FilesystemOperationResult> {
   try {
-    return await invoke<FilesystemOperationResult>('write_binary_file', {
-      payload: {
-        filePath: normalizedPath,
-        data: Array.from(data),
-        directoryUri: options?.androidDirectoryUri,
-      },
-    })
+    return await invoke<FilesystemOperationResult>('backend_library_entry_operation', { payload })
   } catch (error) {
     return {
       ok: false,
-      error: getSafeErrorMessage(error, 'Could not write file.'),
+      error: getSafeErrorMessage(error, 'Could not perform operation.'),
     }
   }
 }

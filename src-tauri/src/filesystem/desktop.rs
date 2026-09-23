@@ -15,7 +15,7 @@ use super::types::{
     content_revision, FileNode, FilesystemConflict, IsDirectoryPathResult, MarkdownFileDocument,
     OperationResult, PathExistsResult, ReadLibraryFileResult, ReadLibraryTreePayload,
     ReadMarkdownFilesPayload, SearchLibraryFilesPayload, SearchLibraryFilesResult,
-    WriteBinaryFilePayload, WriteLibraryFileResult,
+    WriteLibraryFileResult,
 };
 
 pub(crate) fn read_library_tree(payload: ReadLibraryTreePayload) -> Vec<FileNode> {
@@ -118,6 +118,7 @@ pub(crate) fn write_library_file(
             .map(|current| content_revision(&current));
         if current_revision.as_deref() != Some(expected_revision) {
             return WriteLibraryFileResult {
+                revision: None,
                 ok: false,
                 error: Some("CONFLICT: el archivo cambió desde la última lectura.".to_string()),
                 conflict: Some(FilesystemConflict {
@@ -155,11 +156,13 @@ pub(crate) fn write_library_file(
 
     match result {
         Ok(()) => WriteLibraryFileResult {
+            revision: None,
             ok: true,
             error: None,
             conflict: None,
         },
         Err(_) => WriteLibraryFileResult {
+            revision: None,
             ok: false,
             error: Some("Could not write file atomically.".to_string()),
             conflict: None,
@@ -303,19 +306,6 @@ pub(crate) fn path_exists(path: &str) -> PathExistsResult {
 pub(crate) fn is_directory_path(path: &str) -> IsDirectoryPathResult {
     IsDirectoryPathResult {
         is_directory: Path::new(path).is_dir(),
-    }
-}
-
-pub(crate) fn write_binary_file(payload: WriteBinaryFilePayload) -> OperationResult {
-    match fs::write(payload.file_path, payload.data) {
-        Ok(()) => OperationResult {
-            ok: true,
-            error: None,
-        },
-        Err(_) => OperationResult {
-            ok: false,
-            error: Some("Could not write file.".to_string()),
-        },
     }
 }
 

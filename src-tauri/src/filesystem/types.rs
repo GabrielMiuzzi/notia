@@ -52,6 +52,9 @@ pub struct WriteLibraryFileResult {
     pub(crate) ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
+    /// Revision of the content written, for the next compare-and-write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) conflict: Option<FilesystemConflict>,
 }
@@ -123,15 +126,6 @@ pub struct CreateLibraryDirectoryPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PathExistsPayload {
     pub(crate) path: String,
-    #[serde(default)]
-    pub(crate) directory_uri: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteBinaryFilePayload {
-    pub(crate) file_path: String,
-    pub(crate) data: Vec<u8>,
     #[serde(default)]
     pub(crate) directory_uri: Option<String>,
 }

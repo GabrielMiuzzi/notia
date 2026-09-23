@@ -7,6 +7,8 @@ export interface OpenDocumentTab {
   document: OpenFileDocument
   saveStatus: NotiaDocumentSaveStatus
   latestSavedSource: string
+  /** Backend revision of `latestSavedSource`; saves only overwrite that version. */
+  latestSavedRevision?: string
 }
 
 export interface OpenWorkspaceSpecialTabs {

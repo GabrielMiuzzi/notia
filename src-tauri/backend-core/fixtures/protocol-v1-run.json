@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "request": {
+    "type": "run",
+    "payload": {
+      "context": {
+        "requestId": "fixture-request-1",
+        "libraryId": "fixture-library-1",
+        "actor": {
+          "libraryUserId": "fixture-user-1"
+        },
+        "channel": "app",
+        "scope": "library",
+        "persistencePolicy": "persistent"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "Consulta pública de fixture"
+        }
+      ],
+      "tools": [],
+      "attachments": [],
+      "idempotencyKey": "fixture-request-1"
+    }
+  }
+}

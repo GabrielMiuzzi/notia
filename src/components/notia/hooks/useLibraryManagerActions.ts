@@ -5,6 +5,7 @@ import { setSelectedLibraryId, addLibrary, updateLibraryAndroidTreeUri, removeLi
 import { setLibraryManagerOpen } from '../../../features/ui/uiSlice'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import type { NotiaLibrary } from '../../../types/notia'
+import { revokeLibraryBinding } from '../../../services/libraries/libraryRuntime'
 
 interface UseLibraryManagerActionsParams {
   closeTabsByPath: (path: string) => Promise<boolean>
@@ -55,6 +56,11 @@ export function useLibraryManagerActions({
     })
     if (!shouldRemove) { return }
     if (!(await closeTabsByPath(library.path))) { return }
+    try {
+      await revokeLibraryBinding(library.id)
+    } catch {
+      // The native binding may already be absent after a restart.
+    }
     dispatch(removeLibraryById(library.id))
   }, [closeTabsByPath, confirm, dispatch])
 

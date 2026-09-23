@@ -195,10 +195,10 @@ describe('TaskManagerPublicationClient', () => {
     })
 
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 4, sequence: 4, replay: [] })
-    const mutation = client.invokeMutation('write_library_file', { payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' } })
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', { payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' } })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const request = JSON.parse(FakeWebSocket.latest?.sent[1] ?? '{}') as Record<string, unknown>
-    expect(request).toMatchObject({ type: 'mutate', command: 'write_library_file' })
+    expect(request).toMatchObject({ type: 'mutate', command: 'task_manager_write_ticket_source' })
 
     FakeWebSocket.latest?.receive({ type: 'ack', protocolVersion: 1, operationId: request.operationId, ok: true, result: { ok: true }, sequence: 5, revision: 5 })
     await expect(mutation).resolves.toEqual({ ok: true })
@@ -223,8 +223,8 @@ describe('TaskManagerPublicationClient', () => {
     await vi.runAllTicks()
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 4, sequence: 4, replay: [] })
 
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     const rejection = expect(mutation).rejects.toMatchObject({
       outcome: 'unknown',
@@ -262,8 +262,8 @@ describe('TaskManagerPublicationClient', () => {
     })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const request = JSON.parse(FakeWebSocket.latest?.sent[1] ?? '{}') as Record<string, unknown>
@@ -337,8 +337,10 @@ describe('TaskManagerPublicationClient', () => {
   })
 
   it('accepts only the publication mutation commands', () => {
-    expect(isTaskManagerPublicationMutationCommand('write_library_file')).toBe(true)
-    expect(isTaskManagerPublicationMutationCommand('append_task_comment')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('task_manager_write_ticket_source')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('task_manager_append_pomodoro')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('write_library_file')).toBe(false)
+    expect(isTaskManagerPublicationMutationCommand('append_task_comment')).toBe(false)
     expect(isTaskManagerPublicationMutationCommand('read_library_file')).toBe(false)
     expect(isTaskManagerPublicationMutationCommand('begin_task_manager_publication_batch')).toBe(true)
     expect(isTaskManagerPublicationMutationCommand('end_task_manager_publication_batch')).toBe(true)
@@ -361,8 +363,8 @@ describe('TaskManagerPublicationClient', () => {
     })
     client.close()
 
-    await expect(client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    await expect(client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })).rejects.toThrow('ya no acepta mutaciones')
   })
 
@@ -383,8 +385,8 @@ describe('TaskManagerPublicationClient', () => {
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 4, sequence: 4, replay: [] })
 
-    const first = client.invokeMutation('write_library_file', { payload: { filePath: 'published-vault/a.md', content: 'uno' } })
-    const second = client.invokeMutation('write_library_file', { payload: { filePath: 'published-vault/b.md', content: 'dos' } })
+    const first = client.invokeMutation('task_manager_write_ticket_source', { payload: { logicalPath: 'published-vault/a.md', content: 'uno', expectedRevision: 'sha256:base' } })
+    const second = client.invokeMutation('task_manager_write_ticket_source', { payload: { logicalPath: 'published-vault/b.md', content: 'dos', expectedRevision: 'sha256:base' } })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
 
     const socket = FakeWebSocket.latest
@@ -422,8 +424,8 @@ describe('TaskManagerPublicationClient', () => {
     const operationId = 'shared-ticket-move'
     const commands = [
       ['begin_task_manager_publication_batch', {}],
-      ['write_library_file', { payload: { filePath: 'published-vault/a.md', content: 'uno' } }],
-      ['write_library_file', { payload: { filePath: 'published-vault/b.md', content: 'dos' } }],
+      ['task_manager_write_ticket_source', { payload: { logicalPath: 'published-vault/a.md', content: 'uno', expectedRevision: 'sha256:base' } }],
+      ['task_manager_write_ticket_source', { payload: { logicalPath: 'published-vault/b.md', content: 'dos', expectedRevision: 'sha256:base' } }],
       ['end_task_manager_publication_batch', {}],
     ] as const
     const sentFrames: Array<Record<string, unknown>> = []
@@ -473,8 +475,8 @@ describe('TaskManagerPublicationClient', () => {
     setActiveTaskManagerPublicationBatchOperation('move-same-ticket-twice')
 
     const mutation = invokePublishedTaskManagerMutation(
-      'write_library_file',
-      { payload: { filePath: 'published-vault/a.md', content: 'moved-again' } },
+      'task_manager_write_ticket_source',
+      { payload: { logicalPath: 'published-vault/a.md', content: 'moved-again', expectedRevision: 'sha256:base' } },
     )
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const request = JSON.parse(socket?.sent.at(-1) ?? '{}') as Record<string, unknown>
@@ -553,8 +555,8 @@ describe('TaskManagerPublicationClient', () => {
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
 
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const request = JSON.parse(FakeWebSocket.latest?.sent[1] ?? '{}') as Record<string, unknown>
@@ -593,8 +595,8 @@ describe('TaskManagerPublicationClient', () => {
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
 
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     client.close()
@@ -622,8 +624,8 @@ describe('TaskManagerPublicationClient', () => {
     })
     const beforeSendController = new AbortController()
     const beforeSend = client.invokeMutation(
-      'write_library_file',
-      { payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'no-escribe' } },
+      'task_manager_write_ticket_source',
+      { payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'no-escribe', expectedRevision: 'sha256:base' } },
       undefined,
       { signal: beforeSendController.signal },
     )
@@ -635,8 +637,8 @@ describe('TaskManagerPublicationClient', () => {
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
     const afterSendController = new AbortController()
     const afterSend = client.invokeMutation(
-      'write_library_file',
-      { payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'resultado-incierto' } },
+      'task_manager_write_ticket_source',
+      { payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'resultado-incierto', expectedRevision: 'sha256:base' } },
       undefined,
       { signal: afterSendController.signal },
     )
@@ -936,8 +938,8 @@ describe('TaskManagerPublicationClient', () => {
     })
 
     expect(changes).toHaveLength(0)
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const request = JSON.parse(FakeWebSocket.latest?.sent[1] ?? '{}') as Record<string, unknown>
@@ -1108,8 +1110,8 @@ describe('TaskManagerPublicationClient', () => {
     await vi.runAllTicks()
     const firstSocket = FakeWebSocket.latest
     firstSocket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 4, sequence: 4, replay: [] })
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     await vi.runAllTicks()
     const firstRequest = JSON.parse(firstSocket?.sent[1] ?? '{}') as Record<string, unknown>
@@ -1152,8 +1154,8 @@ describe('TaskManagerPublicationClient', () => {
     client.setActiveBatchOperation('batch-move-ticket-again')
 
     const mutation = client.invokeMutation(
-      'write_library_file',
-      { payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'segundo movimiento' } },
+      'task_manager_write_ticket_source',
+      { payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'segundo movimiento', expectedRevision: 'sha256:base' } },
       'batch-move-ticket-again',
     )
     await vi.runAllTicks()
@@ -1188,7 +1190,7 @@ describe('TaskManagerPublicationClient', () => {
     const retryRequest = JSON.parse(secondSocket?.sent[2] ?? '{}') as Record<string, unknown>
     expect(retryRequest).toMatchObject({
       type: 'mutate',
-      command: 'write_library_file',
+      command: 'task_manager_write_ticket_source',
       operationId: 'batch-move-ticket-again',
       messageId: firstRequest.messageId,
     })
@@ -1288,8 +1290,8 @@ describe('TaskManagerPublicationClient', () => {
     const socket = FakeWebSocket.latest
     socket?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
 
-    const mutation = client.invokeMutation('write_library_file', {
-      payload: { filePath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo' },
+    const mutation = client.invokeMutation('task_manager_write_ticket_source', {
+      payload: { logicalPath: 'published-vault/task-mannager/equipo/a.md', content: 'nuevo', expectedRevision: 'sha256:base' },
     })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const firstRequest = JSON.parse(socket?.sent[1] ?? '{}') as Record<string, unknown>
@@ -1346,10 +1348,11 @@ describe('TaskManagerPublicationClient', () => {
 
     for (let revision = 1; revision <= 100; revision += 1) {
       const actor = clients[(revision - 1) % clients.length]
-      const mutation = actor?.invokeMutation('write_library_file', {
+      const mutation = actor?.invokeMutation('task_manager_write_ticket_source', {
         payload: {
-          filePath: 'published-vault/task-mannager/equipo/demo.md',
+          logicalPath: 'published-vault/task-mannager/equipo/demo.md',
           content: `revisión-${revision}`,
+          expectedRevision: 'sha256:base',
         },
       })
       await expect(mutation).resolves.toEqual({ ok: true })

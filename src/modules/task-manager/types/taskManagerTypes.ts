@@ -17,6 +17,7 @@ export type TaskState = (typeof TASK_STATES)[number]
 export type TaskPriority = (typeof TASK_PRIORITIES)[number]
 
 export interface TaskFrontmatter {
+  id?: string
   tarea?: string
   detalle?: string
   estado?: string
@@ -41,6 +42,7 @@ export interface TaskFrontmatter {
 }
 
 export interface TaskItem {
+  id?: string
   filePath: string
   fileName: string
   title: string
@@ -58,6 +60,9 @@ export interface TaskItem {
   parentTaskName: string
   order: number
   preview: string
+  contexto?: string
+  relatedDocuments?: string[]
+  relatedTasks?: string[]
 }
 
 export interface TaskFormData {
@@ -124,7 +129,13 @@ export interface TaskManagerSettings {
 export interface TaskManagerVaultRef {
   path: string
   androidTreeUri?: string
+  libraryId?: string
+  libraryUserId?: string
 }
+
+// The local application currently operates as the library owner. Rust still
+// validates this identity against the selected library before every mutation.
+export const TASK_MANAGER_LOCAL_LIBRARY_USER_ID = 'user-owner'
 
 export interface MarkdownFileDocument {
   path: string

@@ -496,6 +496,10 @@ function areTaskManagerAppPropsEqual(
     return false
   }
 
+  if ((previous.vault?.libraryId ?? '') !== (next.vault?.libraryId ?? '')) {
+    return false
+  }
+
   if ((previous.vault?.androidTreeUri ?? '') !== (next.vault?.androidTreeUri ?? '')) {
     return false
   }

@@ -1,25 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 import { getArgentinaHolidays } from './argentinaHolidaysService'
 
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+
 describe('getArgentinaHolidays', () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => vi.mocked(invoke).mockReset())
 
-  it('combines national and bank holidays and gives bank days their distinct type', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify([
-        { fecha: '2026-05-01', nombre: 'Día del Trabajador', tipo: 'inamovible' },
-        { fecha: '2026-06-15', nombre: 'Feriado puente' },
-      ])))
-      .mockResolvedValueOnce(new Response(JSON.stringify([
-        { fecha: '2026-05-01', nombre: 'Feriado bancario coincidente' },
-        { fecha: '2026-06-19', nombre: 'Día del empleado bancario' },
-      ])))
+  it('asks the backend for the merged holidays of the year', async () => {
+    const holidays = [{ date: '2026-05-01', name: 'Feriado bancario coincidente', kind: 'bank' }]
+    vi.mocked(invoke).mockResolvedValue(holidays)
 
-    await expect(getArgentinaHolidays(2026)).resolves.toEqual([
-      { date: '2026-05-01', name: 'Feriado bancario coincidente', kind: 'bank' },
-      { date: '2026-06-15', name: 'Feriado puente', kind: 'national', detail: undefined },
-      { date: '2026-06-19', name: 'Día del empleado bancario', kind: 'bank' },
-    ])
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expect(getArgentinaHolidays(2026)).resolves.toEqual(holidays)
+    expect(invoke).toHaveBeenCalledWith('calendar_argentina_holidays', { year: 2026 })
+  })
+
+  it('surfaces the backend error message', async () => {
+    vi.mocked(invoke).mockRejectedValue({ code: 'invalidInput', message: 'El año del calendario no es válido.', retryable: false })
+
+    await expect(getArgentinaHolidays(1900)).rejects.toThrow('El año del calendario no es válido.')
   })
 })

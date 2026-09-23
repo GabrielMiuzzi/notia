@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 import type { NotiaLibrary } from '../../../types/notia'
 import type { FinanceAccount, FinanceCategory, FinanceDashboard, FinanceTransaction, FinanceContext, FinanceSavingsReserve, FinanceSavingsMovement, FinanceSavingsExchange, FinanceSavedSavingsExchange, FinancePurchaseRecord, FinanceSavedPurchase, FinancePurchaseSummary, FinancePriceObservation, FinanceSalaryReceipt, FinanceSalaryReceiptInput, FinanceSalaryEvolution, FinanceCreditCardStatement, FinanceCreditCardStatementInput, FinanceSavedCreditCardStatement, FinanceInstallmentPlan, FinanceInstallment, FinanceInvestment, FinanceNetWorth, FinanceNetWorthHistoryPoint, FinanceExtractionResult, FinanceDevQueryResult, FinanceDevTable, FinanceService, FinanceServiceOccurrence, FinanceServiceOccurrenceVersion, FinanceServiceInvoice, FinanceAuditRun, FinanceAuditProposal, FinanceCardServiceResolution, FinanceRelationRepair, FinanceRelationRepairType } from '../types/financeTypes'
 import { financeContext } from '../types/financeTypes'
+import type { FinanceDailySummary, FinanceDateRange, FinanceRelationAudit, SalaryExtractionDraft } from '../types/financeViews'
+import type { FinanceCardServiceReconciliation, FinancePurchaseValidation } from '../types/financeTypes'
 import { notifyFinanceDataChanged } from './financeDataEvents'
 
 export type FinanceActor = string | { libraryUserId?: string; source?: FinanceContext['source'] } | undefined
@@ -299,3 +301,28 @@ export function listFinanceArtifacts(library: NotiaLibrary, actor?: FinanceActor
 }
 
 export type { FinanceContext }
+
+/** Expenses, incomes and savings of the range, computed by the backend. */
+export function getFinancePeriodSummary(library: NotiaLibrary, range: FinanceDateRange, actor?: FinanceActor): Promise<FinanceDailySummary> {
+  return invoke<FinanceDailySummary>('finance_period_summary', { payload: { context: context(library, actor), range } })
+}
+
+/** Relation audit of the dashboard month, or of every record without a month. */
+export function getFinanceRelationAudit(library: NotiaLibrary, month?: string, actor?: FinanceActor): Promise<FinanceRelationAudit> {
+  return invoke<FinanceRelationAudit>('finance_relation_audit', { payload: { context: context(library, actor), month } })
+}
+
+/** Ticket arithmetic with the same rules used to save it. */
+export function validateFinancePurchase(purchase: FinancePurchaseRecord): Promise<FinancePurchaseValidation> {
+  return invoke<FinancePurchaseValidation>('finance_validate_purchase', { purchase })
+}
+
+/** Service assignments a card statement would apply once saved. */
+export function previewFinanceCardServices(library: NotiaLibrary, statement: FinanceCreditCardStatementInput, actor?: FinanceActor): Promise<FinanceCardServiceReconciliation> {
+  return invoke<FinanceCardServiceReconciliation>('finance_preview_card_services', { payload: { context: context(library, actor), statement } })
+}
+
+/** Salary fields found in a document extraction, to prefill the form. */
+export function draftFinanceSalary(rawResult: unknown): Promise<SalaryExtractionDraft> {
+  return invoke<SalaryExtractionDraft>('finance_salary_draft', { rawResult })
+}

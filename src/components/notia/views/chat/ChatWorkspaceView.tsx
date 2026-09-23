@@ -26,29 +26,21 @@ import { useChatAttachmentMenu } from './useChatAttachmentMenu'
 import { beginPhantomClickSuppression } from '../../../../utils/interactions/phantomClickSuppression'
 import { notiaTimer } from '../../../../services/runtime/notiaLogger'
 import {
-  listAgentPrompts,
-  loadSelectedAgentPromptFileName,
+  loadAgentPromptSelection,
   saveSelectedAgentPromptFileName,
   type AgentPromptOption,
 } from '../../../../services/ai/agentPromptRuntime'
 import type { ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
-import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
+import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview } from '../../../../types/ai/agentContracts'
-import { cancelPendingAgentPlanSteps, loadAgentExecutionPlan, resumeBlockedAgentPlan, retryFailedAgentPlan, saveAgentPlan } from '../../../../services/ai/agentPlanPersistence'
 import {
-  buildClarificationResumePrompt,
-  canResumeClarification,
-  clearClarificationRequest,
-  loadClarificationRequest,
-  saveClarificationRequest,
-  type PersistedClarificationRequest,
+  answerPendingClarification,
+  clearPendingClarification,
+  loadPendingClarification,
+  savePendingClarification,
 } from '../../../../services/ai/clarificationPersistence'
 import { useWorkspaceAiSnapshot } from '../../hooks/useWorkspaceAiSnapshot'
-import { loadAutoApplyLowRiskPreference, shouldAutoApplyLowRiskPreview } from '../../../../services/ai/aiAutoApplyPreference'
-import { listAiOperationHistory, type AiOperationHistoryEntry } from '../../../../services/ai/aiOperationHistory'
-import { getAiOperation } from '../../../../services/ai/aiOperationJournal'
-import { getMultiDocumentOperation } from '../../../../services/ai/aiMultiDocumentJournal'
-import { getMultiDocumentPatchOperation } from '../../../../services/ai/aiMultiDocumentPatchJournal'
+import { listAiOperationHistory, loadAiOperationDiff, type AiOperationHistoryEntry } from '../../../../services/ai/aiOperationHistory'
 import type { AiOperationHistoryDiff } from './ChatThread'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
@@ -150,30 +142,21 @@ export function ChatWorkspaceViewComponent({
   const [pendingAgentConfirmation, setPendingAgentConfirmation] = useState<string | null>(null)
   const [pendingAgentPreview, setPendingAgentPreview] = useState<MutationPreview | null>(null)
   const [pendingAgentHunkIds, setPendingAgentHunkIds] = useState<string[]>([])
-  const [agentExecutionPlan, setAgentExecutionPlan] = useState<TaskExecutionStep[]>(() => library ? loadAgentExecutionPlan(library.id) : [])
+  const [agentExecutionPlan, setAgentExecutionPlan] = useState<TaskExecutionStep[]>([])
   const [awaitingAgentExecutionPlanApproval, setAwaitingAgentExecutionPlanApproval] = useState(false)
   const [lastAppliedOperationId, setLastAppliedOperationId] = useState<string | null>(null)
-  const [aiOperationHistory, setAiOperationHistory] = useState<AiOperationHistoryEntry[]>(() => listAiOperationHistory())
+  const [aiOperationHistory, setAiOperationHistory] = useState<AiOperationHistoryEntry[]>([])
   const [aiOperationDiff, setAiOperationDiff] = useState<AiOperationHistoryDiff | null>(null)
   const clarificationResolverRef = useRef<((answer: string) => void) | null>(null)
-  const rehydratedClarificationRef = useRef<PersistedClarificationRequest | null>(null)
+  const rehydratedClarificationRef = useRef(false)
   const confirmationResolverRef = useRef<((decision: AgentConfirmationDecision) => void) | null>(null)
   const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string; steps?: TaskExecutionStep[] }) => void) | null>(null)
-  const planHydrationPendingRef = useRef(false)
   const activeLibraryId = library?.id
 
+  // The plan shown is the one the backend asked to approve in this session.
   useEffect(() => {
-    planHydrationPendingRef.current = true
-    setAgentExecutionPlan(activeLibraryId ? loadAgentExecutionPlan(activeLibraryId) : [])
+    setAgentExecutionPlan([])
   }, [activeLibraryId])
-
-  useEffect(() => {
-    if (planHydrationPendingRef.current) {
-      planHydrationPendingRef.current = false
-      return
-    }
-    if (library) saveAgentPlan(library.id, agentExecutionPlan)
-  }, [agentExecutionPlan, library])
 
   useEffect(() => {
     if (!library) {
@@ -185,15 +168,10 @@ export function ChatWorkspaceViewComponent({
     let isCurrent = true
     const refreshAgentPrompts = async () => {
       try {
-        const options = await listAgentPrompts(library)
+        const { prompts, selected } = await loadAgentPromptSelection(library)
         if (!isCurrent) return
-        const storedSelection = loadSelectedAgentPromptFileName(library.id)
-        const selected = options.some((option) => option.fileName === storedSelection)
-          ? storedSelection
-          : 'default.md'
-        setAgentPromptOptions(options)
+        setAgentPromptOptions(prompts)
         setAgentPromptFileName(selected)
-        saveSelectedAgentPromptFileName(library.id, selected)
       } catch {
         if (!isCurrent) return
         setAgentPromptOptions([{ fileName: 'default.md', name: 'default' }])
@@ -298,40 +276,45 @@ export function ChatWorkspaceViewComponent({
   })
   const activeDocumentPath = workspaceSnapshot?.activeDocument?.path ?? null
 
+  const refreshAiOperationHistory = useCallback(() => {
+    if (!library) {
+      setAiOperationHistory([])
+      return
+    }
+    void listAiOperationHistory(library).then(setAiOperationHistory).catch(() => setAiOperationHistory([]))
+  }, [library])
+
   useEffect(() => {
-    setAiOperationHistory(listAiOperationHistory())
+    refreshAiOperationHistory()
     setAiOperationDiff(null)
-  }, [activeDocumentPath, activeLibraryId])
+  }, [activeDocumentPath, refreshAiOperationHistory])
 
   useEffect(() => {
     if (!library) {
-      rehydratedClarificationRef.current = null
+      rehydratedClarificationRef.current = false
       return
     }
-
-    const persisted = loadClarificationRequest(library.id)
-    const context = {
-      libraryId: library.id,
+    let isCurrent = true
+    // A document-scoped question waits for the active tab to hydrate; the
+    // backend answers `waiting` instead of discarding it.
+    void loadPendingClarification(library.id, {
       scope: agentScope ?? 'library',
       documentPath: workspaceSnapshot?.activeDocument?.path ?? null,
       revision: workspaceSnapshot?.activeDocumentRevision ?? null,
-    }
-    // Wait for the active tab to hydrate before deciding that a document-scoped
-    // clarification is stale; otherwise a WebView restart could erase it during
-    // the transient `activeDocument === null` render.
-    if (persisted?.documentPath && !context.documentPath) return
-    if (!persisted || !canResumeClarification(persisted, context)) {
-      if (persisted) clearClarificationRequest(library.id)
-      rehydratedClarificationRef.current = null
-      if (!clarificationResolverRef.current) setPendingAgentQuestion(null)
-      return
-    }
-
-    rehydratedClarificationRef.current = persisted
-    if (!clarificationResolverRef.current) {
-      setPendingAgentQuestion({ question: persisted.question, choices: persisted.choices })
-      setPendingAgentAnswer(null)
-    }
+    }).then((pending) => {
+      if (!isCurrent || pending.status === 'waiting') return
+      if (pending.status === 'none') {
+        rehydratedClarificationRef.current = false
+        if (!clarificationResolverRef.current) setPendingAgentQuestion(null)
+        return
+      }
+      rehydratedClarificationRef.current = true
+      if (!clarificationResolverRef.current) {
+        setPendingAgentQuestion({ question: pending.question, choices: pending.choices })
+        setPendingAgentAnswer(null)
+      }
+    }).catch(() => undefined)
+    return () => { isCurrent = false }
   }, [agentScope, library, workspaceSnapshot?.activeDocument?.path, workspaceSnapshot?.activeDocumentRevision])
 
   useEffect(() => {
@@ -425,7 +408,7 @@ export function ChatWorkspaceViewComponent({
         const handleAbort = () => {
           clarificationResolverRef.current = null
           setPendingAgentQuestion(null)
-          if (library) clearClarificationRequest(library.id)
+          if (library) void clearPendingClarification(library.id).catch(() => undefined)
           reject(new Error('Se canceló la aclaración solicitada por el agente.'))
         }
         signal.addEventListener('abort', handleAbort, { once: true })
@@ -433,35 +416,23 @@ export function ChatWorkspaceViewComponent({
           signal.removeEventListener('abort', handleAbort)
           clarificationResolverRef.current = null
           setPendingAgentQuestion(null)
-          if (library) clearClarificationRequest(library.id)
+          if (library) void clearPendingClarification(library.id).catch(() => undefined)
           resolve(answer)
         }
-        rehydratedClarificationRef.current = null
+        rehydratedClarificationRef.current = false
         setPendingAgentAnswer(null)
         setPendingAgentQuestion({ question, choices })
         if (library) {
-          saveClarificationRequest({
-            version: 1,
-            requestId: `clarification-${Date.now()}`,
-            libraryId: library.id,
-            question,
-            choices,
+          void savePendingClarification(library.id, question, choices, {
             scope: agentScope ?? 'library',
             documentPath: workspaceSnapshot?.activeDocument?.path ?? null,
             revision: workspaceSnapshot?.activeDocumentRevision ?? null,
-            createdAt: Date.now(),
-            expiresAt: Date.now() + 15 * 60_000,
-          })
+          }).catch(() => undefined)
         }
         setStreamingThinking('')
         setStreamingAssistantMessage('')
       }),
       requestAgentConfirmation: (question, signal, preview) => new Promise<boolean | AgentConfirmationDecision>((resolve, reject) => {
-        const autoApplyPreview = preview
-        if (library && autoApplyPreview && shouldAutoApplyLowRiskPreview(autoApplyPreview, loadAutoApplyLowRiskPreference(library.id))) {
-          resolve({ accepted: true, hunkIds: autoApplyPreview.hunks.map((hunk) => hunk.id) })
-          return
-        }
         const handleAbort = () => {
           confirmationResolverRef.current = null
           setPendingAgentConfirmation(null)
@@ -485,7 +456,6 @@ export function ChatWorkspaceViewComponent({
         setStreamingThinking('')
         setStreamingAssistantMessage('')
       }),
-      agentExecutionPlan,
       onAgentExecutionPlanChange: setAgentExecutionPlan,
       onAgentProgress: (event: AgentProgressEvent) => {
         if (event.type === 'phase-changed' && event.phase === 'preparing') {
@@ -495,13 +465,13 @@ export function ChatWorkspaceViewComponent({
         if (agentScope !== 'document' || event.type !== 'tool-completed' || !event.ok || !event.changed || !event.operationId) return
         if (event.toolName === 'undo_ai_operation') {
           setLastAppliedOperationId(null)
-          setAiOperationHistory(listAiOperationHistory())
+          refreshAiOperationHistory()
           return
         }
         setLastAppliedOperationId(event.operationId)
-        setAiOperationHistory(listAiOperationHistory())
+        refreshAiOperationHistory()
       },
-      requestAgentExecutionPlanApproval: (_steps, signal) => new Promise((resolve, reject) => {
+      requestAgentExecutionPlanApproval: (steps, signal) => new Promise((resolve, reject) => {
         const handleAbort = () => {
           planApprovalResolverRef.current = null
           clarificationResolverRef.current = null
@@ -516,6 +486,7 @@ export function ChatWorkspaceViewComponent({
           setAwaitingAgentExecutionPlanApproval(false)
           resolve(decision)
         }
+        setAgentExecutionPlan(steps)
         setAwaitingAgentExecutionPlanApproval(true)
         setStreamingThinking('')
         setStreamingAssistantMessage('')
@@ -574,28 +545,15 @@ export function ChatWorkspaceViewComponent({
     return submitMessage(message, undefined, operationId)
   }
 
-  const consumeRehydratedClarification = (answer: string): string | null => {
-    const request = rehydratedClarificationRef.current
-    if (!request) return null
-    rehydratedClarificationRef.current = null
-    clearClarificationRequest(request.libraryId)
-    return buildClarificationResumePrompt(request, answer)
+  const consumeRehydratedClarification = async (answer: string): Promise<string | null> => {
+    if (!rehydratedClarificationRef.current || !library) return null
+    rehydratedClarificationRef.current = false
+    return answerPendingClarification(library.id, answer).catch(() => null)
   }
 
   const handleResumeAgentExecutionPlan = () => {
     if (isSubmitting || agentExecutionPlan.length === 0) return
-    const resumed = resumeBlockedAgentPlan(agentExecutionPlan)
-    const nextPlan = resumed?.steps ?? agentExecutionPlan
-    if (resumed) setAgentExecutionPlan(nextPlan)
-    void submitMessage('Continuá con el TO-DO aprobado.', resumed ? nextPlan : undefined)
-  }
-
-  const handleRetryAgentExecutionPlan = () => {
-    if (isSubmitting) return
-    const retry = retryFailedAgentPlan(agentExecutionPlan)
-    if (!retry) return
-    setAgentExecutionPlan(retry.steps)
-    void submitMessage(`Reintentá únicamente el paso fallido "${retry.stepId}" y continuá con el TO-DO aprobado.`, retry.steps)
+    void submitMessage('Continuá con el TO-DO aprobado.', true)
   }
 
   const handleCancelAgentExecutionPlan = () => {
@@ -603,7 +561,7 @@ export function ChatWorkspaceViewComponent({
       cancelActiveReply()
     }
     setAwaitingAgentExecutionPlanApproval(false)
-    setAgentExecutionPlan((current) => cancelPendingAgentPlanSteps(current))
+    setAgentExecutionPlan([])
   }
 
   const handleCreateChat = async (payload: CreateChatModalSubmitPayload) => {
@@ -737,33 +695,11 @@ export function ChatWorkspaceViewComponent({
   }
 
   const handleViewAiOperationDiff = (operationId: string): void => {
-    const markdownOperation = getAiOperation(operationId)
-    if (markdownOperation) {
-      setAiOperationDiff({
-        operationId,
-        summary: markdownOperation.summary,
-        files: [{
-          path: markdownOperation.documentPath,
-          previousSource: markdownOperation.previousSource,
-          nextSource: markdownOperation.nextSource,
-        }],
-      })
-      return
-    }
-
-    const multiDocumentOperation = getMultiDocumentOperation(operationId)
-    if (multiDocumentOperation) {
-      setAiOperationDiff({ operationId, summary: multiDocumentOperation.summary, files: multiDocumentOperation.files })
-      return
-    }
-
-    const multiDocumentPatchOperation = getMultiDocumentPatchOperation(operationId)
-    if (multiDocumentPatchOperation) {
-      setAiOperationDiff({ operationId, summary: multiDocumentPatchOperation.summary, files: multiDocumentPatchOperation.files })
-      return
-    }
-
-    setDialogMessage('El diff detallado ya no está disponible en esta sesión, pero el historial conserva su metadata.')
+    if (!library) return
+    void loadAiOperationDiff(library, operationId).then((diff) => {
+      if (diff) setAiOperationDiff(diff)
+      else setDialogMessage('El cambio es demasiado grande para mostrar su diff, pero el historial conserva su registro.')
+    }).catch(() => setDialogMessage('No se pudo leer el diff del cambio.'))
   }
 
   const lastAssistantMessage = pendingAgentConfirmation
@@ -807,7 +743,7 @@ export function ChatWorkspaceViewComponent({
                     const nextFileName = event.target.value
                     setAgentPromptFileName(nextFileName)
                     if (library) {
-                      saveSelectedAgentPromptFileName(library.id, nextFileName)
+                      void saveSelectedAgentPromptFileName(library.id, nextFileName).catch(() => undefined)
                     }
                   }}
                 >
@@ -865,7 +801,6 @@ export function ChatWorkspaceViewComponent({
                 }
               }}
               onResumeAgentExecutionPlan={handleResumeAgentExecutionPlan}
-              onRetryAgentExecutionPlan={handleRetryAgentExecutionPlan}
               onCancelAgentExecutionPlan={handleCancelAgentExecutionPlan}
               lastAppliedOperationId={lastAppliedOperationId}
               aiOperationHistory={activeDocumentPath
@@ -899,15 +834,15 @@ export function ChatWorkspaceViewComponent({
               onSelectAgentClarificationOption={(choice) => {
                 const resolver = clarificationResolverRef.current
                 if (!resolver) {
-                  const resumePrompt = consumeRehydratedClarification(choice)
-                  if (!resumePrompt) {
-                    setPendingAgentQuestion(null)
-                    setPendingAgentAnswer('Cancelada')
-                    return
-                  }
-                  setPendingAgentAnswer(choice)
                   setPendingAgentQuestion(null)
-                  void submitMessage(resumePrompt)
+                  void consumeRehydratedClarification(choice).then((resumePrompt) => {
+                    if (!resumePrompt) {
+                      setPendingAgentAnswer('Cancelada')
+                      return
+                    }
+                    setPendingAgentAnswer(choice)
+                    void submitMessage(resumePrompt)
+                  })
                   return
                 }
                 setPendingAgentAnswer(choice)
@@ -965,11 +900,12 @@ export function ChatWorkspaceViewComponent({
                   if (rehydratedClarificationRef.current) {
                     const answer = draft.trim()
                     if (!answer) return
-                    const resumePrompt = consumeRehydratedClarification(answer)
                     setPendingAgentAnswer(answer)
                     setPendingAgentQuestion(null)
                     setDraft('')
-                    if (resumePrompt) void submitMessage(resumePrompt)
+                    void consumeRehydratedClarification(answer).then((resumePrompt) => {
+                      if (resumePrompt) void submitMessage(resumePrompt)
+                    })
                     return
                   }
                   setPendingAgentAnswer(null)
@@ -997,10 +933,9 @@ export function ChatWorkspaceViewComponent({
                   return Promise.resolve()
                 }
                 if (rehydratedClarificationRef.current) {
-                  const resumePrompt = consumeRehydratedClarification(text)
                   setPendingAgentAnswer(text)
                   setPendingAgentQuestion(null)
-                  return resumePrompt ? submitMessage(resumePrompt) : Promise.resolve()
+                  return consumeRehydratedClarification(text).then((resumePrompt) => (resumePrompt ? submitMessage(resumePrompt) : undefined))
                 }
                 setPendingAgentAnswer(null)
                 return submitComposerMessage(text)

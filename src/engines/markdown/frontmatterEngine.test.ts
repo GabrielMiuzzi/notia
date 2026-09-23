@@ -5,7 +5,6 @@ import {
   hasFrontmatterKey,
   setFrontmatterValue,
   removeFrontmatterValue,
-  ensureMarkdownDefaults,
   validatePageLinkValue,
 } from './frontmatterEngine.ts'
 
@@ -52,25 +51,6 @@ describe('frontmatterEngine helpers', () => {
     ]
     const result = removeFrontmatterValue(entries, 'title')
     assert.deepStrictEqual(result, [{ key: 'author', value: 'Me' }])
-  })
-
-  it('ensureMarkdownDefaults injects missing properties', () => {
-    const source = '# Hello\n\nWorld'
-    const fileStats = { createdAt: 1234567890 }
-    const result = ensureMarkdownDefaults(source, fileStats)
-    assert.strictEqual(result.mutated, true)
-    assert.ok(result.source.includes('createdAt: 1234567890'))
-    assert.ok(result.source.includes('nextPage: N/A'))
-    assert.ok(result.source.includes('previousPage: N/A'))
-    assert.ok(result.source.includes('contexto: "#Personal"'))
-    assert.ok(result.source.includes('# Hello'))
-  })
-
-  it('ensureMarkdownDefaults does not mutate when all keys present', () => {
-    const source = `---\ncreatedAt: 1234567890\nnextPage: N/A\npreviousPage: N/A\ncontexto: "#Personal"\n---\n\n# Hello`
-    const result = ensureMarkdownDefaults(source, { createdAt: 999 })
-    assert.strictEqual(result.mutated, false)
-    assert.strictEqual(result.source, source)
   })
 
   it('validatePageLinkValue accepts non-empty string', () => {

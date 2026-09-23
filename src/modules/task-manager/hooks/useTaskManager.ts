@@ -3,7 +3,6 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   DEFAULT_BOARD_NAME,
   DEFAULT_BOARDS,
-  TASK_MANAGER_SHARED_METADATA_FILE,
   TASKS_ROOT_FOLDER,
   TASK_PRIORITIES,
   TASK_STATES,
@@ -22,7 +21,6 @@ import {
   resumePomodoro,
   startPomodoro,
 } from '../engines/pomodoroEngine'
-import { appendTaskComment } from '../engines/taskCommentEngine'
 import {
   normalizeTaskArrangementUpdates,
   selectChangedTaskArrangementUpdates,
@@ -35,25 +33,16 @@ import { normalizeTaskManagerSettings } from '../utils/settings'
 import {
   appendPomodoroEntry,
   cleanupEmptyWorkspaceBoards,
-  createTask,
   deletePomodoroEntry,
-  deleteTask,
-  ensureBoardWorkspace,
   ensureTaskWorkspace,
   loadTaskManagerSnapshot,
   loadTaskManagerSnapshotForChangedPaths,
-  moveTaskByState,
   readPomodoroEntries,
-  removeBoardWorkspace,
   readTaskMarkdownSourceWithRevision,
   resolveTaskManagerSnapshotChangedPaths,
   resolveTaskManagerMutationJournalPath,
-  resolveTaskManagerRuntimePath,
-  renameBoardWorkspace,
-  reconcileBoardMarkdownContext,
   setTaskManagerRuntimeRootPolicy,
   syncTaskIndexesAndMetadata,
-  updateTaskBody,
   updateTaskFrontmatter as updateTaskFrontmatterInSource,
   writeTaskMarkdownSource,
   type TaskManagerSnapshot,
@@ -85,11 +74,14 @@ import {
 } from '../services/taskManagerPublicationRuntime'
 import {
   subscribeTaskManagerPublicationChanges,
-  invokeTaskManagerPublicationMutation,
   TaskManagerPublicationMutationError,
   type TaskManagerPublicationConflict,
 } from '../services/taskManagerPublicationClient'
 import { enqueueTaskManagerMutation, type TaskManagerMutationContext } from '../services/taskManagerMutationCoordinator'
+import {
+  executeTaskManagerAgentMutation,
+  type TaskManagerAgentMutation,
+} from '../services/taskManagerAgentMutationService'
 import {
   drainTaskManagerReloadQueue,
   getTaskManagerReloadRetryDelay,
@@ -331,6 +323,8 @@ function resolveSettingsForEmptySnapshot(previousSettings: TaskManagerSettings):
 
 function areSameVaultRef(left: TaskManagerVaultRef | null, right: TaskManagerVaultRef | null): boolean {
   return (left?.path ?? '') === (right?.path ?? '')
+    && (left?.libraryId ?? '') === (right?.libraryId ?? '')
+    && (left?.libraryUserId ?? '') === (right?.libraryUserId ?? '')
     && (left?.androidTreeUri ?? '') === (right?.androidTreeUri ?? '')
 }
 
@@ -1091,6 +1085,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     const normalizedVault: TaskManagerVaultRef = {
       path: vault.path,
       androidTreeUri: vault.androidTreeUri,
+      libraryId: vault.libraryId,
+      libraryUserId: vault.libraryUserId,
     }
     activeVaultRef.current = normalizedVault
     setActiveTaskManagerVaultContext(normalizedVault)
@@ -1160,6 +1156,8 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     const normalizedVault: TaskManagerVaultRef = {
       path: vault.path,
       androidTreeUri: vault.androidTreeUri,
+      libraryId: vault.libraryId,
+      libraryUserId: vault.libraryUserId,
     }
 
     activeVaultRef.current = normalizedVault
@@ -1593,6 +1591,47 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     })
   }, [applySnapshotState, persistSharedMetadata, reload, settings.activeVaultPath, settings.boards])
 
+  /**
+   * Every Task Manager write goes to the Rust store: the backend validates,
+   * previews, applies with revisions and renders indexes and metadata. The
+   * WebView keeps no fallback that writes the workspace itself.
+   */
+  const runEmbeddedMutation = useCallback(async (
+    mutation: TaskManagerAgentMutation | TaskManagerAgentMutation[],
+    _syncBoardsOverride?: Board[],
+    options?: {
+      syncStrategy?: 'full' | 'snapshot-only'
+      publicationSettings?: TaskManagerSettings
+    },
+  ): Promise<void> => {
+    const vault = activeVaultRef.current
+    if (!vault?.path || !vault.libraryId || !vault.libraryUserId) {
+      throw new Error('El Task Manager necesita una biblioteca registrada y un usuario activo.')
+    }
+
+    setIsSyncing(true)
+    try {
+      for (const nextMutation of Array.isArray(mutation) ? mutation : [mutation]) {
+        await executeTaskManagerAgentMutation(
+          vault.path,
+          nextMutation,
+          {},
+          {
+            libraryId: vault.libraryId,
+            libraryUserId: vault.libraryUserId,
+            published: typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true,
+            android: isAndroidRuntime,
+            publicationSettings: options?.publicationSettings,
+          },
+        )
+      }
+      await reload([], { forceFullReload: true })
+      setPublicationConflict(null)
+    } finally {
+      setIsSyncing(false)
+    }
+  }, [isAndroidRuntime, reload])
+
   const clearPublicationConflict = useCallback(() => {
     setPublicationConflict(null)
   }, [])
@@ -1625,26 +1664,44 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        if (taskDialog.mode === 'create' || !taskDialog.task) {
-          const boardContext = settings.boards.find((board) => board.name === formData.board)?.contexto ?? DEFAULT_CONTEXT_TAG
-          await createTask(settings.activeVaultPath as string, { ...formData, contexto: boardContext }, snapshotRef.current.tasks)
-          return
+      if (taskDialog.mode === 'edit' && !taskDialog.task) {
+        throw new Error('No se encontró la tarea que se intenta editar.')
+      }
+      const taskPath = taskDialog.task?.filePath ?? ''
+      const isCreating = taskDialog.mode === 'create' || !taskDialog.task
+      const mutation: TaskManagerAgentMutation = isCreating
+        ? {
+          kind: 'create',
+          board: formData.board,
+          title: formData.title,
+          content: formData.detail,
+          group: formData.group,
+          priority: formData.priority || 'Media',
+          state: formData.state,
+          parentTaskName: formData.parentTaskName,
+          fields: {
+            fechaFin: formData.endDate,
+            fechaFinDinamica: formData.dynamicEndDate,
+            estimacion: formData.estimatedHours,
+            contexto: settings.boards.find((board) => board.name === formData.board)?.contexto ?? DEFAULT_CONTEXT_TAG,
+          },
         }
-
-        await updateTaskFrontmatterCompat(settings.activeVaultPath as string, taskDialog.task.filePath, {
-          tarea: formData.title,
-          detalle: formData.detail,
-          estado: formData.state,
-          fechaFin: formData.endDate,
-          fechaFinDinamica: formData.dynamicEndDate,
-          equipo: formData.group,
-          prioridad: formData.priority,
-          estimacion: formData.estimatedHours,
-          parent: formData.parentTaskName ? `[[${formData.parentTaskName}]]` : '',
-          contexto: settings.boards.find((board) => board.name === formData.board)?.contexto ?? DEFAULT_CONTEXT_TAG,
-        })
-      })
+        : {
+          kind: 'update-fields',
+          taskPath,
+          fields: {
+            tarea: formData.title,
+            content: formData.detail,
+            estado: formData.state,
+            prioridad: formData.priority,
+            equipo: formData.group,
+            fechaFin: formData.endDate,
+            fechaFinDinamica: formData.dynamicEndDate,
+            estimacion: formData.estimatedHours,
+            parent: formData.parentTaskName,
+          },
+        }
+      await runEmbeddedMutation(mutation)
       closeTaskDialog()
     } catch (runtimeError) {
       console.error(runtimeError)
@@ -1656,7 +1713,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           ? `No se pudo guardar la tarea: ${runtimeMessage}`
           : 'No se pudo guardar la tarea.')
     }
-  }, [closeTaskDialog, runSync, settings.activeVaultPath, settings.boards, taskDialog.mode, taskDialog.task, updateTaskFrontmatterCompat])
+  }, [closeTaskDialog, runEmbeddedMutation, settings.activeVaultPath, settings.boards, taskDialog.mode, taskDialog.task])
 
   const updateTaskState = useCallback(async (task: TaskItem, nextState: string) => {
     if (!settings.activeVaultPath) {
@@ -1664,10 +1721,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        const existingPaths = new Set(snapshotRef.current.tasks.map((item) => item.filePath))
-        await moveTaskByState(settings.activeVaultPath as string, task, nextState, existingPaths)
-      })
+      await runEmbeddedMutation({ kind: 'change-state', taskPath: task.filePath, state: nextState as TaskState })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -1675,7 +1729,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo cambiar el estado de la tarea: ${runtimeMessage}`
         : 'No se pudo cambiar el estado de la tarea.')
     }
-  }, [runSync, settings.activeVaultPath])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const updateTaskPriority = useCallback(async (task: TaskItem, nextPriority: TaskPriority) => {
     if (!settings.activeVaultPath) {
@@ -1683,11 +1737,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        await updateTaskFrontmatterCompat(settings.activeVaultPath as string, task.filePath, {
-          prioridad: nextPriority,
-        })
-      }, undefined, { syncStrategy: 'snapshot-only' })
+      await runEmbeddedMutation({ kind: 'change-priority', taskPath: task.filePath, priority: nextPriority }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -1695,7 +1745,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo cambiar la prioridad de la tarea: ${runtimeMessage}`
         : 'No se pudo cambiar la prioridad de la tarea.')
     }
-  }, [runSync, settings.activeVaultPath, updateTaskFrontmatterCompat])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const updateTaskDedicatedHours = useCallback(async (task: TaskItem, nextDedicatedHours: number) => {
     if (!settings.activeVaultPath) {
@@ -1703,11 +1753,9 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        await updateTaskFrontmatterCompat(settings.activeVaultPath as string, task.filePath, {
-          dedicado: roundHours(Math.max(0, nextDedicatedHours)),
-        })
-      }, undefined, { syncStrategy: 'snapshot-only' })
+      await runEmbeddedMutation({ kind: 'update-fields', taskPath: task.filePath, fields: {
+        dedicado: roundHours(Math.max(0, nextDedicatedHours)),
+      } }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -1715,7 +1763,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo actualizar horas dedicadas: ${runtimeMessage}`
         : 'No se pudo actualizar horas dedicadas.')
     }
-  }, [runSync, settings.activeVaultPath, updateTaskFrontmatterCompat])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const markTaskAsUrgent = useCallback(async (task: TaskItem) => {
     if (!settings.activeVaultPath) {
@@ -1723,12 +1771,10 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        await updateTaskFrontmatterCompat(settings.activeVaultPath as string, task.filePath, {
-          prioridad: 'Urgente',
-          estado: task.state === 'Pendiente' ? 'En progreso' : task.state,
-        })
-      }, undefined, { syncStrategy: 'snapshot-only' })
+      await runEmbeddedMutation({ kind: 'update-fields', taskPath: task.filePath, fields: {
+        prioridad: 'Urgente',
+        estado: task.state === 'Pendiente' ? 'En progreso' : task.state,
+      } }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -1736,7 +1782,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo marcar la tarea como urgente: ${runtimeMessage}`
         : 'No se pudo marcar la tarea como urgente.')
     }
-  }, [runSync, settings.activeVaultPath, updateTaskFrontmatterCompat])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const deleteTaskItem = useCallback(async (task: TaskItem) => {
     if (!settings.activeVaultPath) {
@@ -1744,7 +1790,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(() => deleteTask(settings.activeVaultPath as string, task.filePath))
+      await runEmbeddedMutation({ kind: 'delete', taskPath: task.filePath })
     } catch (runtimeError) {
       console.error(runtimeError)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
@@ -1752,7 +1798,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo eliminar la tarea: ${runtimeMessage}`
         : 'No se pudo eliminar la tarea.')
     }
-  }, [runSync, settings.activeVaultPath])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const toggleSubtaskDone = useCallback(async (task: TaskItem, done: boolean) => {
     if (!settings.activeVaultPath) {
@@ -1760,16 +1806,16 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        await updateTaskFrontmatterCompat(settings.activeVaultPath as string, task.filePath, {
-          estado: done ? 'Finalizada' : 'Pendiente',
-        })
+      await runEmbeddedMutation({
+        kind: 'change-state',
+        taskPath: task.filePath,
+        state: done ? 'Finalizada' : 'Pendiente',
       }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       setError('No se pudo actualizar la subtarea.')
     }
-  }, [runSync, settings.activeVaultPath, updateTaskFrontmatterCompat])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const addTaskComment = useCallback(async (task: TaskItem, comment: string) => {
     if (!settings.activeVaultPath) {
@@ -1782,31 +1828,12 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
-          await invokeTaskManagerPublicationMutation({
-            command: 'append_task_comment',
-            args: {
-              payload: {
-                filePath: await resolveTaskManagerRuntimePath(
-                  settings.activeVaultPath as string,
-                  task.filePath,
-                ),
-                comment: normalizedComment,
-              },
-            },
-          })
-          return
-        }
-        await updateTaskBody(settings.activeVaultPath as string, task.filePath, (currentContent) => {
-          return appendTaskComment(currentContent, normalizedComment)
-        })
-      }, undefined, { syncStrategy: 'snapshot-only' })
+      await runEmbeddedMutation({ kind: 'add-comment', taskPath: task.filePath, comment: normalizedComment }, undefined, { syncStrategy: 'snapshot-only' })
     } catch (runtimeError) {
       console.error(runtimeError)
       setError('No se pudo agregar el comentario.')
     }
-  }, [runSync, settings.activeVaultPath])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const loadTaskSource = useCallback(async (taskPath: string): Promise<string> => {
     if (!settings.activeVaultPath) {
@@ -1895,9 +1922,12 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           boards: nextBoards,
           activeTab: normalizedName,
         }
-        await runSync(async () => {
-          await ensureBoardWorkspace(settings.activeVaultPath as string, normalizedName)
-          await reconcileBoardMarkdownContext(settings.activeVaultPath as string, normalizedName, normalizedContexto)
+        await runEmbeddedMutation({
+          kind: 'create-board',
+          name: normalizedName,
+          color: normalizedColor,
+          contexto: normalizedContexto,
+          activityHoursPerDay: normalizedActivityHoursPerDay,
         }, nextBoards, { publicationSettings: nextPublicationSettings })
         updateSettings((previousSettings) => ({
           ...previousSettings,
@@ -1945,11 +1975,13 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           activeTab: settings.activeTab === previousName ? effectiveName : settings.activeTab,
         }
 
-        await runSync(async () => {
-          if (canRenameOrRecolor && previousName !== effectiveName) {
-            await renameBoardWorkspace(settings.activeVaultPath as string, previousName, effectiveName)
-          }
-          await reconcileBoardMarkdownContext(settings.activeVaultPath as string, effectiveName, normalizedContexto)
+        await runEmbeddedMutation({
+          kind: 'update-board',
+          previousName,
+          name: effectiveName,
+          color: effectiveColor,
+          contexto: normalizedContexto,
+          activityHoursPerDay: normalizedActivityHoursPerDay,
         }, nextBoards, { publicationSettings: nextPublicationSettings })
         updateSettings((previousSettings) => ({
           ...previousSettings,
@@ -1963,7 +1995,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       console.error(runtimeError)
       setError('No se pudo guardar el tablero.')
     }
-  }, [boardDialog.board, boardDialog.mode, closeBoardDialog, runSync, settings, updateSettings])
+  }, [boardDialog.board, boardDialog.mode, closeBoardDialog, runEmbeddedMutation, settings, updateSettings])
 
   const removeBoard = useCallback(async (boardName: string) => {
     if (!settings.activeVaultPath || boardName === DEFAULT_BOARD_NAME) {
@@ -1979,20 +2011,18 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         groups: nextGroups,
         activeTab: settings.activeTab === boardName ? DEFAULT_BOARD_NAME : settings.activeTab,
       }
-      await runSync(async () => {
-        await removeBoardWorkspace(settings.activeVaultPath as string, boardName)
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          boards: nextBoards,
-          groups: nextGroups,
-          activeTab: previousSettings.activeTab === boardName ? DEFAULT_BOARD_NAME : previousSettings.activeTab,
-        }))
-      }, nextBoards, { publicationSettings: nextPublicationSettings })
+      await runEmbeddedMutation({ kind: 'delete-board', board: boardName }, nextBoards, { publicationSettings: nextPublicationSettings })
+      updateSettings((previousSettings) => ({
+        ...previousSettings,
+        boards: nextBoards,
+        groups: nextGroups,
+        activeTab: previousSettings.activeTab === boardName ? DEFAULT_BOARD_NAME : previousSettings.activeTab,
+      }))
     } catch (runtimeError) {
       console.error(runtimeError)
       setError('No se pudo eliminar el tablero.')
     }
-  }, [runSync, settings, updateSettings])
+  }, [runEmbeddedMutation, settings, updateSettings])
 
   const openGroupCreateDialog = useCallback(() => {
     setGroupDialog({ open: true, mode: 'create', group: null })
@@ -2082,27 +2112,23 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       ...settings,
       groups: nextGroups,
     }
-    const initialSharedSettings = loadTaskManagerSettings()
+    const groupMutation: TaskManagerAgentMutation = groupDialog.mode === 'create'
+      ? { kind: 'create-group', board: normalizedBoard, name: normalizedName, color: normalizedColor }
+      : {
+        kind: 'update-group',
+        board: normalizedBoard,
+        previousBoard: groupDialog.group?.board ?? DEFAULT_BOARD_NAME,
+        previousName: groupDialog.group?.name ?? normalizedName,
+        name: normalizedName,
+        color: normalizedColor,
+      }
 
     try {
-      await withTaskManagerPublicationBatch(async (mutationContext) => {
-        await persistSharedMetadata(settings.activeVaultPath as string, nextSettings, { throwOnError: true })
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          groups: nextGroups,
-        }), { syncPublication: false })
-        await syncTaskManagerPublicationSettings(settings.activeVaultPath as string, nextSettings, mutationContext)
-      }, undefined, {
-        vaultPath: settings.activeVaultPath,
-        scopes: ['task-manager', 'groups'],
-        changedPaths: [`${TASKS_ROOT_FOLDER}/${TASK_MANAGER_SHARED_METADATA_FILE}`],
-        onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-          settings.activeVaultPath as string,
-          snapshot,
-          initialSharedSettings,
-          mutationContext,
-        ),
-      })
+      await runEmbeddedMutation(groupMutation, undefined, { publicationSettings: nextSettings })
+      updateSettings((previousSettings) => ({
+        ...previousSettings,
+        groups: nextGroups,
+      }))
     } catch (runtimeError) {
       console.error(runtimeError)
       if (runtimeError instanceof TaskManagerPublicationMutationError && runtimeError.conflict) {
@@ -2122,7 +2148,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
 
     closeGroupDialog()
     setInfoMessage('Grupo actualizado.')
-  }, [closeGroupDialog, groupDialog.group, groupDialog.mode, persistSharedMetadata, recoverPartialTaskManagerPublicationBatch, settings, snapshot, updateSettings])
+  }, [closeGroupDialog, groupDialog.group, groupDialog.mode, runEmbeddedMutation, settings, updateSettings])
 
   const removeGroup = useCallback(async (groupName: string, board: string) => {
     if (!settings.activeVaultPath) {
@@ -2137,34 +2163,11 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
           && (group.board ?? DEFAULT_BOARD_NAME) === board
         )),
       }
-      await runSync(async () => {
-        const currentTasks = snapshotRef.current.tasks
-        const candidateTasks = currentTasks
-          .filter((task) => task.board === board)
-          .filter((task) => task.group === groupName)
-          .filter((task) => task.state !== 'Finalizada' && task.state !== 'Cancelada')
-        const candidateParentNames = new Set(
-          candidateTasks.flatMap((task) => [task.title.trim().toLowerCase(), task.fileName.trim().toLowerCase()]).filter(Boolean),
-        )
-        const tasksToDismiss = candidateTasks.filter((task) => {
-          const parentReference = task.parentTaskName.trim().toLowerCase()
-          if (!parentReference) {
-            return true
-          }
-
-          return !candidateParentNames.has(parentReference)
-        })
-
-        const existingPaths = new Set(currentTasks.map((task) => task.filePath))
-        for (const task of tasksToDismiss) {
-          await moveTaskByState(settings.activeVaultPath as string, task, 'Cancelada', existingPaths)
-        }
-
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          groups: nextPublicationSettings.groups,
-        }))
-      }, undefined, { publicationSettings: nextPublicationSettings })
+      await runEmbeddedMutation({ kind: 'delete-group', board, name: groupName }, undefined, { publicationSettings: nextPublicationSettings })
+      updateSettings((previousSettings) => ({
+        ...previousSettings,
+        groups: nextPublicationSettings.groups,
+      }))
 
       closeGroupDialog()
       setInfoMessage('Grupo eliminado.')
@@ -2175,7 +2178,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
         ? `No se pudo eliminar el grupo: ${runtimeMessage}`
         : 'No se pudo eliminar el grupo.')
     }
-  }, [closeGroupDialog, runSync, settings, updateSettings])
+  }, [closeGroupDialog, runEmbeddedMutation, settings, updateSettings])
 
   const reorderGroupsInBoard = useCallback(async (board: string, orderedGroupNames: string[]) => {
     const normalizedBoard = board.trim().toLowerCase() || DEFAULT_BOARD_NAME
@@ -2199,26 +2202,12 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       ...settings,
       groups: nextGroups,
     }
-    const initialSharedSettings = loadTaskManagerSettings()
     try {
-      await withTaskManagerPublicationBatch(async (mutationContext) => {
-        await persistSharedMetadata(settings.activeVaultPath as string, nextSettings, { throwOnError: true })
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          groups: reorderGroupsForBoard(previousSettings.groups, normalizedBoard, uniqueNames),
-        }), { syncPublication: false })
-        await syncTaskManagerPublicationSettings(settings.activeVaultPath as string, nextSettings, mutationContext)
-      }, undefined, {
-        vaultPath: settings.activeVaultPath,
-        scopes: ['task-manager', 'groups'],
-        changedPaths: [`${TASKS_ROOT_FOLDER}/${TASK_MANAGER_SHARED_METADATA_FILE}`],
-        onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-          settings.activeVaultPath as string,
-          snapshot,
-          initialSharedSettings,
-          mutationContext,
-        ),
-      })
+      await runEmbeddedMutation({ kind: 'reorder-groups', board: normalizedBoard, groupNames: uniqueNames }, undefined, { publicationSettings: nextSettings })
+      updateSettings((previousSettings) => ({
+        ...previousSettings,
+        groups: nextGroups,
+      }))
     } catch (runtimeError) {
       console.error(runtimeError)
       if (runtimeError instanceof TaskManagerPublicationMutationError && runtimeError.conflict) {
@@ -2234,7 +2223,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
       const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
       setError(runtimeMessage || 'No se pudo reordenar los grupos en la publicación.')
     }
-  }, [persistSharedMetadata, recoverPartialTaskManagerPublicationBatch, settings, snapshot, updateSettings])
+  }, [runEmbeddedMutation, settings, updateSettings])
 
   const applyTaskArrangement = useCallback(async (
     updates: Array<{ taskPath: string; order: number; group?: string; parentTaskName?: string }>,
@@ -2250,23 +2239,26 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     }
 
     try {
-      await runSync(async () => {
-        const changedUpdates = selectChangedTaskArrangementUpdates(snapshotRef.current.tasks, sanitizedUpdates)
-        for (const update of changedUpdates) {
-          await updateTaskFrontmatterCompat(settings.activeVaultPath as string, update.taskPath, {
-            order: update.order,
-            ...(typeof update.group === 'string' ? { equipo: update.group } : {}),
-            ...(update.parentTaskName !== undefined
-              ? { parent: update.parentTaskName ? `[[${update.parentTaskName}]]` : '' }
-              : {}),
-          })
-        }
-      })
+      const changedUpdates = selectChangedTaskArrangementUpdates(snapshotRef.current.tasks, sanitizedUpdates)
+      await runEmbeddedMutation(changedUpdates.map((update) => ({
+        kind: 'update-fields' as const,
+        taskPath: update.taskPath,
+        fields: {
+          order: update.order,
+          ...(typeof update.group === 'string' ? { equipo: update.group } : {}),
+          ...(update.parentTaskName !== undefined
+            ? { parent: update.parentTaskName ? `[[${update.parentTaskName}]]` : '' }
+            : {}),
+        },
+      })))
     } catch (runtimeError) {
       console.error(runtimeError)
-      setError('No se pudo reordenar tareas/grupos.')
+      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
+      setError(runtimeMessage
+        ? `No se pudo reordenar tareas/grupos: ${runtimeMessage}`
+        : 'No se pudo reordenar tareas/grupos.')
     }
-  }, [runSync, settings.activeVaultPath, updateTaskFrontmatterCompat])
+  }, [runEmbeddedMutation, settings.activeVaultPath])
 
   const selectPomodoroTask = useCallback((taskPath: string | null) => {
     updateSettings((previousSettings) => ({

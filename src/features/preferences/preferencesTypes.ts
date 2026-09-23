@@ -3,7 +3,6 @@ import type { InkMathPreferences } from '../../services/preferences/inkMathSetti
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import type { Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
 import type { Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
-import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 
 export interface PreferencesState {
@@ -14,6 +13,7 @@ export interface PreferencesState {
   telegramSettings: TelegramPreferences
   qwen3TtsSettings: Qwen3TtsPreferences
   qwen3AsrSettings: Qwen3AsrPreferences
-  backupPreferences: BackupPreferences
   taskManagerPublicationPreferences: TaskManagerPublicationPreferences
+  /** Device preferences arrive from the backend after start. */
+  devicePreferencesLoaded: boolean
 }

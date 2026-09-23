@@ -1,6 +1,5 @@
-import { loadLibraryFileOptions } from './chatAttachmentRuntime'
 import type { StoredChatMessage } from './chatDocumentStorage'
-import type { TaskExecutionStep } from './chatScopedAgentRuntime'
+import type { TaskExecutionStep } from './chatAgentTypes'
 import { createGlobalAiAgent, createAppAiRequest, runGlobalAiChat } from './globalAiChatRuntime'
 import { runNotiaChatReply } from './notiaChatRuntime'
 import { isGlobalAiChatRequest } from '../../types/ai/globalAiContract'
@@ -26,24 +25,10 @@ export interface MeetingEphemeralChatReplyInput {
 export async function runMeetingEphemeralChatReply(
   input: MeetingEphemeralChatReplyInput,
 ): Promise<string> {
-  const files = await loadLibraryFileOptions(input.library)
-  const agent = await createGlobalAiAgent({
-    scope: 'library',
-    persistencePolicy: 'ephemeral-no-memory',
-    readOnly: true,
-    workspaceSnapshot: buildWorkspaceAiSnapshot({
-      view: 'meeting',
-      scope: 'library',
-      library: input.library,
-      activeDocument: null,
-      openTabs: [],
-    }),
-    actor: { libraryUserId: 'user-owner' },
-    financeSource: 'app',
-    aiPreferences: input.aiPreferences,
+  const agent = createGlobalAiAgent({
     library: input.library,
-    scopePaths: files.map((file) => file.path),
-    promptFileName: loadSelectedAgentPromptFileName(input.library.id),
+    actor: { libraryUserId: 'user-owner' },
+    promptFileName: await loadSelectedAgentPromptFileName(input.library.id),
     requestClarification: async (question, signal) => {
       if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
       return window.prompt(question)?.trim() ?? ''
@@ -57,7 +42,6 @@ export async function runMeetingEphemeralChatReply(
         `Aprobar este plan de ejecución:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
       ),
     }),
-    onExecutionPlanChange: input.onExecutionPlanChange,
   })
 
   const prompt = [
@@ -92,7 +76,6 @@ export async function runMeetingEphemeralChatReply(
       agent,
       prompt,
       previousMessages: input.previousMessages,
-      intentContext: {},
     }, {
       abortSignal: input.signal,
       onMessageDelta: input.onMessageDelta,
@@ -103,7 +86,6 @@ export async function runMeetingEphemeralChatReply(
     request,
     agent,
     previousMessages: input.previousMessages,
-    intentContext: {},
   }, {
     abortSignal: input.signal,
     onMessageDelta: input.onMessageDelta,

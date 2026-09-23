@@ -72,10 +72,11 @@ const documentsSlice = createSlice({
         tab.saveStatus = action.payload.status
       }
     },
-    updateTabSavedSource(state, action: PayloadAction<{ path: string; source: string }>) {
+    updateTabSavedSource(state, action: PayloadAction<{ path: string; source: string; revision?: string }>) {
       const tab = state.openTabs.find((t) => t.document.path === action.payload.path)
       if (tab) {
         tab.latestSavedSource = action.payload.source
+        tab.latestSavedRevision = action.payload.revision
         tab.saveStatus = 'idle'
       }
     },

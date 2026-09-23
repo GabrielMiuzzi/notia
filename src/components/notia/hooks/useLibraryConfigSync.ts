@@ -58,7 +58,7 @@ export function useLibraryConfigSync({
   const libraryConfigLoadedRef = useRef(false)
   const initialConfigRef = useRef<NotiaLibraryConfig | null>(null)
   const libraryConfigTimeoutRef = useRef<number | null>(null)
-  const activeLibraryPathRef = useRef<string | null>(null)
+  const activeLibraryIdRef = useRef<string | null>(null)
   const fallbackPreferencesRef = useRef({
     aiPreferences,
     explorerRefreshIntervalMs,
@@ -94,7 +94,7 @@ export function useLibraryConfigSync({
       }
       libraryConfigLoadedRef.current = false
       initialConfigRef.current = null
-      activeLibraryPathRef.current = null
+      activeLibraryIdRef.current = null
       return
     }
 
@@ -114,9 +114,7 @@ export function useLibraryConfigSync({
     initialConfigRef.current = null
 
     void (async () => {
-      const config = await readLibraryConfig(activeLibrary.path, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      })
+      const config = await readLibraryConfig(activeLibrary.id)
 
       if (isCancelled) {
         return
@@ -214,16 +212,14 @@ export function useLibraryConfigSync({
       }
     }
 
-    activeLibraryPathRef.current = activeLibrary.path
+    activeLibraryIdRef.current = activeLibrary.id
 
     if (libraryConfigTimeoutRef.current) {
       window.clearTimeout(libraryConfigTimeoutRef.current)
     }
 
     libraryConfigTimeoutRef.current = window.setTimeout(() => {
-      void writeLibraryConfig(activeLibraryPathRef.current!, config, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      }).then((result) => {
+      void writeLibraryConfig(activeLibraryIdRef.current!, config).then((result) => {
         if (result.ok) {
           initialConfigRef.current = config
         }

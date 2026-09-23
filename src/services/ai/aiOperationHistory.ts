@@ -1,3 +1,13 @@
+import { invoke } from '@tauri-apps/api/core'
+import type { NotiaLibrary } from '../../types/notia'
+import { joinLibraryPath } from '../libraries/libraryPathMapping'
+
+/*
+ * The backend records every undoable change the agent applies and marks
+ * the undone ones (`agent_history.rs`); the interface lists them and asks
+ * for a diff. Nothing is kept in the WebView.
+ */
+
 export type AiOperationHistoryStatus = 'applied' | 'undone'
 
 export interface AiOperationHistoryEntry {
@@ -7,58 +17,34 @@ export interface AiOperationHistoryEntry {
   status: AiOperationHistoryStatus
   appliedAt: number
   undoneAt: number | null
+  hasDiff: boolean
 }
 
-const STORAGE_KEY = 'notia:ai-operation-history:v1'
-const MAX_ENTRIES = 100
-
-function isEntry(value: unknown): value is AiOperationHistoryEntry {
-  if (!value || typeof value !== 'object') return false
-  const candidate = value as Partial<AiOperationHistoryEntry>
-  return typeof candidate.operationId === 'string'
-    && typeof candidate.documentPath === 'string'
-    && typeof candidate.summary === 'string'
-    && (candidate.status === 'applied' || candidate.status === 'undone')
-    && typeof candidate.appliedAt === 'number'
-    && (candidate.undoneAt === null || typeof candidate.undoneAt === 'number')
+export interface AiOperationDiff {
+  operationId: string
+  summary: string
+  files: { path: string; previousSource: string; nextSource: string }[]
 }
 
-function readEntries(): AiOperationHistoryEntry[] {
-  if (typeof window === 'undefined') return []
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    const entries = raw ? JSON.parse(raw) as unknown : []
-    return Array.isArray(entries) ? entries.filter(isEntry).slice(0, MAX_ENTRIES) : []
-  } catch {
-    return []
-  }
+interface BackendHistoryEntry extends Omit<AiOperationHistoryEntry, 'documentPath'> {
+  logicalPath: string
 }
 
-function writeEntries(entries: readonly AiOperationHistoryEntry[]): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(0, MAX_ENTRIES)))
-  } catch {
-    // The in-memory operation journal remains authoritative when storage is unavailable.
-  }
+export async function listAiOperationHistory(library: NotiaLibrary): Promise<AiOperationHistoryEntry[]> {
+  const entries = await invoke<BackendHistoryEntry[]>('backend_agent_history', { payload: { libraryId: library.id } })
+  return entries.map(({ logicalPath, ...entry }) => ({ ...entry, documentPath: joinLibraryPath(library.path, logicalPath) }))
 }
 
-export function recordAiOperationHistory(entry: AiOperationHistoryEntry): void {
-  const next = [entry, ...readEntries().filter((candidate) => candidate.operationId !== entry.operationId)]
-  writeEntries(next)
-}
-
-export function markAiOperationHistoryUndone(operationId: string, undoneAt: number): void {
-  const next = readEntries().map((entry) => entry.operationId === operationId
-    ? { ...entry, status: 'undone' as const, undoneAt }
-    : entry)
-  writeEntries(next)
-}
-
-export function listAiOperationHistory(): AiOperationHistoryEntry[] {
-  return readEntries()
-}
-
-export function clearAiOperationHistoryForTests(): void {
-  if (typeof window !== 'undefined') window.localStorage.removeItem(STORAGE_KEY)
+export async function loadAiOperationDiff(library: NotiaLibrary, operationId: string): Promise<AiOperationDiff | null> {
+  const diff = await invoke<{ operationId: string; summary: string; logicalPath: string; previousSource: string; nextSource: string } | null>(
+    'backend_agent_history_diff',
+    { payload: { libraryId: library.id, operationId } },
+  )
+  return diff
+    ? {
+        operationId: diff.operationId,
+        summary: diff.summary,
+        files: [{ path: joinLibraryPath(library.path, diff.logicalPath), previousSource: diff.previousSource, nextSource: diff.nextSource }],
+      }
+    : null
 }

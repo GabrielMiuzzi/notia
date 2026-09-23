@@ -17,17 +17,14 @@ import {
   queueFinanceAudit,
   repairFinanceRelation,
   listFinanceRelationRepairs,
-  listFinanceServiceOccurrences,
   listAllFinanceTransactions,
-  listAllFinanceSavingsMovements,
-  listFinanceServices,
-  listAllFinanceServiceOccurrences,
-  listFinanceServiceInvoices,
-  listFinanceInvestments,
+  draftFinanceSalary,
+  getFinanceRelationAudit,
+  previewFinanceCardServices,
+  validateFinancePurchase,
 } from "../services/financeService";
 import type {
   FinanceAccount,
-  FinanceCategory,
   FinanceCreditCardStatement,
   FinanceDebtRatioHistoryPoint,
   FinanceCurrency,
@@ -37,17 +34,14 @@ import type {
   FinancePurchaseRecord,
   FinancePurchaseSummary,
   FinanceSalaryEvolution,
-  FinanceSavingsReserve,
   FinanceRelationRepairType,
   FinanceTransaction,
   FinanceRelationRepair,
+  FinancePurchaseValidation,
 } from "../types/financeTypes";
-import { validateTicketArithmetic } from "../engines/ticketValidation";
-import { parseSalaryExtraction } from "../engines/salaryExtraction";
 import { financeErrorMessage } from "../engines/financeError";
 import { formatFinanceLoadedDate } from "../engines/financeLoadedDate";
-import { reconcileFinanceCardServices } from "../engines/serviceEngine";
-import { auditFinanceRelations, type FinanceRelationAudit, type FinanceRelationEntity, type FinanceRelationIssue } from "../engines/financeRelations";
+import type { FinanceRelationAudit, FinanceRelationEntity, FinanceRelationIssue } from "../types/financeViews";
 import { CreditCardStatementForm } from "./CreditCardStatementForm";
 import { CreditCardEvolutionChart } from "./CreditCardEvolutionChart";
 import { DebtRatioEvolutionChart } from "./DebtRatioEvolutionChart";
@@ -56,8 +50,6 @@ import { SalaryEvolutionChart } from "./SalaryEvolutionChart";
 interface Props {
   library: NotiaLibrary;
   accounts: FinanceAccount[];
-  categories: FinanceCategory[];
-  reserves: FinanceSavingsReserve[];
   debtRatioHistory: FinanceDebtRatioHistoryPoint[];
   historyFrom: string;
   historyTo: string;
@@ -76,7 +68,7 @@ function formatSalaryNet(amount: string, currency: FinanceCurrency): string {
   return new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
 }
 
-export function FinanceRecordsPanel({ library, accounts, categories, reserves, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
+export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
   const { confirm } = useConfirmationEngine();
   const [form, setForm] = useState<FormKind>(null);
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
@@ -92,7 +84,7 @@ export function FinanceRecordsPanel({ library, accounts, categories, reserves, d
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
-      const [purchaseRows, priceRows, salaryRows, statementRows, worth, worthHistory, transactions, savingsMovements, services, occurrences, invoices, investments, repairs] = await Promise.all([
+      const [purchaseRows, priceRows, salaryRows, statementRows, worth, worthHistory, transactions, audit, repairs] = await Promise.all([
         listFinancePurchases(library),
         listFinancePriceHistory(library),
         listFinanceSalaries(library),
@@ -100,11 +92,7 @@ export function FinanceRecordsPanel({ library, accounts, categories, reserves, d
         getFinanceNetWorth(library, today()),
         listFinanceNetWorthHistory(library),
         listAllFinanceTransactions(library),
-        listAllFinanceSavingsMovements(library),
-        listFinanceServices(library),
-        listAllFinanceServiceOccurrences(library),
-        listFinanceServiceInvoices(library),
-        listFinanceInvestments(library),
+        getFinanceRelationAudit(library),
         listFinanceRelationRepairs(library),
       ]);
       setPurchases(purchaseRows);
@@ -115,13 +103,14 @@ export function FinanceRecordsPanel({ library, accounts, categories, reserves, d
       setNetWorthHistory(worthHistory);
       setTransactions(transactions);
       setRelationRepairs(repairs);
-      setRelationAudit(auditFinanceRelations({ accounts, categories, transactions, services, occurrences, invoices, reserves, savingsMovements, purchases: purchaseRows, statements: statementRows, investments }));
+      setRelationAudit(audit);
       setError(null);
     } catch (reason) {
       setError(financeErrorMessage(reason));
     }
-  }, [accounts, categories, historyFrom, historyTo, library, reserves]);
-  useEffect(() => void load(), [load]);
+  }, [historyFrom, historyTo, library]);
+  // The dashboard passes new accounts after every refresh; reload then too.
+  useEffect(() => void load(), [load, accounts]);
   const saved = async () => {
     setForm(null);
     await Promise.all([load(), onChanged()]);
@@ -215,8 +204,7 @@ export function FinanceRecordsPanel({ library, accounts, categories, reserves, d
       {form === "ticket" && <TicketForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (purchase) => { await saveFinancePurchase(library, purchase); await queueFinanceAudit(library, purchase.observedAt.slice(0, 7), `ui:purchase:${purchase.id}`, "Alta de compra desde Finanzas"); await saved(); }} />}
       {form === "salary" && <SalaryForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (salary) => { await saveFinanceSalary(library, salary); await queueFinanceAudit(library, salary.paymentDate.slice(0, 7), `ui:salary:${salary.id}`, "Alta de sueldo desde Finanzas"); await saved(); }} />}
       {form === "card-statement" && <CreditCardStatementForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (statement) => {
-        const [services, occurrences] = await Promise.all([listFinanceServices(library), listFinanceServiceOccurrences(library, statement.period)]);
-        const preview = reconcileFinanceCardServices({ ...statement, items: statement.items.map((item) => ({ ...item, transactionId: item.transactionId ?? `preview:${item.id}` })) }, services, occurrences);
+        const preview = await previewFinanceCardServices(library, statement);
         const previewText = preview.assignments.map((assignment) => `${assignment.lineId} → ${assignment.period}`).join(", ") || "sin asignaciones automáticas";
         const ambiguityText = preview.ambiguousGroups.length ? ` Hay ${preview.ambiguousGroups.length} grupo(s) ambiguo(s) que no se asignarán automáticamente.` : "";
         const accepted = await confirm({ title: "Vista previa del resumen y conciliación", message: `Se guardará el resumen del período ${statement.period}. Conciliación prevista: ${previewText}.${ambiguityText}`, confirmLabel: "Continuar", tone: "default" });
@@ -274,12 +262,27 @@ function AccountCurrencyFields({ accounts, accountId, currency, setAccountId, se
   return <><label>Cuenta<select required value={accountId} onChange={(event) => { const id = event.target.value; setAccountId(id); const account = accounts.find((candidate) => candidate.id === id); if (account) setCurrency(account.currency); }}><option value="">Seleccionar</option>{accounts.filter((account) => account.active && account.accountType !== "savings_reserve").map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label><label>Moneda<select value={currency} disabled><option>{currency}</option></select></label></>;
 }
 
+/** Ticket arithmetic from the backend, requested once the fields settle. */
+function usePurchaseValidation(purchase: FinancePurchaseRecord): FinancePurchaseValidation | null {
+  const [validation, setValidation] = useState<FinancePurchaseValidation | null>(null);
+  // Ids are regenerated on every render; the key keeps only the values.
+  const key = JSON.stringify({ ...purchase, id: "", items: purchase.items.map((item) => ({ ...item, id: "" })) });
+  useEffect(() => {
+    let isCurrent = true;
+    const timer = window.setTimeout(() => {
+      void validateFinancePurchase(JSON.parse(key) as FinancePurchaseRecord).then((result) => { if (isCurrent) setValidation(result); }).catch(() => { if (isCurrent) setValidation(null); });
+    }, 250);
+    return () => { isCurrent = false; window.clearTimeout(timer); };
+  }, [key]);
+  return validation;
+}
+
 function TicketForm({ library, accounts, onCancel, onSave }: FormProps<FinancePurchaseRecord> & { library: NotiaLibrary }) {
   const [accountId, setAccountId] = useState(""); const [currency, setCurrency] = useState<FinanceCurrency>("ARS"); const [merchant, setMerchant] = useState(""); const [date, setDate] = useState(today()); const [lines, setLines] = useState(""); const [discount, setDiscount] = useState("0"); const [tax, setTax] = useState("0"); const [total, setTotal] = useState(""); const [reference, setReference] = useState(""); const [rawExtraction, setRawExtraction] = useState<string | null>(null); const [extracting, setExtracting] = useState(false); const [status, setStatus] = useState<"pending" | "confirmed">("pending"); const [error, setError] = useState<string | null>(null);
   const items = lines.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const [description = "", quantity = "1", unitPrice = "0", lineTotal = "0"] = line.split("|").map((part) => part.trim()); return { id: crypto.randomUUID(), originalDescription: description, quantity, unitPrice, discountAmount: "0", lineTotal }; });
   const subtotal = items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0).toFixed(2);
   const purchase: FinancePurchaseRecord = { id: crypto.randomUUID(), accountId, merchantName: merchant, observedAt: date, currency, subtotalAmount: subtotal, discountAmount: discount, taxAmount: tax, totalAmount: total, status, sourceReference: reference || null, rawExtraction, items };
-  const validation = validateTicketArithmetic(purchase);
+  const validation = usePurchaseValidation(purchase);
   const submit = async (event: FormEvent) => { event.preventDefault(); if (status === "confirmed" && !validation?.valid) { setError("Revisá la discrepancia antes de confirmar."); return; } try { await onSave(purchase); } catch (reason) { setError(financeErrorMessage(reason)); } };
   const extract = async () => { if (!reference.trim()) return; setExtracting(true); setError(null); try { const result = await extractFinanceDocument(library, `ticket-extraction:${crypto.randomUUID()}`, reference, "ticket"); setRawExtraction(JSON.stringify(result.rawResult)); } catch (reason) { setError(financeErrorMessage(reason)); } finally { setExtracting(false); } };
   return <DialogForm title="Vista previa del ticket" onSubmit={submit} onCancel={onCancel} error={error}><AccountCurrencyFields accounts={accounts} accountId={accountId} currency={currency} setAccountId={setAccountId} setCurrency={setCurrency} /><label>Comercio<input required value={merchant} onChange={(event) => setMerchant(event.target.value)} /></label><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Productos, uno por línea: descripción | cantidad | precio unitario | total<textarea required rows={5} value={lines} onChange={(event) => setLines(event.target.value)} placeholder="Yerba 1kg | 1 | 3200.00 | 3200.00" /></label><div className="finance-form-row"><label>Subtotal<input readOnly value={subtotal} /></label><label>Descuento<input inputMode="decimal" value={discount} onChange={(event) => setDiscount(event.target.value)} /></label><label>Impuestos<input inputMode="decimal" value={tax} onChange={(event) => setTax(event.target.value)} /></label><label>Total<input required inputMode="decimal" value={total} onChange={(event) => setTotal(event.target.value)} /></label></div><p className={validation?.valid ? "finance-success" : "finance-warning"} role="status">Calculado: {validation?.calculatedTotal ?? "—"} · diferencia: {validation?.discrepancy ?? "—"}</p><label>Ruta del archivo original<input value={reference} onChange={(event) => setReference(event.target.value)} /></label><button type="button" disabled={!reference.trim() || extracting} onClick={() => void extract()}>{extracting ? "Extrayendo…" : "Extraer con LlamaCloud"}</button>{rawExtraction && <details><summary>Respuesta cruda preservada</summary><pre className="finance-raw-extraction">{rawExtraction}</pre></details>}<label>Estado<select value={status} onChange={(event) => setStatus(event.target.value as "pending" | "confirmed")}><option value="pending">Pendiente para corregir</option><option value="confirmed">Confirmado</option></select></label></DialogForm>;
@@ -288,7 +291,7 @@ function TicketForm({ library, accounts, onCancel, onSave }: FormProps<FinancePu
 function SalaryForm({ library, accounts, onCancel, onSave }: FormProps<Parameters<typeof saveFinanceSalary>[1]> & { library: NotiaLibrary }) {
   const [accountId, setAccountId] = useState(""); const [currency, setCurrency] = useState<FinanceCurrency>("ARS"); const [period, setPeriod] = useState(today().slice(0, 7)); const [date, setDate] = useState(today()); const [employer, setEmployer] = useState(""); const [gross, setGross] = useState(""); const [deductions, setDeductions] = useState("0"); const [net, setNet] = useState(""); const [conceptsText, setConceptsText] = useState(""); const [status, setStatus] = useState<"pending" | "confirmed">("pending"); const [reference, setReference] = useState(""); const [rawExtraction, setRawExtraction] = useState<string | null>(null); const [extracting, setExtracting] = useState(false); const [error, setError] = useState<string | null>(null);
   const calculated = (Number(gross || 0) - Number(deductions || 0)).toFixed(2);
-  const extract = async () => { setExtracting(true); setError(null); try { const result = await extractFinanceDocument(library, crypto.randomUUID(), reference, "salary"); const draft = parseSalaryExtraction(result.rawResult); if (draft.period) setPeriod(draft.period.slice(0, 7)); if (draft.paymentDate) setDate(draft.paymentDate.slice(0, 10)); if (draft.employer) setEmployer(draft.employer); if (draft.grossAmount) setGross(draft.grossAmount); if (draft.deductionsTotal) setDeductions(draft.deductionsTotal); if (draft.netAmount) setNet(draft.netAmount); if (draft.currency) setCurrency(draft.currency); if (draft.concepts?.length) setConceptsText(draft.concepts.map((concept) => `${concept.name} | ${concept.conceptType} | ${concept.amount}`).join("\n")); setRawExtraction(JSON.stringify(result.rawResult, null, 2)); } catch (reason) { setError(financeErrorMessage(reason)); } finally { setExtracting(false); } };
+  const extract = async () => { setExtracting(true); setError(null); try { const result = await extractFinanceDocument(library, crypto.randomUUID(), reference, "salary"); const draft = await draftFinanceSalary(result.rawResult); if (draft.period) setPeriod(draft.period.slice(0, 7)); if (draft.paymentDate) setDate(draft.paymentDate.slice(0, 10)); if (draft.employer) setEmployer(draft.employer); if (draft.grossAmount) setGross(draft.grossAmount); if (draft.deductionsTotal) setDeductions(draft.deductionsTotal); if (draft.netAmount) setNet(draft.netAmount); if (draft.currency) setCurrency(draft.currency); if (draft.concepts?.length) setConceptsText(draft.concepts.map((concept) => `${concept.name} | ${concept.conceptType} | ${concept.amount}`).join("\n")); setRawExtraction(JSON.stringify(result.rawResult, null, 2)); } catch (reason) { setError(financeErrorMessage(reason)); } finally { setExtracting(false); } };
   const submit = async (event: FormEvent) => { event.preventDefault(); try { await onSave({ id: crypto.randomUUID(), period, paymentDate: date, employer, grossAmount: gross, deductionsTotal: deductions, netAmount: net, currency, accountId, status, sourceReference: reference || null, rawExtraction, concepts: conceptsText.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const [name = "", type = "earning", amount = "0"] = line.split("|").map((part) => part.trim()); return { id: crypto.randomUUID(), name, conceptType: type === "deduction" ? "deduction" : "earning", amount }; }) }); } catch (reason) { setError(financeErrorMessage(reason)); } };
   return <DialogForm title="Vista previa del recibo de sueldo" onSubmit={submit} onCancel={onCancel} error={error}><AccountCurrencyFields accounts={accounts} accountId={accountId} currency={currency} setAccountId={setAccountId} setCurrency={setCurrency} /><label>Archivo original dentro de la biblioteca<input value={reference} onChange={(event) => setReference(event.target.value)} /></label><button type="button" disabled={!reference.trim() || extracting} onClick={() => void extract()}>{extracting ? "Extrayendo…" : "Extraer campos con LlamaCloud"}</button><label>Período<input required type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label><label>Fecha de cobro<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Empleador<input required value={employer} onChange={(event) => setEmployer(event.target.value)} /></label><div className="finance-form-row"><label>Bruto<input required inputMode="decimal" value={gross} onChange={(event) => setGross(event.target.value)} /></label><label>Descuentos<input required inputMode="decimal" value={deductions} onChange={(event) => setDeductions(event.target.value)} /></label><label>Neto<input required inputMode="decimal" value={net} onChange={(event) => setNet(event.target.value)} /></label></div><p className={calculated === Number(net || 0).toFixed(2) ? "finance-success" : "finance-warning"} role="status">Bruto menos descuentos: {calculated}</p><label>Conceptos: nombre | earning/deduction | importe<textarea rows={4} value={conceptsText} onChange={(event) => setConceptsText(event.target.value)} /></label>{rawExtraction && <details><summary>Respuesta cruda preservada</summary><pre className="finance-raw-extraction">{rawExtraction}</pre></details>}<label>Estado<select value={status} onChange={(event) => setStatus(event.target.value as "pending" | "confirmed")}><option value="pending">Pendiente</option><option value="confirmed">Confirmado y crear ingreso</option></select></label></DialogForm>;
 }

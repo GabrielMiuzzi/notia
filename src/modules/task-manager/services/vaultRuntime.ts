@@ -18,6 +18,11 @@ import {
   type FilesystemReadTextResult,
 } from '../../../services/files/filesystemEngine'
 import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
+import {
+  getLibraryMarkdownDocumentOptions,
+  readLibraryFileContent,
+  writeLibraryFileContent,
+} from '../../../services/libraries/libraryDocumentRuntime'
 import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
 
 type OperationResult = FilesystemOperationResult
@@ -43,7 +48,27 @@ function normalizeVaultRef(vault: TaskManagerVaultRef | null): TaskManagerVaultR
     androidTreeUri: typeof vault.androidTreeUri === 'string' && vault.androidTreeUri.trim()
       ? vault.androidTreeUri
       : undefined,
+    libraryId: typeof vault.libraryId === 'string' && vault.libraryId.trim()
+      ? vault.libraryId.trim()
+      : undefined,
+    libraryUserId: typeof vault.libraryUserId === 'string' && vault.libraryUserId.trim()
+      ? vault.libraryUserId.trim()
+      : undefined,
   }
+}
+
+function getMarkdownDocumentOptions(filePath: string) {
+  const vaultRef = activeTaskManagerVaultRef
+  if (!vaultRef?.libraryId) {
+    return undefined
+  }
+
+  return getLibraryMarkdownDocumentOptions({
+    id: vaultRef.libraryId,
+    name: 'Task Manager',
+    path: vaultRef.path,
+    androidTreeUri: vaultRef.androidTreeUri,
+  }, filePath)
 }
 
 function resolveAndroidDirectoryUri(pathValue: string): string | undefined {
@@ -86,6 +111,19 @@ function collectMarkdownPathsFromTree(
 
 export function setActiveTaskManagerVaultContext(vault: TaskManagerVaultRef | null): void {
   activeTaskManagerVaultRef = normalizeVaultRef(vault)
+}
+
+export function getActiveTaskManagerVaultContext(): TaskManagerVaultRef | null {
+  return activeTaskManagerVaultRef
+}
+
+/**
+ * True when the active vault has a library identity: the Rust store then owns
+ * every workspace file (tickets, indexes, shared metadata, Pomodoro) and the
+ * WebView must not write them itself.
+ */
+export function hasTaskManagerBackendIdentity(): boolean {
+  return Boolean(activeTaskManagerVaultRef?.libraryId?.trim() && activeTaskManagerVaultRef.libraryUserId?.trim())
 }
 
 function notifyLibraryTreeChanged(pathHint: string) {
@@ -186,9 +224,7 @@ async function readMarkdownFilesFromPaths(
       }
 
       const filePath = filePaths[currentIndex]
-      const result = await readTextFile(filePath, {
-        androidDirectoryUri: resolveAndroidDirectoryUri(filePath),
-      })
+      const result = await readFileContent(filePath)
       if (!result.ok) {
         continue
       }
@@ -232,34 +268,32 @@ export async function readMarkdownFiles(directoryPath: string): Promise<Markdown
   }
 
   try {
-    if (getRuntimeDevice() === 'Android') {
-      const vaultRef = activeTaskManagerVaultRef
-      if (vaultRef && isNestedPath(vaultRef.path, directoryPath)) {
-        const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath).replace(/[\\/]+$/, '')
-        const normalizedVaultPath = normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')
-        const subtreeNodes = await readLibraryTree(normalizedDirectoryPath, {
-          androidDirectoryUri: resolveAndroidDirectoryUri(normalizedDirectoryPath) ?? vaultRef.androidTreeUri,
+    const vaultRef = activeTaskManagerVaultRef
+    if (vaultRef?.libraryId && isNestedPath(vaultRef.path, directoryPath)) {
+      const normalizedDirectoryPath = normalizeFilesystemPath(directoryPath).replace(/[\\/]+$/, '')
+      const normalizedVaultPath = normalizeFilesystemPath(vaultRef.path).replace(/[\\/]+$/, '')
+      const subtreeNodes = await readLibraryTree(normalizedDirectoryPath, {
+        androidDirectoryUri: resolveAndroidDirectoryUri(normalizedDirectoryPath) ?? vaultRef.androidTreeUri,
+      })
+
+      const collectedMarkdownPaths: string[] = []
+      collectMarkdownPathsFromTree(subtreeNodes, collectedMarkdownPaths)
+
+      if (getRuntimeDevice() === 'Android' && collectedMarkdownPaths.length === 0 && normalizedDirectoryPath !== normalizedVaultPath) {
+        const rootTree = await readLibraryTree(vaultRef.path, {
+          androidDirectoryUri: vaultRef.androidTreeUri,
         })
-
-        const collectedMarkdownPaths: string[] = []
-        collectMarkdownPathsFromTree(subtreeNodes, collectedMarkdownPaths)
-
-        if (collectedMarkdownPaths.length === 0 && normalizedDirectoryPath !== normalizedVaultPath) {
-          const rootTree = await readLibraryTree(vaultRef.path, {
-            androidDirectoryUri: vaultRef.androidTreeUri,
-          })
-          collectMarkdownPathsFromTree(rootTree, collectedMarkdownPaths)
-        }
-
-        const filteredMarkdownPaths = Array.from(new Set(collectedMarkdownPaths))
-          .filter((filePath) => (
-            normalizedDirectoryPath === normalizedVaultPath
-            || isNestedPath(normalizedDirectoryPath, filePath)
-          ))
-          .sort((left, right) => left.localeCompare(right, 'es'))
-
-        return await readMarkdownFilesFromPaths(filteredMarkdownPaths, 6)
+        collectMarkdownPathsFromTree(rootTree, collectedMarkdownPaths)
       }
+
+      const filteredMarkdownPaths = Array.from(new Set(collectedMarkdownPaths))
+        .filter((filePath) => (
+          normalizedDirectoryPath === normalizedVaultPath
+          || isNestedPath(normalizedDirectoryPath, filePath)
+        ))
+        .sort((left, right) => left.localeCompare(right, 'es'))
+
+      return await readMarkdownFilesFromPaths(filteredMarkdownPaths, 6)
     }
 
     return await readMarkdownDocuments(normalizeFilesystemPath(directoryPath), {
@@ -314,9 +348,12 @@ export async function readFileContent(filePath: string): Promise<ReadLibraryFile
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
-    const result = await readTextFile(normalizedPath, {
-      androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
-    })
+    const documentOptions = getMarkdownDocumentOptions(normalizedPath)
+    const result = documentOptions
+      ? await readLibraryFileContent(normalizedPath, documentOptions)
+      : await readTextFile(normalizedPath, {
+        androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
+      })
     if (result.ok || result.error) {
       return result
     }
@@ -335,10 +372,17 @@ export async function writeFileContent(
   const normalizedPath = normalizeFilesystemPath(filePath)
 
   try {
-    const result = await writeTextFile(normalizedPath, content, {
+    const documentOptions = getMarkdownDocumentOptions(normalizedPath)
+    const filesystemOptions = {
       androidDirectoryUri: resolveAndroidDirectoryUri(normalizedPath),
       expectedRevision,
-    })
+    }
+    const writeOptions = expectedRevision === undefined
+      ? (documentOptions ?? filesystemOptions)
+      : { ...(documentOptions ?? filesystemOptions), expectedRevision }
+    const result = documentOptions
+      ? await writeLibraryFileContent(normalizedPath, content, writeOptions)
+      : await writeTextFile(normalizedPath, content, writeOptions)
     if (result.ok) {
       notifyLibraryTreeChanged(normalizedPath)
     }

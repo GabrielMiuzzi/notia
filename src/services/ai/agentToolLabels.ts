@@ -1,0 +1,46 @@
+// Words shown to the user for the tool a plan step will use.
+
+const TOOL_LABELS: Record<string, string> = {
+  read_active_markdown_document: 'leyendo el documento activo',
+  replace_active_markdown_document: 'preparando una mejora del documento',
+  insert_active_markdown_document: 'preparando una inserción en el documento',
+  move_document_block: 'reordenando un bloque del documento',
+  verify_operation: 'verificando el cambio aplicado',
+  apply_document_patch: 'aplicando la mejora propuesta',
+  replace_document_selection: 'preparando una mejora de la selección',
+  replace_document_block: 'preparando una mejora de un bloque',
+  delete_document_block: 'preparando la eliminación solicitada',
+  update_document_frontmatter: 'actualizando los metadatos del documento',
+  create_document_from_template: 'preparando una nota nueva',
+  search_library_documents: 'buscando en la biblioteca',
+  search_library_context: 'consultando el contexto de la biblioteca',
+  read_library_documents: 'leyendo documentos autorizados',
+  read_all_task_tickets: 'leyendo las tareas',
+  get_task_board_summary: 'resumiendo el tablero autorizado',
+  duplicate_task: 'duplicando el ticket autorizado',
+  archive_task: 'archivando el ticket autorizado',
+  restore_task: 'restaurando el ticket autorizado',
+  search_task_tickets: 'buscando tareas',
+  search_task_context: 'consultando el contexto de tareas',
+  get_finance_dashboard: 'consultando el resumen financiero',
+  get_finance_dollar_quotes: 'consultando cotizaciones',
+  get_finance_inflation_indices: 'consultando índices económicos',
+  get_finance_historical_dollar_quotes: 'consultando el historial de cotizaciones',
+  request_user_clarification: 'preparando una pregunta para vos',
+  set_task_execution_plan: 'organizando el plan de trabajo',
+  set_agent_execution_plan: 'organizando el plan de trabajo',
+  get_workspace_context: 'revisando el contexto autorizado',
+  compare_documents: 'comparando documentos autorizados',
+  link_ticket_document: 'vinculando el ticket con el documento',
+  extract_document_facts: 'extrayendo datos explícitos del documento',
+  update_document_tags: 'actualizando los tags del documento',
+  materialize_document_facts: 'preparando una nota con la extracción',
+  update_document_wikilink: 'actualizando un wikilink autorizado',
+  get_active_document_outline: 'ubicando la sección del documento',
+  read_active_document_range: 'leyendo la parte necesaria del documento',
+  request_file_read_permission: 'solicitando permiso para leer un archivo',
+}
+
+export function agentToolLabel(toolName: string): string {
+  return TOOL_LABELS[toolName] ?? 'ejecutando una operación autorizada'
+}

@@ -64,3 +64,9 @@ pub async fn synthesize_qwen3_tts_speech(
     .await
     .map_err(|error| format!("Fallo la tarea de sintesis Qwen3-TTS: {error}"))?
 }
+
+/// Texts to synthesize, in order, for an answer written in Markdown.
+#[tauri::command]
+pub fn qwen3_tts_speech_plan(markdown: String) -> Vec<String> {
+    notia_backend_core::speech_text::speech_plan(&markdown)
+}

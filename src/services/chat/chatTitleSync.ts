@@ -1,49 +1,28 @@
-import { generateAiChatTitle } from '../ai/aiRuntime'
-import type { AiPreferences } from '../preferences/aiSettingsStorage'
+import { invoke } from '@tauri-apps/api/core'
 import type { NotiaLibrary } from '../../types/notia'
-import { saveChatDocument, type StoredChatDocument } from './chatDocumentStorage'
+import { resolveLibraryDocumentLogicalPath } from '../libraries/libraryDocumentRuntime'
 import { notiaLog } from '../runtime/notiaLogger'
 
-interface PersistAiChatTitleInput {
+interface ScheduleAiChatTitleInput {
   library: NotiaLibrary
-  aiPreferences: AiPreferences
   filePath: string
-  document: StoredChatDocument
   prompt: string
 }
 
-export async function persistAiChatTitle(
-  input: PersistAiChatTitleInput,
-): Promise<string | null> {
-  const generatedTitle = (await generateAiChatTitle(input.aiPreferences, {
-    prompt: input.prompt,
-  })).trim()
-
-  if (!generatedTitle || generatedTitle === input.document.title) {
-    return null
-  }
-
-  await saveChatDocument(input.filePath, {
-    ...input.document,
-    title: generatedTitle,
-  }, input.library)
-
-  return generatedTitle
-}
-
+/** The backend names the chat from its first message and saves the title. */
 export function scheduleAiChatTitle(
-  input: PersistAiChatTitleInput,
-  options: {
-    onPersisted?: (title: string) => void
-  } = {},
+  input: ScheduleAiChatTitleInput,
+  options: { onPersisted?: (title: string) => void } = {},
 ): void {
-  void persistAiChatTitle(input)
+  const logicalPath = resolveLibraryDocumentLogicalPath(input.library.path, input.filePath)
+  if (!logicalPath) return
+  void invoke<string | null>('backend_title_chat', {
+    payload: { libraryId: input.library.id, logicalPath, prompt: input.prompt },
+  })
     .then((title) => {
-      if (title) {
-        options.onPersisted?.(title)
-      }
+      if (title) options.onPersisted?.(title)
     })
-    .catch((error) => {
+    .catch((error: unknown) => {
       notiaLog('chat-title', 'could not persist ai chat title', {
         error: error instanceof Error ? error.message : String(error),
       }, 'error')

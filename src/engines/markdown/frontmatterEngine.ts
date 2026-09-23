@@ -1,5 +1,3 @@
-import { DEFAULT_CONTEXT_TAG } from '../../services/contexts/libraryContexts'
-
 export type FrontmatterScalarValue = string | number | boolean | null
 export type FrontmatterValue = FrontmatterScalarValue | FrontmatterScalarValue[]
 
@@ -286,48 +284,6 @@ export function setFrontmatterValue(entries: FrontmatterEntry[], key: string, va
 
 export function removeFrontmatterValue(entries: FrontmatterEntry[], key: string): FrontmatterEntry[] {
   return entries.filter((entry) => entry.key !== key)
-}
-
-export function ensureMarkdownDefaults(
-  source: string,
-  fileStats: { createdAt?: number },
-): { source: string; mutated: boolean } {
-  const document = parseFrontmatterDocument(source)
-  let nextEntries = document.frontmatter
-  let mutated = false
-
-  if (!hasFrontmatterKey(nextEntries, 'createdAt')) {
-    const createdAtValue = fileStats.createdAt ?? Date.now()
-    nextEntries = setFrontmatterValue(nextEntries, 'createdAt', createdAtValue)
-    mutated = true
-  }
-
-  if (!hasFrontmatterKey(nextEntries, 'nextPage')) {
-    nextEntries = setFrontmatterValue(nextEntries, 'nextPage', 'N/A')
-    mutated = true
-  }
-
-  if (!hasFrontmatterKey(nextEntries, 'previousPage')) {
-    nextEntries = setFrontmatterValue(nextEntries, 'previousPage', 'N/A')
-    mutated = true
-  }
-
-  if (!hasFrontmatterKey(nextEntries, 'contexto')) {
-    nextEntries = setFrontmatterValue(nextEntries, 'contexto', DEFAULT_CONTEXT_TAG)
-    mutated = true
-  }
-
-  if (!mutated) {
-    return { source, mutated: false }
-  }
-
-  const nextSource = serializeFrontmatterDocument({
-    hasFrontmatter: true,
-    frontmatter: nextEntries,
-    body: document.body,
-  })
-
-  return { source: nextSource, mutated: true }
 }
 
 export function validatePageLinkValue(value: unknown): value is string {

@@ -16,8 +16,16 @@ pub struct ColdPassBluetoothPinPayload {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ColdPassBluetoothEncryptedPayload {
-    pub packet: String,
+pub struct ColdPassBluetoothAuthPayload {
+    pub challenge: String,
+    pub passkey: String,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColdPassBluetoothMessagePayload {
+    pub message: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -272,6 +280,9 @@ pub async fn coldpass_bluetooth_submit_pin() -> Result<ColdPassBluetoothStatusDt
 pub async fn coldpass_bluetooth_disconnect(
     state: State<'_, ColdPassBluetoothState>,
 ) -> Result<ColdPassBluetoothStatusDto, String> {
+    if let Ok(mut passkey) = state.session_passkey.lock() {
+        *passkey = None;
+    }
     #[cfg(target_os = "linux")]
     {
         let mut session_lock = state
@@ -339,9 +350,10 @@ pub async fn coldpass_bluetooth_disconnect() -> Result<ColdPassBluetoothStatusDt
 #[tauri::command]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn coldpass_bluetooth_authenticate(
-    payload: ColdPassBluetoothEncryptedPayload,
+    payload: ColdPassBluetoothAuthPayload,
     state: State<'_, ColdPassBluetoothState>,
 ) -> Result<ColdPassBluetoothStatusDto, String> {
+    let packet = crate::services::coldpass_secure_link::encrypt_packet("AUTH", payload.challenge.trim(), &payload.passkey)?;
     #[cfg(target_os = "linux")]
     {
         let device_id = {
@@ -365,7 +377,7 @@ pub async fn coldpass_bluetooth_authenticate(
         let baseline_response = bluetooth_service::linux_read_gatt_value(&connection).await?;
         let mut notifications =
             bluetooth_service::linux_subscribe_gatt_notifications(&connection).await?;
-        bluetooth_service::linux_write_gatt_payload(&connection, &payload.packet).await?;
+        bluetooth_service::linux_write_gatt_payload(&connection, &packet).await?;
         let response = bluetooth_service::linux_wait_for_gatt_notification(
             &mut notifications,
             &connection,
@@ -392,6 +404,10 @@ pub async fn coldpass_bluetooth_authenticate(
                 existing_connection.application_authenticated = true;
             }
         }
+        *state
+            .session_passkey
+            .lock()
+            .map_err(|_| "No se pudo guardar la sesión de ColdPass.".to_string())? = Some(payload.passkey.trim().to_string());
 
         let mut status = coldpass_bluetooth_status(state).await?;
         status.application_authenticated = true;
@@ -401,8 +417,7 @@ pub async fn coldpass_bluetooth_authenticate(
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = payload;
-        let _ = state;
+        let _ = (packet, state);
         Err(
             "La autenticacion de aplicacion sobre ColdPass solo esta soportada en Linux por ahora."
                 .to_string(),
@@ -419,9 +434,16 @@ pub async fn coldpass_bluetooth_authenticate() -> Result<ColdPassBluetoothStatus
 #[tauri::command]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn coldpass_bluetooth_send_message(
-    payload: ColdPassBluetoothEncryptedPayload,
+    payload: ColdPassBluetoothMessagePayload,
     state: State<'_, ColdPassBluetoothState>,
 ) -> Result<ColdPassBluetoothStatusDto, String> {
+    let passkey = state
+        .session_passkey
+        .lock()
+        .map_err(|_| "No se pudo leer la sesión de ColdPass.".to_string())?
+        .clone()
+        .ok_or_else(|| "Autenticá primero el canal seguro con ColdPass.".to_string())?;
+    let packet = crate::services::coldpass_secure_link::encrypt_packet("MSG", payload.message.trim(), &passkey)?;
     #[cfg(target_os = "linux")]
     {
         let existing_connection = {
@@ -442,7 +464,7 @@ pub async fn coldpass_bluetooth_send_message(
         let baseline_response = bluetooth_service::linux_read_gatt_value(&connection).await?;
         let mut notifications =
             bluetooth_service::linux_subscribe_gatt_notifications(&connection).await?;
-        bluetooth_service::linux_write_gatt_payload(&connection, &payload.packet).await?;
+        bluetooth_service::linux_write_gatt_payload(&connection, &packet).await?;
         let response = bluetooth_service::linux_wait_for_gatt_notification(
             &mut notifications,
             &connection,
@@ -467,8 +489,7 @@ pub async fn coldpass_bluetooth_send_message(
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = payload;
-        let _ = state;
+        let _ = (packet, state);
         Err(
             "El envio cifrado de mensajes a ColdPass solo esta soportado en Linux por ahora."
                 .to_string(),

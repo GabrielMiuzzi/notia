@@ -8,8 +8,6 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
-use chrono::{DateTime, Local, Utc};
-#[cfg(target_os = "windows")]
 use rcgen::{CertificateParams, KeyPair};
 #[cfg(target_os = "windows")]
 use rustls::{
@@ -119,6 +117,8 @@ pub struct PublishedBoard {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskManagerPublicationPayload {
+    #[serde(rename = "libraryId", default)]
+    library_id: Option<String>,
     #[serde(rename = "vaultPath")]
     vault_path: String,
     theme: String,
@@ -218,10 +218,10 @@ struct PublicationMutateFrame {
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationMutationCommand {
-    WriteLibraryFile,
-    AppendTaskComment,
-    CreateLibraryEntry,
-    LibraryEntryOperation,
+    TaskManagerPreviewMutation,
+    TaskManagerApplyMutation,
+    TaskManagerWriteTicketSource,
+    TaskManagerAppendPomodoro,
     BeginBatch,
     EndBatch,
     UpdatePublicationSettings,
@@ -231,10 +231,10 @@ enum PublicationMutationCommand {
 impl PublicationMutationCommand {
     fn parse(command: &str) -> Option<Self> {
         match command {
-            "write_library_file" => Some(Self::WriteLibraryFile),
-            "append_task_comment" => Some(Self::AppendTaskComment),
-            "create_library_entry" => Some(Self::CreateLibraryEntry),
-            "library_entry_operation" => Some(Self::LibraryEntryOperation),
+            "task_manager_preview_mutation" => Some(Self::TaskManagerPreviewMutation),
+            "task_manager_apply_mutation" => Some(Self::TaskManagerApplyMutation),
+            "task_manager_write_ticket_source" => Some(Self::TaskManagerWriteTicketSource),
+            "task_manager_append_pomodoro" => Some(Self::TaskManagerAppendPomodoro),
             "begin_task_manager_publication_batch" => Some(Self::BeginBatch),
             "end_task_manager_publication_batch" => Some(Self::EndBatch),
             "update_task_manager_publication_settings" => Some(Self::UpdatePublicationSettings),
@@ -249,72 +249,6 @@ impl PublicationMutationCommand {
         // narrower concurrency token and retain the publication-wide check.
         matches!(self, Self::UpdatePublicationSettings)
     }
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationWriteMutationArgs {
-    payload: PublicationWriteMutationPayload,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationWriteMutationPayload {
-    file_path: String,
-    content: String,
-    expected_revision: Option<String>,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationCommentMutationArgs {
-    payload: PublicationCommentMutationPayload,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationCommentMutationPayload {
-    file_path: String,
-    comment: String,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationCreateEntryMutationArgs {
-    payload: PublicationCreateEntryMutationPayload,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationCreateEntryMutationPayload {
-    directory_path: String,
-    name: String,
-    kind: String,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationEntryOperationMutationArgs {
-    payload: PublicationEntryOperationMutationPayload,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicationEntryOperationMutationPayload {
-    action: String,
-    target_path: Option<String>,
-    new_name: Option<String>,
-    source_path: Option<String>,
-    target_directory_path: Option<String>,
-    mode: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -698,11 +632,12 @@ pub fn publish_task_manager_ai_stream_event(
 pub fn publish_task_manager_boards(
     app: tauri::AppHandle,
     state: tauri::State<'_, TaskManagerPublicationState>,
+    registry: tauri::State<'_, crate::library_registry::LibraryBindingRegistry>,
     mut payload: TaskManagerPublicationPayload,
 ) -> Result<String, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, state, payload);
+        let _ = (app, state, registry, payload);
         Err("La publicación de tableros solo está disponible en Windows.".to_string())
     }
     #[cfg(target_os = "windows")]
@@ -713,6 +648,18 @@ pub fn publish_task_manager_boards(
         if payload.vault_path.trim().is_empty() {
             return Err("No hay una biblioteca activa para publicar.".to_string());
         }
+        let library_id = payload
+            .library_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "La publicación requiere la identidad de la biblioteca.".to_string())?;
+        crate::library_users::authorize_task_manager_user(
+            &app,
+            &registry,
+            library_id,
+            "user-owner",
+        )
+        .map_err(|error| error.message)?;
         if payload.port < 1024 {
             return Err("Elegí un puerto entre 1024 y 65535.".to_string());
         }
@@ -1907,7 +1854,7 @@ fn serve_request<S: Read + Write + Send + 'static>(
     } else if method == "GET" && path == format!("{base}/bootstrap") {
         json_response(
             "200 OK",
-            build_publication_bootstrap(&publication, &runtime),
+            build_publication_bootstrap(&publication, &runtime, request_session_token(&request)),
         )
     } else if method == "POST" && path == format!("{base}/invoke") {
         serve_invoke(
@@ -1995,9 +1942,26 @@ fn build_publication_client_settings(publication: &TaskManagerPublicationPayload
 }
 
 #[cfg(target_os = "windows")]
+fn publication_task_manager_board_ids(publication: &TaskManagerPublicationPayload) -> Vec<String> {
+    publication
+        .settings
+        .get("boards")
+        .and_then(Value::as_array)
+        .map(|boards| {
+            boards
+                .iter()
+                .filter_map(|board| board.get("name").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
 fn build_publication_bootstrap(
     publication: &TaskManagerPublicationPayload,
     runtime: &Arc<Mutex<PublicationRuntime>>,
+    session_id: Option<&str>,
 ) -> Value {
     let (publication_epoch, revision, sequence) = runtime
         .lock()
@@ -2010,7 +1974,17 @@ fn build_publication_bootstrap(
             )
         })
         .unwrap_or_else(|| (String::new(), 0, 0));
+    let library_user_id = session_id.and_then(|session| {
+        runtime.lock().ok().and_then(|guard| {
+            guard
+                .authenticated_sessions
+                .get(session)
+                .map(|value| authenticated_session_user(value).to_string())
+        })
+    });
     serde_json::json!({
+        "libraryId": publication.library_id,
+        "libraryUserId": library_user_id,
         "vaultPath": PUBLISHED_VAULT_ALIAS,
         "taskRootAtVault": publication.task_root_at_vault,
         "taskRootFolder": publication_task_root_folder(publication),
@@ -2627,7 +2601,7 @@ fn serve_invoke(
         };
         execute_publication_invoke_unlocked(request, runtime, &current_publication, session_id)
     } else {
-        execute_publication_invoke(request, runtime, &publication)
+        execute_publication_invoke_unlocked(request, runtime, &publication, session_id)
     };
     match result {
         Ok((result, changed)) => {
@@ -2661,28 +2635,52 @@ fn current_authenticated_publication(
     guard.payload.clone()
 }
 
+/// A disabled or deleted library user loses access on the next request: the
+/// session is dropped instead of living until its TTL expires.
 #[cfg(target_os = "windows")]
-fn execute_publication_invoke(
-    request: Value,
+fn ensure_publication_session_user_authorized(
     runtime: &Arc<Mutex<PublicationRuntime>>,
     publication: &TaskManagerPublicationPayload,
-) -> Result<(Value, bool), String> {
-    let command = request
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "Operación inválida.".to_string())?;
-    if is_mutating_publication_command(command) {
-        let mutation_lock = runtime
+    session_id: &str,
+) -> Result<(), String> {
+    let Some(library_id) = publication
+        .library_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let (app_handle, library_user_id) = {
+        let guard = runtime
             .lock()
-            .map_err(|_| "No se pudo serializar la mutación.".to_string())?
-            .mutation_lock
-            .clone();
-        let _mutation_guard = mutation_lock
-            .lock()
-            .map_err(|_| "No se pudo serializar la mutación.".to_string())?;
-        return execute_publication_invoke_unlocked(request, runtime, publication, None);
+            .map_err(|_| "No se pudo validar la sesión publicada.".to_string())?;
+        let Some(app_handle) = guard.app_handle.clone() else {
+            return Ok(());
+        };
+        let Some(user) = guard
+            .authenticated_sessions
+            .get(session_id)
+            .map(|value| authenticated_session_user(value).to_string())
+        else {
+            return Err("La sesión ya no está autorizada.".to_string());
+        };
+        (app_handle, user)
+    };
+    let registry = app_handle.state::<crate::library_registry::LibraryBindingRegistry>();
+    if crate::library_users::authorize_task_manager_user(
+        &app_handle,
+        &registry,
+        library_id,
+        &library_user_id,
+    )
+    .is_err()
+    {
+        if let Ok(mut guard) = runtime.lock() {
+            guard.authenticated_sessions.remove(session_id);
+        }
+        return Err("La sesión ya no está autorizada.".to_string());
     }
-    execute_publication_invoke_unlocked(request, runtime, publication, None)
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -2696,6 +2694,143 @@ fn execute_publication_invoke_unlocked(
         .get("command")
         .and_then(Value::as_str)
         .ok_or_else(|| "Operación inválida.".to_string())?;
+    if let Some(session_id) = session_id {
+        ensure_publication_session_user_authorized(runtime, publication, session_id)?;
+    }
+    if matches!(
+        command,
+        "task_manager_snapshot" | "task_manager_preview_mutation" | "task_manager_apply_mutation"
+    ) {
+        let app_handle = runtime
+            .lock()
+            .map_err(|_| "No se pudo acceder al runtime de publicación.".to_string())?
+            .app_handle
+            .clone()
+            .ok_or_else(|| "El backend publicado no está disponible.".to_string())?;
+        let library_id = publication
+            .library_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "La publicación no tiene una biblioteca autorizada.".to_string())?;
+        let session_id =
+            session_id.ok_or_else(|| "La sesión publicada es obligatoria.".to_string())?;
+        let library_user_id = runtime
+            .lock()
+            .map_err(|_| "No se pudo validar la sesión publicada.".to_string())?
+            .authenticated_sessions
+            .get(session_id)
+            .map(|value| authenticated_session_user(value).to_string())
+            .ok_or_else(|| "La sesión ya no está autorizada.".to_string())?;
+        let allowed_board_ids = publication_task_manager_board_ids(publication);
+        let backend_state =
+            app_handle.state::<crate::task_manager_commands::TaskManagerBackendState>();
+        let registry = app_handle.state::<crate::library_registry::LibraryBindingRegistry>();
+        if command == "task_manager_snapshot" {
+            let result = crate::task_manager_commands::task_manager_snapshot_for_publication(
+                &app_handle,
+                &backend_state,
+                &registry,
+                library_id,
+                &library_user_id,
+                allowed_board_ids,
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok((
+                serde_json::to_value(result).map_err(|_| "No se pudo serializar el snapshot.")?,
+                false,
+            ));
+        }
+        let args = request
+            .get("args")
+            .ok_or_else(|| "Faltan los argumentos de Task Manager.".to_string())?;
+        if command == "task_manager_preview_mutation" {
+            let request = args
+                .get("request")
+                .cloned()
+                .ok_or_else(|| "Falta la solicitud de preview.".to_string())?;
+            let request =
+                serde_json::from_value::<notia_backend_core::TaskMutationRequestDto>(request)
+                    .map_err(|_| "La solicitud de preview es inválida.".to_string())?;
+            let result = crate::task_manager_commands::task_manager_preview_for_publication(
+                &app_handle,
+                &backend_state,
+                &registry,
+                library_id,
+                &library_user_id,
+                allowed_board_ids,
+                request,
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok((
+                serde_json::to_value(result).map_err(|_| "No se pudo serializar el preview.")?,
+                false,
+            ));
+        }
+        let request = args
+            .get("request")
+            .cloned()
+            .ok_or_else(|| "Falta la solicitud de aplicación.".to_string())?;
+        let request =
+            serde_json::from_value::<notia_backend_core::TaskMutationApplyRequestDto>(request)
+                .map_err(|_| "La solicitud de aplicación es inválida.".to_string())?;
+        let result = crate::task_manager_commands::task_manager_apply_for_publication(
+            &app_handle,
+            &backend_state,
+            &registry,
+            library_id,
+            &library_user_id,
+            allowed_board_ids,
+            request,
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok((
+            serde_json::to_value(result).map_err(|_| "No se pudo serializar el receipt.")?,
+            true,
+        ));
+    }
+    if matches!(
+        command,
+        "task_manager_read_ticket_source"
+            | "task_manager_write_ticket_source"
+            | "task_manager_pomodoro_entries"
+            | "task_manager_append_pomodoro"
+    ) {
+        let app_handle = runtime
+            .lock()
+            .map_err(|_| "No se pudo acceder al runtime de publicación.".to_string())?
+            .app_handle
+            .clone()
+            .ok_or_else(|| "El backend publicado no está disponible.".to_string())?;
+        let library_id = publication
+            .library_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "La publicación no tiene una biblioteca autorizada.".to_string())?;
+        let session_id =
+            session_id.ok_or_else(|| "La sesión publicada es obligatoria.".to_string())?;
+        let library_user_id = runtime
+            .lock()
+            .map_err(|_| "No se pudo validar la sesión publicada.".to_string())?
+            .authenticated_sessions
+            .get(session_id)
+            .map(|value| authenticated_session_user(value).to_string())
+            .ok_or_else(|| "La sesión ya no está autorizada.".to_string())?;
+        let backend_state =
+            app_handle.state::<crate::task_manager_commands::TaskManagerBackendState>();
+        let registry = app_handle.state::<crate::library_registry::LibraryBindingRegistry>();
+        let empty = serde_json::json!({});
+        return crate::task_manager_commands::task_manager_execute_for_publication(
+            &app_handle,
+            &backend_state,
+            &registry,
+            library_id,
+            &library_user_id,
+            publication_task_manager_board_ids(publication),
+            command,
+            request.get("args").unwrap_or(&empty),
+        )
+        .map_err(|error| error.message);
+    }
     if command == "begin_task_manager_publication_batch" {
         let session_id =
             session_id.ok_or_else(|| "La sesión WebSocket es obligatoria.".to_string())?;
@@ -2837,9 +2972,6 @@ fn execute_publication_invoke_unlocked(
     ) {
         internalize_publication_paths(&mut payload, publication);
     }
-    if command == "append_task_comment" {
-        return execute_publication_comment_append(&payload, publication);
-    }
     if let Some(result) = virtual_publication_result(command, &payload, publication) {
         return Ok((result, false));
     }
@@ -2878,6 +3010,14 @@ fn validate_publication_mutation_args(
     validate_typed_publication_mutation_args(command, args)?;
 
     match command {
+        PublicationMutationCommand::TaskManagerPreviewMutation
+        | PublicationMutationCommand::TaskManagerApplyMutation => args
+            .get("request")
+            .filter(|value| value.is_object())
+            .map(|_| ())
+            .ok_or_else(|| {
+                "La mutación de Task Manager requiere una solicitud válida.".to_string()
+            }),
         PublicationMutationCommand::BeginBatch | PublicationMutationCommand::EndBatch => {
             if args.as_object().is_some_and(|object| object.is_empty()) {
                 Ok(())
@@ -2902,26 +3042,21 @@ fn validate_publication_mutation_args(
             }
             Ok(())
         }
-        PublicationMutationCommand::WriteLibraryFile => {
+        PublicationMutationCommand::TaskManagerWriteTicketSource => {
             let payload = required_publication_mutation_payload(args)?;
-            require_publication_string(payload, "filePath", 2_048)?;
+            require_publication_string(payload, "logicalPath", 2_048)?;
             require_publication_text(payload, "content", MAX_PUBLICATION_WS_MESSAGE_BYTES)?;
-            validate_optional_publication_string(payload, "expectedRevision", 128)
+            require_publication_string(payload, "expectedRevision", 128)
         }
-        PublicationMutationCommand::AppendTaskComment => {
+        PublicationMutationCommand::TaskManagerAppendPomodoro => {
             let payload = required_publication_mutation_payload(args)?;
-            require_publication_string(payload, "filePath", 2_048)?;
-            require_publication_text(payload, "comment", 10_000)
-        }
-        PublicationMutationCommand::CreateLibraryEntry => {
-            let payload = required_publication_mutation_payload(args)?;
-            require_publication_string(payload, "directoryPath", 2_048)?;
-            require_publication_string(payload, "name", 255)?;
-            require_publication_string(payload, "kind", 32)
-        }
-        PublicationMutationCommand::LibraryEntryOperation => {
-            let payload = required_publication_mutation_payload(args)?;
-            require_publication_string(payload, "action", 32)
+            require_publication_string(payload, "localDate", 10)?;
+            require_publication_string(payload, "localTime", 5)?;
+            payload
+                .get("entry")
+                .filter(|entry| entry.is_object())
+                .map(|_| ())
+                .ok_or_else(|| "El pomodoro publicado no es válido.".to_string())
         }
     }
 }
@@ -2933,47 +3068,24 @@ fn validate_typed_publication_mutation_args(
 ) -> Result<(), String> {
     let invalid = || "Los argumentos de la mutación publicada son inválidos.".to_string();
     match command {
+        PublicationMutationCommand::TaskManagerPreviewMutation
+        | PublicationMutationCommand::TaskManagerApplyMutation => {
+            let request = args
+                .get("request")
+                .filter(|value| value.is_object())
+                .ok_or_else(invalid)?;
+            if serde_json::to_vec(request).map_err(|_| invalid())?.len()
+                > MAX_PUBLICATION_WS_MESSAGE_BYTES
+            {
+                return Err(invalid());
+            }
+            Ok(())
+        }
         PublicationMutationCommand::BeginBatch | PublicationMutationCommand::EndBatch => Ok(()),
-        PublicationMutationCommand::WriteLibraryFile => {
-            let typed = serde_json::from_value::<PublicationWriteMutationArgs>(args.clone())
-                .map_err(|_| invalid())?;
-            let _ = (
-                typed.payload.file_path,
-                typed.payload.content,
-                typed.payload.expected_revision,
-            );
-            Ok(())
-        }
-        PublicationMutationCommand::AppendTaskComment => {
-            let typed = serde_json::from_value::<PublicationCommentMutationArgs>(args.clone())
-                .map_err(|_| invalid())?;
-            let _ = (typed.payload.file_path, typed.payload.comment);
-            Ok(())
-        }
-        PublicationMutationCommand::CreateLibraryEntry => {
-            let typed = serde_json::from_value::<PublicationCreateEntryMutationArgs>(args.clone())
-                .map_err(|_| invalid())?;
-            let _ = (
-                typed.payload.directory_path,
-                typed.payload.name,
-                typed.payload.kind,
-            );
-            Ok(())
-        }
-        PublicationMutationCommand::LibraryEntryOperation => {
-            let typed =
-                serde_json::from_value::<PublicationEntryOperationMutationArgs>(args.clone())
-                    .map_err(|_| invalid())?;
-            let _ = (
-                typed.payload.action,
-                typed.payload.target_path,
-                typed.payload.new_name,
-                typed.payload.source_path,
-                typed.payload.target_directory_path,
-                typed.payload.mode,
-            );
-            Ok(())
-        }
+        // Field shapes were checked above; the backend command validates the
+        // content, revision and scope.
+        PublicationMutationCommand::TaskManagerWriteTicketSource
+        | PublicationMutationCommand::TaskManagerAppendPomodoro => Ok(()),
         PublicationMutationCommand::UpdatePublicationSettings => {
             let typed = serde_json::from_value::<PublicationSettingsMutationShape>(args.clone())
                 .map_err(|_| invalid())?;
@@ -3037,32 +3149,9 @@ fn require_publication_text(
 }
 
 #[cfg(target_os = "windows")]
-fn validate_optional_publication_string(
-    payload: &serde_json::Map<String, Value>,
-    key: &str,
-    max_length: usize,
-) -> Result<(), String> {
-    let Some(value) = payload.get(key) else {
-        return Ok(());
-    };
-    let value = value
-        .as_str()
-        .filter(|value| value.len() <= max_length && !value.chars().any(char::is_control))
-        .ok_or_else(|| "La mutación publicada contiene un campo inválido.".to_string())?;
-    if value.is_empty() {
-        return Err("La mutación publicada contiene un campo inválido.".to_string());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
 fn safe_publication_command_error(command: &str) -> &'static str {
     match command {
         "read_library_file" | "read_markdown_files" => "No se pudo leer el contenido publicado.",
-        "write_library_file" => "No se pudo guardar el contenido publicado.",
-        "create_library_entry" => "No se pudo crear la entrada publicada.",
-        "library_entry_operation" => "No se pudo actualizar la entrada publicada.",
-        "append_task_comment" => "No se pudo agregar el comentario publicado.",
         "update_task_manager_publication_settings" => {
             "No se pudo actualizar la configuración publicada."
         }
@@ -3084,57 +3173,6 @@ fn sanitize_publication_result(command: &str, mut result: Value) -> Value {
         );
     }
     result
-}
-
-#[cfg(target_os = "windows")]
-fn execute_publication_comment_append(
-    payload: &Value,
-    publication: &TaskManagerPublicationPayload,
-) -> Result<(Value, bool), String> {
-    let file_path = payload
-        .get("filePath")
-        .and_then(Value::as_str)
-        .map(normalize_path)
-        .ok_or_else(|| "Falta el archivo de la tarea.".to_string())?;
-    let comment = payload
-        .get("comment")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|comment| !comment.is_empty() && comment.chars().count() <= 10_000)
-        .ok_or_else(|| "El comentario no es válido.".to_string())?;
-    if !authorize_publication_command(
-        "append_task_comment",
-        &serde_json::json!({ "filePath": file_path }),
-        publication,
-    ) {
-        return Err("El comentario está fuera del alcance publicado.".to_string());
-    }
-
-    validate_publication_filesystem_paths(
-        &serde_json::json!({ "filePath": file_path }),
-        publication,
-    )?;
-
-    let current = crate::filesystem::desktop::read_library_file(&file_path);
-    if !current.ok {
-        return Err("No se pudo leer la tarea publicada.".to_string());
-    }
-    let timestamp = format_publication_comment_timestamp(unix_timestamp_millis());
-    let comment_block = format!("## Comentario - {timestamp}\n{comment}\n");
-    let next_content = if current.content.trim().is_empty() {
-        comment_block
-    } else {
-        format!("{}\n\n{comment_block}", current.content.trim_end())
-    };
-    let write_result = crate::filesystem::desktop::write_library_file(
-        &file_path,
-        &next_content,
-        current.revision.as_deref(),
-    );
-    let changed = write_result.ok;
-    let result = serde_json::to_value(write_result)
-        .map_err(|_| "No se pudo serializar el resultado del comentario.".to_string())?;
-    Ok((publicize_publication_paths(result, publication), changed))
 }
 
 #[cfg(target_os = "windows")]
@@ -3614,21 +3652,6 @@ fn unix_timestamp_millis() -> u64 {
         .map_or(0, |duration| {
             duration.as_millis().min(u128::from(u64::MAX)) as u64
         })
-}
-
-#[cfg(target_os = "windows")]
-fn format_publication_comment_timestamp(timestamp_millis: u64) -> String {
-    let Some(timestamp_millis) = i64::try_from(timestamp_millis).ok() else {
-        return "01/01/1970 00:00".to_string();
-    };
-    DateTime::<Utc>::from_timestamp_millis(timestamp_millis)
-        .map(|timestamp| {
-            timestamp
-                .with_timezone(&Local)
-                .format("%d/%m/%Y %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|| "01/01/1970 00:00".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -4949,15 +4972,10 @@ fn virtual_publication_result(
         return None;
     }
     match command {
-        "read_library_file" | "write_library_file"
-            if is_publication_pomodoro_file(&path, publication) =>
-        {
-            None
-        }
+        "read_library_file" if is_publication_pomodoro_file(&path, publication) => None,
         "read_library_file" => {
             Some(serde_json::json!({ "ok": true, "content": "", "error": null }))
         }
-        "write_library_file" => Some(serde_json::json!({ "ok": true, "error": null })),
         "path_exists" => Some(serde_json::json!({ "exists": true })),
         "is_directory_path" => Some(serde_json::json!({ "isDirectory": false })),
         _ => None,
@@ -5002,16 +5020,14 @@ fn authorize_command(
     payload: &Value,
     publication: &TaskManagerPublicationPayload,
 ) -> bool {
+    // Read-only filesystem access. Every published write goes through the
+    // typed Task Manager commands of the Rust store.
     const COMMANDS: &[&str] = &[
         "read_library_tree",
         "read_markdown_files",
         "read_library_file",
-        "write_library_file",
-        "append_task_comment",
         "path_exists",
         "is_directory_path",
-        "create_library_entry",
-        "library_entry_operation",
     ];
     if !COMMANDS.contains(&command) {
         return false;
@@ -5039,7 +5055,6 @@ fn authorize_command(
         is_tasks_root(path, publication)
             || is_selected_board_path(path, publication)
             || is_authorized_archived_path(path, publication)
-            || (command == "create_library_entry" && is_publication_vault_root(path, publication))
     })
 }
 
@@ -5049,237 +5064,7 @@ fn authorize_publication_command(
     payload: &Value,
     publication: &TaskManagerPublicationPayload,
 ) -> bool {
-    if !authorize_command(command, payload, publication) {
-        return false;
-    }
-
-    match command {
-        "write_library_file" => filesystem_paths(payload).first().is_some_and(|path| {
-            is_authorized_task_file(path, publication)
-                || is_publication_pomodoro_file(path, publication)
-        }),
-        "append_task_comment" => filesystem_paths(payload)
-            .first()
-            .is_some_and(|path| is_authorized_task_file(path, publication)),
-        "create_library_entry" => authorize_publication_entry_creation(payload, publication),
-        "library_entry_operation" => authorize_publication_entry_operation(payload, publication),
-        _ => true,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn authorize_publication_entry_creation(
-    payload: &Value,
-    publication: &TaskManagerPublicationPayload,
-) -> bool {
-    let Some(kind) = payload.get("kind").and_then(Value::as_str) else {
-        return false;
-    };
-    let Some(directory_path) = payload
-        .get("directoryPath")
-        .and_then(Value::as_str)
-        .map(normalize_path)
-    else {
-        return false;
-    };
-    let Some(name) = payload.get("name").and_then(Value::as_str) else {
-        return false;
-    };
-    let name = name.trim();
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return false;
-    }
-
-    let candidate = normalize_path(&format!("{directory_path}/{name}"));
-    match kind {
-        "folder" => is_allowed_task_workspace_directory(&candidate, publication),
-        "note" => {
-            let normalized_name = if name.to_lowercase().ends_with(".md") {
-                name.to_string()
-            } else {
-                format!("{name}.md")
-            };
-            let candidate = normalize_path(&format!("{directory_path}/{normalized_name}"));
-            is_authorized_task_file_creation(&candidate, &directory_path, publication)
-                || is_authorized_system_file_creation(&candidate, &directory_path, publication)
-        }
-        // Mermaid and arbitrary library entries are not part of the published Task Manager
-        // write surface. Keeping this bridge limited also prevents using it as a file manager.
-        _ => false,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn authorize_publication_entry_operation(
-    payload: &Value,
-    publication: &TaskManagerPublicationPayload,
-) -> bool {
-    let Some(action) = payload.get("action").and_then(Value::as_str) else {
-        return false;
-    };
-
-    match action {
-        "delete" => payload
-            .get("targetPath")
-            .and_then(Value::as_str)
-            .map(normalize_path)
-            .is_some_and(|path| is_authorized_task_file(&path, publication)),
-        "rename" => {
-            let Some(target_path) = payload
-                .get("targetPath")
-                .and_then(Value::as_str)
-                .map(normalize_path)
-            else {
-                return false;
-            };
-            let Some(new_name) = payload.get("newName").and_then(Value::as_str) else {
-                return false;
-            };
-            let new_name = new_name.trim();
-            !new_name.is_empty()
-                && new_name.to_lowercase().ends_with(".md")
-                && !new_name.contains('/')
-                && !new_name.contains('\\')
-                && !new_name.contains("..")
-                && is_authorized_task_file(&target_path, publication)
-                && !is_reserved_task_file(&normalize_path(&format!(
-                    "{}/{}",
-                    std::path::Path::new(&target_path)
-                        .parent()
-                        .and_then(std::path::Path::to_str)
-                        .unwrap_or_default(),
-                    new_name
-                )))
-        }
-        "paste" => {
-            let Some(source_path) = payload
-                .get("sourcePath")
-                .and_then(Value::as_str)
-                .map(normalize_path)
-            else {
-                return false;
-            };
-            let Some(target_directory_path) = payload
-                .get("targetDirectoryPath")
-                .and_then(Value::as_str)
-                .map(normalize_path)
-            else {
-                return false;
-            };
-            payload.get("mode").and_then(Value::as_str) == Some("move")
-                && is_authorized_task_file(&source_path, publication)
-                && is_allowed_task_destination_directory(&target_directory_path, publication)
-        }
-        _ => false,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn is_authorized_task_file(path: &str, publication: &TaskManagerPublicationPayload) -> bool {
-    let normalized_path = normalize_path(path);
-    normalized_path.ends_with(".md")
-        && !is_reserved_task_file(&normalized_path)
-        && (is_active_task_file_path(&normalized_path, publication)
-            || is_authorized_archived_path(&normalized_path, publication))
-}
-
-#[cfg(target_os = "windows")]
-fn is_active_task_file_path(path: &str, publication: &TaskManagerPublicationPayload) -> bool {
-    selected_board_roots(publication).iter().any(|root| {
-        let Some(relative_path) = path.strip_prefix(&format!("{root}/")) else {
-            return false;
-        };
-        !relative_path.is_empty()
-            && (relative_path.split('/').count() == 1 || relative_path.starts_with("subtasks/"))
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn is_authorized_task_file_creation(
-    candidate: &str,
-    directory_path: &str,
-    publication: &TaskManagerPublicationPayload,
-) -> bool {
-    !is_reserved_task_file(candidate)
-        && selected_board_roots(publication)
-            .iter()
-            .any(|root| directory_path == root || directory_path == format!("{root}/subtasks"))
-        && candidate.ends_with(".md")
-}
-
-#[cfg(target_os = "windows")]
-fn is_authorized_system_file_creation(
-    candidate: &str,
-    directory_path: &str,
-    publication: &TaskManagerPublicationPayload,
-) -> bool {
-    let Some(file_name) = std::path::Path::new(candidate)
-        .file_name()
-        .and_then(|name| name.to_str())
-    else {
-        return false;
-    };
-    let normalized_name = file_name.to_lowercase();
-    let is_task_root = task_roots(publication)
-        .iter()
-        .any(|root| directory_path == root);
-    let is_archive_root = task_roots(publication).iter().any(|root| {
-        [
-            format!("{root}/finished"),
-            format!("{root}/cancelled"),
-            format!("{root}/completadas"),
-        ]
-        .iter()
-        .any(|archive_root| directory_path == archive_root)
-    });
-    let is_selected_board = selected_board_roots(publication)
-        .iter()
-        .any(|root| directory_path == root);
-
-    normalized_name == "pomodoro.md" && is_task_root
-        || (normalized_name.starts_with("taskindex") || normalized_name.ends_with("taskindex.md"))
-            && (is_task_root || is_archive_root || is_selected_board)
-}
-
-#[cfg(target_os = "windows")]
-fn is_allowed_task_workspace_directory(
-    candidate: &str,
-    publication: &TaskManagerPublicationPayload,
-) -> bool {
-    task_roots(publication).iter().any(|root| {
-        candidate == *root
-            || candidate == format!("{root}/finished")
-            || candidate == format!("{root}/cancelled")
-            || candidate == format!("{root}/completadas")
-            || candidate == format!("{root}/finished/subtasks")
-            || candidate == format!("{root}/cancelled/subtasks")
-            || candidate == format!("{root}/completadas/subtasks")
-    }) || selected_board_roots(publication)
-        .iter()
-        .any(|root| candidate == root || candidate == format!("{root}/subtasks"))
-}
-
-#[cfg(target_os = "windows")]
-fn is_allowed_task_destination_directory(
-    path: &str,
-    publication: &TaskManagerPublicationPayload,
-) -> bool {
-    is_allowed_task_workspace_directory(path, publication)
-        || task_roots(publication).iter().any(|root| path == *root)
-}
-
-#[cfg(target_os = "windows")]
-fn is_reserved_task_file(path: &str) -> bool {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            let normalized_name = name.to_lowercase();
-            normalized_name == "pomodoro.md"
-                || normalized_name == TASK_MANAGER_SHARED_METADATA_FILE
-                || normalized_name.starts_with("taskindex")
-                || normalized_name.ends_with("taskindex.md")
-        })
+    authorize_command(command, payload, publication)
 }
 
 #[cfg(target_os = "windows")]
@@ -5297,11 +5082,6 @@ fn is_publication_pomodoro_file(path: &str, publication: &TaskManagerPublication
     task_roots(publication)
         .iter()
         .any(|root| path == format!("{root}/pomodoro.md"))
-}
-
-#[cfg(target_os = "windows")]
-fn is_publication_vault_root(path: &str, publication: &TaskManagerPublicationPayload) -> bool {
-    normalize_path(path) == normalize_path(&publication.vault_path)
 }
 
 #[cfg(target_os = "windows")]
@@ -6195,6 +5975,7 @@ mod tests {
 
     fn publication() -> TaskManagerPublicationPayload {
         TaskManagerPublicationPayload {
+            library_id: Some("library-1".to_string()),
             vault_path: "C:/Vault".to_string(),
             theme: "dark".to_string(),
             password_hash: hash_task_manager_publication_password("contraseña-segura".to_string())
@@ -6383,7 +6164,7 @@ mod tests {
         });
 
         let runtime = Arc::new(Mutex::new(PublicationRuntime::default()));
-        let bootstrap = build_publication_bootstrap(&publication, &runtime);
+        let bootstrap = build_publication_bootstrap(&publication, &runtime, None);
         let serialized = serde_json::to_string(&bootstrap).expect("bootstrap json");
 
         assert_eq!(bootstrap["vaultPath"], PUBLISHED_VAULT_ALIAS);
@@ -7715,11 +7496,12 @@ mod tests {
             "messageId": "message-1",
             "operationId": "operation-1",
             "baseRevision": 4,
-            "command": "write_library_file",
+            "command": "task_manager_write_ticket_source",
             "args": {
                 "payload": {
-                    "filePath": "published-vault/task-mannager/equipo/ticket.md",
-                    "content": "contenido"
+                    "logicalPath": "task-mannager/equipo/ticket.md",
+                    "content": "contenido",
+                    "expectedRevision": "sha256:abc"
                 }
             }
         }))
@@ -7727,13 +7509,21 @@ mod tests {
         assert_eq!(mutation.message_type, "mutate");
         assert_eq!(
             PublicationMutationCommand::parse(&mutation.command),
-            Some(PublicationMutationCommand::WriteLibraryFile)
+            Some(PublicationMutationCommand::TaskManagerWriteTicketSource)
         );
         assert!(validate_publication_mutation_args(
-            PublicationMutationCommand::WriteLibraryFile,
+            PublicationMutationCommand::TaskManagerWriteTicketSource,
             &mutation.args,
         )
         .is_ok());
+        for raw_command in [
+            "write_library_file",
+            "append_task_comment",
+            "create_library_entry",
+            "library_entry_operation",
+        ] {
+            assert_eq!(PublicationMutationCommand::parse(raw_command), None);
+        }
 
         let cancellation = serde_json::from_value::<PublicationCancelFrame>(serde_json::json!({
             "type": "cancel",
@@ -7784,10 +7574,8 @@ mod tests {
 
     #[test]
     fn ticket_mutations_use_file_level_conflicts_instead_of_global_revision() {
-        assert!(!PublicationMutationCommand::WriteLibraryFile.requires_current_revision());
-        assert!(!PublicationMutationCommand::AppendTaskComment.requires_current_revision());
-        assert!(!PublicationMutationCommand::CreateLibraryEntry.requires_current_revision());
-        assert!(!PublicationMutationCommand::LibraryEntryOperation.requires_current_revision());
+        assert!(!PublicationMutationCommand::TaskManagerWriteTicketSource.requires_current_revision());
+        assert!(!PublicationMutationCommand::TaskManagerAppendPomodoro.requires_current_revision());
         assert!(PublicationMutationCommand::UpdatePublicationSettings.requires_current_revision());
     }
 
@@ -7801,64 +7589,6 @@ mod tests {
         assert_eq!(
             calculate_publication_latency_p95(&[94, 0, 0, 0, 0, 6], 100),
             Some(5_001)
-        );
-    }
-
-    #[test]
-    fn appends_a_task_comment_inside_the_publication_scope() {
-        let directory = std::env::temp_dir().join(format!(
-            "notia-task-manager-comment-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let task_directory = directory.join("task-mannager").join("equipo");
-        fs::create_dir_all(&task_directory).expect("task directory");
-        let task_path = task_directory.join("ticket.md");
-        fs::write(&task_path, "---\ntablero: equipo\n---\n\nContenido").expect("task content");
-
-        let mut publication = publication();
-        publication.vault_path = directory.to_string_lossy().into_owned();
-        let result = execute_publication_comment_append(
-            &serde_json::json!({
-                "filePath": task_path.to_string_lossy(),
-                "comment": "Comentario concurrente",
-            }),
-            &publication,
-        )
-        .expect("append comment");
-
-        assert!(result.1);
-        let content = fs::read_to_string(&task_path).expect("updated task");
-        assert!(content.contains("Contenido"));
-        let comment_heading = content
-            .lines()
-            .find(|line| line.starts_with("## Comentario - "))
-            .expect("comment heading");
-        assert_eq!(
-            comment_heading.len(),
-            "## Comentario - DD/MM/YYYY HH:MM".len()
-        );
-        assert!(comment_heading
-            .strip_prefix("## Comentario - ")
-            .is_some_and(|timestamp| {
-                timestamp.len() == 16
-                    && timestamp.as_bytes()[2] == b'/'
-                    && timestamp.as_bytes()[5] == b'/'
-                    && timestamp.as_bytes()[10] == b' '
-                    && timestamp.as_bytes()[13] == b':'
-            }));
-        assert!(content.contains("Comentario concurrente"));
-        fs::remove_dir_all(&directory).expect("remove test directory");
-    }
-
-    #[test]
-    fn formats_publication_comment_timestamp_for_people() {
-        assert_eq!(
-            format_publication_comment_timestamp(1_789_181_556_059),
-            DateTime::<Utc>::from_timestamp_millis(1_789_181_556_059)
-                .expect("timestamp")
-                .with_timezone(&Local)
-                .format("%d/%m/%Y %H:%M")
-                .to_string()
         );
     }
 
@@ -8021,10 +7751,10 @@ mod tests {
         assert!(!is_safe_publication_operation_id("operation with spaces"));
         assert!(!is_safe_publication_operation_id("operation\n123"));
         assert!(validate_publication_mutation_args(
-            PublicationMutationCommand::WriteLibraryFile,
+            PublicationMutationCommand::TaskManagerWriteTicketSource,
             &serde_json::json!({
                 "payload": {
-                    "filePath": "published-vault/task-mannager/equipo/ticket.md",
+                    "logicalPath": "task-mannager/equipo/ticket.md",
                     "content": "contenido",
                     "expectedRevision": "sha256:abc"
                 }
@@ -8032,20 +7762,22 @@ mod tests {
         )
         .is_ok());
         assert!(validate_publication_mutation_args(
-            PublicationMutationCommand::WriteLibraryFile,
+            PublicationMutationCommand::TaskManagerWriteTicketSource,
             &serde_json::json!({
                 "payload": {
-                    "filePath": "published-vault/task-mannager/equipo/ticket.md"
+                    "logicalPath": "task-mannager/equipo/ticket.md",
+                    "content": "contenido"
                 }
             }),
         )
         .is_err());
         assert!(validate_publication_mutation_args(
-            PublicationMutationCommand::AppendTaskComment,
+            PublicationMutationCommand::TaskManagerAppendPomodoro,
             &serde_json::json!({
                 "payload": {
-                    "filePath": "published-vault/task-mannager/equipo/ticket.md",
-                    "comment": "comentario"
+                    "localDate": "2026-09-22",
+                    "localTime": "10:05",
+                    "entry": { "type": "work" }
                 }
             }),
         )
@@ -8106,24 +7838,25 @@ mod tests {
 
     #[test]
     fn rejects_oversized_or_malformed_publication_mutations_before_filesystem_access() {
-        let oversized_comment = "x".repeat(10_001);
         assert!(validate_publication_mutation_args(
-            PublicationMutationCommand::AppendTaskComment,
+            PublicationMutationCommand::TaskManagerAppendPomodoro,
             &serde_json::json!({
                 "payload": {
-                    "filePath": "published-vault/task-mannager/equipo/ticket.md",
-                    "comment": oversized_comment,
+                    "localDate": "2026-09-22-extra",
+                    "localTime": "10:05",
+                    "entry": {}
                 }
             }),
         )
         .is_err());
 
         assert!(validate_publication_mutation_args(
-            PublicationMutationCommand::WriteLibraryFile,
+            PublicationMutationCommand::TaskManagerWriteTicketSource,
             &serde_json::json!({
                 "payload": {
-                    "filePath": "published-vault/task-mannager/equipo/ticket.md",
+                    "logicalPath": "task-mannager/equipo/ticket.md",
                     "content": "contenido\u{0000}no valido",
+                    "expectedRevision": "sha256:abc"
                 }
             }),
         )

@@ -1,3 +1,4 @@
+use crate::library_registry::LibraryBindingRegistry;
 use crate::notia_timer::NotiaTimer;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -27,6 +28,10 @@ const SAF_CACHE_TTL_SECS: u64 = 30;
 /// guards against short-term bursts of `resolve_entry_uri` requests.
 #[cfg(target_os = "android")]
 const SAF_PATH_LRU_CAPACITY: usize = 500;
+/// Upper bound of cached logical path → document URI entries across all
+/// trees. Beyond it, paths are resolved lazily through SAF instead of cached.
+#[cfg(target_os = "android")]
+const MAX_SAF_PATH_CACHE_ENTRIES: usize = 20_000;
 
 pub struct AndroidDirectoryPickerState {
     #[cfg(target_os = "android")]
@@ -41,6 +46,11 @@ pub struct AndroidDirectoryPickerState {
     /// repetitive refreshes within the TTL window can be skipped.
     #[cfg(target_os = "android")]
     last_cache_refresh_at: Mutex<HashMap<String, Instant>>,
+    /// Per-tree mutation epoch. A tree read that started before a mutation
+    /// carries an older epoch and is discarded instead of re-caching stale
+    /// path → URI mappings.
+    #[cfg(target_os = "android")]
+    cache_epochs: Mutex<HashMap<String, u64>>,
     /// Lightweight LRU cache for resolved path→URI lookups to avoid repeated
     /// JNI calls during bursts (e.g. reading many files from the same subtree).
     #[cfg(target_os = "android")]
@@ -102,6 +112,7 @@ impl AndroidDirectoryPickerState {
             paths: Mutex::new(HashMap::new()),
             root_entries: Mutex::new(HashMap::new()),
             last_cache_refresh_at: Mutex::new(HashMap::new()),
+            cache_epochs: Mutex::new(HashMap::new()),
             saf_path_lru: Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(SAF_PATH_LRU_CAPACITY).unwrap(),
             )),
@@ -109,13 +120,14 @@ impl AndroidDirectoryPickerState {
     }
 
     #[cfg(target_os = "android")]
-    fn unavailable() -> Self {
+    pub(crate) fn unavailable() -> Self {
         Self {
             handle: Mutex::new(None),
             roots: Mutex::new(HashMap::new()),
             paths: Mutex::new(HashMap::new()),
             root_entries: Mutex::new(HashMap::new()),
             last_cache_refresh_at: Mutex::new(HashMap::new()),
+            cache_epochs: Mutex::new(HashMap::new()),
             saf_path_lru: Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(SAF_PATH_LRU_CAPACITY).unwrap(),
             )),
@@ -123,7 +135,7 @@ impl AndroidDirectoryPickerState {
     }
 
     #[cfg(not(target_os = "android"))]
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {}
     }
 }
@@ -142,6 +154,13 @@ pub struct PickAndroidDirectoryTreeResult {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickAndroidDirectoryTreePayload {
+    #[serde(default)]
+    pub library_id: Option<String>,
 }
 
 #[cfg(target_os = "android")]
@@ -177,6 +196,13 @@ struct WriteFileResponse {
 #[cfg(target_os = "android")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct VerifyDocumentResponse {
+    ok: bool,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateEntryResponse {
     path: Option<String>,
 }
@@ -196,6 +222,9 @@ fn cache_android_path(
     path: &str,
     uri: &str,
 ) {
+    if path_map.len() >= MAX_SAF_PATH_CACHE_ENTRIES && !path_map.contains_key(path) {
+        return;
+    }
     path_map.insert(path.to_string(), uri.to_string());
     cached_keys.insert(path.to_string());
 
@@ -251,6 +280,28 @@ pub fn invalidate_tree_cache(state: &AndroidDirectoryPickerState, tree_uri: &str
     if let Ok(mut timestamps) = state.last_cache_refresh_at.lock() {
         timestamps.remove(tree_uri);
     }
+}
+
+/// Current mutation epoch of a tree. Capture it before reading the tree and
+/// pass it to the cache update so a concurrent mutation wins.
+#[cfg(target_os = "android")]
+pub fn tree_cache_epoch(state: &AndroidDirectoryPickerState, tree_uri: &str) -> u64 {
+    state
+        .cache_epochs
+        .lock()
+        .map(|epochs| epochs.get(tree_uri).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+/// Marks a tree as mutated: the cache becomes stale and every tree read that
+/// started earlier is discarded when it tries to update the cache.
+#[cfg(target_os = "android")]
+pub fn mark_tree_mutated(state: &AndroidDirectoryPickerState, tree_uri: &str) {
+    if let Ok(mut epochs) = state.cache_epochs.lock() {
+        let epoch = epochs.entry(tree_uri.to_string()).or_insert(0);
+        *epoch = epoch.wrapping_add(1);
+    }
+    invalidate_tree_cache(state, tree_uri);
 }
 
 #[cfg(not(target_os = "android"))]
@@ -311,6 +362,7 @@ pub fn update_cache_from_nodes(
     state: &AndroidDirectoryPickerState,
     tree_uri: &str,
     nodes: &[AndroidTreeNode],
+    epoch_before_read: u64,
 ) {
     let root_paths = {
         let Ok(roots) = state.roots.lock() else {
@@ -331,6 +383,12 @@ pub fn update_cache_from_nodes(
     let Ok(mut root_entries) = state.root_entries.lock() else {
         return;
     };
+    // Checked while holding the cache locks: a mutation that finished after
+    // the read started invalidates this snapshot.
+    if tree_cache_epoch(state, tree_uri) != epoch_before_read {
+        log::debug!("[notia:saf] lectura de árbol obsoleta descartada");
+        return;
+    }
 
     if let Some(previous_keys) = root_entries.get(tree_uri) {
         for key in previous_keys {
@@ -356,6 +414,7 @@ pub fn refresh_android_tree_path_cache(
     if !force && is_cache_fresh(state, tree_uri) {
         return Ok(());
     }
+    let epoch_before_read = tree_cache_epoch(state, tree_uri);
 
     let guard = state
         .handle
@@ -393,6 +452,10 @@ pub fn refresh_android_tree_path_cache(
         .root_entries
         .lock()
         .map_err(|_| "No se pudo actualizar la cache Android.".to_string())?;
+    if tree_cache_epoch(state, tree_uri) != epoch_before_read {
+        log::debug!("[notia:saf] lectura de árbol obsoleta descartada");
+        return Ok(());
+    }
 
     if let Some(previous_keys) = root_entries.get(tree_uri) {
         for key in previous_keys {
@@ -481,6 +544,8 @@ pub struct ReadAndroidTreePayload {
 #[tauri::command]
 pub fn pick_android_directory_tree(
     state: State<'_, AndroidDirectoryPickerState>,
+    registry: State<'_, LibraryBindingRegistry>,
+    payload: Option<PickAndroidDirectoryTreePayload>,
 ) -> Result<PickAndroidDirectoryTreeResult, String> {
     #[cfg(target_os = "android")]
     {
@@ -517,6 +582,12 @@ pub fn pick_android_directory_tree(
             .clone()
             .filter(|uri| is_saf_tree_uri(uri) && uri.trim() == path.trim())
             .ok_or_else(|| "El selector no devolvió una URI tree SAF válida.".to_string())?;
+
+        if let Some(library_id) = payload.and_then(|value| value.library_id) {
+            registry
+                .register_android_tree(&library_id, &selected_uri)
+                .map_err(|error| error.message)?;
+        }
         {
             let uri = selected_uri.clone();
             let mut roots = state
@@ -552,7 +623,7 @@ pub fn pick_android_directory_tree(
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = state;
+        let _ = (state, registry, payload);
         Err("El selector de carpetas Android solo esta disponible en Android.".to_string())
     }
 }
@@ -640,6 +711,7 @@ pub async fn read_android_library_tree(
         // Fetch the tree and update the cache in one pass — no second readTree.
         // This is an async command so the Tauri runtime can process other events
         // (e.g. WebView rendering) while this command runs on the async thread pool.
+        let epoch_before_read = tree_cache_epoch(state.inner(), &uri);
         let response = {
             let guard = state
                 .handle
@@ -659,7 +731,7 @@ pub async fn read_android_library_tree(
 
         // Update the path cache from the tree nodes we already fetched, avoiding
         // the redundant second readTree that refresh_android_tree_path_cache would do.
-        update_cache_from_nodes(state.inner(), &uri, &response.nodes);
+        update_cache_from_nodes(state.inner(), &uri, &response.nodes, epoch_before_read);
 
         let mut nodes = response.nodes;
         sort_android_tree_nodes(&mut nodes);
@@ -850,6 +922,30 @@ pub async fn read_android_directory(
         let _ = (directory_path, directory_uri);
         Err("Solo disponible en Android.".to_string())
     }
+}
+
+/// Flat SAF listing of a granted tree for backend indexing. Entry paths are
+/// `tree/<logical path>`; the caller validates and strips the tree prefix.
+#[cfg(target_os = "android")]
+pub(crate) fn read_android_flat_entries(
+    state: &AndroidDirectoryPickerState,
+    tree_uri: &str,
+) -> Result<Vec<AndroidFlatFileEntry>, String> {
+    validate_tree_context(Some(tree_uri))?;
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+    handle
+        .run_mobile_plugin::<ReadFlatFileListResponse>(
+            "readFlatFileList",
+            serde_json::json!({ "uri": tree_uri }),
+        )
+        .map(|response| response.files)
+        .map_err(|error| format!("No se pudo leer la lista de archivos Android: {error}"))
 }
 
 /// Read a flat (non-nested) list of ALL files and folders in the tree.
@@ -1091,6 +1187,34 @@ pub fn write_android_content_bytes(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub fn verify_android_document_under_tree(
+    state: &AndroidDirectoryPickerState,
+    tree_uri: &str,
+    document_uri: &str,
+    require_write: bool,
+) -> Result<bool, String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let Some(handle) = guard.as_ref() else {
+        return Err("El selector de carpetas no esta disponible.".to_string());
+    };
+
+    let response = handle
+        .run_mobile_plugin::<VerifyDocumentResponse>(
+            "verifyDocumentUnderTree",
+            serde_json::json!({
+                "treeUri": tree_uri,
+                "documentUri": document_uri,
+                "requireWrite": require_write,
+            }),
+        )
+        .map_err(|error| format!("No se pudo verificar el documento Android: {error}"))?;
+    Ok(response.ok)
 }
 
 #[cfg(target_os = "android")]

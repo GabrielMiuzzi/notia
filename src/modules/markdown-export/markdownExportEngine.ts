@@ -1,6 +1,5 @@
 import { parseFrontmatterDocument } from '../../engines/markdown/frontmatterEngine'
-import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
-import { writeBinaryFile } from '../../services/files/filesystemEngine'
+import { resolveLibraryDocumentLogicalPath } from '../../services/libraries/libraryDocumentRuntime'
 
 const MATH_TOKEN_PREFIX = 'NOTIA_MATH_TOKEN_'
 
@@ -103,57 +102,20 @@ function downloadBlobInBrowser(blob: Blob, fileName: string): void {
 }
 
 export interface MarkdownExportContext {
+  /** Native registry identity used by the backend export command. */
+  libraryId?: string | null
   /** Active library path; required to persist exports inside the library on Android. */
   libraryPath?: string | null
-  /** SAF tree URI of the active library when the runtime is Android. */
-  androidDirectoryUri?: string | null
   /** Path of the exported source document, used as the export destination folder. */
   sourceDocumentPath?: string | null
 }
 
-async function persistExportBlob(blob: Blob, fileName: string, context?: MarkdownExportContext): Promise<boolean> {
-  const { isTauri } = await import('@tauri-apps/api/core')
-  if (!isTauri()) {
-    downloadBlobInBrowser(blob, fileName)
-    return true
-  }
-
-  // Android SAF: the native save dialog would return a content URI that the
-  // binary writer cannot open, so exports persist next to the source
-  // document through the same file boundary used by the library.
-  if (getRuntimeDevice() === 'Android') {
-    const libraryPath = context?.libraryPath?.trim()
-    const androidDirectoryUri = context?.androidDirectoryUri?.trim() || undefined
-    const sourceDocumentPath = context?.sourceDocumentPath?.trim() || ''
-    if (!libraryPath || !sourceDocumentPath) {
-      throw new Error('No se pudo resolver la biblioteca activa para exportar el documento.')
-    }
-    const separatorIndex = Math.max(sourceDocumentPath.lastIndexOf('/'), sourceDocumentPath.lastIndexOf('\\'))
-    const parentDirectory = separatorIndex > 0 ? sourceDocumentPath.slice(0, separatorIndex) : libraryPath
-    const exportPath = `${parentDirectory}/${fileName}`
-    const result = await writeBinaryFile(exportPath, new Uint8Array(await blob.arrayBuffer()), {
-      androidDirectoryUri,
-    })
-    if (!result.ok) {
-      throw new Error(result.error || 'No se pudo escribir el archivo exportado.')
-    }
-    return true
-  }
-
-  const [{ save }] = await Promise.all([
-    import('@tauri-apps/plugin-dialog'),
-  ])
-  const extension = fileName.split('.').pop() ?? ''
-  const selectedPath = await save({
-    defaultPath: fileName,
-    filters: extension ? [{ name: extension.toUpperCase(), extensions: [extension] }] : undefined,
-  })
-  if (!selectedPath) return false
-
-  const result = await writeBinaryFile(selectedPath, new Uint8Array(await blob.arrayBuffer()))
-  if (!result.ok) {
-    throw new Error(result.error || 'No se pudo escribir el archivo exportado.')
-  }
+/**
+ * Browser-only persistence. Tauri hosts never render or write exports from the
+ * WebView: `exportMarkdownDocument` delegates them to the Rust backend.
+ */
+async function persistExportBlob(blob: Blob, fileName: string): Promise<boolean> {
+  downloadBlobInBrowser(blob, fileName)
   return true
 }
 
@@ -171,7 +133,7 @@ async function renderElementToPng(element: HTMLElement, scale = 2): Promise<HTML
   })
 }
 
-async function exportPdf(source: string, documentName: string, context?: MarkdownExportContext): Promise<boolean> {
+async function exportPdf(source: string, documentName: string): Promise<boolean> {
   const element = await createExportElement(source)
   const unmount = mountExportElement(element)
   try {
@@ -196,13 +158,13 @@ async function exportPdf(source: string, documentName: string, context?: Markdow
     }
 
     const output = pdf.output('arraybuffer')
-    return persistExportBlob(new Blob([output], { type: 'application/pdf' }), `${getExportBaseName(documentName)}.pdf`, context)
+    return persistExportBlob(new Blob([output], { type: 'application/pdf' }), `${getExportBaseName(documentName)}.pdf`)
   } finally {
     unmount()
   }
 }
 
-async function exportGoogleDocs(source: string, documentName: string, context?: MarkdownExportContext): Promise<boolean> {
+async function exportGoogleDocs(source: string, documentName: string): Promise<boolean> {
   const element = await createExportElement(source)
   const unmount = mountExportElement(element)
   try {
@@ -232,7 +194,7 @@ async function exportGoogleDocs(source: string, documentName: string, context?: 
 
     const document = new Document({ sections: [{ children }] })
     const blob = await Packer.toBlob(document)
-    return persistExportBlob(blob, `${getExportBaseName(documentName)}.docx`, context)
+    return persistExportBlob(blob, `${getExportBaseName(documentName)}.docx`)
   } finally {
     unmount()
   }
@@ -245,8 +207,28 @@ export async function exportMarkdownDocument(
   context?: MarkdownExportContext,
 ): Promise<boolean> {
   const exportableSource = getExportableMarkdownBody(source)
-  if (format === 'pdf') {
-    return exportPdf(exportableSource, documentName, context)
+  const { isTauri, invoke } = await import('@tauri-apps/api/core')
+  const logicalPath = context?.libraryPath && context.sourceDocumentPath
+    ? resolveLibraryDocumentLogicalPath(context.libraryPath, context.sourceDocumentPath)
+    : undefined
+  if (isTauri()) {
+    if (!context?.libraryId || !logicalPath) {
+      throw new Error('No se pudo resolver la biblioteca activa para exportar el documento.')
+    }
+    const result = await invoke<{ ok: boolean; error?: string }>('backend_export_markdown_document', {
+      payload: {
+        libraryId: context.libraryId,
+        sourceLogicalPath: logicalPath,
+        format: format === 'pdf' ? 'pdf' : 'docx',
+      },
+    })
+    if (!result.ok) {
+      throw new Error(result.error || 'No se pudo exportar el documento.')
+    }
+    return true
   }
-  return exportGoogleDocs(exportableSource, documentName, context)
+  if (format === 'pdf') {
+    return exportPdf(exportableSource, documentName)
+  }
+  return exportGoogleDocs(exportableSource, documentName)
 }

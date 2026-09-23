@@ -2,6 +2,8 @@
 use std::path::Path;
 #[cfg(any(target_os = "android", test))]
 use std::path::PathBuf;
+#[cfg(target_os = "android")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "android")]
 use crate::mobile_directory_picker;
@@ -68,59 +70,17 @@ mod error_mapping_tests {
     }
 }
 
+/// Drops a stale path cache for one library tree. Freshness is tracked per
+/// tree URI in `AndroidDirectoryPickerState`, so a refresh of one library can
+/// never suppress the invalidation of another.
 #[cfg(target_os = "android")]
 fn refresh_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: Option<&str>) {
-    use std::cell::RefCell;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    thread_local! {
-        static LAST_REFRESH_MS: RefCell<u64> = const { RefCell::new(0) };
-    }
-
     let Some(tree_uri) = root_tree_uri else {
         return;
     };
-
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    let should_refresh = LAST_REFRESH_MS.with(|last| {
-        let last_value = *last.borrow();
-        let elapsed = now_ms.saturating_sub(last_value);
-        if elapsed < 200 {
-            return false;
-        }
-        *last.borrow_mut() = now_ms;
-        true
-    });
-
-    if !should_refresh {
-        log::debug!("[notia:saf] refresh_root_tree_cache throttled");
-        return;
-    }
-
-    let is_fresh = mobile_directory_picker::is_cache_fresh(state, tree_uri);
-    if is_fresh {
-        log::debug!("[notia:saf] cache hit");
-    } else {
-        // Instead of eagerly doing a full readTree, just invalidate the
-        // cache. The next operation that truly needs to resolve a path
-        // will trigger a lazy refresh. This avoids the expensive full
-        // tree traversal that refresh_android_tree_path_cache would do.
-        log::info!("[notia:saf] cache stale, invalidating (lazy refresh)");
-        mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
-    }
-}
-
-/// Mark the SAF path cache as stale so that the next operation that needs a
-/// fresh cache will trigger a full `readTree`. This is used after mutations
-/// (create, delete, rename, paste) instead of eagerly doing a full refresh.
-#[cfg(target_os = "android")]
-fn invalidate_root_tree_cache(state: &AndroidDirectoryPickerState, root_tree_uri: Option<&str>) {
-    if let Some(tree_uri) = root_tree_uri {
+    if !mobile_directory_picker::is_cache_fresh(state, tree_uri) {
+        // Lazy refresh: the next operation that must resolve a path rebuilds
+        // only what it needs instead of eagerly traversing the whole tree.
         mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
     }
 }
@@ -135,10 +95,10 @@ fn invalidate_paths_for_entry(
     path_prefix: &str,
     root_tree_uri: Option<&str>,
 ) {
-    // 1. Invalidate the Kotlin tree cache timestamp so that the next readTree
-    //    or readFlatFileList will fetch fresh data from SAF.
+    // 1. Mark the tree as mutated: the next readTree or readFlatFileList
+    //    fetches fresh data and reads already in flight are discarded.
     if let Some(tree_uri) = root_tree_uri {
-        mobile_directory_picker::invalidate_tree_cache(state, tree_uri);
+        mobile_directory_picker::mark_tree_mutated(state, tree_uri);
     }
 
     // 2. Selectively remove cached path→URI entries that match the affected
@@ -165,7 +125,7 @@ fn is_android_tree_uri(path: &str) -> bool {
     path.starts_with("content://") && path.contains("/tree/") && !is_android_document_uri(path)
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(target_os = "android")]
 fn is_document_under_tree(document_uri: &str, tree_uri: &str) -> bool {
     let document = normalize_android_path(document_uri);
     let tree = normalize_android_path(tree_uri);
@@ -328,6 +288,20 @@ fn resolve_entry_uri(
 
     log::warn!("[notia:saf] resolve_entry_uri failed no_context");
     None
+}
+
+/// Resolves a logical SAF lookup path to the real document URI used by I/O.
+///
+/// The lookup path may be a synthetic `tree`-based path, but the returned value
+/// is only used after it has resolved to a document URI. Callers must not pass
+/// the tree grant to `readFile` or `writeFile`.
+#[cfg(target_os = "android")]
+pub(crate) fn resolve_document_uri(
+    state: &AndroidDirectoryPickerState,
+    lookup_path: &str,
+    root_tree_uri: Option<&str>,
+) -> Option<String> {
+    resolve_entry_uri(state, lookup_path, root_tree_uri)
 }
 
 #[cfg(test)]
@@ -509,6 +483,7 @@ pub(crate) fn write_library_file(
         Some(content_uri) => content_uri,
         None if has_android_resolution_context(root_tree_uri, file_path) => {
             return Some(WriteLibraryFileResult {
+                revision: None,
                 ok: false,
                 error: Some("Could not resolve Android file.".to_string()),
                 conflict: None,
@@ -524,6 +499,7 @@ pub(crate) fn write_library_file(
                 .map(|current| content_revision(&current));
         if current_revision.as_deref() != Some(expected_revision) {
             return Some(WriteLibraryFileResult {
+                revision: None,
                 ok: false,
                 error: Some("CONFLICT: el archivo cambió desde la última lectura.".to_string()),
                 conflict: Some(FilesystemConflict {
@@ -538,11 +514,13 @@ pub(crate) fn write_library_file(
     Some(
         match mobile_directory_picker::write_android_content_text(state, &content_uri, content) {
             Ok(()) => WriteLibraryFileResult {
+                revision: None,
                 ok: true,
                 error: None,
                 conflict: None,
             },
             Err(error) => WriteLibraryFileResult {
+                revision: None,
                 ok: false,
                 error: Some(error),
                 conflict: None,
@@ -819,8 +797,11 @@ pub(crate) fn write_binary_file(
 
     let _timer = NotiaTimer::new("saf.write_binary_file").with_meta(format!("path={}", file_path));
     refresh_root_tree_cache(state, root_tree_uri);
-    let content_uri = match resolve_entry_uri(state, file_path, root_tree_uri) {
-        Some(content_uri) => content_uri,
+    match resolve_entry_uri(state, file_path, root_tree_uri) {
+        Some(_) => Some(OperationResult {
+            ok: false,
+            error: Some("El archivo exportado ya existe.".to_string()),
+        }),
         None if has_android_resolution_context(root_tree_uri, file_path) => {
             let normalized_path = file_path.replace('\\', "/");
             let Some((parent_path, file_name)) = normalized_path.rsplit_once('/') else {
@@ -841,12 +822,41 @@ pub(crate) fn write_binary_file(
                     error: Some("Could not resolve Android destination directory.".to_string()),
                 });
             };
-            match mobile_directory_picker::create_android_tree_entry(
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let temporary_name = format!(".{file_name}.notia-export-{nonce}.tmp");
+            let temporary_uri = match mobile_directory_picker::create_android_tree_entry(
                 state,
                 &parent_uri,
-                file_name,
+                &temporary_name,
                 "file",
                 None,
+            ) {
+                Ok(created_uri) => created_uri,
+                Err(error) => {
+                    return Some(OperationResult {
+                        ok: false,
+                        error: Some(error),
+                    });
+                }
+            };
+
+            let write_result =
+                mobile_directory_picker::write_android_content_bytes(state, &temporary_uri, data);
+            if let Err(error) = write_result {
+                let _ = mobile_directory_picker::delete_android_tree_entry(state, &temporary_uri);
+                return Some(OperationResult {
+                    ok: false,
+                    error: Some(error),
+                });
+            }
+
+            match mobile_directory_picker::rename_android_tree_entry(
+                state,
+                &temporary_uri,
+                file_name,
             ) {
                 Ok(created_uri) => {
                     mobile_directory_picker::put_android_path_lru(
@@ -854,9 +864,14 @@ pub(crate) fn write_binary_file(
                         file_path.to_string(),
                         created_uri.clone(),
                     );
-                    created_uri
+                    return Some(OperationResult {
+                        ok: true,
+                        error: None,
+                    });
                 }
                 Err(error) => {
+                    let _ =
+                        mobile_directory_picker::delete_android_tree_entry(state, &temporary_uri);
                     return Some(OperationResult {
                         ok: false,
                         error: Some(error),
@@ -864,32 +879,10 @@ pub(crate) fn write_binary_file(
                 }
             }
         }
-        None => return None,
-    };
-
-    Some(
-        match mobile_directory_picker::write_android_content_bytes(state, &content_uri, data) {
-            Ok(()) => OperationResult {
-                ok: true,
-                error: None,
-            },
-            Err(error) => OperationResult {
-                ok: false,
-                error: Some(error),
-            },
-        },
-    )
+        None => None,
+    }
 }
 
-#[cfg(not(target_os = "android"))]
-pub(crate) fn write_binary_file<T>(
-    _state: &T,
-    _file_path: &str,
-    _data: &[u8],
-    _root_tree_uri: Option<&str>,
-) -> Option<OperationResult> {
-    None
-}
 
 #[cfg(target_os = "android")]
 pub(crate) fn create_library_entry(

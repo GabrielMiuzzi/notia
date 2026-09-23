@@ -3,6 +3,7 @@ package com.gabriel.notia
 import android.app.Activity
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Channel
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
@@ -127,6 +128,30 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
             )
             toJsObject(response)
         }
+    }
+
+    /**
+     * Streams a backend-built `/api/chat` request (raw messages, no tools) to
+     * the Rust runtime. Deltas go through the Rust-owned `onEvent` channel
+     * tagged with `requestId`; the command resolves with the final answer.
+     * `cancelStreaming` with the same `requestId` disconnects the stream.
+     */
+    @Command
+    fun rawChatStreaming(invoke: Invoke) {
+        val channel = try {
+            invoke.parseArgs(StreamChannelArgs::class.java).onEvent
+        } catch (error: Exception) {
+            invoke.resolve(JSObject().put("ok", false).put("error", "El canal de streaming no es valido."))
+            return
+        }
+        val args = arguments(invoke)
+        Thread {
+            try {
+                invoke.resolve(streamRawChat(args, channel))
+            } catch (error: Exception) {
+                invoke.resolve(JSObject().put("ok", false).put("error", error.message ?: "Fallo en el streaming AI Android."))
+            }
+        }.start()
     }
 
     @Command
@@ -263,6 +288,50 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    private fun streamRawChat(args: ArgumentMap, channel: Channel): JSObject {
+        val requestId = args.string("requestId")
+        if (requestId.isBlank()) error("El identificador de streaming es obligatorio.")
+        val body = JSONObject()
+            .put("model", args.string("model"))
+            .put("stream", true)
+            .put("messages", JSONArray(args.string("messagesJson")))
+        args.value("think")?.let { body.put("think", JSONObject.wrap(it)) }
+        val connection = openConnection(
+            args.string("ollamaUrl"),
+            args.string("apiKey"),
+            "/api/chat",
+            "POST",
+            body,
+            args.number("timeoutSeconds", DEFAULT_STREAM_TIMEOUT_SECONDS),
+        )
+        activeStreams[requestId] = connection
+        val answer = StringBuilder()
+        try {
+            connection.outputStream.use { output -> output.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            if (status !in 200..299) error("Ollama respondio con HTTP $status.")
+            connection.inputStream.use { input ->
+                BufferedReader(InputStreamReader(input, Charsets.UTF_8)).forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    val message = JSONObject(line).optJSONObject("message") ?: return@forEachLine
+                    val thinkingDelta = message.optString("thinking")
+                    if (thinkingDelta.isNotEmpty()) {
+                        channel.send(JSObject().put("requestId", requestId).put("type", "thinking").put("delta", thinkingDelta))
+                    }
+                    val answerDelta = message.optString("content")
+                    if (answerDelta.isNotEmpty()) {
+                        answer.append(answerDelta)
+                        channel.send(JSObject().put("requestId", requestId).put("type", "content").put("delta", answerDelta))
+                    }
+                }
+            }
+            return JSObject().put("ok", true).put("answer", answer.toString())
+        } finally {
+            activeStreams.remove(requestId, connection)
+            connection.disconnect()
+        }
+    }
+
     private fun triggerStream(requestId: String, type: String, value: String) {
         val payload = JSObject()
             .put("requestId", requestId)
@@ -343,6 +412,10 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
             is Number -> value.toInt()
             else -> value?.toString()?.toIntOrNull() ?: fallback
         }
+    }
+
+    private class StreamChannelArgs {
+        lateinit var onEvent: Channel
     }
 
     private companion object {

@@ -1,4 +1,4 @@
-import { readFileContent, writeFileContent } from './vaultRuntime'
+import { hasTaskManagerBackendIdentity, readFileContent, writeFileContent } from './vaultRuntime'
 
 export const TASK_MANAGER_MUTATION_JOURNAL_VERSION = 1
 const MAX_JOURNAL_ENTRIES = 64
@@ -116,6 +116,9 @@ export async function beginTaskManagerMutationJournal(
   operationId: string,
   scopes: string[],
 ): Promise<void> {
+  // Rust commits are atomic and verified; the WebView journal only covered
+  // the legacy multi-file TS writes.
+  if (hasTaskManagerBackendIdentity()) return
   const now = Date.now()
   const current = await readJournal(journalPath)
   const entries = current.document.entries.filter((entry) => entry.operationId !== operationId)
@@ -137,6 +140,7 @@ export async function completeTaskManagerMutationJournal(
   operationId: string,
   status: Exclude<TaskManagerMutationJournalStatus, 'pending'>,
 ): Promise<void> {
+  if (hasTaskManagerBackendIdentity()) return
   const current = await readJournal(journalPath)
   const entries = current.document.entries.map((entry) => (
     entry.operationId === operationId ? { ...entry, status, updatedAt: Date.now() } : entry
@@ -155,6 +159,7 @@ export async function recordTaskManagerMutationJournalChangedPaths(
   operationId: string,
   changedPaths: string[],
 ): Promise<void> {
+  if (hasTaskManagerBackendIdentity()) return
   const current = await readJournal(journalPath)
   const entry = current.document.entries.find((candidate) => candidate.operationId === operationId)
   if (!entry) {

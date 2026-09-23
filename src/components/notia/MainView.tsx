@@ -98,12 +98,11 @@ function MainViewComponent({
     setExportError(null)
     try {
       const { exportMarkdownDocument } = await import('../../modules/markdown-export/markdownExportEngine')
-      // On Android the native save dialog returns content URIs that the
-      // desktop binary writer cannot open; exports persist next to the
-      // source document through the SAF boundary instead.
+      // Exports are rendered and written next to the source document by the
+      // Rust backend on Windows and Android (SAF); the WebView never writes.
       const exported = await exportMarkdownDocument(activeDocument.source, activeDocument.name, format, {
+        libraryId: activeLibrary?.id ?? null,
         libraryPath: activeLibrary?.path ?? null,
-        androidDirectoryUri: activeLibrary?.androidTreeUri ?? null,
         sourceDocumentPath: activeDocument.path,
       })
       if (exported) setIsExportModalOpen(false)
@@ -208,6 +207,8 @@ function MainViewComponent({
           theme={theme}
           markdownZoom={markdownZoom}
           onMarkdownZoomChange={setMarkdownZoom}
+          libraryId={activeLibrary?.id}
+          libraryPath={activeLibrary?.path}
           contexts={contexts}
         />
       </section>

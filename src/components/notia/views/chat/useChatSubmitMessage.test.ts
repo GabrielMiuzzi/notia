@@ -15,13 +15,10 @@ const mocks = vi.hoisted(() => ({
   scheduleAiChatTitle: vi.fn(),
   checkAiHealth: vi.fn(),
   startNotiaChatReply: vi.fn(),
-  createChatScopedAgent: vi.fn(),
   loadAgentMemories: vi.fn(),
   startPerformanceMeasurement: vi.fn(),
   buildAutoCreateChatPayload: vi.fn(),
   normalizeChatTitle: vi.fn(),
-  buildChatAttachmentPrompt: vi.fn(),
-  buildChatImageAttachment: vi.fn(),
 }))
 
 vi.mock('react', async () => {
@@ -59,9 +56,6 @@ vi.mock('../../../../services/ai/aiRuntime', () => ({
 vi.mock('../../../../services/chat/notiaChatRuntime', () => ({
   startNotiaChatReply: mocks.startNotiaChatReply,
 }))
-vi.mock('../../../../services/chat/chatScopedAgentRuntime', () => ({
-  createChatScopedAgent: mocks.createChatScopedAgent,
-}))
 vi.mock('../../../../services/ai/agentPromptRuntime', () => ({
   loadAgentMemories: mocks.loadAgentMemories,
 }))
@@ -71,10 +65,6 @@ vi.mock('../../../../services/runtime/performanceBaseline', () => ({
 vi.mock('./useChatState', () => ({
   buildAutoCreateChatPayload: mocks.buildAutoCreateChatPayload,
   normalizeChatTitle: mocks.normalizeChatTitle,
-}))
-vi.mock('./chatImageAttachment', () => ({
-  buildChatAttachmentPrompt: mocks.buildChatAttachmentPrompt,
-  buildChatImageAttachment: mocks.buildChatImageAttachment,
 }))
 
 import { useChatSubmitMessage } from './useChatSubmitMessage'
@@ -94,14 +84,11 @@ describe('useChatSubmitMessage lifecycle', () => {
     mocks.checkAiHealth.mockResolvedValue({ ok: true, message: '' })
     mocks.buildChatMemoryWindow.mockReturnValue([])
     mocks.resolvePersistedChatTitle.mockReturnValue('Chat')
-    mocks.buildChatAttachmentPrompt.mockImplementation((value: string) => value)
-    mocks.buildChatImageAttachment.mockReturnValue(null)
     mocks.startPerformanceMeasurement.mockReturnValue({
       success: vi.fn(),
       error: vi.fn(),
       cancel: vi.fn(),
     })
-    mocks.createChatScopedAgent.mockResolvedValue({ systemPrompt: 'prompt', tools: [], executeTool: vi.fn() })
     mocks.appendChatMessages.mockResolvedValue({ appended: true })
   })
 
@@ -131,7 +118,6 @@ describe('useChatSubmitMessage lifecycle', () => {
       agentPromptFileName: 'default.md',
       requestAgentClarification: vi.fn(),
       requestAgentConfirmation: vi.fn(),
-      agentExecutionPlan: [],
       onAgentExecutionPlanChange: vi.fn(),
       requestAgentExecutionPlanApproval: vi.fn(),
       library,
@@ -220,7 +206,6 @@ describe('useChatSubmitMessage lifecycle', () => {
       agentPromptFileName: 'default.md',
       requestAgentClarification: vi.fn(),
       requestAgentConfirmation: vi.fn(),
-      agentExecutionPlan: [],
       onAgentExecutionPlanChange: vi.fn(),
       requestAgentExecutionPlanApproval: vi.fn(),
       library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
@@ -265,8 +250,11 @@ describe('useChatSubmitMessage lifecycle', () => {
 
     await submitMessage('Hacelo')
 
-    expect(mocks.buildChatAttachmentPrompt).toHaveBeenCalledWith('Hacelo', [attachment])
-    expect(mocks.buildChatImageAttachment).toHaveBeenCalledWith([attachment])
-    expect(mocks.startNotiaChatReply).toHaveBeenCalled()
+    // The backend composes the attachment prompt; the client forwards the files.
+    expect(mocks.startNotiaChatReply).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ prompt: 'Hacelo', attachments: [attachment] }),
+      expect.anything(),
+    )
   })
 })

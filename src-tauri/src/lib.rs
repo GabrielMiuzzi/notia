@@ -1,18 +1,45 @@
 use serde::Deserialize;
 
 use filesystem::commands::{
-    create_library_directory, create_library_entry, create_library_file, is_directory_path,
-    library_entry_operation, path_exists, read_library_file, read_library_tree,
-    read_library_tree_signature, read_markdown_files, search_library_files, write_binary_file,
-    write_library_file,
+    backend_export_markdown_document, backend_library_entry_operation, backend_read_library_document,
+    backend_write_library_document, create_library_directory, create_library_entry,
+    create_library_file, is_directory_path, library_entry_operation, path_exists,
+    read_library_file, read_library_tree, read_library_tree_signature, read_markdown_files,
+    search_library_files, write_library_file,
 };
 use filesystem::watch::{start_library_tree_watch, stop_library_tree_watch, LibraryTreeWatchState};
+use library_registry::{
+    pick_library_directory, register_library_binding, revoke_library_binding,
+    LibraryBindingRegistry,
+};
 
+pub mod backend;
+pub mod backend_ollama;
+mod backend_runtime;
+pub mod backend_tauri;
 mod backup;
 mod database;
 mod finance;
+mod finance_agent_inputs;
 mod finance_reconciliation;
 mod finance_records;
+mod finance_views;
+mod coldpass;
+mod agent_history;
+mod agent_knowledge;
+mod agent_pending;
+mod agent_workspace;
+mod chat_history;
+mod device_preferences;
+mod telegram_worker;
+mod library_documents;
+mod library_catalog;
+mod library_config;
+mod page_links;
+mod library_graph;
+mod library_inventory;
+mod library_document_adapter;
+mod library_registry;
 mod library_users;
 mod user_auth;
 
@@ -33,11 +60,19 @@ mod mobile_continuity;
 mod mobile_directory_picker;
 mod mobile_speech_permission;
 mod notia_timer;
+mod task_manager_commands;
+mod task_manager_fs;
 mod task_manager_publication;
+mod task_manager_publication_source;
+mod task_manager_store;
 mod services {
+    pub mod calendar_holidays;
     pub mod ai_service;
     pub mod bluetooth_service;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub mod coldpass_secure_link;
     pub mod finance_extraction;
+    pub mod finance_external;
     pub mod qwen3_asr_service;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
@@ -170,6 +205,23 @@ pub fn run() {
         .manage(services::qwen3_tts_service::Qwen3TtsRuntimeState::default())
         .manage(LibraryTreeWatchState::default())
         .manage(task_manager_publication::TaskManagerPublicationState::default())
+        .manage(task_manager_commands::TaskManagerBackendState::default())
+        .manage(backend_runtime::BackendRuntimeState::default())
+        .manage(LibraryBindingRegistry::default())
+        .manage(coldpass::ColdPassState::default())
+        .manage(library_catalog::LibraryCatalogState::default())
+        .manage(agent_workspace::AgentWorkspaceState::default())
+        .manage(agent_history::AgentHistoryState::default())
+        .manage(chat_history::ChatHistoryState::default())
+        .manage(device_preferences::DevicePreferencesState::default())
+        .manage(telegram_worker::TelegramWorkerState::default())
+        .manage(library_graph::LibraryGraphState::default())
+        .manage(services::calendar_holidays::CalendarHolidaysState::default())
+        .plugin(library_registry::init())
+        .plugin(backup::service::init())
+        .plugin(telegram_worker::init())
+        .plugin(task_manager_publication_source::init())
+        .manage(backup::service::BackupState::default())
         .plugin(tauri_plugin_dialog::init());
 
     let builder = builder.plugin(database::init());
@@ -182,6 +234,58 @@ pub fn run() {
             read_library_tree,
             read_library_tree_signature,
             read_library_file,
+            backend_read_library_document,
+            backend_write_library_document,
+            backend_export_markdown_document,
+            backend_library_entry_operation,
+            library_config::backend_read_library_config,
+            library_config::backend_write_library_config,
+            library_config::backend_ensure_library_config,
+            library_inventory::backend_reindex_library,
+            library_graph::backend_library_graph,
+            library_graph::backend_rebuild_link_cache,
+            library_graph::backend_library_graph_search,
+            library_graph::backend_library_search,
+            services::calendar_holidays::calendar_argentina_holidays,
+            library_catalog::backend_library_catalog,
+            agent_history::backend_agent_history,
+            agent_knowledge::backend_title_chat,
+            agent_knowledge::backend_learn_from_turn,
+            agent_pending::backend_save_pending_clarification,
+            agent_pending::backend_pending_clarification,
+            agent_pending::backend_clear_pending_clarification,
+            agent_pending::backend_answer_pending_clarification,
+            agent_history::backend_agent_history_diff,
+            agent_workspace::backend_agent_prompts,
+            agent_workspace::backend_agent_prompt,
+            agent_workspace::backend_select_agent_prompt,
+            agent_workspace::backend_agent_memories,
+            agent_workspace::backend_save_agent_memories,
+            agent_workspace::backend_agent_rules,
+            agent_workspace::backend_save_agent_rules,
+            agent_workspace::backend_append_agent_rule,
+            device_preferences::backend_device_preferences,
+            task_manager_publication_source::backend_publish_task_manager,
+            device_preferences::backend_save_device_preferences,
+            chat_history::backend_ensure_chat_structure,
+            chat_history::backend_create_chat,
+            chat_history::backend_load_chat,
+            chat_history::backend_save_chat,
+            chat_history::backend_append_chat,
+            chat_history::backend_chat_image_previews,
+            chat_history::backend_classify_chat_file,
+            library_catalog::backend_save_library_catalog,
+            backup::service::backend_backup_status,
+            backup::service::backend_pick_backup_directory,
+            backup::service::backend_disable_backups,
+            backup::service::backend_migrate_backup_directory,
+            page_links::backend_sync_page_link,
+            coldpass::coldpass_unlock,
+            coldpass::coldpass_lock,
+            coldpass::coldpass_save_entry,
+            coldpass::coldpass_delete_entry,
+            coldpass::coldpass_pick_csv_import,
+            coldpass::coldpass_confirm_import,
             search_library_files,
             read_markdown_files,
             write_library_file,
@@ -189,17 +293,11 @@ pub fn run() {
             create_library_directory,
             path_exists,
             is_directory_path,
-            write_binary_file,
-            backup::create_windows_library_backup,
             create_library_entry,
             library_entry_operation,
             start_library_tree_watch,
             stop_library_tree_watch,
             database::initialize_library_database,
-            database::begin_library_inventory_snapshot,
-            database::upsert_library_inventory_batch,
-            database::commit_library_inventory_snapshot,
-            database::delete_library_inventory_subtree,
             database::query_library_inventory,
             library_users::list_library_roles,
             library_users::create_library_role,
@@ -218,6 +316,8 @@ pub fn run() {
             finance::finance_get_transaction,
             finance::finance_list_all_transactions,
             finance::finance_list_all_savings_movements,
+            finance::finance_list_accounts,
+            finance::finance_list_categories,
             finance::finance_dev_list_tables,
             finance::finance_dev_query_table,
             finance::finance_dev_query_sql,
@@ -253,6 +353,14 @@ pub fn run() {
             finance::finance_link_savings_account,
             finance_records::finance_save_purchase,
             finance_records::finance_list_purchases,
+            finance_views::finance_period_summary,
+            services::finance_external::finance_dollar_quotes,
+            services::finance_external::finance_inflation_indices,
+            services::finance_external::finance_historical_dollar_quotes,
+            finance_views::finance_relation_audit,
+            finance_views::finance_validate_purchase,
+            finance_views::finance_preview_card_services,
+            finance_views::finance_salary_draft,
             finance_records::finance_list_price_history,
             finance_records::finance_save_salary,
             finance_records::finance_list_salaries,
@@ -267,13 +375,15 @@ pub fn run() {
             finance_records::finance_list_net_worth_history,
             services::finance_extraction::extract_finance_document,
             services::finance_extraction::list_finance_artifacts,
+            backend_tauri::validate_backend_request,
+            backend_runtime::configure_backend_provider,
+            backend_runtime::replay_backend_events,
+            backend_runtime::run_backend_request,
             commands::ai::check_desktop_ai_health,
             commands::ai::run_desktop_ai_chat,
-            commands::ai::run_desktop_ai_tool_chat,
             commands::ai::run_desktop_ai_chat_streaming,
             commands::ai::list_desktop_ai_models,
             commands::ai::inspect_desktop_ai_model,
-            commands::ai::run_desktop_ai_web_search,
             commands::speech::get_speech_capabilities,
             commands::speech::prepare_speech_model,
             commands::speech::get_speech_model_status,
@@ -288,23 +398,18 @@ pub fn run() {
             commands::qwen3_tts::get_qwen3_tts_status,
             commands::qwen3_tts::reload_qwen3_tts,
             commands::qwen3_tts::synthesize_qwen3_tts_speech,
+            commands::qwen3_tts::qwen3_tts_speech_plan,
             commands::qwen3_tts::prepare_qwen3_tts,
             commands::telegram::check_telegram_bot,
-            commands::telegram::poll_telegram_updates,
-            commands::telegram::send_telegram_message,
-            commands::telegram::edit_telegram_message,
-            commands::telegram::transcribe_telegram_audio,
-            commands::telegram::download_telegram_photo,
-            commands::telegram::extract_telegram_pdf,
-            commands::telegram::answer_telegram_callback,
             mobile_ai_bridge::check_android_ai_health,
             mobile_ai_bridge::run_android_ai_chat,
             mobile_ai_bridge::run_android_ai_chat_streaming,
             mobile_ai_bridge::cancel_android_ai_chat_streaming,
-            mobile_ai_bridge::run_android_ai_tool_chat,
-            mobile_ai_bridge::run_android_ai_web_search,
             mobile_ai_bridge::list_android_ai_models,
             mobile_directory_picker::pick_android_directory_tree,
+            pick_library_directory,
+            register_library_binding,
+            revoke_library_binding,
             mobile_directory_picker::read_android_library_tree,
             mobile_directory_picker::read_android_directory,
             mobile_directory_picker::read_android_flat_file_list,
@@ -329,6 +434,21 @@ pub fn run() {
             task_manager_publication::begin_task_manager_publication_batch,
             task_manager_publication::end_task_manager_publication_batch,
             task_manager_publication::notify_task_manager_publication_changed,
+            task_manager_commands::task_manager_list_boards,
+            task_manager_commands::task_manager_snapshot,
+            task_manager_commands::task_manager_list_groups,
+            task_manager_commands::task_manager_list_tickets,
+            task_manager_commands::task_manager_read_ticket,
+            task_manager_commands::task_manager_search_context,
+            task_manager_commands::task_manager_get_options,
+            task_manager_commands::task_manager_board_summary,
+            task_manager_commands::task_manager_preview_mutation,
+            task_manager_commands::task_manager_apply_mutation,
+            task_manager_commands::task_manager_pomodoro_entries,
+            task_manager_commands::task_manager_append_pomodoro,
+            task_manager_commands::task_manager_delete_pomodoro,
+            task_manager_commands::task_manager_read_ticket_source,
+            task_manager_commands::task_manager_write_ticket_source,
         ])
         .plugin(mobile_ai_bridge::init())
         .plugin(mobile_continuity::init())

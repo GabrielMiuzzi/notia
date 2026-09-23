@@ -2,6 +2,10 @@ import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 import { toStoredLibraryPath } from '../libraries/libraryPathMapping'
 import { getPathBaseName, readTextFile } from '../files/filesystemEngine'
 import { readLibraryTree } from '../libraries/libraryRuntime'
+import {
+  getLibraryMarkdownDocumentOptions,
+  readLibraryFileContent,
+} from '../libraries/libraryDocumentRuntime'
 
 export type ChatFileContextMode = 'direct' | 'index'
 
@@ -15,6 +19,7 @@ export interface ChatInlineFileAttachment {
   path: string
   name: string
   content: string
+  revision?: string
 }
 
 export function buildAttachmentDisplayName(pathValue: string, options: ChatLibraryFileOption[] = []): string {
@@ -86,9 +91,10 @@ export async function loadInlineFileAttachments(
   options: ChatLibraryFileOption[] = [],
 ): Promise<ChatInlineFileAttachment[]> {
   const loadedFiles = await Promise.all(selectedPaths.map(async (selectedPath) => {
-    const result = await readTextFile(selectedPath, {
-      androidDirectoryUri: library.androidTreeUri,
-    })
+    const markdownOptions = getLibraryMarkdownDocumentOptions(library, selectedPath)
+    const result = markdownOptions
+      ? await readLibraryFileContent(selectedPath, markdownOptions)
+      : await readTextFile(selectedPath, { androidDirectoryUri: library.androidTreeUri })
     if (!result.ok) {
       throw new Error(result.error || `No se pudo leer ${selectedPath}.`)
     }
@@ -97,6 +103,7 @@ export async function loadInlineFileAttachments(
       path: toStoredLibraryPath(library.path, selectedPath),
       name: buildAttachmentDisplayName(selectedPath, options),
       content: result.content,
+      revision: result.revision,
     } satisfies ChatInlineFileAttachment
   }))
 

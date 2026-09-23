@@ -13,8 +13,6 @@ describe("FinanceRecordsPanel accessibility", () => {
         createElement(FinanceRecordsPanel, {
           library: { id: "library", name: "Personal", path: "C:/personal" },
           accounts: [],
-          categories: [],
-          reserves: [],
           debtRatioHistory: [],
           historyFrom: "2025-10",
           historyTo: "2026-09",

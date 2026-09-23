@@ -10,25 +10,7 @@ import {
   recordTaskManagerMutationJournalChangedPaths,
 } from './taskManagerMutationJournal'
 import { resolveTaskManagerMutationJournalPath } from './taskManagerService'
-import type { Board, Group, TaskItem, TaskManagerSettings } from '../types/taskManagerTypes'
-import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
-
-export interface PublishedTaskManagerBoard {
-  name: string
-  color: string
-  groups: Array<Pick<Group, 'name' | 'color'>>
-  tasks: Array<Pick<TaskItem, 'title' | 'detail' | 'state' | 'startDate' | 'endDate' | 'group' | 'priority' | 'dedicatedHours' | 'estimatedHours' | 'deviationHours' | 'parentTaskName' | 'order'>>
-}
-
-export interface TaskManagerPublicationPayload {
-  vaultPath: string
-  theme: 'dark' | 'light'
-  maxClients: number
-  port: number
-  aiPreferences: AiPreferences
-  settings: TaskManagerSettings
-  boards: PublishedTaskManagerBoard[]
-}
+import type { TaskManagerSettings } from '../types/taskManagerTypes'
 
 export interface TaskManagerPublicationStatusSnapshot {
   active: boolean
@@ -81,57 +63,12 @@ function createTaskManagerPublicationOperationId(): string {
   return `published-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`
 }
 
-export function buildTaskManagerPublicationPayload(
-  boards: Board[],
-  groups: Group[],
-  tasks: TaskItem[],
-  publishedBoardNames: string[],
-  vaultPath: string,
-  theme: 'dark' | 'light',
-  aiPreferences: AiPreferences,
-  port = 52471,
-  maxClients = 64,
-): TaskManagerPublicationPayload {
-  const allowedBoardNames = new Set(publishedBoardNames.map((name) => name.trim().toLowerCase()))
-  const isPublishedBoard = (boardName: string | undefined): boolean => allowedBoardNames.has(boardName?.trim().toLowerCase() ?? 'default')
-  return {
-    vaultPath,
-    theme,
-    maxClients: Math.min(64, Math.max(1, Math.trunc(maxClients))),
-    port,
-    aiPreferences,
-    settings: {
-      activeVaultPath: null,
-      boards: boards.filter((board) => isPublishedBoard(board.name)),
-      groups: groups.filter((group) => isPublishedBoard(group.board)),
-      pomodoro: {
-        phase: 'work', runState: 'idle', remainingSeconds: 0, endTimestamp: null, completedWorkCycles: 0,
-        selectedTaskPath: null, isDeviationActive: false, deviationStartedAt: null, deviationBaseRemainingSeconds: 0,
-        phaseDeviationSeconds: 0, durations: { workMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15 },
-      },
-      activeTab: boards.find((board) => isPublishedBoard(board.name))?.name ?? 'default',
-    },
-    boards: boards
-      .filter((board) => isPublishedBoard(board.name))
-      .map((board) => ({
-        name: board.name,
-        color: board.color,
-        groups: groups
-          .filter((group) => group.board?.trim().toLowerCase() === board.name.trim().toLowerCase())
-          .map((group) => ({ name: group.name, color: group.color })),
-        tasks: tasks
-          .filter((task) => task.board.trim().toLowerCase() === board.name.trim().toLowerCase())
-          .filter((task) => !task.filePath.includes('/finished/') && !task.filePath.includes('/cancelled/'))
-          .map(({ title, detail, state, startDate, endDate, group, priority, dedicatedHours, estimatedHours, deviationHours, parentTaskName, order }) => ({
-            title, detail, state, startDate, endDate, group, priority, dedicatedHours, estimatedHours, deviationHours, parentTaskName, order,
-          }))
-          .sort((left, right) => left.order - right.order),
-      })),
-  }
-}
-
-export async function publishTaskManagerBoards(payload: TaskManagerPublicationPayload): Promise<string> {
-  return invoke<string>('publish_task_manager_boards', { payload })
+/**
+ * Publishes the boards chosen in the device preferences. The backend builds
+ * what is served from the Task Manager store (`task_manager_publication_source.rs`).
+ */
+export async function publishTaskManagerBoards(libraryId: string, theme: 'dark' | 'light'): Promise<string> {
+  return invoke<string>('backend_publish_task_manager', { payload: { libraryId, theme } })
 }
 
 export async function getTaskManagerPublicationUrl(): Promise<string> {

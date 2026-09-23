@@ -11,6 +11,7 @@ export function toTaskFrontmatter(value: unknown): TaskFrontmatter | null {
 
   const frontmatter: TaskFrontmatter = {}
 
+  if (typeof value.id === 'string') frontmatter.id = value.id
   if (typeof value.tarea === 'string') frontmatter.tarea = value.tarea
   if (typeof value.detalle === 'string') frontmatter.detalle = value.detalle
   if (typeof value.estado === 'string') frontmatter.estado = value.estado

@@ -109,6 +109,49 @@ class DirectoryPickerPluginTest {
         assertEquals(document, normalize(document))
     }
 
+    @Test fun verificationRejectsAProviderDocumentThatCannotBeResolved() {
+        val document = "$root/document/primary%3ANotas%2Fhijo.md"
+        val result = verify(document)
+
+        assertFalse(result.getBoolean("ok"))
+        assertEquals(
+            listOf("$root/document/primary%3ANotas%2Fhijo.md"),
+            provider.queries
+        )
+    }
+
+    @Test fun verificationUsesTheProviderTreeAndDocumentIds() {
+        activity.grantUriPermission(
+            activity.packageName,
+            Uri.parse(root),
+            Intent.FLAG_GRANT_READ_URI_PERMISSION
+        )
+        provider.returnVerificationRows = true
+        val document = "$root/document/primary%3ANotas%2Fhijo.md"
+        val result = verify(document)
+
+        assertTrue(result.getBoolean("ok"))
+        assertEquals(
+            listOf(
+                "$root/document/primary%3ANotas%2Fhijo.md",
+                "$root/document/primary%3ANotas/children"
+            ),
+            provider.queries
+        )
+    }
+
+    private fun verify(document: String): JSONObject {
+        var response = ""
+        plugin.verifyDocumentUnderTree(
+            invoke(
+                JSONObject()
+                    .put("treeUri", root)
+                    .put("documentUri", document)
+            ) { _, data -> response = data }
+        )
+        return JSONObject(response)
+    }
+
     private fun assertRootQuery(command: (Invoke) -> Unit) {
         var callback: Long? = null
         var response = ""
@@ -126,11 +169,24 @@ class DirectoryPickerPluginTest {
 
     class EmptyDocumentsProvider : ContentProvider() {
         val queries = mutableListOf<String>()
+        var returnVerificationRows = false
         override fun onCreate() = true
         override fun query(uri: Uri, projection: Array<out String>?, selection: String?,
                            selectionArgs: Array<out String>?, sortOrder: String?): MatrixCursor {
             queries.add(uri.toString())
-            return MatrixCursor(requireNotNull(projection))
+            val columns = requireNotNull(projection)
+            return MatrixCursor(columns).also { cursor ->
+                if (returnVerificationRows) {
+                    cursor.addRow(columns.map { column ->
+                        when (column) {
+                            DocumentsContract.Document.COLUMN_DOCUMENT_ID ->
+                                "primary:Notas/hijo.md"
+                            DocumentsContract.Document.COLUMN_MIME_TYPE -> "text/markdown"
+                            else -> null
+                        }
+                    }.toTypedArray())
+                }
+            }
         }
         override fun getType(uri: Uri): String? = null
         override fun insert(uri: Uri, values: ContentValues?): Uri? = error("Unexpected insert")

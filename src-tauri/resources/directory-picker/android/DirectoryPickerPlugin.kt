@@ -3,6 +3,7 @@ package com.gabriel.notia
 import android.app.Activity
 import android.content.ContentResolver
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.result.ActivityResult
@@ -204,6 +205,41 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     /**
+     * Verifies a document ID through the registered tree grant instead of
+     * inferring containment from URI text. The provider query is deliberately
+     * bounded because a provider may expose a very large tree.
+     */
+    @Command
+    fun verifyDocumentUnderTree(invoke: Invoke) {
+        runSaf(invoke, "No se pudo verificar el documento Android.") { args ->
+            val treeUri = requireTreeUri(args.optString("treeUri", ""))
+            val documentUri = requireDocumentUri(args.optString("documentUri", ""))
+            val documentId = documentIdOrNull(documentUri)
+            val treeDocumentId = documentIdOrNull(treeUri, tree = true)
+            val requireWrite = args.optBoolean("requireWrite", false)
+
+            if (documentId == null || treeDocumentId == null ||
+                documentUri.authority != treeUri.authority ||
+                !hasTreePermission(treeUri, requireWrite)
+            ) {
+                return@runSaf JSObject().put("ok", false)
+            }
+
+            val documentUnderTreeUri = try {
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+            } catch (_: Exception) {
+                return@runSaf JSObject().put("ok", false)
+            }
+            if (!documentExists(documentUnderTreeUri) ||
+                !containsDocument(treeUri, treeDocumentId, documentId)
+            ) {
+                return@runSaf JSObject().put("ok", false)
+            }
+            JSObject().put("ok", true)
+        }
+    }
+
+    /**
      * Creates a nested entry starting at the granted tree root. This command
      * deliberately does not depend on readTree/path caches, so bootstrap files
      * such as `.notia/notiaConfig.json` can be created atomically even when a
@@ -339,6 +375,14 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
         return uri
     }
 
+    private fun requireDocumentUri(raw: String): Uri {
+        val uri = requireUri(raw)
+        if (!DocumentsContract.isDocumentUri(activity, uri)) {
+            throw IOException("El destino Android debe ser una URI document SAF válida.")
+        }
+        return uri
+    }
+
     // ── URI helpers ─────────────────────────────────────────────────────
 
     /**
@@ -365,6 +409,103 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
         } catch (_: Exception) {
             throw IOException("La URI Android no pertenece a un árbol SAF válido.")
         }
+    }
+
+    private fun documentIdOrNull(uri: Uri, tree: Boolean = false): String? {
+        return try {
+            val value = if (tree) {
+                DocumentsContract.getTreeDocumentId(uri)
+            } else {
+                DocumentsContract.getDocumentId(uri)
+            }
+            value.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun hasTreePermission(treeUri: Uri, requireWrite: Boolean): Boolean {
+        val permission = if (requireWrite) {
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        } else {
+            Intent.FLAG_GRANT_READ_URI_PERMISSION
+        }
+        val hasLivePermission = activity.checkUriPermission(
+            treeUri,
+            android.os.Process.myPid(),
+            android.os.Process.myUid(),
+            permission
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasLivePermission) return true
+
+        return activity.contentResolver.persistedUriPermissions.any { persisted ->
+            persisted.uri == treeUri &&
+                persisted.isReadPermission &&
+                (!requireWrite || persisted.isWritePermission)
+        }
+    }
+
+    private fun documentExists(uri: Uri): Boolean {
+        return try {
+            activity.contentResolver.query(
+                uri,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                null,
+                null,
+                null
+            )?.use { cursor -> cursor.moveToFirst() } ?: false
+        } catch (_: SecurityException) {
+            throw IOException("El permiso del documento Android no está disponible.")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun containsDocument(treeUri: Uri, treeDocumentId: String, candidateId: String): Boolean {
+        if (treeDocumentId == candidateId) return true
+
+        val pending = ArrayDeque<Pair<String, Int>>()
+        pending.addLast(treeDocumentId to 0)
+        var visited = 0
+        while (pending.isNotEmpty()) {
+            val (parentId, depth) = pending.removeFirst()
+            try {
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
+                activity.contentResolver.query(
+                    childrenUri,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE
+                    ),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    val idIndex = cursor.getColumnIndexOrThrow(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID
+                    )
+                    val mimeIndex = cursor.getColumnIndexOrThrow(
+                        DocumentsContract.Document.COLUMN_MIME_TYPE
+                    )
+                    while (cursor.moveToNext()) {
+                        visited += 1
+                        if (visited > MAX_CONTAINMENT_NODES) return false
+                        val childId = cursor.getString(idIndex) ?: continue
+                        if (childId == candidateId) return true
+                        if (depth < MAX_TREE_DEPTH &&
+                            cursor.getString(mimeIndex) == DocumentsContract.Document.MIME_TYPE_DIR
+                        ) {
+                            pending.addLast(childId to depth + 1)
+                        }
+                    }
+                }
+            } catch (error: SecurityException) {
+                throw error
+            } catch (_: Exception) {
+                return false
+            }
+        }
+        return false
     }
 
     private fun childDocumentUri(parentUri: Uri, documentId: String): Uri {
@@ -673,5 +814,6 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
         /** SAF recursion cap to keep memory bounded on large libraries. */
         private const val MAX_TREE_DEPTH = 24
         private const val MAX_ENTRY_NAME_LENGTH = 255
+        private const val MAX_CONTAINMENT_NODES = 4096
     }
 }

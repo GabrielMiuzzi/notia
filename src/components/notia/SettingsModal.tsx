@@ -12,14 +12,12 @@ import {
   getDefaultOllamaApiUrl,
   getSessionAiApiKey,
   normalizeAiSettingsInput,
-  resolveAiPreferencesForTransport,
   type AiPreferences,
 } from '../../services/preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
 import { checkAiHealth, invalidateAiHealthCache, listAiModels, type AiModelOption } from '../../services/ai/aiRuntime'
-import { loadAutoApplyLowRiskPreference, saveAutoApplyLowRiskPreference } from '../../services/ai/aiAutoApplyPreference'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
@@ -33,15 +31,14 @@ import { clearAllFinanceData } from '../../modules/finance/services/financeServi
 import { financeErrorMessage } from '../../modules/finance/engines/financeError'
 import { notifyFinanceDataChanged } from '../../modules/finance/services/financeDataEvents'
 import { ConfirmationDialogModal } from './ConfirmationDialogModal'
-import { pickDirectory } from '../../services/files/filesystemEngine'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
 import { NotiaSubmenuPanel } from './NotiaSubmenuPanel'
 import { NotiaSelectMenu } from '../common/NotiaSelectMenu'
-import type { BackupPreferences } from '../../services/preferences/backupSettingsStorage'
+import { disableBackups, loadBackupStatus, pickBackupDirectory, type BackupStatus } from '../../services/preferences/backupSettingsStorage'
+import { saveDevicePreferences } from '../../services/preferences/devicePreferencesStorage'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
-import { loadTaskManagerSnapshot } from '../../modules/task-manager/services/taskManagerService'
-import { buildTaskManagerPublicationPayload, getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, openTaskManagerPublication, publishTaskManagerBoards, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
+import { getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, openTaskManagerPublication, publishTaskManagerBoards, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
 import { loadTaskManagerPublicationTelemetry, recordTaskManagerPublicationTelemetry } from '../../modules/task-manager/services/taskManagerPublicationTelemetry'
 import { normalizeContextTag, normalizeLibraryContexts, type LibraryContext } from '../../services/contexts/libraryContexts'
 import {
@@ -72,8 +69,6 @@ interface SettingsModalProps {
   onAiPreferencesChange: (value: AiPreferences) => void
   telegramPreferences: TelegramPreferences
   onTelegramPreferencesChange: (value: TelegramPreferences) => void
-  backupPreferences: BackupPreferences
-  onBackupPreferencesChange: (value: BackupPreferences) => void
   taskManagerPublicationPreferences: TaskManagerPublicationPreferences
   onTaskManagerPublicationPreferencesChange: (value: TaskManagerPublicationPreferences) => void
   contexts: LibraryContext[]
@@ -115,8 +110,6 @@ export function SettingsModal({
   onAiPreferencesChange,
   telegramPreferences,
   onTelegramPreferencesChange,
-  backupPreferences,
-  onBackupPreferencesChange,
   taskManagerPublicationPreferences,
   onTaskManagerPublicationPreferencesChange,
   contexts,
@@ -130,7 +123,6 @@ export function SettingsModal({
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
-  const [autoApplyLowRisk, setAutoApplyLowRisk] = useState(false)
   const normalizedIncomingAiPreferences = {
     ...normalizeAiSettingsInput(aiPreferences),
     apiKey: getSessionAiApiKey(),
@@ -142,10 +134,6 @@ export function SettingsModal({
     }
     return 'General'
   })
-
-  useEffect(() => {
-    setAutoApplyLowRisk(activeLibrary?.id ? loadAutoApplyLowRiskPreference(activeLibrary.id) : false)
-  }, [activeLibrary?.id, open])
 
   useEffect(() => {
     if (open && requestedSection && VALID_SETTINGS_SECTIONS.has(requestedSection)) {
@@ -184,6 +172,15 @@ export function SettingsModal({
   const [isFinanceDeleteConfirmationOpen, setIsFinanceDeleteConfirmationOpen] = useState(false)
   const [isClearingFinanceData, setIsClearingFinanceData] = useState(false)
   const [backupStatus, setBackupStatus] = useState('')
+  const [backupSettings, setBackupSettings] = useState<BackupStatus | null>(null)
+  useEffect(() => {
+    if (activeSection !== 'Backups') return
+    let isCurrent = true
+    void loadBackupStatus()
+      .then((status) => { if (isCurrent) setBackupSettings(status) })
+      .catch(() => { if (isCurrent) setBackupStatus('No se pudo leer la configuración de backups.') })
+    return () => { isCurrent = false }
+  }, [activeSection])
   const [publicationStatus, setPublicationStatus] = useState('Seleccioná uno o más tableros para habilitar la publicación local.')
   const [publicationUrl, setPublicationUrl] = useState<string | null>(null)
   const [isPublishingBoards, setIsPublishingBoards] = useState(false)
@@ -690,18 +687,9 @@ export function SettingsModal({
     }
    setIsPublishingBoards(true)
    try {
-    const snapshot = await loadTaskManagerSnapshot(activeLibrary.path)
-      const url = await publishTaskManagerBoards(buildTaskManagerPublicationPayload(
-        taskManagerSettings.boards,
-        taskManagerSettings.groups,
-        snapshot.tasks,
-        taskManagerPublicationPreferences.publishedBoardNames,
-        activeLibrary.path,
-         appTheme,
-         resolveAiPreferencesForTransport(normalizedAiPreferences),
-         taskManagerPublicationPreferences.port,
-         taskManagerPublicationPreferences.maxClients,
-      ))
+      // The backend reads the selection it stores; save it before publishing.
+      await saveDevicePreferences({ taskManagerPublication: taskManagerPublicationPreferences })
+      const url = await publishTaskManagerBoards(activeLibrary.id, appTheme)
       setPublicationUrl(url)
       setPublicationStatus('Tableros publicados en la red local. La URL solo funciona mientras Notia esté abierta.')
     } catch (error) {
@@ -1173,22 +1161,6 @@ export function SettingsModal({
                       onAiPreferencesChange({ ...normalizedAiPreferences, editProgressMessage: event.target.checked })
                     }} />
                   </label>
-                  <label className="notia-settings-checkbox-row">
-                    <span>Aplicar automáticamente cambios de riesgo bajo</span>
-                    <input
-                      type="checkbox"
-                      checked={autoApplyLowRisk}
-                      disabled={!activeLibrary}
-                      onChange={(event) => {
-                        const enabled = event.target.checked
-                        setAutoApplyLowRisk(enabled)
-                        if (activeLibrary) saveAutoApplyLowRiskPreference(activeLibrary.id, enabled)
-                      }}
-                    />
-                  </label>
-                  <p className="notia-settings-hint">
-                    Solo omite la confirmación de previews de riesgo bajo en esta biblioteca. Renombrados, borrados, cambios multiarchivo, tareas y finanzas siempre vuelven a pedir confirmación.
-                  </p>
                 </div>
                 {modelsErrorMessage ? (
                   <div className="notia-settings-status notia-settings-status--error">
@@ -1413,17 +1385,25 @@ export function SettingsModal({
           ) : activeSection === 'Backups' ? (
             <div className="notia-settings-card">
               <div className="notia-settings-card-label">Backups automáticos</div>
-              <div className="notia-settings-card-value">{backupPreferences.directoryPath || 'Desactivados'}</div>
+              <div className="notia-settings-card-value">{backupSettings?.directoryPath || 'Desactivados'}</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">
                 Disponible solo en Windows. Guarda un ZIP de la biblioteca activa cada hora y conserva como máximo 2 días (48 backups).
+                {backupSettings?.lastBackupAt ? ` Último backup: ${new Date(backupSettings.lastBackupAt * 1000).toLocaleString()}.` : ''}
+                {backupSettings?.lastError ? ` Último error: ${backupSettings.lastError}` : ''}
               </div>
               <div className="notia-settings-actions">
-                <NotiaButton variant="secondary" onClick={() => {
-                  void pickDirectory('Elegí la carpeta para guardar los backups').then((selection) => {
-                    if (selection) { onBackupPreferencesChange({ directoryPath: selection.path }); setBackupStatus('Carpeta de backups configurada.') }
+                <NotiaButton variant="secondary" disabled={backupSettings?.supported === false} onClick={() => {
+                  void pickBackupDirectory().then((status) => {
+                    setBackupSettings(status)
+                    if (status.directoryPath) setBackupStatus('Carpeta de backups configurada.')
                   }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudo elegir la carpeta.'))
                 }}>Elegir carpeta</NotiaButton>
-                <NotiaButton variant="secondary" disabled={!backupPreferences.directoryPath} onClick={() => { onBackupPreferencesChange({ directoryPath: '' }); setBackupStatus('Backups desactivados.') }}>Desactivar</NotiaButton>
+                <NotiaButton variant="secondary" disabled={!backupSettings?.directoryPath} onClick={() => {
+                  void disableBackups().then((status) => {
+                    setBackupSettings(status)
+                    setBackupStatus('Backups desactivados.')
+                  }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudieron desactivar los backups.'))
+                }}>Desactivar</NotiaButton>
               </div>
               <div className="notia-settings-status" role="status">{backupStatus}</div>
             </div>

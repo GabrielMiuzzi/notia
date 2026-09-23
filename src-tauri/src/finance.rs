@@ -59,7 +59,7 @@ pub type FinanceCommandResult<T> = Result<T, FinanceCommandError>;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::database::open_library_connection;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinanceContext {
     pub library_path: String,
@@ -3377,6 +3377,24 @@ pub fn finance_list_all_savings_movements(
 ) -> FinanceCommandResult<Vec<FinanceSavingsMovement>> {
     let connection = validate_context(&context, &app)?;
     finance_list_savings_movements_all_inner(&connection).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn finance_list_accounts(
+    app: tauri::AppHandle,
+    context: FinanceContext,
+) -> FinanceCommandResult<Vec<FinanceAccount>> {
+    let connection = validate_context(&context, &app)?;
+    finance_list_accounts_inner(&connection).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn finance_list_categories(
+    app: tauri::AppHandle,
+    context: FinanceContext,
+) -> FinanceCommandResult<Vec<FinanceCategory>> {
+    let connection = validate_context(&context, &app)?;
+    finance_list_categories_inner(&connection).map_err(Into::into)
 }
 
 fn finance_salary_by_currency(

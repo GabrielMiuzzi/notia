@@ -1,95 +1,55 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 import { ensureLibraryConfigExists, readLibraryConfig, writeLibraryConfig } from './libraryConfig'
-import { createDirectory, createFile, pathExists, readTextFile, writeTextFile } from '../files/filesystemEngine'
 
-vi.mock('../files/filesystemEngine', () => ({
-  createDirectory: vi.fn().mockResolvedValue({ ok: true }),
-  createFile: vi.fn().mockResolvedValue({ ok: true }),
-  pathExists: vi.fn().mockResolvedValue(false),
-  readTextFile: vi.fn(),
-  writeTextFile: vi.fn().mockResolvedValue({ ok: true }),
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
 }))
 
 const aiPreferences = {
   ollamaUrl: 'https://ollama.com',
-  apiKey: 'secret-must-not-enter-library-config',
+  apiKey: 'library-key',
   selectedModel: 'qwen3',
   thinkingEnabled: true,
   thinkingLevel: 'medium' as const,
 }
 
-describe('libraryConfig AI preferences', () => {
+describe('libraryConfig backend client', () => {
   beforeEach(() => {
-    vi.mocked(readTextFile).mockReset()
-    vi.mocked(writeTextFile).mockReset().mockResolvedValue({ ok: true })
-    vi.mocked(createFile).mockReset().mockResolvedValue({ ok: true })
-    vi.mocked(pathExists).mockReset().mockResolvedValue(false)
-    vi.mocked(createDirectory).mockReset().mockResolvedValue({ ok: true })
+    vi.mocked(invoke).mockReset()
   })
 
-  it('hydrates an API key from the library configuration', async () => {
-    vi.mocked(readTextFile).mockResolvedValue({
-      ok: true,
-      content: JSON.stringify({ version: 1, ia: aiPreferences }),
-    })
+  it('reads the configuration normalized by the backend by library identity', async () => {
+    vi.mocked(invoke).mockResolvedValue({ ok: true, config: { version: 1, ia: aiPreferences } })
 
-    const config = await readLibraryConfig('library')
+    const config = await readLibraryConfig('library-id')
 
+    expect(invoke).toHaveBeenCalledWith('backend_read_library_config', { payload: { libraryId: 'library-id' } })
     expect(config?.ia).toMatchObject(aiPreferences)
   })
 
-  it('writes the API key to the library configuration', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true)
+  it('returns null when the library has no configuration or it cannot be read', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ ok: true, config: null })
+    expect(await readLibraryConfig('library-id')).toBeNull()
 
-    await writeLibraryConfig('library', { version: 1, ia: aiPreferences })
-
-    const content = vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]
-    expect(typeof content).toBe('string')
-    expect(JSON.parse(content as string).ia).toMatchObject(aiPreferences)
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('ipc'))
+    expect(await readLibraryConfig('library-id')).toBeNull()
   })
 
-  it('creates a missing library configuration file through the filesystem adapter', async () => {
-    await writeLibraryConfig('library', { version: 1, ia: aiPreferences })
+  it('sends the configuration to the backend without filesystem paths', async () => {
+    vi.mocked(invoke).mockResolvedValue({ ok: true, config: {} })
 
-    expect(createFile).toHaveBeenCalledOnce()
-    expect(writeTextFile).not.toHaveBeenCalled()
+    const result = await writeLibraryConfig('library-id', { version: 1, ia: aiPreferences })
+
+    expect(result).toEqual({ ok: true })
+    expect(invoke).toHaveBeenCalledWith('backend_write_library_config', {
+      payload: { libraryId: 'library-id', config: { version: 1, ia: aiPreferences } },
+    })
   })
 
   it('reports when the default configuration cannot be written', async () => {
-    vi.mocked(createFile).mockResolvedValue({ ok: false, error: 'SAF rechazó la escritura.' })
+    vi.mocked(invoke).mockResolvedValue({ ok: false, error: 'SAF rechazó la escritura.' })
 
-    await expect(ensureLibraryConfigExists('library')).rejects.toThrow('SAF rechazó la escritura.')
-  })
-
-  it('creates the complete Android SAF config path without a separate directory command', async () => {
-    vi.mocked(readTextFile).mockResolvedValue({ ok: false, content: '' })
-
-    await ensureLibraryConfigExists('content://tree/library', {
-      androidDirectoryUri: 'content://tree/library',
-    })
-
-    expect(createDirectory).not.toHaveBeenCalled()
-    expect(createFile).toHaveBeenCalledOnce()
-    expect(createFile).toHaveBeenCalledWith(
-      'content://tree/library/.notia/notiaConfig.json',
-      expect.any(String),
-      { androidDirectoryUri: 'content://tree/library' },
-    )
-  })
-
-  it('does not hydrate legacy publication credentials from the active library configuration', async () => {
-    vi.mocked(readTextFile).mockResolvedValue({
-      ok: true,
-      content: JSON.stringify({
-        version: 1,
-        taskManagerPublication: {
-          accessUsers: [{ username: 'Ana', passwordHash: '$notia-pbkdf2-sha256$v=1$i=210000$salt$hash' }],
-        },
-      }),
-    })
-
-    const config = await readLibraryConfig('library')
-
-    expect(config).not.toHaveProperty('taskManagerPublication')
+    await expect(ensureLibraryConfigExists('library-id')).rejects.toThrow('SAF rechazó la escritura.')
   })
 })

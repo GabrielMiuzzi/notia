@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AiHttpSettings {
@@ -151,14 +150,12 @@ struct OllamaShowResponse {
     capabilities: Vec<String>,
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct OllamaWebSearchResponse {
     #[serde(default)]
     results: Vec<OllamaWebSearchItem>,
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct OllamaWebSearchItem {
     title: Option<String>,
@@ -203,7 +200,6 @@ struct OllamaChatStreamMessage {
     thinking: Option<String>,
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub enum AiChatStreamDelta {
     Thinking(String),
     Content(String),
@@ -370,7 +366,7 @@ pub async fn search_ollama_web(
     }
 
     let payload = response
-        .json::<OllamaWebSearchResponse>()
+        .json::<serde_json::Value>()
         .await
         .map_err(|error| {
             describe_request_error(
@@ -378,26 +374,45 @@ pub async fn search_ollama_web(
                 "La respuesta de busqueda web no se pudo interpretar.",
             )
         })?;
+    normalize_web_search_payload(payload, bounded_results)
+}
+
+/// Sanitizes a raw Ollama `/api/web_search` payload. Shared by the desktop
+/// HTTP client and the Android bridge so both platforms expose the same
+/// bounded, credential-free results to the agent.
+pub(crate) fn normalize_web_search_payload(
+    payload: serde_json::Value,
+    max_results: u32,
+) -> Result<AiWebSearchResponse, String> {
+    let payload = serde_json::from_value::<OllamaWebSearchResponse>(payload)
+        .map_err(|_| "La respuesta de busqueda web no se pudo interpretar.".to_string())?;
     let results = payload
         .results
         .into_iter()
         .filter_map(|item| {
-            let title = item.title?.trim().to_string();
-            let url = item.url?.trim().to_string();
-            let snippet = item
-                .content
-                .unwrap_or_default()
-                .trim()
-                .chars()
-                .take(2_000)
-                .collect::<String>();
-            let parsed_url = Url::parse(&url).ok()?;
+            let title = sanitize_web_text(item.title?.trim(), 300);
+            let raw_url = item.url?.trim().to_string();
+            let snippet = sanitize_web_text(
+                item.content.unwrap_or_default().trim(),
+                2_000,
+            );
+            let mut parsed_url = reqwest::Url::parse(&raw_url).ok()?;
             if title.is_empty()
                 || snippet.is_empty()
                 || !matches!(parsed_url.scheme(), "http" | "https")
+                || !parsed_url.username().is_empty()
+                || parsed_url.password().is_some()
             {
                 return None;
             }
+            for key in parsed_url.query_pairs().map(|(key, _)| key.to_string()).collect::<Vec<_>>() {
+                if matches!(key.to_ascii_lowercase().as_str(), "api_key" | "apikey" | "access_token" | "token" | "secret" | "password" | "cookie" | "authorization") {
+                    parsed_url.set_query(None);
+                    break;
+                }
+            }
+            parsed_url.set_fragment(None);
+            let url = parsed_url.to_string();
             let source_name = parsed_url.host_str()?.to_string();
             Some(AiWebSearchResult {
                 title,
@@ -407,10 +422,26 @@ pub async fn search_ollama_web(
                 published_at: None,
             })
         })
-        .take(bounded_results as usize)
+        .take(max_results.clamp(1, 10) as usize)
         .collect();
 
     Ok(AiWebSearchResponse { results })
+}
+
+fn sanitize_web_text(value: &str, limit: usize) -> String {
+    let without_markup = value
+        .replace("<", " ")
+        .replace(">", " ")
+        .replace("ignore previous instructions", "[instrucción web omitida]")
+        .replace("disregard the system message", "[instrucción web omitida]")
+        .replace("reveal the system prompt", "[instrucción web omitida]");
+    without_markup
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(limit)
+        .collect()
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

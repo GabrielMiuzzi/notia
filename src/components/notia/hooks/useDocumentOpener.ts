@@ -18,15 +18,18 @@ import { toFileUrl } from '../../../utils/files/toFileUrl'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
+import { resolveLibraryDocumentLogicalPath } from '../../../services/libraries/libraryDocumentRuntime'
 
 interface UseDocumentOpenerParams {
-  openDocumentInTab: (document: OpenFileDocument, latestSavedSource: string) => void
+  openDocumentInTab: (document: OpenFileDocument, latestSavedSource: string, latestSavedRevision?: string) => void
   resolveActiveLibraryAndroidDirectoryUri: (pathValue?: string | null) => string | undefined
+  activeLibrary: { id: string; path: string } | null
 }
 
 export function useDocumentOpener({
   openDocumentInTab,
   resolveActiveLibraryAndroidDirectoryUri,
+  activeLibrary,
 }: UseDocumentOpenerParams) {
   const dispatch = useAppDispatch()
   const openingDocumentPathsRef = useRef<Set<string>>(new Set())
@@ -52,6 +55,10 @@ export function useDocumentOpener({
         const readFn = isMarkdown ? readMarkdownWithDefaults : readLibraryFileContent
         const result = await readFn(androidDocumentUri ?? filePath, {
           androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
+          libraryId: activeLibrary?.id,
+          logicalPath: activeLibrary
+            ? resolveLibraryDocumentLogicalPath(activeLibrary.path, filePath)
+            : undefined,
         })
         if (!result.ok) {
           openFileMeasurement.error(new Error(result.error ?? 'Could not read file.'))
@@ -71,7 +78,7 @@ export function useDocumentOpener({
           source: result.content,
           androidDocumentUri,
         }
-        openDocumentInTab(nextDocument, result.content)
+        openDocumentInTab(nextDocument, result.content, result.revision)
         openFileMeasurement.success({ sourceLength: result.content.length })
         openTimer.success({ stage: 'textual_loaded', sourceLength: result.content.length })
         return
@@ -84,7 +91,7 @@ export function useDocumentOpener({
     openDocumentInTab({ path: filePath, name, extension, viewKind, imageUrl: toFileUrl(filePath) }, '')
     openFileMeasurement.success()
     openTimer.success({ stage: 'binary_loaded' })
-  }, [dispatch, openDocumentInTab, resolveActiveLibraryAndroidDirectoryUri])
+  }, [activeLibrary, dispatch, openDocumentInTab, resolveActiveLibraryAndroidDirectoryUri])
 
   const handleOpenFileFromView = useCallback(
     (filePath: string, androidDocumentUri?: string) => { void handleOpenFile(filePath, androidDocumentUri) },

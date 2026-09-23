@@ -28,6 +28,7 @@ export function normalizeTaskManagerPublicationPreferences(value: unknown): Task
   return { publishedBoardNames: normalizeBoardNames(input.publishedBoardNames), port, maxClients }
 }
 
+/** Copy kept by older versions in the WebView; read once to migrate it. */
 export function loadTaskManagerPublicationPreferences(): TaskManagerPublicationPreferences {
   try {
     // Older versions stored publication passwords, access users and approved
@@ -38,7 +39,12 @@ export function loadTaskManagerPublicationPreferences(): TaskManagerPublicationP
   }
 }
 
-export function saveTaskManagerPublicationPreferences(preferences: TaskManagerPublicationPreferences): void {
-  const normalized = normalizeTaskManagerPublicationPreferences(preferences)
-  localStorage.setItem(TASK_MANAGER_PUBLICATION_SETTINGS_STORAGE_KEY, JSON.stringify(normalized))
+
+/** Removes the WebView copy after the backend holds the preferences. */
+export function clearLegacyTaskManagerPublicationPreferences(): void {
+  try {
+    localStorage.removeItem(TASK_MANAGER_PUBLICATION_SETTINGS_STORAGE_KEY)
+  } catch {
+    // A stale copy is ignored once the backend is initialized.
+  }
 }

@@ -45,11 +45,13 @@ export function useLibraryLinkCacheAutoRebuild(): void {
 
     scheduleLibraryLinkCacheRebuild({
       libraryPath: activeLibrary.path,
+      libraryId: activeLibrary.id,
       treeNodes: latestTreeNodesRef.current,
       flatFileList: latestFlatFileListRef.current.length > 0 ? latestFlatFileListRef.current : undefined,
       androidDirectoryUri: activeLibrary.androidTreeUri,
     })
   }, [
+    activeLibrary?.id,
     activeLibrary?.path,
     activeLibrary?.androidTreeUri,
     activeWorkspaceView,
@@ -68,6 +70,7 @@ export function useLibraryLinkCacheAutoRebuild(): void {
     }
 
     const libraryPath = activeLibrary.path
+    const libraryId = activeLibrary.id
     const androidDirectoryUri = activeLibrary.androidTreeUri
 
     let cancelled = false
@@ -78,12 +81,13 @@ export function useLibraryLinkCacheAutoRebuild(): void {
       if (cancelled) return
 
       try {
-        const existingCache = await readLibraryLinkCache(libraryPath, { androidDirectoryUri })
+        const existingCache = await readLibraryLinkCache(libraryPath, { libraryId, androidDirectoryUri })
         if (existingCache) return
 
         // Cache does not exist — schedule an urgent rebuild
         scheduleLibraryLinkCacheRebuild({
           libraryPath,
+          libraryId,
           treeNodes: latestTreeNodesRef.current,
           flatFileList: latestFlatFileListRef.current.length > 0 ? latestFlatFileListRef.current : undefined,
           androidDirectoryUri,
@@ -99,6 +103,7 @@ export function useLibraryLinkCacheAutoRebuild(): void {
       cancelled = true
     }
   }, [
+    activeLibrary?.id,
     activeLibrary?.path,
     activeLibrary?.androidTreeUri,
     activeWorkspaceView,

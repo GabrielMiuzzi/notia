@@ -1,5 +1,5 @@
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
-import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
+import type { TaskExecutionStep } from '../../../services/chat/chatAgentTypes'
 
 interface PublishedTaskManagerChatProxyInput {
   taskManagerScopeKey: string | null

@@ -31,13 +31,8 @@ import {
   searchWikiLinkTargets,
   type MarkdownWikiLinkLookup,
 } from '../../../engines/markdown/wikiLinkEngine'
-import {
-  syncPageLink,
-} from '../../../engines/markdown/pageLinkSyncEngine'
-import {
-  readLibraryFileContent,
-  writeLibraryFileContent,
-} from '../../../services/libraries/libraryDocumentRuntime'
+import { resolveLibraryDocumentLogicalPath } from '../../../services/libraries/libraryDocumentRuntime'
+import { invoke } from '@tauri-apps/api/core'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../../types/views/markdownSelection'
 import { buildMarkdownSelectionContext } from '../../../engines/markdown/selectionEngine'
@@ -68,6 +63,7 @@ import {
 } from '../../../engines/markdown/tableCellBlocks'
 import { shouldShowMarkdownBlockHandle } from '../../../engines/markdown/markdownBlockHandleEngine'
 import { markdownTableBlockView } from './markdown/markdownTableBlockView'
+import { ChatAttachmentImages } from './ChatAttachmentImages'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -79,7 +75,8 @@ const INLINE_LATEX_BUTTON_SELECTOR = '[data-notia-inkmath-inline-button]'
 interface MarkdownViewProps {
   source: string
   documentPath: string
-  androidDocumentUri?: string
+  libraryId?: string
+  libraryPath?: string
   onSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
@@ -332,7 +329,8 @@ function replaceInlineLatexEditorText(editorElement: HTMLElement, latex: string)
 function MarkdownViewInner({
   source,
   documentPath,
-  androidDocumentUri,
+  libraryId,
+  libraryPath,
   onSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
@@ -943,56 +941,39 @@ function MarkdownViewInner({
     latestComposedSourceRef.current = nextSource
     onSourceChangeRef.current(nextSource)
 
-    // Bidirectional sync for page links using the pageLinkSyncEngine
+    // Page links are bidirectional: the backend checks cycles and updates
+    // the opposite link of the previous and new target notes.
     const lowerKey = key.toLowerCase()
-    if (lowerKey === 'nextpage' || lowerKey === 'previouspage') {
-      const linkKey = lowerKey === 'nextpage' ? 'nextPage' : 'previousPage'
-
-      const readSource = async (path: string): Promise<string | null> => {
-        try {
-          const result = await readLibraryFileContent(path === documentPath ? androidDocumentUri ?? path : path)
-          return result.ok ? result.content : null
-        } catch {
-          return null
-        }
-      }
-
-      const writeSource = async (path: string, source: string): Promise<void> => {
-        try {
-          const result = await writeLibraryFileContent(path === documentPath ? androidDocumentUri ?? path : path, source)
-          if (!result.ok) {
-            import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
-              notiaLog('markdown', 'writeSource failed', { path, error: result.error }, 'error')
-            })
-          }
-        } catch (error) {
-          import('../../../services/runtime/notiaLogger').then(({ notiaLog }) => {
-            notiaLog('markdown', 'writeSource error', { path, error: String(error) }, 'error')
+    const logicalPath = libraryPath ? resolveLibraryDocumentLogicalPath(libraryPath, documentPath) : undefined
+    if ((lowerKey === 'nextpage' || lowerKey === 'previouspage') && libraryId && logicalPath) {
+      try {
+        const result = await invoke<{ currentValue: string; changed: boolean; error?: string | null }>('backend_sync_page_link', {
+          payload: {
+            libraryId,
+            logicalPath,
+            key: lowerKey === 'nextpage' ? 'nextPage' : 'previousPage',
+            oldValue: typeof oldValue === 'string' ? oldValue : '',
+            newValue: typeof value === 'string' ? value : '',
+          },
+        })
+        if (result.currentValue !== value) {
+          const entries = frontmatterRef.current.map((entry) => (
+            entry.key === key ? { key, value: result.currentValue as FrontmatterEntry['value'] } : entry
+          ))
+          frontmatterRef.current = entries
+          const canonicalSource = serializeFrontmatterDocument({
+            hasFrontmatter: true,
+            frontmatter: entries,
+            body: latestBodyRef.current,
           })
+          latestComposedSourceRef.current = canonicalSource
+          onSourceChangeRef.current(canonicalSource)
         }
-      }
-
-      const result = await syncPageLink(
-        documentPath,
-        nextSource,
-        linkKey,
-        oldValue,
-        value,
-        readSource,
-        writeSource,
-      )
-
-      if (result.mutated) {
-        // If the engine further mutated the source (e.g. to canonicalize the value),
-        // update our local state.
-        const finalDocument = parseFrontmatterDocument(result.currentSource)
-        frontmatterRef.current = finalDocument.frontmatter
-        latestComposedSourceRef.current = result.currentSource
-        onSourceChangeRef.current(result.currentSource)
-      }
-
-      if (result.error) {
-        console.error('[MarkdownView] Page link sync error:', result.error)
+        if (result.error) {
+          console.error('[MarkdownView] Page link sync error:', result.error)
+        }
+      } catch (error) {
+        console.error('[MarkdownView] Page link sync error:', error)
       }
     }
   }
@@ -1034,6 +1015,7 @@ function MarkdownViewInner({
   return (
     <div ref={viewportRef} className="notia-markdown-host" aria-label="Markdown editor">
       <div ref={zoomContentRef} className="notia-markdown-zoom-content">
+        <ChatAttachmentImages source={source} />
         <div className="notia-markdown-properties-wrap">
           <MarkdownPropertiesPanel
             entries={parsedDocument.frontmatter}

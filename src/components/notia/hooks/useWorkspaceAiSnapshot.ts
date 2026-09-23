@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectActiveLibrary } from '../../../features/library/librarySelectors'
 import { selectActiveTab, selectActiveWorkspaceView, selectOpenTabs } from '../../../features/documents/documentsSelectors'
-import type { ChatAgentScope } from '../../../services/chat/chatScopedAgentRuntime'
+import type { ChatAgentScope } from '../../../services/chat/chatAgentTypes'
 import {
   buildWorkspaceAiSnapshot,
   type WorkspaceAiDocumentInput,

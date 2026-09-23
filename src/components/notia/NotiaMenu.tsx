@@ -33,24 +33,26 @@ import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
 import { useLibraryLinkCacheAutoRebuild } from './hooks/useLibraryLinkCacheAutoRebuild'
-import { useTelegramAgentBridge } from './hooks/useTelegramAgentBridge'
+import { useTelegramLibraryChanges } from './hooks/useTelegramLibraryChanges'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
-import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setBackupPreferences, setTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSlice'
-import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectBackupPreferences, selectTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSelectors'
+import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSlice'
+import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
-import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
+import { selectSelectedLibraryId, selectActiveLibrary, selectLibraries } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 import { notiaTimer } from '../../services/runtime/notiaLogger'
 import { saveAiPreferences } from '../../services/preferences/aiSettingsStorage'
-import { useWindowsBackups } from './hooks/useWindowsBackups'
-import { useTaskManagerPublicationAutostart } from '../../modules/task-manager/hooks/useTaskManagerPublicationAutostart'
+import { useBackupSettingsMigration } from './hooks/useBackupSettingsMigration'
+import { useLibraryCatalogPersistence } from './hooks/useLibraryCatalogPersistence'
+import { useDevicePreferencesPersistence } from './hooks/useDevicePreferencesPersistence'
 import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manager/hooks/useTaskManagerPublicationAiHostBridge'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../services/contexts/libraryContexts'
-import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
+import { TASK_MANAGER_LOCAL_LIBRARY_USER_ID } from '../../modules/task-manager/types/taskManagerTypes'
+import { registerLibraryBinding } from '../../services/libraries/libraryRuntime'
 import { PerformanceProfiler } from './PerformanceProfiler'
 
 // --- Pure helper function ---
@@ -67,15 +69,17 @@ function NotiaMenuComponent() {
   const inkMathPreferences = useAppSelector(selectInkMathPreferences, shallowEqual)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const telegramPreferences = useAppSelector(selectTelegramSettings, shallowEqual)
-  const backupPreferences = useAppSelector(selectBackupPreferences, shallowEqual)
   const taskManagerPublicationPreferences = useAppSelector(selectTaskManagerPublicationPreferences, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
+  const libraries = useAppSelector(selectLibraries)
   const treeNodes = useAppSelector(selectTreeNodes)
   const flatFileList = useAppSelector(selectFlatFileList)
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
-  useWindowsBackups(activeLibrary, backupPreferences.directoryPath)
+  useLibraryCatalogPersistence()
+  useDevicePreferencesPersistence()
+  useBackupSettingsMigration()
 
   useEffect(() => {
     const mountTimer = notiaTimer('ui', 'NotiaMenu.mount')
@@ -83,6 +87,22 @@ function NotiaMenuComponent() {
       mountTimer.success()
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all(libraries.map(async (library) => {
+      try {
+        await registerLibraryBinding(library)
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[notia] no se pudo rehidratar el binding de biblioteca', error)
+        }
+      }
+    }))
+    return () => {
+      cancelled = true
+    }
+  }, [libraries])
 
   const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
@@ -189,6 +209,7 @@ function NotiaMenuComponent() {
     clearPendingTextSaveByPath,
     bumpLibraryIndexRevision: bumpLibraryIndexRevisionCallback,
     resetColdPassSession,
+    activeLibraryId,
     activeLibraryPath: activeLibraryPath,
   })
   const { persistDirtyTextDocuments } = tabManager
@@ -249,6 +270,7 @@ function NotiaMenuComponent() {
   } = useDocumentOpener({
     openDocumentInTab: tabManager.openDocumentInTab,
     resolveActiveLibraryAndroidDirectoryUri,
+    activeLibrary: activeLibrary ? { id: activeLibrary.id, path: activeLibrary.path } : null,
   })
 
   const activeLibraryForToolbar = activeLibrary ?? null
@@ -273,7 +295,6 @@ function NotiaMenuComponent() {
     handleMoveNode,
   } = useFileTreeActions({
     activeLibrary: activeLibraryForToolbar,
-    resolveActiveLibraryAndroidDirectoryUri,
     notifyLibraryTreeChanged,
     persistDirtyTextDocuments,
     closeTabsByPath: tabManager.closeTabsByPath,
@@ -332,7 +353,7 @@ function NotiaMenuComponent() {
     (next) => dispatch(setTaskManagerPublicationPreferences(next)), [dispatch],
   )
 
-  const isLibraryConfigReady = useLibraryConfigSync({
+  useLibraryConfigSync({
     activeLibrary: activeLibraryForToolbar,
     aiPreferences,
     explorerRefreshIntervalMs,
@@ -348,30 +369,13 @@ function NotiaMenuComponent() {
     setContexts: setLibraryContexts,
   })
 
-  useTaskManagerPublicationAutostart({
-    activeLibrary,
-    preferences: taskManagerPublicationPreferences,
-    theme,
-    aiPreferences,
-    enabled: isLibraryConfigReady,
-  })
-
   useTaskManagerPublicationAiHostBridge({
     activeLibrary,
     aiPreferences,
     publicationPreferences: taskManagerPublicationPreferences,
   })
 
-  useTelegramAgentBridge({
-    library: activeLibraryForToolbar,
-    aiPreferences,
-    // Telegram's agent runtime is not durable outside the React process on
-    // Android. Do not start the integration there until a native runtime owns
-    // its complete lifecycle.
-    telegram: isAndroidRuntime ? { ...telegramPreferences, enabled: false } : telegramPreferences,
-    onTelegramChange: handleTelegramPreferencesChange,
-    onLibraryChanged: () => notifyLibraryTreeChanged(activeLibraryPath ?? undefined),
-  })
+  useTelegramLibraryChanges(activeLibraryId, () => notifyLibraryTreeChanged(activeLibraryPath ?? undefined))
 
   useLibrarySearch({
     treeNodes,
@@ -415,8 +419,8 @@ function NotiaMenuComponent() {
     handleExternalTextDocumentChange,
   } = tabManager
 
-  const handleActiveMarkdownDocumentChanged = useCallback((documentPath: string, source: string) => {
-    handleExternalTextDocumentChange(documentPath, source)
+  const handleActiveMarkdownDocumentChanged = useCallback((documentPath: string, source: string, revision?: string) => {
+    handleExternalTextDocumentChange(documentPath, source, revision)
     markdownExternalUpdateRevisionRef.current += 1
     setMarkdownExternalUpdate({
       documentPath,
@@ -436,31 +440,27 @@ function NotiaMenuComponent() {
 
   const activeTaskManagerVault = useMemo(
     () => (activeLibrary
-      ? { path: activeLibrary.path, androidTreeUri: activeLibrary.androidTreeUri }
+      ? {
+        path: activeLibrary.path,
+        androidTreeUri: activeLibrary.androidTreeUri,
+        libraryId: activeLibrary.id,
+        libraryUserId: TASK_MANAGER_LOCAL_LIBRARY_USER_ID,
+      }
       : null),
     [activeLibrary],
   )
-
-  const taskManagerBoardContexts = useMemo(() => Object.fromEntries(
-    loadTaskManagerSettings().boards
-      .filter(() => libraryContexts.length > 0 || activeWorkspaceView === 'graph')
-      .map((board) => [board.name.toLowerCase(), board.contexto ?? '#Personal']),
-  ), [activeWorkspaceView, libraryContexts])
 
   const {
     graphChatContextSummary,
     graphChatEffectivePaths,
     graphChatSelectedPaths,
     graphModel,
-    graphSourcesByPath,
+    searchGraph,
     isGraphLoading,
     setGraphChatSelectedPaths,
   } = useGraphWorkspace({
     activeLibrary,
     activeWorkspaceView,
-    treeNodes,
-    contexts: libraryContexts,
-    boardContextsByName: taskManagerBoardContexts,
   })
 
   const {
@@ -584,7 +584,7 @@ function NotiaMenuComponent() {
               activeTaskManagerVault={activeTaskManagerVault}
               libraryContexts={libraryContexts}
               graphModel={graphModel}
-              graphSourcesByPath={graphSourcesByPath}
+              searchGraph={searchGraph}
               isGraphLoading={isGraphLoading}
               graphChatSelectedPaths={graphChatSelectedPaths}
               setGraphChatSelectedPaths={setGraphChatSelectedPaths}
@@ -627,8 +627,6 @@ function NotiaMenuComponent() {
           contexts={libraryContexts}
           onContextsChange={setLibraryContexts}
         onTelegramPreferencesChange={handleTelegramPreferencesChange}
-        backupPreferences={backupPreferences}
-        onBackupPreferencesChange={(value) => dispatch(setBackupPreferences(value))}
         taskManagerPublicationPreferences={taskManagerPublicationPreferences}
         onTaskManagerPublicationPreferencesChange={(value) => dispatch(setTaskManagerPublicationPreferences(value))}
           coldPassPromptState={coldPassPromptState}

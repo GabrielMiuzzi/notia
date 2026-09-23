@@ -1,4 +1,5 @@
 import type { NotiaFileNode, NotiaFlatFileEntry, NotiaLibrary } from '../../types/notia'
+import { invoke } from '@tauri-apps/api/core'
 import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
 import { join } from '../../utils/files/pathUtils'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
@@ -9,6 +10,7 @@ import {
   getPathBaseName,
   isDirectoryPath,
   pathExists,
+  performBackendLibraryEntryOperation,
   performLibraryEntryOperation as performFilesystemEntryOperation,
   pickDirectory,
   readLibraryDirectory as readFilesystemDirectory,
@@ -16,8 +18,12 @@ import {
   readLibraryTree as readFilesystemTree,
   readLibraryTreeSignature as readFilesystemTreeSignature,
   searchLibraryFiles as searchFilesystemFiles,
+  type BackendLibraryEntryPayload,
+  type FilesystemCreateEntryKind,
+  type FilesystemEntryOperationMode,
   type FilesystemOperationResult,
 } from '../files/filesystemEngine'
+import { buildRelativeLibraryPath } from './libraryPathMapping'
 import { writeTextFile } from '../files/filesystemEngine'
 import { DEFAULT_CONTEXT_TAG } from '../contexts/libraryContexts'
 import {
@@ -283,11 +289,11 @@ async function resolveLibraryDirectoryFromSelection(selectedPath: string): Promi
   return (await isDirectoryPath(parentDirectoryPath)) ? parentDirectoryPath : null
 }
 
-export async function pickLibraryDirectory(): Promise<PickedLibrary | null> {
+export async function pickLibraryDirectory(libraryId?: string): Promise<PickedLibrary | null> {
   let selected: { path: string; uri?: string } | null = null
   const runtimeDevice = getRuntimeDevice()
   try {
-    const pickerPromise = pickDirectory('Seleccionar libreria')
+    const pickerPromise = pickDirectory('Seleccionar libreria', libraryId)
     selected = runtimeDevice === 'Android'
       ? await withTimeout(
         pickerPromise,
@@ -431,6 +437,20 @@ export async function readLibraryTree(
     }
     inFlightReadMetadata.delete(readMetadataKey('tree', requestKey))
   }), options?.signal)
+}
+
+export async function registerLibraryBinding(library: NotiaLibrary): Promise<void> {
+  await invoke('register_library_binding', {
+    payload: {
+      libraryId: library.id,
+      libraryPath: library.path,
+      ...(library.androidTreeUri ? { androidTreeUri: library.androidTreeUri } : {}),
+    },
+  })
+}
+
+export async function revokeLibraryBinding(libraryId: string): Promise<void> {
+  await invoke('revoke_library_binding', { libraryId })
 }
 
 export async function readLibraryDirectory(
@@ -632,6 +652,65 @@ export async function performLibraryEntryOperation(
     console.error('[notia] library_entry_operation failed', error)
     return { ok: false, error: 'Could not perform operation.' }
   }
+}
+
+/** Explorer entry mutation expressed with the paths the UI shows. */
+export type LibraryEntryMutation =
+  | { action: 'create'; parentPath: string; name: string; kind: FilesystemCreateEntryKind }
+  | { action: 'delete'; targetPath: string }
+  | { action: 'rename'; targetPath: string; newName: string }
+  | { action: 'paste'; sourcePath: string; targetDirectoryPath: string; mode: FilesystemEntryOperationMode }
+
+/**
+ * Sends an entry mutation to the backend by library identity. Visible paths
+ * are only translated to logical paths; the backend validates them, resolves
+ * the physical location from the registered binding and performs the change
+ * (including the initial frontmatter of new notes).
+ */
+export async function mutateLibraryEntry(
+  library: Pick<NotiaLibrary, 'id' | 'path'>,
+  mutation: LibraryEntryMutation,
+): Promise<CreateLibraryEntryResult> {
+  const toLogical = (pathValue: string) => buildRelativeLibraryPath(library.path, pathValue)
+  const outside = { ok: false, error: 'La ruta está fuera de la biblioteca activa.' }
+  const measurement = startPerformanceMeasurement('filesystem.mutate_entry', {
+    operation: `entry-${mutation.action}`,
+  })
+  let payload: BackendLibraryEntryPayload
+  switch (mutation.action) {
+    case 'create': {
+      const logicalPath = toLogical(mutation.parentPath)
+      if (logicalPath === null) return outside
+      payload = { libraryId: library.id, action: 'create', logicalPath, name: mutation.name, kind: mutation.kind }
+      break
+    }
+    case 'delete':
+    case 'rename': {
+      const logicalPath = toLogical(mutation.targetPath)
+      if (!logicalPath) return outside
+      payload = {
+        libraryId: library.id,
+        action: mutation.action,
+        logicalPath,
+        ...(mutation.action === 'rename' ? { name: mutation.newName } : {}),
+      }
+      break
+    }
+    case 'paste': {
+      const sourceLogicalPath = toLogical(mutation.sourcePath)
+      const logicalPath = toLogical(mutation.targetDirectoryPath)
+      if (!sourceLogicalPath || logicalPath === null) return outside
+      payload = { libraryId: library.id, action: 'paste', logicalPath, sourceLogicalPath, mode: mutation.mode }
+      break
+    }
+  }
+  const result = await performBackendLibraryEntryOperation(payload)
+  if (result.ok) {
+    measurement.success()
+  } else {
+    measurement.error(result.error ?? 'mutation-failed')
+  }
+  return result
 }
 
 export async function searchLibraryFiles(directoryPath: string, query: string): Promise<string[]> {

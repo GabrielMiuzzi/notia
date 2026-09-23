@@ -23,10 +23,8 @@ import {
   MULTICHAT_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import {
-  invalidateLibrarySearchGraphIndex,
-} from '../../../services/libraries/librarySearchGraphIndex'
-import {
   writeLibraryFileContent,
+  resolveLibraryDocumentLogicalPath,
 } from '../../../services/libraries/libraryDocumentRuntime'
 import {
   isTextFileDocument,
@@ -144,6 +142,7 @@ interface UseTabManagerParams {
   clearPendingTextSaveByPath: (path: string) => void
   bumpLibraryIndexRevision: () => void
   resetColdPassSession: () => void
+  activeLibraryId: string | null
   activeLibraryPath: string | undefined
 }
 
@@ -152,6 +151,7 @@ export function useTabManager({
   clearPendingTextSaveByPath,
   bumpLibraryIndexRevision,
   resetColdPassSession,
+  activeLibraryId,
   activeLibraryPath,
 }: UseTabManagerParams) {
   const dispatch = useAppDispatch()
@@ -165,16 +165,19 @@ export function useTabManager({
       dispatch(updateTabSaveStatus({ path: targetPath, status: 'saving' }))
       const result = await writeLibraryFileContent(currentTab.document.androidDocumentUri ?? targetPath, targetSource, {
         androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
+        libraryId: activeLibraryId ?? undefined,
+        logicalPath: activeLibraryPath
+          ? resolveLibraryDocumentLogicalPath(activeLibraryPath, targetPath)
+          : undefined,
+        // Only the version the editor loaded or saved may be overwritten.
+        ...(currentTab.latestSavedRevision ? { expectedRevision: currentTab.latestSavedRevision } : {}),
       })
       const latestTab = store.getState().documents.openTabs.find((tab) => tab.document.path === targetPath)
       if (!latestTab || !isTextFileDocument(latestTab.document) || latestTab.document.source !== targetSource) {
         return true
       }
       if (result.ok) {
-        if (activeLibraryPath) {
-          invalidateLibrarySearchGraphIndex(activeLibraryPath, targetPath)
-        }
-        dispatch(updateTabSavedSource({ path: targetPath, source: targetSource }))
+        dispatch(updateTabSavedSource({ path: targetPath, source: targetSource, revision: result.revision }))
         bumpLibraryIndexRevision()
         return true
       }
@@ -182,11 +185,13 @@ export function useTabManager({
       dispatch(setDialogState({
         type: 'info',
         title: 'No se pudo guardar',
-        message: result.error ?? 'No se pudo guardar el archivo.',
+        message: result.conflict
+          ? 'La nota cambió fuera del editor (por ejemplo, por el agente) desde que la abriste. Cerrala y volvé a abrirla para no perder esos cambios; tu texto sigue en el editor.'
+          : result.error ?? 'No se pudo guardar el archivo.',
       }))
       return false
     },
-    [activeLibraryPath, bumpLibraryIndexRevision, dispatch, resolveActiveLibraryAndroidDirectoryUri],
+    [activeLibraryId, activeLibraryPath, bumpLibraryIndexRevision, dispatch, resolveActiveLibraryAndroidDirectoryUri],
   )
 
   const persistOpenTabBeforeClose = useCallback(
@@ -364,8 +369,8 @@ export function useTabManager({
     if (selectActiveTabPath(store.getState()) === path) { dispatch(setActiveTabPath(nextPath)) }
   }, [clearPendingTextSaveByPath, dispatch])
 
-  const openDocumentInTab = useCallback((document: OpenFileDocument, latestSavedSource: string) => {
-    dispatch(addOpenTab({ document, saveStatus: 'idle', latestSavedSource }))
+  const openDocumentInTab = useCallback((document: OpenFileDocument, latestSavedSource: string, latestSavedRevision?: string) => {
+    dispatch(addOpenTab({ document, saveStatus: 'idle', latestSavedSource, latestSavedRevision }))
     dispatch(setActiveTabPath(document.path))
   }, [dispatch])
 
@@ -404,12 +409,12 @@ export function useTabManager({
     dispatch(updateTabSource({ path: targetPath, source: nextSource }))
   }, [dispatch])
 
-  const handleExternalTextDocumentChange = useCallback((targetPath: string, nextSource: string) => {
+  const handleExternalTextDocumentChange = useCallback((targetPath: string, nextSource: string, nextRevision?: string) => {
     const currentTab = store.getState().documents.openTabs.find((tab) => tab.document.path === targetPath)
     if (!currentTab || !isTextFileDocument(currentTab.document)) { return }
     clearPendingTextSaveByPath(targetPath)
     dispatch(updateTabSource({ path: targetPath, source: nextSource }))
-    dispatch(updateTabSavedSource({ path: targetPath, source: nextSource }))
+    dispatch(updateTabSavedSource({ path: targetPath, source: nextSource, revision: nextRevision }))
   }, [clearPendingTextSaveByPath, dispatch])
 
   const resetTabs = useCallback(() => {

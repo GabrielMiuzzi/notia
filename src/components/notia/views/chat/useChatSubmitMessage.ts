@@ -10,11 +10,10 @@ import {
 } from '../../../../services/ai/aiRuntime'
 import { createAppAiRequest, startGlobalAiChat, startNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
 import { createGlobalAiAgent } from '../../../../services/chat/globalAiChatRuntime'
-import type { TaskExecutionStep } from '../../../../services/chat/chatScopedAgentRuntime'
 import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
+import { readLibraryFileContent, resolveLibraryDocumentLogicalPath } from '../../../../services/libraries/libraryDocumentRuntime'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
-import { buildChatAttachmentPrompt, buildChatImageAttachment } from './chatImageAttachment'
 import type {
   UseChatSubmitMessageDependencies,
   UseChatSubmitMessageState,
@@ -35,7 +34,7 @@ export function useChatSubmitMessage(
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
 ): {
-  submitMessage: (rawMessage: string, executionPlanOverride?: TaskExecutionStep[], undoOperationId?: string) => Promise<void>
+  submitMessage: (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string) => Promise<void>
   cancelActiveReply: () => void
 } {
   const {
@@ -44,7 +43,6 @@ export function useChatSubmitMessage(
     agentPromptFileName,
     requestAgentClarification,
     requestAgentConfirmation,
-    agentExecutionPlan,
     onAgentExecutionPlanChange,
     onAgentProgress,
     requestAgentExecutionPlanApproval,
@@ -116,7 +114,7 @@ export function useChatSubmitMessage(
     activeReplyRef.current = null
   }
 
-  const submitMessage = async (rawMessage: string, executionPlanOverride?: TaskExecutionStep[], undoOperationId?: string) => {
+  const submitMessage = async (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string) => {
     const trimmedMessage = rawMessage.trim()
     if (!trimmedMessage || isSubmitting || !library) {
       return
@@ -273,6 +271,9 @@ export function useChatSubmitMessage(
     })
 
     try {
+      // The backend reports writes as changed tool results; the open note is
+      // reloaded after the reply so the editor shows the agent's edit.
+      let dataChanged = false
       const streamCallbacks = {
         onThinkingDelta: (delta: string) => {
           setStreamingThinking((current) => current + delta)
@@ -281,54 +282,31 @@ export function useChatSubmitMessage(
           setStreamingAssistantMessage((current) => current + delta)
         },
         onAgentProgress: (event: AgentProgressEvent) => {
+          if (event.type === 'tool-completed' && event.changed) dataChanged = true
           onAgentProgress?.(event)
         },
       }
       const effectiveAgentScope = agentScope ?? 'library'
-      const resumablePlan = (executionPlanOverride ?? agentExecutionPlan)
-        .filter((step) => step.status === 'pending' || step.status === 'in-progress')
-        .map((step) => ({ ...step, status: step.status === 'in-progress' ? 'pending' as const : step.status }))
-      const isContinuationRequest = /\b(contin(?:u[aá]a|uar|uemos)|reanuda|retoma|siguiente paso|segu[ií])\b/i.test(trimmedMessage)
       const requestId = crypto.randomUUID()
-      if (!isContinuationRequest || resumablePlan.length === 0) onAgentExecutionPlanChange([])
-      const agent = await createGlobalAiAgent({
-          scope: effectiveAgentScope,
-          aiPreferences,
-          promptFileName: agentPromptFileName,
-          requestClarification: requestAgentClarification,
-          library,
-          scopePaths: agentCorpusPaths,
-          taskManagerScopeKey: effectiveAgentScope === 'task-manager' ? preferredContextScopeKey : null,
-          activeDocumentPath: effectiveAgentScope === 'document' ? agentCorpusPaths[0] ?? null : null,
-          activeMarkdownSource: effectiveAgentScope === 'document' ? activeMarkdownSource : null,
-          getActiveMarkdownSource: effectiveAgentScope === 'document'
-            ? () => activeMarkdownSource
-            : undefined,
-          markdownSelection: effectiveAgentScope === 'document' ? markdownSelection : null,
-          workspaceSnapshot,
-           actor: { libraryUserId: 'user-owner' },
-           financeSource: 'app',
-           financeRequestId: requestId,
-          explicitlySelectedPaths: effectiveAgentScope === 'graph' && effectiveSelectedContextMode === 'direct'
-            ? effectiveSelectedContextPaths
-            : [],
-          requestConfirmation: requestAgentConfirmation,
-          initialExecutionPlan: isContinuationRequest && resumablePlan.length > 0 ? resumablePlan : undefined,
-          initialExecutionPlanApproved: isContinuationRequest && resumablePlan.length > 0,
-          undoOperationId,
-          onActiveMarkdownDocumentChanged,
-          onExecutionPlanChange: onAgentExecutionPlanChange,
-          requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
-        })
+      if (!keepExecutionPlan) onAgentExecutionPlanChange([])
+      const agent = createGlobalAiAgent({
+        library,
+        actor: { libraryUserId: 'user-owner' },
+        promptFileName: agentPromptFileName,
+        undoOperationId,
+        requestClarification: requestAgentClarification,
+        requestConfirmation: requestAgentConfirmation,
+        requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
+      })
       const globalPrompt = [
-        buildChatAttachmentPrompt(trimmedMessage, conversationAttachments),
+        trimmedMessage,
         transientContextContent?.trim()
           ? `Contexto auxiliar de la sala o vista activa (solo consulta; no sos participante de esa sala):\n${transientContextContent.trim()}`
           : null,
       ].filter(Boolean).join('\n\n')
       const replyInput = {
         agent,
-        image: buildChatImageAttachment(conversationAttachments),
+        attachments: conversationAttachments,
         previousMessages: chatMemory,
         longTermMemories,
         intentContext: {
@@ -357,6 +335,17 @@ export function useChatSubmitMessage(
       const streamedAnswer = await replyHandle.promise
       if (!mountedRef.current) return
       activeReplyRef.current = null
+      const activeDocumentPath = effectiveAgentScope === 'document' ? agentCorpusPaths[0] : undefined
+      if (dataChanged && activeDocumentPath && onActiveMarkdownDocumentChanged) {
+        const refreshed = await readLibraryFileContent(activeDocumentPath, {
+          androidDirectoryUri: library.androidTreeUri,
+          libraryId: library.id,
+          logicalPath: resolveLibraryDocumentLogicalPath(library.path, activeDocumentPath),
+        })
+        if (refreshed.ok && refreshed.content !== activeMarkdownSource) {
+          await onActiveMarkdownDocumentChanged(activeDocumentPath, refreshed.content, refreshed.revision)
+        }
+      }
       aiReplyMeasurement.success({
         responseLength: streamedAnswer.length,
       })
@@ -381,19 +370,15 @@ export function useChatSubmitMessage(
         if (titleChanged) {
           await saveChatDocument(targetChatFilePath, persistedDocument, library)
         } else {
-          const appendResult = await appendChatMessages(targetChatFilePath, persistedDocument, library)
-          if (!appendResult.appended) {
-            await saveChatDocument(targetChatFilePath, persistedDocument, library)
-          }
+          // The backend rewrites the whole chat when the turn cannot be appended.
+          await appendChatMessages(targetChatFilePath, persistedDocument, library)
         }
 
         if (previousMessages.length === 0) {
           scheduleAiChatTitle(
           {
             library,
-            aiPreferences,
             filePath: targetChatFilePath,
-            document: persistedDocument,
             prompt: trimmedMessage,
           },
           {
@@ -422,11 +407,9 @@ export function useChatSubmitMessage(
         if (!mountedRef.current) return
         scheduleLongTermMemoriesForTurn({
           library,
-          aiPreferences,
           prompt: trimmedMessage,
           assistantReply: streamedAnswer,
           previousMessages,
-          existingLongTermMemories: longTermMemories,
         })
       }
 

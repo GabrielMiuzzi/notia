@@ -129,7 +129,7 @@ fn purchase_storage_error(step: &str, error: rusqlite::Error) -> String {
     format!("finance_purchase.{step}: {error}")
 }
 
-fn validate_purchase(record: &PurchaseRecord) -> Result<PurchaseValidation, String> {
+pub(crate) fn validate_purchase(record: &PurchaseRecord) -> Result<PurchaseValidation, String> {
     if record.id.trim().is_empty()
         || record.account_id.trim().is_empty()
         || record.merchant_name.trim().is_empty()

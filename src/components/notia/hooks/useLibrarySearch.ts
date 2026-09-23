@@ -35,14 +35,11 @@ export function useLibrarySearch({ treeNodes, treeNodesLibraryId, flatFileList }
     dispatch(setIsSearchLoading(true))
 
     const timeoutId = window.setTimeout(() => {
-      // Use flatFileList on Android when available, fall back to treeNodes
-      const hasFlatFileList = flatFileList.length > 0
       void searchIndexedLibraryFiles({
         libraryPath: activeLibrary.path,
-        treeNodes: hasFlatFileList ? undefined : treeNodes,
-        flatFileList: hasFlatFileList ? flatFileList : undefined,
+        libraryId: activeLibrary.id,
         query: normalizedSearchQuery,
-        androidDirectoryUri: activeLibrary.androidTreeUri,
+        revision: libraryIndexRevision,
       })
         .then((paths: string[]) => {
           if (!isCurrent) {

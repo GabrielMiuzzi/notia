@@ -2,7 +2,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 import type { TaskManagerChatContext } from '../../../modules/task-manager/types/taskManagerTypes'
 import type { ChatFileContextMode } from '../../../services/chat/chatAttachmentRuntime'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
-import type { ChatAgentScope } from '../../../services/chat/chatScopedAgentRuntime'
+import type { ChatAgentScope } from '../../../services/chat/chatAgentTypes'
 import type { MarkdownSelectionContext } from '../../../types/views/markdownSelection'
 import { getMultichatPanelContext, subscribeMultichatPanelContext } from '../../../services/multichat/multichatSessionStore'
 

@@ -12,7 +12,6 @@ import {
   submitColdPassBluetoothPin,
   type ColdPassBluetoothStatus,
 } from '../../services/coldpass/coldpassBluetooth'
-import { createColdPassEncryptedPacket } from '../../services/coldpass/coldpassSecureLink'
 import { ColdPassBluetoothAuthModal } from './ColdPassBluetoothAuthModal'
 import { ColdPassBluetoothMessageModal } from './ColdPassBluetoothMessageModal'
 import { ColdPassBluetoothPinModal } from './ColdPassBluetoothPinModal'
@@ -116,7 +115,6 @@ export function ColdPassBluetoothCard() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false)
   const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null)
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false)
-  const [sessionPasskey, setSessionPasskey] = useState<string | null>(null)
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false)
   const [messageErrorMessage, setMessageErrorMessage] = useState<string | null>(null)
   const [isSendingMessage, setIsSendingMessage] = useState(false)
@@ -140,7 +138,6 @@ export function ColdPassBluetoothCard() {
           setIsAuthModalOpen(nextStatus.connected && !nextStatus.applicationAuthenticated)
 
           if (!nextStatus.connected) {
-            setSessionPasskey(null)
             setIsMessageModalOpen(false)
             setMessageErrorMessage(null)
           }
@@ -214,7 +211,6 @@ export function ColdPassBluetoothCard() {
       setPinErrorMessage(null)
       setAuthErrorMessage(null)
       setMessageErrorMessage(null)
-      setSessionPasskey(null)
     } catch (error) {
       setViewStatus('error')
       setMessage(error instanceof Error ? error.message : 'No se pudo desconectar ColdPass.')
@@ -226,12 +222,11 @@ export function ColdPassBluetoothCard() {
     setAuthErrorMessage(null)
 
     try {
-      const packet = await createColdPassEncryptedPacket('AUTH', values.challenge.trim(), values.passkey.trim())
-      const nextStatus = await authenticateColdPassBluetooth(packet)
+      // The backend encrypts the challenge and keeps the passkey for the session.
+      const nextStatus = await authenticateColdPassBluetooth(values.challenge.trim(), values.passkey.trim())
       setConnectionStatus(nextStatus)
       setViewStatus(resolveViewStatus(nextStatus))
       setMessage(resolveStatusMessage(nextStatus))
-      setSessionPasskey(values.passkey.trim())
       setIsAuthModalOpen(false)
     } catch (error) {
       setAuthErrorMessage(resolveUnknownErrorMessage(error, 'No se pudo autenticar el canal seguro.'))
@@ -241,17 +236,11 @@ export function ColdPassBluetoothCard() {
   }
 
   const handleSendMessage = async (messageToSend: string) => {
-    if (!sessionPasskey) {
-      setMessageErrorMessage('La PassKey de la sesion ya no esta disponible en memoria.')
-      return
-    }
-
     setIsSendingMessage(true)
     setMessageErrorMessage(null)
 
     try {
-      const packet = await createColdPassEncryptedPacket('MSG', messageToSend.trim(), sessionPasskey)
-      const nextStatus = await sendColdPassBluetoothMessage(packet)
+      const nextStatus = await sendColdPassBluetoothMessage(messageToSend.trim())
       setConnectionStatus(nextStatus)
       setViewStatus(resolveViewStatus(nextStatus))
       setMessage(resolveStatusMessage(nextStatus))

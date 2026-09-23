@@ -1,57 +1,48 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  createChatScopedAgent: vi.fn(),
-  runNotiaChatReply: vi.fn(),
+  runGlobalAiChat: vi.fn(),
 }))
 
-vi.mock('../../../services/chat/chatScopedAgentRuntime', () => ({
-  createChatScopedAgent: mocks.createChatScopedAgent,
-}))
 vi.mock('../../../services/chat/notiaChatRuntime', () => ({
-  runNotiaChatReply: mocks.runNotiaChatReply,
+  runGlobalAiChat: mocks.runGlobalAiChat,
+  createAppAiRequest: vi.fn(),
 }))
 
 import { runPublishedTaskManagerHostChatReply } from './publishedTaskManagerChatRuntime'
 
+// The published scope (boards, tools, no memory) is enforced by the Rust
+// runtime from the request context; the client only sends the request.
 describe('runPublishedTaskManagerChatReply', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('uses the common Notia runtime with a strict published-board scope', async () => {
-    const agent = { systemPrompt: 'prompt', tools: [], executeTool: vi.fn() }
-    mocks.createChatScopedAgent.mockResolvedValue(agent)
-    mocks.runNotiaChatReply.mockResolvedValue('respuesta')
+  it('sends a published-board request without memory through the backend facade', async () => {
+    mocks.runGlobalAiChat.mockResolvedValue('respuesta')
     const signal = new AbortController().signal
     const onAgentProgress = vi.fn()
     const aiPreferences = {
       ollamaUrl: 'https://127.0.0.1:1', apiKey: '', selectedModel: 'qwen3',
       thinkingEnabled: true, thinkingLevel: 'medium' as const,
     }
-
     await expect(runPublishedTaskManagerHostChatReply({
       aiPreferences,
       library: { id: 'published', name: 'Publicada', path: 'C:/Vault' },
-       taskManagerScopeKey: 'task-manager:panel:equipo',
-       scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
-       publishedBoardNames: ['equipo'],
+      taskManagerScopeKey: 'task-manager:panel:equipo',
+      scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
+      publishedBoardNames: ['equipo'],
       prompt: 'Move el ticket',
-       previousMessages: [],
-       signal,
-       onAgentProgress,
+      previousMessages: [],
+      signal,
+      onAgentProgress,
     })).resolves.toBe('respuesta')
 
-    expect(mocks.createChatScopedAgent).toHaveBeenCalledWith(expect.objectContaining({
-      scope: 'task-manager',
-      publishedScope: true,
-      persistencePolicy: 'published-no-memory',
-       taskManagerScopeKey: 'task-manager:panel:equipo',
-       scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
-       publishedBoardNames: ['equipo'],
-    }))
-     expect(mocks.runNotiaChatReply).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({
-      agent,
-      prompt: 'Move el ticket',
-      streamFinalResponse: true,
-     }), expect.objectContaining({ abortSignal: signal, onAgentProgress }))
+    expect(mocks.runGlobalAiChat).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({
+      agent: expect.objectContaining({ libraryId: 'published' }),
+      request: expect.objectContaining({
+        prompt: 'Move el ticket',
+        requestedScope: 'published-task-manager',
+        persistencePolicy: 'published-no-memory',
+      }),
+    }), expect.objectContaining({ abortSignal: signal, onAgentProgress }))
   })
 })

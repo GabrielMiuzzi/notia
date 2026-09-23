@@ -3,10 +3,18 @@ import { useAppDispatch } from '../../../store/hooks'
 import { setDialogState } from '../../../features/documents/documentsSlice'
 import type { NotiaLibrary } from '../../../types/notia'
 import type { ColdPassEntry } from '../../../types/coldpass'
-import type { ColdPassSessionData } from '../../../services/coldpass/coldpassStorage'
-import { resolveColdPassPaths, saveColdPassEntries, unlockColdPassSession } from '../../../services/coldpass/coldpassStorage'
-import { importColdPassEntriesFromCsvFile, type ColdPassCsvImportResult } from '../../../services/coldpass/coldpassCsvImport'
-import { pathExists, pickFile } from '../../../services/files/filesystemEngine'
+import {
+  confirmColdPassImport,
+  deleteColdPassEntry,
+  lockColdPassSession,
+  pickColdPassCsvImport,
+  resolveColdPassPaths,
+  saveColdPassEntry,
+  unlockColdPassSession,
+  type ColdPassImportPreview,
+  type ColdPassSessionData,
+} from '../../../services/coldpass/coldpassStorage'
+import { pathExists } from '../../../services/files/filesystemEngine'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 
 const EMPTY_COLDPASS_ENTRIES: ColdPassEntry[] = []
@@ -57,7 +65,7 @@ const INITIAL_DELETE_PROMPT_STATE: ColdPassDeletePromptState = {
 
 interface ColdPassImportPromptState {
   open: boolean
-  pendingImport: ColdPassCsvImportResult | null
+  pendingImport: ColdPassImportPreview | null
   errorMessage: string | null
   isSubmitting: boolean
   isSelectingFile: boolean
@@ -113,7 +121,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
 
   // Auto-open ColdPass prompt when entering coldpass view without session
   useEffect(() => {
-    if (activeWorkspaceView !== 'coldpass' || !activeLibrary || coldPassSession?.filePath) {
+    if (activeWorkspaceView !== 'coldpass' || !activeLibrary || coldPassSession) {
       return
     }
 
@@ -145,7 +153,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     return () => {
       cancelled = true
     }
-  }, [activeLibrary, activeWorkspaceView, coldPassSession?.filePath])
+  }, [activeLibrary, activeWorkspaceView, coldPassSession])
 
   const handleSubmitColdPassPasskey = useCallback((passkey: string) => {
     if (!activeLibrary) {
@@ -159,7 +167,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSubmitting: true,
     })
 
-    void unlockColdPassSession(activeLibrary, passkey)
+    void unlockColdPassSession(activeLibrary.id, passkey)
       .then((session) => {
         setColdPassSession(session)
         setColdPassPromptState({
@@ -270,34 +278,19 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSelectingFile: true,
     })
 
-    void pickFile('Importar vault CSV', ['csv'])
-      .then((selectedFile) => {
-        if (!selectedFile) {
-          setColdPassImportPromptState({
-            open: false,
-            pendingImport: null,
-            errorMessage: null,
-            isSubmitting: false,
-            isSelectingFile: false,
-          })
-          return null
-        }
-
-        return importColdPassEntriesFromCsvFile(selectedFile.path)
-      })
+    if (!activeLibrary) {
+      setColdPassImportPromptState(INITIAL_IMPORT_PROMPT_STATE)
+      return
+    }
+    void pickColdPassCsvImport(activeLibrary.id)
       .then((importResult) => {
         if (!importResult) {
+          setColdPassImportPromptState(INITIAL_IMPORT_PROMPT_STATE)
           return
         }
 
-        if (importResult.importedEntries.length === 0) {
-          setColdPassImportPromptState({
-            open: false,
-            pendingImport: null,
-            errorMessage: null,
-            isSubmitting: false,
-            isSelectingFile: false,
-          })
+        if (importResult.importedCount === 0) {
+          setColdPassImportPromptState(INITIAL_IMPORT_PROMPT_STATE)
           dispatch(setDialogState({
             type: 'info',
             title: 'Sin credenciales para importar',
@@ -315,51 +308,23 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
         })
       })
       .catch((error) => {
-        setColdPassImportPromptState({
-          open: false,
-          pendingImport: null,
-          errorMessage: null,
-          isSubmitting: false,
-          isSelectingFile: false,
-        })
+        setColdPassImportPromptState(INITIAL_IMPORT_PROMPT_STATE)
         dispatch(setDialogState({
           type: 'info',
           title: 'No se pudo importar el vault',
           message: error instanceof Error ? error.message : 'No se pudo validar el CSV seleccionado.',
         }))
       })
-  }, [coldPassSession, dispatch])
+  }, [activeLibrary, coldPassSession, dispatch])
 
   const handleSubmitColdPassCredential = useCallback((entry: ColdPassEntry) => {
-    if (!coldPassSession) {
+    if (!coldPassSession || !activeLibrary) {
       return
     }
 
-    const nextEntries = [...coldPassSession.entries]
-    if (
-      coldPassCredentialModalState.mode === 'edit'
-      && coldPassCredentialModalState.editingIndex !== null
-      && nextEntries[coldPassCredentialModalState.editingIndex]
-    ) {
-      const previousEntry = nextEntries[coldPassCredentialModalState.editingIndex]
-      const nextPasswordHistory = [...previousEntry.passwordHistory]
-      if (previousEntry.password && previousEntry.password !== entry.password) {
-        nextPasswordHistory.unshift(previousEntry.password)
-      }
-
-      nextEntries[coldPassCredentialModalState.editingIndex] = {
-        ...entry,
-        id: previousEntry.id,
-        passwordHistory: nextPasswordHistory,
-      }
-    } else {
-      nextEntries.push({
-        ...entry,
-        id: entry.id || crypto.randomUUID(),
-        passwordHistory: entry.passwordHistory ?? [],
-      })
-    }
-
+    const editingEntry = coldPassCredentialModalState.mode === 'edit' && coldPassCredentialModalState.editingIndex !== null
+      ? coldPassSession.entries[coldPassCredentialModalState.editingIndex]
+      : undefined
     setColdPassCredentialModalState({
       open: true,
       mode: coldPassCredentialModalState.mode,
@@ -368,29 +333,10 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSubmitting: true,
     })
 
-    void saveColdPassEntries(
-      coldPassSession.filePath,
-      coldPassSession.passkey,
-      nextEntries,
-      activeLibrary?.androidTreeUri,
-    )
-      .then((result) => {
-        if (!result.ok) {
-          throw new Error(result.error ?? 'No se pudo guardar la credencial.')
-        }
-
-        setColdPassSession({
-          ...coldPassSession,
-          entries: nextEntries,
-          markdown: result.markdown,
-        })
-        setColdPassCredentialModalState({
-          open: false,
-          mode: 'create',
-          editingIndex: null,
-          errorMessage: null,
-          isSubmitting: false,
-        })
+    void saveColdPassEntry(activeLibrary.id, entry, editingEntry?.id)
+      .then((session) => {
+        setColdPassSession(session)
+        setColdPassCredentialModalState(INITIAL_CREDENTIAL_MODAL_STATE)
       })
       .catch((error) => {
         setColdPassCredentialModalState({
@@ -401,7 +347,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
           isSubmitting: false,
         })
       })
-  }, [activeLibrary?.androidTreeUri, coldPassCredentialModalState.editingIndex, coldPassCredentialModalState.mode, coldPassSession])
+  }, [activeLibrary, coldPassCredentialModalState.editingIndex, coldPassCredentialModalState.mode, coldPassSession])
 
   const handleCloseColdPassDeletePrompt = useCallback(() => {
     setColdPassDeletePromptState({
@@ -423,25 +369,13 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
   }, [])
 
   const handleSubmitColdPassDeletePasskey = useCallback((passkey: string) => {
-    if (
-      !coldPassSession
-      || coldPassDeletePromptState.deletingIndex === null
-      || !coldPassSession.entries[coldPassDeletePromptState.deletingIndex]
-    ) {
+    const deletingEntry = coldPassDeletePromptState.deletingIndex === null
+      ? undefined
+      : coldPassSession?.entries[coldPassDeletePromptState.deletingIndex]
+    if (!activeLibrary || !deletingEntry) {
       return
     }
 
-    if (passkey !== coldPassSession.passkey) {
-      setColdPassDeletePromptState((current) => ({
-        ...current,
-        open: true,
-        errorMessage: 'La passkey no coincide.',
-        isSubmitting: false,
-      }))
-      return
-    }
-
-    const nextEntries = coldPassSession.entries.filter((_, index) => index !== coldPassDeletePromptState.deletingIndex)
     setColdPassDeletePromptState((current) => ({
       ...current,
       open: true,
@@ -449,28 +383,10 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSubmitting: true,
     }))
 
-    void saveColdPassEntries(
-      coldPassSession.filePath,
-      coldPassSession.passkey,
-      nextEntries,
-      activeLibrary?.androidTreeUri,
-    )
-      .then((result) => {
-        if (!result.ok) {
-          throw new Error(result.error ?? 'No se pudo eliminar la credencial.')
-        }
-
-        setColdPassSession({
-          ...coldPassSession,
-          entries: nextEntries,
-          markdown: result.markdown,
-        })
-        setColdPassDeletePromptState({
-          open: false,
-          deletingIndex: null,
-          errorMessage: null,
-          isSubmitting: false,
-        })
+    void deleteColdPassEntry(activeLibrary.id, deletingEntry.id, passkey)
+      .then((session) => {
+        setColdPassSession(session)
+        setColdPassDeletePromptState(INITIAL_DELETE_PROMPT_STATE)
       })
       .catch((error) => {
         setColdPassDeletePromptState((current) => ({
@@ -480,25 +396,14 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
           isSubmitting: false,
         }))
       })
-  }, [activeLibrary?.androidTreeUri, coldPassDeletePromptState.deletingIndex, coldPassSession])
+  }, [activeLibrary, coldPassDeletePromptState.deletingIndex, coldPassSession])
 
   const handleSubmitColdPassImportPasskey = useCallback((passkey: string) => {
-    if (!coldPassSession || !coldPassImportPromptState.pendingImport) {
-      return
-    }
-
-    if (passkey !== coldPassSession.passkey) {
-      setColdPassImportPromptState((current) => ({
-        ...current,
-        open: true,
-        errorMessage: 'La passkey no coincide.',
-        isSubmitting: false,
-      }))
-      return
-    }
-
     const importSummary = coldPassImportPromptState.pendingImport
-    const nextEntries = [...coldPassSession.entries, ...importSummary.importedEntries]
+    if (!activeLibrary || !coldPassSession || !importSummary) {
+      return
+    }
+
     setColdPassImportPromptState((current) => ({
       ...current,
       open: true,
@@ -506,36 +411,17 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSubmitting: true,
     }))
 
-    void saveColdPassEntries(
-      coldPassSession.filePath,
-      coldPassSession.passkey,
-      nextEntries,
-      activeLibrary?.androidTreeUri,
-    )
-      .then((result) => {
-        if (!result.ok) {
-          throw new Error(result.error ?? 'No se pudo importar el vault.')
-        }
-
-        setColdPassSession({
-          ...coldPassSession,
-          entries: nextEntries,
-          markdown: result.markdown,
-        })
+    void confirmColdPassImport(activeLibrary.id, passkey)
+      .then((session) => {
+        setColdPassSession(session)
         dispatch(setDialogState({
           type: 'info',
           title: 'Vault importado',
           message: importSummary.skippedRowCount > 0
-            ? `Se importaron ${importSummary.importedEntries.length} credenciales desde ${importSummary.sourceFileName} y se omitieron ${importSummary.skippedRowCount} filas vacias.`
-            : `Se importaron ${importSummary.importedEntries.length} credenciales desde ${importSummary.sourceFileName}.`,
+            ? `Se importaron ${importSummary.importedCount} credenciales desde ${importSummary.sourceFileName} y se omitieron ${importSummary.skippedRowCount} filas vacias.`
+            : `Se importaron ${importSummary.importedCount} credenciales desde ${importSummary.sourceFileName}.`,
         }))
-        setColdPassImportPromptState({
-          open: false,
-          pendingImport: null,
-          errorMessage: null,
-          isSubmitting: false,
-          isSelectingFile: false,
-        })
+        setColdPassImportPromptState(INITIAL_IMPORT_PROMPT_STATE)
       })
       .catch((error) => {
         setColdPassImportPromptState((current) => ({
@@ -545,15 +431,19 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
           isSubmitting: false,
         }))
       })
-  }, [activeLibrary?.androidTreeUri, coldPassImportPromptState.pendingImport, coldPassSession, dispatch])
+  }, [activeLibrary, coldPassImportPromptState.pendingImport, coldPassSession, dispatch])
 
   const resetColdPassSession = useCallback(() => {
+    if (activeLibrary) {
+      // The unlocked vault lives in the backend; closing the view locks it.
+      void lockColdPassSession(activeLibrary.id).catch(() => undefined)
+    }
     setColdPassSession(null)
     setColdPassPromptState(INITIAL_PROMPT_STATE)
     setColdPassCredentialModalState(INITIAL_CREDENTIAL_MODAL_STATE)
     setColdPassDeletePromptState(INITIAL_DELETE_PROMPT_STATE)
     setColdPassImportPromptState(INITIAL_IMPORT_PROMPT_STATE)
-  }, [])
+  }, [activeLibrary])
 
   const coldPassEntries = coldPassSession?.entries ?? EMPTY_COLDPASS_ENTRIES
 

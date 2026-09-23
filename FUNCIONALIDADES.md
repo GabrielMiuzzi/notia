@@ -16,7 +16,7 @@
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
 - Chat local con IA mediante Ollama, con prompt default del sistema embebido y visualizador sincronizado, prompts Markdown alternativos seleccionables, continuidad conversacional, análisis/comparaciones y reintento seguro de respuestas nativas vacías transitorias después de rondas de tools.
-- Adjuntos locales múltiples en el chat, conservados en los mensajes del historial y reutilizables en seguimientos, con eliminación individual, bloques separados para texto y colección visual ordenada para imágenes y páginas de PDF.
+- Adjuntos locales múltiples en el chat, conservados en los mensajes del historial y reutilizables en seguimientos, con eliminación individual, bloques separados para texto, colección visual ordenada para imágenes y páginas de PDF y previews acotados de imágenes raster persistidas al abrir chats Markdown.
 - Multichat efímero con dinámicas Markdown, contexto adicional opcional fijo, de uno a seis agentes, selección por ronda de subconjunto y orden aleatorios —o agentes concretos/todos según la dinámica—, turnos secuenciales, streaming separado de thinking/respuesta y contexto auxiliar del panel derecho, sin tools, búsqueda web ni mutaciones.
 - Memoria persistente y herramientas nativas para el agente de IA.
 - Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca; Meeting, Graph View, Multichat, publicación y Telegram de otros usuarios sin memoria global.
@@ -26,7 +26,8 @@
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes.
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
-- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas y comentarios.
+- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios y títulos visibles con separadores de ruta.
+- Mutaciones embebidas de Task Manager en desktop con preview/apply/receipt Rust y fallback local explícito para Android o vaults sin identidad.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
 - Temporizador Pomodoro integrado en Task Manager.
 - Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.

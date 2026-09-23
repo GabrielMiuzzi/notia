@@ -1,5 +1,5 @@
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
-import type { TaskExecutionStep } from '../../../services/chat/chatScopedAgentRuntime'
+import type { TaskExecutionStep } from '../../../services/chat/chatAgentTypes'
 import { createGlobalAiAgent, runGlobalAiChat } from '../../../services/chat/globalAiChatRuntime'
 import { createGlobalAiRequest, type AiActor } from '../../../types/ai/globalAiContract'
 import { buildWorkspaceAiSnapshot } from '../../../services/ai/workspaceAiSnapshotRuntime'
@@ -24,24 +24,15 @@ interface PublishedTaskManagerChatInput {
 }
 
 export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskManagerChatInput): Promise<string> {
-  const agent = await createGlobalAiAgent({
-    scope: 'task-manager',
-    publishedScope: true,
-    persistencePolicy: 'published-no-memory',
-    aiPreferences: input.aiPreferences,
+  const agent = createGlobalAiAgent({
     library: input.library,
-    scopePaths: input.scopePaths,
     actor: input.actor,
-    financeSource: 'public-url',
-    publishedBoardNames: input.publishedBoardNames,
-    taskManagerScopeKey: input.taskManagerScopeKey ?? 'task-manager:published-boards',
     requestClarification: async (question, signal, choices) => {
       if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
       const suffix = choices?.length ? `\n\nOpciones:\n${choices.map((choice) => `- ${choice}`).join('\n')}` : ''
       return window.prompt(`${question}${suffix}`)?.trim() ?? ''
     },
     requestConfirmation: async (question, signal) => !signal.aborted && window.confirm(question),
-    onExecutionPlanChange: input.onExecutionPlanChange,
     requestExecutionPlanApproval: async (steps, signal) => ({
       approved: !signal.aborted && window.confirm(
         `Aprobar este plan de ejecucion:\n${steps.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`,
@@ -59,7 +50,6 @@ export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskM
   const replyInput = {
     agent,
     previousMessages: input.previousMessages,
-    intentContext: {},
   }
   return runGlobalAiChat(input.aiPreferences, {
     request: createGlobalAiRequest({
@@ -73,8 +63,6 @@ export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskM
       prompt: input.prompt,
     }),
     ...replyInput,
-    streamFinalResponse: true,
-    diagnosticModule: 'published-task-manager-chat',
   }, {
     abortSignal: input.signal,
     onMessageDelta: input.onMessageDelta,

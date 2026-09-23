@@ -21,6 +21,8 @@ import {
   deleteFinanceCategory,
   deleteFinanceTransaction,
   queueFinanceAudit,
+  getFinancePeriodSummary,
+  getFinanceRelationAudit,
 } from "../services/financeService";
 import type {
   FinanceAccount,
@@ -41,8 +43,7 @@ import { FinanceRecordsPanel } from "./FinanceRecordsPanel";
 import { DollarQuotesCards } from "./DollarQuotesCards";
 import { subscribeToFinanceDataChanges } from "../services/financeDataEvents";
 import { getDollarQuotes } from "../services/dollarQuotesService";
-import { buildFinanceDailySummary, type FinanceDateRange } from "../engines/financeDailySummary";
-import { auditFinanceRelations } from "../engines/financeRelations";
+import type { FinanceDailySummary, FinanceDateRange, FinanceRelationAudit } from "../types/financeViews";
 
 interface FinanceDashboardProps {
   library: NotiaLibrary;
@@ -274,9 +275,24 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   }, [month, summaryDate]);
 
   const selectedSummaryRange = useMemo(() => summaryRange(summaryView, month, summaryDate), [month, summaryDate, summaryView]);
-  const dailySummary = useMemo(() => data ? buildFinanceDailySummary({ range: selectedSummaryRange, transactions: data.transactions, categories: data.categories, savingsMovements: data.savingsMovements, reserves: data.savings }) : null, [data, selectedSummaryRange]);
-  const relationAudit = useMemo(() => data ? auditFinanceRelations({ accounts: data.accounts, categories: data.categories, transactions: data.transactions }) : null, [data]);
-  const comparisonSummary = useMemo(() => summaryView === "month" && comparisonData ? buildFinanceDailySummary({ range: monthRange(previousMonth(month)), transactions: comparisonData.transactions, categories: comparisonData.categories, savingsMovements: comparisonData.savingsMovements, reserves: comparisonData.savings }) : null, [comparisonData, month, summaryView]);
+  const [dailySummary, setDailySummary] = useState<FinanceDailySummary | null>(null);
+  const [comparisonSummary, setComparisonSummary] = useState<FinanceDailySummary | null>(null);
+  const [relationAudit, setRelationAudit] = useState<FinanceRelationAudit | null>(null);
+  // `data` and `comparisonData` change after every reload, so the derived
+  // views are requested again from the backend.
+  useEffect(() => {
+    let isCurrent = true;
+    if (!data) { setDailySummary(null); setRelationAudit(null); return; }
+    void getFinancePeriodSummary(library, selectedSummaryRange).then((summary) => { if (isCurrent) setDailySummary(summary); }).catch(() => { if (isCurrent) setDailySummary(null); });
+    void getFinanceRelationAudit(library, month).then((audit) => { if (isCurrent) setRelationAudit(audit); }).catch(() => { if (isCurrent) setRelationAudit(null); });
+    return () => { isCurrent = false; };
+  }, [data, library, month, selectedSummaryRange]);
+  useEffect(() => {
+    let isCurrent = true;
+    if (summaryView !== "month" || !comparisonData) { setComparisonSummary(null); return; }
+    void getFinancePeriodSummary(library, monthRange(previousMonth(month))).then((summary) => { if (isCurrent) setComparisonSummary(summary); }).catch(() => { if (isCurrent) setComparisonSummary(null); });
+    return () => { isCurrent = false; };
+  }, [comparisonData, library, month, summaryView]);
   const categoryVariation = useMemo(() => {
     if (!dailySummary || !comparisonSummary || summaryView !== "month") return new Map<string, number | null>();
     const previous = new Map(comparisonSummary.expenseByCategory.map((item) => [`${item.categoryId ?? "uncategorized"}:${item.currency}`, item.amount]));
@@ -527,7 +543,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
          )}
        {relationAudit && relationAudit.incompleteEntityCount > 0 && data && <FinanceRelationReview audit={relationAudit} transactions={data.transactions} onReview={setEditingTransaction} />}
        {data && <section className="finance-card" aria-labelledby="finance-category-settings"><div className="finance-section-heading"><h2 id="finance-category-settings">Configuración de categorías</h2><button type="button" onClick={() => setIsCategoryFormOpen(true)}>Nueva categoría</button></div><ul className="finance-category-list">{data.categories.map((category) => <li key={category.id}><span>{category.name}<small>{category.kind} · {category.active ? "activa" : "inactiva"}{category.parentId ? " · subcategoría" : ""}</small></span><span className="finance-row-actions"><button type="button" onClick={() => setEditingCategory(category)}>Editar</button>{category.active && <button type="button" onClick={async () => { if (window.confirm(`¿Desactivar ${category.name}?`)) { await deleteFinanceCategory(library, category.id); await refresh(); } }}>Desactivar</button>}</span></li>)}</ul></section>}
-      {data && <FinanceRecordsPanel library={library} accounts={data.accounts} categories={data.categories} reserves={data.savings} debtRatioHistory={data.debtRatioHistory} historyFrom={historyStartPeriod(month)} historyTo={month} onChanged={refresh} />}
+      {data && <FinanceRecordsPanel library={library} accounts={data.accounts} debtRatioHistory={data.debtRatioHistory} historyFrom={historyStartPeriod(month)} historyTo={month} onChanged={refresh} />}
       {isFormOpen && (
         <FinanceTransactionForm
           accounts={data?.accounts ?? []}
@@ -603,7 +619,7 @@ function FinanceQuickExpenseForm({ accounts, categories, recentTransactions, onC
   return <div className="finance-modal-backdrop" role="presentation"><form className="finance-form" aria-label="Registrar gasto rápido" onSubmit={(event) => void submit(event)}><h2>Registrar gasto</h2><label>Importe<input required autoFocus inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); setAllowPossibleDuplicate(false); }} /></label><label>Fecha<input required type="date" value={date} onChange={(event) => { setDate(event.target.value); setAllowPossibleDuplicate(false); }} /></label><label>Cuenta de origen<select required value={accountId} onChange={(event) => { setAccountId(event.target.value); setAllowPossibleDuplicate(false); }}><option value="">Seleccionar…</option>{accounts.filter((account) => account.active).map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label><label>Categoría (opcional)<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">Sin categoría</option>{categories.filter((category) => category.active && category.kind === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Descripción<input value={description} onChange={(event) => { setDescription(event.target.value); setAllowPossibleDuplicate(false); }} placeholder="Ej. supermercado" /></label>{possibleDuplicate && <label className="finance-warning"><input type="checkbox" checked={allowPossibleDuplicate} onChange={(event) => setAllowPossibleDuplicate(event.target.checked)} /> Ya existe un gasto igual en esta fecha y cuenta; registrar de todos modos</label>}<div className="finance-form-actions"><button type="button" onClick={onCancel}>Cancelar</button><button type="submit" disabled={saving || !accountId || (possibleDuplicate && !allowPossibleDuplicate)}>{saving ? "Guardando…" : "Guardar gasto"}</button></div></form></div>;
 }
 
-function FinanceRelationReview({ audit, transactions, onReview }: { audit: ReturnType<typeof auditFinanceRelations>; transactions: FinanceTransaction[]; onReview: (transaction: FinanceTransaction) => void }) {
+function FinanceRelationReview({ audit, transactions, onReview }: { audit: FinanceRelationAudit; transactions: FinanceTransaction[]; onReview: (transaction: FinanceTransaction) => void }) {
   return <section className="finance-card finance-warning" aria-labelledby="finance-relations-title"><h2 id="finance-relations-title">Relaciones para revisar</h2><p>{audit.incompleteEntityCount} registro(s) tienen relaciones incompletas o incompatibles. Esto no cambia los datos automáticamente.</p><ul>{audit.issues.slice(0, 8).map((issue) => { const transaction = issue.entity === "transaction" ? transactions.find((candidate) => candidate.id === issue.entityId) : undefined; return <li key={`${issue.entity}-${issue.entityId}-${issue.relation}`}>{issue.message}{transaction && <button type="button" onClick={() => onReview(transaction)}>Revisar movimiento</button>}</li> })}</ul>{audit.issues.length > 8 && <p>Hay más relaciones para revisar en los filtros y detalles de movimientos.</p>}</section>;
 }
 

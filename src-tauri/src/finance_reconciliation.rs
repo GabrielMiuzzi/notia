@@ -149,7 +149,7 @@ fn valid_date(value: &str) -> bool {
     max_day > 0 && (1..=max_day).contains(&day)
 }
 
-fn previous_period(period: &str) -> Option<String> {
+pub(crate) fn previous_period(period: &str) -> Option<String> {
     if period.len() != 7 {
         return None;
     }

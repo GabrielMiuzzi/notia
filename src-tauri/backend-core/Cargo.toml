@@ -1,0 +1,12 @@
+[package]
+name = "notia-backend-core"
+version = "0.1.0"
+description = "Tauri-independent backend core for Notia"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+regex = "1.10"
+docx-rs = "0.4.22"

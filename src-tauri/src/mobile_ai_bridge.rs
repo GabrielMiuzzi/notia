@@ -2,8 +2,6 @@ use crate::mobile_continuity::ContinuityState;
 #[cfg(target_os = "android")]
 use crate::mobile_continuity::{begin_android_work, end_android_work};
 use crate::notia_timer::NotiaTimer;
-#[cfg(target_os = "android")]
-use crate::services::ai_service::contains_sensitive_web_query_data;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
@@ -35,6 +33,66 @@ pub enum AiStreamEvent {
 pub struct AndroidAiBridgeState {
     #[cfg(target_os = "android")]
     handle: Mutex<Option<PluginHandle<Wry>>>,
+    #[cfg(target_os = "android")]
+    streams: AndroidStreamRouter,
+}
+
+/// Event of a backend-owned Android stream.
+#[cfg(target_os = "android")]
+pub(crate) enum AndroidStreamEvent {
+    Thinking(String),
+    Content(String),
+    Done(Result<serde_json::Value, String>),
+}
+
+/// Maximum concurrent backend streams routed through the bridge channel.
+#[cfg(target_os = "android")]
+const MAX_ANDROID_STREAMS: usize = 16;
+
+/// Routes stream deltas from one app-wide IPC channel to the waiting request.
+/// Tauri never unregisters mobile channels, so a single long-lived channel is
+/// used instead of one per request; routes are removed when a stream ends.
+#[cfg(target_os = "android")]
+#[derive(Default)]
+struct AndroidStreamRouter {
+    routes: std::sync::Arc<Mutex<std::collections::HashMap<String, std::sync::mpsc::Sender<AndroidStreamEvent>>>>,
+    channel: std::sync::OnceLock<tauri::ipc::Channel<serde_json::Value>>,
+}
+
+#[cfg(target_os = "android")]
+impl AndroidStreamRouter {
+    fn channel(&self) -> tauri::ipc::Channel<serde_json::Value> {
+        self.channel
+            .get_or_init(|| {
+                let routes = std::sync::Arc::clone(&self.routes);
+                tauri::ipc::Channel::new(move |body| {
+                    let tauri::ipc::InvokeResponseBody::Json(text) = body else {
+                        return Ok(());
+                    };
+                    let Ok(message) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        return Ok(());
+                    };
+                    let request_id = message.get("requestId").and_then(serde_json::Value::as_str);
+                    let delta = message
+                        .get("delta")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    let (Some(request_id), Some(delta)) = (request_id, delta) else {
+                        return Ok(());
+                    };
+                    let event = match message.get("type").and_then(serde_json::Value::as_str) {
+                        Some("thinking") => AndroidStreamEvent::Thinking(delta),
+                        Some("content") => AndroidStreamEvent::Content(delta),
+                        _ => return Ok(()),
+                    };
+                    if let Some(sender) = routes.lock().ok().and_then(|routes| routes.get(request_id).cloned()) {
+                        let _ = sender.send(event);
+                    }
+                    Ok(())
+                })
+            })
+            .clone()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +129,7 @@ impl AndroidAiBridgeState {
     fn with_handle(handle: PluginHandle<Wry>) -> Self {
         Self {
             handle: Mutex::new(Some(handle)),
+            streams: AndroidStreamRouter::default(),
         }
     }
 
@@ -78,6 +137,7 @@ impl AndroidAiBridgeState {
     fn unavailable() -> Self {
         Self {
             handle: Mutex::new(None),
+            streams: AndroidStreamRouter::default(),
         }
     }
 
@@ -149,50 +209,6 @@ pub struct RunAndroidAiChatPayload {
     image: Option<AiImagePayload>,
     #[serde(default)]
     selected_context_mode: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunAndroidAiToolChatPayload {
-    ollama_url: String,
-    #[serde(default)]
-    api_key: String,
-    model: String,
-    #[serde(default)]
-    think: serde_json::Value,
-    messages: serde_json::Value,
-    tools: serde_json::Value,
-    #[serde(default)]
-    timeout_seconds: Option<u64>,
-    #[serde(default)]
-    request_id: Option<String>,
-    #[serde(default)]
-    library_id: Option<String>,
-    #[serde(default)]
-    actor_library_user_id: Option<String>,
-    #[serde(default)]
-    channel: Option<String>,
-    #[serde(default)]
-    app_surface: Option<String>,
-    #[serde(default)]
-    requested_scope: Option<String>,
-    #[serde(default)]
-    persistence_policy: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunAndroidAiWebSearchPayload {
-    ollama_url: String,
-    #[serde(default)]
-    api_key: String,
-    query: String,
-    #[serde(default = "default_android_web_search_max_results")]
-    max_results: u32,
-}
-
-fn default_android_web_search_max_results() -> u32 {
-    5
 }
 
 #[cfg(target_os = "android")]
@@ -680,131 +696,91 @@ pub fn inspect_android_ai_model(
     }
 }
 
-#[tauri::command]
-pub fn run_android_ai_tool_chat(
-    state: State<'_, AndroidAiBridgeState>,
-    continuity: State<'_, ContinuityState>,
-    payload: RunAndroidAiToolChatPayload,
+/// Invokes one AI bridge command for the backend runtime. The plugin handle
+/// is cloned out of the state lock before the blocking HTTP call, so
+/// concurrent requests never wait on each other's network I/O.
+#[cfg(target_os = "android")]
+pub(crate) fn call_android_ai_plugin(
+    app: &tauri::AppHandle,
+    command: &str,
+    payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    #[cfg(target_os = "android")]
-    {
-        let _timer = NotiaTimer::new("run_android_ai_tool_chat")
-            .with_meta(format!("model={}", payload.model));
-        let timeout_seconds = payload.timeout_seconds.unwrap_or(600);
-        if !(1..=600).contains(&timeout_seconds) {
-            return Err(
-                "El tiempo de espera de herramientas debe estar entre 1 y 600 segundos."
-                    .to_string(),
-            );
+    let handle = app
+        .try_state::<AndroidAiBridgeState>()
+        .ok_or_else(|| "El bridge AI de Android no esta disponible.".to_string())?
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?
+        .clone()
+        .ok_or_else(|| "El bridge AI de Android no esta disponible.".to_string())?;
+    let continuity = app.try_state::<ContinuityState>();
+    let continuity_started = continuity
+        .as_ref()
+        .is_some_and(|state| begin_android_work(state.inner(), Some("dataSync")));
+    let result = handle
+        .run_mobile_plugin::<serde_json::Value>(command, payload)
+        .map_err(|error| format!("No se pudo ejecutar la IA en Android: {error}"));
+    if continuity_started {
+        if let Some(state) = continuity.as_ref() {
+            end_android_work(state.inner());
         }
-        let global_metadata = [
-            payload.request_id.as_deref(),
-            payload.library_id.as_deref(),
-            payload.actor_library_user_id.as_deref(),
-            payload.channel.as_deref(),
-            payload.requested_scope.as_deref(),
-            payload.persistence_policy.as_deref(),
-        ];
-        if global_metadata
-            .iter()
-            .any(|value| value.is_some_and(|value| value.trim().is_empty()))
-            || global_metadata.iter().any(Option::is_none)
-                != global_metadata.iter().all(Option::is_none)
-        {
-            return Err("El sobre global de IA Android está incompleto.".to_string());
-        }
-
-        let guard = state
-            .handle
-            .lock()
-            .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
-        let Some(handle) = guard.as_ref() else {
-            return Err("El bridge AI de Android no esta disponible.".to_string());
-        };
-
-        let continuity_started = begin_android_work(continuity.inner(), Some("dataSync"));
-        let result = handle
-            .run_mobile_plugin::<serde_json::Value>(
-                "toolChat",
-                serde_json::json!({
-                    "ollamaUrl": payload.ollama_url,
-                    "apiKey": payload.api_key,
-                    "model": payload.model,
-                    "think": payload.think,
-                    "messagesJson": payload.messages.to_string(),
-                    "toolsJson": payload.tools.to_string(),
-                    "timeoutSeconds": timeout_seconds,
-                    "requestId": payload.request_id,
-                    "libraryId": payload.library_id,
-                    "actorLibraryUserId": payload.actor_library_user_id,
-                    "channel": payload.channel,
-                    "appSurface": payload.app_surface,
-                    "requestedScope": payload.requested_scope,
-                    "persistencePolicy": payload.persistence_policy,
-                }),
-            )
-            .map_err(|error| {
-                format!("No se pudo ejecutar la ronda de herramientas en Android: {error}")
-            });
-        if continuity_started {
-            end_android_work(continuity.inner());
-        }
-        return result;
     }
-
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = (state, continuity, payload);
-        Err("La ronda de herramientas de Android solo esta disponible en Android.".to_string())
-    }
+    result
 }
 
-#[tauri::command]
-pub fn run_android_ai_web_search(
-    state: State<'_, AndroidAiBridgeState>,
-    continuity: State<'_, ContinuityState>,
-    payload: RunAndroidAiWebSearchPayload,
-) -> Result<serde_json::Value, String> {
-    #[cfg(target_os = "android")]
-    {
-        let query = payload.query.trim();
-        if contains_sensitive_web_query_data(query) {
-            return Err(
-                "La busqueda web fue bloqueada porque la consulta no es publica y segura."
-                    .to_string(),
-            );
+/// Runs a raw `/api/chat` stream for the backend runtime. Deltas and the
+/// final result arrive on `events`; the route is removed when the call ends.
+#[cfg(target_os = "android")]
+pub(crate) fn stream_android_raw_chat(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    mut payload: serde_json::Value,
+    events: std::sync::mpsc::Sender<AndroidStreamEvent>,
+) {
+    let state = match app.try_state::<AndroidAiBridgeState>() {
+        Some(state) => state,
+        None => {
+            let _ = events.send(AndroidStreamEvent::Done(Err(
+                "El bridge AI de Android no esta disponible.".to_string(),
+            )));
+            return;
         }
-        let max_results = payload.max_results.clamp(1, 10);
-        let guard = state
-            .handle
-            .lock()
-            .map_err(|_| "No se pudo acceder al bridge AI de Android.".to_string())?;
-        let Some(handle) = guard.as_ref() else {
-            return Err("El bridge AI de Android no esta disponible.".to_string());
-        };
-        let continuity_started = begin_android_work(continuity.inner(), Some("dataSync"));
-        let result = handle
-            .run_mobile_plugin::<serde_json::Value>(
-                "webSearch",
-                serde_json::json!({
-                    "ollamaUrl": payload.ollama_url,
-                    "apiKey": payload.api_key,
-                    "query": query,
-                    "maxResults": max_results,
-                }),
-            )
-            .map_err(|error| format!("No se pudo completar la busqueda web en Android: {error}"));
-        if continuity_started {
-            end_android_work(continuity.inner());
+    };
+    let registered = state.streams.routes.lock().ok().is_some_and(|mut routes| {
+        if routes.len() >= MAX_ANDROID_STREAMS {
+            return false;
         }
-        return result;
+        routes.insert(request_id.to_string(), events.clone());
+        true
+    });
+    if !registered {
+        let _ = events.send(AndroidStreamEvent::Done(Err(
+            "Hay demasiadas respuestas de IA en curso en Android.".to_string(),
+        )));
+        return;
     }
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("requestId".to_string(), serde_json::Value::String(request_id.to_string()));
+        object.insert(
+            "onEvent".to_string(),
+            serde_json::to_value(state.streams.channel()).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    let result = call_android_ai_plugin(app, "rawChatStreaming", payload);
+    if let Ok(mut routes) = state.streams.routes.lock() {
+        routes.remove(request_id);
+    }
+    let _ = events.send(AndroidStreamEvent::Done(result));
+}
 
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = (state, continuity, payload);
-        Err("La busqueda web Android solo esta disponible en Android.".to_string())
-    }
+/// Disconnects a backend stream started with `stream_android_raw_chat`.
+#[cfg(target_os = "android")]
+pub(crate) fn cancel_android_raw_chat(app: &tauri::AppHandle, request_id: &str) {
+    let _ = call_android_ai_plugin(
+        app,
+        "cancelStreaming",
+        serde_json::json!({ "requestId": request_id }),
+    );
 }
 
 pub fn init() -> TauriPlugin<Wry> {
@@ -842,7 +818,6 @@ mod tests {
         AiStreamEvent, AiStreamEventPayload, AndroidAiModelDetailsResult, AndroidAiModelListResult,
         CancelAndroidAiChatStreamingPayload, CheckAndroidAiHealthPayload,
         InspectAndroidAiModelPayload, RunAndroidAiChatPayload, RunAndroidAiChatStreamingPayload,
-        RunAndroidAiToolChatPayload, RunAndroidAiWebSearchPayload,
     };
 
     #[test]
@@ -871,25 +846,6 @@ mod tests {
 
         assert_eq!(payload.ollama_url, "https://ollama.com");
         assert!(payload.api_key.is_empty());
-    }
-
-    #[test]
-    fn android_tool_and_web_fixtures_keep_optional_limits() {
-        let tool_payload: RunAndroidAiToolChatPayload = serde_json::from_value(serde_json::json!({
-            "ollamaUrl": "https://ollama.com",
-            "model": "qwen3:test",
-            "messages": [],
-            "tools": [],
-        }))
-        .expect("android tool payload should deserialize");
-        let web_payload: RunAndroidAiWebSearchPayload = serde_json::from_value(serde_json::json!({
-            "ollamaUrl": "https://ollama.com",
-            "query": "public Rust release notes",
-        }))
-        .expect("android web search payload should deserialize");
-
-        assert!(tool_payload.timeout_seconds.is_none());
-        assert_eq!(web_payload.max_results, 5);
     }
 
     #[test]

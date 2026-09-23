@@ -2,19 +2,15 @@ import { useCallback } from 'react'
 import { useAppDispatch } from '../../../store/hooks'
 import { store } from '../../../store/index'
 import { setPendingCreation, setRenamingPath, setContextMenu, setDialogState } from '../../../features/documents/documentsSlice'
-import { createLibraryEntry, performLibraryEntryOperation } from '../../../services/libraries/libraryRuntime'
+import { mutateLibraryEntry } from '../../../services/libraries/libraryRuntime'
 import { findTreeNodeByPath } from '../../../utils/tree/findTreeNodeByPath'
 import { isSameOrNestedPath, getParentDirectory, joinParentPath } from './useTabManager'
-import { join } from '../../../utils/files/pathUtils'
-import { writeLibraryFileContent } from '../../../services/libraries/libraryDocumentRuntime'
-import { DEFAULT_CONTEXT_TAG } from '../../../services/contexts/libraryContexts'
 import { loadTaskManagerSettings } from '../../../modules/task-manager/services/taskManagerStorage'
 import { reconcileBoardMarkdownContext } from '../../../modules/task-manager/services/taskManagerService'
-import type { NotiaFileNode } from '../../../types/notia'
+import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
 
 interface UseFileTreeActionsParams {
-  activeLibrary: { path: string; androidTreeUri?: string } | null
-  resolveActiveLibraryAndroidDirectoryUri: (pathValue?: string | null) => string | undefined
+  activeLibrary: Pick<NotiaLibrary, 'id' | 'path' | 'androidTreeUri'> | null
   notifyLibraryTreeChanged: (pathHint?: string) => void
   persistDirtyTextDocuments: () => Promise<boolean>
   closeTabsByPath: (path: string) => Promise<boolean>
@@ -23,7 +19,6 @@ interface UseFileTreeActionsParams {
 
 export function useFileTreeActions({
   activeLibrary,
-  resolveActiveLibraryAndroidDirectoryUri,
   notifyLibraryTreeChanged,
   persistDirtyTextDocuments,
   closeTabsByPath,
@@ -37,29 +32,17 @@ export function useFileTreeActions({
       dispatch(setPendingCreation(null))
       return
     }
-    const result = await createLibraryEntry(
-      currentPendingCreation.parentPath, name, currentPendingCreation.kind,
-      { androidDirectoryUri: activeLibrary.androidTreeUri },
-    )
+    const result = await mutateLibraryEntry(activeLibrary, {
+      action: 'create',
+      parentPath: currentPendingCreation.parentPath,
+      name,
+      kind: currentPendingCreation.kind,
+    })
     if (!result.ok) {
       dispatch(setDialogState({ type: 'info', title: 'No se pudo crear', message: result.error ?? 'No se pudo crear el elemento.' }))
       return
     }
     if (currentPendingCreation.kind === 'note') {
-      const fileName = name.toLowerCase().endsWith('.md') ? name : `${name}.md`
-      const notePath = join(currentPendingCreation.parentPath, fileName)
-      const noteSource = [
-        '---',
-        `contexto: "${DEFAULT_CONTEXT_TAG}"`,
-        '---',
-        '',
-      ].join('\n')
-      const writeResult = await writeLibraryFileContent(notePath, noteSource, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      })
-      if (!writeResult.ok) {
-        dispatch(setDialogState({ type: 'info', title: 'Nota creada parcialmente', message: writeResult.error ?? 'No se pudo guardar el contexto inicial de la nota.' }))
-      }
       const boardName = resolveTaskBoardName(currentPendingCreation.parentPath)
       const boardContext = boardName
         ? loadTaskManagerSettings().boards.find((board) => board.name === boardName)?.contexto
@@ -88,9 +71,8 @@ export function useFileTreeActions({
   const handleRenameSubmit = useCallback(async (path: string, name: string) => {
     if (!(await persistDirtyTextDocuments())) { return }
 
-    const result = await performLibraryEntryOperation({
-      action: 'rename', targetPath: path, newName: name,
-    }, { androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(path) })
+    if (!activeLibrary) { return }
+    const result = await mutateLibraryEntry(activeLibrary, { action: 'rename', targetPath: path, newName: name })
     if (!result.ok) {
       dispatch(setDialogState({ type: 'info', title: 'No se pudo renombrar', message: result.error ?? 'No se pudo renombrar el elemento.' }))
       return
@@ -107,7 +89,7 @@ export function useFileTreeActions({
     }
     dispatch(setRenamingPath(null))
     notifyLibraryTreeChanged(path)
-  }, [closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments, renameOpenTabPath, resolveActiveLibraryAndroidDirectoryUri])
+  }, [activeLibrary, closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments, renameOpenTabPath])
 
   const handleMoveNode = useCallback((sourcePath: string, targetDirectoryPath: string) => {
     if (!activeLibrary) { return }
@@ -122,11 +104,8 @@ export function useFileTreeActions({
     void (async () => {
       if (!(await persistDirtyTextDocuments())) { return }
 
-      const moveResult = await performLibraryEntryOperation({
+      const moveResult = await mutateLibraryEntry(activeLibrary, {
         action: 'paste', sourcePath: normalizedSourcePath, targetDirectoryPath: normalizedTargetDirectoryPath, mode: 'move',
-      }, {
-        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(normalizedTargetDirectoryPath)
-          ?? resolveActiveLibraryAndroidDirectoryUri(normalizedSourcePath),
       })
       if (!moveResult.ok) {
         dispatch(setDialogState({ type: 'info', title: 'No se pudo mover', message: moveResult.error ?? 'No se pudo mover el elemento.' }))
@@ -143,7 +122,7 @@ export function useFileTreeActions({
       notifyLibraryTreeChanged(normalizedSourcePath)
       notifyLibraryTreeChanged(normalizedTargetDirectoryPath)
     })()
-  }, [activeLibrary, closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments, resolveActiveLibraryAndroidDirectoryUri])
+  }, [activeLibrary, closeTabsByPath, dispatch, notifyLibraryTreeChanged, persistDirtyTextDocuments])
 
   const handleCancelRename = useCallback(() => { dispatch(setRenamingPath(null)) }, [dispatch])
 
