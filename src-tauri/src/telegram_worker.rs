@@ -937,7 +937,15 @@ impl Progress {
                             if let Ok(mut last) = last_sequence.lock() {
                                 *last = (*last).max(envelope.sequence);
                             }
-                            seen.push(envelope.event);
+                            // Stream fragments do not change the progress
+                            // message and a long answer has thousands.
+                            if !matches!(
+                                envelope.event,
+                                notia_backend_core::BackendEvent::ThinkingSummary { .. }
+                                    | notia_backend_core::BackendEvent::AssistantDelta { .. }
+                            ) {
+                                seen.push(envelope.event);
+                            }
                         }
                         bot::progress_message(&seen)
                     };

@@ -5602,15 +5602,58 @@ fn selected_board_roots(publication: &TaskManagerPublicationPayload) -> Vec<Stri
         .collect()
 }
 
+/// A frontend file of the publication with its media type. Release builds
+/// serve the assets embedded at compile time. Debug builds read the current
+/// `dist/` on disk (kept up to date by the development script), so the
+/// published page never shows an older design than the app.
+#[cfg(target_os = "windows")]
+fn publication_asset(
+    assets: &tauri::AssetResolver<tauri::Wry>,
+    relative_path: &str,
+) -> Option<(Vec<u8>, String)> {
+    #[cfg(debug_assertions)]
+    {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("dist")
+            .join(relative_path);
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Some((bytes, development_mime_type(relative_path).to_string()));
+        }
+    }
+    assets
+        .get(relative_path.to_string())
+        .map(|asset| (asset.bytes().to_vec(), asset.mime_type().to_string()))
+}
+
+#[cfg(all(target_os = "windows", debug_assertions))]
+fn development_mime_type(relative_path: &str) -> &'static str {
+    match relative_path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase().as_str() {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript",
+        "css" => "text/css",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn serve_publication_index(assets: &tauri::AssetResolver<tauri::Wry>) -> Vec<u8> {
-    let Some(asset) = assets.get("public-task-manager.html".to_string()) else {
+    let Some((bytes, _)) = publication_asset(assets, "public-task-manager.html") else {
         return text_response(
             "503 Service Unavailable",
             "Los recursos de Task Manager no están disponibles.",
         );
     };
-    let html = String::from_utf8_lossy(asset.bytes()).replace(
+    let html = String::from_utf8_lossy(&bytes).replace(
         "/assets/",
         &format!("{TASK_MANAGER_PUBLICATION_PATH}/assets/"),
     );
@@ -5622,8 +5665,8 @@ fn serve_asset(assets: &tauri::AssetResolver<tauri::Wry>, relative_path: &str) -
     if relative_path.contains("..") {
         return text_response("404 Not Found", "No existe.");
     }
-    match assets.get(relative_path.to_string()) {
-        Some(asset) => response("200 OK", asset.mime_type(), asset.bytes()),
+    match publication_asset(assets, relative_path) {
+        Some((bytes, mime_type)) => response("200 OK", &mime_type, &bytes),
         None => text_response("404 Not Found", "No existe."),
     }
 }

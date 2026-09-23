@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $repoPath = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $devConfigPath = Join-Path $repoPath 'src-tauri\tauri.windows.dev.conf.json'
 $viteProcess = $null
+$assetsWatchProcess = $null
 
 function Test-NotiaDevPort {
   try {
@@ -96,6 +97,16 @@ if (Test-NotiaDevPort) {
 try {
   Invoke-DevelopmentAssetsBuild
 
+  # The published Task Manager page is served from dist/: keep it in step
+  # with the sources while the app runs.
+  Write-Host 'Manteniendo actualizados los assets publicados (vite build --watch)...'
+  $assetsWatchProcess = Start-Process `
+    -FilePath 'npx.cmd' `
+    -ArgumentList @('vite', 'build', '--watch', '--minify=false') `
+    -WorkingDirectory $repoPath `
+    -WindowStyle Hidden `
+    -PassThru
+
   if (-not (Test-NotiaDevPort)) {
     Write-Host 'Iniciando Vite en http://127.0.0.1:1420...'
     $viteProcess = Start-Process `
@@ -124,5 +135,8 @@ try {
 } finally {
   if ($null -ne $viteProcess -and -not $viteProcess.HasExited) {
     Stop-ProcessTree -RootProcessId $viteProcess.Id
+  }
+  if ($null -ne $assetsWatchProcess -and -not $assetsWatchProcess.HasExited) {
+    Stop-ProcessTree -RootProcessId $assetsWatchProcess.Id
   }
 }

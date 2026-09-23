@@ -609,8 +609,6 @@ fn run_agent_inner(
             options.max_provider_retries,
             should_stream,
             events,
-            options,
-            &mut event_count,
             &mut streamed_content,
         )?;
         // The streamed round has no tools: a model that answers it empty may
@@ -626,8 +624,6 @@ fn run_agent_inner(
                 options.max_provider_retries,
                 false,
                 events,
-                options,
-                &mut event_count,
                 &mut streamed_content,
             )?;
         }
@@ -1082,35 +1078,26 @@ fn call_provider_with_retry(
     max_retries: u32,
     stream: bool,
     events: &dyn BackendEventSink,
-    options: &AgentRuntimeOptions,
-    event_count: &mut usize,
     streamed_content: &mut bool,
 ) -> Result<ProviderResponse, BackendError> {
     let mut attempts = 0;
     loop {
         control.check()?;
         let result = if stream {
+            // Stream fragments do not count against the event limit, which
+            // bounds rounds, tools and interactions: a thinking model sends
+            // thousands of them. The event store keeps its own bounded history.
             let mut on_delta = |delta: ProviderStreamDelta| match delta {
-                ProviderStreamDelta::Thinking(summary) => emit(
-                    events,
-                    options,
-                    event_count,
-                    BackendEvent::ThinkingSummary {
-                        request_id: request.context.request_id.clone(),
-                        summary,
-                    },
-                ),
+                ProviderStreamDelta::Thinking(summary) => events.publish(BackendEvent::ThinkingSummary {
+                    request_id: request.context.request_id.clone(),
+                    summary,
+                }),
                 ProviderStreamDelta::Content(delta) => {
                     *streamed_content = true;
-                    emit(
-                        events,
-                        options,
-                        event_count,
-                        BackendEvent::AssistantDelta {
-                            request_id: request.context.request_id.clone(),
-                            delta,
-                        },
-                    )
+                    events.publish(BackendEvent::AssistantDelta {
+                        request_id: request.context.request_id.clone(),
+                        delta,
+                    })
                 }
             };
             provider.stream_chat(request, control, &mut on_delta)
@@ -1507,6 +1494,59 @@ mod tests {
             allowed_contexts: vec!["#Confidencial".into()],
             all_contexts: true,
         }
+    }
+
+    #[test]
+    fn long_streams_do_not_hit_the_event_limit() {
+        struct Chatty;
+        impl AgentProvider for Chatty {
+            fn chat(&self, _: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+                unreachable!()
+            }
+            fn stream_chat(
+                &self,
+                _: &ProviderRequest,
+                _: &RequestControl,
+                on_delta: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
+            ) -> Result<ProviderResponse, BackendError> {
+                for _ in 0..2_000 {
+                    on_delta(ProviderStreamDelta::Thinking("pienso".into()))?;
+                    on_delta(ProviderStreamDelta::Content("dato ".into()))?;
+                }
+                Ok(ProviderResponse {
+                    message: ProviderMessage {
+                        role: ProviderMessageRole::Assistant,
+                        content: "dato".into(),
+                        images: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_name: None,
+                    },
+                })
+            }
+            fn tool_chat(&self, _: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+                unreachable!()
+            }
+        }
+        let events = VecEventSink::default();
+        let provider_request = ProviderRequest {
+            context: request(Vec::new()).context,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let mut streamed = false;
+        let response = call_provider_with_retry(
+            &Chatty,
+            &provider_request,
+            &RequestControl::new(None),
+            0,
+            true,
+            &events,
+            &mut streamed,
+        )
+        .expect("stream completes");
+        assert_eq!(response.message.content, "dato");
+        assert_eq!(events.events().len(), 4_000);
+        assert!(streamed);
     }
 
     struct Provider {
