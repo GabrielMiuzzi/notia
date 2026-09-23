@@ -2,6 +2,11 @@
   "bundle": {
     "resources": [
       "resources/speech/runtime/android-arm64-v8a/**/*",
+      "resources/speech/models/es-parakeet-tdt-v3/encoder.onnx",
+      "resources/speech/models/es-parakeet-tdt-v3/decoder.onnx",
+      "resources/speech/models/es-parakeet-tdt-v3/joiner.onnx",
+      "resources/speech/models/es-parakeet-tdt-v3/tokens.txt",
+      "resources/speech/models/es-parakeet-tdt-v3/silero_vad.onnx",
       "resources/speech/models/qwen3-asr-0.6b-q8/**/*",
       "resources/speech/models/speaker-diarization-v1/**/*",
       "resources/qwen3-tts/models/qwen3-tts-0.6b-customvoice-q4_k_m/**/*"

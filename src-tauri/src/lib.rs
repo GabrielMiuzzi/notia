@@ -71,6 +71,7 @@ mod task_manager_store;
 mod services {
     pub mod calendar_holidays;
     pub mod ai_service;
+    pub mod asr_recognizer;
     pub mod bluetooth_service;
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub mod coldpass_secure_link;
@@ -79,7 +80,9 @@ mod services {
     pub mod qwen3_asr_service;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
+    pub mod sherpa_offline;
     pub mod sherpa_runtime;
+    pub mod spanish_transcript;
     pub mod speech_audio;
     pub mod speech_model_repository;
     pub mod speech_service;
@@ -459,6 +462,7 @@ pub fn run() {
         .plugin(mobile_continuity::init())
         .plugin(mobile_directory_picker::init())
         .plugin(mobile_speech_permission::init())
+        .plugin(services::speech_service::init_preload())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

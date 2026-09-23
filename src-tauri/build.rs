@@ -130,7 +130,13 @@ fn validate_bundled_speech_models() {
         .map(std::path::PathBuf::from)
         .expect("CARGO_MANIFEST_DIR is required");
     let models = manifest_dir.join("resources").join("speech").join("models");
+    let parakeet = models.join("es-parakeet-tdt-v3");
     let required = [
+        parakeet.join("encoder.onnx"),
+        parakeet.join("decoder.onnx"),
+        parakeet.join("joiner.onnx"),
+        parakeet.join("tokens.txt"),
+        parakeet.join("silero_vad.onnx"),
         models
             .join("qwen3-asr-0.6b-q8")
             .join("Qwen3-ASR-0.6B-Q8_0.gguf"),
@@ -144,7 +150,10 @@ fn validate_bundled_speech_models() {
     ];
     for path in required {
         if !path.is_file() {
-            panic!("missing bundled speech model: {}", path.display());
+            panic!(
+                "missing bundled speech model: {}. Run scripts/install-speech.sh parakeet.",
+                path.display()
+            );
         }
         println!("cargo:rerun-if-changed={}", path.display());
     }

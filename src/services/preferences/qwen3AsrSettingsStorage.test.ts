@@ -22,11 +22,15 @@ describe('normalizeQwen3AsrPreferences', () => {
       device: 'invalid',
       language: '   ',
     } as never)).toEqual({
-      model: '0.6b',
+      model: 'parakeet-v3',
       device: 'cpu',
       enabled: true,
       language: 'es',
     })
+  })
+
+  it('keeps a chosen Qwen3-ASR size', () => {
+    expect(normalizeQwen3AsrPreferences({ model: '0.6b' })).toMatchObject({ model: '0.6b' })
   })
 
   it('preserves the GPU preference', () => {

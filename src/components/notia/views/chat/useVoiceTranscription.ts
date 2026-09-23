@@ -53,6 +53,9 @@ export function stabilizePartialTranscript(previous: string, next: string): stri
 
 export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, maxDurationSeconds = 900, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
   const qwen3Asr = useAppSelector(selectQwen3AsrSettings)
+  // The backend preloads the saved model at startup; asking before the saved
+  // preferences arrive would prepare the default model instead.
+  const devicePreferencesLoaded = useAppSelector((appState) => appState.preferences.devicePreferencesLoaded)
   const [capabilities, setCapabilities] = useState<SpeechCapabilities | null>(null)
   const [audioInput, setAudioInput] = useState<SpeechAudioInputStatus | null>(null)
   const [sherpaRuntime, setSherpaRuntime] = useState<SherpaRuntimeStatus | null>(null)
@@ -81,7 +84,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
 
   useEffect(() => {
     let current = true
-    if (!qwen3Asr.enabled) {
+    if (!devicePreferencesLoaded || !qwen3Asr.enabled) {
       setIsModelReady(false)
       return () => { current = false }
     }
@@ -93,11 +96,11 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
     }).catch((error: unknown) => {
       if (!current) return
       setIsModelReady(false)
-      setModelPreparationError(error instanceof Error ? error.message : 'No se pudo preparar Qwen3-ASR.')
+      setModelPreparationError(error instanceof Error ? error.message : 'No se pudo preparar el reconocimiento de voz.')
     })
 
     return () => { current = false }
-  }, [qwen3Asr])
+  }, [devicePreferencesLoaded, qwen3Asr])
 
   useEffect(() => {
     let current = true
@@ -240,7 +243,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
         status: 'error',
         error: {
           code: 'internal',
-          message: 'Activa Qwen3-ASR en Configuraciones → Voz.',
+          message: 'Activa el reconocimiento de voz en Configuraciones → Voz.',
         },
       })
       return false
@@ -251,7 +254,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
       setIsModelReady(true)
       setModelPreparationError(null)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'No se pudo preparar Qwen3-ASR.'
+      const message = error instanceof Error ? error.message : 'No se pudo preparar el reconocimiento de voz.'
       setIsModelReady(false)
       setModelPreparationError(message)
       setState({ status: 'error', error: { code: 'internal', message } })
@@ -291,7 +294,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
         status: 'error',
         error: {
           code: 'unsupported-platform',
-          message: environmentErrorRef.current || 'Qwen3-ASR no está disponible en esta plataforma.',
+          message: environmentErrorRef.current || 'El reconocimiento de voz no está disponible en esta plataforma.',
         },
       })
       return false

@@ -46,10 +46,12 @@ pub fn normalize_publication(value: &Value) -> Value {
     json!({ "publishedBoardNames": boards, "port": port, "maxClients": clients })
 }
 
-/// Speech recognition model, device, language and switch.
+/// Speech recognition model, device, language and switch. Parakeet is the
+/// default model; the device only applies to the Qwen3-ASR sizes.
 pub fn normalize_asr(value: &Value) -> Value {
+    let model = text(value, "model");
     json!({
-        "model": if text(value, "model") == "1.7b" { "1.7b" } else { "0.6b" },
+        "model": if matches!(model.as_str(), "0.6b" | "1.7b") { model.as_str() } else { "parakeet-v3" },
         "device": if text(value, "device") == "gpu" { "gpu" } else { "cpu" },
         "enabled": value.get("enabled").and_then(Value::as_bool) != Some(false),
         "language": language(value),
@@ -98,6 +100,13 @@ mod tests {
         assert_eq!(normalized["qwen3Tts"]["speed"], 1.8);
         assert_eq!(normalized["qwen3Tts"]["pauseDetectionMs"], 600);
         assert_eq!(normalized["qwen3Tts"]["enabled"], false);
-        assert_eq!(normalized["qwen3Asr"], json!({ "model": "0.6b", "device": "cpu", "enabled": true, "language": "es" }));
+        assert_eq!(normalized["qwen3Asr"], json!({ "model": "parakeet-v3", "device": "cpu", "enabled": true, "language": "es" }));
+    }
+
+    #[test]
+    fn asr_keeps_a_chosen_qwen3_size() {
+        assert_eq!(normalize_asr(&json!({ "model": "1.7b", "device": "gpu" }))["model"], "1.7b");
+        assert_eq!(normalize_asr(&json!({ "model": "0.6b" }))["model"], "0.6b");
+        assert_eq!(normalize_asr(&json!({ "model": "whisper" }))["model"], "parakeet-v3");
     }
 }

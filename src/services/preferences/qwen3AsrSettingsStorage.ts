@@ -1,4 +1,5 @@
-export type Qwen3AsrModel = '0.6b' | '1.7b'
+/** Parakeet runs on CPU and detects the language; the device and language apply to Qwen3-ASR. */
+export type Qwen3AsrModel = 'parakeet-v3' | '0.6b' | '1.7b'
 export type Qwen3AsrDevice = 'cpu' | 'gpu'
 
 export interface Qwen3AsrPreferences {
@@ -11,7 +12,7 @@ export interface Qwen3AsrPreferences {
 const STORAGE_KEY = 'notia:qwen3-asr:v1'
 
 export const DEFAULT_QWEN3_ASR_PREFERENCES: Qwen3AsrPreferences = {
-  model: '0.6b',
+  model: 'parakeet-v3',
   device: 'cpu',
   enabled: true,
   language: 'es',
@@ -19,7 +20,7 @@ export const DEFAULT_QWEN3_ASR_PREFERENCES: Qwen3AsrPreferences = {
 
 export function normalizeQwen3AsrPreferences(value: Partial<Qwen3AsrPreferences> | null | undefined): Qwen3AsrPreferences {
   return {
-    model: value?.model === '1.7b' ? '1.7b' : '0.6b',
+    model: value?.model === '0.6b' || value?.model === '1.7b' ? value.model : 'parakeet-v3',
     device: value?.device === 'gpu' ? 'gpu' : 'cpu',
     enabled: value?.enabled !== false,
     language: value?.language?.trim().toLowerCase() || 'es',

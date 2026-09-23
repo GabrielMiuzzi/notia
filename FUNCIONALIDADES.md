@@ -21,7 +21,7 @@
 - Memoria persistente y herramientas nativas para el agente de IA.
 - Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca; Meeting, Graph View, Multichat, publicación y Telegram de otros usuarios sin memoria global.
 - Chat efímero de Meeting con transcripción offline y diarización.
-- Dictado y síntesis de voz offline.
+- Dictado y síntesis de voz offline, con reconocimiento Parakeet TDT (por defecto) o Qwen3-ASR.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
 - ColdPass para credenciales cifradas.

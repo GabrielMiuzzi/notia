@@ -24,22 +24,17 @@ pub async fn prepare_speech_model(
     payload: PrepareSpeechModelPayload,
     app: AppHandle,
 ) -> Result<(), String> {
-    if !matches!(payload.model.as_str(), "0.6b" | "1.7b") {
-        return Err("El modelo Qwen3-ASR seleccionado no es válido.".to_string());
-    }
-    if !matches!(payload.device.as_str(), "cpu" | "gpu") {
-        return Err("El dispositivo Qwen3-ASR seleccionado no es válido.".to_string());
-    }
+    validate_asr_selection(&payload.model, &payload.device)?;
     let language = payload.language.trim().to_string();
     if language.is_empty() {
-        return Err("El idioma de Qwen3-ASR no puede estar vacío.".to_string());
+        return Err("El idioma del reconocimiento de voz no puede estar vacío.".to_string());
     }
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         speech_service::prepare_recognizer(&worker_app, &payload.model, &language, &payload.device)
     })
     .await
-    .map_err(|error| format!("Falló la preparación de Qwen3-ASR: {error}"))?
+    .map_err(|error| format!("Falló la preparación del reconocimiento de voz: {error}"))?
 }
 
 #[tauri::command]
@@ -109,12 +104,7 @@ pub async fn start_speech_session(
     permission_state: State<'_, AndroidSpeechPermissionState>,
 ) -> Result<StartSpeechSessionResultDto, String> {
     speech_service::validate_start_input(&payload.language, payload.max_duration_seconds)?;
-    if !matches!(payload.model.as_str(), "0.6b" | "1.7b") {
-        return Err("El modelo Qwen3-ASR seleccionado no es válido.".to_string());
-    }
-    if !matches!(payload.device.as_str(), "cpu" | "gpu") {
-        return Err("El dispositivo Qwen3-ASR seleccionado no es válido.".to_string());
-    }
+    validate_asr_selection(&payload.model, &payload.device)?;
     let _diarization_enabled = payload.diarization_enabled;
     let phase = *state
         .phase
@@ -164,7 +154,7 @@ pub async fn start_speech_session(
         let worker_app = app.clone();
         let worker_session_id = session_id.clone();
         let result = match tauri::async_runtime::spawn_blocking(move || {
-            let model = speech_model_repository::resolve_qwen3_asr_model(
+            let model = speech_model_repository::resolve_asr_model(
                 &worker_app,
                 &model_size,
                 &language,
@@ -219,6 +209,17 @@ pub async fn start_speech_session(
         let _ = (app, state);
         Err(speech_service::not_integrated_error())
     }
+}
+
+/// Parakeet runs on CPU only; the device applies to Qwen3-ASR.
+fn validate_asr_selection(model: &str, device: &str) -> Result<(), String> {
+    if !speech_model_repository::is_supported_asr_model(model) {
+        return Err("El modelo de reconocimiento de voz seleccionado no es válido.".to_string());
+    }
+    if !matches!(device, "cpu" | "gpu") {
+        return Err("El dispositivo de reconocimiento de voz seleccionado no es válido.".to_string());
+    }
+    Ok(())
 }
 
 fn microphone_permission(_state: &AndroidSpeechPermissionState) -> String {

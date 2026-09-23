@@ -80,3 +80,8 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Model files are verified with SHA-256 before loading; unoptimized, hashing
+# the speech models takes tens of seconds in development builds.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -18,7 +18,7 @@ const DIARIZATION_CHUNK_SAMPLES: usize = 16_000 * 15 * 60;
 const GLOBAL_SPEAKER_MATCH_THRESHOLD: f32 = 0.72;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub(crate) type PreloadedRecognizer =
-    Arc<StdMutex<Option<crate::services::qwen3_asr_service::Qwen3AsrRecognizer>>>;
+    Arc<StdMutex<Option<crate::services::asr_recognizer::AsrRecognizer>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechPhase {
@@ -41,6 +41,10 @@ pub struct SpeechRuntimeState {
     active_session: Mutex<Option<ActivePlatformSpeechSession>>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     preloaded_recognizer: PreloadedRecognizer,
+    /// Serializes the startup preload and interface requests so the same
+    /// model is never loaded twice at once.
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    preparation: StdMutex<()>,
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -56,26 +60,14 @@ pub fn transcribe_external_audio(
 ) -> Result<String, String> {
     use crate::services::speech_worker::StreamingRecognizer;
 
+    let model = preferred_asr_model(app)?;
     let mut recognizer = match cache
         .lock()
         .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?
         .take()
     {
-        Some(recognizer)
-            if recognizer.matches(
-                &crate::services::speech_model_repository::resolve_qwen3_asr_model(
-                    app, "0.6b", "es", "cpu",
-                )?,
-            ) =>
-        {
-            recognizer
-        }
-        Some(_) | None => {
-            let model = crate::services::speech_model_repository::resolve_qwen3_asr_model(
-                app, "0.6b", "es", "cpu",
-            )?;
-            crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(app, &model)?
-        }
+        Some(recognizer) if recognizer.matches(&model) => recognizer,
+        Some(_) | None => crate::services::asr_recognizer::AsrRecognizer::load(app, &model)?,
     };
     let result = (|| {
         let mut text = String::new();
@@ -101,6 +93,83 @@ pub fn transcribe_external_audio(
     }
     reset_result?;
     result
+}
+
+/// The recognition model selected in the device preferences, for audio that
+/// does not come from a session started by the interface.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn preferred_asr_model(
+    app: &AppHandle,
+) -> Result<crate::services::asr_recognizer::AsrModelConfig, String> {
+    let selection = SavedAsrSelection::read(app);
+    crate::services::speech_model_repository::resolve_asr_model(
+        app,
+        &selection.model,
+        &selection.language,
+        &selection.device,
+    )
+}
+
+/// The `qwen3Asr` device preference, already normalized by the backend.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct SavedAsrSelection {
+    model: String,
+    language: String,
+    device: String,
+    enabled: bool,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl SavedAsrSelection {
+    fn read(app: &AppHandle) -> Self {
+        let preferences = crate::device_preferences::section(app, "qwen3Asr");
+        let field = |key: &str| preferences[key].as_str().unwrap_or_default().to_string();
+        Self {
+            model: field("model"),
+            language: field("language"),
+            device: field("device"),
+            enabled: preferences["enabled"].as_bool() != Some(false),
+        }
+    }
+}
+
+/// Loads the saved recognition model while Notia starts, so dictation and
+/// Meeting find it resident. Runs on its own thread: the window never waits.
+pub(crate) fn init_preload() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("notia-speech-preload")
+        .setup(|app, _api| {
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            preload_at_startup(app.clone());
+            #[cfg(not(any(target_os = "windows", target_os = "android")))]
+            let _ = app;
+            Ok(())
+        })
+        .build()
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn preload_at_startup(app: AppHandle) {
+    let selection = SavedAsrSelection::read(&app);
+    if !selection.enabled {
+        log::info!("[notia:speech] startup preload skipped: speech recognition disabled");
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("notia-speech-preload".to_string())
+        .spawn(move || {
+            let started_at = Instant::now();
+            match prepare_recognizer(&app, &selection.model, &selection.language, &selection.device) {
+                Ok(()) => log::info!(
+                    "[notia:speech] startup preload ready model={} elapsed_ms={}",
+                    selection.model,
+                    started_at.elapsed().as_millis()
+                ),
+                Err(message) => log::warn!("[notia:speech] startup preload failed: {message}"),
+            }
+        });
+    if let Err(error) = spawned {
+        log::warn!("[notia:speech] startup preload thread not started: {error}");
+    }
 }
 
 fn commit_external_update(
@@ -131,6 +200,8 @@ impl Default for SpeechRuntimeState {
             active_session: Mutex::new(None),
             #[cfg(any(target_os = "windows", target_os = "android"))]
             preloaded_recognizer: Arc::new(StdMutex::new(None)),
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            preparation: StdMutex::new(()),
         }
     }
 }
@@ -142,10 +213,15 @@ pub fn prepare_recognizer(
     language: &str,
     device: &str,
 ) -> Result<(), String> {
-    let resolved = crate::services::speech_model_repository::resolve_qwen3_asr_model(
-        app, model, language, device,
-    )?;
     let state = app.state::<SpeechRuntimeState>();
+    // A request that arrives while the startup preload is loading waits here
+    // and then finds the model already resident.
+    let _preparing = state
+        .preparation
+        .lock()
+        .map_err(|_| "No se pudo coordinar la preparación del modelo de voz.".to_string())?;
+    let resolved =
+        crate::services::speech_model_repository::resolve_asr_model(app, model, language, device)?;
     {
         let cache = state
             .preloaded_recognizer
@@ -158,12 +234,12 @@ pub fn prepare_recognizer(
             return Ok(());
         }
     }
-    let recognizer = crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(app, &resolved)?;
+    let recognizer = crate::services::asr_recognizer::AsrRecognizer::load(app, &resolved)?;
     *state
         .preloaded_recognizer
         .lock()
         .map_err(|_| "No se pudo guardar el modelo precargado.".to_string())? = Some(recognizer);
-    log::info!("[notia:speech] selected offline recognizer prepared");
+    log::info!("[notia:speech] selected offline recognizer prepared model={model}");
     Ok(())
 }
 
@@ -186,7 +262,7 @@ pub fn start_platform_session(
     app: &AppHandle,
     state: &SpeechRuntimeState,
     session_id: String,
-    model: crate::services::qwen3_asr_service::Qwen3AsrModelConfig,
+    model: crate::services::asr_recognizer::AsrModelConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
     max_duration_seconds: u32,
     capture_system_audio: bool,
@@ -219,16 +295,20 @@ pub fn start_platform_session(
         buffer,
         max_duration_seconds,
         move || {
-            if let Some(recognizer) = recognizer_cache
+            let cached = recognizer_cache
                 .lock()
                 .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?
                 .take()
-            {
-                if recognizer.matches(&model) {
-                    return Ok(recognizer);
-                }
-            }
-            crate::services::qwen3_asr_service::Qwen3AsrRecognizer::load(&recognizer_app, &model)
+                .filter(|recognizer| recognizer.matches(&model));
+            let mut recognizer = match cached {
+                Some(recognizer) => recognizer,
+                None => crate::services::asr_recognizer::AsrRecognizer::load(
+                    &recognizer_app,
+                    &model,
+                )?,
+            };
+            recognizer.enable_live_partials();
+            Ok(recognizer)
         },
         move |event| {
             handle_worker_event(
@@ -1146,7 +1226,7 @@ pub fn validate_start_input(language: &str, max_duration_seconds: u32) -> Result
 }
 
 pub fn not_integrated_error() -> String {
-    "La integración nativa con llama.cpp y Qwen3-ASR todavía no está disponible.".to_string()
+    "El reconocimiento de voz nativo todavía no está disponible en esta plataforma.".to_string()
 }
 
 #[cfg(test)]

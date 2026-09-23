@@ -12,6 +12,8 @@ use tauri::{AppHandle, Manager};
 
 const MODEL_MANIFEST_JSON: &str = include_str!("../../resources/speech/model-manifest.json");
 const MODEL_DIRECTORY_NAME: &str = "speech-models";
+pub const PARAKEET_MODEL: &str = "parakeet-v3";
+const PARAKEET_PROFILE_ID: &str = "es-parakeet-tdt-v3";
 static MODEL_HASH_CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedModelHash>>> =
     OnceLock::new();
 
@@ -84,62 +86,146 @@ struct SpeechModelFile {
 }
 
 pub fn inspect_installed_models(app: &AppHandle) -> Result<SpeechModelStatusDto, String> {
-    let root = model_root(app)?;
-    inspect_manifest_metadata(MODEL_MANIFEST_JSON, &root)
+    let roots = model_roots(app)?;
+    inspect_manifest_metadata(MODEL_MANIFEST_JSON, &roots)
 }
 
-fn model_root(app: &AppHandle) -> Result<PathBuf, String> {
+/// Directories that may hold model profiles, by priority. Each profile is
+/// read from the first directory that contains all of its files, so an
+/// incomplete private install never hides a complete bundled profile.
+fn model_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::with_capacity(3);
+    // En desarrollo, los recursos del checkout son la fuente de verdad. Esto
+    // evita que una instalación anterior en AppData oculte modelos
+    // actualizados del proyecto al ejecutar `npm run dev:tauri:windows`.
     #[cfg(debug_assertions)]
-    {
-        // En desarrollo, los recursos del checkout son la fuente de verdad.
-        // Esto evita que una instalación anterior en AppData oculte modelos
-        // actualizados del proyecto al ejecutar `npm run dev:tauri:windows`.
-        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    roots.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("speech")
-            .join("models");
-        let source_asr = source_root.join("qwen3-asr-0.6b-q8");
-        if source_asr.join("Qwen3-ASR-0.6B-Q8_0.gguf").is_file()
-            && source_asr.join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").is_file()
-        {
-            return Ok(source_root);
-        }
-    }
-    let installed_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("No se pudo resolver el directorio privado de modelos: {error}"))?
-        .join(MODEL_DIRECTORY_NAME);
-    // No alcanza con que exista la carpeta: instalaciones interrumpidas pueden
-    // dejarla creada pero sin los archivos requeridos. Solo la usamos cuando el
-    // perfil Qwen3-ASR realmente contiene ambos artefactos principales.
-    let installed_asr = installed_root.join("qwen3-asr-0.6b-q8");
-    if installed_asr.join("Qwen3-ASR-0.6B-Q8_0.gguf").is_file()
-        && installed_asr
-            .join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf")
-            .is_file()
-    {
-        return Ok(installed_root);
-    }
-    Ok(app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("No se pudo resolver el directorio de recursos: {error}"))?
-        .join("resources")
-        .join("speech")
-        .join("models"))
+            .join("models"),
+    );
+    roots.push(
+        app.path()
+            .app_data_dir()
+            .map_err(|error| {
+                format!("No se pudo resolver el directorio privado de modelos: {error}")
+            })?
+            .join(MODEL_DIRECTORY_NAME),
+    );
+    roots.push(
+        app.path()
+            .resource_dir()
+            .map_err(|error| format!("No se pudo resolver el directorio de recursos: {error}"))?
+            .join("resources")
+            .join("speech")
+            .join("models"),
+    );
+    Ok(roots)
+}
+
+/// The first root holding every declared file of the profile, or the last
+/// (bundled) root so that missing files are reported against it.
+fn profile_models_root<'a>(roots: &'a [PathBuf], profile: &SpeechModelProfile) -> &'a Path {
+    roots
+        .iter()
+        .find(|root| {
+            profile
+                .files
+                .iter()
+                .all(|file| root.join(&profile.profile_id).join(&file.relative_path).is_file())
+        })
+        .or(roots.last())
+        .map_or(Path::new(""), PathBuf::as_path)
+}
+
+/// Valid values of the `model` preference: Parakeet or a Qwen3-ASR size.
+pub fn is_supported_asr_model(model: &str) -> bool {
+    matches!(model, PARAKEET_MODEL | "0.6b" | "1.7b")
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub fn resolve_qwen3_asr_model(
+pub fn resolve_asr_model(
+    app: &AppHandle,
+    model: &str,
+    language: &str,
+    device: &str,
+) -> Result<crate::services::asr_recognizer::AsrModelConfig, String> {
+    use crate::services::asr_recognizer::AsrModelConfig;
+    match model {
+        PARAKEET_MODEL => resolve_parakeet_model(app, language).map(AsrModelConfig::Parakeet),
+        "0.6b" | "1.7b" => {
+            resolve_qwen3_asr_model(app, model, language, device).map(AsrModelConfig::Qwen3)
+        }
+        _ => Err("El modelo de reconocimiento de voz seleccionado no es válido.".to_string()),
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn resolve_parakeet_model(
+    app: &AppHandle,
+    language: &str,
+) -> Result<crate::services::sherpa_offline::OfflineNemoTransducerConfig, String> {
+    let manifest = parse_manifest()?;
+    let profile = manifest
+        .profiles
+        .iter()
+        .find(|profile| profile.profile_id == PARAKEET_PROFILE_ID)
+        .ok_or_else(|| "No hay un modelo Parakeet TDT configurado.".to_string())?;
+    let profile_root = verified_profile_root(app, profile)?;
+    let Some(SpeechAsrConfig::OfflineNemoTransducer {
+        encoder,
+        decoder,
+        joiner,
+        tokens,
+        vad,
+    }) = profile.asr.as_ref()
+    else {
+        return Err("El perfil Parakeet no declara un modelo NeMo transducer.".to_string());
+    };
+    let num_threads = std::thread::available_parallelism()
+        .map(|threads| threads.get().min(crate::services::sherpa_offline::MAX_ASR_THREADS as usize) as i32)
+        .unwrap_or(2);
+    Ok(crate::services::sherpa_offline::OfflineNemoTransducerConfig {
+        encoder: resolve_verified_role_path(&profile_root, encoder)?,
+        decoder: resolve_verified_role_path(&profile_root, decoder)?,
+        joiner: resolve_verified_role_path(&profile_root, joiner)?,
+        tokens: resolve_verified_role_path(&profile_root, tokens)?,
+        vad: resolve_verified_role_path(&profile_root, vad)?,
+        num_threads,
+        language: language.to_string(),
+    })
+}
+
+fn parse_manifest() -> Result<SpeechModelManifest, String> {
+    let manifest: SpeechModelManifest = serde_json::from_str(MODEL_MANIFEST_JSON)
+        .map_err(|error| format!("El manifiesto de modelos de voz no es valido: {error}"))?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+/// Directory of an ASR profile whose files pass the size and SHA-256 check.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn verified_profile_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<PathBuf, String> {
+    let roots = model_roots(app)?;
+    let models_root = profile_models_root(&roots, profile);
+    if !inspect_profile(models_root, profile)?.ready {
+        return Err(format!(
+            "El modelo ASR {} no esta instalado o no supera su verificacion.",
+            profile.profile_id
+        ));
+    }
+    Ok(models_root.join(&profile.profile_id))
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn resolve_qwen3_asr_model(
     app: &AppHandle,
     model_size: &str,
     language: &str,
     device: &str,
 ) -> Result<crate::services::qwen3_asr_service::Qwen3AsrModelConfig, String> {
-    let manifest: SpeechModelManifest = serde_json::from_str(MODEL_MANIFEST_JSON)
-        .map_err(|error| format!("El manifiesto de modelos de voz no es valido: {error}"))?;
-    validate_manifest(&manifest)?;
+    let manifest = parse_manifest()?;
     let profile = manifest
         .profiles
         .iter()
@@ -147,15 +233,7 @@ pub fn resolve_qwen3_asr_model(
             profile.profile_id == format!("qwen3-asr-{model_size}-q8") && profile.asr.is_some()
         })
         .ok_or_else(|| format!("No hay un modelo Qwen3-ASR {model_size} configurado."))?;
-    let models_root = model_root(app)?;
-    let profile_root = models_root.join(&profile.profile_id);
-    let status = inspect_profile(&models_root, profile)?;
-    if !status.ready {
-        return Err(format!(
-            "El modelo ASR {} no esta instalado o no supera su verificacion.",
-            profile.profile_id
-        ));
-    }
+    let profile_root = verified_profile_root(app, profile)?;
     let (model, mmproj) = match profile.asr.as_ref() {
         Some(SpeechAsrConfig::Qwen3Asr { model, mmproj }) => (model, mmproj),
         Some(SpeechAsrConfig::OfflineNemoTransducer { .. }) => {
@@ -176,16 +254,15 @@ pub fn resolve_diarization_model(
     app: &AppHandle,
     language: &str,
 ) -> Result<ResolvedDiarizationModel, String> {
-    let manifest: SpeechModelManifest = serde_json::from_str(MODEL_MANIFEST_JSON)
-        .map_err(|error| format!("El manifiesto de modelos de voz no es valido: {error}"))?;
-    validate_manifest(&manifest)?;
+    let manifest = parse_manifest()?;
     let profile = manifest
         .profiles
         .iter()
         .find(|profile| profile.diarization.is_some())
         .ok_or_else(|| format!("No hay un modelo de diarizacion para el idioma {language}."))?;
-    let models_root = model_root(app)?;
-    if !inspect_profile(&models_root, profile)?.ready {
+    let roots = model_roots(app)?;
+    let models_root = profile_models_root(&roots, profile);
+    if !inspect_profile(models_root, profile)?.ready {
         return Err("El perfil de diarizacion no supera su verificacion.".to_string());
     }
     let (segmentation, embedding) = match profile.diarization.as_ref() {
@@ -205,19 +282,19 @@ pub fn resolve_diarization_model(
 
 #[cfg(test)]
 fn inspect_manifest(manifest_json: &str, root: &Path) -> Result<SpeechModelStatusDto, String> {
-    inspect_manifest_with_hashes(manifest_json, root, true)
+    inspect_manifest_with_hashes(manifest_json, &[root.to_path_buf()], true)
 }
 
 fn inspect_manifest_metadata(
     manifest_json: &str,
-    root: &Path,
+    roots: &[PathBuf],
 ) -> Result<SpeechModelStatusDto, String> {
-    inspect_manifest_with_hashes(manifest_json, root, false)
+    inspect_manifest_with_hashes(manifest_json, roots, false)
 }
 
 fn inspect_manifest_with_hashes(
     manifest_json: &str,
-    root: &Path,
+    roots: &[PathBuf],
     verify_hashes: bool,
 ) -> Result<SpeechModelStatusDto, String> {
     let manifest: SpeechModelManifest = serde_json::from_str(manifest_json)
@@ -227,7 +304,13 @@ fn inspect_manifest_with_hashes(
     let profiles = manifest
         .profiles
         .iter()
-        .map(|profile| inspect_profile_with_hashes(root, profile, verify_hashes))
+        .map(|profile| {
+            inspect_profile_with_hashes(
+                profile_models_root(roots, profile),
+                profile,
+                verify_hashes,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(SpeechModelStatusDto {
         schema_version: manifest.schema_version,
@@ -519,6 +602,26 @@ mod tests {
     }
 
     #[test]
+    fn each_profile_uses_the_first_root_that_holds_all_its_files() {
+        let profile: super::SpeechModelProfile = serde_json::from_str(r#"{"profileId":"es-test","language":"es","files":[{"relativePath":"model.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}"#).expect("valid profile");
+        let base = temporary_root();
+        let private = base.join("private");
+        let bundled = base.join("bundled");
+        fs::create_dir_all(bundled.join("es-test")).expect("create bundled profile");
+        fs::write(bundled.join("es-test").join("model.onnx"), b"abc").expect("write model");
+        let roots = [private.clone(), bundled.clone()];
+        assert_eq!(super::profile_models_root(&roots, &profile), bundled.as_path());
+
+        fs::create_dir_all(private.join("es-test")).expect("create private profile");
+        fs::write(private.join("es-test").join("model.onnx"), b"abc").expect("write model");
+        assert_eq!(super::profile_models_root(&roots, &profile), private.as_path());
+
+        let missing = [base.join("a"), base.join("b")];
+        assert_eq!(super::profile_models_root(&missing, &profile), missing[1].as_path());
+        fs::remove_dir_all(base).expect("remove test roots");
+    }
+
+    #[test]
     fn rejects_path_traversal() {
         let manifest = r#"{"schemaVersion":1,"profiles":[{"profileId":"es","language":"es","files":[{"relativePath":"../model.onnx","bytes":3,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}]}"#;
         assert!(inspect_manifest(manifest, &temporary_root()).is_err());
@@ -544,7 +647,8 @@ mod tests {
         std::fs::write(profile_root.join("model.onnx"), b"xyz").expect("write model");
         let manifest = r#"{"schemaVersion":1,"profiles":[{"profileId":"es-test","language":"es","files":[{"relativePath":"model.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}]}"#;
 
-        let metadata = inspect_manifest_metadata(manifest, &root).expect("inspect metadata");
+        let metadata =
+            inspect_manifest_metadata(manifest, &[root.clone()]).expect("inspect metadata");
         let verified = inspect_manifest(manifest, &root).expect("inspect hashes");
 
         assert!(metadata.profiles[0].ready);
