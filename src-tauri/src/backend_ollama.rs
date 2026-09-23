@@ -284,6 +284,12 @@ impl OllamaTransport for NativeOllamaTransport {
                     }
                 }
                 Ok(StreamMessage::Done(result)) => {
+                    // An empty answer is not a transport failure: the agent
+                    // decides how to continue (see `run_agent`).
+                    let result = match result {
+                        Err(error) if error == EMPTY_ANSWER => Ok(String::new()),
+                        other => other,
+                    };
                     return result.map_err(map_service_error).and_then(|answer| {
                         control.check()?;
                         Ok(answer)
@@ -450,13 +456,6 @@ impl OllamaTransport for AndroidOllamaTransport {
                         .map(str::trim)
                         .unwrap_or_default()
                         .to_string();
-                    if answer.is_empty() {
-                        return Err(BackendError::new(
-                            BackendErrorCode::ProviderUnavailable,
-                            "La IA no devolvio contenido.",
-                            true,
-                        ));
-                    }
                     return Ok(answer);
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -721,6 +720,24 @@ where
     }
 }
 
+#[cfg(not(target_os = "android"))]
+const EMPTY_ANSWER: &str = "La IA no devolvio contenido.";
+
+/// Short provider detail safe to show: the `error` field of an Ollama JSON
+/// body or a one-line message, without credentials or URLs.
+fn provider_detail(error: &str) -> Option<String> {
+    let detail = serde_json::from_str::<Value>(error)
+        .ok()
+        .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| error.to_string());
+    let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = detail.to_lowercase();
+    let unsafe_detail = ["http", "bearer", "key", "token", "secret", "password"]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    (!detail.is_empty() && !unsafe_detail).then(|| detail.chars().take(160).collect())
+}
+
 fn map_service_error(error: String) -> BackendError {
     let normalized = error.to_lowercase();
     if normalized.contains("cancel") || normalized.contains("cancelad") {
@@ -737,6 +754,16 @@ fn map_service_error(error: String) -> BackendError {
     {
         return BackendError::invalid_input(safe_validation_message(&normalized));
     }
+    if normalized.contains("unauthorized") {
+        return BackendError::invalid_input(
+            "Ollama rechazó la credencial. Revisá la API key en Configuración → IA.",
+        );
+    }
+    if normalized.contains("not found") && normalized.contains("model") {
+        return BackendError::invalid_input(
+            "El modelo seleccionado no existe en el servidor de Ollama configurado.",
+        );
+    }
     if normalized.contains("no se pudo conectar")
         || normalized.contains("se interrumpio el stream")
         || normalized.contains("consumidor del stream")
@@ -749,7 +776,10 @@ fn map_service_error(error: String) -> BackendError {
     }
     BackendError::new(
         BackendErrorCode::ProviderUnavailable,
-        "Ollama no pudo completar la solicitud.",
+        match provider_detail(&error) {
+            Some(detail) => format!("Ollama no pudo completar la solicitud: {detail}"),
+            None => "Ollama no pudo completar la solicitud.".to_string(),
+        },
         false,
     )
 }
@@ -971,6 +1001,18 @@ mod tests {
             map_service_error("No se pudo conectar con la IA. api_key=secret".to_string()).code,
             BackendErrorCode::ProviderUnavailable
         );
+        assert_eq!(
+            map_service_error("{\"error\":\"unauthorized\"}".to_string()).code,
+            BackendErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_service_error("{\"error\":\"model 'x' not found\"}".to_string()).code,
+            BackendErrorCode::InvalidInput
+        );
+        assert!(map_service_error("{\"error\":\"context length exceeded\"}".to_string())
+            .message
+            .ends_with("context length exceeded"));
+        assert!(!map_service_error("bad Bearer abc".to_string()).message.contains("abc"));
         assert!(
             !map_service_error("No se pudo conectar con la IA. api_key=secret".to_string())
                 .message

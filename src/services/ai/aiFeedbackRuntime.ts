@@ -67,7 +67,11 @@ export function describeAiFeedbackError(
     case 'cancelled': return 'Operación cancelada. No se aplicaron cambios.'
     case 'timeout': return 'La operación tardó demasiado y se detuvo. No se aplicaron cambios.'
     case 'search-blocked': return 'La búsqueda pública fue bloqueada porque la consulta no es segura. No presento resultados sin verificar.'
-    case 'provider-unavailable': return 'El proveedor de IA o búsqueda no está disponible. Verificá la conexión e intentá nuevamente.'
+    case 'provider-unavailable': {
+      const { message } = errorDetails(error)
+      const detail = message ? ` (${redactFeedbackMessage(message)})` : ''
+      return `El proveedor de IA o búsqueda no está disponible${detail}. Verificá la conexión e intentá nuevamente.`
+    }
     case 'no-data': return 'No encontré datos cargados para esa consulta.'
     case 'no-evidence': return 'No encontré evidencia suficiente para responder con seguridad.'
     case 'unauthorized': return 'No tenés autorización para realizar esa consulta.'

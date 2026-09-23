@@ -2,7 +2,7 @@
 
 - Gestión de bibliotecas locales de documentos.
 - Explorador de archivos y carpetas con búsqueda integrada.
-- Editor enriquecido de archivos Markdown.
+- Editor enriquecido de archivos Markdown, con aviso de conflicto al guardar una nota que el agente modificó.
 - Bloques Markdown, gráficos, imágenes y otros bloques compatibles dentro de celdas de tablas, con selector, selección, eliminación y arrastre entre posiciones o celdas.
 - Propiedades y frontmatter editables en notas Markdown.
 - Wikilinks y enlaces bidireccionales entre notas.
@@ -23,10 +23,10 @@
 - Chat efímero de Meeting con transcripción offline y diarización.
 - Dictado y síntesis de voz offline.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
-- Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes.
+- Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
-- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios y títulos visibles con separadores de ruta.
+- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor y títulos visibles con separadores de ruta.
 - Mutaciones embebidas de Task Manager en desktop con preview/apply/receipt Rust y fallback local explícito para Android o vaults sin identidad.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
 - Temporizador Pomodoro integrado en Task Manager.

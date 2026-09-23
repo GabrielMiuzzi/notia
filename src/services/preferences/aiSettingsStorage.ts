@@ -13,6 +13,7 @@ const LEGACY_AI_DEFAULT_URLS = new Set([
 // held in memory here and the library config synchronizer persists it for the
 // active library. Native adapters receive it only when a request is sent.
 let sessionApiKey = ''
+const sessionApiKeyListeners = new Set<() => void>()
 
 export type AiProgressMode = 'minimal' | 'standard' | 'detailed' | 'off'
 
@@ -161,7 +162,10 @@ export function loadAiPreferences(): NormalizedAiPreferences {
 
 export function saveAiPreferences(value: AiPreferences): void {
   const normalized = normalizeAiPreferences(value)
-  sessionApiKey = normalized.apiKey
+  if (sessionApiKey !== normalized.apiKey) {
+    sessionApiKey = normalized.apiKey
+    sessionApiKeyListeners.forEach((listener) => listener())
+  }
   window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify({
     ...normalized,
     apiKey: '',
@@ -174,6 +178,14 @@ export function normalizeAiSettingsInput(input: Partial<AiPreferences>): Normali
 
 export function getSessionAiApiKey(): string {
   return sessionApiKey
+}
+
+/** Notifies when the session credential changes; for `useSyncExternalStore`. */
+export function subscribeSessionAiApiKey(listener: () => void): () => void {
+  sessionApiKeyListeners.add(listener)
+  return () => {
+    sessionApiKeyListeners.delete(listener)
+  }
 }
 
 /** Adds the session credential only at the native transport boundary. */

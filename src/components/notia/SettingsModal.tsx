@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
 import { Brain, ChevronDown, Eye, KeyRound, Pencil, Trash2, Unlink, Wrench, X } from 'lucide-react'
@@ -11,6 +11,7 @@ import type { InkMathPreferences } from '../../services/preferences/inkMathSetti
 import {
   getDefaultOllamaApiUrl,
   getSessionAiApiKey,
+  subscribeSessionAiApiKey,
   normalizeAiSettingsInput,
   type AiPreferences,
 } from '../../services/preferences/aiSettingsStorage'
@@ -123,9 +124,10 @@ export function SettingsModal({
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
+  const sessionApiKey = useSyncExternalStore(subscribeSessionAiApiKey, getSessionAiApiKey)
   const normalizedIncomingAiPreferences = {
     ...normalizeAiSettingsInput(aiPreferences),
-    apiKey: getSessionAiApiKey(),
+    apiKey: sessionApiKey,
   }
   const requestedSection = useAppSelector(selectSettingsActiveSection)
   const [activeSection, setActiveSection] = useState<SettingsSection>(() => {

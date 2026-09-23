@@ -2397,14 +2397,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     }
                     WebSearchReservation::New => {}
                 }
-                let settings = self
-                    .app
-                    .state::<BackendRuntimeState>()
-                    .provider
-                    .lock()
-                    .map_err(|_| internal_error("No se pudo leer la configuración del proveedor backend."))?
-                    .clone()
-                    .ok_or_else(|| BackendError::new(BackendErrorCode::ProviderUnavailable, "El proveedor de búsqueda no está configurado.", true))?;
+                let settings = provider_settings_for_library(
+                    &self.app,
+                    &self.app.state::<BackendRuntimeState>(),
+                    &context.library_id,
+                )?;
                 let response = crate::backend_ollama::search_web(
                     &self.app,
                     &crate::services::ai_service::AiHttpSettings {
@@ -3976,12 +3973,7 @@ pub(crate) fn execute_backend_request(
         ToolCatalogProjection::Full,
     )?;
     state.journal.store_request(&request)?;
-    let provider_settings = state
-        .provider
-        .lock()
-        .map_err(|_| internal_error("No se pudo leer la configuración del proveedor backend."))?
-        .clone()
-        .ok_or_else(|| BackendError::new(BackendErrorCode::ProviderUnavailable, "El proveedor backend no está configurado.", true))?;
+    let provider_settings = provider_settings_for_library(app, state, &request.context.library_id)?;
     let provider = OllamaAgentProvider::with_transport(
         OllamaProviderConfig::new(
             crate::services::ai_service::AiHttpSettings {
@@ -4090,6 +4082,32 @@ fn provider_settings_from_config(config: &Value) -> Result<BackendProviderSettin
         Value::Bool(false)
     };
     Ok(BackendProviderSettings { ollama_url, model, api_key: text("apiKey"), think })
+}
+
+/// Provider of one library: its saved AI settings (URL, model, credential and
+/// thinking), so a run never uses the credential of another library. The
+/// runtime-wide settings are only a fallback for a library without them.
+fn provider_settings_for_library(
+    app: &AppHandle,
+    state: &BackendRuntimeState,
+    library_id: &str,
+) -> Result<BackendProviderSettings, BackendError> {
+    let config = crate::library_config::read_library_config(app, library_id)?.unwrap_or(Value::Null);
+    if let Ok(settings) = provider_settings_from_config(&config) {
+        return Ok(settings);
+    }
+    state
+        .provider
+        .lock()
+        .map_err(|_| internal_error("No se pudo leer la configuración del proveedor backend."))?
+        .clone()
+        .ok_or_else(|| {
+            BackendError::new(
+                BackendErrorCode::ProviderUnavailable,
+                "Configurá la URL de Ollama y el modelo en Configuración.",
+                false,
+            )
+        })
 }
 
 /// One completion without tools for a background task of the library

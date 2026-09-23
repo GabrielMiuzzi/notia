@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
   getSessionAiApiKey,
+  subscribeSessionAiApiKey,
   normalizeAiSettingsInput,
   type AiPreferences,
 } from '../../../services/preferences/aiSettingsStorage'
@@ -55,6 +56,8 @@ export function useLibraryConfigSync({
   setContexts,
 }: UseLibraryConfigSyncParams): boolean {
   const [isLibraryConfigReady, setIsLibraryConfigReady] = useState(false)
+  // The credential is kept out of Redux; this makes a key change rewrite the config.
+  const sessionApiKey = useSyncExternalStore(subscribeSessionAiApiKey, getSessionAiApiKey)
   const libraryConfigLoadedRef = useRef(false)
   const initialConfigRef = useRef<NotiaLibraryConfig | null>(null)
   const libraryConfigTimeoutRef = useRef<number | null>(null)
@@ -198,7 +201,7 @@ export function useLibraryConfigSync({
       inkMath: inkMathPreferences,
       ia: {
         ...aiPreferences,
-        apiKey: getSessionAiApiKey(),
+        apiKey: sessionApiKey,
       },
       telegram: telegramPreferences,
       contexts: normalizeLibraryContexts(contexts),
@@ -232,7 +235,7 @@ export function useLibraryConfigSync({
         libraryConfigTimeoutRef.current = null
       }
     }
-  }, [activeLibrary, aiPreferences, contexts, explorerRefreshIntervalMs, inkMathPreferences, taskManagerPublicationPreferences, telegramPreferences])
+  }, [activeLibrary, aiPreferences, contexts, explorerRefreshIntervalMs, inkMathPreferences, sessionApiKey, taskManagerPublicationPreferences, telegramPreferences])
 
   useEffect(() => {
     saveExplorerRefreshIntervalMs(explorerRefreshIntervalMs)

@@ -264,7 +264,7 @@ El chat principal, los chats desplegables, Meeting, Telegram y la publicación u
 - Telegram autoriza inicialmente el corpus legible completo de la biblioteca y no hereda el módulo activo de la interfaz: sus consultas pueden combinar documentos, tickets de Task Manager y datos financieros.
 - El compositor admite dictado y adjuntos de audio mediante ASR/STT; Qwen3-TTS permanece disponible para superficies que lo integren, pero los chats no exponen un modo llamada ni leen automáticamente las respuestas. La sección **Configuraciones → Voz** concentra las opciones de transcripción y síntesis disponibles.
 - Cuando el agente necesita una aclaración abierta, muestra la pregunta dentro del hilo y pausa la ejecución. La respuesta escrita en el compositor reanuda la misma consulta; también puede cancelarse mientras espera.
-- Cada librería puede mantener prompts Markdown alternativos en `.agent/promps/`. La carpeta `.agent` es visible y editable desde el explorador de Notia, aunque las demás carpetas ocultas continúan excluidas. `default.md` se crea o sobrescribe para mostrar exactamente el prompt default embebido, pero no es la fuente de ejecución: la opción **default** siempre usa el prompt del sistema. Los prompts alternativos `.md` se cargan únicamente cuando se seleccionan de forma explícita y nunca se sobrescriben durante esta sincronización. El chat lateral muestra el selector superior con `default` y cada archivo adicional —usando su nombre sin `.md`—, recuerda la elección por librería y vuelve al prompt del sistema si el alternativo no puede leerse o está vacío.
+- Cada librería puede mantener prompts Markdown alternativos en `.agent/promps/`. La carpeta `.agent` es visible y editable desde el explorador de Notia, aunque las demás carpetas ocultas continúan excluidas. `default.md` se crea o sobrescribe para mostrar exactamente el prompt default embebido, pero no es la fuente de ejecución: la opción **default** siempre usa el prompt del sistema. Los prompts alternativos `.md` se cargan únicamente cuando se seleccionan de forma explícita y nunca se sobrescriben durante esta sincronización. El chat lateral muestra el selector superior con `default` y cada archivo adicional —usando su nombre sin `.md`—, recuerda la elección en este dispositivo y vuelve al prompt del sistema si el alternativo no puede leerse o está vacío.
 - El selector **Adjuntar archivo → Seleccionar archivo** permite elegir varios archivos locales a la vez. Notia los conserva juntos en el compositor, muestra un chip por archivo y permite quitar cada uno individualmente antes de enviar la consulta. Cuando hay muchos adjuntos, se muestran dentro de un bloque compacto con desplazamiento propio para mantener visible el campo de mensaje. Al enviar, los adjuntos quedan asociados al mensaje de usuario, se conservan al guardar el historial del chat y se rehidratan al volver a cargarlo; sus nombres aparecen en el hilo y pueden reutilizarse en consultas posteriores dentro del contexto conservado.
 - La IA mantiene **memoria persistente** en `.agent/memory/memory.md` para las superficies persistentes: extrae hechos, preferencias y datos personales de la conversación para personalizar respuestas futuras. Meeting, Graph View, Multichat y las superficies publicadas no cargan ni escriben esa memoria. Telegram la carga y puede guardarla cuando el vínculo autorizado corresponde al Owner; para cualquier otro usuario usa `persistencePolicy: 'ephemeral-no-memory'`, no carga ni persiste memoria y filtra las rutas bajo `.agent/memory/` de sus documentos y tools. Multichat tampoco guarda el historial de su sala.
 - Soporte para modelos multimodales: enviá una o varias imágenes (capturas, fotos) para que la IA las analice (requiere modelo con soporte de visión). En el chat lateral de un `.md`, podés adjuntarlas junto con PDF o texto y pedir **"Insertá esto en el documento"**: la IA conserva el orden, transcribe el contenido respetando párrafos, listas y encabezados, convierte las fórmulas en bloques LaTeX `$$...$$`, muestra una vista previa con confirmación y actualiza la nota abierta.
@@ -303,7 +303,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 - **Tareas con subtareas**: cada tarea puede tener subtareas anidadas mediante wikilinks.
 - **Estados**: pendiente, en progreso, completada, cancelada.
 - **Prioridad**: alta, media, baja.
-- **Comentarios**: discusión y notas adjuntas a cada tarea.
+- **Comentarios**: discusión y notas adjuntas a cada tarea. Cada comentario se agrega al final del ticket como `## Comentario - DD/MM/YYYY HH:MM - Autor`, con la hora local y el nombre del usuario, y el texto debajo. La tarjeta muestra el detalle seguido de los comentarios.
 - **Pomodoro integrado**: temporizador de 25/5 minutos con registro histórico de sesiones y estadísticas de productividad.
 - **Persistencia transparente**: cada tarea se guarda como un archivo Markdown con metadatos (frontmatter) dentro de la carpeta del tablero correspondiente.
 - **Agente contextual**: el chat lateral conoce el panel activo de Task Manager pero no adjunta todos los tickets. Las búsquedas y lecturas quedan limitadas al tablero o panel visible; para consultar otro contexto primero hay que cambiar a ese panel. Usa RAG local para consultas generales y lee archivos completos bajo demanda mediante tool calling nativo de Ollama. Cuando recupera o lee un ticket padre, incorpora automáticamente las subtareas declaradas en `childs` y su contenido, de forma recursiva, para que la respuesta no pierda sus seguimientos.
@@ -792,6 +792,18 @@ Copyright © 2026 Gabriel. Todos los derechos reservados.
 ---
 
 **Notia** — Tu espacio de conocimiento, organizado.
+
+## Cambios del motor de la aplicación
+
+Notia ejecuta ahora toda la lógica de la aplicación en su motor nativo; la interfaz solo muestra resultados y envía tus acciones. En el uso diario esto cambia lo siguiente:
+
+- **Telegram** funciona aunque la ventana de Notia esté cerrada, y también en Android. Si le enviás al bot un PDF escaneado (sin texto), te pide fotos de las páginas.
+- **Notas editadas por el agente**: si el agente modifica una nota que tenés abierta, Notia la recarga. Si además tenías cambios sin guardar, al guardar te avisa del conflicto en lugar de pisar la versión del agente.
+- **Confirmaciones**: ya no existe la opción de aplicar automáticamente los cambios de bajo riesgo; todo cambio del agente pide confirmación. En los planes del agente se quitó **Reintentar paso fallido**; **Continuar TO-DO** y **Cancelar** siguen disponibles.
+- **Preferencias por dispositivo**: el prompt elegido del agente, las opciones de voz y la publicación de Task Manager se guardan en cada dispositivo, no en la biblioteca. Las elecciones anteriores se conservan.
+- **Publicación de Task Manager**: en Windows se vuelve a publicar sola al abrir Notia, con tema oscuro.
+- **Task Manager**: un ticket se mueve a Completadas o Canceladas solo cuando cambiás su estado; una subtarea finalizada que guardás junto a su tarea padre queda donde está. Los comentarios usan el formato con fecha, hora y autor descrito en **Task Manager**.
+- **ColdPass por Bluetooth**: la passkey de la sesión ya no queda en la interfaz. La sincronización sigue disponible solo en Linux.
 
 ## Roles, usuarios y acceso
 

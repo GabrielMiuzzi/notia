@@ -8,7 +8,7 @@
 
 Hooks, servicios y stores TypeScript pueden coordinar únicamente comportamiento visual —por ejemplo, modales, selección, foco, carga y presentación de errores—. No deben contener reglas de negocio, validaciones autoritativas, transformaciones de dominio, acceso directo a persistencia o filesystem, coordinación funcional ni fallbacks que decidan resultados. Las validaciones visuales no sustituyen las de Rust. Al modificar un flujo existente, cualquier lógica funcional detectada en React o TypeScript debe migrarse a Rust; las excepciones admisibles son locales y puramente visuales, sin efecto sobre datos, permisos ni resultados.
 
-Este cambio define la arquitectura exigida para el desarrollo, pero no migró código ni modificó comandos, DTO, persistencia, validaciones de ejecución o política de errores. Las secciones de este documento que describen lógica o fallbacks funcionales TypeScript continúan registrando el estado real heredado y señalan deuda técnica frente a esta frontera; no implican una excepción autorizada ni permiten afirmar que la migración completa ya terminó.
+Este cambio define la arquitectura exigida para el desarrollo, pero no migró código ni modificó comandos, DTO, persistencia, validaciones de ejecución o política de errores. Las secciones de este documento que describen lógica o fallbacks funcionales TypeScript continúan registrando el estado real heredado y señalan deuda técnica frente a esta frontera; no implican una excepción autorizada ni permiten afirmar que la migración completa ya terminó. La migración posterior de los flujos del runtime se describe en «Estado sincronizado de esta iteración: runtime de aplicación en Rust y correcciones del store de Task Manager».
 
 ### Validación y pendientes
 
@@ -16,6 +16,68 @@ Este cambio define la arquitectura exigida para el desarrollo, pero no migró c�
 - `git diff --no-index --check -- NUL CLAUDE.md`: aprobado; únicamente informó el warning de conversión LF/CRLF.
 - No se ejecutaron tests ni builds porque la intervención solo cambia reglas y documentación.
 - Queda pendiente migrar y validar cada flujo heredado que aún conserve lógica funcional en React o TypeScript; cada migración deberá cubrir sus contratos Rust, errores, límites y regresiones en Windows y Android. No se verificó en esta iteración que el runtime completo funcione sin React/WebView ni que se hayan eliminado todos los fallbacks funcionales del frontend.
+
+## Estado sincronizado de esta iteración: runtime de aplicación en Rust y correcciones del store de Task Manager
+
+Esta iteración implementa las Fases 0 a 11 del plan de migración: el runtime de la aplicación pasa al backend Rust y React queda como cáscara visual que envía intents y representa resultados. Donde las secciones anteriores de este documento describen lógica, persistencia o coordinación en TypeScript para los flujos listados abajo, esta sección las reemplaza; en particular quedan superadas las descripciones de `useTelegramAgentBridge`, `chatScopedAgentRuntime.ts`, la ejecución de tools en `aiRuntime.ts`, los journals TypeScript de operaciones, la preferencia `notia:ai-auto-apply-low-risk:v1` y los checkpoints de Telegram en `localStorage`.
+
+### Agente y chat
+
+- **Ejecución:** en Windows y Android todo chat con agente se ejecuta con `run_backend_request` (sobres `Run`/`Resume`); `runNotiaChatReply` rechaza ejecutar tools en el WebView. Una operación pausada devuelve una `PendingInteraction` (aclaración, confirmación o plan) y se reanuda con un `ResumeDecision`. `chatScopedAgentRuntime.ts`, los motores TypeScript de tools y sus pruebas se eliminaron.
+- **Workspace `.agent`:** `agent_workspace.rs` y `backend-core/src/agent_workspace.rs` crean carpetas, reglas y memoria, migran la memoria heredada una sola vez con backup, sincronizan `default.md` y listan prompts desde el inventario. Las reglas se escriben dentro del bloque de reglas de IA y la memoria mantiene un máximo de 100 ítems. Comandos: `backend_agent_prompts`, `backend_agent_prompt`, `backend_select_agent_prompt`, `backend_agent_memories`, `backend_save_agent_memories`, `backend_agent_rules`, `backend_save_agent_rules`, `backend_append_agent_rule`.
+- **Historial de chats:** `chat_history.rs` y `backend-core/src/chat_history.rs` parsean y serializan el documento del chat, agregan mensajes (con reescritura completa si el append falla por una edición externa) y generan previews de imágenes. Comandos: `backend_ensure_chat_structure`, `backend_create_chat`, `backend_load_chat`, `backend_save_chat`, `backend_append_chat`, `backend_chat_image_previews`, `backend_classify_chat_file`.
+- **Adjuntos:** `backend-core/src/chat_attachments.rs` clasifica y valida los adjuntos y compone el mensaje para el modelo; `BackendMessage.attachments` forma parte del contrato. El WebView sigue rasterizando PDFs con pdf.js porque Rust no tiene renderizador PDF.
+- **Título y aprendizaje:** `backend_title_chat` y `backend_learn_from_turn` (`agent_knowledge.rs`) generan el título del chat y las memorias de un turno.
+- **Historial y aclaraciones pendientes:** `agent_history.rs` guarda el historial y el diff de las operaciones del agente en `app_data/agent-history/<clave>.json`; `agent_pending.rs` guarda la aclaración pendiente en `app_data/agent-pending/<clave>.json`. Comandos: `backend_agent_history`, `backend_agent_history_diff`, `backend_save_pending_clarification`, `backend_pending_clarification`, `backend_clear_pending_clarification`, `backend_answer_pending_clarification`.
+- **Voz:** `backend-core/src/speech_text.rs` prepara el texto que lee el TTS (`qwen3_tts_speech_plan`); `backend-core/src/remote_audio.rs` valida fragmentos de audio para un futuro cliente remoto.
+
+### Finanzas
+
+- `create_finance_transaction` resuelve cuentas y categorías por nombre (`finance_agent_inputs.rs`), no duplica un movimiento con la misma referencia de origen, marca la ocurrencia del servicio pagado y, si el guardado falla con un error de almacenamiento, verifica si el movimiento quedó registrado antes de informar.
+- `backend-core/src/finance_answer.rs` compara la respuesta final del agente con los hechos del turno y corrige respuestas que afirman escrituras que no ocurrieron.
+- Vistas calculadas en Rust (`finance_views.rs`): `finance_period_summary`, `finance_relation_audit`, `finance_validate_purchase`, `finance_preview_card_services`, `finance_salary_draft`. Proveedores externos (`services/finance_external.rs`): `finance_dollar_quotes`, `finance_inflation_indices`, `finance_historical_dollar_quotes`. Se eliminaron los motores TypeScript equivalentes.
+
+### Telegram
+
+- `telegram_worker.rs` supervisa un worker Rust por biblioteca y bot que hace el polling y ejecuta el agente sin React ni ventana abierta, también en Android. Implementa vinculación, cola, `/reanudar`, confirmaciones, aclaraciones y planes mediante `Resume`, edición del mensaje de progreso y reenvío como texto plano si Telegram rechaza el HTML.
+- El estado se persiste en `app_data/telegram/<biblioteca>-<bot>.json`; el texto de los pedidos nunca se guarda. Tras cambiar datos de la biblioteca, el worker emite `notia://telegram-library-changed` para que la interfaz recargue.
+- `commands/telegram.rs` expone solo `check_telegram_bot`: el WebView ya no puede leer ni enviar mensajes con el token.
+- Un PDF sin texto recibido por Telegram no se rasteriza en Rust; el bot pide fotos de las páginas.
+
+### Preferencias, editor, publicación y ColdPass
+
+- **Preferencias del dispositivo:** `device_preferences.rs` guarda la publicación de Task Manager y las opciones de voz en `app_data/device-preferences.json`, con normalización en `backend-core/src/device_preferences.rs` y guardado parcial por sección (`backend_device_preferences`, `backend_save_device_preferences`). La selección de prompt se guarda en `app_data/agent-prompt-selection.json`. Ambas son por dispositivo, no por biblioteca; los valores previos de `localStorage` se migran una vez.
+- **Editor:** `WriteLibraryFileResult` devuelve `revision`; el editor guarda con `expectedRevision` y, si el agente cambió la nota mientras estaba abierta, muestra un conflicto en lugar de sobrescribirla. La nota activa se recarga después de una edición del agente. `write_library_file` y `create_library_file` verifican lo escrito releyendo el archivo.
+- **Publicación de Task Manager:** `task_manager_publication_source.rs` arma el payload desde el store Rust, las preferencias del dispositivo y la configuración, y restaura la publicación al arrancar en Windows (`backend_publish_task_manager`); la publicación restaurada usa tema oscuro.
+- **ColdPass Bluetooth:** `services/coldpass_secure_link.rs` cifra los paquetes (AES-256-CBC con PBKDF2-HMAC-SHA256) y la passkey de la sesión queda en el estado Rust. `coldpass_bluetooth_authenticate` recibe `{ challenge, passkey }` y `coldpass_bluetooth_send_message` recibe `{ message }`. El transporte sigue disponible solo en Linux.
+
+### Comportamiento retirado
+
+- La autoaplicación de cambios de bajo riesgo: los previews del backend no informan nivel de riesgo, por lo que nunca se activaba en Tauri.
+- La acción «Reintentar paso fallido» del plan: el backend no informa pasos fallidos. «Continuar TO-DO» y «Cancelar» siguen disponibles.
+
+### Store Markdown de Task Manager
+
+Correcciones en `task_manager_store.rs` detectadas con una biblioteca real:
+
+- **Archivado:** un ticket se mueve a `finished/` o `cancelled/` solo cuando su estado cambia en ese commit; un ticket archivado guardado en otra carpeta (por ejemplo, una subtarea finalizada junto a su padre) conserva su ruta. Antes, cada commit intentaba moverlo y comparaba el destino contra el contenido del origen, lo que producía `conflict` («El workspace cambió durante el commit de Task Manager») en todas las mutaciones.
+- **Traslados:** cuando un ticket se mueve, el destino se escribe siempre y se valida contra su propio contenido actual. Si ya existe un archivo con ese nombre, se usa `nombre (n).md`; nunca se sobrescribe otro archivo. Antes, un ticket trasladado con contenido idéntico podía borrarse del origen sin escribirse en el destino.
+- **Frontmatter:** los valores de texto se escriben en una sola línea, con `\n`, `\r`, `\t`, `\\` y `\"` escapados, y se leen de vuelta de forma simétrica. `detalle` se escribe vacío: el detalle vive en el cuerpo y `detalle` solo se lee en tickets heredados con cuerpo vacío. Antes, el cuerpo completo se copiaba a `detalle` sin escapar los saltos de línea; al releerlo, sus líneas se interpretaban como campos.
+- **Índices de tablero:** el nombre del tablero pasa por `safe_filename` al armar la ruta del índice, así que un nombre con separadores o prefijo de unidad no genera una ruta fuera de la biblioteca (`forbidden`, «La ruta queda fuera de la biblioteca») ni bloquea la carga.
+- **Comentarios:** se escriben como `## Comentario - DD/MM/YYYY HH:MM - Autor` seguido del texto, en hora local del dispositivo y con el nombre del usuario de la biblioteca (`library_users::library_user_names`, leído una vez por store; si no está disponible se usa el id). Al leer se aceptan ese formato, el histórico `## Comentario - DD/MM/YYYY HH:MM` (atribuido al Owner) y el bloque de metadatos `---` escrito brevemente por esta iteración, que se convierte al guardar el ticket. Un encabezado que no tiene fecha válida sigue siendo texto del ticket. Los ids de los comentarios sin metadatos se derivan del ticket, la posición, el encabezado y el texto; los comentarios no participan de la validación de revisiones.
+- **Usuarios del snapshot:** el snapshot leído incluye a los autores de los comentarios como usuarios; antes llegaba vacío y el core rechazaba la recarga de cualquier biblioteca con comentarios («El usuario no está autorizado para esta biblioteca»).
+- **Vista previa de la tarjeta:** `ticket_detail_preview` (`backend-core`) arma `detail_preview` con el detalle seguido de los comentarios en orden de creación, con el límite de 180 caracteres. Se recalcula en cada mutación que toca un ticket y al leer desde disco.
+- **Dependencia:** `chrono` pasó a dependencia general del crate Tauri para formatear la hora local también en Android.
+
+Limitación conocida: el índice de tablero se escribe en `workspace.active`; en el layout `task-mannager/` eso es la raíz del workspace, mientras que el formato anterior lo guardaba dentro de la carpeta del tablero, por lo que pueden coexistir ambos índices.
+
+### Validaciones y pendientes
+
+- `cargo check --offline --tests` en `src-tauri` y en `src-tauri/backend-core`, y el chequeo del target Android del proyecto: aprobados, con warnings preexistentes.
+- `npx tsc --noEmit -p tsconfig.app.json` y ESLint sobre los archivos TypeScript tocados: aprobados.
+- No se ejecutaron suites de pruebas, builds de release, firmas ni instalaciones. El binario de tests del crate Tauri no arranca en el entorno de desarrollo (`STATUS_ENTRYPOINT_NOT_FOUND`), así que las regresiones nuevas del store (archivado, frontmatter de varias líneas, índices con nombres inseguros, formato de comentarios) y de la vista previa quedan sin ejecutar.
+- No se probó ningún modelo de Ollama, Qwen3-ASR/TTS ni Sherpa, ni DolarApi, ArgentinaDatos o Telegram. No hay validación en Android real (SAF, permisos, suspensión) ni en red LAN para la publicación.
+- La resolución SAF sigue pendiente de validación en un dispositivo. La Fase 12 del plan (pruebas, builds y validación manual) queda a cargo de la persona usuaria.
 
 ## Estado sincronizado de esta iteración: validación separada de títulos visibles en Task Manager
 
@@ -2293,6 +2355,7 @@ La autenticación y autorización vigentes de ese flujo son las descritas en el 
 
 #### Salidas
 - Archivos `.md` individuales con YAML frontmatter (`tarea`, `estado`, `tablero`, `contexto`, `equipo`, `prioridad`, `parent`, `childs`, `tags`, `fechaFin`, `horasEstimadas`, etc.) persistidos en el filesystem.
+- Comentarios al final del cuerpo del ticket con el encabezado `## Comentario - DD/MM/YYYY HH:MM - Autor` y el texto debajo; `detalle` se escribe vacío porque el detalle vive en el cuerpo (ver la sección de esta iteración sobre el store de Task Manager).
 - Archivo `task-mannager/PomodoroLog.md` con registro histórico de sesiones Pomodoro.
 - Archivos de índice (`TaskIndex.md`, `FinishedTaskIndex.md`, `CancelledTaskIndex.md`) que listan las tareas de cada tablero.
 - Estado UI en componentes locales (`useState`), metadata compartida en `.notia-task-manager.json` y caché/preferencias locales en `taskManagerStorage.ts`.
@@ -4187,6 +4250,8 @@ graph TB
 
 ### 5.3 Storage Keys (localStorage)
 
+Las preferencias del dispositivo (publicación de Task Manager y voz) y la selección de prompt del agente ya no usan `localStorage`: viven en `app_data/device-preferences.json` y `app_data/agent-prompt-selection.json`, administrados por Rust. El historial de operaciones del agente, las aclaraciones pendientes y el estado de Telegram tampoco se guardan en el navegador.
+
 | Key | Servicio | Tipo | Descripción |
 |---|---|---|---|
 | `notia:libraries` | `libraryStorage` | JSON | Lista de librerías configuradas |
@@ -4693,6 +4758,8 @@ sequenceDiagram
 
 ## Agente de Notia por Telegram
 
+> **Actualizado:** el bot corre en el worker Rust `telegram_worker.rs`. Las referencias de esta sección a `useTelegramAgentBridge`, `notiaChatRuntime` y checkpoints en `localStorage` describen la implementación anterior; el estado vigente está en «Estado sincronizado de esta iteración: runtime de aplicación en Rust y correcciones del store de Task Manager».
+
 El agente recibe `responseFormat: 'telegram-html'` al construirse. Esa personalización del prompt exige texto plano o el subconjunto HTML admitido por Telegram y prohíbe Markdown; la respuesta final se envía con `parseMode: 'HTML'`. Este contrato es exclusivo del bridge de Telegram: los demás consumidores de `notiaChatRuntime` no establecen `responseFormat` y conservan su formato original.
 
 `ensureAgentPromptFile` también garantiza la estructura persistente `.agent/memory/rules.md` y `.agent/memory/memory.md`. Primero inspecciona el directorio para no recrear archivos existentes y solo crea los faltantes; la operación es segura ante ejecuciones repetidas y compatible con filesystem local y Android SAF.
@@ -4805,7 +4872,9 @@ Algunos modelos devuelven XML heredado en lugar del `tool_calls` nativo. `parseL
 
 Las mutaciones de Finanzas iniciadas por Telegram conservan el ciclo común: resolver cuenta/categoría, generar preview, solicitar una única confirmación visible, persistir y devolver un resultado verificable. `create_finance_purchase`, `create_finance_salary` y `create_finance_credit_card_statement` no se auto-confirman por canal; sus errores de validación, duplicados y fallos SQLite se convierten en resultados seguros y no se afirma éxito sin `ok:true` y la verificación correspondiente. La cuenta sigue siendo una aclaración obligatoria cuando el mensaje, audio o comprobante no permite inferirla de manera razonable.
 
-La integración usa long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
+> **Actualizado:** el polling, la cola, la vinculación y el estado de Telegram pasaron al worker Rust `telegram_worker.rs`, que funciona sin la ventana abierta y también en Android; `useTelegramAgentBridge` se eliminó. Ver «Estado sincronizado de esta iteración: runtime de aplicación en Rust y correcciones del store de Task Manager». El texto siguiente describe la integración anterior.
+
+La integración usaba long polling de Bot API desde `useTelegramAgentBridge`; las solicitudes HTTPS atraviesan comandos Tauri y `telegram_service.rs`, por lo que el token no forma parte de una URL construida en el WebView. La configuración es por biblioteca bajo `telegram` en `.notia/notiaConfig.json`: `enabled`, `botToken`, `authorizedPeer`, `pendingPeer` y `updateOffset`. El token está en texto plano, igual que la API key actual de Ollama, y nunca debe registrarse.
 
 Las notificaciones iniciadas en modo fire-and-forget pasan por `sendTelegramMessageBestEffort`. Si el chat ya no existe, el usuario bloqueó el bot o Telegram rechaza el envío, la promesa se captura, se registra únicamente un diagnóstico sanitizado y se devuelve `null`; no queda un `Uncaught (in promise)` ni se pierde la solicitud durable, que conserva su estado para recuperación cuando corresponde. Las operaciones que esperan una respuesta mantienen su manejo explícito de errores separado de este wrapper.
 
@@ -5074,6 +5143,8 @@ El runtime común expone `extract_document_facts` para devolver candidatos expl�
 `update_document_tags` modifica tags de frontmatter con `add`, `remove` o `replace`. `update_document_wikilink` agrega o quita un wikilink exacto entre dos documentos autorizados con el mismo ciclo de preview/confirmación/revisión/undo. `find_document_references` permite inspeccionar backlinks antes de mutar. Las tres capacidades están excluidas de Finance y del scope publicado.
 
 ### Política de autoaplicación de cambios de bajo riesgo
+
+> **Retirada:** la autoaplicación se eliminó al mover el agente a Rust, porque los previews del backend no informan nivel de riesgo. Todo cambio requiere confirmación visible. El párrafo siguiente describe el comportamiento anterior.
 
 La preferencia `notia:ai-auto-apply-low-risk:v1` se guarda por biblioteca y está desactivada por defecto. Si el usuario la activa, `ChatWorkspaceView` solo acepta automáticamente un preview de un único documento cuyo riesgo tipado sea `low`, con hunks concretos y acción `apply-all`; el preview y la validación de revisión siguen existiendo. Renombrados, borrados, operaciones multiarchivo, Task Manager y Finanzas no entran en esta excepción y mantienen confirmación visible.
 

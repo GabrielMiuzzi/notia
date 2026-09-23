@@ -1,5 +1,5 @@
 import type { AiImageAttachment, CancelableAiReplyHandle } from '../ai/aiRuntime'
-import type { AiPreferences } from '../preferences/aiSettingsStorage'
+import { resolveAiPreferencesForTransport, type AiPreferences } from '../preferences/aiSettingsStorage'
 import type { StoredChatAttachment, StoredChatMessage } from './chatDocumentStorage'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview } from '../../types/ai/agentContracts'
 import { createGlobalAiRequest, isGlobalAiChatRequest, type AiAppSurface, type GlobalAiChatRequest } from '../../types/ai/globalAiContract'
@@ -236,11 +236,13 @@ async function runBackendGlobalAiChat(
       ? `Deshice el último cambio de IA en \`${undone.path}\`.`
       : 'Deshice el último cambio de IA.'
   }
+  // Fallback only: Rust runs each request with its library's saved AI settings.
+  const transport = resolveAiPreferencesForTransport(preferences)
   await configureBackendProvider({
-    ollamaUrl: preferences.ollamaUrl,
-    model: preferences.selectedModel,
-    apiKey: preferences.apiKey,
-    think: preferences.thinkingEnabled ? preferences.thinkingLevel : false,
+    ollamaUrl: transport.ollamaUrl,
+    model: transport.selectedModel,
+    apiKey: transport.apiKey,
+    think: transport.thinkingEnabled ? transport.thinkingLevel : false,
   })
   const envelope: BackendRequestEnvelope = {
     protocolVersion: 2,

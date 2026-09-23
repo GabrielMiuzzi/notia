@@ -602,7 +602,7 @@ fn run_agent_inner(
         let should_stream = options.stream_final_response && had_tool_result;
         let provider_request = provider_request(&messages);
         let mut streamed_content = false;
-        let provider_response = call_provider_with_retry(
+        let mut provider_response = call_provider_with_retry(
             provider,
             &provider_request,
             control,
@@ -613,6 +613,24 @@ fn run_agent_inner(
             &mut event_count,
             &mut streamed_content,
         )?;
+        // The streamed round has no tools: a model that answers it empty may
+        // still need one, so the round is asked again with its tools.
+        if should_stream
+            && provider_response.message.content.trim().is_empty()
+            && provider_response.message.tool_calls.is_empty()
+        {
+            provider_response = call_provider_with_retry(
+                provider,
+                &provider_request,
+                control,
+                options.max_provider_retries,
+                false,
+                events,
+                options,
+                &mut event_count,
+                &mut streamed_content,
+            )?;
+        }
         let provider_message = provider_response.message;
         let content = provider_message.content.trim().to_string();
         let calls = provider_message

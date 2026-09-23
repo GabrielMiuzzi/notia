@@ -109,3 +109,4 @@
 [2026-09-20 23:01:46 -03:00] Se conservaron en la LRU las URI SAF devueltas al crear directorios y archivos para resolver operaciones inmediatas.
 [2026-09-22 03:45:00 -03:00] Se integraron las mutaciones de la UI embebida de Task Manager con el backend Rust en desktop, conservando fallback explícito para Android/vaults sin identidad y validación de identidad Owner.
 [2026-09-22 18:07:32 -03:00] Se estableció Rust como única capa de lógica de aplicación y React como cáscara visual limitada a contratos explícitos del backend.
+[2026-09-23 02:35:04 -03:00] Se movió el runtime de la aplicación (agente, chats, Finanzas, Telegram, preferencias, historial y publicación de Task Manager) a Rust y se corrigieron en el store de Task Manager los conflictos de archivado, el frontmatter de varias líneas, los índices con nombres inseguros, el formato de comentarios y la vista previa de las tarjetas.
