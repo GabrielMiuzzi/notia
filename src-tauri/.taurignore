@@ -1,4 +1,4 @@
-# IDE Gradle imports also build Android examples inside vendor/llama.cpp.
+# Gradle and native build caches of the Android project and vendored sources.
 # Match caches at any depth; keep source files and Gradle scripts watched.
 **/.gradle/
 **/.kotlin/

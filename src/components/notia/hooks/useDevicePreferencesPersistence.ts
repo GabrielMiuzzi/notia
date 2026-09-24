@@ -11,7 +11,7 @@ export function useDevicePreferencesPersistence(): void {
   const dispatch = useAppDispatch()
   const loaded = useAppSelector((state) => state.preferences.devicePreferencesLoaded)
   const taskManagerPublication = useAppSelector((state) => state.preferences.taskManagerPublicationPreferences)
-  const qwen3Asr = useAppSelector((state) => state.preferences.qwen3AsrSettings)
+  const speechRecognition = useAppSelector((state) => state.preferences.speechRecognitionSettings)
   const qwen3Tts = useAppSelector((state) => state.preferences.qwen3TtsSettings)
   const skipNextSaveRef = useRef(true)
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
@@ -37,7 +37,7 @@ export function useDevicePreferencesPersistence(): void {
     }
     saveQueueRef.current = saveQueueRef.current
       .catch(() => undefined)
-      .then(() => saveDevicePreferences({ taskManagerPublication, qwen3Asr, qwen3Tts }))
+      .then(() => saveDevicePreferences({ taskManagerPublication, speechRecognition, qwen3Tts }))
       .catch(() => undefined)
-  }, [loaded, qwen3Asr, qwen3Tts, taskManagerPublication])
+  }, [loaded, qwen3Tts, speechRecognition, taskManagerPublication])
 }

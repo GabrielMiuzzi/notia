@@ -12,7 +12,6 @@ use crate::host::{AppHandle, Manager};
 
 const MODEL_MANIFEST_JSON: &str = include_str!("../../../resources/speech/model-manifest.json");
 const MODEL_DIRECTORY_NAME: &str = "speech-models";
-pub const PARAKEET_MODEL: &str = "parakeet-v3";
 const PARAKEET_PROFILE_ID: &str = "es-parakeet-tdt-v3";
 static MODEL_HASH_CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedModelHash>>> =
     OnceLock::new();
@@ -64,10 +63,6 @@ pub struct ResolvedDiarizationModel {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum SpeechAsrConfig {
-    Qwen3Asr {
-        model: String,
-        mmproj: String,
-    },
     OfflineNemoTransducer {
         encoder: String,
         decoder: String,
@@ -139,30 +134,9 @@ fn profile_models_root<'a>(roots: &'a [PathBuf], profile: &SpeechModelProfile) -
         .map_or(Path::new(""), PathBuf::as_path)
 }
 
-/// Valid values of the `model` preference: Parakeet or a Qwen3-ASR size.
-pub fn is_supported_asr_model(model: &str) -> bool {
-    matches!(model, PARAKEET_MODEL | "0.6b" | "1.7b")
-}
-
+/// The Parakeet profile, the only speech recognition model.
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub fn resolve_asr_model(
-    app: &AppHandle,
-    model: &str,
-    language: &str,
-    device: &str,
-) -> Result<crate::services::asr_recognizer::AsrModelConfig, String> {
-    use crate::services::asr_recognizer::AsrModelConfig;
-    match model {
-        PARAKEET_MODEL => resolve_parakeet_model(app, language).map(AsrModelConfig::Parakeet),
-        "0.6b" | "1.7b" => {
-            resolve_qwen3_asr_model(app, model, language, device).map(AsrModelConfig::Qwen3)
-        }
-        _ => Err("El modelo de reconocimiento de voz seleccionado no es válido.".to_string()),
-    }
-}
-
-#[cfg(any(target_os = "windows", target_os = "android"))]
-fn resolve_parakeet_model(
     app: &AppHandle,
     language: &str,
 ) -> Result<crate::services::sherpa_offline::OfflineNemoTransducerConfig, String> {
@@ -216,37 +190,6 @@ fn verified_profile_root(app: &AppHandle, profile: &SpeechModelProfile) -> Resul
         ));
     }
     Ok(models_root.join(&profile.profile_id))
-}
-
-#[cfg(any(target_os = "windows", target_os = "android"))]
-fn resolve_qwen3_asr_model(
-    app: &AppHandle,
-    model_size: &str,
-    language: &str,
-    device: &str,
-) -> Result<crate::services::qwen3_asr_service::Qwen3AsrModelConfig, String> {
-    let manifest = parse_manifest()?;
-    let profile = manifest
-        .profiles
-        .iter()
-        .find(|profile| {
-            profile.profile_id == format!("qwen3-asr-{model_size}-q8") && profile.asr.is_some()
-        })
-        .ok_or_else(|| format!("No hay un modelo Qwen3-ASR {model_size} configurado."))?;
-    let profile_root = verified_profile_root(app, profile)?;
-    let (model, mmproj) = match profile.asr.as_ref() {
-        Some(SpeechAsrConfig::Qwen3Asr { model, mmproj }) => (model, mmproj),
-        Some(SpeechAsrConfig::OfflineNemoTransducer { .. }) => {
-            return Err("El perfil seleccionado no es un modelo Qwen3-ASR.".to_string())
-        }
-        None => return Err("El perfil seleccionado no declara un modelo ASR.".to_string()),
-    };
-    Ok(crate::services::qwen3_asr_service::Qwen3AsrModelConfig {
-        model: resolve_verified_role_path(&profile_root, model)?,
-        mmproj: resolve_verified_role_path(&profile_root, mmproj)?,
-        language: language.to_string(),
-        use_gpu: device == "gpu",
-    })
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -399,18 +342,15 @@ fn validate_asr_roles(
     config: &SpeechAsrConfig,
     declared_paths: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
-    let roles: Vec<&String> = match config {
-        SpeechAsrConfig::Qwen3Asr { model, mmproj } => vec![model, mmproj],
-        SpeechAsrConfig::OfflineNemoTransducer {
-            encoder,
-            decoder,
-            joiner,
-            tokens,
-            vad,
-        } => vec![encoder, decoder, joiner, tokens, vad],
-    };
+    let SpeechAsrConfig::OfflineNemoTransducer {
+        encoder,
+        decoder,
+        joiner,
+        tokens,
+        vad,
+    } = config;
     let mut unique_roles = std::collections::HashSet::new();
-    for path in roles {
+    for path in [encoder, decoder, joiner, tokens, vad] {
         validate_relative_path(path)?;
         if !declared_paths.contains(path.as_str()) {
             return Err(format!(

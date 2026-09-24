@@ -6,5 +6,5 @@ export const selectInkMathPreferences = (state: RootState) => state.preferences.
 export const selectExplorerRefreshIntervalMs = (state: RootState) => state.preferences.explorerRefreshIntervalMs
 export const selectTelegramSettings = (state: RootState) => state.preferences.telegramSettings
 export const selectQwen3TtsSettings = (state: RootState) => state.preferences.qwen3TtsSettings
-export const selectQwen3AsrSettings = (state: RootState) => state.preferences.qwen3AsrSettings
+export const selectSpeechRecognitionSettings = (state: RootState) => state.preferences.speechRecognitionSettings
 export const selectTaskManagerPublicationPreferences = (state: RootState) => state.preferences.taskManagerPublicationPreferences

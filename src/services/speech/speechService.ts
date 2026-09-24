@@ -13,7 +13,7 @@ import type {
   StartSpeechSessionInput,
   StartSpeechSessionResult,
 } from './speechTypes'
-import type { Qwen3AsrPreferences } from '../preferences/qwen3AsrSettingsStorage'
+import type { SpeechRecognitionPreferences } from '../preferences/speechRecognitionSettingsStorage'
 
 const SPEECH_STATE_EVENT = 'speech://state'
 const SPEECH_PARTIAL_EVENT = 'speech://partial'
@@ -161,8 +161,8 @@ export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
   return parseSpeechCapabilities(await callBackend<unknown>('get_speech_capabilities'))
 }
 
-export async function prepareSpeechModel(preferences: Qwen3AsrPreferences): Promise<void> {
-  const key = `${preferences.model}:${preferences.device}:${preferences.language.trim().toLowerCase()}`
+export async function prepareSpeechModel(preferences: SpeechRecognitionPreferences): Promise<void> {
+  const key = preferences.language.trim().toLowerCase()
   if (preparedModelKey === key) return
   if (pendingModelPreparation) {
     if (pendingModelKey === key) return pendingModelPreparation
@@ -171,8 +171,6 @@ export async function prepareSpeechModel(preferences: Qwen3AsrPreferences): Prom
   }
   const preparation = callBackend<void>('prepare_speech_model', {
     payload: {
-      model: preferences.model,
-      device: preferences.device,
       language: preferences.language,
     },
   })

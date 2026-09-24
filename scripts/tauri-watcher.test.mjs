@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
-test('Tauri ignore rules cover Gradle artifacts in the app and vendored Android examples', () => {
+test('Tauri ignore rules cover Gradle and native build artifacts at any depth', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'notia-watcher-test-'))
   try {
     execFileSync('git', ['init', '--quiet', directory])
@@ -15,12 +15,11 @@ test('Tauri ignore rules cover Gradle artifacts in the app and vendored Android 
       'gen/android/build/',
       'gen/android/buildSrc/.gradle/8.14.3/executionHistory/executionHistory.lock',
       'gen/android/app/build/intermediates/output.bin',
-      'vendor/llama.cpp/examples/llama.android/.gradle/8.14.3/fileHashes/fileHashes.lock',
-      'vendor/llama.cpp/examples/llama.android/.gradle/8.14.3/fileChanges/last-build.bin',
-      'vendor/llama.cpp/examples/llama.android/app/build/',
-      'vendor/llama.cpp/examples/llama.android/lib/.cxx/cache.bin',
-      'vendor/llama.cpp/examples/llama.android/.kotlin/session.bin',
-      'vendor/llama.cpp/examples/llama.android/lib/.externalNativeBuild/output.bin',
+      'gen/android/.kotlin/session.bin',
+      'gen/android/app/.cxx/cache.bin',
+      'gen/android/app/.externalNativeBuild/output.bin',
+      'vendor/qwen3-tts.cpp/build/',
+      'vendor/qwen3-tts.cpp/ggml/build/bin/ggml.dll',
     ]
     const watched = [
       'src/lib.rs', 'build.rs', 'Cargo.toml', 'tauri.conf.json',
@@ -28,9 +27,8 @@ test('Tauri ignore rules cover Gradle artifacts in the app and vendored Android 
       'gen/android/app/src/main/AndroidManifest.xml',
       'gen/android/app/src/main/java/com/gabriel/notia/LibraryDatabasePlugin.kt',
       'gen/android/app/src/main/java/com/gabriel/notia/AiBridgePlugin.kt',
-      'vendor/llama.cpp/examples/llama.android/build.gradle.kts',
-      'vendor/llama.cpp/examples/llama.android/lib/src/main/cpp/llama-android.cpp',
-      'vendor/llama.cpp/src/llama.cpp',
+      'vendor/qwen3-tts.cpp/CMakeLists.txt',
+      'vendor/qwen3-tts.cpp/src/gguf_loader.cpp',
     ]
     // Tauri specifies gitignore syntax; live watcher verification complements this contract test.
     const actual = execFileSync('git', [

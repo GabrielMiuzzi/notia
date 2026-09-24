@@ -1,4 +1,3 @@
-import type { Qwen3AsrDevice, Qwen3AsrModel } from '../preferences/qwen3AsrSettingsStorage'
 
 export type SpeechPermissionState = 'granted' | 'denied' | 'prompt' | 'unavailable'
 
@@ -76,8 +75,6 @@ export interface SpeechSegmentsEvent {
 
 export interface StartSpeechSessionInput {
   language: string
-  model: Qwen3AsrModel
-  device: Qwen3AsrDevice
   diarizationEnabled: boolean
   maxDurationSeconds: number
   captureSystemAudio?: boolean

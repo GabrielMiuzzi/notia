@@ -22,10 +22,9 @@ import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
-import { selectQwen3AsrSettings, selectQwen3TtsSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
-import { setQwen3AsrSettings, setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
+import { selectQwen3TtsSettings, selectSpeechRecognitionSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
+import { setQwen3TtsSettings, setSpeechRecognitionSettings } from '../../features/preferences/preferencesSlice'
 import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
-import type { Qwen3AsrModel } from '../../services/preferences/qwen3AsrSettingsStorage'
 import { checkQwen3TtsConnection, getQwen3TtsStatus, reloadQwen3Tts } from '../../services/qwen3Tts/qwen3TtsRuntime'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import { clearAllFinanceData } from '../../modules/finance/services/financeService'
@@ -120,7 +119,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const dispatch = useAppDispatch()
   const qwen3TtsPreferences = useAppSelector(selectQwen3TtsSettings)
-  const qwen3AsrPreferences = useAppSelector(selectQwen3AsrSettings)
+  const speechRecognitionPreferences = useAppSelector(selectSpeechRecognitionSettings)
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const appTheme = useAppSelector(selectTheme)
   const [qwen3TtsStatus, setQwen3TtsStatus] = useState('Consultando el runtime local...')
@@ -1210,43 +1209,17 @@ export function SettingsModal({
             <>
             <div className="notia-settings-card">
               <div className="notia-settings-card-label">Reconocimiento de voz</div>
-              <div className="notia-settings-card-value">{qwen3AsrPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
+              <div className="notia-settings-card-value">{speechRecognitionPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
               <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                {qwen3AsrPreferences.model === 'parakeet-v3'
-                  ? 'Parakeet TDT en CPU mediante sherpa-onnx. Detecta el idioma automáticamente.'
-                  : 'Reconocimiento local GGUF mediante llama.cpp.'}
+                Parakeet TDT 0.6B v3 en CPU mediante sherpa-onnx. Detecta el idioma automáticamente.
               </div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Modelo</div>
-              <NotiaSelectMenu
-                className="notia-settings-input"
-                ariaLabel="Modelo de reconocimiento de voz"
-                value={qwen3AsrPreferences.model}
-                options={[
-                  { value: 'parakeet-v3', label: 'Parakeet TDT 0.6B v3 (rápido)' },
-                  { value: '0.6b', label: 'Qwen3-ASR 0.6B Q8' },
-                  { value: '1.7b', label: 'Qwen3-ASR 1.7B Q8' },
-                ]}
-                onChange={(value) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, model: value as Qwen3AsrModel }))}
-              />
-              {qwen3AsrPreferences.model !== 'parakeet-v3' ? (
-                <>
-                  <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
-                  <NotiaSelectMenu
-                    className="notia-settings-input"
-                    ariaLabel="Dispositivo de Qwen3-ASR"
-                    value={qwen3AsrPreferences.device}
-                    options={[{ value: 'cpu', label: 'CPU' }, { value: 'gpu', label: 'GPU (Vulkan)' }]}
-                    onChange={(value) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, device: value as 'cpu' | 'gpu' }))}
-                  />
-                </>
-              ) : null}
               <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
-              <input className="notia-settings-input" aria-label="Idioma del reconocimiento de voz" value={qwen3AsrPreferences.language}
-                onChange={(event) => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, language: event.target.value }))} />
+              <input className="notia-settings-input" aria-label="Idioma del reconocimiento de voz" value={speechRecognitionPreferences.language}
+                onChange={(event) => dispatch(setSpeechRecognitionSettings({ ...speechRecognitionPreferences, language: event.target.value }))} />
               <div className="notia-settings-actions">
-                <NotiaButton variant={qwen3AsrPreferences.enabled ? 'primary' : 'secondary'}
-                  onClick={() => dispatch(setQwen3AsrSettings({ ...qwen3AsrPreferences, enabled: !qwen3AsrPreferences.enabled }))}>
-                  {qwen3AsrPreferences.enabled ? 'Desactivar' : 'Activar'}
+                <NotiaButton variant={speechRecognitionPreferences.enabled ? 'primary' : 'secondary'}
+                  onClick={() => dispatch(setSpeechRecognitionSettings({ ...speechRecognitionPreferences, enabled: !speechRecognitionPreferences.enabled }))}>
+                  {speechRecognitionPreferences.enabled ? 'Desactivar' : 'Activar'}
                 </NotiaButton>
               </div>
             </div>

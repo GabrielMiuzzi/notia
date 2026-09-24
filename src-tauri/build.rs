@@ -146,12 +146,6 @@ fn validate_bundled_speech_models() {
         parakeet.join("tokens.txt"),
         parakeet.join("silero_vad.onnx"),
         models
-            .join("qwen3-asr-0.6b-q8")
-            .join("Qwen3-ASR-0.6B-Q8_0.gguf"),
-        models
-            .join("qwen3-asr-0.6b-q8")
-            .join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"),
-        models
             .join("speaker-diarization-v1")
             .join("segmentation.onnx"),
         models.join("speaker-diarization-v1").join("embedding.onnx"),
@@ -285,34 +279,6 @@ fn prepare_android_speech_runtime() {
                     .expect("Qwen3-TTS library without filename");
                 std::fs::copy(&source, destination_dir.join(file_name))
                     .expect("failed to copy an Android Qwen3-TTS library");
-            }
-        }
-    }
-    let qwen_asr_runtime_dir = manifest_dir
-        .join("resources")
-        .join("qwen3-asr")
-        .join("runtime")
-        .join("android-arm64-v8a");
-    if qwen_asr_runtime_dir.is_dir() {
-        let destination_dir = generated_app
-            .join("src")
-            .join("main")
-            .join("jniLibs")
-            .join("arm64-v8a");
-        std::fs::create_dir_all(&destination_dir)
-            .expect("failed to create the Android Qwen3-ASR native library directory");
-        for entry in std::fs::read_dir(qwen_asr_runtime_dir)
-            .expect("failed to list Android Qwen3-ASR libraries")
-        {
-            let source = entry
-                .expect("failed to read Qwen3-ASR library entry")
-                .path();
-            if source.extension().and_then(|value| value.to_str()) == Some("so") {
-                let file_name = source
-                    .file_name()
-                    .expect("Qwen3-ASR library without filename");
-                std::fs::copy(&source, destination_dir.join(file_name))
-                    .expect("failed to copy an Android Qwen3-ASR library");
             }
         }
     }

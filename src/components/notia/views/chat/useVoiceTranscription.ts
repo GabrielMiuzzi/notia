@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppSelector } from '../../../../store/hooks'
-import { selectQwen3AsrSettings } from '../../../../features/preferences/preferencesSelectors'
+import { selectSpeechRecognitionSettings } from '../../../../features/preferences/preferencesSelectors'
 import {
   cancelSpeechSession,
   consumeSpeechTurn,
@@ -54,7 +54,7 @@ export function stabilizePartialTranscript(previous: string, next: string): stri
 }
 
 function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, maxDurationSeconds = 900, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
-  const qwen3Asr = useAppSelector(selectQwen3AsrSettings)
+  const speechRecognition = useAppSelector(selectSpeechRecognitionSettings)
   // The backend preloads the saved model at startup; asking before the saved
   // preferences arrive would prepare the default model instead.
   const devicePreferencesLoaded = useAppSelector((appState) => appState.preferences.devicePreferencesLoaded)
@@ -82,16 +82,16 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
   useEffect(() => {
     setIsModelReady(false)
     setModelPreparationError(null)
-  }, [qwen3Asr])
+  }, [speechRecognition])
 
   useEffect(() => {
     let current = true
-    if (!devicePreferencesLoaded || !qwen3Asr.enabled) {
+    if (!devicePreferencesLoaded || !speechRecognition.enabled) {
       setIsModelReady(false)
       return () => { current = false }
     }
 
-    void prepareSpeechModel(qwen3Asr).then(() => {
+    void prepareSpeechModel(speechRecognition).then(() => {
       if (!current) return
       setIsModelReady(true)
       setModelPreparationError(null)
@@ -102,7 +102,7 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
     })
 
     return () => { current = false }
-  }, [devicePreferencesLoaded, qwen3Asr])
+  }, [devicePreferencesLoaded, speechRecognition])
 
   useEffect(() => {
     let current = true
@@ -240,7 +240,7 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
   }, [state.status])
 
   const start = useCallback(async () => {
-    if (!qwen3Asr.enabled) {
+    if (!speechRecognition.enabled) {
       setState({
         status: 'error',
         error: {
@@ -252,7 +252,7 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
     }
     setState({ status: 'preparing' })
     try {
-      await prepareSpeechModel(qwen3Asr)
+      await prepareSpeechModel(speechRecognition)
       setIsModelReady(true)
       setModelPreparationError(null)
     } catch (error) {
@@ -340,9 +340,7 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
     setState({ status: 'preparing' })
     try {
       const result = await startSpeechSession({
-        language: qwen3Asr.language,
-        model: qwen3Asr.model,
-        device: qwen3Asr.device,
+        language: speechRecognition.language,
         diarizationEnabled: !continuousSession,
         maxDurationSeconds,
         captureSystemAudio,
@@ -361,7 +359,7 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
       setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
-  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, maxDurationSeconds, qwen3Asr])
+  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, maxDurationSeconds, speechRecognition])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current

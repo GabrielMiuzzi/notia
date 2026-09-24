@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 use crate::host::{AppHandle, Emitter, Manager};
+#[cfg(any(target_os = "windows", target_os = "android"))]
+use crate::services::sherpa_offline::{OfflineNemoTransducerConfig, OfflineVadRecognizer};
 
 pub const MAX_SPEECH_SESSION_SECONDS: u32 = 12 * 60 * 60;
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -17,8 +19,7 @@ const DIARIZATION_CHUNK_SAMPLES: usize = 16_000 * 15 * 60;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 const GLOBAL_SPEAKER_MATCH_THRESHOLD: f32 = 0.72;
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub(crate) type PreloadedRecognizer =
-    Arc<StdMutex<Option<crate::services::asr_recognizer::AsrRecognizer>>>;
+pub(crate) type PreloadedRecognizer = Arc<StdMutex<Option<OfflineVadRecognizer>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechPhase {
@@ -67,7 +68,7 @@ pub fn transcribe_external_audio(
         .take()
     {
         Some(recognizer) if recognizer.matches(&model) => recognizer,
-        Some(_) | None => crate::services::asr_recognizer::AsrRecognizer::load(app, &model)?,
+        Some(_) | None => load_recognizer(app, &model)?,
     };
     let result = (|| {
         let mut text = String::new();
@@ -95,39 +96,36 @@ pub fn transcribe_external_audio(
     result
 }
 
-/// The recognition model selected in the device preferences, for audio that
-/// does not come from a session started by the interface.
 #[cfg(any(target_os = "windows", target_os = "android"))]
-fn preferred_asr_model(
+fn load_recognizer(
     app: &AppHandle,
-) -> Result<crate::services::asr_recognizer::AsrModelConfig, String> {
-    let selection = SavedAsrSelection::read(app);
-    crate::services::speech_model_repository::resolve_asr_model(
-        app,
-        &selection.model,
-        &selection.language,
-        &selection.device,
-    )
+    model: &OfflineNemoTransducerConfig,
+) -> Result<OfflineVadRecognizer, String> {
+    let runtime = crate::services::sherpa_runtime::resolve_platform_runtime_path(app)?;
+    OfflineVadRecognizer::load(&runtime, model)
 }
 
-/// The `qwen3Asr` device preference, already normalized by the backend.
+/// The recognition model with the saved language, for audio that does not
+/// come from a session started by the interface.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn preferred_asr_model(app: &AppHandle) -> Result<OfflineNemoTransducerConfig, String> {
+    let selection = SavedAsrSelection::read(app);
+    crate::services::speech_model_repository::resolve_asr_model(app, &selection.language)
+}
+
+/// The `speechRecognition` device preference, already normalized by the backend.
 #[cfg(any(target_os = "windows", target_os = "android"))]
 struct SavedAsrSelection {
-    model: String,
     language: String,
-    device: String,
     enabled: bool,
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
 impl SavedAsrSelection {
     fn read(app: &AppHandle) -> Self {
-        let preferences = crate::device_preferences::section(app, "qwen3Asr");
-        let field = |key: &str| preferences[key].as_str().unwrap_or_default().to_string();
+        let preferences = crate::device_preferences::section(app, "speechRecognition");
         Self {
-            model: field("model"),
-            language: field("language"),
-            device: field("device"),
+            language: preferences["language"].as_str().unwrap_or_default().to_string(),
             enabled: preferences["enabled"].as_bool() != Some(false),
         }
     }
@@ -158,10 +156,9 @@ fn preload_at_startup(app: AppHandle) {
         .name("notia-speech-preload".to_string())
         .spawn(move || {
             let started_at = Instant::now();
-            match prepare_recognizer(&app, &selection.model, &selection.language, &selection.device) {
+            match prepare_recognizer(&app, &selection.language) {
                 Ok(()) => log::info!(
-                    "[notia:speech] startup preload ready model={} elapsed_ms={}",
-                    selection.model,
+                    "[notia:speech] startup preload ready elapsed_ms={}",
                     started_at.elapsed().as_millis()
                 ),
                 Err(message) => log::warn!("[notia:speech] startup preload failed: {message}"),
@@ -207,12 +204,7 @@ impl Default for SpeechRuntimeState {
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub fn prepare_recognizer(
-    app: &AppHandle,
-    model: &str,
-    language: &str,
-    device: &str,
-) -> Result<(), String> {
+pub fn prepare_recognizer(app: &AppHandle, language: &str) -> Result<(), String> {
     let state = app.state::<SpeechRuntimeState>();
     // A request that arrives while the startup preload is loading waits here
     // and then finds the model already resident.
@@ -220,8 +212,7 @@ pub fn prepare_recognizer(
         .preparation
         .lock()
         .map_err(|_| "No se pudo coordinar la preparación del modelo de voz.".to_string())?;
-    let resolved =
-        crate::services::speech_model_repository::resolve_asr_model(app, model, language, device)?;
+    let resolved = crate::services::speech_model_repository::resolve_asr_model(app, language)?;
     {
         let cache = state
             .preloaded_recognizer
@@ -234,22 +225,17 @@ pub fn prepare_recognizer(
             return Ok(());
         }
     }
-    let recognizer = crate::services::asr_recognizer::AsrRecognizer::load(app, &resolved)?;
+    let recognizer = load_recognizer(app, &resolved)?;
     *state
         .preloaded_recognizer
         .lock()
         .map_err(|_| "No se pudo guardar el modelo precargado.".to_string())? = Some(recognizer);
-    log::info!("[notia:speech] selected offline recognizer prepared model={model}");
+    log::info!("[notia:speech] offline recognizer prepared");
     Ok(())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "android")))]
-pub fn prepare_recognizer(
-    _app: &crate::host::AppHandle,
-    _model: &str,
-    _language: &str,
-    _device: &str,
-) -> Result<(), String> {
+pub fn prepare_recognizer(_app: &crate::host::AppHandle, _language: &str) -> Result<(), String> {
     Err(not_integrated_error())
 }
 
@@ -262,7 +248,7 @@ pub fn start_platform_session(
     app: &AppHandle,
     state: &SpeechRuntimeState,
     session_id: String,
-    model: crate::services::asr_recognizer::AsrModelConfig,
+    model: OfflineNemoTransducerConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
     max_duration_seconds: u32,
     capture_system_audio: bool,
@@ -302,10 +288,7 @@ pub fn start_platform_session(
                 .filter(|recognizer| recognizer.matches(&model));
             let mut recognizer = match cached {
                 Some(recognizer) => recognizer,
-                None => crate::services::asr_recognizer::AsrRecognizer::load(
-                    &recognizer_app,
-                    &model,
-                )?,
+                None => load_recognizer(&recognizer_app, &model)?,
             };
             recognizer.enable_live_partials();
             Ok(recognizer)

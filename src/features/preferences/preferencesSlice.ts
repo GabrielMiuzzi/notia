@@ -6,7 +6,7 @@ import { loadExplorerRefreshIntervalMs, saveExplorerRefreshIntervalMs } from '..
 import type { PreferencesState } from './preferencesTypes'
 import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { DEFAULT_QWEN3_TTS_PREFERENCES, type Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
-import { DEFAULT_QWEN3_ASR_PREFERENCES, type Qwen3AsrPreferences } from '../../services/preferences/qwen3AsrSettingsStorage'
+import { DEFAULT_SPEECH_RECOGNITION_PREFERENCES, type SpeechRecognitionPreferences } from '../../services/preferences/speechRecognitionSettingsStorage'
 import { DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES, type TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { DevicePreferences } from '../../services/preferences/devicePreferencesStorage'
 
@@ -17,7 +17,7 @@ const initialState: PreferencesState = {
   explorerRefreshIntervalMs: loadExplorerRefreshIntervalMs(),
   telegramSettings: DEFAULT_TELEGRAM_PREFERENCES,
   qwen3TtsSettings: DEFAULT_QWEN3_TTS_PREFERENCES,
-  qwen3AsrSettings: DEFAULT_QWEN3_ASR_PREFERENCES,
+  speechRecognitionSettings: DEFAULT_SPEECH_RECOGNITION_PREFERENCES,
   taskManagerPublicationPreferences: DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES,
   devicePreferencesLoaded: false,
 }
@@ -54,15 +54,15 @@ const preferencesSlice = createSlice({
     setQwen3TtsSettings(state, action: PayloadAction<Qwen3TtsPreferences>) {
       state.qwen3TtsSettings = action.payload
     },
-    setQwen3AsrSettings(state, action: PayloadAction<Qwen3AsrPreferences>) {
-      state.qwen3AsrSettings = action.payload
+    setSpeechRecognitionSettings(state, action: PayloadAction<SpeechRecognitionPreferences>) {
+      state.speechRecognitionSettings = action.payload
     },
     setTaskManagerPublicationPreferences(state, action: PayloadAction<TaskManagerPublicationPreferences>) {
       state.taskManagerPublicationPreferences = action.payload
     },
     hydrateDevicePreferences(state, action: PayloadAction<DevicePreferences>) {
       state.taskManagerPublicationPreferences = action.payload.taskManagerPublication
-      state.qwen3AsrSettings = action.payload.qwen3Asr
+      state.speechRecognitionSettings = action.payload.speechRecognition
       state.qwen3TtsSettings = action.payload.qwen3Tts
       state.devicePreferencesLoaded = true
     },
@@ -77,7 +77,7 @@ export const {
   setExplorerRefreshIntervalMs,
   setTelegramSettings,
   setQwen3TtsSettings,
-  setQwen3AsrSettings,
+  setSpeechRecognitionSettings,
   setTaskManagerPublicationPreferences,
   hydrateDevicePreferences,
 } = preferencesSlice.actions

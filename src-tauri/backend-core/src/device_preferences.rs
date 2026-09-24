@@ -46,13 +46,9 @@ pub fn normalize_publication(value: &Value) -> Value {
     json!({ "publishedBoardNames": boards, "port": port, "maxClients": clients })
 }
 
-/// Speech recognition model, device, language and switch. Parakeet is the
-/// default model; the device only applies to the Qwen3-ASR sizes.
+/// Speech recognition switch and language (Parakeet is the only model).
 pub fn normalize_asr(value: &Value) -> Value {
-    let model = text(value, "model");
     json!({
-        "model": if matches!(model.as_str(), "0.6b" | "1.7b") { model.as_str() } else { "parakeet-v3" },
-        "device": if text(value, "device") == "gpu" { "gpu" } else { "cpu" },
         "enabled": value.get("enabled").and_then(Value::as_bool) != Some(false),
         "language": language(value),
     })
@@ -74,13 +70,16 @@ pub fn normalize_tts(value: &Value) -> Value {
     })
 }
 
-/// Every section normalized; missing sections take their defaults.
+/// Every section normalized; missing sections take their defaults. Older
+/// versions stored speech recognition under `qwen3Asr`; it is read until the
+/// next save writes `speechRecognition`.
 pub fn normalize_device_preferences(value: &Value) -> Value {
     let empty = Value::Object(Map::new());
     let section = |key: &str| value.get(key).unwrap_or(&empty).clone();
+    let speech_recognition = value.get("speechRecognition").or_else(|| value.get("qwen3Asr")).unwrap_or(&empty);
     json!({
         "taskManagerPublication": normalize_publication(&section("taskManagerPublication")),
-        "qwen3Asr": normalize_asr(&section("qwen3Asr")),
+        "speechRecognition": normalize_asr(speech_recognition),
         "qwen3Tts": normalize_tts(&section("qwen3Tts")),
     })
 }
@@ -100,13 +99,17 @@ mod tests {
         assert_eq!(normalized["qwen3Tts"]["speed"], 1.8);
         assert_eq!(normalized["qwen3Tts"]["pauseDetectionMs"], 600);
         assert_eq!(normalized["qwen3Tts"]["enabled"], false);
-        assert_eq!(normalized["qwen3Asr"], json!({ "model": "parakeet-v3", "device": "cpu", "enabled": true, "language": "es" }));
+        assert_eq!(normalized["speechRecognition"], json!({ "enabled": true, "language": "es" }));
     }
 
     #[test]
-    fn asr_keeps_a_chosen_qwen3_size() {
-        assert_eq!(normalize_asr(&json!({ "model": "1.7b", "device": "gpu" }))["model"], "1.7b");
-        assert_eq!(normalize_asr(&json!({ "model": "0.6b" }))["model"], "0.6b");
-        assert_eq!(normalize_asr(&json!({ "model": "whisper" }))["model"], "parakeet-v3");
+    fn speech_recognition_keeps_the_legacy_section_until_saved_again() {
+        let legacy = json!({ "qwen3Asr": { "model": "1.7b", "device": "gpu", "enabled": false, "language": "en" } });
+        let normalized = normalize_device_preferences(&legacy);
+        assert_eq!(normalized["speechRecognition"], json!({ "enabled": false, "language": "en" }));
+        assert!(normalized.get("qwen3Asr").is_none());
+
+        let both = json!({ "speechRecognition": { "language": "pt" }, "qwen3Asr": { "language": "en" } });
+        assert_eq!(normalize_device_preferences(&both)["speechRecognition"]["language"], "pt");
     }
 }

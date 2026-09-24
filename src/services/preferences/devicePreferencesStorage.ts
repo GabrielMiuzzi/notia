@@ -1,5 +1,5 @@
 import { callBackend } from '../transport'
-import { clearLegacyQwen3AsrPreferences, loadQwen3AsrPreferences, type Qwen3AsrPreferences } from './qwen3AsrSettingsStorage'
+import { clearLegacySpeechRecognitionPreferences, loadSpeechRecognitionPreferences, type SpeechRecognitionPreferences } from './speechRecognitionSettingsStorage'
 import { clearLegacyQwen3TtsPreferences, loadQwen3TtsPreferences, type Qwen3TtsPreferences } from './qwen3TtsSettingsStorage'
 import {
   clearLegacyTaskManagerPublicationPreferences,
@@ -10,7 +10,7 @@ import {
 /** Preferences of this device, stored and normalized by the backend (`device_preferences.rs`). */
 export interface DevicePreferences {
   taskManagerPublication: TaskManagerPublicationPreferences
-  qwen3Asr: Qwen3AsrPreferences
+  speechRecognition: SpeechRecognitionPreferences
   qwen3Tts: Qwen3TtsPreferences
 }
 
@@ -27,12 +27,12 @@ export async function loadDevicePreferences(): Promise<DevicePreferences> {
   const migrated = await callBackend<DevicePreferences>('backend_save_device_preferences', {
     preferences: {
       taskManagerPublication: loadTaskManagerPublicationPreferences() ?? undefined,
-      qwen3Asr: loadQwen3AsrPreferences() ?? undefined,
+      speechRecognition: loadSpeechRecognitionPreferences() ?? undefined,
       qwen3Tts: loadQwen3TtsPreferences() ?? undefined,
     },
   })
   clearLegacyTaskManagerPublicationPreferences()
-  clearLegacyQwen3AsrPreferences()
+  clearLegacySpeechRecognitionPreferences()
   clearLegacyQwen3TtsPreferences()
   return migrated
 }

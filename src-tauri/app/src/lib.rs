@@ -72,13 +72,11 @@ mod task_manager_store;
 mod services {
     pub mod calendar_holidays;
     pub mod ai_service;
-    pub mod asr_recognizer;
     pub mod bluetooth_service;
     #[cfg(all(feature = "bluetooth", not(any(target_os = "android", target_os = "ios"))))]
     pub mod coldpass_secure_link;
     pub mod finance_extraction;
     pub mod finance_external;
-    pub mod qwen3_asr_service;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
     pub mod sherpa_offline;

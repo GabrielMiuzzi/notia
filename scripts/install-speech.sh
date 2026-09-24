@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 MODEL="${1:-parakeet}"
-[[ "$MODEL" =~ ^(parakeet|0\.6b|1\.7b|all)$ ]] || { echo 'Uso: install-speech.sh [parakeet|0.6b|1.7b|all]' >&2; exit 2; }
+[[ "$MODEL" == 'parakeet' ]] || { echo 'Uso: install-speech.sh [parakeet]' >&2; exit 2; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 MODELS="$ROOT/src-tauri/resources/speech/models"
-download_model(){
-  local size="$1" upper dir repo main projector
-  [[ "$size" == '0.6b' ]] && upper='0.6B' || upper='1.7B'
-  dir="$MODELS/qwen3-asr-$size-q8"
-  repo="https://huggingface.co/ggml-org/Qwen3-ASR-$upper-GGUF/resolve/main"
-  main="Qwen3-ASR-$upper-Q8_0.gguf"
-  projector="mmproj-Qwen3-ASR-$upper-Q8_0.gguf"
-  mkdir -p "$dir"
-  curl -fL --retry 3 -o "$dir/$main" "$repo/$main"
-  curl -fL --retry 3 -o "$dir/$projector" "$repo/$projector"
-}
 # Parakeet TDT 0.6B v3 int8 y Silero VAD publicados por sherpa-onnx. Los
 # hashes coinciden con src-tauri/resources/speech/model-manifest.json.
 install_parakeet(){
@@ -45,9 +34,5 @@ d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d  tokens.txt
 SUMS
   )
 }
-case "$MODEL" in
-  parakeet) install_parakeet ;;
-  all) install_parakeet; download_model '0.6b'; download_model '1.7b' ;;
-  *) download_model "$MODEL" ;;
-esac
+install_parakeet
 printf '%s\n' 'Modelos de voz instalados. La diarización conserva su runtime sherpa independiente.'

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppSelector } from '../../../../store/hooks'
-import { selectQwen3AsrSettings } from '../../../../features/preferences/preferencesSelectors'
+import { selectSpeechRecognitionSettings } from '../../../../features/preferences/preferencesSelectors'
 import { backendSupports } from '../../../../services/transport'
 import { cancelRemoteSpeech, prepareSpeechModel, sendRemoteSpeechChunk } from '../../../../services/speech/speechService'
 import { bytesToBase64, startRemoteSpeechCapture, type RemoteSpeechCapture } from '../../../../services/speech/remoteSpeechCapture'
@@ -29,7 +29,7 @@ function messageOf(error: unknown, fallback: string): string {
  * Same shape as the local hook; there are no partial results nor speakers.
  */
 export function useRemoteVoiceTranscription({ draft, setDraft, onCompleted }: UseRemoteVoiceTranscriptionInput) {
-  const qwen3Asr = useAppSelector(selectQwen3AsrSettings)
+  const speechRecognition = useAppSelector(selectSpeechRecognitionSettings)
   const devicePreferencesLoaded = useAppSelector((appState) => appState.preferences.devicePreferencesLoaded)
   const [state, setState] = useState<SpeechSessionState>(INITIAL_STATE)
   const [isModelReady, setIsModelReady] = useState(false)
@@ -48,11 +48,11 @@ export function useRemoteVoiceTranscription({ draft, setDraft, onCompleted }: Us
 
   useEffect(() => {
     let current = true
-    if (!supported || !devicePreferencesLoaded || !qwen3Asr.enabled) {
+    if (!supported || !devicePreferencesLoaded || !speechRecognition.enabled) {
       setIsModelReady(false)
       return () => { current = false }
     }
-    void prepareSpeechModel(qwen3Asr).then(() => {
+    void prepareSpeechModel(speechRecognition).then(() => {
       if (!current) return
       setIsModelReady(true)
       setModelPreparationError(null)
@@ -62,7 +62,7 @@ export function useRemoteVoiceTranscription({ draft, setDraft, onCompleted }: Us
       setModelPreparationError(messageOf(error, 'No se pudo preparar el reconocimiento de voz.'))
     })
     return () => { current = false }
-  }, [devicePreferencesLoaded, qwen3Asr, supported])
+  }, [devicePreferencesLoaded, speechRecognition, supported])
 
   useEffect(() => {
     if (state.status !== 'recording') return
@@ -107,7 +107,7 @@ export function useRemoteVoiceTranscription({ draft, setDraft, onCompleted }: Us
       setState({ status: 'error', error: { code: 'unsupported-platform', message: 'El servidor no ofrece dictado.' } })
       return false
     }
-    if (!qwen3Asr.enabled) {
+    if (!speechRecognition.enabled) {
       setState({ status: 'error', error: { code: 'internal', message: 'Activa el reconocimiento de voz en Configuraciones → Voz.' } })
       return false
     }
@@ -127,7 +127,7 @@ export function useRemoteVoiceTranscription({ draft, setDraft, onCompleted }: Us
       setState({ status: 'error', error: { code: 'microphone-unavailable', message: messageOf(error, 'No se pudo usar el micrófono.') } })
       return false
     }
-  }, [draft, fail, qwen3Asr.enabled, send, supported])
+  }, [draft, fail, speechRecognition.enabled, send, supported])
 
   const stop = useCallback(async () => {
     const capture = captureRef.current

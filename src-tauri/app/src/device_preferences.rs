@@ -46,7 +46,7 @@ fn read(app: &AppHandle) -> Option<Value> {
 }
 
 /// Normalized preferences of one section (`taskManagerPublication`,
-/// `qwen3Asr`, `qwen3Tts`); defaults when nothing was saved.
+/// `speechRecognition`, `qwen3Tts`); defaults when nothing was saved.
 pub(crate) fn section(app: &AppHandle, key: &str) -> Value {
     normalize_device_preferences(&read(app).unwrap_or(Value::Null))[key].clone()
 }
