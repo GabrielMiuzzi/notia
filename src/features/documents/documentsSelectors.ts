@@ -1,7 +1,7 @@
 import { createSelector } from '@reduxjs/toolkit'
 import type { RootState } from '../../store/index'
 import type { OpenDocumentTab } from './documentsTypes'
-import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH } from './documentsSlice'
+import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH } from './documentsSlice'
 
 export const selectOpenTabs = (state: RootState) => state.documents.openTabs
 export const selectActiveTabPath = (state: RootState) => state.documents.activeTabPath
@@ -36,7 +36,7 @@ export const selectSaveStatus = createSelector(
   (tab) => tab?.saveStatus ?? 'idle' as const,
 )
 
-export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'routine' => {
+export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'agenda' | 'multichat' | 'routine' => {
   const path = state.documents.activeTabPath
   if (path === GRAPH_WORKSPACE_TAB_PATH) return 'graph'
   if (path === CHAT_WORKSPACE_TAB_PATH) return 'chat'
@@ -45,6 +45,7 @@ export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'grap
   if (path === MEETING_WORKSPACE_TAB_PATH) return 'meeting'
   if (path === FINANCE_WORKSPACE_TAB_PATH) return 'finance'
   if (path === CALENDAR_WORKSPACE_TAB_PATH) return 'calendar'
+  if (path === AGENDA_WORKSPACE_TAB_PATH) return 'agenda'
   if (path === MULTICHAT_WORKSPACE_TAB_PATH) return 'multichat'
   if (path === ROUTINE_WORKSPACE_TAB_PATH) return 'routine'
   return 'documents'
@@ -94,6 +95,7 @@ export const selectTitleBarTabs = createSelector(
     if (specialTabs.meeting) tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' })
     if (specialTabs.finance) tabs.push({ path: FINANCE_WORKSPACE_TAB_PATH, title: 'Finanzas' })
     if (specialTabs.calendar) tabs.push({ path: CALENDAR_WORKSPACE_TAB_PATH, title: 'Calendario' })
+    if (specialTabs.agenda) tabs.push({ path: AGENDA_WORKSPACE_TAB_PATH, title: 'Agenda' })
     if (specialTabs.multichat) tabs.push({ path: MULTICHAT_WORKSPACE_TAB_PATH, title: 'Multichat' })
     if (specialTabs.routine) tabs.push({ path: ROUTINE_WORKSPACE_TAB_PATH, title: 'Rutina' })
 

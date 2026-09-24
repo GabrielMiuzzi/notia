@@ -12,7 +12,7 @@ use crate::host::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 24;
+pub const CURRENT_SCHEMA_VERSION: i64 = 25;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -924,6 +924,36 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
         )?;
         transaction.commit()?;
     }
+    if current_version < 25 && target >= 25 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agenda_events (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1425),
+                 end_minute INTEGER NOT NULL CHECK (end_minute > start_minute AND end_minute <= 1440),
+                 title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+                 priority TEXT NOT NULL CHECK (priority IN ('urgent', 'high', 'medium', 'low')),
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_agenda_events_owner_date
+                 ON agenda_events(owner_user_id, date, start_minute);
+             CREATE TABLE IF NOT EXISTS agenda_notes (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 text TEXT NOT NULL CHECK (length(trim(text)) > 0),
+                 done_on TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_agenda_notes_owner
+                 ON agenda_notes(owner_user_id, done_on);
+             INSERT INTO notia_schema_migrations (version) VALUES (25);",
+        )?;
+        transaction.commit()?;
+    }
     // Some development builds recorded schema version 18/19 before the
     // association columns were present. Repair the invariant independently
     // of the version marker so existing libraries can load their dashboard.
@@ -1091,26 +1121,59 @@ fn failure(error: String) -> InitializeLibraryDatabaseResult {
     }
 }
 
+/// Opens the library database for a feature that stores per-user data: the
+/// SAF copy on Android, the library file elsewhere.
 #[cfg(target_os = "android")]
-fn open_inventory_connection(
+pub(crate) fn open_user_data_connection(
     app: &crate::host::AppHandle,
-    library_path: &str,
+    _library_path: &str,
     android_directory_uri: Option<&str>,
 ) -> Result<Connection, String> {
-    let _ = library_path;
     let directory_uri = android_directory_uri
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "La librería Android no tiene una URI SAF válida.".to_string())?;
+        .ok_or_else(|| "La biblioteca perdió su URI SAF. Volvé a seleccionarla.".to_string())?;
     open_mobile_library_connection(app, directory_uri)
 }
 
-#[cfg(not(target_os = "android"))]
-fn open_inventory_connection(
+#[cfg(target_os = "ios")]
+pub(crate) fn open_user_data_connection(
+    _app: &crate::host::AppHandle,
+    _library_path: &str,
+    _android_directory_uri: Option<&str>,
+) -> Result<Connection, String> {
+    Err("Esta función todavía no está disponible en iOS.".to_string())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn open_user_data_connection(
     _app: &crate::host::AppHandle,
     library_path: &str,
     _android_directory_uri: Option<&str>,
 ) -> Result<Connection, String> {
+    if library_path.trim().is_empty() {
+        return Err("La librería es obligatoria.".to_string());
+    }
     open_library_connection(library_path)
+}
+
+/// Android works on a cached copy of the database: writes are copied back
+/// through SAF before they are reported as saved. Elsewhere it does nothing.
+pub(crate) fn sync_user_data_connection(
+    app: &crate::host::AppHandle,
+    android_directory_uri: Option<&str>,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let directory_uri = android_directory_uri
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "La biblioteca perdió su URI SAF. Volvé a seleccionarla.".to_string())?;
+        sync_mobile_library_connection(app, directory_uri)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, android_directory_uri);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -41,6 +41,7 @@
 - Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas, inversiones, servicios mensuales integrados en Home, facturas/boletas, conciliación determinista de consumos de tarjeta con matching por límites de palabra y control integral mediante tools tipadas de IA con confirmaciones individuales, reforzadas cuando corresponde al canal.
 - Auditoría financiera con propuestas de acciones estructuradas, preview sin escritura, aplicación individual con huella vigente, resolución manual validada e invalidación ante cambios.
 - Calendario con feriados nacionales y bancarios de Argentina.
+- Agenda por usuario con calendario mensual, semana en bloques de 15 minutos para agendar tareas con prioridad (mouse, táctil y teclado), anotador rápido del día y próximos eventos, persistida en SQLite.
 - Rutina de hábitos por usuario con rutinas, tareas por días, marcas diarias, rachas, calendario, evolución, progreso semanal y rueda de la vida con metas, persistida en SQLite y operable con tools de IA confirmadas.
 - Temas claro y oscuro.
 - Backups automáticos de bibliotecas en Windows.

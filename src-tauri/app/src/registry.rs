@@ -102,6 +102,8 @@ fn route(command: &str) -> Option<Route> {
         "finance_get_dashboard" => finance_get_dashboard,
         "routine_get_dashboard" => routine_get_dashboard,
         "routine_apply_mutation" => routine_apply_mutation,
+        "agenda_get_view" => agenda_get_view,
+        "agenda_apply_mutation" => agenda_apply_mutation,
         "finance_get_transaction" => finance_get_transaction,
         "finance_list_all_transactions" => finance_list_all_transactions,
         "finance_list_all_savings_movements" => finance_list_all_savings_movements,
@@ -332,6 +334,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "finance_get_dashboard",
     "routine_get_dashboard",
     "routine_apply_mutation",
+    "agenda_get_view",
+    "agenda_apply_mutation",
     "finance_get_transaction",
     "finance_list_all_transactions",
     "finance_list_all_savings_movements",
@@ -907,6 +911,14 @@ fn routine_get_dashboard(app: &AppHandle, _window_label: &str, command: &str, ar
 
 fn routine_apply_mutation(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::routine::routine_apply_mutation(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn agenda_get_view(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::agenda::agenda_get_view(app.clone(), arg(command, args, "context")?, arg(command, args, "request")?))))
+}
+
+fn agenda_apply_mutation(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::agenda::agenda_apply_mutation(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn finance_get_transaction(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

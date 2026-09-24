@@ -21,6 +21,8 @@ mod finance_reconciliation;
 mod finance_records;
 mod finance_ui;
 mod finance_views;
+mod agenda;
+mod agenda_view;
 mod routine;
 mod routine_dashboard;
 mod routine_tools;

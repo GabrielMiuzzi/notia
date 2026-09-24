@@ -50,7 +50,7 @@ graph TB
     end
 
     subgraph App["notia-app (src-tauri/app)"]
-        Registry["registry.rs<br/>184 comandos · dispatch · app_invoke<br/>dispatch_published"]
+        Registry["registry.rs<br/>202 comandos · dispatch · app_invoke<br/>dispatch_published"]
         HostLayer["host/<br/>AppContext · Manager · Emitter · puertos"]
         UseCases["casos de uso y adaptadores<br/>biblioteca, IA, Task Manager, Finanzas, voz, Telegram…"]
         Server["server/<br/>http · tls · network · rate · assets · events · owner"]
@@ -6756,3 +6756,69 @@ La lectura directa ocurre en el turno del Owner (el chat de la app siempre usa `
 El turno no espera la organización y los errores solo se registran como warning, sin contenido. `rules.md` no se reorganiza.
 
 Validación: `cargo test --offline -p notia-backend-core` (236; `organized_memories_must_be_a_usable_list` y memoria en el scope de nota), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings), `cargo check` Android (63 warnings, sin nuevos), `tsc`, `eslint` y `vitest run`. Pendiente: comprobar con un modelo real que el agente guarda los datos personales sin que se lo pidan y que la organización deja `memory.md` ordenado sin perder datos.
+
+## Agenda
+
+Módulo nuevo que sigue el lienzo de diseño «Dashboard de agenda» (artboard *Dashboard*: calendario mensual, semana en bloques de 15 minutos, anotador rápido y próximos eventos), con los tokens de la paleta en lugar de los colores del lienzo. El rail muestra **Agenda** (ícono `CalendarClock`) debajo de **Calendario**; abre la pestaña especial `__workspace_agenda__` (vista `agenda`, acción de rail `agenda`, clave `specialTabs.agenda`). Rust valida, persiste y arma la vista completa, incluidas fechas, navegación y textos; React solo la representa y envía intenciones.
+
+### Módulos
+
+- `src-tauri/app/src/agenda.rs`: contexto (`AgendaContext`), errores, prioridades (`AgendaPriority`), lectura por cuadro (`load_data`), agrupación de la selección (`group_slots`), mutaciones (`AgendaMutation`, `apply_mutation`) y los dos comandos.
+- `src-tauri/app/src/agenda_view.rs`: resolución del cuadro (`AgendaFrame::resolve`: día elegido, mes, grilla de 42 días y semana) y derivación pura del DTO (`build_view`) con todas las etiquetas en español.
+- `src-tauri/app/src/database.rs`: migración v25 y `open_user_data_connection` / `sync_user_data_connection` (archivo de la biblioteca en escritorio, copia SAF en Android y su sincronización). Reemplazan a `open_inventory_connection`, que no se usaba; Rutina conserva sus funciones propias.
+- `src/modules/agenda/`: tipos del contrato, servicio, hook `useAgendaView`, componentes (`AgendaDashboardView`, `AgendaMonthCalendar`, `AgendaActionBar`, `AgendaWeekGrid`, `AgendaNotesCard`, `AgendaUpcomingCard`) y `agenda.css`. `src/components/notia/views/AgendaView.tsx` monta la vista.
+
+### Persistencia: esquema SQLite v25
+
+`CURRENT_SCHEMA_VERSION` pasa a `25` (reemplaza la mención de `24` en la sección de Rutina). La migración es transaccional e idempotente (`CREATE ... IF NOT EXISTS`) y crea:
+
+- `agenda_events(id, owner_user_id → library_users ON DELETE CASCADE, date YYYY-MM-DD, start_minute 0..1425, end_minute > start_minute y ≤ 1440, title, priority IN ('urgent','high','medium','low'), created_at, updated_at)`, con índice `(owner_user_id, date, start_minute)`. `end_minute` es exclusivo.
+- `agenda_notes(id, owner_user_id → library_users ON DELETE CASCADE, text, done_on, created_at, updated_at)`, con índice `(owner_user_id, done_on)`. `done_on` es la fecha local en que se marcó la nota, o `NULL` si está pendiente.
+
+Los datos pertenecen al usuario de biblioteca que actúa (`actorLibraryUserId`, que debe existir en `library_users`); la app usa `user-owner`. Eliminar un evento o una nota es un borrado físico. Las notas marcadas en días anteriores quedan guardadas pero la vista ya no las lista.
+
+### Contratos
+
+- `agenda_get_view({ context, request })` → `AgendaView`.
+- `agenda_apply_mutation({ payload: { context, mutation, request } })` → `{ outcome: { changed, entityIds, summary }, view }`.
+
+`context` es `{ libraryPath, androidDirectoryUri?, actorLibraryUserId }`. `request` es `{ selectedDate: "YYYY-MM-DD" | null, month: "YYYY-MM" | null }`: sin día se usa hoy y sin mes, el mes del día elegido. `mutation` es una unión etiquetada por `type`:
+
+```json
+{ "type": "scheduleEvents", "slots": [{ "date": "2026-09-24", "minute": 540 }, { "date": "2026-09-24", "minute": 555 }], "title": "Reunión de equipo", "priority": "medium" }
+```
+
+Variantes: `scheduleEvents { slots, title, priority }`, `deleteEvent { id }`, `addNote { text }`, `setNoteDone { id, done }` y `deleteNote { id }`. Los errores son `{ code: "validation" | "notFound" | "conflict" | "storage", message }`.
+
+`AgendaView` contiene `today`, `todayLabel`, `summaryLabel` (eventos próximos y notas pendientes), `selectedDate`, `slotMinutes` (15), `month` (`key`, `label`, `prevMonth`, `nextMonth`, `weekdays` y 42 `cells` con `date`, `day`, `inMonth`, `isToday`, `isSelected`, `hasEvents` y `ariaLabel`), `week` (`label`, `prevDate` y `nextDate` a ±7 días del elegido, los 7 `days` y sus `events`), `timeSlots` (96 filas con `minute`, `label` e `isHour`), `priorities` y `defaultPriority` (`medium`), `upcoming` (`events`, `total` y `label`) y `notes` (`items`, `pending` y `pendingLabel`). Cada evento trae `startMinute`, `endMinute`, `priority`, `priorityLabel`, `timeLabel` («09:00–10:00») y `whenLabel` («Lun 21 sep · 09:00–10:00»). La interfaz navega reenviando los valores de `month.prevMonth`, `week.nextDate`, etc., sin calcular fechas.
+
+### Reglas y validaciones
+
+- Cada bloque es `{ date, minute }` con `minute` múltiplo de 15 en `[0, 1440)`; se aceptan de 1 a 672 bloques (una semana) y fechas `YYYY-MM-DD` entre 1900 y 2199. Los repetidos cuentan una vez.
+- `group_slots` agrupa los bloques en tramos consecutivos del mismo día y `scheduleEvents` crea un evento por tramo, todos con el mismo título y prioridad. Un título vacío se guarda como «Tarea sin título»; admite hasta 120 caracteres, sin caracteres de control.
+- Un tramo que se superpone con otro evento del mismo usuario se rechaza con `conflict`, nombrando el evento; la operación es todo o nada. Un evento puede empezar exactamente cuando termina otro, y otro usuario puede usar el mismo horario.
+- Nota: de 1 a 200 caracteres, sin caracteres de control. Marcar y desmarcar son idempotentes (`changed: false` sin cambio).
+- La vista lista las notas pendientes y las marcadas hoy, en orden de creación. Los próximos eventos son los que todavía no terminaron (`date > hoy`, o hoy con `end_minute` mayor que el minuto actual), ordenados, hasta 10, con el total aparte.
+- «Hoy» y «ahora» salen de `Local::now()` del equipo que ejecuta el backend: en el servidor headless, su reloj.
+- `agenda_apply_mutation` valida `request` antes de guardar, así un cuadro inválido nunca llega después de un cambio ya aplicado. En Android sincroniza la copia SAF antes de responder.
+
+### Interfaz
+
+- Estado efímero en React: el `request` (día y mes), la selección de bloques (`fecha|minuto`), el evento activo, el título, la prioridad elegida y los errores por sección. El hook descarta respuestas viejas con tickets y recarga al volver el foco a la ventana.
+- Grilla semanal (`AgendaWeekGrid`): cada día es una grilla CSS de 96 filas; los bloques libres son botones con `aria-pressed` y cada evento es un único botón que ocupa sus filas (los bloques que cubre no se renderizan). Arranca desplazada a las 8:00, con encabezado de días y columna de horas fijos.
+  - Mouse: presionar selecciona o deselecciona según el primer bloque y arrastrar aplica lo mismo (captura del puntero); el clic posterior se ignora.
+  - Táctil: un toque alterna el bloque; mantener 350 ms inicia la selección por arrastre y, solo mientras dura, un `touchmove` no pasivo bloquea el scroll. Moverse más de 10 px antes cancela y deja desplazar. El menú contextual del toque largo se suprime sobre los bloques.
+  - Teclado: *roving tabindex* (un solo bloque en el orden de tabulación); las flechas se mueven entre bloques y eventos, Enter o Espacio alternan la selección.
+- Barra de acciones: ayuda (texto distinto con `pointer: coarse`), selección con cantidad y duración, título, prioridad como grupo de radios y **Agendar**/**Cancelar**, o el evento activo con **Eliminar tarea** y **Cerrar**. Tocar un próximo evento salta a su día, lo activa y lo desplaza a la vista. Los resultados se anuncian en una región `aria-live`.
+- Estilos: tokens de la paleta en ambos temas (fondo, panel, panel elevado, hairline, texto, muted, teal y los cuatro colores de prioridad), con tinte del 18 % en oscuro y 10 % en claro. Las fuentes del lienzo (Fraunces, IBM Plex) no se cargan: los títulos usan la pila `'Fraunces', Georgia, serif` y los horarios una monoespaciada del sistema.
+- Ancho y responsive: la vista ocupa el 100 % del área de trabajo, sin ancho máximo, con márgenes laterales fluidos de 16 a 40 px. `.notia-main.agenda-view` es un contenedor (`container: agenda / inline-size`) y los cortes usan `@container agenda`, no el ancho de la ventana: así se adaptan también cuando el Explorador o el Asistente achican el área. Filas de 16 px con puntero fino y 28 px con `pointer: coarse`; swatches y controles de 44 px táctiles. La grilla semanal mide `clamp(360px, 65dvh, 880px)` de alto. Con 900 px de contenedor o menos, las tarjetas inferiores se apilan; con 640 px o menos, la grilla usa columna de horas de 40 px, columnas de 38 px (entran los 7 días en 390 px) y alto de 60 dvh; si falta ancho se desplaza en horizontal con la columna de horas fija.
+- El chat del panel derecho usa el scope `library` y la etiqueta «Contexto activo: Agenda».
+- Diferencias con el lienzo: el anotador persiste (pendientes pasan al día siguiente, marcadas desaparecen al cambiar el día); no hay edición de eventos ni tools de IA para la Agenda.
+
+### Validaciones ejecutadas y pendientes
+
+- `cargo test --offline -p notia-app --features bluetooth`: 314 aprobados y 1 ignorado (17 nuevos en `agenda` y `agenda_view`: agrupación, superposición, dueño, próximos, notas, cuadro, etiquetas y serialización camelCase).
+- `cargo check --offline -p notia-app`: 39 warnings (antes 41); `--no-default-features`: 39; Android (`aarch64-linux-android`, NDK 30): 62 (antes 63); Linux en WSL (`wsl_build.sh check`): aprobado. Ninguno de los warnings es del módulo nuevo.
+- `tsc -p tsconfig.app.json`, ESLint, `vitest run` (229; 6 nuevos en `AgendaWeekGrid.test.tsx`: eventos que reemplazan bloques, teclado, mouse sin doble alternancia, toque, toque sostenido y flechas), `vite build` y `git diff --check`: aprobados.
+- Revisión visual con Chrome sin ventana sobre la vista real alimentada con el JSON que serializa Rust, en tema oscuro y claro a 1280 px y en 390 px; corrigió el desplazamiento inicial y los eventos de 15 minutos.
+- Pendiente: prueba manual en la app de Windows y en Android (teléfono y tableta: toque sostenido y arrastre, teclado virtual, sincronización SAF), y desde el navegador contra un servidor headless.

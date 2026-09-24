@@ -10,7 +10,7 @@ const EMPTY_CONTEXT_PATHS: string[] = []
 
 interface UseRightPanelChatContextParams {
   activeDocument: OpenFileDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'documents' | 'routine'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'agenda' | 'multichat' | 'documents' | 'routine'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
@@ -42,7 +42,7 @@ export function resolveRightPanelAgentScope(
   if (activeWorkspaceView === 'task-manager') return 'task-manager'
   if (activeWorkspaceView === 'graph') return 'graph'
   if (activeWorkspaceView === 'finance') return 'finance'
-  if (activeWorkspaceView === 'multichat' || activeWorkspaceView === 'routine') return 'library'
+  if (activeWorkspaceView === 'multichat' || activeWorkspaceView === 'routine' || activeWorkspaceView === 'agenda') return 'library'
   return activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
     ? 'document'
     : null
@@ -92,7 +92,7 @@ export function shouldSelectMatchingRightPanelChat(
 }
 
 function buildRightPanelChatContextLabel(
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'multichat' | 'documents' | 'routine',
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'agenda' | 'multichat' | 'documents' | 'routine',
   activeDocument: OpenFileDocument | null,
   taskManagerPanelId: string,
   markdownSelection: MarkdownSelectionContext | null,
@@ -135,6 +135,10 @@ function buildRightPanelChatContextLabel(
 
   if (activeWorkspaceView === 'routine') {
     return 'Contexto activo: Rutina'
+  }
+
+  if (activeWorkspaceView === 'agenda') {
+    return 'Contexto activo: Agenda'
   }
 
   if (activeWorkspaceView === 'multichat') {

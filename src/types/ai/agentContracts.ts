@@ -12,6 +12,7 @@ export type WorkspaceAiView =
   | 'finance'
   | 'multichat'
   | 'calendar'
+  | 'agenda'
   | 'routine'
 
 export type WorkspaceAiScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance' | 'published'

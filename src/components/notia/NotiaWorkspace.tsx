@@ -13,6 +13,7 @@ import { ColdPassView } from './views/ColdPassView'
 import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
 import { CalendarView } from './views/CalendarView'
+import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
 import { MultichatView } from './views/MultichatView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
@@ -222,6 +223,10 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'calendar') {
     return <CalendarView />
+  }
+
+  if (activeWorkspaceView === 'agenda') {
+    return <AgendaView library={activeLibrary} />
   }
 
   if (activeWorkspaceView === 'routine') {

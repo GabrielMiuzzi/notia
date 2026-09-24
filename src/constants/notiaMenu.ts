@@ -16,6 +16,7 @@ import {
   WalletCards,
   CalendarDays,
   CalendarCheck,
+  CalendarClock,
   UsersRound,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
@@ -34,6 +35,7 @@ export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
   ],
   [
     { id: 'calendar', label: 'Calendario', icon: CalendarDays },
+    { id: 'agenda', label: 'Agenda', icon: CalendarClock },
     { id: 'multichat', label: 'Multichat', icon: UsersRound },
     { id: 'routine', label: 'Rutina', icon: CalendarCheck },
   ],
