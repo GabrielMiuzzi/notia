@@ -1,0 +1,1142 @@
+/*
+ * Markdown editor: text column, properties panel, block handle and the
+ * floating format toolbar. Colors come from the theme tokens; mixes only
+ * soften a token.
+ */
+
+/*
+ * No container query here: containment would make the host the reference of
+ * the fixed-position pieces inside it (wikilink menu, drop line). The column
+ * uses percentages of the editor width instead.
+ */
+.notia-markdown-host {
+  position: relative;
+  --notia-editor-column: 760px;
+  /*
+   * Left room for the block handle: 120px, as in the canvas, when the editor
+   * is as wide as the canvas' (1128px, even with its scrollbar), and a share
+   * of it when narrower.
+   */
+  --notia-editor-gutter: clamp(48px, 11%, 120px);
+  --notia-editor-right: clamp(16px, 3%, 24px);
+  /* In the canvas the text starts 2px inside the column, where its highlight begins. */
+  --notia-editor-text-inset: 2px;
+  --notia-editor-wash: color-mix(in srgb, var(--color-accent-text) 6%, transparent);
+  --notia-editor-wash-edge: color-mix(in srgb, var(--color-accent-text) 14%, transparent);
+  --notia-editor-dim: color-mix(in srgb, var(--color-muted-text) 72%, transparent);
+  --notia-editor-control: 30px;
+  /* Body text of paragraphs and list items. */
+  --notia-editor-body-size: 15.5px;
+  --notia-editor-body-line: 1.6;
+}
+
+@media (pointer: coarse) {
+  .notia-markdown-host {
+    --notia-editor-gutter: 64px;
+    --notia-editor-control: 44px;
+  }
+}
+
+/* Buttons take the editor's type; `:where` keeps this below every rule that follows. */
+:where(.notia-format-toolbar, .notia-properties) .notia-button {
+  font-family: inherit;
+  font-weight: 400;
+}
+
+/* ---------- Text column ---------- */
+
+/*
+ * Spacing follows the canvas: the panel starts 36px below the top, the text
+ * 36px below the panel, and blocks are separated only by their own padding.
+ * Both blocks measure the same width, so the percentages line up the text
+ * with the panel.
+ */
+.notia-markdown-properties-wrap {
+  max-width: calc(var(--notia-editor-column) + var(--notia-editor-gutter) + var(--notia-editor-right));
+  margin: 0;
+  padding: 36px var(--notia-editor-right) 0 var(--notia-editor-gutter);
+  box-sizing: border-box;
+}
+
+.notia-markdown-editor-root .milkdown {
+  padding: 0;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror {
+  max-width: calc(var(--notia-editor-column) + var(--notia-editor-gutter) + var(--notia-editor-right));
+  padding: 0 var(--notia-editor-right) 38px calc(var(--notia-editor-gutter) + var(--notia-editor-text-inset));
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h1,
+.notia-markdown-editor-root .milkdown .ProseMirror h2,
+.notia-markdown-editor-root .milkdown .ProseMirror h3,
+.notia-markdown-editor-root .milkdown .ProseMirror h4,
+.notia-markdown-editor-root .milkdown .ProseMirror h5,
+.notia-markdown-editor-root .milkdown .ProseMirror h6 {
+  margin: 0;
+  font-weight: 500;
+  color: var(--color-heading-text);
+}
+
+/*
+ * Each kind keeps its spacing in two variables: the padding uses them, and so
+ * does the painted block, which hugs the text line and not the padding.
+ */
+.notia-markdown-editor-root .milkdown .ProseMirror h1,
+.notia-markdown-editor-root .milkdown .ProseMirror h2,
+.notia-markdown-editor-root .milkdown .ProseMirror h3,
+.notia-markdown-editor-root .milkdown .ProseMirror h4,
+.notia-markdown-editor-root .milkdown .ProseMirror h5,
+.notia-markdown-editor-root .milkdown .ProseMirror h6,
+.notia-markdown-editor-root .milkdown .ProseMirror p {
+  padding: var(--notia-block-pad-top) 0 var(--notia-block-pad-bottom);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h1 {
+  --notia-block-pad-top: 12px;
+  --notia-block-pad-bottom: 6px;
+  font-size: 34px;
+  line-height: 1.25;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h2 {
+  --notia-block-pad-top: 26px;
+  --notia-block-pad-bottom: 4px;
+  font-size: 25px;
+  line-height: 1.3;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h3 {
+  --notia-block-pad-top: 14px;
+  --notia-block-pad-bottom: 2px;
+  font-size: 19px;
+  line-height: 1.35;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h4,
+.notia-markdown-editor-root .milkdown .ProseMirror h5,
+.notia-markdown-editor-root .milkdown .ProseMirror h6 {
+  --notia-block-pad-top: 12px;
+  --notia-block-pad-bottom: 2px;
+  font-size: 17px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror p {
+  --notia-block-pad-top: 3px;
+  --notia-block-pad-bottom: 3px;
+  font-size: var(--notia-editor-body-size);
+  line-height: var(--notia-editor-body-line);
+}
+
+/* List items: 2px above and below, the bullet 6px inside the column and the text 24px after it. */
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block,
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block .children p {
+  --notia-block-pad-top: 2px;
+  --notia-block-pad-bottom: 2px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper,
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .label {
+  height: calc(var(--notia-editor-body-size) * var(--notia-editor-body-line) + 4px);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .label {
+  padding: 0;
+  line-height: calc(var(--notia-editor-body-size) * var(--notia-editor-body-line) + 4px);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper:has(.bullet) {
+  width: 14px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .bullet {
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .bullet svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  fill: var(--notia-editor-dim);
+}
+
+/* ---------- Rich text ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror [data-align='center'] {
+  text-align: center;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror [data-align='right'] {
+  text-align: right;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror u {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.notia-markdown-host [data-color='gray'] { --notia-rich-color: var(--color-muted-text); }
+.notia-markdown-host [data-color='teal'] { --notia-rich-color: var(--color-accent-text); }
+.notia-markdown-host [data-color='blue'] { --notia-rich-color: var(--color-periwinkle); }
+.notia-markdown-host [data-color='violet'] { --notia-rich-color: var(--color-violet); }
+.notia-markdown-host [data-color='red'] { --notia-rich-color: var(--color-coral); }
+.notia-markdown-host [data-color='orange'] { --notia-rich-color: var(--color-amber); }
+.notia-markdown-host [data-color='yellow'] { --notia-rich-color: var(--color-gold); }
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-text-color {
+  color: var(--notia-rich-color, inherit);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-highlight {
+  color: inherit;
+  background: color-mix(in srgb, var(--notia-rich-color, var(--color-gold)) 26%, transparent);
+  border-radius: 4px;
+  padding: 1px 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* ---------- Block handle and dragging ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-block-active {
+  position: relative;
+  isolation: isolate;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-block-active::before {
+  content: '';
+  position: absolute;
+  top: calc(var(--notia-block-pad-top, 0px) - 3px);
+  right: -10px;
+  bottom: calc(var(--notia-block-pad-bottom, 0px) - 3px);
+  left: calc(-10px - var(--notia-editor-text-inset));
+  z-index: -1;
+  border-radius: 8px;
+  background: var(--notia-editor-wash);
+  box-shadow: inset 0 0 0 1px var(--notia-editor-wash-edge);
+  pointer-events: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle {
+  z-index: 9;
+  flex-direction: row;
+  gap: 2px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item {
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted-text);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+/*
+ * Crepe always renders an add-block button before the grip; the design has
+ * only the grip. New blocks come from Enter and the `/` menu.
+ */
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item:first-child {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item:last-child {
+  cursor: grab;
+  background: var(--color-card-bg);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg {
+  width: auto;
+  height: auto;
+  fill: currentColor;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg[fill='none'] {
+  fill: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item:hover,
+.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item.active {
+  background: var(--color-hover-surface);
+  color: var(--color-heading-text);
+}
+
+@media (pointer: coarse) {
+  .notia-markdown-editor-root .milkdown .milkdown-block-handle {
+    flex-direction: column;
+  }
+
+  .notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-slash-menu {
+  z-index: 12;
+}
+
+/* The block being dragged stays in place, faded. */
+.notia-markdown-editor-root .milkdown .ProseMirror[data-dragging='true'] .ProseMirror-selectednode {
+  opacity: 0.35;
+}
+
+.notia-markdown-editor-root .milkdown .crepe-drop-cursor {
+  background-color: var(--color-accent-text);
+  border-radius: 1px;
+  opacity: 1;
+}
+
+/* Horizontal drop lines start with a ring. */
+.notia-markdown-editor-root .milkdown .crepe-drop-cursor[style*='height: 2px']::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border: 2px solid var(--color-accent-text);
+  border-radius: 50%;
+  background: var(--color-main-bg);
+  transform: translateY(-50%);
+}
+
+/* Drag image; it only exists while the browser takes its snapshot. */
+.notia-block-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 260px;
+  padding: 4px 12px 4px 4px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  box-shadow: 0 12px 28px var(--color-menu-shadow);
+  font-size: 14px;
+  transform: rotate(-1.5deg);
+  pointer-events: none;
+}
+
+.notia-block-drag-ghost-grip {
+  flex-shrink: 0;
+  width: 22px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-block-drag-ghost-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Format toolbar ---------- */
+
+.notia-format-toolbar {
+  position: absolute;
+  z-index: 20;
+  max-width: calc(100% - 16px);
+}
+
+/*
+ * Covers the gap between the toolbar and the text below it, so the pointer
+ * reaches the toolbar without passing over the previous block, which would
+ * move the toolbar there.
+ */
+.notia-format-toolbar[data-placement='above']::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+
+.notia-format-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: calc(var(--notia-editor-control) + 8px);
+  padding: 0 4px;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+  box-shadow: 0 10px 28px var(--color-menu-shadow), 0 2px 6px var(--color-menu-shadow);
+  white-space: nowrap;
+}
+
+.notia-format-toolbar-group {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.notia-format-toolbar-divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 20px;
+  margin: 0 3px;
+  background: var(--color-border-soft);
+}
+
+.notia-format-toolbar .notia-button.notia-format-toolbar-button {
+  min-width: var(--notia-editor-control);
+  height: var(--notia-editor-control);
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font-size: 13px;
+  gap: 4px;
+}
+
+.notia-format-toolbar .notia-button.notia-format-toolbar-button:hover:not(:disabled) {
+  background: var(--color-hover-surface);
+}
+
+.notia-format-toolbar .notia-button.notia-format-toolbar-button[aria-pressed='true'],
+.notia-format-toolbar .notia-button.notia-format-toolbar-button[aria-expanded='true'] {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-format-toolbar .notia-button.notia-format-toolbar-button:disabled {
+  opacity: 0.4;
+}
+
+.notia-format-toolbar .notia-button.notia-format-toolbar-kind {
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.notia-format-toolbar-glyph {
+  font-size: 14px;
+}
+
+.notia-format-toolbar-glyph.is-bold { font-weight: 700; }
+.notia-format-toolbar-glyph.is-italic { font-style: italic; font-family: Georgia, serif; }
+.notia-format-toolbar-glyph.is-underline { text-decoration: underline; }
+.notia-format-toolbar-glyph.is-strike { text-decoration: line-through; }
+
+.notia-format-toolbar .notia-button.notia-format-toolbar-swatch-button {
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 8px;
+}
+
+.notia-format-toolbar-letter {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 14px;
+}
+
+.notia-format-toolbar-bar {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--notia-rich-color, var(--color-heading-text));
+}
+
+.notia-format-toolbar-bar--highlight {
+  background: var(--notia-rich-color, var(--color-border-soft));
+}
+
+.notia-format-toolbar-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 30;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 14px 36px var(--color-menu-shadow);
+  white-space: normal;
+}
+
+.notia-format-toolbar-kind-menu {
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 190px;
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-menu-item {
+  justify-content: flex-start;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--color-heading-text);
+  font-size: 13px;
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-menu-item[aria-checked='true'] {
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-format-toolbar-menu-item--heading1 { font-size: 16px !important; font-weight: 600; }
+.notia-format-toolbar-menu-item--heading2 { font-size: 15px !important; font-weight: 600; }
+.notia-format-toolbar-menu-item--heading3 { font-weight: 600; }
+
+.notia-format-toolbar-color-menu {
+  left: 50%;
+  width: min(272px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  transform: translateX(-50%);
+}
+
+.notia-format-toolbar-menu-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-text);
+}
+
+.notia-format-toolbar-swatches {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-swatch {
+  height: 26px;
+  min-width: 0;
+  padding: 0;
+  border: 1.5px solid var(--color-border-soft);
+  border-radius: 7px;
+  background: var(--color-sidebar-bg);
+  color: var(--notia-rich-color, var(--color-heading-text));
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-swatch--highlight {
+  background: color-mix(in srgb, var(--notia-rich-color, transparent) 26%, var(--color-sidebar-bg));
+  color: var(--color-heading-text);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-swatch:hover:not(:disabled) {
+  border-color: var(--color-muted-text);
+  background: var(--color-sidebar-bg);
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-swatch--highlight:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--notia-rich-color, transparent) 26%, var(--color-sidebar-bg));
+}
+
+.notia-format-toolbar-menu .notia-button.notia-format-toolbar-swatch[aria-checked='true'] {
+  border-color: var(--color-accent-text);
+}
+
+@media (pointer: coarse) {
+  .notia-format-toolbar-menu .notia-button.notia-format-toolbar-swatch {
+    height: 40px;
+  }
+
+  .notia-format-toolbar-menu .notia-button.notia-format-toolbar-menu-item {
+    min-height: 44px;
+  }
+}
+
+/* ---------- Properties ---------- */
+
+/* Only its menus are inside, and they are absolute, so the panel can be a container. */
+.notia-properties {
+  container: notia-properties / inline-size;
+  margin-bottom: 36px;
+  font-size: 13px;
+}
+
+.notia-properties-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  flex-wrap: wrap;
+}
+
+.notia-properties .notia-button.notia-properties-toggle {
+  height: 30px;
+  margin-left: -4px;
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-radius: 6px;
+  gap: 8px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.notia-properties-chevron {
+  transition: transform 150ms ease;
+}
+
+.notia-properties-toggle[aria-expanded='true'] .notia-properties-chevron {
+  transform: rotate(90deg);
+}
+
+.notia-properties-count {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--color-card-bg);
+  color: var(--color-muted-text);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.notia-properties-summary-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+}
+
+.notia-properties-summary-divider {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--color-border-soft);
+}
+
+.notia-properties-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  padding: 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-sidebar-bg);
+}
+
+.notia-properties-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 4px 0 10px;
+  border-radius: 8px;
+}
+
+.notia-properties-row:hover,
+.notia-properties-row:focus-within {
+  background: var(--color-row-hover);
+}
+
+.notia-properties-row.is-editing {
+  background: var(--color-card-bg);
+  z-index: 2;
+}
+
+.notia-properties-key {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--color-muted-text);
+  font-size: 13px;
+}
+
+.notia-properties-key svg {
+  flex-shrink: 0;
+  color: var(--notia-editor-dim);
+}
+
+.notia-properties-row.is-editing .notia-properties-key {
+  color: var(--color-heading-text);
+}
+
+.notia-properties-row.is-editing .notia-properties-key svg {
+  color: var(--color-accent-text);
+}
+
+.notia-properties-key span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-properties-value {
+  min-width: 0;
+  color: var(--color-body-text);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+
+.notia-properties-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.notia-properties-text {
+  min-width: 0;
+}
+
+.notia-properties .notia-button.notia-properties-link {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-text);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  user-select: text;
+}
+
+.notia-properties .notia-button.notia-properties-link:hover:not(:disabled) {
+  background: transparent;
+  color: var(--color-accent-text);
+}
+
+.notia-properties-link--broken {
+  color: var(--color-muted-text);
+  text-decoration: underline dashed;
+  text-underline-offset: 2px;
+}
+
+.notia-properties .notia-button.notia-properties-placeholder,
+.notia-properties .notia-button.notia-properties-value-button {
+  justify-content: flex-start;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--notia-editor-dim);
+  font-size: 13.5px;
+  text-align: left;
+}
+
+.notia-properties .notia-button.notia-properties-value-button {
+  color: var(--color-body-text);
+}
+
+.notia-properties .notia-button.notia-properties-placeholder:hover:not(:disabled),
+.notia-properties .notia-button.notia-properties-value-button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--color-accent-text);
+}
+
+.notia-properties .notia-button.notia-properties-icon-button,
+.notia-properties .notia-button.notia-properties-delete-button {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--notia-editor-dim);
+  opacity: 0.6;
+}
+
+.notia-properties-row:hover .notia-button.notia-properties-icon-button,
+.notia-properties-row:hover .notia-button.notia-properties-delete-button,
+.notia-properties .notia-button.notia-properties-icon-button:focus-visible,
+.notia-properties .notia-button.notia-properties-delete-button:focus-visible {
+  opacity: 1;
+}
+
+.notia-properties-timestamp {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.notia-properties-raw {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--notia-editor-dim);
+}
+
+.notia-properties-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  max-width: 100%;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.notia-properties-chip--small {
+  height: 22px;
+  padding: 0 9px;
+}
+
+.notia-properties .notia-button.notia-properties-chip--button {
+  min-height: 0;
+  border: 0;
+}
+
+.notia-properties .notia-button.notia-properties-chip--button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-text) 22%, transparent);
+  color: var(--color-accent-text);
+}
+
+.notia-properties-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notia-properties .notia-button.notia-properties-chip-remove {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin-right: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.notia-properties .notia-button.notia-properties-chip-add {
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  color: var(--notia-editor-dim);
+}
+
+.notia-properties-context {
+  position: relative;
+  display: inline-block;
+}
+
+.notia-properties-popover,
+.notia-note-link-menu,
+.notia-properties-type-menu {
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 14px 36px var(--color-menu-shadow);
+}
+
+.notia-properties-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+}
+
+.notia-properties .notia-button.notia-properties-popover-option,
+.notia-properties .notia-button.notia-note-link-option,
+.notia-properties .notia-button.notia-note-link-action,
+.notia-properties .notia-button.notia-properties-type-option {
+  justify-content: flex-start;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-heading-text);
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+}
+
+.notia-properties .notia-button.notia-properties-popover-option[aria-selected='true'],
+.notia-properties .notia-button.notia-note-link-option[aria-selected='true'] {
+  background: var(--color-active-item-bg);
+}
+
+.notia-properties-input {
+  width: 100%;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 7px;
+  background: var(--color-main-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.notia-properties-input:focus,
+.notia-properties-input--active {
+  outline: none;
+  border-color: var(--color-focus-ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus-ring) 15%, transparent);
+}
+
+.notia-note-link-input {
+  position: relative;
+}
+
+.notia-note-link-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: min(380px, calc(100cqi - 32px));
+}
+
+.notia-note-link-menu-title {
+  margin: 0;
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-text);
+}
+
+.notia-properties .notia-button.notia-note-link-option {
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+}
+
+.notia-note-link-option-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.notia-note-link-option-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-note-link-option-title svg {
+  flex-shrink: 0;
+  color: var(--notia-editor-dim);
+}
+
+.notia-note-link-option[aria-selected='true'] .notia-note-link-option-title svg {
+  color: var(--color-accent-text);
+}
+
+.notia-note-link-option-folder {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-muted-text);
+  font-size: 11.5px;
+}
+
+.notia-note-link-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--color-border-soft);
+}
+
+.notia-properties .notia-button.notia-note-link-action {
+  gap: 10px;
+  color: var(--color-muted-text);
+}
+
+.notia-note-link-error,
+.notia-properties-error {
+  margin: 4px 10px;
+  color: var(--color-coral);
+  font-size: 12px;
+}
+
+.notia-properties-checkbox {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  cursor: pointer;
+}
+
+.notia-properties-checkbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--color-accent-text);
+  cursor: pointer;
+}
+
+.notia-properties-divider {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--color-border-soft);
+}
+
+.notia-properties .notia-button.notia-properties-add-button {
+  justify-content: flex-start;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--notia-editor-dim);
+  font-size: 13px;
+}
+
+.notia-properties-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  padding: 6px 4px 4px 10px;
+}
+
+.notia-properties-add-form > .notia-properties-input {
+  flex: 1 1 200px;
+  max-width: 260px;
+}
+
+.notia-properties-type-menu {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  width: 240px;
+}
+
+.notia-properties .notia-button.notia-properties-type-option {
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+
+.notia-properties .notia-button.notia-properties-type-option:hover:not(:disabled) {
+  background: var(--color-active-item-bg);
+}
+
+.notia-properties-type-glyph {
+  min-width: 16px;
+  color: var(--notia-editor-dim);
+}
+
+.notia-properties .notia-button.notia-properties-type-option:hover .notia-properties-type-glyph {
+  color: var(--color-accent-text);
+}
+
+.notia-properties .notia-button.notia-properties-add-cancel {
+  height: 32px;
+  border: 0;
+  color: var(--color-muted-text);
+}
+
+.notia-properties-add-form .notia-properties-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+@media (pointer: coarse) {
+  .notia-properties-row {
+    min-height: 44px;
+  }
+
+  .notia-properties .notia-button.notia-properties-icon-button,
+  .notia-properties .notia-button.notia-properties-delete-button,
+  .notia-properties .notia-button.notia-properties-chip-add {
+    width: 40px;
+    height: 40px;
+    opacity: 1;
+  }
+
+  .notia-properties .notia-button.notia-properties-chip-remove {
+    width: 28px;
+    height: 28px;
+  }
+
+  .notia-properties .notia-button.notia-properties-placeholder,
+  .notia-properties .notia-button.notia-properties-value-button,
+  .notia-properties .notia-button.notia-properties-add-button,
+  .notia-properties .notia-button.notia-properties-popover-option,
+  .notia-properties .notia-button.notia-note-link-option,
+  .notia-properties .notia-button.notia-note-link-action,
+  .notia-properties .notia-button.notia-properties-type-option,
+  .notia-properties .notia-button.notia-properties-toggle {
+    min-height: 44px;
+  }
+
+  .notia-properties-input {
+    height: 40px;
+  }
+
+  .notia-properties-checkbox {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@container notia-properties (max-width: 520px) {
+  .notia-properties-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .notia-properties-key {
+    grid-column: 1 / -1;
+  }
+
+  .notia-properties-type-menu {
+    width: 100%;
+  }
+}

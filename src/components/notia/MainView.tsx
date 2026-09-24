@@ -19,6 +19,8 @@ interface MainViewProps {
   onTextDocumentChange: (nextSource: string) => void
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  /** Creates a note next to the open one from a link property; resolves to an error message or `null`. */
+  onCreateLinkedNote?: (title: string) => Promise<string | null>
   onSelectionChange: (selection: MarkdownSelectionContext | null) => void
   externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
@@ -44,6 +46,7 @@ function MainViewComponent({
   onTextDocumentChange,
   markdownWikiLinkTargets,
   onOpenLinkedFile,
+  onCreateLinkedNote,
   onSelectionChange,
   externalSourceUpdate,
   theme,
@@ -234,6 +237,7 @@ function MainViewComponent({
           onTextSourceChange={onTextDocumentChange}
           wikiLinkTargets={markdownWikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
+          onCreateLinkedNote={onCreateLinkedNote}
           onSelectionChange={onSelectionChange}
           externalSourceUpdate={externalSourceUpdate}
           theme={theme}

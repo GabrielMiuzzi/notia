@@ -1031,6 +1031,7 @@ Cuarto y último paso de la fase 1 del plan de separación. Con esta iteración,
 
 - **Editor Markdown** (Milkdown):
   - composición del buffer (frontmatter + cuerpo) en cada pulsación, en `frontmatterEngine.ts`;
+  - lectura y escritura del subrayado, el color, el resaltado y la alineación como HTML, en `richTextMarkdown.ts`;
   - sintaxis y resolución local de enlaces wiki;
   - bloques de tabla y selección.
 
@@ -6869,3 +6870,56 @@ El doble clic sobre una tarjeta abre `TaskSourceDialog` (`src/modules/task-manag
 - **Frontmatter**: `serializeFrontmatterDocument` ahora pone entre comillas los textos que al releerse serían otro tipo (números, `true`, `false`, `null`, `~`) o que empiezan con comillas. Antes, editar el cuerpo convertía `revision: "7954508202859205"` en un número YAML. Rust lo toleraba, pero un texto como `"007"` volvía como `7`. Afecta también a las notas y a las tareas abiertas en el editor principal.
 - **Panel de propiedades**: la fila pasó a tener tres columnas (`180px 1fr auto`). El botón `×` de borrar, que no tenía estilos y caía en una línea aparte, queda al final de su fila, con 40 px en pantallas táctiles.
 - **Validación**: `tsc`, ESLint, `vitest run` (238) y `vite build` aprobados. Hay 4 tests en `TaskSourceDialog.test.tsx` (error de lectura, guardado solo con cambios, la reescritura inicial como punto de partida y enlaces con cambios pendientes) y 1 de ida y vuelta en `frontmatterEngine.test.ts`, que falla sin la corrección. Se revisó con Chrome sin ventana el diálogo con el `MarkdownView` real y una tarea de ejemplo. Pendiente: prueba en la app de Windows y en Android (teclado virtual y toque dentro del editor), y en la página publicada.
+
+## Editor Markdown: rediseño con propiedades, handle y barra de formato
+
+El editor de notas (`MarkdownView`, Milkdown Crepe) sigue el lienzo «Notia · Editor rediseño»: panel de propiedades plegable, bloque resaltado con su handle, arrastre con línea de destino y una barra de formato sobre la selección. Todo es presentación y edición del documento abierto, dentro de la excepción de TypeScript del editor. Rust sigue validando el guardado, el frontmatter por defecto y los enlaces entre páginas, y crea las notas.
+
+- **Columna de texto**: el texto y el panel comparten una columna de hasta 760 px, con los márgenes del lienzo.
+  - El margen izquierdo, donde vive el handle, es `clamp(48px, 11%, 120px)` del ancho del editor: 120 px desde un editor de 1128 px con su barra de desplazamiento, que es el ancho del lienzo, y 64 px con puntero táctil. El texto empieza 2 px dentro de la columna, como en el lienzo.
+  - El panel empieza 36 px debajo del borde, sus filas miden 36 px y el texto empieza 36 px debajo del panel.
+  - Los bloques no tienen márgenes: los separa su propio relleno, con los valores del lienzo. Título 1: 12/6 px; título 2: 26/4; título 3: 14/2; títulos 4 a 6: 12/2; párrafo: 3/3; ítem de lista: 2/2. Cada tipo guarda su relleno en `--notia-block-pad-top` y `--notia-block-pad-bottom`.
+  - La viñeta ocupa una caja de 14 px (antes 24 × 32), así el texto del ítem empieza 24 px después de la columna y cada ítem mide lo que su línea.
+  - Se comparó midiendo con Chrome la columna del lienzo, reconstruida con sus estilos, contra el editor a 1128 px: el panel, las filas y el primer carácter de cada bloque coinciden con diferencias de 0,3 px o menos.
+  - El contenedor del editor no usa `container-type`: la contención lo convertiría en referencia de las piezas `position: fixed` que tiene adentro (menú de wikilinks, línea de arrastre) y las desplazaría. Por eso la columna usa porcentajes, y solo el panel de propiedades es un contenedor. Los estilos viven en `views/markdown/markdownEditor.css`, que reemplaza a los del panel y del handle en `notia.css`.
+- **Propiedades** (`MarkdownPropertiesPanel` y `views/markdown/properties/`):
+  - el encabezado «Propiedades» muestra la cantidad y pliega el panel; plegado, resume el contexto y la fecha de creación. Cada dispositivo recuerda si se plegó (`localStorage`, con `try/catch`);
+  - `propertyKinds.ts` deduce el tipo de cada fila a partir de la clave y el valor, porque el frontmatter no guarda tipos: contexto, enlace a nota (`nextPage`, `previousPage` o un único `[[wikilink]]`), marca de tiempo (números en claves `…At`), fecha `AAAA-MM-DD`, casilla, número, etiquetas (listas) y texto;
+  - cada tipo se edita en su lugar: chips de contexto con los contextos de la biblioteca (bloqueado dentro de un tablero), fecha legible con el valor guardado al lado, `input type="date"`, casilla, chips de etiquetas con quitar y agregar, y texto con Enter o al salir para guardar y Escape para cancelar. Las fechas usan meses fijos en español («19 sep 2026, 01:43») porque cada WebView formatea distinto con `Intl`;
+  - `NoteLinkInput` reemplaza a `WikiLinkPropertyInput`: busca notas mientras se escribe, sin `[[`, con la misma consulta a Rust (`library_link_suggestions`, solo la última respuesta). Muestra la carpeta de cada nota, permite quitar el enlace (`N/A` en los enlaces de página) y ofrece **Crear nota «…»**;
+  - **Crear nota** llega por `onCreateLinkedNote` (`NotiaWorkspace` → `MainView` → `FileViewHost` → `MarkdownView`). Crea la nota junto a la actual con `library_mutate_entry`, el mismo comando del explorador, refresca el árbol y enlaza `[[título]]`. `backend_sync_page_link` resuelve los nombres sin carpeta como hermanos de la nota. Si Rust rechaza el nombre, el error aparece en el menú. El editor de tareas no ofrece crear notas;
+  - **Agregar propiedad** pide el nombre y el tipo (Texto, Etiquetas, Número, Fecha, Nota o Casilla) y arranca con un valor de ese tipo. Una propiedad «Nota» vacía conserva su tipo mientras la nota esté abierta.
+- **Handle y arrastre** (`views/markdown/blockHandle.ts`):
+  - el bloque del handle se pinta con un fondo y un borde teal tenues. El resaltado abraza la línea de texto, no el relleno del bloque: va de 3 px sobre la línea a 3 px bajo ella, y de 10 px antes a 10 px después de la columna. Se calcula con las variables de relleno de cada tipo de bloque. La decoración la pone el plugin `activeBlockPlugin`. El bloque activo se toma de `getPosition` del handle de Crepe y se limpia cuando Milkdown lo oculta; un `MutationObserver` mira el atributo `data-show`. Son transacciones sin cambios de documento y fuera del historial;
+  - el handle muestra solo el grip de seis puntos del diseño. Crepe siempre dibuja un botón «+» antes del grip; se oculta por CSS. Los bloques nuevos salen de Enter y del menú `/`. El grip mide 22 × 24 px (44 × 44 px con puntero táctil). Queda 40 px a la izquierda de la columna, centrado en la primera línea del bloque (`blockHandleReference`, con la ubicación `left` fija). En el lienzo el grip toca el resaltado del bloque; en la app se veía pegado, así que se lo separó 8 px;
+  - Milkdown solo oculta el handle cuando el puntero se mueve dentro del texto, así que quedaba visible al salir del editor. Ahora `hideBlockHandleOnPointerLeave` lo oculta igual que Milkdown (`data-show`) cuando un mouse sale del editor, y con él se limpian el bloque pintado y su barra;
+  - al arrastrar, el bloque de origen queda atenuado, la línea de destino es teal de 2 px con un anillo al inicio, y la imagen de arrastre es una tarjeta con el texto del bloque en lugar de la captura del navegador.
+- **Barra de formato** (`formatToolbarPlugin.ts`, `formatCommands.ts`, `MarkdownFormatToolbar.tsx`):
+  - aparece en dos casos. Con una selección de texto, o un bloque elegido con el handle, formatea la selección; aparece cuando el puntero termina de seleccionar. Sin selección, y como en el lienzo, aparece al pasar el mouse sobre un bloque de texto: párrafo, título, ítem de lista o cita con texto, fuera de tablas. Toma el bloque activo del handle (`getActiveBlock`) y formatea el bloque entero: antes de cada comando selecciona su texto (`selectBlockText`). La selección tiene prioridad. El modo de bloque no necesita el foco y no se usa con puntero táctil. No aparece en bloques de código;
+  - en escritorio va sobre el texto, alineada con el bloque; con puntero táctil va debajo, para no tapar la barra de copiar y pegar del sistema;
+  - sobre un bloque, la barra empieza 4 px antes de la columna y termina 10 px sobre la primera línea (`firstLineBox`), como en el lienzo. Con puntero, el resaltado, el handle y la barra coinciden al píxel con el lienzo en un título, un párrafo y un ítem de lista;
+  - cuando va arriba, un «puente» invisible de 10 px cubre el espacio entre la barra y el texto. Sin él, el puntero pasaría sobre el bloque anterior al subir hacia la barra, y la barra saltaría a ese bloque;
+  - ofrece tipo de bloque (Párrafo, Título 1 a 3, Lista, Lista numerada y Cita; primero saca el bloque de listas y citas), negrita, cursiva, subrayado (también `Ctrl+U`), tachado, código, color de texto, resaltado, alineación, enlace (el editor de enlaces de Crepe) y quitar formato (conserva los enlaces);
+  - los botones no le quitan el foco al editor, así la selección sigue en su lugar. Cambiar de ventana tampoco la oculta. En pantallas angostas, la fila se desplaza de costado y los menús quedan fuera de ella para no recortarse.
+- **Formato persistido** (`engines/markdown/richTextMarkdown.ts` y `views/markdown/richTextMarks.ts`):
+  - subrayado `<u>…</u>`;
+  - color `<span data-color="teal">…</span>`;
+  - resaltado `<mark data-color="yellow">…</mark>`; un `<mark>` sin color se lee como amarillo;
+  - alineación: un párrafo o título de primer nivel centrado o a la derecha se envuelve en `<div align="center">` separado por líneas en blanco.
+
+  Los colores se guardan por nombre (`gray`, `teal`, `blue`, `violet`, `red`, `orange`, `yellow`) y cada tema los pinta con sus tokens: muted, teal, periwinkle, violeta, coral, ámbar y oro. GitHub y Obsidian muestran el subrayado, el resaltado y la alineación; el color se degrada a texto normal. Un transformador de remark agrupa las etiquetas antes de que Milkdown arme el documento. Los serializadores se registran en `toMarkdownExtensions`, como remark-gfm. Se conservan tal como están:
+  - las etiquetas con colores desconocidos;
+  - el HTML ajeno;
+  - las etiquetas sin cerrar;
+  - un `<div align>` que envuelve otra cosa (una lista, por ejemplo), para que guardar nunca borre HTML escrito a mano.
+
+  La alineación solo se ofrece para párrafos y títulos de primer nivel: el `<div>` es un bloque propio que una lista o una celda no pueden contener.
+- **Validación**:
+  - aprobados `tsc`, ESLint, `vitest run` (260) y `vite build`;
+  - tests nuevos: `richTextMarks.test.ts` (5, ida y vuelta con un editor Milkdown real), `formatCommands.test.ts` (8: marcas, colores, quitar formato, tipo de bloque saliendo de listas, alineación, bloque elegido con el handle, formato del bloque entero y bloques sin barra) y `MarkdownPropertiesPanel.test.tsx` (9: plegado, fecha, contexto, contexto bloqueado, enlazar, crear nota, error al crear, agregar propiedad y edición por tipo);
+  - revisado con Chrome sin ventana contra el lienzo, en tema oscuro y claro, a 1128 px y a 390 px: propiedades, buscador de notas, selector de tipo, handle, barra y menús de tipo y color;
+  - probado con eventos de mouse reales, enviados por el protocolo de DevTools. Al pasar sobre un párrafo aparece la barra de su bloque, sin el «+». Subir hasta la barra la mantiene en ese bloque, y **B** pone en negrita el párrafo entero. Con el cursor en un título y el puntero encima, la barra pasa a ese título. Al salir del editor, se oculta. Al seleccionar palabras arrastrando, la barra pasa a la selección.
+- **Pendiente**:
+  - prueba en la app de Windows: arrastre real con la imagen de arrastre y la línea de destino, y el editor de enlaces;
+  - prueba en Android: selección por toque largo con la barra debajo, handle de 44 px, teclado virtual y arrastre;
+  - crear una nota desde una propiedad en una biblioteca SAF.

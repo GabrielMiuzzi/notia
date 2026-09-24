@@ -5416,178 +5416,6 @@
   min-height: 100%;
 }
 
-.notia-markdown-properties-wrap {
-  max-width: none;
-  margin: 0;
-  padding: 14px 24px 2px 64px;
-}
-
-.notia-properties-panel {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.notia-properties-panel h3 {
-  margin: 0 0 10px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-heading-text);
-}
-
-.notia-properties-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.notia-properties-row {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 28px;
-}
-
-/* Delete button of a property, in its own column at the end of the row. */
-.notia-button.notia-properties-delete-button {
-  width: 28px;
-  height: 28px;
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  color: var(--color-icon-muted);
-  font-size: 15px;
-}
-
-@media (pointer: coarse) {
-  .notia-button.notia-properties-delete-button {
-    width: 40px;
-    height: 40px;
-  }
-}
-
-.notia-properties-key {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-subtle-text);
-  font-size: 13px;
-}
-
-.notia-properties-value {
-  font-size: 13px;
-  color: var(--color-body-text);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.notia-properties-wikilink {
-  border: 0;
-  background: transparent;
-  color: var(--color-accent-text);
-  font: inherit;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-thickness: 1px;
-}
-
-.notia-properties-wikilink--broken {
-  color: var(--color-subtle-text);
-  cursor: text;
-  text-decoration-style: dashed;
-}
-
-.notia-properties-empty {
-  color: var(--color-subtle-text);
-}
-
-.notia-properties-tags {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.notia-properties-tag-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  border-radius: 999px;
-  padding: 0 8px;
-  background: var(--color-accent-bg);
-  color: var(--color-accent-text);
-  font-size: 12px;
-}
-
-.notia-properties-add-button {
-  margin-top: 10px;
-  border: 0;
-  background: transparent;
-  color: var(--color-subtle-text);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  border-radius: 6px;
-  padding: 4px 2px;
-}
-
-.notia-properties-add-button:hover {
-  background: var(--color-tree-hover);
-  color: var(--color-heading-text);
-}
-
-.notia-properties-add-form {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 8px 10px;
-  margin-top: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.notia-properties-input {
-  height: 30px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  background: var(--color-main-bg);
-  color: var(--color-heading-text);
-  padding: 0 8px;
-  font-size: 13px;
-}
-
-.notia-properties-input:focus {
-  outline: none;
-  border-color: var(--color-focus-ring);
-}
-
-.notia-properties-add-actions {
-  grid-column: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.notia-properties-add-actions button {
-  border: 1px solid var(--color-border-soft);
-  background: var(--color-card-bg);
-  color: var(--color-heading-text);
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.notia-properties-add-actions button:hover {
-  background: var(--color-hover-surface);
-}
-
 .notia-markdown-editor-root {
   width: 100%;
   min-height: 100%;
@@ -5621,12 +5449,11 @@
   --crepe-font-code: 'IBM Plex Mono', 'JetBrains Mono', Consolas, monospace;
 }
 
+/* Column width and padding live in markdownEditor.css. */
 .notia-markdown-editor-root .milkdown .ProseMirror {
   min-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 180px);
   width: 100%;
-  max-width: none;
   margin: 0;
-  padding: 24px 24px 38px 64px;
   box-sizing: border-box;
 }
 
@@ -5797,19 +5624,6 @@
   .notia-markdown-editor-root .milkdown .milkdown-latex-inline-edit .ProseMirror {
     max-width: max(0px, calc(94vw - 130px));
   }
-}
-
-.notia-markdown-editor-root .milkdown .milkdown-block-handle {
-  z-index: 9;
-  flex-direction: column;
-}
-
-.notia-markdown-editor-root .milkdown .milkdown-block-handle .operation-item svg {
-  fill: var(--notia-milkdown-handle-ink);
-}
-
-.notia-markdown-editor-root .milkdown .milkdown-slash-menu {
-  z-index: 12;
 }
 
 .notia-markdown-document-menu {

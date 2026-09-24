@@ -34,6 +34,8 @@ interface FileViewHostProps {
   onTextSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
+  /** Creates a note next to the open one from a link property; resolves to an error message or `null`. */
+  onCreateLinkedNote?: (title: string) => Promise<string | null>
   onSelectionChange: (selection: MarkdownSelectionContext | null) => void
   externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
@@ -48,6 +50,7 @@ function FileViewHostComponent({
   onTextSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
+  onCreateLinkedNote,
   onSelectionChange,
   externalSourceUpdate,
   theme,
@@ -95,6 +98,7 @@ function FileViewHostComponent({
           onSourceChange={onTextSourceChange}
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
+          onCreateLinkedNote={onCreateLinkedNote}
           onSelectionChange={onSelectionChange}
           externalSourceUpdate={externalSourceUpdate}
           theme={theme}

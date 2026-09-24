@@ -214,7 +214,9 @@ Características:
 - **Pestañas múltiples**: abrí varios archivos simultáneamente y navegá entre ellos.
 - **Guardado automático**: los cambios se guardan automáticamente tras un breve período de inactividad y se persisten de inmediato antes de cerrar, salir o cambiar de biblioteca.
 - **Wikilinks**: escribí `[[Nombre de Nota]]` para crear enlaces bidireccionales entre documentos. Al hacer clic en un wikilink, la nota destino se abre en una nueva pestaña.
-- **Frontmatter y propiedades**: cada nota puede tener metadatos (título, etiquetas, fecha, etc.) editables desde el panel de propiedades lateral.
+- **Propiedades**: arriba de cada nota, el panel **Propiedades** muestra sus metadatos y se pliega con un toque; plegado, resume el contexto y la fecha. Cada valor se edita según su tipo: el contexto con los de la biblioteca, las fechas legibles, casillas, etiquetas como chips y los enlaces a otras notas con un buscador que también permite **Crear nota**. **Agregar propiedad** pide el nombre y el tipo (Texto, Etiquetas, Número, Fecha, Nota o Casilla).
+- **Barra de formato**: al pasar el mouse sobre un párrafo, título, ítem de lista o cita aparece encima una barra que formatea el bloque entero; al seleccionar texto (o un bloque con su handle), la barra formatea la selección. Sirve para cambiar el tipo de bloque (párrafo, títulos, listas o cita) y aplicar negrita, cursiva, subrayado, tachado, código, color de texto, resaltado, alineación y enlaces, o quitar el formato. El subrayado, el color, el resaltado y la alineación se guardan como HTML dentro del Markdown (`<u>`, `<span data-color>`, `<mark>`, `<div align>`), que GitHub y Obsidian también muestran, salvo el color.
+- **Mover bloques**: al pasar sobre un bloque se resalta y muestra su handle (el ícono de seis puntos); arrastralo para moverlo. Una línea teal marca dónde va a quedar. Para agregar bloques, usá Enter o escribí `/`.
 - **Bloques dentro de tablas Markdown**: una celda puede combinar texto normal con bloques de código (incluidos XGraph y Mermaid), imágenes y otros bloques compatibles con el editor.
 - **Indicadores de estado**: visualización de "Guardando...", "Guardado ✓" o "Error ✗" en la pestaña activa.
 - **Imágenes de chats persistidos**: al abrir un chat Markdown que conserva adjuntos, Notia muestra sobre el editor hasta 24 previews de imágenes raster válidas; también las muestra en la vista de documento grande. SVG, formatos no admitidos y datos Base64 que no superan la validación permitida no se renderizan.
@@ -397,7 +399,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Vincula notas Markdown en una secuencia ordenada mediante las propiedades de frontmatter `nextPage` y `previousPage`. Útil para navegar entre capítulos, pasos de un proceso o entradas de un diario. |
 | **Cuándo usarlo** | Cuando necesitás que varias notas estén conectadas en un orden específico y que el explorador las agrupe como un bloque secuencial. |
-| **Pasos para consumir** | 1. Abrí una nota Markdown y abrí el panel de **Propiedades** (a la izquierda del editor). 2. Encontrá la propiedad `nextPage` (se crea automáticamente al abrir una nota si no existe). 3. Hacé **doble clic** en el valor de `nextPage` para editarlo. 4. Escribí `[[Nombre de la siguiente nota]]` y presioná **Enter**. 5. Notia actualizará automáticamente la nota destino para que tenga `previousPage: [[Nombre de la nota actual]]`. 6. Repetí el proceso para `previousPage` si es necesario. |
+| **Pasos para consumir** | 1. Abrí una nota Markdown; el panel **Propiedades** está arriba del texto. 2. Encontrá la propiedad `nextPage` (se crea automáticamente al abrir una nota si no existe). 3. Tocá **Vincular nota…** (o el lápiz, si ya tiene una nota). 4. Escribí parte del nombre y elegí la nota de la lista, o tocá **Crear nota «…»** para crearla junto a la actual. 5. Notia actualizará automáticamente la nota destino para que tenga `previousPage: [[Nombre de la nota actual]]`. 6. Repetí el proceso para `previousPage` si es necesario. |
 | **Entradas esperadas** | Un wikilink válido: `[[nombre-de-archivo.md]]`. Se aceptan referencias sin extensión (ej. `[[6-10]]`) que se resuelven automáticamente a `.md`. |
 | **Salidas / Resultado** | Las dos notas quedan vinculadas bidireccionalmente. El **Explorador** renderiza las notas conectadas con una línea vertical que las agrupa como un bloque. Los bloques se ordenan por la fecha de creación (`createdAt`) de la primera nota. |
 | **Errores comunes** | **Ciclo detectado**: si A → B → C, intentar que C apunte a A es rechazado. Solución: mantener una cadena lineal sin ciclos. **Link roto**: si `nextPage` apunta a un archivo inexistente, se ordena como nota suelta por fecha. Solución: verificar que el archivo exista. |
@@ -603,15 +605,15 @@ En Linux, el servidor se compila desde `src-tauri` con `cargo build --release --
 ### Usar Enlaces Secuenciales (Page Links)
 
 1. Abrí una nota Markdown desde el Explorador.
-2. En el panel **Propiedades** (a la izquierda del editor), buscá la propiedad `nextPage`. Si no existe, se crea automáticamente al abrir la nota por primera vez.
-3. Hacé **doble clic** en el valor de `nextPage` para editarlo.
-4. Escribí `[[nombre-del-siguiente-archivo]]` (puede ser sin `.md`, se resuelve automáticamente). Aparecerá un menú de autocompletado con las notas de la librería.
-5. Presioná **Enter** para confirmar.
+2. En el panel **Propiedades** (arriba del texto), buscá la propiedad `nextPage`. Si no existe, se crea automáticamente al abrir la nota por primera vez.
+3. Tocá **Vincular nota…** (o el lápiz, si ya apunta a una nota).
+4. Escribí parte del nombre: aparece la lista de notas de la librería, cada una con su carpeta.
+5. Elegí la nota (o presioná **Enter** para la resaltada). Si todavía no existe, tocá **Crear nota «…»**: Notia la crea junto a la nota actual y la enlaza.
 6. Notia guardará automáticamente:
    - La nota actual con `nextPage: [[nombre-del-siguiente-archivo]]`
    - La nota destino con `previousPage: [[nombre-de-la-nota-actual]]`
 7. En el **Explorador**, ambas notas aparecerán conectadas visualmente como un bloque secuencial.
-8. Para **romper un link**, editá `nextPage` (o `previousPage`) y dejalo en `N/A`. Notia limpiará el vínculo opuesto automáticamente.
+8. Para **romper un link**, tocá el lápiz de `nextPage` (o `previousPage`) y elegí **Quitar enlace**. Notia limpiará el vínculo opuesto automáticamente.
 9. Para **cambiar el destino**, editá `nextPage` a un nuevo archivo. Notia limpiará el vínculo en el destino anterior y lo creará en el nuevo.
 10. **Nota**: No se permiten ciclos (A → B → C → A). Si intentás crear un ciclo, Notia mostrará un error.
 

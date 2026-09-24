@@ -23,6 +23,8 @@ import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 import type { GraphSearchResult } from '../../hooks/useLibraryGraphData'
+import { mutateLibraryEntry } from '../../services/libraries/libraryRuntime'
+import { getParentDirectory } from './hooks/useTabManager'
 
 const GraphView = lazy(async () => {
   const module = await import('./views/GraphView')
@@ -119,6 +121,18 @@ function NotiaWorkspaceComponent({
   const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
 
   const markdownWikiLinkTargets = useWikiLinkTargets(isMarkdownDocumentActive ? activeLibrary?.id : undefined, treeNodes)
+  const activeDocumentPath = activeDocument?.path
+
+  // «Crear nota» of a link property: the new note goes next to the open one.
+  const handleCreateLinkedNote = useCallback(async (title: string): Promise<string | null> => {
+    if (!activeLibrary || !activeDocumentPath) return 'No hay una biblioteca abierta.'
+    const hasFolder = /[\\/]/.test(activeDocumentPath)
+    const parentPath = hasFolder ? getParentDirectory(activeDocumentPath) : activeLibrary.path
+    const result = await mutateLibraryEntry(activeLibrary, { action: 'create', parentPath, name: title, kind: 'note' })
+    if (!result.ok) return result.error ?? 'No se pudo crear la nota.'
+    handleChatWorkspaceTreeChanged(parentPath)
+    return null
+  }, [activeDocumentPath, activeLibrary, handleChatWorkspaceTreeChanged])
 
   const shouldDeferHeavyWorkspaceMount =
     isAndroidRuntime
@@ -246,6 +260,7 @@ function NotiaWorkspaceComponent({
       externalSourceUpdate={markdownExternalUpdate}
       markdownWikiLinkTargets={markdownWikiLinkTargets}
       onOpenLinkedFile={handleOpenFileFromView}
+      onCreateLinkedNote={handleCreateLinkedNote}
       theme={appTheme}
       contexts={libraryContexts}
       activeLibrary={activeLibrary}

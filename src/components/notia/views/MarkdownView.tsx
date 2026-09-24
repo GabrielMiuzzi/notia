@@ -62,6 +62,29 @@ import { shouldShowMarkdownBlockHandle } from '../../../engines/markdown/markdow
 import { markdownTableBlockView } from './markdown/markdownTableBlockView'
 import { ChatAttachmentImages } from './ChatAttachmentImages'
 import { suggestLinkTargets } from '../../../services/libraries/libraryLinkRuntime'
+import { $prose } from '@milkdown/kit/utils'
+import { toggleLinkCommand } from '@milkdown/kit/component/link-tooltip'
+import { configureBlockAlignment, richTextPlugins } from './markdown/richTextMarks'
+import {
+  activeBlockPlugin,
+  attachBlockDragGhost,
+  BLOCK_GRIP_ICON,
+  blockHandleReference,
+  hideBlockHandleOnPointerLeave,
+  observeBlockHandleVisibility,
+  setActiveBlock,
+} from './markdown/blockHandle'
+import { createFormatToolbarPlugin, type FormatToolbarState } from './markdown/formatToolbarPlugin'
+import {
+  clearFormatting,
+  selectBlockText,
+  setBlockAlignment,
+  setBlockKind,
+  setColorMark,
+  toggleFormatMark,
+} from './markdown/formatCommands'
+import { MarkdownFormatToolbar, type MarkdownFormatToolbarActions } from './markdown/MarkdownFormatToolbar'
+import './markdown/markdownEditor.css'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -85,7 +108,17 @@ interface MarkdownViewProps {
   zoom: number
   onZoomChange: (zoom: number) => void
   contexts?: readonly LibraryContext[]
+  /** Creates a note next to this one from a link property; resolves to an error message or `null`. */
+  onCreateLinkedNote?: (title: string) => Promise<string | null>
 }
+
+/** Drop line of a dragged block, as thin as the design's. */
+const DROP_INDICATOR_WIDTH = 2
+/**
+ * Distance from the text to the handle: the painted block reaches 12px left
+ * of the text (10px past the column), and the grip keeps 8px from it.
+ */
+const BLOCK_HANDLE_OFFSET = 20
 
 function clampWikiLinkMenuLeft(left: number): number {
   const maxLeft = Math.max(WIKI_LINK_MENU_MARGIN, window.innerWidth - WIKI_LINK_MENU_WIDTH - WIKI_LINK_MENU_MARGIN)
@@ -333,13 +366,16 @@ function MarkdownViewInner({
   zoom,
   onZoomChange,
   contexts = [],
+  onCreateLinkedNote,
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
 
   const [wikiLinkMenuState, setWikiLinkMenuState] = useState<WikiLinkSuggestionMenuState | null>(null)
   const [isEditorReady, setIsEditorReady] = useState(false)
+  const [formatToolbarState, setFormatToolbarState] = useState<FormatToolbarState | null>(null)
 
+  const toolbarRef = useRef<HTMLDivElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const zoomContentRef = useRef<HTMLDivElement | null>(null)
@@ -437,7 +473,20 @@ function MarkdownViewInner({
         [Crepe.Feature.BlockEdit]: true,
       },
       featureConfigs: {
+        [Crepe.Feature.Cursor]: { width: DROP_INDICATOR_WIDTH },
         [Crepe.Feature.BlockEdit]: {
+          handleDragIcon: BLOCK_GRIP_ICON,
+          blockHandle: {
+            getOffset: () => BLOCK_HANDLE_OFFSET,
+            // Centred on the first line, as in the canvas, whatever the block's padding.
+            getPlacement: () => 'left',
+            // The handle's block is also the one painted as active.
+            getPosition: ({ ctx, active }) => {
+              const view = ctx.get(editorViewCtx)
+              setActiveBlock(view, active.$pos.pos)
+              return blockHandleReference(view, active.$pos.pos, active.el)
+            },
+          },
           buildMenu: (builder) => {
             const advancedGroup = builder.getGroup('advanced')
             advancedGroup.addItem('xgraph', {
@@ -683,7 +732,17 @@ function MarkdownViewInner({
       }))
       ctx.update(tableCellSchema.key, (prev) => () => extendTableCellSchemaWithBlocks(prev(ctx)))
       ctx.update(tableHeaderSchema.key, (prev) => () => extendTableCellSchemaWithBlocks(prev(ctx)))
+      configureBlockAlignment(ctx)
     })
+
+    crepe.editor.use(richTextPlugins)
+    crepe.editor.use($prose(() => activeBlockPlugin))
+    crepe.editor.use($prose(() => createFormatToolbarPlugin({
+      onChange: (state) => {
+        if (isMounted) setFormatToolbarState(state)
+      },
+      isInsideToolbar: (node) => Boolean(node && toolbarRef.current?.contains(node)),
+    })))
 
     crepe.editor.use(
       createWikiLinkPlugin({
@@ -808,11 +867,26 @@ function MarkdownViewInner({
       editorView.dom.addEventListener('mouseup', notifySelectionChange)
       editorView.dom.addEventListener('touchend', notifySelectionChange)
       document.addEventListener('selectionchange', notifySelectionChange)
+      const root = rootRef.current
+      const host = viewportRef.current
+      const stopObservingHandle = root
+        ? observeBlockHandleVisibility(root, () => setActiveBlock(editorView, null))
+        : () => {}
+      const detachDragGhost = root && host
+        ? attachBlockDragGhost(root, host, () => {
+          const { selection } = editorView.state
+          return selection instanceof NodeSelection ? selection.node.textContent : ''
+        })
+        : () => {}
+      const stopHidingHandle = root && host ? hideBlockHandleOnPointerLeave(host, root) : () => {}
       selectionCleanupRef.current = () => {
         editorView.dom.removeEventListener('keyup', notifySelectionChange)
         editorView.dom.removeEventListener('mouseup', notifySelectionChange)
         editorView.dom.removeEventListener('touchend', notifySelectionChange)
         document.removeEventListener('selectionchange', notifySelectionChange)
+        stopObservingHandle()
+        detachDragGhost()
+        stopHidingHandle()
       }
       notifySelectionChange()
       onSelectionChangeRef.current(buildMarkdownSelectionContext(
@@ -995,6 +1069,27 @@ function MarkdownViewInner({
     onSourceChangeRef.current(nextSource)
   }
 
+  /** Runs a toolbar command; on a block's toolbar it first selects that block's text. */
+  const runFormat = (action: (view: EditorView) => void) => {
+    const crepe = crepeRef.current
+    if (!crepe || !isReadyRef.current) return
+    const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+    const target = formatToolbarState?.target
+    if (target?.kind === 'block') selectBlockText(view, target.pos)
+    action(view)
+    view.focus()
+  }
+
+  const formatToolbarActions: MarkdownFormatToolbarActions = {
+    onBlockKind: (kind) => runFormat((view) => setBlockKind(view, kind)),
+    onToggleMark: (name) => runFormat((view) => toggleFormatMark(view, name)),
+    onColor: (name, color) => runFormat((view) => setColorMark(view, name, color)),
+    onAlign: (align) => runFormat((view) => setBlockAlignment(view, align)),
+    // Crepe's link tooltip asks for the address.
+    onLink: () => runFormat(() => crepeRef.current?.editor.action((ctx) => ctx.get(commandsCtx).call(toggleLinkCommand.key))),
+    onClear: () => runFormat(clearFormatting),
+  }
+
   const handleWikiLinkSelect = (index: number) => {
     const menuState = wikiLinkMenuStateRef.current
     const crepe = crepeRef.current
@@ -1025,6 +1120,7 @@ function MarkdownViewInner({
             onEditProperty={handleEditProperty}
             onDeleteProperty={handleDeleteProperty}
             onOpenLinkedFile={onOpenLinkedFile}
+            onCreateLinkedNote={onCreateLinkedNote}
             contexts={contexts}
             lockedContextTag={lockedContextTag}
           />
@@ -1032,6 +1128,12 @@ function MarkdownViewInner({
         <div ref={rootRef} className="notia-markdown-editor-root" />
       </div>
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />
+      <MarkdownFormatToolbar
+        state={formatToolbarState}
+        hostRef={viewportRef}
+        toolbarRef={toolbarRef}
+        {...formatToolbarActions}
+      />
     </div>
   )
 }

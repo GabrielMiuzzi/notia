@@ -1,26 +1,21 @@
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
-import { Binary, Hash, List, Plus, Tag } from 'lucide-react'
+import { useId, useMemo, useState } from 'react'
+import { ArrowLeft, ArrowRight, Binary, Calendar, ChevronRight, Hash, Link2, ListChecks, Plus, SquareCheck, Type, X, type LucideIcon } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
-import {
-  findWikiLinkMatches,
-  resolveWikiLinkTarget,
-  type MarkdownWikiLinkLookup,
-} from '../../../engines/markdown/wikiLinkEngine'
-import {
-  parsePropertyInputValue,
-  formatFrontmatterValue,
-  type FrontmatterEntry,
-  type FrontmatterScalarValue,
-  type FrontmatterValue,
-} from '../../../engines/markdown/frontmatterEngine'
-import { WikiLinkPropertyInput } from './markdown/WikiLinkPropertyInput'
+import type { MarkdownWikiLinkLookup } from '../../../engines/markdown/wikiLinkEngine'
+import type { FrontmatterEntry, FrontmatterValue } from '../../../engines/markdown/frontmatterEngine'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
+import { PropertyValue } from './markdown/properties/PropertyValue'
+import {
+  NEW_PROPERTY_TYPES,
+  inferPropertyKind,
+  isContextKey,
+  isProtectedKey,
+  summarizeProperties,
+  validatePropertyKey,
+  type PropertyKind,
+} from './markdown/properties/propertyKinds'
 
-const PROTECTED_PROPERTY_KEYS = new Set([
-  'createdat',
-  'nextpage',
-  'previouspage',
-])
+const OPEN_STORAGE_KEY = 'notia.markdown.propertiesOpen'
 
 interface MarkdownPropertiesPanelProps {
   entries: FrontmatterEntry[]
@@ -30,139 +25,104 @@ interface MarkdownPropertiesPanelProps {
   onEditProperty: (key: string, value: FrontmatterValue) => void
   onDeleteProperty: (key: string) => void
   onOpenLinkedFile: (filePath: string) => void
+  /** Creates a note next to this one for a link property; resolves to an error message or `null`. */
+  onCreateLinkedNote?: (title: string) => Promise<string | null>
   contexts?: readonly LibraryContext[]
   lockedContextTag?: string
 }
 
-function getPropertyIcon(value: FrontmatterValue, key: string) {
-  if (key.toLowerCase() === 'tags') {
-    return Tag
-  }
-
-  if (Array.isArray(value)) {
-    return List
-  }
-
-  if (typeof value === 'number') {
-    return Binary
-  }
-
-  return Hash
+const KIND_ICONS: Record<PropertyKind, LucideIcon> = {
+  context: Hash,
+  noteLink: Link2,
+  timestamp: Calendar,
+  date: Calendar,
+  checkbox: SquareCheck,
+  number: Binary,
+  tags: ListChecks,
+  text: Type,
 }
 
-function renderWikiLinkedText(
-  value: string,
-  lookup: MarkdownWikiLinkLookup,
-  onOpenLinkedFile: (filePath: string) => void,
-  keyBase: string,
-): ReactNode {
-  const matches = findWikiLinkMatches(value)
-  if (matches.length === 0) {
-    return <span>{value}</span>
-  }
-
-  const chunks: ReactNode[] = []
-  let cursor = 0
-
-  matches.forEach((match, index) => {
-    if (match.startOffset > cursor) {
-      chunks.push(
-        <Fragment key={`${keyBase}-text-${index}`}>
-          {value.slice(cursor, match.startOffset)}
-        </Fragment>,
-      )
-    }
-
-    const target = resolveWikiLinkTarget(lookup, match.reference)
-    if (target) {
-      chunks.push(
-        <NotiaButton
-          key={`${keyBase}-link-${index}`}
-          variant="ghost"
-          className="notia-properties-wikilink"
-          onClick={() => onOpenLinkedFile(target.path)}
-        >
-          {match.displayLabel}
-        </NotiaButton>,
-      )
-    } else {
-      chunks.push(
-        <span key={`${keyBase}-broken-${index}`} className="notia-properties-wikilink notia-properties-wikilink--broken">
-          {match.displayLabel}
-        </span>,
-      )
-    }
-
-    cursor = match.endOffset
-  })
-
-  if (cursor < value.length) {
-    chunks.push(<Fragment key={`${keyBase}-tail`}>{value.slice(cursor)}</Fragment>)
-  }
-
-  return chunks
+function iconFor(key: string, kind: PropertyKind): LucideIcon {
+  if (key.toLowerCase() === 'nextpage') return ArrowRight
+  if (key.toLowerCase() === 'previouspage') return ArrowLeft
+  return KIND_ICONS[kind]
 }
 
-function renderScalarPropertyValue(
-  value: FrontmatterScalarValue,
-  lookup: MarkdownWikiLinkLookup,
-  onOpenLinkedFile: (filePath: string) => void,
-  keyBase: string,
-): ReactNode {
-  if (value === '') {
-    return <span className="notia-properties-empty">Empty</span>
+/** The panel remembers whether it was folded, on this device only. */
+function readStoredOpen(): boolean {
+  try {
+    return window.localStorage.getItem(OPEN_STORAGE_KEY) !== 'false'
+  } catch {
+    return true
   }
-
-  if (value === null) {
-    return <span>null</span>
-  }
-
-  if (typeof value === 'string') {
-    return renderWikiLinkedText(value, lookup, onOpenLinkedFile, keyBase)
-  }
-
-  return <span>{String(value)}</span>
 }
 
-function renderPropertyValue(
-  entry: FrontmatterEntry,
-  lookup: MarkdownWikiLinkLookup,
-  onOpenLinkedFile: (filePath: string) => void,
-) {
-  if (entry.key.toLowerCase() === 'tags' && Array.isArray(entry.value)) {
-    if (entry.value.length === 0) {
-      return <span className="notia-properties-empty">Empty</span>
-    }
+function storeOpen(isOpen: boolean): void {
+  try {
+    window.localStorage.setItem(OPEN_STORAGE_KEY, String(isOpen))
+  } catch {
+    // Some WebViews disable localStorage; the panel just opens unfolded.
+  }
+}
 
-    return (
-      <div className="notia-properties-tags">
-        {entry.value.map((tagValue, index) => (
-          <span key={`${entry.key}-${index}`} className="notia-properties-tag-chip">
-            {String(tagValue)}
-          </span>
+function AddPropertyForm({
+  existingKeys,
+  onAdd,
+  onCancel,
+}: {
+  existingKeys: ReadonlySet<string>
+  onAdd: (key: string, type: typeof NEW_PROPERTY_TYPES[number]) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const errorId = useId()
+  const choose = (type: typeof NEW_PROPERTY_TYPES[number]) => {
+    const key = name.trim()
+    const failure = validatePropertyKey(key, existingKeys)
+    if (failure) {
+      setError(failure)
+      return
+    }
+    onAdd(key, type)
+  }
+  return (
+    <div className="notia-properties-add-form">
+      <input
+        className="notia-properties-input notia-properties-input--active"
+        value={name}
+        placeholder="Nombre de la propiedad"
+        aria-label="Nombre de la propiedad"
+        aria-invalid={error !== null}
+        aria-describedby={error ? errorId : undefined}
+        autoFocus
+        onChange={(event) => {
+          setName(event.currentTarget.value)
+          setError(null)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && NEW_PROPERTY_TYPES[0]) {
+            event.preventDefault()
+            choose(NEW_PROPERTY_TYPES[0])
+          }
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onCancel()
+          }
+        }}
+      />
+      <div className="notia-properties-type-menu" role="group" aria-label="Tipo de la propiedad">
+        {NEW_PROPERTY_TYPES.map((type) => (
+          <NotiaButton key={type.kind} variant="ghost" className="notia-properties-type-option" onClick={() => choose(type)}>
+            <span className="notia-properties-type-glyph" aria-hidden="true">{type.glyph}</span>
+            {type.label}
+          </NotiaButton>
         ))}
       </div>
-    )
-  }
-
-  if (Array.isArray(entry.value)) {
-    if (entry.value.length === 0) {
-      return <span className="notia-properties-empty">Empty</span>
-    }
-
-    return (
-      <span>
-        {entry.value.map((item, index) => (
-          <Fragment key={`${entry.key}-value-${index}`}>
-            {index > 0 ? ', ' : null}
-            {renderScalarPropertyValue(item, lookup, onOpenLinkedFile, `${entry.key}-${index}`)}
-          </Fragment>
-        ))}
-      </span>
-    )
-  }
-
-  return renderScalarPropertyValue(entry.value, lookup, onOpenLinkedFile, `${entry.key}-scalar`)
+      {error ? <p id={errorId} className="notia-properties-error" role="alert">{error}</p> : null}
+      <NotiaButton variant="ghost" className="notia-properties-add-cancel" onClick={onCancel}>Cancelar</NotiaButton>
+    </div>
+  )
 }
 
 export function MarkdownPropertiesPanel({
@@ -173,177 +133,113 @@ export function MarkdownPropertiesPanel({
   onEditProperty,
   onDeleteProperty,
   onOpenLinkedFile,
+  onCreateLinkedNote,
   contexts = [],
   lockedContextTag,
 }: MarkdownPropertiesPanelProps) {
-  const [isAddingProperty, setIsAddingProperty] = useState(false)
-  const [keyInput, setKeyInput] = useState('')
-  const [valueInput, setValueInput] = useState('')
+  const [isOpen, setIsOpen] = useState(readStoredOpen)
   const [editingKey, setEditingKey] = useState<string | null>(null)
-  const [editValueInput, setEditValueInput] = useState('')
+  const [isAdding, setIsAdding] = useState(false)
+  // A new «Nota» property is empty until it links one, which reads as text.
+  const [kindOverrides, setKindOverrides] = useState<Record<string, PropertyKind>>({})
+  const cardId = useId()
 
   const existingKeys = useMemo(() => new Set(entries.map((entry) => entry.key.toLowerCase())), [entries])
+  const summary = useMemo(() => summarizeProperties(entries), [entries])
 
-  const submitAddProperty = () => {
-    const normalizedKey = keyInput.trim()
-    if (!normalizedKey) {
-      return
-    }
-
-    if (!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(normalizedKey)) {
-      return
-    }
-
-    if (existingKeys.has(normalizedKey.toLowerCase())) {
-      return
-    }
-
-    onAddProperty({
-      key: normalizedKey,
-      value: parsePropertyInputValue(valueInput),
+  const toggleOpen = () => {
+    setIsOpen((current) => {
+      storeOpen(!current)
+      return !current
     })
-
-    setIsAddingProperty(false)
-    setKeyInput('')
-    setValueInput('')
-  }
-
-  const startEditProperty = (entry: FrontmatterEntry) => {
-    setEditingKey(entry.key)
-    setEditValueInput(formatFrontmatterValue(entry.value))
-  }
-
-  const submitEditProperty = () => {
-    if (!editingKey) return
-    const rawValue = editValueInput.trim()
-    const isPageLinkKey = editingKey.toLowerCase() === 'nextpage' || editingKey.toLowerCase() === 'previouspage'
-    const value = isPageLinkKey ? rawValue : parsePropertyInputValue(editValueInput)
-    onEditProperty(editingKey, value)
     setEditingKey(null)
-    setEditValueInput('')
+    setIsAdding(false)
   }
 
-  const cancelEditProperty = () => {
-    setEditingKey(null)
-    setEditValueInput('')
+  const addProperty = (key: string, type: typeof NEW_PROPERTY_TYPES[number]) => {
+    onAddProperty({ key, value: type.initialValue() })
+    setKindOverrides((current) => ({ ...current, [key]: type.kind }))
+    setIsAdding(false)
+    setEditingKey(type.kind === 'checkbox' ? null : key)
   }
 
   return (
-    <section className="notia-properties-panel" aria-label="File properties">
-      <h3>Properties</h3>
-      <div className="notia-properties-list">
-        {entries.map((entry) => {
-          const Icon = getPropertyIcon(entry.value, entry.key)
-
-          return (
-            <div key={entry.key} className="notia-properties-row">
-              <div className="notia-properties-key">
-                <Icon size={14} />
-                <span>{entry.key}</span>
-              </div>
-              <div className="notia-properties-value">
-                {editingKey === entry.key ? (
-                  <div className="notia-properties-edit-form">
-                    {entry.key.toLowerCase() === 'contexto' && lockedContextTag ? (
-                      <span>{lockedContextTag} (tablero)</span>
-                    ) : entry.key.toLowerCase() === 'contexto' && contexts.length > 0 ? (
-                      <select className="notia-properties-input" value={editValueInput} onChange={(event) => setEditValueInput(event.target.value)} autoFocus>
-                        {contexts.map((context) => <option key={context.tag} value={context.tag}>{context.tag}</option>)}
-                      </select>
-                    ) : entry.key.toLowerCase() === 'nextpage' || entry.key.toLowerCase() === 'previouspage' ? (
-                      <WikiLinkPropertyInput
-                        value={editValueInput}
-                        libraryId={libraryId}
-                        onChange={setEditValueInput}
-                        onConfirm={submitEditProperty}
-                        onCancel={cancelEditProperty}
-                        autoFocus
-                      />
-                    ) : (
-                      <input
-                        className="notia-properties-input"
-                        value={editValueInput}
-                        onChange={(event) => setEditValueInput(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') submitEditProperty()
-                          if (event.key === 'Escape') cancelEditProperty()
-                        }}
-                        autoFocus
-                      />
-                    )}
-                    <NotiaButton onClick={submitEditProperty} disabled={entry.key.toLowerCase() === 'contexto' && Boolean(lockedContextTag)}>Save</NotiaButton>
-                    <NotiaButton variant="secondary" onClick={cancelEditProperty}>Cancel</NotiaButton>
-                  </div>
-                ) : (
-                  <div
-                    className="notia-properties-value-display"
-                    onClick={() => {
-                      if (entry.key.toLowerCase() === 'contexto' && lockedContextTag) return
-                      startEditProperty(entry)
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(event) => {
-                      if ((event.key === 'Enter' || event.key === ' ') && !(entry.key.toLowerCase() === 'contexto' && lockedContextTag)) startEditProperty(entry)
-                    }}
-                  >
-                    {renderPropertyValue(entry, wikiLinkLookup, onOpenLinkedFile)}
-                  </div>
-                )}
-              </div>
-              {!PROTECTED_PROPERTY_KEYS.has(entry.key.toLowerCase()) && !(entry.key.toLowerCase() === 'contexto' && lockedContextTag) ? (
-                <NotiaButton
-                  variant="ghost"
-                  className="notia-properties-delete-button"
-                  onClick={() => onDeleteProperty(entry.key)}
-                >
-                  ×
-                </NotiaButton>
-              ) : null}
-            </div>
-          )
-        })}
-
-        {isAddingProperty ? (
-          <div className="notia-properties-add-form">
-            <input
-              className="notia-properties-input"
-              placeholder="property"
-              value={keyInput}
-              onChange={(event) => setKeyInput(event.currentTarget.value)}
-            />
-            <input
-              className="notia-properties-input"
-              placeholder="value"
-              value={valueInput}
-              onChange={(event) => setValueInput(event.currentTarget.value)}
-            />
-            <div className="notia-properties-add-actions">
-              <NotiaButton onClick={submitAddProperty}>
-                Add
-              </NotiaButton>
-              <NotiaButton
-                variant="secondary"
-                onClick={() => {
-                  setIsAddingProperty(false)
-                  setKeyInput('')
-                  setValueInput('')
-                }}
-              >
-                Cancel
-              </NotiaButton>
-            </div>
+    <section className="notia-properties" aria-label="Propiedades del archivo">
+      <div className="notia-properties-summary">
+        <NotiaButton
+          variant="ghost"
+          className="notia-properties-toggle"
+          aria-expanded={isOpen}
+          aria-controls={cardId}
+          onClick={toggleOpen}
+        >
+          <ChevronRight size={12} strokeWidth={2.4} className="notia-properties-chevron" aria-hidden="true" />
+          Propiedades
+          <span className="notia-properties-count">{entries.length}</span>
+        </NotiaButton>
+        {!isOpen && (summary.context || summary.date) ? (
+          <div className="notia-properties-summary-values">
+            <span className="notia-properties-summary-divider" aria-hidden="true" />
+            {summary.context ? <span className="notia-properties-chip notia-properties-chip--small">{summary.context}</span> : null}
+            {summary.date ? <span className="notia-properties-summary-date">{summary.date}</span> : null}
           </div>
         ) : null}
       </div>
-      <NotiaButton
-        className="notia-properties-add-button"
-        variant="secondary"
-        onClick={() => setIsAddingProperty(true)}
-      >
-        <Plus size={15} />
-        <span>Add property</span>
-      </NotiaButton>
+
+      {isOpen ? (
+        <div className="notia-properties-card" id={cardId}>
+          {entries.map((entry) => {
+            const kind = kindOverrides[entry.key] && entry.value === '' ? kindOverrides[entry.key] as PropertyKind : inferPropertyKind(entry)
+            const Icon = iconFor(entry.key, kind)
+            const isEditing = editingKey === entry.key
+            const canDelete = !isProtectedKey(entry.key) && !(isContextKey(entry.key) && lockedContextTag)
+            return (
+              <div key={entry.key} className={`notia-properties-row${isEditing ? ' is-editing' : ''}`}>
+                <div className="notia-properties-key">
+                  <Icon size={15} strokeWidth={1.6} aria-hidden="true" />
+                  <span>{entry.key}</span>
+                </div>
+                <div className="notia-properties-value">
+                  <PropertyValue
+                    entry={entry}
+                    kind={kind}
+                    isEditing={isEditing}
+                    onStartEdit={() => setEditingKey(entry.key)}
+                    onStopEdit={() => setEditingKey((current) => (current === entry.key ? null : current))}
+                    onCommit={(value) => onEditProperty(entry.key, value)}
+                    wikiLinkLookup={wikiLinkLookup}
+                    onOpenLinkedFile={onOpenLinkedFile}
+                    libraryId={libraryId}
+                    contexts={contexts}
+                    lockedContextTag={lockedContextTag}
+                    onCreateLinkedNote={onCreateLinkedNote}
+                  />
+                </div>
+                {canDelete ? (
+                  <NotiaButton
+                    variant="ghost"
+                    className="notia-properties-delete-button"
+                    aria-label={`Quitar la propiedad ${entry.key}`}
+                    title="Quitar la propiedad"
+                    onClick={() => onDeleteProperty(entry.key)}
+                  >
+                    <X size={14} aria-hidden="true" />
+                  </NotiaButton>
+                ) : <span aria-hidden="true" />}
+              </div>
+            )
+          })}
+          {entries.length > 0 ? <span className="notia-properties-divider" aria-hidden="true" /> : null}
+          {isAdding ? (
+            <AddPropertyForm existingKeys={existingKeys} onAdd={addProperty} onCancel={() => setIsAdding(false)} />
+          ) : (
+            <NotiaButton variant="ghost" className="notia-properties-add-button" onClick={() => setIsAdding(true)}>
+              <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
+              Agregar propiedad
+            </NotiaButton>
+          )}
+        </div>
+      ) : null}
     </section>
   )
 }

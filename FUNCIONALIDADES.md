@@ -4,7 +4,9 @@
 - Explorador de archivos y carpetas con búsqueda integrada, guías de nivel y atajos `Ctrl + N` (nueva nota) y `Ctrl + O` (buscar archivo).
 - Editor enriquecido de archivos Markdown, con aviso de conflicto al guardar una nota que el agente modificó.
 - Bloques Markdown, gráficos, imágenes y otros bloques compatibles dentro de celdas de tablas, con selector, selección, eliminación y arrastre entre posiciones o celdas.
-- Propiedades y frontmatter editables en notas Markdown.
+- Propiedades y frontmatter editables en notas Markdown: panel plegable con resumen, valores por tipo (contexto, fechas, casillas, etiquetas y enlaces a notas con buscador y creación de la nota) y alta de propiedades eligiendo su tipo.
+- Barra de formato sobre la selección en notas Markdown: tipo de bloque, negrita, cursiva, subrayado, tachado, código, color de texto, resaltado, alineación, enlaces y quitar formato.
+- Bloques de las notas resaltados con su handle y movibles por arrastre, con línea de destino.
 - Wikilinks y enlaces bidireccionales entre notas.
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
