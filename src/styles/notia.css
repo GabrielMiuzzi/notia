@@ -1467,6 +1467,7 @@
   color: var(--color-body-text);
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .notia-app-dialog-actions,
@@ -6119,10 +6120,13 @@
   z-index: 120;
 }
 
+/* A panel takes the width of its size and the height of its content, up to
+   the screen minus a margin; taller content scrolls inside the panel. */
 .notia-modal-engine-panel {
-  width: min(760px, calc(100vw - 56px));
-  max-width: calc((100vw - var(--safe-area-left) - var(--safe-area-right) - 16px) * 0.75);
-  max-height: calc((100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 16px) * 0.75);
+  box-sizing: border-box;
+  width: 760px;
+  max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 32px);
+  max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 32px);
   border: 1px solid var(--modal-engine-border);
   border-radius: 10px;
   background: linear-gradient(
@@ -6132,27 +6136,28 @@
   );
   box-shadow: 0 24px 60px var(--modal-engine-shadow);
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
   color: var(--color-body-text);
 }
 
 .notia-modal-engine-panel--sm {
-  width: min(420px, calc(100vw - 44px));
+  width: 420px;
 }
 
 .notia-modal-engine-panel--md {
-  width: min(560px, calc(100vw - 52px));
+  width: 560px;
 }
 
 .notia-modal-engine-panel--lg {
-  width: min(760px, calc(100vw - 56px));
+  width: 760px;
 }
 
 .notia-modal-engine-panel--xl {
-  width: min(860px, calc(100vw - 56px));
+  width: 860px;
 }
 
-/* Every modal exposed by the shared modal engine uses the same viewport footprint. */
+/* `fill`: a fixed surface for modals with their own scrollable sections or
+   lists (Settings, library manager, library file picker, InkMath). */
 .notia-modal-engine-panel.notia-modal-engine-panel--viewport {
   width: 75vw;
   max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 16px);

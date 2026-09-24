@@ -6,6 +6,11 @@ interface NotiaModalShellProps {
   children: ReactNode
   panelClassName?: string
   size?: 'sm' | 'md' | 'lg' | 'xl'
+  /**
+   * Fixed surface of 75% of the screen, for modals with their own scrollable
+   * sections or lists. Without it the panel takes the height of its content.
+   */
+  fill?: boolean
   panelStyle?: CSSProperties
 }
 
@@ -28,6 +33,7 @@ export function NotiaModalShell({
   children,
   panelClassName,
   size = 'lg',
+  fill = false,
   panelStyle,
 }: NotiaModalShellProps) {
   const panelRef = useRef<HTMLDivElement | null>(null)
@@ -102,7 +108,7 @@ export function NotiaModalShell({
     return null
   }
 
-  const panelClasses = ['notia-modal-engine-panel', 'notia-modal-engine-panel--viewport', resolveSizeClass(size), panelClassName]
+  const panelClasses = ['notia-modal-engine-panel', fill ? 'notia-modal-engine-panel--viewport' : null, resolveSizeClass(size), panelClassName]
     .filter(Boolean)
     .join(' ')
 

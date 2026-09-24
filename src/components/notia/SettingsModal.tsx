@@ -698,7 +698,7 @@ export function SettingsModal({
   }
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-settings-modal">
+    <NotiaModalShell open={open} onClose={onClose} size="xl" fill panelClassName="notia-settings-modal">
       <div className="notia-settings-content">
         <div className="notia-settings-header">
           <h2>Configuraciones</h2>

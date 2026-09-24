@@ -85,7 +85,7 @@ export function LibraryManagerModal({
     : null
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-library-manager-modal">
+    <NotiaModalShell open={open} onClose={onClose} size="xl" fill panelClassName="notia-library-manager-modal">
         <div className="notia-library-manager-header">
           <h2>Administrar librerias</h2>
           <NotiaButton

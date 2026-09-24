@@ -156,7 +156,7 @@ export function ChatLibraryFilesModal({
   }
 
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="lg" panelClassName="notia-chat-files-modal">
+    <NotiaModalShell open={open} onClose={onClose} size="lg" fill panelClassName="notia-chat-files-modal">
       <div className="notia-chat-files-modal-header">
         <div>
           <h2>{copy.title}</h2>
