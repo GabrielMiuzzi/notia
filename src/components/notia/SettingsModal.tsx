@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { selectSettingsActiveSection } from '../../features/ui/uiSelectors'
-import { Brain, ChevronDown, Eye, KeyRound, Pencil, Trash2, Unlink, Wrench, X } from 'lucide-react'
+import { Brain, ChevronDown, Eye, FolderOpen, KeyRound, Lock, Pencil, Play, Plus, RotateCcw, Trash2, TriangleAlert, Unlink, Wrench, X } from 'lucide-react'
 import {
   clampOcrDebounceMs,
   INKMATH_OCR_DEBOUNCE_MAX_MS,
@@ -57,8 +57,26 @@ import {
   type LibraryRole,
   type LibraryUser,
 } from '../../services/libraries/libraryUsers'
+import { SETTINGS_SECTION_META, SETTINGS_SECTIONS, settingsGroupOf, type SettingsSection } from './settings/settingsSections'
+import { SettingsNav } from './settings/SettingsNav'
+import {
+  SettingsAvatar,
+  SettingsBadge,
+  SettingsCard,
+  SettingsChip,
+  SettingsFooter,
+  SettingsNotice,
+  SettingsRange,
+  SettingsRow,
+  SettingsStat,
+  SettingsSwitch,
+} from './settings/SettingsControls'
+import './settings/settings.css'
 
-type SettingsSection = 'General' | 'Contextos' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
+const OWNER_USER_ID = 'user-owner'
+const OWNER_ROLE_ID = 'role-owner'
+const THINKING_LEVEL_LABELS = { low: 'Bajo', medium: 'Medio', high: 'Alto' } as const
+const FINANCE_DELETED_DATA = ['Cuentas', 'Categorías personalizadas', 'Movimientos', 'Tickets', 'Productos y precios', 'Sueldos', 'Ahorro', 'Cuotas', 'Inversiones', 'Archivos de extracción']
 
 interface SettingsModalProps {
   open: boolean
@@ -77,8 +95,7 @@ interface SettingsModalProps {
   onContextsChange: (value: LibraryContext[]) => void
 }
 
-const SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
-const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SECTIONS)
+const VALID_SETTINGS_SECTIONS = new Set<SettingsSection>(SETTINGS_SECTIONS)
 
 function formatPublicationBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
@@ -175,7 +192,8 @@ export function SettingsModal({
   const [showReasoningSummaryDraft, setShowReasoningSummaryDraft] = useState(incomingAiPreferences.showReasoningSummary)
   const [editProgressMessageDraft, setEditProgressMessageDraft] = useState(incomingAiPreferences.editProgressMessage)
   const [telegramTokenDraft, setTelegramTokenDraft] = useState(telegramPreferences.botToken)
-  const [telegramStatus, setTelegramStatus] = useState('Todavia no se probo la conexion.')
+  const [telegramStatus, setTelegramStatus] = useState('Todavía no se probó la conexión.')
+  const [telegramStatusTone, setTelegramStatusTone] = useState<'idle' | 'success' | 'error'>('idle')
   const [isCheckingTelegram, setIsCheckingTelegram] = useState(false)
   const [isFinanceDeleteConfirmationOpen, setIsFinanceDeleteConfirmationOpen] = useState(false)
   const [isClearingFinanceData, setIsClearingFinanceData] = useState(false)
@@ -229,7 +247,7 @@ export function SettingsModal({
     message: string
   }>({
     tone: 'idle',
-    message: 'Todavia no se probo la conexion.',
+    message: 'Todavía no se probó la conexión.',
   })
   const [isCheckingAiHealth, setIsCheckingAiHealth] = useState(false)
   const projectVersion = getAppVersion()
@@ -239,8 +257,15 @@ export function SettingsModal({
   const runtimeDevice = getRuntimeDevice()
   const isAndroidBackend = platform === 'android'
   const visibleSections = platform === 'windows'
-    ? SECTIONS
-    : SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar' && (!isAndroidBackend || section !== 'Telegram'))
+    ? SETTINGS_SECTIONS
+    : SETTINGS_SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar' && (!isAndroidBackend || section !== 'Telegram'))
+  const [searchQuery, setSearchQuery] = useState('')
+  const [financeConfirmText, setFinanceConfirmText] = useState('')
+  const paneRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    paneRef.current?.scrollTo({ top: 0 })
+  }, [activeSection])
 
   useEffect(() => {
     if (isAndroidBackend && activeSection === 'Telegram') setActiveSection('General')
@@ -252,10 +277,10 @@ export function SettingsModal({
   const refreshIntervalSeconds = isAutoRefreshDisabled
     ? 0
     : Math.max(refreshBounds.minSeconds, Math.round(explorerRefreshIntervalMs / 1000))
-  const refreshIntervalLabel = isAutoRefreshDisabled ? 'Manual' : `${refreshIntervalSeconds}s`
-  const refreshIntervalRangeLabel = refreshBounds.allowDisabled
-    ? `Cooldown del chequeo automatico (0 = manual, ${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
-    : `Cooldown del chequeo automatico (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
+  const refreshIntervalLabel = isAutoRefreshDisabled ? 'Manual' : `${refreshIntervalSeconds} s`
+  const refreshIntervalDescription = refreshBounds.allowDisabled
+    ? `Tiempo mínimo entre dos chequeos. En 0 queda manual; si no, entre ${refreshBounds.minSeconds} s y ${refreshBounds.maxSeconds} s.`
+    : `Tiempo mínimo entre dos chequeos. Entre ${refreshBounds.minSeconds} s y ${refreshBounds.maxSeconds} s.`
   const ocrDebounceMs = clampOcrDebounceMs(inkMathPreferences.debounceMs)
   const ocrDebounceLabel = `${ocrDebounceMs} ms`
   const draftAiPreferences: AiPreferences = {
@@ -305,6 +330,11 @@ export function SettingsModal({
   useEffect(() => {
     if (!open) setIsFinanceDeleteConfirmationOpen(false)
   }, [open])
+
+  const toggleFinanceConfirmation = (openConfirmation: boolean) => {
+    setFinanceConfirmText('')
+    setIsFinanceDeleteConfirmationOpen(openConfirmation)
+  }
 
   // Boards of the active library, to choose what to publish and to show
   // which contexts are in use.
@@ -440,6 +470,12 @@ export function SettingsModal({
     onAiPreferencesChange(draftAiPreferences)
   }
 
+  const commitAiOnEnter = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    commitAiPreferences()
+  }
+
   // Save pending changes when modal closes
   useEffect(() => {
     if (!open) {
@@ -471,9 +507,11 @@ export function SettingsModal({
     setIsCheckingTelegram(true)
     try {
       const bot = await checkTelegramBot(token)
-      setTelegramStatus(`Conexion correcta con @${bot.username ?? bot.displayName}. Envia /start al bot para emparejar.`)
+      setTelegramStatus(`Conexión correcta con @${bot.username ?? bot.displayName}. Enviá /start al bot para emparejar.`)
+      setTelegramStatusTone('success')
     } catch (error) {
       setTelegramStatus(error instanceof Error ? error.message : 'No se pudo verificar el bot.')
+      setTelegramStatusTone('error')
     } finally { setIsCheckingTelegram(false) }
   }
 
@@ -693,771 +731,925 @@ export function SettingsModal({
     }
   }
 
+  const chooseBackupDirectory = () => {
+    void pickBackupDirectory().then((status) => {
+      setBackupSettings(status)
+      if (status.directoryPath) setBackupStatus('Carpeta de backups configurada.')
+    }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudo elegir la carpeta.'))
+  }
+
+  const turnOffBackups = () => {
+    void disableBackups().then((status) => {
+      setBackupSettings(status)
+      setBackupStatus('Backups desactivados.')
+    }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudieron desactivar los backups.'))
+  }
+
+  const checkQwen3Voice = () => {
+    setIsCheckingQwen3Tts(true)
+    void checkQwen3TtsConnection(qwen3TtsPreferences)
+      .then(() => setQwen3TtsStatus('Runtime Qwen3-TTS y voz verificados.'))
+      .catch((error) => setQwen3TtsStatus(error instanceof Error ? error.message : 'No se pudo iniciar la voz local.'))
+      .finally(() => setIsCheckingQwen3Tts(false))
+  }
+
+  const pickSection = (section: SettingsSection) => {
+    setActiveSection(section)
+    toggleFinanceConfirmation(false)
+  }
+
+  const addContext = () => {
+    const tag = normalizeContextTag(newContextTag)
+    if (!tag || contexts.some((item) => item.tag.toLowerCase() === tag.toLowerCase())) return
+    onContextsChange([...contexts, { tag, color: newContextColor }])
+    setNewContextTag('')
+  }
+
   if (!open) {
     return null
   }
 
+  const libraryName = activeLibrary?.name ?? 'Sin biblioteca activa'
+  const libraryDataNotice = libraryDataStatus.tone === 'error' || libraryDataStatus.tone === 'loading'
+    ? <SettingsNotice tone={libraryDataStatus.tone}>{libraryDataStatus.message}</SettingsNotice>
+    : null
+  const roleOptions = libraryRoles.map((role) => ({ value: role.id, label: role.name }))
+  const roleName = (roleId: string) => libraryRoles.find((role) => role.id === roleId)?.name ?? ''
+  const linkedTelegramUsers = libraryUsers.filter((user) => user.telegramLinked)
+  const qwen3TtsNeedsReload = Boolean(qwen3TtsLoadedSelection
+    && (qwen3TtsLoadedSelection.model !== qwen3TtsPreferences.model || qwen3TtsLoadedSelection.device !== qwen3TtsPreferences.device))
+  const backupsSupported = backupSettings?.supported !== false && backendSupports('backend_pick_backup_directory')
+  const backupsOn = Boolean(backupSettings?.directoryPath)
+  const isPublicationActive = Boolean(publicationMetrics?.active)
+  const financeConfirmMatches = Boolean(activeLibrary) && financeConfirmText.trim() === activeLibrary?.name
+
   return (
-    <NotiaModalShell open={open} onClose={onClose} size="xl" fill panelClassName="notia-settings-modal">
-      <div className="notia-settings-content">
-        <div className="notia-settings-header">
-          <h2>Configuraciones</h2>
-          <NotiaButton
-            size="icon"
-            variant="ghost"
-            className="notia-settings-close"
-            title="Cerrar"
-            onClick={onClose}
-          >
-            <X size={16} />
-          </NotiaButton>
-        </div>
-        <div className="notia-settings-body">
-          {activeSection === 'General' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Version del proyecto</div>
-              <div className="notia-settings-card-value">v{projectVersion}</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Dispositivo
-              </div>
-              <div className="notia-settings-card-value">{runtimeDevice}</div>
+    <NotiaModalShell open={open} onClose={onClose} size="xl" panelClassName="notia-settings-modal">
+      <div className="notia-settings-layout">
+        <SettingsNav
+          sections={visibleSections}
+          active={activeSection}
+          query={searchQuery}
+          footer={`Notia v${projectVersion} · ${runtimeDevice}`}
+          onQueryChange={setSearchQuery}
+          onPick={pickSection}
+        />
+        <div className="notia-settings-main">
+          <header className="notia-settings-heading">
+            <div className="notia-settings-heading-text">
+              <div className="notia-settings-heading-group">{settingsGroupOf(activeSection)}</div>
+              <h2>{activeSection}</h2>
+              <p>{SETTINGS_SECTION_META[activeSection].description}</p>
             </div>
-          ) : activeSection === 'Contextos' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Contextos de la biblioteca</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Cada nota puede declarar una propiedad <code>contexto</code> con un tag como <code>#Personal</code>. El color se usa en Graph View.
-              </div>
-              <div className="notia-settings-context-create">
-                <label className="notia-settings-context-create-label" htmlFor="notia-new-context-tag">Nuevo contexto</label>
-                <div className="notia-settings-context-create-row">
-                  <input
-                    id="notia-new-context-tag"
-                    className="notia-settings-input"
-                    aria-label="Nuevo tag de contexto"
-                    placeholder="#NuevoContexto"
-                    value={newContextTag}
-                    onChange={(event) => setNewContextTag(event.target.value)}
-                  />
-                  <input type="color" aria-label="Color del nuevo contexto" value={newContextColor} onChange={(event) => setNewContextColor(event.target.value.toUpperCase())} />
-                  <NotiaButton
-                    onClick={() => {
-                      const tag = normalizeContextTag(newContextTag)
-                      if (!tag || contexts.some((item) => item.tag.toLowerCase() === tag.toLowerCase())) return
-                      onContextsChange([...contexts, { tag, color: newContextColor }])
-                      setNewContextTag('')
-                    }}
-                    disabled={!newContextTag.trim()}
-                  >
-                    Agregar contexto
-                  </NotiaButton>
-                </div>
-              </div>
-              <div className="notia-settings-context-table-wrap">
-                <table className="notia-settings-context-table">
-                  <caption className="notia-settings-visually-hidden">Contextos configurados</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Contexto</th>
-                      <th scope="col">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {contexts.map((context) => {
+            <NotiaButton size="icon" variant="ghost" className="notia-settings-icon-button" aria-label="Cerrar configuraciones" title="Cerrar" onClick={onClose}>
+              <X size={18} aria-hidden="true" />
+            </NotiaButton>
+          </header>
+          <div className="notia-settings-pane" ref={paneRef}>
+            <div className="notia-settings-stack">
+              {activeSection === 'General' ? (
+                <SettingsCard>
+                  <SettingsRow label="Versión" description="Versión instalada del proyecto." inline>
+                    <span className="notia-settings-value">v{projectVersion}</span>
+                  </SettingsRow>
+                  <SettingsRow label="Dispositivo" description="Algunas funciones dependen de la plataforma." inline>
+                    <span className="notia-settings-plain">{runtimeDevice}</span>
+                  </SettingsRow>
+                  <SettingsRow label="Biblioteca activa" description="Los ajustes de esta ventana se aplican a esta biblioteca." inline>
+                    <span className="notia-settings-plain notia-settings-plain--strong">{libraryName}</span>
+                  </SettingsRow>
+                </SettingsCard>
+              ) : activeSection === 'Contextos' ? (
+                <>
+                  <SettingsCard>
+                    <form className="notia-settings-toolbar" onSubmit={(event) => { event.preventDefault(); addContext() }}>
+                      <input type="color" className="notia-settings-swatch" aria-label="Color del nuevo contexto" value={newContextColor} onChange={(event) => setNewContextColor(event.target.value.toUpperCase())} />
+                      <input
+                        className="notia-settings-field notia-settings-field--grow"
+                        aria-label="Nombre del nuevo contexto"
+                        placeholder="#NuevoContexto"
+                        value={newContextTag}
+                        onChange={(event) => setNewContextTag(event.target.value)}
+                      />
+                      <NotiaButton type="submit" variant="primary" disabled={!newContextTag.trim()}>
+                        <Plus size={15} aria-hidden="true" />Agregar
+                      </NotiaButton>
+                    </form>
+                    {contexts.map((context, index) => {
                       const isUsedByBoard = taskManagerBoards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
+                      const blockedReason = isUsedByBoard ? 'Usado por un tablero' : contexts.length <= 1 ? 'Único contexto' : null
                       return (
-                        <tr key={context.tag}>
-                          <td>
-                            <input
-                              className="notia-settings-input"
-                              aria-label={`Tag de contexto ${context.tag}`}
-                              value={context.tag}
-                              onChange={(event) => {
-                                const nextTag = normalizeContextTag(event.target.value)
-                                if (!nextTag || contexts.some((item) => item !== context && item.tag.toLowerCase() === nextTag.toLowerCase())) return
-                                onContextsChange(contexts.map((item) => item === context ? { ...item, tag: nextTag } : item))
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <div className="notia-settings-context-actions">
-                              <input
-                                type="color"
-                                aria-label={`Color de contexto ${context.tag}`}
-                                value={context.color}
-                                onChange={(event) => onContextsChange(contexts.map((item) => item === context ? { ...item, color: event.target.value.toUpperCase() } : item))}
-                              />
-                              <NotiaButton
-                                variant="secondary"
-                                disabled={contexts.length <= 1 || isUsedByBoard}
-                                title={isUsedByBoard ? 'No se puede eliminar un contexto usado por un tablero.' : undefined}
-                                onClick={() => onContextsChange(contexts.filter((item) => item !== context))}
-                              >
-                                Eliminar
-                              </NotiaButton>
-                            </div>
-                          </td>
-                        </tr>
+                        // Keyed by position: renaming changes the tag and must not remount the input being typed in.
+                        <div key={index} className="notia-settings-list-row">
+                          <input
+                            type="color"
+                            className="notia-settings-swatch"
+                            aria-label={`Color de ${context.tag}`}
+                            value={context.color}
+                            onChange={(event) => onContextsChange(contexts.map((item) => item === context ? { ...item, color: event.target.value.toUpperCase() } : item))}
+                          />
+                          <input
+                            className="notia-settings-inline-input"
+                            aria-label={`Nombre del contexto ${context.tag}`}
+                            value={context.tag}
+                            onChange={(event) => {
+                              const nextTag = normalizeContextTag(event.target.value)
+                              if (!nextTag || contexts.some((item) => item !== context && item.tag.toLowerCase() === nextTag.toLowerCase())) return
+                              onContextsChange(contexts.map((item) => item === context ? { ...item, tag: nextTag } : item))
+                            }}
+                          />
+                          {blockedReason ? <span className="notia-settings-row-meta">{blockedReason}</span> : null}
+                          <NotiaButton
+                            size="icon"
+                            variant="ghost"
+                            className="notia-settings-icon-button"
+                            aria-label={blockedReason ? `${context.tag} no se puede eliminar` : `Eliminar ${context.tag}`}
+                            title={blockedReason ?? 'Eliminar'}
+                            disabled={blockedReason !== null}
+                            onClick={() => onContextsChange(contexts.filter((item) => item !== context))}
+                          >
+                            <Trash2 size={16} aria-hidden="true" />
+                          </NotiaButton>
+                        </div>
                       )
                     })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : activeSection === 'Roles' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Roles de la biblioteca activa</div>
-              <form className="notia-settings-context-create" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryRole() }}>
-                <label className="notia-settings-context-create-label" htmlFor="notia-new-library-role">Nuevo rol</label>
-                <div className="notia-settings-context-create-row">
-                  <input id="notia-new-library-role" className="notia-settings-input" value={newRoleName} maxLength={64} placeholder="Nombre del rol" onChange={(event) => setNewRoleName(event.target.value)} />
-                  <NotiaButton type="submit" disabled={!activeLibrary || !newRoleName.trim() || isSavingLibraryData}>{isSavingLibraryData ? 'Guardando…' : 'Agregar rol'}</NotiaButton>
-                </div>
-              </form>
-              {libraryDataStatus.tone === 'error' ? <div className="notia-settings-status" role="alert">{libraryDataStatus.message}</div> : null}
-              {libraryDataStatus.tone === 'loading' ? <div className="notia-settings-status" role="status">{libraryDataStatus.message}</div> : null}
-              <div className="notia-settings-context-table-wrap">
-                <table className="notia-settings-context-table">
-                  <caption className="notia-settings-visually-hidden">Roles configurados en la biblioteca</caption>
-                  <thead><tr><th scope="col">Rol</th></tr></thead>
-                  <tbody>
-                    {libraryRoles.map((role) => <tr key={role.id}><td>{role.name}</td></tr>)}
-                  </tbody>
-                </table>
-                {!libraryDataStatus.message && libraryRoles.length === 0 ? <div className="notia-settings-card-label">No hay roles para mostrar.</div> : null}
-              </div>
-            </div>
-          ) : activeSection === 'Usuarios' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Usuarios de la biblioteca activa</div>
-              <form className="notia-settings-user-create" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryUser() }}>
-                <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Nombre del usuario</span><input className="notia-settings-input" value={newUserName} maxLength={64} placeholder="Nombre" onChange={(event) => setNewUserName(event.target.value)} /></label>
-                <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Rol</span><NotiaSelectMenu className="notia-settings-input" value={selectedUserRoleId} options={[{ value: '', label: 'Seleccioná un rol', disabled: true }, ...libraryRoles.map((role) => ({ value: role.id, label: role.name }))]} onChange={setSelectedUserRoleId} ariaLabel="Rol del nuevo usuario" disabled={libraryRoles.length === 0} /></label>
-                <div className="notia-settings-actions"><NotiaButton type="submit" disabled={!activeLibrary || !newUserName.trim() || !selectedUserRoleId || libraryRoles.length === 0 || isSavingLibraryData}>{isSavingLibraryData ? 'Guardando…' : 'Agregar un usuario'}</NotiaButton></div>
-              </form>
-              {libraryDataStatus.tone === 'error' ? <div className="notia-settings-status" role="alert">{libraryDataStatus.message}</div> : null}
-              {libraryDataStatus.tone === 'loading' ? <div className="notia-settings-status" role="status">{libraryDataStatus.message}</div> : null}
-              <div className="notia-settings-context-table-wrap">
-                <table className="notia-settings-context-table">
-                  <caption className="notia-settings-visually-hidden">Usuarios y roles de la biblioteca</caption>
-                  <thead><tr><th scope="col">Usuario</th><th scope="col">Rol</th><th scope="col">Contraseña</th><th scope="col">Contextos permitidos</th><th scope="col">Acciones</th></tr></thead>
-                  <tbody>
-                    {libraryUsers.map((user) => (
-                      <tr key={user.id}>
-                        <td>
-                          {renameUserId === user.id ? <form onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserName(user.id) }}><input className="notia-settings-input" aria-label={`Nuevo nombre para ${user.name}`} value={renameDraft} maxLength={64} onChange={(event) => setRenameDraft(event.target.value)} /><div className="notia-settings-actions"><NotiaButton size="sm" type="submit" disabled={isSavingLibraryData || !renameDraft.trim()}>Guardar</NotiaButton><NotiaButton size="sm" type="button" variant="ghost" onClick={() => { setRenameUserId(null); setRenameDraft('') }}>Cancelar</NotiaButton></div></form> : user.name}
-                        </td>
-                         <td><NotiaSelectMenu className="notia-settings-input" ariaLabel={`Rol de ${user.name}`} value={user.roleId} options={libraryRoles.map((role) => ({ value: role.id, label: role.name }))} disabled={isSavingLibraryData} onChange={(roleId) => { void handleUpdateLibraryUserRole(user.id, roleId) }} /></td>
-                        <td>{user.passwordConfigured ? 'Configurada' : 'Sin contraseña configurada'}</td>
-                        <td>
-                          <div className="notia-settings-user-context-list">
-                            {user.allContexts ? (
-                              <span className="notia-settings-user-context-all">Todos los contextos</span>
-                            ) : contexts.length === 0 ? (
-                              <span className="notia-settings-card-label">Sin contextos configurados</span>
-                            ) : contexts.map((context) => {
-                              const checked = user.allowedContexts.some((tag) => tag.toLowerCase() === context.tag.toLowerCase())
-                              return (
-                                <label key={context.tag} className="notia-settings-user-context-option">
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    disabled={isSavingLibraryData}
-                                    aria-label={`${context.tag} permitido para ${user.name}`}
-                                    onChange={(event) => { void handleUpdateLibraryUserContexts(user, context.tag, event.target.checked) }}
-                                  />
-                                  <span className="notia-settings-context-dot" style={{ backgroundColor: context.color }} aria-hidden="true" />
-                                  <span>{context.tag}</span>
-                                </label>
-                              )
-                            })}
-                          </div>
-                          <div className="notia-settings-context-actions notia-settings-user-actions">
-                            <NotiaButton
-                              size="icon"
-                              variant="secondary"
-                              aria-label={`Cambiar nombre de ${user.name}`}
-                              title="Cambiar nombre"
-                              disabled={isSavingLibraryData}
-                              onClick={() => { setRenameUserId(user.id); setRenameDraft(user.name) }}
-                            >
-                              <Pencil size={16} aria-hidden="true" />
-                            </NotiaButton>
-                            <NotiaButton
-                              size="icon"
-                              variant="secondary"
-                              aria-label={`Establecer nueva contraseña para ${user.name}`}
-                              title="Establecer nueva contraseña"
-                              disabled={isSavingLibraryData}
-                              onClick={() => { setPasswordUserId(user.id); setPasswordDraft(''); setPasswordConfirmationDraft(''); setShowPasswordDraft(false) }}
-                            >
-                              <KeyRound size={16} aria-hidden="true" />
-                            </NotiaButton>
-                            {user.telegramLinked ? (
-                              <NotiaButton
-                                size="icon"
-                                variant="secondary"
-                                aria-label={`Desvincular Telegram de ${user.name}`}
-                                title="Desvincular Telegram"
-                                disabled={isSavingLibraryData}
-                                onClick={() => { void handleUnlinkLibraryUserTelegram(user.id) }}
-                              >
-                                <Unlink size={16} aria-hidden="true" />
-                              </NotiaButton>
-                            ) : null}
-                            {user.id === 'user-owner' ? (
-                              <span className="notia-settings-card-label" title="Owner es un usuario protegido">Owner protegido</span>
-                            ) : (
-                              <NotiaButton
-                                size="icon"
-                                variant="danger"
-                                aria-label={`Eliminar usuario ${user.name}`}
-                                title="Eliminar usuario"
-                                disabled={isSavingLibraryData}
-                                onClick={() => setDeleteUser(user)}
-                              >
-                                <Trash2 size={16} aria-hidden="true" />
-                              </NotiaButton>
-                            )}
-                          </div>
-                          {passwordUserId === user.id ? <form className="notia-settings-user-inline-form" onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserPassword(user.id) }}><input className="notia-settings-input" aria-label="Nueva contraseña" type={showPasswordDraft ? 'text' : 'password'} autoComplete="new-password" minLength={8} maxLength={256} value={passwordDraft} onChange={(event) => setPasswordDraft(event.target.value)} placeholder="Nueva contraseña" /><input className="notia-settings-input" aria-label="Confirmar nueva contraseña" type={showPasswordDraft ? 'text' : 'password'} autoComplete="new-password" minLength={8} maxLength={256} value={passwordConfirmationDraft} onChange={(event) => setPasswordConfirmationDraft(event.target.value)} placeholder="Confirmar contraseña" /><NotiaButton size="sm" type="button" onClick={() => setShowPasswordDraft((current) => !current)}>{showPasswordDraft ? 'Ocultar' : 'Mostrar'}</NotiaButton><NotiaButton size="sm" type="submit" disabled={isSavingLibraryData}>Guardar</NotiaButton><NotiaButton size="sm" type="button" variant="ghost" onClick={() => setPasswordUserId(null)}>Cancelar</NotiaButton></form> : null}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {libraryUsers.length === 0 && libraryDataStatus.tone !== 'loading' ? <div className="notia-settings-card-label">No hay usuarios para mostrar.</div> : null}
-              </div>
-            </div>
-          ) : activeSection === 'Panel desplegable' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Chequeo automatico de cambios</div>
-              <div className="notia-settings-card-value">{refreshIntervalLabel}</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                {refreshIntervalRangeLabel}
-              </div>
-              <div className="notia-settings-slider-wrap">
-                <input
-                  type="range"
-                  min={refreshSliderMin}
-                  max={refreshBounds.maxSeconds}
-                  step={1}
-                  value={refreshIntervalSeconds}
-                  onChange={(event) => {
-                    const seconds = Number(event.target.value)
-                    if (refreshBounds.allowDisabled && seconds <= 0) {
-                      onExplorerRefreshIntervalMsChange(0)
-                      return
-                    }
-
-                    onExplorerRefreshIntervalMsChange(seconds * 1000)
-                  }}
-                />
-              </div>
-            </div>
-          ) : activeSection === 'InkMath' ? (
-            <>
-              <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Debounce OCR</div>
-                <div className="notia-settings-card-value">{ocrDebounceLabel}</div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Tiempo de inactividad antes de enviar la fórmula manuscrita a Ollama
-                </div>
-                <div className="notia-settings-slider-wrap">
-                  <input
-                    type="range"
-                    min={INKMATH_OCR_DEBOUNCE_MIN_MS}
-                    max={INKMATH_OCR_DEBOUNCE_MAX_MS}
-                    step={50}
-                    value={ocrDebounceMs}
-                    onChange={(event) => {
-                      onInkMathPreferencesChange({
-                        ...inkMathPreferences,
-                        debounceMs: clampOcrDebounceMs(Number(event.target.value)),
-                      })
-                    }}
-                  />
-                </div>
-              </div>
-            </>
-          ) : activeSection === 'IA' ? (
-            <>
-                <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Host de Ollama Cloud</div>
-                <div className="notia-settings-card-value">{draftAiPreferences.ollamaUrl}</div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Por defecto usa Ollama Cloud (`https://ollama.com`). Si querés, podés reemplazarlo por una URL local propia.
-                </div>
-                <div className="notia-settings-input-wrap">
-                  <input
-                    className="notia-settings-input"
-                    type="text"
-                    value={ollamaUrlDraft}
-                    onChange={(event) => {
-                      setOllamaUrlDraft(event.target.value)
-                    }}
-                    onBlur={commitAiPreferences}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        commitAiPreferences()
-                      }
-                    }}
-                    placeholder={getDefaultOllamaApiUrl()}
-                  />
-                </div>
-              </div>
-              <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Modelo de Ollama</div>
-                <div className="notia-settings-card-value">
-                  {draftAiPreferences.selectedModel || 'Sin seleccionar'}
-                </div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Selecciona cualquier modelo disponible. Para enviar imagenes, elegi uno con capacidad de vision.
-                </div>
-                <div className="notia-ai-model-select">
-                  <button
-                    ref={modelTriggerRef}
-                    type="button"
-                    className="notia-ai-model-select-trigger"
-                    aria-haspopup="listbox"
-                    aria-expanded={isModelMenuOpen}
-                    aria-controls={isModelMenuOpen ? 'notia-ai-model-select-menu' : undefined}
-                    onClick={() => setIsModelMenuOpen((current) => !current)}
-                    disabled={isLoadingModels || availableModels.length === 0}
-                  >
-                    <span>{selectedModelDraft || (isLoadingModels ? 'Cargando modelos...' : 'No hay modelos disponibles')}</span>
-                    <ChevronDown size={16} aria-hidden="true" />
-                  </button>
-                  {isModelMenuOpen ? (
-                    <NotiaSubmenuPanel ref={modelPanelRef} id="notia-ai-model-select-menu" className="notia-ai-model-select-menu" role="listbox" aria-label="Modelos de Ollama">
-                      {availableModels.map((model) => (
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={model.name === selectedModelDraft}
-                          className={`notia-ai-model-select-option${model.name === selectedModelDraft ? ' is-selected' : ''}`}
-                          key={model.name}
-                          onClick={() => {
-                            const nextValue = model.name
-                            setSelectedModelDraft(nextValue)
-                            onAiPreferencesChange({ ...draftAiPreferences, selectedModel: nextValue })
-                            setIsModelMenuOpen(false)
-                          }}
-                        >
-                          <span className="notia-ai-model-select-name">{model.name}</span>
-                          <span className="notia-ai-model-capabilities">
-                            {model.supportsThinking ? <span title="Admite thinking"><Brain size={13} /> Thinking</span> : null}
-                            {model.supportsVision ? <span title="Admite imágenes"><Eye size={13} /> Vision</span> : null}
-                            {model.supportsTools ? <span title="Admite tool calling nativo"><Wrench size={13} /> Tools</span> : null}
-                            {!model.supportsThinking && !model.supportsVision && !model.supportsTools ? <span>Texto</span> : null}
-                          </span>
-                        </button>
-                      ))}
-                    </NotiaSubmenuPanel>
-                  ) : null}
-                </div>
-                {selectedModelOption?.supportsThinking ? (
-                  <div className="notia-ai-thinking-settings">
-                    <div className="notia-ai-thinking-toggle-row">
-                      <div>
-                        <strong>Thinking</strong>
-                        <span>Incluye el razonamiento separado de la respuesta.</span>
+                  </SettingsCard>
+                  <p className="notia-settings-note">En una nota: <code>contexto: #Personal</code>. Editá un nombre para renombrarlo.</p>
+                </>
+              ) : activeSection === 'Roles' ? (
+                <SettingsCard>
+                  <form className="notia-settings-toolbar" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryRole() }}>
+                    <input
+                      className="notia-settings-field notia-settings-field--grow"
+                      aria-label="Nombre del nuevo rol"
+                      placeholder="Nombre del rol"
+                      maxLength={64}
+                      value={newRoleName}
+                      onChange={(event) => setNewRoleName(event.target.value)}
+                    />
+                    <NotiaButton type="submit" variant="primary" disabled={!activeLibrary || !newRoleName.trim() || isSavingLibraryData}>
+                      <Plus size={15} aria-hidden="true" />{isSavingLibraryData ? 'Guardando…' : 'Agregar rol'}
+                    </NotiaButton>
+                  </form>
+                  {libraryDataNotice}
+                  {libraryRoles.map((role) => {
+                    const userCount = libraryUsers.filter((user) => user.roleId === role.id).length
+                    return (
+                      <div key={role.id} className="notia-settings-list-row">
+                        <span className="notia-settings-list-name">{role.name}</span>
+                        {role.id === OWNER_ROLE_ID ? <SettingsBadge icon={<Lock size={11} aria-hidden="true" />}>Protegido</SettingsBadge> : null}
+                        <span className="notia-settings-row-meta notia-settings-count">
+                          {userCount === 0 ? 'Sin usuarios' : `${userCount} ${userCount === 1 ? 'usuario' : 'usuarios'}`}
+                        </span>
                       </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-label="Activar Thinking"
-                        aria-checked={thinkingEnabledDraft}
-                        className={`notia-settings-switch${thinkingEnabledDraft ? ' is-on' : ''}`}
-                        onClick={() => {
-                          const nextEnabled = !thinkingEnabledDraft
-                          setThinkingEnabledDraft(nextEnabled)
-                          onAiPreferencesChange({
-                            ...draftAiPreferences,
-                            thinkingEnabled: nextEnabled,
-                          })
-                        }}
-                      >
-                        <span />
-                      </button>
-                    </div>
-                    {selectedModelOption.supportsThinkingLevels ? (
-                      <div className="notia-ai-thinking-levels" role="group" aria-label="Nivel de thinking">
-                        {(['low', 'medium', 'high'] as const).map((level) => (
-                          <button
-                            type="button"
-                            key={level}
-                            className={thinkingLevelDraft === level ? 'is-selected' : ''}
-                            disabled={!thinkingEnabledDraft}
-                            onClick={() => {
-                              setThinkingLevelDraft(level)
-                              onAiPreferencesChange({
-                                ...draftAiPreferences,
-                                thinkingLevel: level,
-                              })
-                            }}
-                          >
-                            {level}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="notia-ai-thinking-note">Este modelo admite activar o desactivar Thinking, pero no niveles.</span>
-                    )}
-                  </div>
-                ) : null}
-                <div className="notia-ai-thinking-settings">
-                  <div className="notia-settings-card-label">Feedback del agente</div>
-                  <label className="notia-settings-checkbox-row">
-                    <span>Detalle del progreso</span>
+                    )
+                  })}
+                  {libraryDataStatus.tone !== 'loading' && libraryRoles.length === 0 ? <div className="notia-settings-empty">No hay roles para mostrar.</div> : null}
+                </SettingsCard>
+              ) : activeSection === 'Usuarios' ? (
+                <SettingsCard>
+                  <form className="notia-settings-toolbar" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryUser() }}>
+                    <input
+                      className="notia-settings-field notia-settings-field--grow"
+                      aria-label="Nombre del nuevo usuario"
+                      placeholder="Nombre del usuario"
+                      maxLength={64}
+                      value={newUserName}
+                      onChange={(event) => setNewUserName(event.target.value)}
+                    />
                     <NotiaSelectMenu
-                      className="notia-settings-select"
-                      ariaLabel="Detalle del progreso"
-                      value={progressModeDraft}
-                      options={[
-                        { value: 'minimal', label: 'Mínimo' },
-                        { value: 'standard', label: 'Estándar' },
-                        { value: 'detailed', label: 'Detallado' },
-                        { value: 'off', label: 'Desactivado' },
-                      ]}
-                      onChange={(value) => {
-                        if (value !== 'minimal' && value !== 'standard' && value !== 'detailed' && value !== 'off') return
-                        setProgressModeDraft(value)
-                        onAiPreferencesChange({ ...draftAiPreferences, progressMode: value })
+                      className="notia-settings-field notia-settings-field--role"
+                      value={selectedUserRoleId}
+                      options={[{ value: '', label: 'Rol', disabled: true }, ...roleOptions]}
+                      onChange={setSelectedUserRoleId}
+                      ariaLabel="Rol del nuevo usuario"
+                      disabled={libraryRoles.length === 0}
+                    />
+                    <NotiaButton type="submit" variant="primary" disabled={!activeLibrary || !newUserName.trim() || !selectedUserRoleId || libraryRoles.length === 0 || isSavingLibraryData}>
+                      <Plus size={15} aria-hidden="true" />{isSavingLibraryData ? 'Guardando…' : 'Agregar usuario'}
+                    </NotiaButton>
+                  </form>
+                  {libraryDataNotice}
+                  {libraryUsers.map((user, index) => {
+                    const isOwner = user.id === OWNER_USER_ID
+                    const details = [user.passwordConfigured ? 'Contraseña configurada' : 'Sin contraseña', user.telegramLinked ? 'Telegram vinculado' : null]
+                      .filter(Boolean)
+                      .join(' · ')
+                    return (
+                      <div key={user.id} className="notia-settings-user">
+                        <div className="notia-settings-user-head">
+                          <SettingsAvatar name={user.name} index={index} />
+                          <div className="notia-settings-user-text">
+                            <div className="notia-settings-row-label">
+                              <span className="notia-settings-list-name">{user.name}</span>
+                              {isOwner ? <SettingsBadge icon={<Lock size={11} aria-hidden="true" />}>Owner protegido</SettingsBadge> : null}
+                            </div>
+                            <div className="notia-settings-row-description">{details}</div>
+                          </div>
+                          <div className="notia-settings-user-controls">
+                            <NotiaSelectMenu
+                              className="notia-settings-field notia-settings-field--role"
+                              ariaLabel={`Rol de ${user.name}`}
+                              value={user.roleId}
+                              options={roleOptions}
+                              disabled={isSavingLibraryData || isOwner}
+                              onChange={(roleId) => { void handleUpdateLibraryUserRole(user.id, roleId) }}
+                            />
+                            <div className="notia-settings-icon-group">
+                              <NotiaButton
+                                size="icon"
+                                variant="ghost"
+                                className="notia-settings-icon-button"
+                                aria-label={`Cambiar nombre de ${user.name}`}
+                                title="Cambiar nombre"
+                                disabled={isSavingLibraryData}
+                                onClick={() => { setRenameUserId(user.id); setRenameDraft(user.name) }}
+                              >
+                                <Pencil size={16} aria-hidden="true" />
+                              </NotiaButton>
+                              <NotiaButton
+                                size="icon"
+                                variant="ghost"
+                                className="notia-settings-icon-button"
+                                aria-label={`Establecer nueva contraseña para ${user.name}`}
+                                title="Establecer nueva contraseña"
+                                disabled={isSavingLibraryData}
+                                onClick={() => { setPasswordUserId(user.id); setPasswordDraft(''); setPasswordConfirmationDraft(''); setShowPasswordDraft(false) }}
+                              >
+                                <KeyRound size={16} aria-hidden="true" />
+                              </NotiaButton>
+                              {user.telegramLinked ? (
+                                <NotiaButton
+                                  size="icon"
+                                  variant="ghost"
+                                  className="notia-settings-icon-button"
+                                  aria-label={`Desvincular Telegram de ${user.name}`}
+                                  title="Desvincular Telegram"
+                                  disabled={isSavingLibraryData}
+                                  onClick={() => { void handleUnlinkLibraryUserTelegram(user.id) }}
+                                >
+                                  <Unlink size={16} aria-hidden="true" />
+                                </NotiaButton>
+                              ) : null}
+                              {isOwner ? null : (
+                                <NotiaButton
+                                  size="icon"
+                                  variant="ghost"
+                                  className="notia-settings-icon-button notia-settings-icon-button--danger"
+                                  aria-label={`Eliminar usuario ${user.name}`}
+                                  title="Eliminar usuario"
+                                  disabled={isSavingLibraryData}
+                                  onClick={() => setDeleteUser(user)}
+                                >
+                                  <Trash2 size={16} aria-hidden="true" />
+                                </NotiaButton>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {renameUserId === user.id ? (
+                          <form className="notia-settings-inline-form" onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserName(user.id) }}>
+                            <input
+                              className="notia-settings-field notia-settings-field--grow"
+                              aria-label={`Nuevo nombre para ${user.name}`}
+                              value={renameDraft}
+                              maxLength={64}
+                              onChange={(event) => setRenameDraft(event.target.value)}
+                            />
+                            <NotiaButton type="submit" variant="primary" disabled={isSavingLibraryData || !renameDraft.trim()}>Guardar</NotiaButton>
+                            <NotiaButton type="button" variant="ghost" onClick={() => { setRenameUserId(null); setRenameDraft('') }}>Cancelar</NotiaButton>
+                          </form>
+                        ) : null}
+                        {passwordUserId === user.id ? (
+                          <form className="notia-settings-inline-form" onSubmit={(event) => { event.preventDefault(); void handleUpdateLibraryUserPassword(user.id) }}>
+                            <input
+                              className="notia-settings-field notia-settings-field--grow"
+                              aria-label="Nueva contraseña"
+                              type={showPasswordDraft ? 'text' : 'password'}
+                              autoComplete="new-password"
+                              minLength={8}
+                              maxLength={256}
+                              value={passwordDraft}
+                              placeholder="Nueva contraseña"
+                              onChange={(event) => setPasswordDraft(event.target.value)}
+                            />
+                            <input
+                              className="notia-settings-field notia-settings-field--grow"
+                              aria-label="Confirmar nueva contraseña"
+                              type={showPasswordDraft ? 'text' : 'password'}
+                              autoComplete="new-password"
+                              minLength={8}
+                              maxLength={256}
+                              value={passwordConfirmationDraft}
+                              placeholder="Confirmar contraseña"
+                              onChange={(event) => setPasswordConfirmationDraft(event.target.value)}
+                            />
+                            <NotiaButton type="button" onClick={() => setShowPasswordDraft((current) => !current)}>{showPasswordDraft ? 'Ocultar' : 'Mostrar'}</NotiaButton>
+                            <NotiaButton type="submit" variant="primary" disabled={isSavingLibraryData}>Guardar</NotiaButton>
+                            <NotiaButton type="button" variant="ghost" onClick={() => setPasswordUserId(null)}>Cancelar</NotiaButton>
+                          </form>
+                        ) : null}
+                        <div className="notia-settings-user-contexts">
+                          <span className="notia-settings-row-description">Contextos:</span>
+                          {user.allContexts ? (
+                            <span className="notia-settings-plain">todos</span>
+                          ) : contexts.length === 0 ? (
+                            <span className="notia-settings-row-description">sin contextos configurados</span>
+                          ) : contexts.map((context) => {
+                            const allowed = user.allowedContexts.some((tag) => tag.toLowerCase() === context.tag.toLowerCase())
+                            return (
+                              <SettingsChip
+                                key={context.tag}
+                                pressed={allowed}
+                                color={context.color}
+                                disabled={isSavingLibraryData}
+                                label={`${context.tag} permitido para ${user.name}`}
+                                onClick={() => { void handleUpdateLibraryUserContexts(user, context.tag, !allowed) }}
+                              >
+                                {context.tag}
+                              </SettingsChip>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {libraryUsers.length === 0 && libraryDataStatus.tone !== 'loading' ? <div className="notia-settings-empty">No hay usuarios para mostrar.</div> : null}
+                </SettingsCard>
+              ) : activeSection === 'Panel desplegable' ? (
+                <SettingsCard>
+                  <SettingsRow label="Chequeo automático de cambios" description={refreshIntervalDescription} htmlFor="notia-settings-refresh">
+                    <SettingsRange
+                      id="notia-settings-refresh"
+                      label="Chequeo automático de cambios"
+                      min={refreshSliderMin}
+                      max={refreshBounds.maxSeconds}
+                      step={1}
+                      value={refreshIntervalSeconds}
+                      valueLabel={refreshIntervalLabel}
+                      onChange={(seconds) => {
+                        if (refreshBounds.allowDisabled && seconds <= 0) {
+                          onExplorerRefreshIntervalMsChange(0)
+                          return
+                        }
+                        onExplorerRefreshIntervalMsChange(seconds * 1000)
                       }}
                     />
-                  </label>
-                  <label className="notia-settings-checkbox-row">
-                    <span>Mostrar TO-DO</span>
-                    <input type="checkbox" checked={showPlanDraft} onChange={(event) => {
-                      setShowPlanDraft(event.target.checked)
-                      onAiPreferencesChange({ ...draftAiPreferences, showPlan: event.target.checked })
-                    }} />
-                  </label>
-                  <label className="notia-settings-checkbox-row">
-                    <span>Mostrar resumen del enfoque</span>
-                    <input type="checkbox" checked={showReasoningSummaryDraft} onChange={(event) => {
-                      setShowReasoningSummaryDraft(event.target.checked)
-                      onAiPreferencesChange({ ...draftAiPreferences, showReasoningSummary: event.target.checked })
-                    }} />
-                  </label>
-                  <label className="notia-settings-checkbox-row">
-                    <span>Editar un único mensaje de progreso</span>
-                    <input type="checkbox" checked={editProgressMessageDraft} onChange={(event) => {
-                      setEditProgressMessageDraft(event.target.checked)
-                      onAiPreferencesChange({ ...draftAiPreferences, editProgressMessage: event.target.checked })
-                    }} />
-                  </label>
-                </div>
-                {modelsErrorMessage ? (
-                  <div className="notia-settings-status notia-settings-status--error">
-                    {modelsErrorMessage}
-                  </div>
-                ) : null}
-              </div>
-              <div className="notia-settings-card">
-                <div className="notia-settings-card-label">API key</div>
-                <div className="notia-settings-card-value">
-                  {draftAiPreferences.apiKey ? 'Configurada' : 'No configurada'}
-                </div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Se envía como header `Authorization: Bearer ...`
-                </div>
-                <p className="notia-settings-hint">
-                  Se guarda en `.notia/notiaConfig.json` de la biblioteca activa. No se guarda en Redux ni en localStorage; no compartas ese archivo.
-                </p>
-                <div className="notia-settings-input-wrap">
-                  <input
-                    className="notia-settings-input"
-                    type="password"
-                    value={apiKeyDraft}
-                    onChange={(event) => {
-                      setApiKeyDraft(event.target.value)
-                    }}
-                    onBlur={commitAiPreferences}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        commitAiPreferences()
-                      }
-                    }}
-                    placeholder="ollama-api-key"
-                    autoComplete="off"
-                  />
-                </div>
-                <div className={`notia-settings-status notia-settings-status--${aiHealthStatus.tone}`}>
-                  {aiHealthStatus.message}
-                </div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  En Android, Notia usa el bridge nativo hacia Python embebido. La autenticación sigue el esquema `Bearer` de Ollama Cloud.
-                </div>
-                <div className="notia-settings-actions">
-                  <NotiaButton
-                    variant="secondary"
-                    onClick={() => {
-                      void handleCheckAiConnection()
-                    }}
-                    disabled={isCheckingAiHealth}
-                  >
-                    {isCheckingAiHealth ? 'Probando...' : 'Probar conexion'}
-                  </NotiaButton>
-                </div>
-              </div>
-            </>
-          ) : activeSection === 'Voz' ? (
-            <>
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Reconocimiento de voz</div>
-              <div className="notia-settings-card-value">{speechRecognitionPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Parakeet TDT 0.6B v3 en CPU mediante sherpa-onnx. Detecta el idioma automáticamente.
-              </div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
-              <input className="notia-settings-input" aria-label="Idioma del reconocimiento de voz" value={speechRecognitionPreferences.language}
-                onChange={(event) => dispatch(setSpeechRecognitionSettings({ ...speechRecognitionPreferences, language: event.target.value }))} />
-              <div className="notia-settings-actions">
-                <NotiaButton variant={speechRecognitionPreferences.enabled ? 'primary' : 'secondary'}
-                  onClick={() => dispatch(setSpeechRecognitionSettings({ ...speechRecognitionPreferences, enabled: !speechRecognitionPreferences.enabled }))}>
-                  {speechRecognitionPreferences.enabled ? 'Desactivar' : 'Activar'}
-                </NotiaButton>
-              </div>
-            </div>
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Qwen3-TTS</div>
-              <div className="notia-settings-card-value">{qwen3TtsPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Motor GGML nativo precargado al iniciar Notia en Windows y Android.</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Modelo</div>
-              <NotiaSelectMenu
-                className="notia-settings-input"
-                ariaLabel="Modelo de Qwen3-TTS"
-                value={qwen3TtsPreferences.model}
-                options={[{ value: '0.6b', label: 'Qwen3-TTS 0.6B' }, { value: '1.7b', label: 'Qwen3-TTS 1.7B' }]}
-                onChange={(value) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, model: value as '0.6b' | '1.7b' }))}
-              />
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Dispositivo</div>
-              <NotiaSelectMenu
-                className="notia-settings-input"
-                ariaLabel="Dispositivo de Qwen3-TTS"
-                value={qwen3TtsPreferences.device}
-                options={[{ value: 'cpu', label: 'Automático (CUDA en Windows, CPU como respaldo)' }]}
-                onChange={() => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: 'cpu' }))}
-              />
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Voz</div>
-              <NotiaSelectMenu
-                className="notia-settings-input"
-                ariaLabel="Voz de Qwen3-TTS"
-                value={qwen3TtsPreferences.voice}
-                options={QWEN3_TTS_VOICES.map((voice) => ({ value: voice, label: voice }))}
-                onChange={(voice) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, voice }))}
-              />
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Idioma</div>
-              <input className="notia-settings-input" aria-label="Idioma de Qwen3-TTS" value={qwen3TtsPreferences.language}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, language: event.target.value }))} />
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Velocidad: {qwen3TtsPreferences.speed.toFixed(2)}</div>
-              <input type="range" min="0.7" max="1.8" step="0.05" value={qwen3TtsPreferences.speed}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, speed: Number(event.target.value) }))} />
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Pausa para enviar: {qwen3TtsPreferences.pauseDetectionMs} ms</div>
-              <input type="range" min="600" max="4000" step="100" value={qwen3TtsPreferences.pauseDetectionMs}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, pauseDetectionMs: Number(event.target.value) }))} />
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">Saludo inicial</div>
-              <input className="notia-settings-input" aria-label="Saludo del modo charla" value={qwen3TtsPreferences.greeting}
-                onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, greeting: event.target.value }))} />
-              <div className="notia-settings-actions">
-                <NotiaButton variant={qwen3TtsPreferences.enabled ? 'primary' : 'secondary'}
-                  onClick={() => {
-                    if (qwen3TtsLoadedSelection && (qwen3TtsLoadedSelection.model !== qwen3TtsPreferences.model || qwen3TtsLoadedSelection.device !== qwen3TtsPreferences.device)) {
-                      void reloadQwen3Tts().then(() => setQwen3TtsLoadedSelection(null))
-                    } else dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, enabled: !qwen3TtsPreferences.enabled }))
-                  }}>
-                  {qwen3TtsLoadedSelection && (qwen3TtsLoadedSelection.model !== qwen3TtsPreferences.model || qwen3TtsLoadedSelection.device !== qwen3TtsPreferences.device) ? 'Recargar' : qwen3TtsPreferences.enabled ? 'Desactivar' : 'Activar'}
-                </NotiaButton>
-                <NotiaButton variant="secondary" disabled={isCheckingQwen3Tts} onClick={() => {
-                  setIsCheckingQwen3Tts(true)
-                  void checkQwen3TtsConnection(qwen3TtsPreferences)
-                    .then(() => setQwen3TtsStatus('Runtime Qwen3-TTS y voz verificados.'))
-                    .catch((error) => setQwen3TtsStatus(error instanceof Error ? error.message : 'No se pudo iniciar la voz local.'))
-                    .finally(() => setIsCheckingQwen3Tts(false))
-                }}>{isCheckingQwen3Tts ? 'Probando...' : 'Probar voz'}</NotiaButton>
-              </div>
-              <div className="notia-settings-status">{qwen3TtsStatus}</div>
-            </div>
-            </>
-          ) : activeSection === 'Telegram' ? (
-            <>
-              <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Bot de Telegram</div>
-                <div className="notia-settings-card-value">{telegramPreferences.enabled ? 'Activo' : 'Desactivado'}</div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Configurá el token del bot para esta biblioteca. El enlace de usuarios se inicia desde Telegram con /start.
-                </div>
-                <div className="notia-settings-input-wrap">
-                  <input className="notia-settings-input" type="password" value={telegramTokenDraft}
-                    aria-label="Token del bot de Telegram" autoComplete="off" placeholder="123456:ABC..."
-                    onChange={(event) => setTelegramTokenDraft(event.target.value)} onBlur={commitTelegramToken}
-                    onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitTelegramToken() } }} />
-                </div>
-                <div className="notia-settings-actions">
-                  <NotiaButton variant="secondary" disabled={!telegramTokenDraft.trim() || isCheckingTelegram}
-                    onClick={() => { void handleCheckTelegram() }}>
-                    {isCheckingTelegram ? 'Probando...' : 'Probar conexión'}
-                  </NotiaButton>
-                  <NotiaButton variant={telegramPreferences.enabled ? 'primary' : 'secondary'}
-                    disabled={!telegramTokenDraft.trim()}
-                    onClick={() => onTelegramPreferencesChange({ ...telegramPreferences, botToken: telegramTokenDraft.trim(), enabled: !telegramPreferences.enabled })}>
-                    {telegramPreferences.enabled ? 'Desactivar' : 'Activar'}
-                  </NotiaButton>
-                </div>
-                <div className="notia-settings-status" role="status">{telegramStatus}</div>
-              </div>
-              <div className="notia-settings-card">
-                <div className="notia-settings-card-label">Asociaciones de Telegram</div>
-                <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                  Las asociaciones se completan desde el bot con /start y una contraseña del usuario. Solo se aceptan chats privados.
-                </div>
-                {libraryUsers.filter((user) => user.telegramLinked).length === 0
-                  ? <div className="notia-settings-card-value">No hay usuarios vinculados.</div>
-                  : <ul className="notia-settings-association-list">
-                    {libraryUsers.filter((user) => user.telegramLinked).map((user) => (
-                      <li key={user.id}>
-                        <span>{user.name}</span>
-                        <NotiaButton
-                          size="sm"
-                          variant="secondary"
-                          disabled={isSavingLibraryData}
-                          onClick={() => {
-                            void handleUnlinkLibraryUserTelegram(user.id)
-                          }}
-                        >
-                          Desvincular Telegram
-                        </NotiaButton>
-                      </li>
-                    ))}
-                  </ul>}
-              </div>
-            </>
-          ) : activeSection === 'Finanzas' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Datos financieros de la biblioteca activa</div>
-              <div className="notia-settings-card-value">{activeLibrary?.name ?? 'Sin biblioteca activa'}</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Elimina cuentas, categorías personalizadas, movimientos, tickets, productos y precios, sueldos, ahorro, cuotas, inversiones y sus archivos de extracción registrados. Al finalizar, restaura las diez categorías de gasto iniciales. Esta acción no se puede deshacer.
-              </div>
-              <div className="notia-settings-actions">
-                <NotiaButton
-                  variant="danger"
-                  disabled={!activeLibrary || isClearingFinanceData}
-                  onClick={() => setIsFinanceDeleteConfirmationOpen(true)}
-                >
-                  {isClearingFinanceData ? 'Eliminando…' : 'Eliminar datos financieros'}
-                </NotiaButton>
-              </div>
-              <div className={`notia-settings-status notia-settings-status--${financeClearStatus.tone}`} role="status">
-                {financeClearStatus.message}
-              </div>
-            </div>
-          ) : activeSection === 'Backups' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Backups automáticos</div>
-              <div className="notia-settings-card-value">{backupSettings?.directoryPath || 'Desactivados'}</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Disponible solo en Windows. Guarda un ZIP de la biblioteca activa cada hora y conserva como máximo 2 días (48 backups).
-                {backupSettings?.lastBackupAt ? ` Último backup: ${new Date(backupSettings.lastBackupAt * 1000).toLocaleString()}.` : ''}
-                {backupSettings?.lastError ? ` Último error: ${backupSettings.lastError}` : ''}
-              </div>
-              <div className="notia-settings-actions">
-                <NotiaButton variant="secondary" disabled={backupSettings?.supported === false || !backendSupports('backend_pick_backup_directory')} onClick={() => {
-                  void pickBackupDirectory().then((status) => {
-                    setBackupSettings(status)
-                    if (status.directoryPath) setBackupStatus('Carpeta de backups configurada.')
-                  }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudo elegir la carpeta.'))
-                }}>Elegir carpeta</NotiaButton>
-                <NotiaButton variant="secondary" disabled={!backupSettings?.directoryPath} onClick={() => {
-                  void disableBackups().then((status) => {
-                    setBackupSettings(status)
-                    setBackupStatus('Backups desactivados.')
-                  }).catch((error: unknown) => setBackupStatus(error instanceof Error ? error.message : 'No se pudieron desactivar los backups.'))
-                }}>Desactivar</NotiaButton>
-              </div>
-              <div className="notia-settings-status" role="status">{backupStatus}</div>
-            </div>
-          ) : activeSection === 'Publicar' ? (
-            <div className="notia-settings-card">
-              <div className="notia-settings-card-label">Publicar tableros de Task Manager</div>
-              <div className="notia-settings-card-label notia-settings-card-label--spaced">
-                Disponible solo en Windows. Abre el mismo Task Manager, con sus vistas y funciones de edición, para los tableros seleccionados en cualquier navegador de la red local. Notia debe permanecer abierta.
-              </div>
-              <div className="notia-settings-actions" role="group" aria-label="Tableros publicados">
-                {taskManagerBoards.map((board) => (
-                  <label key={board.name} className="notia-settings-checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={publishedBoardNames.has(board.name)}
-                      onChange={() => handlePublicationBoardToggle(board.name)}
+                  </SettingsRow>
+                </SettingsCard>
+              ) : activeSection === 'InkMath' ? (
+                <SettingsCard>
+                  <SettingsRow label="Debounce OCR" description="Inactividad que espera antes de enviar la fórmula manuscrita a Ollama." htmlFor="notia-settings-ocr">
+                    <SettingsRange
+                      id="notia-settings-ocr"
+                      label="Debounce OCR"
+                      min={INKMATH_OCR_DEBOUNCE_MIN_MS}
+                      max={INKMATH_OCR_DEBOUNCE_MAX_MS}
+                      step={50}
+                      value={ocrDebounceMs}
+                      valueLabel={ocrDebounceLabel}
+                      onChange={(value) => onInkMathPreferencesChange({ ...inkMathPreferences, debounceMs: clampOcrDebounceMs(value) })}
                     />
-                    {board.name}
-                  </label>
-                ))}
-              </div>
-              {taskManagerBoards.length === 0 ? <div className="notia-settings-status">Todavía no hay tableros disponibles.</div> : null}
-              <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Puerto fijo de publicación</span><input className="notia-settings-input" type="number" min="1024" max="65535" value={taskManagerPublicationPreferences.port} onChange={(event) => { const port = Number(event.target.value); if (Number.isInteger(port) && port >= 1024 && port <= 65535) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, port }) }} /></label>
-              <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Clientes simultáneos máximos</span><input className="notia-settings-input" type="number" min="1" max="64" value={taskManagerPublicationPreferences.maxClients} onChange={(event) => { const maxClients = Number(event.target.value); if (Number.isInteger(maxClients) && maxClients >= 1 && maxClients <= 64) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, maxClients }) }} /></label>
-              <div className="notia-settings-actions">
-                <NotiaButton onClick={() => void handlePublishBoards()} disabled={isPublishingBoards || !activeLibrary || taskManagerPublicationPreferences.publishedBoardNames.length === 0}>
-                  {isPublishingBoards ? 'Publicando…' : 'Publicar y actualizar'}
-                </NotiaButton>
-                <NotiaButton variant="secondary" onClick={() => void openTaskManagerPublication()} disabled={!publicationUrl}>
-                  Abrir en el navegador
-                </NotiaButton>
-              </div>
-              {publicationUrl ? <div className="notia-settings-card-value" aria-label="URL de publicación">{publicationUrl}</div> : null}
-              {publicationMetrics ? <div className="notia-settings-status" role="status">
-                {publicationMetrics.active ? <>
-                  {publicationMetrics.recoveryRequired ? <div role="alert">La publicación requiere recuperación: quedó una operación parcial o no verificada. Revisá el workspace y ejecutá una operación del Task Manager que termine correctamente; no se reejecutará nada automáticamente.</div> : null}
-                  {publicationMetrics.websocketSessions >= publicationMetrics.maxWebsocketSessions ? <div role="alert">La publicación alcanzó su capacidad de WebSocket. Los nuevos accesos serán rechazados hasta que se desconecte alguien.</div> : null}
-                  {publicationMetrics.mutationLatencyLastMs !== null && publicationMetrics.mutationLatencyLastMs > 1000 ? <div role="alert">El filesystem está tardando más de un segundo en confirmar cambios. Revisá la carga del host antes de continuar con operaciones masivas.</div> : null}
-                  <div>Latencia de mutaciones: última {formatPublicationMilliseconds(publicationMetrics.mutationLatencyLastMs)} · p95 aproximado {formatPublicationMilliseconds(publicationMetrics.mutationLatencyP95Ms)} · muestras {publicationMetrics.mutationLatencySamples}</div>
-                  <div>Conexiones WebSocket: {publicationMetrics.websocketSessions}/{publicationMetrics.maxWebsocketSessions} · sesiones: {publicationMetrics.authenticatedSessions}/{publicationMetrics.maxAuthenticatedSessions} · revisión {publicationMetrics.revision}</div>
-                  <div>Época: {publicationMetrics.publicationEpoch.slice(0, 8) || '—'} · última operación: {publicationMetrics.lastOperationId?.slice(0, 8) || '—'} · actor: {publicationMetrics.lastActorId?.slice(0, 8) || '—'}</div>
-                  <div>Frames recibidos/enviados: {publicationMetrics.websocketFramesReceived}/{publicationMetrics.websocketFramesSent} · bytes: {formatPublicationBytes(publicationMetrics.websocketBytesReceived)}/{formatPublicationBytes(publicationMetrics.websocketBytesSent)} · errores: {publicationMetrics.mutationErrors} · streams cancelados: {publicationMetrics.aiStreamCancellations}</div>
-                  <div>Conflictos: {publicationMetrics.conflicts} · resync: {publicationMetrics.resyncRequired} · eventos descartados: {publicationMetrics.droppedEvents}</div>
-                  <div>Último cambio: {formatPublicationTimestamp(publicationMetrics.lastChangeAtUnixMs)}</div>
-                  <div>Telemetría local: {publicationTelemetrySamples} muestras acotadas (sin contenido ni secretos)</div>
-                </> : 'La publicación no está activa.'}
-              </div> : null}
-              {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">Si otro equipo no puede abrirla, permití Notia en el Firewall de Windows para redes privadas.</div> : null}
-              {publicationUrl ? <div className="notia-settings-card-label notia-settings-card-label--spaced">La URL usa HTTPS con un certificado autofirmado: en cada equipo remoto aceptá o instalá el certificado de Notia la primera vez.</div> : null}
-              <div className="notia-settings-status" role="status">{publicationStatus}</div>
+                  </SettingsRow>
+                </SettingsCard>
+              ) : activeSection === 'IA' ? (
+                <>
+                  <SettingsCard title="Conexión">
+                    <SettingsRow label="Host" description="Ollama Cloud por defecto. Podés usar una URL local propia." htmlFor="notia-settings-ollama-host">
+                      <input
+                        id="notia-settings-ollama-host"
+                        className="notia-settings-field notia-settings-field--mono"
+                        type="text"
+                        inputMode="url"
+                        value={ollamaUrlDraft}
+                        placeholder={getDefaultOllamaApiUrl()}
+                        onChange={(event) => setOllamaUrlDraft(event.target.value)}
+                        onBlur={commitAiPreferences}
+                        onKeyDown={commitAiOnEnter}
+                      />
+                    </SettingsRow>
+                    <SettingsRow
+                      label="API key"
+                      htmlFor="notia-settings-api-key"
+                      badge={<SettingsBadge tone={draftAiPreferences.apiKey ? 'accent' : undefined}>{draftAiPreferences.apiKey ? 'Configurada' : 'No configurada'}</SettingsBadge>}
+                      description={<>Se envía como <code>Authorization: Bearer</code>. Se guarda solo en <code>.notia/notiaConfig.json</code> de la biblioteca activa; no compartas ese archivo.</>}
+                    >
+                      <input
+                        id="notia-settings-api-key"
+                        className="notia-settings-field"
+                        type="password"
+                        value={apiKeyDraft}
+                        placeholder="ollama-api-key"
+                        autoComplete="off"
+                        onChange={(event) => setApiKeyDraft(event.target.value)}
+                        onBlur={commitAiPreferences}
+                        onKeyDown={commitAiOnEnter}
+                      />
+                    </SettingsRow>
+                    <SettingsFooter tone={isCheckingAiHealth ? 'loading' : aiHealthStatus.tone} message={isCheckingAiHealth ? 'Probando la conexión…' : aiHealthStatus.message}>
+                      <NotiaButton onClick={() => { void handleCheckAiConnection() }} disabled={isCheckingAiHealth}>
+                        {isCheckingAiHealth ? 'Probando…' : 'Probar conexión'}
+                      </NotiaButton>
+                    </SettingsFooter>
+                  </SettingsCard>
+                  <SettingsCard title="Modelo">
+                    <SettingsRow label="Modelo de Ollama" description="Para enviar imágenes, elegí uno con capacidad de visión.">
+                      <div className="notia-ai-model-select">
+                        <button
+                          ref={modelTriggerRef}
+                          type="button"
+                          className="notia-ai-model-select-trigger notia-settings-field"
+                          aria-label={`Modelo de Ollama: ${selectedModelDraft || 'sin seleccionar'}`}
+                          aria-haspopup="listbox"
+                          aria-expanded={isModelMenuOpen}
+                          aria-controls={isModelMenuOpen ? 'notia-ai-model-select-menu' : undefined}
+                          onClick={() => setIsModelMenuOpen((current) => !current)}
+                          disabled={isLoadingModels || availableModels.length === 0}
+                        >
+                          <span>{selectedModelDraft || (isLoadingModels ? 'Cargando modelos…' : 'No hay modelos disponibles')}</span>
+                          <ChevronDown size={16} aria-hidden="true" />
+                        </button>
+                        {isModelMenuOpen ? (
+                          <NotiaSubmenuPanel ref={modelPanelRef} id="notia-ai-model-select-menu" className="notia-ai-model-select-menu" role="listbox" aria-label="Modelos de Ollama">
+                            {availableModels.map((model) => (
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={model.name === selectedModelDraft}
+                                className={`notia-ai-model-select-option${model.name === selectedModelDraft ? ' is-selected' : ''}`}
+                                key={model.name}
+                                onClick={() => {
+                                  const nextValue = model.name
+                                  setSelectedModelDraft(nextValue)
+                                  onAiPreferencesChange({ ...draftAiPreferences, selectedModel: nextValue })
+                                  setIsModelMenuOpen(false)
+                                }}
+                              >
+                                <span className="notia-ai-model-select-name">{model.name}</span>
+                                <span className="notia-ai-model-capabilities">
+                                  {model.supportsThinking ? <span title="Admite thinking"><Brain size={13} /> Thinking</span> : null}
+                                  {model.supportsVision ? <span title="Admite imágenes"><Eye size={13} /> Vision</span> : null}
+                                  {model.supportsTools ? <span title="Admite tool calling nativo"><Wrench size={13} /> Tools</span> : null}
+                                  {!model.supportsThinking && !model.supportsVision && !model.supportsTools ? <span>Texto</span> : null}
+                                </span>
+                              </button>
+                            ))}
+                          </NotiaSubmenuPanel>
+                        ) : null}
+                      </div>
+                    </SettingsRow>
+                    {modelsErrorMessage ? <SettingsNotice tone="error">{modelsErrorMessage}</SettingsNotice> : null}
+                    {selectedModelOption?.supportsThinking ? (
+                      <SettingsRow
+                        label="Thinking"
+                        htmlFor="notia-settings-thinking"
+                        inline
+                        description={selectedModelOption.supportsThinkingLevels
+                          ? 'Muestra el razonamiento separado de la respuesta.'
+                          : 'Muestra el razonamiento separado de la respuesta. Este modelo lo activa o desactiva, sin niveles.'}
+                      >
+                        <SettingsSwitch
+                          id="notia-settings-thinking"
+                          label="Thinking"
+                          checked={thinkingEnabledDraft}
+                          onChange={(nextEnabled) => {
+                            setThinkingEnabledDraft(nextEnabled)
+                            onAiPreferencesChange({ ...draftAiPreferences, thinkingEnabled: nextEnabled })
+                          }}
+                        />
+                      </SettingsRow>
+                    ) : null}
+                    {selectedModelOption?.supportsThinking && selectedModelOption.supportsThinkingLevels ? (
+                      <SettingsRow label="Nivel de thinking">
+                        <div className="notia-settings-segmented" role="group" aria-label="Nivel de thinking">
+                          {(['low', 'medium', 'high'] as const).map((level) => (
+                            <NotiaButton
+                              key={level}
+                              aria-pressed={thinkingLevelDraft === level}
+                              disabled={!thinkingEnabledDraft}
+                              onClick={() => {
+                                setThinkingLevelDraft(level)
+                                onAiPreferencesChange({ ...draftAiPreferences, thinkingLevel: level })
+                              }}
+                            >
+                              {THINKING_LEVEL_LABELS[level]}
+                            </NotiaButton>
+                          ))}
+                        </div>
+                      </SettingsRow>
+                    ) : null}
+                  </SettingsCard>
+                  <SettingsCard title="Feedback del agente">
+                    <SettingsRow label="Detalle del progreso">
+                      <NotiaSelectMenu
+                        className="notia-settings-field notia-settings-field--short"
+                        ariaLabel="Detalle del progreso"
+                        value={progressModeDraft}
+                        options={[
+                          { value: 'minimal', label: 'Mínimo' },
+                          { value: 'standard', label: 'Estándar' },
+                          { value: 'detailed', label: 'Detallado' },
+                          { value: 'off', label: 'Desactivado' },
+                        ]}
+                        onChange={(value) => {
+                          if (value !== 'minimal' && value !== 'standard' && value !== 'detailed' && value !== 'off') return
+                          setProgressModeDraft(value)
+                          onAiPreferencesChange({ ...draftAiPreferences, progressMode: value })
+                        }}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Mostrar TO-DO" htmlFor="notia-settings-show-plan" inline>
+                      <SettingsSwitch
+                        id="notia-settings-show-plan"
+                        label="Mostrar TO-DO"
+                        checked={showPlanDraft}
+                        onChange={(checked) => {
+                          setShowPlanDraft(checked)
+                          onAiPreferencesChange({ ...draftAiPreferences, showPlan: checked })
+                        }}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Mostrar resumen del enfoque" htmlFor="notia-settings-reasoning-summary" inline>
+                      <SettingsSwitch
+                        id="notia-settings-reasoning-summary"
+                        label="Mostrar resumen del enfoque"
+                        checked={showReasoningSummaryDraft}
+                        onChange={(checked) => {
+                          setShowReasoningSummaryDraft(checked)
+                          onAiPreferencesChange({ ...draftAiPreferences, showReasoningSummary: checked })
+                        }}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Editar un único mensaje de progreso" description="En vez de enviar un mensaje nuevo por cada paso." htmlFor="notia-settings-edit-progress" inline>
+                      <SettingsSwitch
+                        id="notia-settings-edit-progress"
+                        label="Editar un único mensaje de progreso"
+                        checked={editProgressMessageDraft}
+                        onChange={(checked) => {
+                          setEditProgressMessageDraft(checked)
+                          onAiPreferencesChange({ ...draftAiPreferences, editProgressMessage: checked })
+                        }}
+                      />
+                    </SettingsRow>
+                  </SettingsCard>
+                  <p className="notia-settings-note">En Android, Notia usa el bridge nativo hacia Python embebido, con el mismo esquema Bearer.</p>
+                </>
+              ) : activeSection === 'Voz' ? (
+                <>
+                  <SettingsCard>
+                    <SettingsRow
+                      emphasis
+                      inline
+                      label="Reconocimiento de voz"
+                      htmlFor="notia-settings-stt"
+                      description="Parakeet TDT 0.6B v3 en CPU mediante sherpa-onnx. Detecta el idioma automáticamente."
+                    >
+                      <span className="notia-settings-row-meta">{speechRecognitionPreferences.enabled ? 'Activo' : 'Inactivo'}</span>
+                      <SettingsSwitch
+                        id="notia-settings-stt"
+                        label="Reconocimiento de voz"
+                        checked={speechRecognitionPreferences.enabled}
+                        onChange={(enabled) => dispatch(setSpeechRecognitionSettings({ ...speechRecognitionPreferences, enabled }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Idioma" htmlFor="notia-settings-stt-language">
+                      <input
+                        id="notia-settings-stt-language"
+                        className="notia-settings-field notia-settings-field--code"
+                        value={speechRecognitionPreferences.language}
+                        onChange={(event) => dispatch(setSpeechRecognitionSettings({ ...speechRecognitionPreferences, language: event.target.value }))}
+                      />
+                    </SettingsRow>
+                  </SettingsCard>
+                  <SettingsCard>
+                    <SettingsRow
+                      emphasis
+                      inline
+                      label="Síntesis de voz · Qwen3-TTS"
+                      htmlFor="notia-settings-tts"
+                      description="Motor GGML nativo, precargado al iniciar Notia en Windows y Android."
+                    >
+                      <span className="notia-settings-row-meta">{qwen3TtsPreferences.enabled ? 'Activo' : 'Inactivo'}</span>
+                      <SettingsSwitch
+                        id="notia-settings-tts"
+                        label="Síntesis de voz"
+                        checked={qwen3TtsPreferences.enabled}
+                        onChange={(enabled) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, enabled }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Modelo">
+                      <NotiaSelectMenu
+                        className="notia-settings-field"
+                        ariaLabel="Modelo de Qwen3-TTS"
+                        value={qwen3TtsPreferences.model}
+                        options={[{ value: '0.6b', label: 'Qwen3-TTS 0.6B' }, { value: '1.7b', label: 'Qwen3-TTS 1.7B' }]}
+                        onChange={(value) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, model: value as '0.6b' | '1.7b' }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Dispositivo" description="CUDA en Windows, CPU como respaldo.">
+                      <NotiaSelectMenu
+                        className="notia-settings-field"
+                        ariaLabel="Dispositivo de Qwen3-TTS"
+                        value={qwen3TtsPreferences.device}
+                        options={[{ value: 'cpu', label: 'Automático' }]}
+                        onChange={() => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, device: 'cpu' }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Voz e idioma">
+                      <NotiaSelectMenu
+                        className="notia-settings-field notia-settings-field--voice"
+                        ariaLabel="Voz de Qwen3-TTS"
+                        value={qwen3TtsPreferences.voice}
+                        options={QWEN3_TTS_VOICES.map((voice) => ({ value: voice, label: voice }))}
+                        onChange={(voice) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, voice }))}
+                      />
+                      <input
+                        className="notia-settings-field notia-settings-field--code"
+                        aria-label="Idioma de Qwen3-TTS"
+                        value={qwen3TtsPreferences.language}
+                        onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, language: event.target.value }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Velocidad" htmlFor="notia-settings-tts-speed">
+                      <SettingsRange
+                        id="notia-settings-tts-speed"
+                        label="Velocidad"
+                        min={0.7}
+                        max={1.8}
+                        step={0.05}
+                        value={qwen3TtsPreferences.speed}
+                        valueLabel={`${qwen3TtsPreferences.speed.toFixed(2)}×`}
+                        onChange={(speed) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, speed }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Pausa para enviar" description="Silencio que espera antes de enviar lo dictado." htmlFor="notia-settings-tts-pause">
+                      <SettingsRange
+                        id="notia-settings-tts-pause"
+                        label="Pausa para enviar"
+                        min={600}
+                        max={4000}
+                        step={100}
+                        value={qwen3TtsPreferences.pauseDetectionMs}
+                        valueLabel={`${qwen3TtsPreferences.pauseDetectionMs} ms`}
+                        onChange={(pauseDetectionMs) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, pauseDetectionMs }))}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Saludo inicial" htmlFor="notia-settings-tts-greeting">
+                      <input
+                        id="notia-settings-tts-greeting"
+                        className="notia-settings-field"
+                        value={qwen3TtsPreferences.greeting}
+                        onChange={(event) => dispatch(setQwen3TtsSettings({ ...qwen3TtsPreferences, greeting: event.target.value }))}
+                      />
+                    </SettingsRow>
+                    <SettingsFooter tone={isCheckingQwen3Tts ? 'loading' : 'idle'} message={qwen3TtsStatus}>
+                      {qwen3TtsNeedsReload ? (
+                        <NotiaButton onClick={() => { void reloadQwen3Tts().then(() => setQwen3TtsLoadedSelection(null)) }}>
+                          <RotateCcw size={14} aria-hidden="true" />Recargar modelo
+                        </NotiaButton>
+                      ) : null}
+                      <NotiaButton disabled={isCheckingQwen3Tts} onClick={checkQwen3Voice}>
+                        <Play size={14} aria-hidden="true" />{isCheckingQwen3Tts ? 'Probando…' : 'Probar voz'}
+                      </NotiaButton>
+                    </SettingsFooter>
+                  </SettingsCard>
+                </>
+              ) : activeSection === 'Telegram' ? (
+                <>
+                  <SettingsCard>
+                    <SettingsRow
+                      emphasis
+                      inline
+                      label="Bot de Telegram"
+                      htmlFor="notia-settings-telegram"
+                      description="Un bot por biblioteca. Los usuarios se vinculan desde el bot con /start."
+                    >
+                      <span className="notia-settings-row-meta">{telegramPreferences.enabled ? 'Activo' : 'Inactivo'}</span>
+                      <SettingsSwitch
+                        id="notia-settings-telegram"
+                        label="Bot de Telegram"
+                        checked={telegramPreferences.enabled}
+                        disabled={!telegramTokenDraft.trim()}
+                        onChange={(enabled) => onTelegramPreferencesChange({ ...telegramPreferences, botToken: telegramTokenDraft.trim(), enabled })}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Token del bot" htmlFor="notia-settings-telegram-token">
+                      <input
+                        id="notia-settings-telegram-token"
+                        className="notia-settings-field"
+                        type="password"
+                        value={telegramTokenDraft}
+                        autoComplete="off"
+                        placeholder="123456:ABC..."
+                        onChange={(event) => setTelegramTokenDraft(event.target.value)}
+                        onBlur={commitTelegramToken}
+                        onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitTelegramToken() } }}
+                      />
+                    </SettingsRow>
+                    <SettingsFooter tone={isCheckingTelegram ? 'loading' : telegramStatusTone} message={telegramStatus}>
+                      <NotiaButton disabled={!telegramTokenDraft.trim() || isCheckingTelegram} onClick={() => { void handleCheckTelegram() }}>
+                        {isCheckingTelegram ? 'Probando…' : 'Probar conexión'}
+                      </NotiaButton>
+                    </SettingsFooter>
+                  </SettingsCard>
+                  <SettingsCard>
+                    <SettingsRow
+                      emphasis
+                      label="Usuarios vinculados"
+                      description={<>Cada usuario se vincula desde el bot con <code>/start</code> y su contraseña. Solo se aceptan chats privados.</>}
+                    />
+                    {linkedTelegramUsers.length === 0 ? <div className="notia-settings-empty">No hay usuarios vinculados.</div> : linkedTelegramUsers.map((user) => (
+                      <div key={user.id} className="notia-settings-list-row">
+                        <SettingsAvatar name={user.name} index={libraryUsers.indexOf(user)} small />
+                        <div className="notia-settings-user-text">
+                          <div className="notia-settings-list-name">{user.name}</div>
+                          <div className="notia-settings-row-description">{roleName(user.roleId)}</div>
+                        </div>
+                        <NotiaButton disabled={isSavingLibraryData} onClick={() => { void handleUnlinkLibraryUserTelegram(user.id) }}>Desvincular</NotiaButton>
+                      </div>
+                    ))}
+                  </SettingsCard>
+                </>
+              ) : activeSection === 'Finanzas' ? (
+                <>
+                  <SettingsCard>
+                    <SettingsRow label="Biblioteca" description="Los datos financieros se guardan por biblioteca." inline>
+                      <span className="notia-settings-plain notia-settings-plain--strong">{libraryName}</span>
+                    </SettingsRow>
+                  </SettingsCard>
+                  <SettingsCard tone="danger">
+                    <div className="notia-settings-danger">
+                      <span className="notia-settings-danger-icon" aria-hidden="true"><TriangleAlert size={17} /></span>
+                      <div className="notia-settings-danger-text">
+                        <h3>Eliminar datos financieros</h3>
+                        <p>Borra definitivamente todo el módulo Finanzas de {libraryName} y restaura las diez categorías de gasto iniciales. No se puede deshacer.</p>
+                        <ul className="notia-settings-danger-list" aria-label="Datos que se eliminan">
+                          {FINANCE_DELETED_DATA.map((item) => <li key={item}>{item}</li>)}
+                        </ul>
+                      </div>
+                      {isFinanceDeleteConfirmationOpen ? null : (
+                        <NotiaButton variant="danger" disabled={!activeLibrary || isClearingFinanceData} onClick={() => toggleFinanceConfirmation(true)}>
+                          {isClearingFinanceData ? 'Eliminando…' : 'Eliminar datos…'}
+                        </NotiaButton>
+                      )}
+                    </div>
+                    {isFinanceDeleteConfirmationOpen ? (
+                      <form className="notia-settings-danger-confirm" onSubmit={(event) => { event.preventDefault(); if (financeConfirmMatches) void handleClearFinanceData() }}>
+                        <label htmlFor="notia-settings-finance-confirm">Escribí <b>{activeLibrary?.name}</b> para confirmar</label>
+                        <input
+                          id="notia-settings-finance-confirm"
+                          className="notia-settings-field notia-settings-field--grow notia-settings-field--mono"
+                          autoComplete="off"
+                          value={financeConfirmText}
+                          onChange={(event) => setFinanceConfirmText(event.target.value)}
+                        />
+                        <NotiaButton type="button" onClick={() => toggleFinanceConfirmation(false)}>Cancelar</NotiaButton>
+                        <NotiaButton type="submit" variant="danger" className="notia-settings-button--danger-solid" disabled={!financeConfirmMatches || isClearingFinanceData}>
+                          Eliminar definitivamente
+                        </NotiaButton>
+                      </form>
+                    ) : null}
+                  </SettingsCard>
+                  {isClearingFinanceData || financeClearStatus.tone !== 'idle' ? (
+                    <SettingsNotice tone={isClearingFinanceData ? 'loading' : financeClearStatus.tone}>{financeClearStatus.message}</SettingsNotice>
+                  ) : null}
+                </>
+              ) : activeSection === 'Backups' ? (
+                <SettingsCard>
+                  <SettingsRow
+                    emphasis
+                    inline
+                    label="Backups automáticos"
+                    htmlFor="notia-settings-backups"
+                    badge={<SettingsBadge>Solo Windows</SettingsBadge>}
+                    description="Un ZIP de la biblioteca activa por hora."
+                  >
+                    <span className="notia-settings-row-meta">{backupsOn ? 'Activos' : 'Desactivados'}</span>
+                    <SettingsSwitch
+                      id="notia-settings-backups"
+                      label="Backups automáticos"
+                      checked={backupsOn}
+                      disabled={!backupsSupported && !backupsOn}
+                      onChange={(checked) => { if (checked) chooseBackupDirectory(); else turnOffBackups() }}
+                    />
+                  </SettingsRow>
+                  <SettingsRow
+                    label="Carpeta de destino"
+                    description={backupSettings?.directoryPath ? <span className="notia-settings-path">{backupSettings.directoryPath}</span> : 'Elegí una carpeta para activar los backups.'}
+                  >
+                    <NotiaButton disabled={!backupsSupported} onClick={chooseBackupDirectory}>
+                      <FolderOpen size={14} aria-hidden="true" />{backupsOn ? 'Cambiar carpeta' : 'Elegir carpeta'}
+                    </NotiaButton>
+                  </SettingsRow>
+                  <div className="notia-settings-stats">
+                    <SettingsStat label="Frecuencia" value="Cada hora" />
+                    <SettingsStat label="Retención" value="2 días · 48 copias" />
+                    <SettingsStat label="Último backup" value={backupSettings?.lastBackupAt ? new Date(backupSettings.lastBackupAt * 1000).toLocaleString() : 'Todavía no hay'} />
+                  </div>
+                  {backupSettings?.lastError ? <SettingsNotice tone="error">Último error: {backupSettings.lastError}</SettingsNotice> : null}
+                  {backupStatus ? <SettingsFooter message={backupStatus} /> : null}
+                </SettingsCard>
+              ) : activeSection === 'Publicar' ? (
+                <>
+                  <SettingsCard>
+                    <div className="notia-settings-block">
+                      <div className="notia-settings-row-label">
+                        <span className="notia-settings-block-title">Tableros del Task Manager</span>
+                        <SettingsBadge>Solo Windows</SettingsBadge>
+                      </div>
+                      <div className="notia-settings-row-description">El mismo Task Manager, con vistas y edición, en cualquier navegador de la red local. Notia tiene que seguir abierta.</div>
+                      {taskManagerBoards.length === 0 ? (
+                        <div className="notia-settings-row-description">Todavía no hay tableros disponibles.</div>
+                      ) : (
+                        <div className="notia-settings-chips" role="group" aria-label="Tableros publicados">
+                          {taskManagerBoards.map((board) => (
+                            <SettingsChip key={board.name} pressed={publishedBoardNames.has(board.name)} onClick={() => handlePublicationBoardToggle(board.name)}>
+                              {board.name}
+                            </SettingsChip>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <SettingsRow label="Puerto fijo" htmlFor="notia-settings-publication-port" inline>
+                      <input
+                        id="notia-settings-publication-port"
+                        className="notia-settings-field notia-settings-field--number"
+                        type="number"
+                        min="1024"
+                        max="65535"
+                        value={taskManagerPublicationPreferences.port}
+                        onChange={(event) => {
+                          const port = Number(event.target.value)
+                          if (Number.isInteger(port) && port >= 1024 && port <= 65535) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, port })
+                        }}
+                      />
+                    </SettingsRow>
+                    <SettingsRow label="Clientes simultáneos máximos" htmlFor="notia-settings-publication-clients" inline>
+                      <input
+                        id="notia-settings-publication-clients"
+                        className="notia-settings-field notia-settings-field--number"
+                        type="number"
+                        min="1"
+                        max="64"
+                        value={taskManagerPublicationPreferences.maxClients}
+                        onChange={(event) => {
+                          const maxClients = Number(event.target.value)
+                          if (Number.isInteger(maxClients) && maxClients >= 1 && maxClients <= 64) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, maxClients })
+                        }}
+                      />
+                    </SettingsRow>
+                    {publicationUrl ? (
+                      <SettingsRow
+                        label="URL"
+                        description="Si otro equipo no puede abrirla, permití Notia en el Firewall de Windows para redes privadas. Usa HTTPS con un certificado autofirmado: en cada equipo remoto aceptá o instalá el certificado de Notia la primera vez."
+                      >
+                        <span className="notia-settings-path" aria-label="URL de publicación">{publicationUrl}</span>
+                      </SettingsRow>
+                    ) : null}
+                    <SettingsFooter tone={isPublicationActive ? 'success' : 'idle'} message={`${isPublicationActive ? 'Publicado' : 'No publicado'} · ${publicationStatus}`}>
+                      <NotiaButton onClick={() => void openTaskManagerPublication()} disabled={!publicationUrl}>Abrir en el navegador</NotiaButton>
+                      <NotiaButton
+                        variant="primary"
+                        onClick={() => void handlePublishBoards()}
+                        disabled={isPublishingBoards || !activeLibrary || taskManagerPublicationPreferences.publishedBoardNames.length === 0}
+                      >
+                        {isPublishingBoards ? 'Publicando…' : 'Publicar y actualizar'}
+                      </NotiaButton>
+                    </SettingsFooter>
+                  </SettingsCard>
+                  {publicationMetrics ? (
+                    <SettingsCard title="Estado del servidor">
+                      {publicationMetrics.active ? (
+                        <>
+                          {publicationMetrics.recoveryRequired ? <SettingsNotice tone="error">La publicación requiere recuperación: quedó una operación parcial o no verificada. Revisá el workspace y ejecutá una operación del Task Manager que termine correctamente; no se reejecutará nada automáticamente.</SettingsNotice> : null}
+                          {publicationMetrics.websocketSessions >= publicationMetrics.maxWebsocketSessions ? <SettingsNotice tone="error">La publicación alcanzó su capacidad de WebSocket. Los nuevos accesos serán rechazados hasta que se desconecte alguien.</SettingsNotice> : null}
+                          {publicationMetrics.mutationLatencyLastMs !== null && publicationMetrics.mutationLatencyLastMs > 1000 ? <SettingsNotice tone="error">El filesystem está tardando más de un segundo en confirmar cambios. Revisá la carga del host antes de continuar con operaciones masivas.</SettingsNotice> : null}
+                          <div className="notia-settings-stats">
+                            <SettingsStat mono label="WebSocket" value={`${publicationMetrics.websocketSessions}/${publicationMetrics.maxWebsocketSessions}`} />
+                            <SettingsStat mono label="Sesiones" value={`${publicationMetrics.authenticatedSessions}/${publicationMetrics.maxAuthenticatedSessions}`} />
+                            <SettingsStat mono label="Conflictos" value={publicationMetrics.conflicts} />
+                            <SettingsStat mono label="Errores" value={publicationMetrics.mutationErrors} />
+                          </div>
+                          <div className="notia-settings-log">
+                            <span>latencia mutaciones · última {formatPublicationMilliseconds(publicationMetrics.mutationLatencyLastMs)} · p95 {formatPublicationMilliseconds(publicationMetrics.mutationLatencyP95Ms)} · {publicationMetrics.mutationLatencySamples} muestras</span>
+                            <span>frames {publicationMetrics.websocketFramesReceived}/{publicationMetrics.websocketFramesSent} · bytes {formatPublicationBytes(publicationMetrics.websocketBytesReceived)}/{formatPublicationBytes(publicationMetrics.websocketBytesSent)} · streams cancelados {publicationMetrics.aiStreamCancellations}</span>
+                            <span>resync {publicationMetrics.resyncRequired} · eventos descartados {publicationMetrics.droppedEvents} · revisión {publicationMetrics.revision}</span>
+                            <span>época {publicationMetrics.publicationEpoch.slice(0, 8) || '—'} · última operación {publicationMetrics.lastOperationId?.slice(0, 8) || '—'} · actor {publicationMetrics.lastActorId?.slice(0, 8) || '—'}</span>
+                            <span>último cambio: {formatPublicationTimestamp(publicationMetrics.lastChangeAtUnixMs)}</span>
+                            <span>telemetría local: {publicationTelemetrySamples} muestras acotadas (sin contenido ni secretos)</span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="notia-settings-empty">La publicación no está activa.</div>
+                      )}
+                    </SettingsCard>
+                  ) : null}
+                </>
+              ) : null}
             </div>
-          ) : (
-            <div>Seccion: {activeSection}</div>
-          )}
+          </div>
         </div>
       </div>
-      <aside className="notia-settings-menu">
-        {visibleSections.map((section) => (
-          <NotiaButton
-            key={section}
-            className={`notia-settings-menu-item ${
-              section === activeSection ? 'notia-settings-menu-item--active' : ''
-            }`}
-            variant={section === activeSection ? 'primary' : 'secondary'}
-            onClick={() => setActiveSection(section)}
-          >
-            {section}
-          </NotiaButton>
-        ))}
-      </aside>
-      <ConfirmationDialogModal
-        open={isFinanceDeleteConfirmationOpen}
-        title="Eliminar datos financieros"
-        message={`Se eliminarán definitivamente los datos financieros de ${activeLibrary?.name ?? 'la biblioteca activa'} y se restaurarán las diez categorías iniciales. Esta acción no se puede deshacer.`}
-        confirmLabel="Eliminar definitivamente"
-        cancelLabel="Cancelar"
-        tone="danger"
-        onConfirm={() => { void handleClearFinanceData() }}
-        onCancel={() => setIsFinanceDeleteConfirmationOpen(false)}
-      />
       <ConfirmationDialogModal
         open={deleteUser !== null}
         title="Eliminar usuario"
@@ -1465,12 +1657,12 @@ export function SettingsModal({
         confirmLabel="Eliminar usuario"
         cancelLabel="Cancelar"
         tone="danger"
-          onConfirm={() => {
-           if (!deleteUser) return
-           const userId = deleteUser.id
-           setDeleteUser(null)
-           void handleDeleteLibraryUser(userId)
-         }}
+        onConfirm={() => {
+          if (!deleteUser) return
+          const userId = deleteUser.id
+          setDeleteUser(null)
+          void handleDeleteLibraryUser(userId)
+        }}
         onCancel={() => setDeleteUser(null)}
       />
     </NotiaModalShell>
