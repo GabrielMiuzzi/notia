@@ -180,7 +180,7 @@ fn blocking_error() -> BackendError {
 }
 
 /// Rebuilds the inventory used by search, Graph View and the agent tools.
-fn reindex_in_background(app: &AppHandle, library_id: &str) {
+pub(crate) fn reindex_in_background(app: &AppHandle, library_id: &str) {
     let app = app.clone();
     let library_id = library_id.to_string();
     crate::host::async_runtime::spawn_blocking(move || {

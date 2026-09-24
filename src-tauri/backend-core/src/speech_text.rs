@@ -163,38 +163,6 @@ pub fn format_diarized(text: &str, segments: &[(Option<&str>, &str)], speaker_co
     if formatted.trim().is_empty() { text.trim().to_string() } else { formatted.trim().to_string() }
 }
 
-/// Speakers named in a transcript (`Hablante N:` at the start of a line), in order.
-pub fn transcript_speakers(transcript: &str) -> Vec<String> {
-    let mut numbers = transcript
-        .lines()
-        .filter_map(|line| {
-            line.get(..9).filter(|prefix| prefix.eq_ignore_ascii_case("hablante "))?;
-            let (digits, _) = line[9..].split_once(':')?;
-            (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())).then(|| digits.parse::<u32>().ok()).flatten()
-        })
-        .collect::<Vec<_>>();
-    numbers.sort_unstable();
-    numbers.dedup();
-    numbers.into_iter().map(|number| format!("Hablante {number}")).collect()
-}
-
-/// Renames a speaker at the start of every line it speaks.
-pub fn rename_speaker(transcript: &str, previous: &str, next: &str) -> String {
-    let (previous, next) = (previous.trim(), next.trim());
-    if previous.is_empty() || next.is_empty() {
-        return transcript.to_string();
-    }
-    let prefix = format!("{previous}:");
-    transcript
-        .split('\n')
-        .map(|line| match line.strip_prefix(&prefix) {
-            Some(rest) => format!("{next}:{rest}"),
-            None => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,12 +196,10 @@ mod tests {
     }
 
     #[test]
-    fn diarized_transcripts_are_labelled_and_speakers_renamed() {
+    fn diarized_transcripts_are_labelled_by_speaker() {
         let segments = [(Some("b"), "Hola."), (Some("b"), "¿Todo bien?"), (Some("a"), "Sí."), (None, "ruido")];
         let text = format_diarized("todo", &segments, 2);
         assert_eq!(text, "Hablante 1: Hola. ¿Todo bien?\n\nHablante 2: Sí.\n\nruido");
         assert_eq!(format_diarized(" solo ", &segments, 1), "solo");
-        assert_eq!(transcript_speakers(&text), ["Hablante 1", "Hablante 2"]);
-        assert_eq!(rename_speaker(&text, "Hablante 1", "Ana"), "Ana: Hola. ¿Todo bien?\n\nHablante 2: Sí.\n\nruido");
     }
 }

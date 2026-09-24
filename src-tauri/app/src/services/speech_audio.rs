@@ -1,5 +1,6 @@
 use crate::dto::speech::SpeechAudioInputStatusDto;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const SPEECH_SAMPLE_RATE: u32 = 16_000;
@@ -98,9 +99,89 @@ pub fn downmix_and_resample(
         .collect()
 }
 
+/// Sources a capture opens. The computer audio exists only on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureSources {
+    pub microphone: bool,
+    pub system: bool,
+}
+
+impl CaptureSources {
+    /// What this platform can open of what was asked.
+    pub fn resolve(microphone: bool, system: bool) -> Result<Self, String> {
+        let system = system && cfg!(target_os = "windows");
+        if !microphone && !system {
+            return Err(if cfg!(target_os = "windows") {
+                "Elegí al menos una fuente de audio.".to_string()
+            } else {
+                "El audio de la computadora solo se puede capturar en Windows; activá el micrófono.".to_string()
+            });
+        }
+        Ok(Self { microphone, system })
+    }
+}
+
+/// Loudness of each source since it was last read and the samples the
+/// capture delivered, which is the position of the recording.
+#[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
+#[derive(Debug, Default)]
+pub struct CaptureMeter {
+    microphone_peak: AtomicU32,
+    system_peak: AtomicU32,
+    delivered_samples: AtomicU64,
+}
+
+#[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
+pub type SharedCaptureMeter = Arc<CaptureMeter>;
+
+#[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
+impl CaptureMeter {
+    fn record(slot: &AtomicU32, samples: &[f32]) {
+        if samples.is_empty() {
+            return;
+        }
+        let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
+        if rms.is_finite() {
+            // Non-negative floats keep their order as bits.
+            slot.fetch_max(rms.to_bits(), Ordering::AcqRel);
+        }
+    }
+
+    pub fn record_microphone(&self, samples: &[f32]) {
+        Self::record(&self.microphone_peak, samples);
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn record_system(&self, samples: &[f32]) {
+        Self::record(&self.system_peak, samples);
+    }
+
+    pub fn add_delivered(&self, samples: usize) {
+        self.delivered_samples.fetch_add(samples as u64, Ordering::AcqRel);
+    }
+
+    pub fn position_ms(&self) -> u64 {
+        crate::services::speech_worker::samples_to_ms(self.delivered_samples.load(Ordering::Acquire))
+    }
+
+    /// Levels from 0 to 1 on a -60..0 dB scale since the previous read.
+    pub fn take_levels(&self) -> (f32, f32) {
+        let take = |slot: &AtomicU32| perceived_level(f32::from_bits(slot.swap(0, Ordering::AcqRel)));
+        (take(&self.microphone_peak), take(&self.system_peak))
+    }
+}
+
+#[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
+fn perceived_level(rms: f32) -> f32 {
+    if rms <= 1e-6 || !rms.is_finite() {
+        return 0.0;
+    }
+    ((20.0 * rms.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
 #[cfg(any(target_os = "windows", target_os = "android"))]
 mod native {
-    use super::{downmix_and_resample, SharedPcmBuffer, SpeechAudioInputStatusDto};
+    use super::{downmix_and_resample, CaptureSources, SharedCaptureMeter, SharedPcmBuffer, SpeechAudioInputStatusDto};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
     use std::collections::VecDeque;
@@ -112,39 +193,37 @@ mod native {
     const MIX_CHUNK_SAMPLES: usize = 160;
     const MIX_MAX_SOURCE_SKEW_SAMPLES: usize = 3_200;
 
-    #[derive(Default)]
+    /// Mixes the open sources into the recognizer queue. Without a target
+    /// (an audio check) it only measures.
     struct MeetingMixer {
         microphone: VecDeque<f32>,
         system: VecDeque<f32>,
         target: Option<SharedPcmBuffer>,
+        /// Read only by the computer audio, which exists on Windows.
+        #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+        microphone_active: bool,
         system_active: bool,
+        meter: Option<SharedCaptureMeter>,
     }
 
     impl MeetingMixer {
-        fn microphone_only(target: SharedPcmBuffer) -> Self {
+        fn new(target: Option<SharedPcmBuffer>, sources: CaptureSources, meter: Option<SharedCaptureMeter>) -> Self {
             Self {
-                target: Some(target),
-                system_active: false,
-                ..Self::default()
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        fn meeting(target: SharedPcmBuffer) -> Self {
-            Self {
-                target: Some(target),
-                system_active: true,
-                ..Self::default()
+                microphone: VecDeque::new(),
+                system: VecDeque::new(),
+                target,
+                microphone_active: sources.microphone,
+                system_active: sources.system,
+                meter,
             }
         }
 
         fn push_microphone(&mut self, samples: Vec<f32>) {
+            if let Some(meter) = &self.meter {
+                meter.record_microphone(&samples);
+            }
             if !self.system_active {
-                if let Some(target) = &self.target {
-                    if let Ok(mut target) = target.lock() {
-                        target.push(samples);
-                    }
-                }
+                self.deliver(samples);
                 return;
             }
             self.microphone.extend(samples);
@@ -153,8 +232,26 @@ mod native {
 
         #[cfg(target_os = "windows")]
         fn push_system(&mut self, samples: Vec<f32>) {
+            if let Some(meter) = &self.meter {
+                meter.record_system(&samples);
+            }
+            if !self.microphone_active {
+                self.deliver(samples);
+                return;
+            }
             self.system.extend(samples);
             self.flush_mix();
+        }
+
+        fn deliver(&mut self, samples: Vec<f32>) {
+            if let Some(meter) = &self.meter {
+                meter.add_delivered(samples.len());
+            }
+            if let Some(target) = &self.target {
+                if let Ok(mut target) = target.lock() {
+                    target.push(samples);
+                }
+            }
         }
 
         fn flush_mix(&mut self) {
@@ -170,68 +267,66 @@ mod native {
                         (microphone * 0.72 + system * 0.72).clamp(-1.0, 1.0)
                     })
                     .collect::<Vec<_>>();
-                if let Some(target) = &self.target {
-                    if let Ok(mut target) = target.lock() {
-                        target.push(mixed);
-                    }
-                }
+                self.deliver(mixed);
             }
         }
     }
 
     pub struct PlatformAudioCapture {
-        stream: Stream,
+        stream: Option<Stream>,
         paused: Arc<AtomicBool>,
         #[cfg(target_os = "windows")]
         _loopback: Option<WindowsLoopbackCapture>,
     }
 
     impl PlatformAudioCapture {
-        pub fn start_with_buffer(
-            buffer: SharedPcmBuffer,
-            capture_system_audio: bool,
+        /// Opens `sources` and feeds `target` with their mix. Without a
+        /// target the capture only feeds `meter` (an audio check).
+        pub fn start(
+            target: Option<SharedPcmBuffer>,
+            sources: CaptureSources,
+            meter: Option<SharedCaptureMeter>,
         ) -> Result<Self, String> {
-            #[cfg(not(target_os = "windows"))]
-            let _ = capture_system_audio;
-            let host = cpal::default_host();
-            let device = host
-                .default_input_device()
-                .ok_or_else(|| "El sistema no informa un microfono predeterminado.".to_string())?;
-            let supported_config = device.default_input_config().map_err(|error| {
-                format!("No se pudo consultar el formato del microfono: {error}")
-            })?;
-            let stream_config: StreamConfig = supported_config.clone().into();
             let paused = Arc::new(AtomicBool::new(false));
-            #[cfg(target_os = "windows")]
-            let mixer = Arc::new(Mutex::new(if capture_system_audio {
-                MeetingMixer::meeting(buffer)
+            let mixer = Arc::new(Mutex::new(MeetingMixer::new(target, sources, meter)));
+            let stream = if sources.microphone {
+                let host = cpal::default_host();
+                let device = host
+                    .default_input_device()
+                    .ok_or_else(|| "El sistema no informa un microfono predeterminado.".to_string())?;
+                let supported_config = device.default_input_config().map_err(|error| {
+                    format!("No se pudo consultar el formato del microfono: {error}")
+                })?;
+                let stream_config: StreamConfig = supported_config.clone().into();
+                Some(build_stream(&device, &supported_config, &stream_config, &paused, &mixer)?)
             } else {
-                MeetingMixer::microphone_only(buffer)
-            }));
-            #[cfg(not(target_os = "windows"))]
-            let mixer = Arc::new(Mutex::new(MeetingMixer::microphone_only(buffer)));
-            let stream = build_stream(&device, &supported_config, &stream_config, &paused, &mixer)?;
+                None
+            };
             #[cfg(target_os = "windows")]
-            // La captura de la salida es opcional: si WASAPI no puede abrir el
-            // endpoint (por ejemplo, no hay una salida activa), mantenemos el
-            // micrófono funcionando para que el dictado no falle por completo.
-            let loopback = if capture_system_audio {
+            // Con el micrófono activo, la captura de la salida es opcional: si
+            // WASAPI no puede abrir el endpoint (por ejemplo, no hay una salida
+            // activa), el micrófono sigue funcionando. Sin micrófono es la
+            // única fuente y su error se informa.
+            let loopback = if sources.system {
                 match WindowsLoopbackCapture::start(Arc::clone(&mixer), Arc::clone(&paused)) {
                     Ok(capture) => Some(capture),
-                    Err(error) => {
+                    Err(error) if sources.microphone => {
                         log::warn!("[notia:speech_audio] captura de salida no disponible: {error}");
                         if let Ok(mut mixer) = mixer.lock() {
                             mixer.system_active = false;
                         }
                         None
                     }
+                    Err(error) => return Err(error),
                 }
             } else {
                 None
             };
-            stream
-                .play()
-                .map_err(|error| format!("No se pudo iniciar el microfono: {error}"))?;
+            if let Some(stream) = &stream {
+                stream
+                    .play()
+                    .map_err(|error| format!("No se pudo iniciar el microfono: {error}"))?;
+            }
             Ok(Self {
                 stream,
                 paused,
@@ -242,15 +337,20 @@ mod native {
 
         pub fn pause(&self) -> Result<(), String> {
             self.paused.store(true, Ordering::Release);
-            self.stream
-                .pause()
-                .map_err(|error| format!("No se pudo pausar el microfono: {error}"))
+            match &self.stream {
+                Some(stream) => stream
+                    .pause()
+                    .map_err(|error| format!("No se pudo pausar el microfono: {error}")),
+                None => Ok(()),
+            }
         }
 
         pub fn resume(&self) -> Result<(), String> {
-            self.stream
-                .play()
-                .map_err(|error| format!("No se pudo reanudar el microfono: {error}"))?;
+            if let Some(stream) = &self.stream {
+                stream
+                    .play()
+                    .map_err(|error| format!("No se pudo reanudar el microfono: {error}"))?;
+            }
             self.paused.store(false, Ordering::Release);
             Ok(())
         }
@@ -563,7 +663,32 @@ pub fn probe_audio_input() -> SpeechAudioInputStatusDto {
 
 #[cfg(test)]
 mod tests {
-    use super::{downmix_and_resample, BoundedPcmBuffer};
+    use super::{downmix_and_resample, perceived_level, BoundedPcmBuffer, CaptureMeter, CaptureSources};
+
+    #[test]
+    fn the_meter_keeps_the_loudest_chunk_until_read_and_counts_delivered_audio() {
+        let meter = CaptureMeter::default();
+        meter.record_microphone(&[0.01; 160]);
+        meter.record_microphone(&[0.5; 160]);
+        meter.record_system(&[]);
+        meter.add_delivered(16_000);
+        let (microphone, system) = meter.take_levels();
+        assert!((microphone - perceived_level(0.5)).abs() < 1e-6);
+        assert_eq!(system, 0.0);
+        assert_eq!(meter.take_levels(), (0.0, 0.0));
+        assert_eq!(meter.position_ms(), 1_000);
+        assert_eq!(perceived_level(1.0), 1.0);
+        assert_eq!(perceived_level(0.0005), 0.0);
+    }
+
+    #[test]
+    fn capture_sources_need_one_source_and_the_computer_only_on_windows() {
+        assert!(CaptureSources::resolve(false, false).is_err());
+        let both = CaptureSources::resolve(true, true).expect("microphone");
+        assert!(both.microphone);
+        assert_eq!(both.system, cfg!(target_os = "windows"));
+        assert_eq!(CaptureSources::resolve(false, true).is_ok(), cfg!(target_os = "windows"));
+    }
 
     #[test]
     fn bounded_buffer_drops_oldest_samples() {

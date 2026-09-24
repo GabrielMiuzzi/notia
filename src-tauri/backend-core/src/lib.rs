@@ -35,6 +35,7 @@ pub mod pomodoro;
 pub mod pomodoro_log;
 pub mod library_tools;
 pub mod markdown_editing;
+pub mod meeting;
 pub mod multichat;
 pub mod page_links;
 pub mod paths;

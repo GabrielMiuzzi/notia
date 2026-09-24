@@ -171,12 +171,28 @@ fn route(command: &str) -> Option<Route> {
         "pause_speech_session" => pause_speech_session,
         "resume_speech_session" => resume_speech_session,
         "consume_speech_turn" => consume_speech_turn,
-        "speech_transcript_speakers" => speech_transcript_speakers,
-        "speech_rename_speaker" => speech_rename_speaker,
         "speech_remote_audio" => speech_remote_audio,
         "speech_remote_audio_cancel" => speech_remote_audio_cancel,
         "stop_speech_session" => stop_speech_session,
         "cancel_speech_session" => cancel_speech_session,
+        "skip_speech_diarization" => skip_speech_diarization,
+        "start_audio_monitor" => start_audio_monitor,
+        "stop_audio_monitor" => stop_audio_monitor,
+        "meeting_snapshot" => meeting_snapshot,
+        "meeting_discard" => meeting_discard,
+        "meeting_add_mark" => meeting_add_mark,
+        "meeting_remove_mark" => meeting_remove_mark,
+        "meeting_set_notes" => meeting_set_notes,
+        "meeting_set_live_answers" => meeting_set_live_answers,
+        "meeting_regenerate_answer" => meeting_regenerate_answer,
+        "meeting_pin_answer" => meeting_pin_answer,
+        "meeting_rename_speaker" => meeting_rename_speaker,
+        "meeting_merge_speakers" => meeting_merge_speakers,
+        "meeting_generate_insights" => meeting_generate_insights,
+        "meeting_save_note" => meeting_save_note,
+        "meeting_export" => meeting_export,
+        "meeting_task_boards" => meeting_task_boards,
+        "meeting_send_tasks" => meeting_send_tasks,
         "get_qwen3_tts_status" => get_qwen3_tts_status,
         "reload_qwen3_tts" => reload_qwen3_tts,
         "synthesize_qwen3_tts_speech" => synthesize_qwen3_tts_speech,
@@ -225,7 +241,6 @@ fn route(command: &str) -> Option<Route> {
         "ai_list_models" => ai_list_models,
         "ai_resolve_model" => ai_resolve_model,
         "ai_recognize_inkmath" => ai_recognize_inkmath,
-        "ai_improve_transcript" => ai_improve_transcript,
         "multichat_catalog" => multichat_catalog,
         "multichat_open" => multichat_open,
         "multichat_send" => multichat_send,
@@ -386,12 +401,28 @@ pub const COMMAND_NAMES: &[&str] = &[
     "pause_speech_session",
     "resume_speech_session",
     "consume_speech_turn",
-    "speech_transcript_speakers",
-    "speech_rename_speaker",
     "speech_remote_audio",
     "speech_remote_audio_cancel",
     "stop_speech_session",
     "cancel_speech_session",
+    "skip_speech_diarization",
+    "start_audio_monitor",
+    "stop_audio_monitor",
+    "meeting_snapshot",
+    "meeting_discard",
+    "meeting_add_mark",
+    "meeting_remove_mark",
+    "meeting_set_notes",
+    "meeting_set_live_answers",
+    "meeting_regenerate_answer",
+    "meeting_pin_answer",
+    "meeting_rename_speaker",
+    "meeting_merge_speakers",
+    "meeting_generate_insights",
+    "meeting_save_note",
+    "meeting_export",
+    "meeting_task_boards",
+    "meeting_send_tasks",
     "get_qwen3_tts_status",
     "reload_qwen3_tts",
     "synthesize_qwen3_tts_speech",
@@ -419,7 +450,6 @@ pub const COMMAND_NAMES: &[&str] = &[
     "ai_list_models",
     "ai_resolve_model",
     "ai_recognize_inkmath",
-    "ai_improve_transcript",
     "multichat_catalog",
     "multichat_open",
     "multichat_send",
@@ -453,6 +483,24 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "consume_speech_turn",
     "stop_speech_session",
     "cancel_speech_session",
+    "skip_speech_diarization",
+    "start_audio_monitor",
+    "stop_audio_monitor",
+    "meeting_snapshot",
+    "meeting_discard",
+    "meeting_add_mark",
+    "meeting_remove_mark",
+    "meeting_set_notes",
+    "meeting_set_live_answers",
+    "meeting_regenerate_answer",
+    "meeting_pin_answer",
+    "meeting_rename_speaker",
+    "meeting_merge_speakers",
+    "meeting_generate_insights",
+    "meeting_save_note",
+    "meeting_export",
+    "meeting_task_boards",
+    "meeting_send_tasks",
     "coldpass_bluetooth_status",
     "coldpass_bluetooth_connect",
     "coldpass_bluetooth_submit_pin",
@@ -1151,14 +1199,6 @@ fn consume_speech_turn(app: &AppHandle, _window_label: &str, command: &str, args
     Ok(Dispatch::Ready(reply_result(crate::commands::speech::consume_speech_turn(arg(command, args, "payload")?, app.clone(), app.state()))))
 }
 
-fn speech_transcript_speakers(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::commands::speech::speech_transcript_speakers(arg(command, args, "payload")?))))
-}
-
-fn speech_rename_speaker(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::commands::speech::speech_rename_speaker(arg(command, args, "payload")?))))
-}
-
 fn speech_remote_audio(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let arg0 = app.clone();
     let arg1 = app.state();
@@ -1175,6 +1215,88 @@ fn stop_speech_session(app: &AppHandle, _window_label: &str, command: &str, args
     let arg1 = app.clone();
     let arg2 = app.state();
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::commands::speech::stop_speech_session(arg0, arg1, arg2).await) })))
+}
+
+fn skip_speech_diarization(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::commands::speech::skip_speech_diarization(arg(command, args, "payload")?, app.state()))))
+}
+
+fn start_audio_monitor(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::commands::speech::start_audio_monitor(arg(command, args, "payload")?, app.clone(), app.state(), app.state()))))
+}
+
+fn stop_audio_monitor(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::commands::speech::stop_audio_monitor(arg(command, args, "payload")?, app.state()))))
+}
+
+fn meeting_snapshot(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_snapshot(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_discard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_discard(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_add_mark(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_add_mark(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_remove_mark(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_remove_mark(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_set_notes(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_set_notes(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_set_live_answers(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_set_live_answers(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_regenerate_answer(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_regenerate_answer(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_pin_answer(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_pin_answer(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_rename_speaker(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_rename_speaker(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_merge_speakers(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_merge_speakers(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_generate_insights(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_generate_insights(arg0, arg1).await) })))
+}
+
+fn meeting_save_note(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_save_note(arg0, arg1).await) })))
+}
+
+fn meeting_export(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_export(arg0, arg1).await) })))
+}
+
+fn meeting_task_boards(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_task_boards(arg0, arg1).await) })))
+}
+
+fn meeting_send_tasks(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_send_tasks(arg0, arg1).await) })))
 }
 
 fn cancel_speech_session(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1362,12 +1484,6 @@ fn ai_recognize_inkmath(app: &AppHandle, _window_label: &str, command: &str, arg
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_tasks::ai_recognize_inkmath(arg0, arg1).await) })))
-}
-
-fn ai_improve_transcript(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    let arg0 = app.clone();
-    let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_tasks::ai_improve_transcript(arg0, arg1).await) })))
 }
 
 fn multichat_catalog(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

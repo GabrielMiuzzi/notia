@@ -22,7 +22,10 @@
 - Multichat efímero con dinámicas Markdown, contexto adicional opcional fijo, de uno a seis agentes, selección por ronda de subconjunto y orden aleatorios —o agentes concretos/todos según la dinámica—, turnos secuenciales, streaming separado de thinking/respuesta y contexto auxiliar del panel derecho, sin tools, búsqueda web ni mutaciones.
 - Memoria persistente y herramientas nativas para el agente de IA.
 - Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca, guardado de datos personales en el mismo turno y organización automática de memory.md en segundo plano; Meeting, Graph View, Multichat, publicación y Telegram de otros usuarios sin memoria global.
-- Chat efímero de Meeting con transcripción offline y diarización.
+- Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas.
+- Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
+- Meeting: «Pasar por IA» (resumen, puntos clave, tareas enviables al Task Manager y corrección), preguntas a la reunión con el minuto citado, guardado como nota Markdown y exportación a PDF o Word.
+- Chat efímero de Meeting en el panel lateral con la transcripción como contexto.
 - Dictado y síntesis de voz offline, con reconocimiento Parakeet TDT.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.

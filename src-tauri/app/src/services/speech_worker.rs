@@ -18,7 +18,6 @@ pub struct RecordedAudio {
 }
 
 impl RecordedAudio {
-    #[cfg(test)]
     pub fn sample_count(&self) -> usize {
         self.sample_count
     }
@@ -139,10 +138,33 @@ impl Drop for AudioArchive {
     }
 }
 
+/// Samples of the session an utterance spans, counted from its start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleSpan {
+    pub start: u64,
+    pub end: u64,
+}
+
+impl SampleSpan {
+    pub fn start_ms(&self) -> u64 {
+        samples_to_ms(self.start)
+    }
+
+    pub fn end_ms(&self) -> u64 {
+        samples_to_ms(self.end)
+    }
+}
+
+pub fn samples_to_ms(samples: u64) -> u64 {
+    samples.saturating_mul(1_000) / u64::from(SPEECH_SAMPLE_RATE)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecognitionUpdate {
     pub text: String,
     pub endpoint_detected: bool,
+    /// Audio of the confirmed utterances, when the recognizer knows it.
+    pub span: Option<SampleSpan>,
 }
 
 pub trait StreamingRecognizer {
@@ -524,6 +546,7 @@ mod tests {
             Ok(RecognitionUpdate {
                 text: self.accepted_samples.to_string(),
                 endpoint_detected: false,
+                span: None,
             })
         }
 
@@ -531,6 +554,7 @@ mod tests {
             Ok(RecognitionUpdate {
                 text: format!("final:{}", self.accepted_samples),
                 endpoint_detected: false,
+                span: None,
             })
         }
 

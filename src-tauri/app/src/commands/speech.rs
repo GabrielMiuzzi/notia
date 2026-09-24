@@ -1,6 +1,7 @@
 use crate::dto::speech::{
-    SherpaRuntimeStatusDto, SpeechAudioInputStatusDto, SpeechCapabilitiesDto, SpeechModelStatusDto,
-    SpeechSessionPayload, StartSpeechSessionPayload, StartSpeechSessionResultDto,
+    AudioMonitorPayload, AudioMonitorResultDto, AudioMonitorStopPayload, SherpaRuntimeStatusDto,
+    SpeechAudioInputStatusDto, SpeechCapabilitiesDto, SpeechModelStatusDto, SpeechSessionPayload,
+    StartSpeechSessionPayload, StartSpeechSessionResultDto,
 };
 use crate::mobile_continuity;
 use crate::mobile_speech_permission::AndroidSpeechPermissionState;
@@ -95,7 +96,10 @@ pub async fn start_speech_session(
     permission_state: State<'_, AndroidSpeechPermissionState>,
 ) -> Result<StartSpeechSessionResultDto, String> {
     speech_service::validate_start_input(&payload.language, payload.max_duration_seconds)?;
-    let _diarization_enabled = payload.diarization_enabled;
+    let sources = speech_audio::CaptureSources::resolve(payload.capture_microphone, payload.capture_system_audio)?;
+    if payload.expected_speakers.is_some_and(|count| !(2..=MAX_EXPECTED_SPEAKERS).contains(&count)) {
+        return Err(format!("La cantidad de hablantes debe estar entre 2 y {MAX_EXPECTED_SPEAKERS}."));
+    }
     let phase = *state
         .phase
         .lock()
@@ -138,24 +142,25 @@ pub async fn start_speech_session(
         );
         let language = payload.language;
         let diarization_enabled = payload.diarization_enabled;
-        let capture_system_audio = payload.capture_system_audio;
+        let capture = speech_service::SessionCapture {
+            sources,
+            max_duration_seconds: payload.max_duration_seconds,
+            expected_speakers: payload.expected_speakers,
+            report_levels: payload.meeting.is_some(),
+        };
         let worker_app = app.clone();
         let worker_session_id = session_id.clone();
+        // The meeting exists before the first line can arrive.
+        if let Some(options) = &payload.meeting {
+            crate::meeting::begin(&app, &session_id, sources, options);
+        }
         let result = match crate::host::async_runtime::spawn_blocking(move || {
             let model = speech_model_repository::resolve_asr_model(&worker_app, &language)?;
             let diarization_model = diarization_enabled
                 .then(|| speech_model_repository::resolve_diarization_model(&worker_app, &language))
                 .transpose()?;
             let worker_state = worker_app.state::<SpeechRuntimeState>();
-            speech_service::start_platform_session(
-                &worker_app,
-                &worker_state,
-                worker_session_id,
-                model,
-                diarization_model,
-                payload.max_duration_seconds,
-                capture_system_audio,
-            )
+            speech_service::start_platform_session(&worker_app, &worker_state, worker_session_id, model, diarization_model, capture)
         })
         .await
         {
@@ -164,6 +169,7 @@ pub async fn start_speech_session(
                 if let Ok(mut phase) = state.phase.lock() {
                     *phase = SpeechPhase::Idle;
                 }
+                crate::meeting::discard_session(&app, &session_id);
                 if continuity_started {
                     mobile_continuity::end_android_work(
                         app.state::<mobile_continuity::ContinuityState>().inner(),
@@ -178,6 +184,7 @@ pub async fn start_speech_session(
             if let Ok(mut phase) = state.phase.lock() {
                 *phase = SpeechPhase::Idle;
             }
+            crate::meeting::discard_session(&app, &session_id);
             if continuity_started {
                 mobile_continuity::end_android_work(
                     app.state::<mobile_continuity::ContinuityState>().inner(),
@@ -189,9 +196,51 @@ pub async fn start_speech_session(
     }
     #[cfg(not(any(target_os = "windows", target_os = "android")))]
     {
-        let _ = (app, state);
+        let _ = (app, state, sources, payload.diarization_enabled, payload.meeting);
         Err(speech_service::not_integrated_error())
     }
+}
+
+/// Most speakers the person can ask the diarization to find.
+const MAX_EXPECTED_SPEAKERS: u32 = 10;
+
+/// Opens the chosen sources only to show their levels before recording.
+pub fn start_audio_monitor(
+    payload: AudioMonitorPayload,
+    app: AppHandle,
+    state: State<'_, SpeechRuntimeState>,
+    permission_state: State<'_, AndroidSpeechPermissionState>,
+) -> Result<AudioMonitorResultDto, String> {
+    let sources = speech_audio::CaptureSources::resolve(payload.microphone, payload.system)?;
+    #[cfg(target_os = "android")]
+    crate::mobile_speech_permission::ensure_microphone_permission(&permission_state)?;
+    #[cfg(not(target_os = "android"))]
+    let _ = permission_state;
+    let phase = *state
+        .phase
+        .lock()
+        .map_err(|_| "No se pudo bloquear el estado de voz.".to_string())?;
+    if phase != SpeechPhase::Idle {
+        return Err("No se puede probar el audio mientras se graba.".to_string());
+    }
+    let monitor_id = speech_service::start_audio_monitor(&app, &state, sources)?;
+    Ok(AudioMonitorResultDto { monitor_id })
+}
+
+pub fn stop_audio_monitor(
+    payload: AudioMonitorStopPayload,
+    state: State<'_, SpeechRuntimeState>,
+) -> Result<(), String> {
+    speech_service::stop_audio_monitor(&state, &payload.monitor_id)
+}
+
+/// Finishes a session that is separating speakers with its text alone.
+pub fn skip_speech_diarization(
+    payload: SpeechSessionPayload,
+    state: State<'_, SpeechRuntimeState>,
+) -> Result<(), String> {
+    validate_session_command(&payload)?;
+    speech_service::skip_diarization(&state, &payload.session_id)
 }
 
 fn microphone_permission(_state: &AndroidSpeechPermissionState) -> String {
@@ -313,7 +362,10 @@ pub async fn stop_speech_session(
     speech_service::emit_session_state(
         &app,
         &payload.session_id,
-        crate::dto::speech::SpeechSessionStateDto::Finalizing { progress: None },
+        crate::dto::speech::SpeechSessionStateDto::Finalizing {
+            progress: None,
+            stage: Some("transcribing"),
+        },
     );
     let worker_app = app.clone();
     crate::host::async_runtime::spawn_blocking(move || {
@@ -363,31 +415,11 @@ pub fn cancel_speech_session(
     validate_session_command(&payload)?;
     speech_service::validate_active_session(&state, &payload.session_id)?;
     let result = speech_service::cancel_platform_audio(&state);
+    crate::meeting::discard_session(&app, &payload.session_id);
     #[cfg(target_os = "android")]
     {
         let continuity_state = app.state::<mobile_continuity::ContinuityState>();
         let _ = mobile_continuity::end_android_work(continuity_state.inner());
     }
-    let _ = app;
     result
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranscriptSpeakerPayload {
-    transcript: String,
-    #[serde(default)]
-    previous_name: String,
-    #[serde(default)]
-    next_name: String,
-}
-
-/// Speakers named in a Meeting transcript, in order.
-pub fn speech_transcript_speakers(payload: TranscriptSpeakerPayload) -> Vec<String> {
-    notia_backend_core::speech_text::transcript_speakers(&payload.transcript)
-}
-
-/// The transcript with a speaker renamed at the start of each line it speaks.
-pub fn speech_rename_speaker(payload: TranscriptSpeakerPayload) -> String {
-    notia_backend_core::speech_text::rename_speaker(&payload.transcript, &payload.previous_name, &payload.next_name)
 }

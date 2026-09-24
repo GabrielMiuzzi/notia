@@ -17,7 +17,8 @@ describe('parseSpeechCapabilities', () => {
       asrModelInstalled: false,
       diarizationModelInstalled: false,
       unavailableReason: 'not-integrated',
-    })).toMatchObject({ supported: false, platform: 'windows' })
+      systemAudioSupported: true,
+    })).toMatchObject({ supported: false, platform: 'windows', systemAudioSupported: true })
   })
 
   it('rechaza estados de permiso desconocidos', () => {

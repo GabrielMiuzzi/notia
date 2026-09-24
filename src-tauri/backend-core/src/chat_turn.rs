@@ -170,6 +170,7 @@ pub fn turn_prompt(mode: TurnMode, message: &str, context: Option<&str>) -> Stri
         TurnMode::Meeting => [
             "Usá la siguiente transcripción actual de Meeting como contexto para responder la consulta.",
             "Si la respuesta no surge de ella ni de una herramienta autorizada, indicá que no está disponible.",
+            "Cada intervención empieza con su minuto [mm:ss]; cuando cites algo de la reunión, indicá el minuto en que se dijo.",
             "",
             "TRANSCRIPCIÓN ACTUAL:",
             context.unwrap_or_default(),

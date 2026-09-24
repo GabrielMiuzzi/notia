@@ -97,10 +97,3 @@ export async function recognizeInkMathWithAi(
   }
   return latex
 }
-
-export function improveMeetingTranscript(preferences: AiPreferences, transcript: string): Promise<string> {
-  return call('ai_improve_transcript', {
-    settings: settingsOf(preferences),
-    transcript,
-  }, 'No se pudo mejorar la transcripción.')
-}

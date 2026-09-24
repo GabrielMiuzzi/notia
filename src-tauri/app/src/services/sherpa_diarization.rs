@@ -28,10 +28,14 @@ mod windows {
     const MIN_EMBEDDING_SAMPLES: usize = 16_000;
     const MAX_EMBEDDING_SAMPLES: usize = 16_000 * 60;
 
+    /// Separates the speakers of `samples`. With `expected_speakers` the
+    /// clustering produces exactly that many; otherwise it decides with a
+    /// conservative distance threshold.
     pub fn process(
         runtime_path: &Path,
         model: &ResolvedDiarizationModel,
         samples: &[f32],
+        expected_speakers: Option<u32>,
     ) -> Result<DiarizationResult, String> {
         if samples.is_empty() {
             return Ok(DiarizationResult {
@@ -61,7 +65,7 @@ mod windows {
                 provider: provider.as_ptr(),
             },
             clustering: FastClusteringConfig {
-                num_clusters: 0,
+                num_clusters: expected_speakers.map_or(0, |count| count as i32),
                 // Sherpa uses a distance threshold: larger values merge more
                 // embeddings. 0.5 over-segments normal meeting audio and tends
                 // to turn channel/noise variation into phantom speakers.

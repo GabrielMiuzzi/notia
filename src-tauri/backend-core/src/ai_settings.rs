@@ -234,24 +234,6 @@ pub fn clean_latex_answer(answer: &str) -> Option<String> {
 
 pub const TRANSCRIPT_SYSTEM_PROMPT: &str = "Sos el asistente de Notia. Responde con claridad, prioriza el contexto provisto y usa markdown solo cuando aporte valor.";
 
-/// Prompt that asks to clean up a meeting transcript without changing it.
-pub fn improve_transcript_prompt(transcript: &str) -> Result<String, BackendError> {
-    let transcript = transcript.trim();
-    if transcript.is_empty() {
-        return Err(BackendError::invalid_input("No hay una transcripción para mejorar."));
-    }
-    Ok([
-        "Organiza y mejora la siguiente transcripción de una reunión.",
-        "Corrige puntuación, ortografía, concordancia y frases evidentemente cortadas.",
-        "Conserva los nombres o etiquetas de hablante exactamente como aparecen y mantén cada intervención con su hablante.",
-        "No inventes información, no resumas, no elimines detalles y no agregues comentarios.",
-        "Devuelve únicamente la transcripción mejorada, sin introducción ni bloque de código.",
-        "",
-        transcript,
-    ]
-    .join("\n"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

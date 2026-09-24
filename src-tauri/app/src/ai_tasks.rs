@@ -1,10 +1,11 @@
 //! AI provider checks and one-shot AI tasks of the interface.
 //!
 //! The settings screen checks the provider and lists its models with the
-//! preferences being edited; the editor turns handwriting into LaTeX and
-//! Meeting cleans up a transcript. Each operation runs on the transport of
-//! the platform (the Rust HTTP client on desktop, the Kotlin AI bridge on
-//! Android); the interface only sends the preferences and the input.
+//! preferences being edited; the editor turns handwriting into LaTeX, and
+//! Meeting uses [`complete`] and [`stream_complete`] for its live answers and
+//! insights. Each operation runs on the transport of the platform (the Rust
+//! HTTP client on desktop, the Kotlin AI bridge on Android); the interface
+//! only sends the preferences and the input.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -58,13 +59,6 @@ pub(crate) struct AiSettingsPayload {
 pub(crate) struct InkMathPayload {
     settings: AiSettingsInput,
     image_base64: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TranscriptPayload {
-    settings: AiSettingsInput,
-    transcript: String,
 }
 
 fn http(settings: &AiSettings) -> AiHttpSettings {
@@ -232,9 +226,7 @@ fn resolve_model(app: &AppHandle, settings: &AiSettings) -> Result<String, Backe
     ai_settings::resolve_model(settings, &names)
 }
 
-/// One answer from the provider, without tools and without thinking.
-fn complete(app: &AppHandle, settings: &AiSettings, system: &str, user: &str, images: Vec<String>) -> Result<String, BackendError> {
-    let model = resolve_model(app, settings)?;
+fn task_messages(system: &str, user: &str, images: Vec<String>) -> Vec<AiChatMessage> {
     let message = |role: &str, content: &str, images: Vec<String>| AiChatMessage {
         role: role.to_string(),
         content: content.to_string(),
@@ -242,11 +234,16 @@ fn complete(app: &AppHandle, settings: &AiSettings, system: &str, user: &str, im
         tool_calls: Vec::new(),
         tool_name: None,
     };
-    let messages = vec![message("system", system, Vec::new()), message("user", user, images)];
+    vec![message("system", system, Vec::new()), message("user", user, images)]
+}
+
+/// One answer from the provider, without tools and without thinking.
+pub(crate) fn complete(app: &AppHandle, settings: &AiSettings, system: &str, user: &str, images: Vec<String>) -> Result<String, BackendError> {
+    let model = resolve_model(app, settings)?;
     let answer = crate::backend_ollama::platform_ollama_transport(app).chat(
         &http(settings),
         &model,
-        &messages,
+        &task_messages(system, user, images),
         &Value::Bool(false),
         &RequestControl::new(Some(TASK_TIMEOUT)),
     )?;
@@ -255,6 +252,44 @@ fn complete(app: &AppHandle, settings: &AiSettings, system: &str, user: &str, im
         return Err(provider_error("La IA no devolvio contenido.".to_string()));
     }
     Ok(answer)
+}
+
+/// Like [`complete`], hearing the text as it arrives. `control` can cancel it.
+pub(crate) fn stream_complete(
+    app: &AppHandle,
+    settings: &AiSettings,
+    system: &str,
+    user: &str,
+    control: &RequestControl,
+    on_text: &mut dyn FnMut(&str),
+) -> Result<String, BackendError> {
+    let model = resolve_model(app, settings)?;
+    let mut text = String::new();
+    let answer = crate::backend_ollama::platform_ollama_transport(app).stream_chat(
+        &http(settings),
+        &model,
+        &task_messages(system, user, Vec::new()),
+        &Value::Bool(false),
+        control,
+        &mut |delta| {
+            if let crate::services::ai_service::AiChatStreamDelta::Content(delta) = delta {
+                text.push_str(&delta);
+                on_text(&text);
+            }
+            Ok(())
+        },
+    )?;
+    let answer = if answer.trim().is_empty() { text } else { answer };
+    let answer = answer.trim().to_string();
+    if answer.is_empty() {
+        return Err(provider_error("La IA no devolvio contenido.".to_string()));
+    }
+    Ok(answer)
+}
+
+/// Timeout of one AI task.
+pub(crate) fn task_control() -> RequestControl {
+    RequestControl::new(Some(TASK_TIMEOUT))
 }
 
 pub(crate) async fn ai_check_health(app: AppHandle, payload: AiSettingsPayload) -> Result<AiHealthDto, BackendError> {
@@ -292,16 +327,6 @@ pub(crate) async fn ai_recognize_inkmath(app: AppHandle, payload: InkMathPayload
         )?;
         ai_settings::clean_latex_answer(&answer)
             .ok_or_else(|| provider_error("Ollama no devolvio una formula LaTeX.".to_string()))
-    })
-    .await
-    .map_err(|_| blocking_error())?
-}
-
-/// Meeting transcript with punctuation and spelling fixed, nothing else.
-pub(crate) async fn ai_improve_transcript(app: AppHandle, payload: TranscriptPayload) -> Result<String, BackendError> {
-    let prompt = ai_settings::improve_transcript_prompt(&payload.transcript)?;
-    crate::host::async_runtime::spawn_blocking(move || {
-        complete(&app, &payload.settings.normalize(), ai_settings::TRANSCRIPT_SYSTEM_PROMPT, &prompt, Vec::new())
     })
     .await
     .map_err(|_| blocking_error())?

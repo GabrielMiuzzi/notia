@@ -5,6 +5,8 @@ import type {
   SpeechAudioInputStatus,
   SpeechErrorCode,
   SpeechCapabilities,
+  SpeechFinalizingStage,
+  SpeechLevelsEvent,
   SpeechPartialEvent,
   SpeechModelStatus,
   SpeechSegmentsEvent,
@@ -18,6 +20,8 @@ import type { SpeechRecognitionPreferences } from '../preferences/speechRecognit
 const SPEECH_STATE_EVENT = 'speech://state'
 const SPEECH_PARTIAL_EVENT = 'speech://partial'
 const SPEECH_SEGMENTS_EVENT = 'speech://segments'
+const SPEECH_LEVELS_EVENT = 'speech://levels'
+const FINALIZING_STAGES: SpeechFinalizingStage[] = ['transcribing', 'detecting-speakers', 'assigning-turns']
 const SPEECH_ERROR_CODES: SpeechErrorCode[] = [
   'permission-denied',
   'microphone-unavailable',
@@ -75,6 +79,7 @@ export function parseSpeechCapabilities(value: unknown): SpeechCapabilities {
     asrModelInstalled: value.asrModelInstalled,
     diarizationModelInstalled: value.diarizationModelInstalled,
     unavailableReason: unavailableReason as SpeechCapabilities['unavailableReason'],
+    systemAudioSupported: value.systemAudioSupported === true,
   }
 }
 
@@ -115,11 +120,22 @@ function parseSpeechSessionState(value: unknown): SpeechSessionState {
   switch (value.status) {
     case 'idle': return { status: 'idle' }
     case 'preparing':
-    case 'finalizing':
       if (value.progress !== undefined && !isNonNegativeNumber(value.progress)) {
         throw new Error('Progreso de voz invalido.')
       }
       return { status: value.status, ...(value.progress === undefined ? {} : { progress: value.progress }) }
+    case 'finalizing':
+      if (value.progress !== undefined && !isNonNegativeNumber(value.progress)) {
+        throw new Error('Progreso de voz invalido.')
+      }
+      if (value.stage !== undefined && !FINALIZING_STAGES.includes(value.stage as SpeechFinalizingStage)) {
+        throw new Error('Etapa de voz invalida.')
+      }
+      return {
+        status: 'finalizing',
+        ...(value.progress === undefined ? {} : { progress: value.progress }),
+        ...(value.stage === undefined ? {} : { stage: value.stage as SpeechFinalizingStage }),
+      }
     case 'recording':
       if (!isNonNegativeNumber(value.elapsedMs) || typeof value.hasSpeech !== 'boolean') {
         throw new Error('Estado de grabacion invalido.')
@@ -145,16 +161,6 @@ function parseSpeechSessionState(value: unknown): SpeechSessionState {
       }
     default: throw new Error('Estado de sesion de voz desconocido.')
   }
-}
-
-/** Speakers named in a Meeting transcript, in order. */
-export function listTranscriptSpeakers(transcript: string): Promise<string[]> {
-  return callBackend<string[]>('speech_transcript_speakers', { payload: { transcript } })
-}
-
-/** The transcript with a speaker renamed at the start of each line it speaks. */
-export function renameTranscriptSpeaker(transcript: string, previousName: string, nextName: string): Promise<string> {
-  return callBackend<string>('speech_rename_speaker', { payload: { transcript, previousName, nextName } })
 }
 
 export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
@@ -295,6 +301,18 @@ export const resumeSpeechSession = (sessionId: string) => invokeSessionCommand('
 export const consumeSpeechTurn = (sessionId: string) => callBackend<string>('consume_speech_turn', { payload: { sessionId } })
 export const stopSpeechSession = (sessionId: string) => invokeSessionCommand('stop_speech_session', sessionId)
 export const cancelSpeechSession = (sessionId: string) => invokeSessionCommand('cancel_speech_session', sessionId)
+/** Finishes a session that is separating speakers with its text alone. */
+export const skipSpeechDiarization = (sessionId: string) => invokeSessionCommand('skip_speech_diarization', sessionId)
+
+/** Opens the sources only to show their levels; resolves with the check's id. */
+export async function startAudioMonitor(sources: { microphone: boolean; system: boolean }): Promise<string> {
+  const value = await callBackend<unknown>('start_audio_monitor', { payload: sources })
+  if (!isRecord(value)) throw new Error('No se pudo probar el audio.')
+  return readString(value.monitorId, 'monitorId')
+}
+
+export const stopAudioMonitor = (monitorId: string) =>
+  callBackend<void>('stop_audio_monitor', { payload: { monitorId } })
 
 const listenValidated = <T>(
   eventName: string,
@@ -326,6 +344,23 @@ export const listenSpeechSegments = (callback: (payload: SpeechSegmentsEvent) =>
     return {
       sessionId: readString(value.sessionId, 'sessionId'),
       transcript: parseDiarizedTranscript(value.transcript),
+    }
+  }, callback)
+)
+
+const readLevel = (value: unknown, field: string): number | null => {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`Nivel de audio invalido: ${field}.`)
+  return Math.min(1, Math.max(0, value))
+}
+
+export const listenSpeechLevels = (callback: (payload: SpeechLevelsEvent) => void) => (
+  listenValidated(SPEECH_LEVELS_EVENT, (value) => {
+    if (!isRecord(value)) throw new Error('Evento de niveles de audio invalido.')
+    return {
+      sessionId: readString(value.sessionId, 'sessionId'),
+      microphone: readLevel(value.microphone, 'microphone'),
+      system: readLevel(value.system, 'system'),
     }
   }, callback)
 )

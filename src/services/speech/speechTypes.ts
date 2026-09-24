@@ -14,6 +14,8 @@ export interface SpeechCapabilities {
   asrModelInstalled: boolean
   diarizationModelInstalled: boolean
   unavailableReason: SpeechUnavailableReason | null
+  /** The computer audio can be captured (Windows). */
+  systemAudioSupported: boolean
 }
 
 export interface SpeechTranscriptSegment {
@@ -48,12 +50,14 @@ export interface SpeechError {
   message: string
 }
 
+export type SpeechFinalizingStage = 'transcribing' | 'detecting-speakers' | 'assigning-turns'
+
 export type SpeechSessionState =
   | { status: 'idle' }
   | { status: 'preparing'; progress?: number }
   | { status: 'recording'; elapsedMs: number; hasSpeech: boolean }
   | { status: 'paused'; elapsedMs: number }
-  | { status: 'finalizing'; progress?: number }
+  | { status: 'finalizing'; progress?: number; stage?: SpeechFinalizingStage }
   | { status: 'completed'; transcript: DiarizedTranscript }
   | { status: 'error'; error: SpeechError }
 
@@ -73,11 +77,29 @@ export interface SpeechSegmentsEvent {
   transcript: DiarizedTranscript
 }
 
+/** Loudness from 0 to 1 of each open source of a capture; `null` when closed. */
+export interface SpeechLevelsEvent {
+  sessionId: string
+  microphone: number | null
+  system: number | null
+}
+
+export interface MeetingSessionOptions {
+  liveAnswers: boolean
+  /** Provider preferences for the live answers. */
+  settings: unknown
+}
+
 export interface StartSpeechSessionInput {
   language: string
   diarizationEnabled: boolean
   maxDurationSeconds: number
   captureSystemAudio?: boolean
+  captureMicrophone?: boolean
+  /** Speakers the diarization must find; missing lets it decide. */
+  expectedSpeakers?: number
+  /** The session records a Meeting. */
+  meeting?: MeetingSessionOptions
 }
 
 export interface StartSpeechSessionResult {

@@ -10,6 +10,12 @@ pub struct SpeechCapabilitiesDto {
     pub asr_model_installed: bool,
     pub diarization_model_installed: bool,
     pub unavailable_reason: Option<String>,
+    /// The computer audio can be captured (Windows).
+    pub system_audio_supported: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -20,6 +26,53 @@ pub struct StartSpeechSessionPayload {
     pub max_duration_seconds: u32,
     #[serde(default)]
     pub capture_system_audio: bool,
+    #[serde(default = "default_true")]
+    pub capture_microphone: bool,
+    /// Speakers the diarization must find; `None` lets it decide.
+    #[serde(default)]
+    pub expected_speakers: Option<u32>,
+    /// The session records a Meeting.
+    #[serde(default)]
+    pub meeting: Option<MeetingSessionOptions>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingSessionOptions {
+    #[serde(default)]
+    pub live_answers: bool,
+    /// Provider preferences for the live answers.
+    #[serde(default)]
+    pub settings: Option<notia_backend_core::ai_settings::AiSettingsInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioMonitorPayload {
+    pub microphone: bool,
+    pub system: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioMonitorStopPayload {
+    pub monitor_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioMonitorResultDto {
+    pub monitor_id: String,
+}
+
+/// Loudness from 0 to 1 of each open source; `None` for a closed one.
+#[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechLevelsEventDto {
+    pub session_id: String,
+    pub microphone: Option<f32>,
+    pub system: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +201,9 @@ pub enum SpeechSessionStateDto {
     Finalizing {
         #[serde(skip_serializing_if = "Option::is_none")]
         progress: Option<f32>,
+        /// `transcribing`, `detecting-speakers` or `assigning-turns`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stage: Option<&'static str>,
     },
     Completed {
         transcript: DiarizedTranscriptDto,

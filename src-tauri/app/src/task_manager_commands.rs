@@ -525,6 +525,60 @@ pub(crate) const TASK_MANAGER_CHANGED_EVENT: &str = "task-manager-changed";
 /// Owner of the local application, as the Task Manager board knows it.
 const LOCAL_OWNER: &str = "user-owner";
 
+fn owner_context(library_id: &str) -> Result<TaskManagerContextDto, BackendError> {
+    TaskManagerContextPayload {
+        library_id: library_id.to_string(),
+        library_user_id: LOCAL_OWNER.to_string(),
+        active_board_id: None,
+        allowed_board_ids: Vec::new(),
+    }
+    .into_core()
+}
+
+/// Names of the boards of a library, for the owner.
+pub(crate) fn owner_board_names(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
+    let context = owner_context(library_id)?;
+    let state = app.state::<TaskManagerBackendState>();
+    let registry = app.state::<LibraryBindingRegistry>();
+    let manager = manager(app, &state, &registry, &context.library_id, &context.library_user_id)?;
+    Ok(manager.read_snapshot(&context)?.boards.into_iter().map(|board| board.name).collect())
+}
+
+/// Creates pending tasks (title and detail) in the first group of `board`,
+/// as the owner. Returns how many were created.
+pub(crate) fn create_owner_tasks(
+    app: &AppHandle,
+    library_id: &str,
+    board: &str,
+    tasks: &[(String, String)],
+) -> Result<usize, BackendError> {
+    let context = owner_context(library_id)?;
+    let state = app.state::<TaskManagerBackendState>();
+    let registry = app.state::<LibraryBindingRegistry>();
+    let mut created = 0;
+    for (title, detail) in tasks {
+        let intent = TaskBoardIntent::CreateTask {
+            board: board.to_string(),
+            title: title.clone(),
+            detail: detail.clone(),
+            group: String::new(),
+            priority: None,
+            state: notia_backend_core::task_manager_tools::TaskState::Pending,
+            parent_task_name: String::new(),
+            end_date: String::new(),
+            dynamic_end_date: true,
+            estimated_hours: 0.0,
+        };
+        if board_execute_in(app, &state, &registry, &context, &intent)? {
+            created += 1;
+        }
+    }
+    if created > 0 {
+        announce_task_manager_change(app, library_id);
+    }
+    Ok(created)
+}
+
 /// Context of the Task Manager board a library note lives in. Notes inside
 /// a board carry the board's context and the editor locks it.
 pub(crate) fn board_context_of_document(app: &AppHandle, library_id: &str, logical_path: &str) -> Option<String> {

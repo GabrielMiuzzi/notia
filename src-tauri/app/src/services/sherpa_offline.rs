@@ -9,7 +9,7 @@
 
 use crate::services::spanish_transcript::normalize_spanish_transcript;
 use crate::services::speech_audio::SPEECH_SAMPLE_RATE;
-use crate::services::speech_worker::{RecognitionUpdate, StreamingRecognizer};
+use crate::services::speech_worker::{RecognitionUpdate, SampleSpan, StreamingRecognizer};
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -491,9 +491,11 @@ impl OfflineVadRecognizer {
         }
     }
 
-    /// Decodes every utterance Silero VAD has closed and joins their text.
-    fn drain_segments(&mut self) -> Result<String, String> {
+    /// Decodes every utterance Silero VAD has closed and joins their text,
+    /// with the samples of the session they span.
+    fn drain_segments(&mut self) -> Result<(String, Option<SampleSpan>), String> {
         let mut texts = Vec::new();
+        let mut span: Option<SampleSpan> = None;
         unsafe {
             while (self.api.vad_empty)(self.vad) == 0 {
                 let segment = (self.api.vad_front)(self.vad);
@@ -518,6 +520,12 @@ impl OfflineVadRecognizer {
                     if !text.is_empty() {
                         self.remember_language_context(&padded_samples);
                         texts.push(text);
+                        let start = segment_start as u64;
+                        let end = start.saturating_add(raw.n as u64);
+                        span = Some(match span {
+                            Some(previous) => SampleSpan { start: previous.start, end },
+                            None => SampleSpan { start, end },
+                        });
                     }
                 } else {
                     (self.api.destroy_segment)(segment);
@@ -525,7 +533,7 @@ impl OfflineVadRecognizer {
                 }
             }
         }
-        Ok(texts.join(" "))
+        Ok((texts.join(" "), span))
     }
 
     /// Refreshes the preview of the utterance that VAD has not closed yet.
@@ -584,28 +592,32 @@ impl StreamingRecognizer for OfflineVadRecognizer {
             self.history_start_sample = self.history_start_sample.saturating_add(overflow as i64);
         }
         unsafe { (self.api.vad_accept)(self.vad, samples.as_ptr(), n) };
-        let confirmed = self.drain_segments()?;
+        let (confirmed, span) = self.drain_segments()?;
         if !confirmed.is_empty() {
             // The preview belonged to the utterance that was just confirmed.
             self.live = LiveUtterance::default();
             return Ok(RecognitionUpdate {
                 text: confirmed,
                 endpoint_detected: true,
+                span,
             });
         }
         self.update_live_utterance()?;
         Ok(RecognitionUpdate {
             text: self.live.text.clone(),
             endpoint_detected: false,
+            span: None,
         })
     }
 
     fn finish(&mut self) -> Result<RecognitionUpdate, String> {
         unsafe { (self.api.vad_flush)(self.vad) };
         self.live = LiveUtterance::default();
+        let (text, span) = self.drain_segments()?;
         Ok(RecognitionUpdate {
-            text: self.drain_segments()?,
+            text,
             endpoint_detected: false,
+            span,
         })
     }
 

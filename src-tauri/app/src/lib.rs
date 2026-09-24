@@ -45,6 +45,7 @@ mod multichat;
 mod library_document_adapter;
 mod library_registry;
 mod library_users;
+mod meeting;
 mod user_auth;
 
 mod commands {
@@ -83,6 +84,8 @@ mod services {
     pub mod sherpa_runtime;
     pub mod spanish_transcript;
     pub mod speech_audio;
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    pub mod speech_levels;
     pub mod speech_model_repository;
     pub mod speech_service;
     pub mod speech_worker;
@@ -110,6 +113,7 @@ pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
     app.manage(library_session::LibrarySessionState::default());
     app.manage(ai_chat::AiChatState::default());
     app.manage(ai_tasks::AiTasksState::default());
+    app.manage(meeting::MeetingState::default());
     app.manage(multichat::MultichatState::default());
     app.manage(coldpass::ColdPassState::default());
     app.manage(library_catalog::LibraryCatalogState::default());

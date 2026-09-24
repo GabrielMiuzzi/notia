@@ -20,6 +20,7 @@ import { mergeVoiceTextIntoDraft } from '../../../../services/speech/speechTrans
 import { backendKind } from '../../../../services/transport'
 import { useRemoteVoiceTranscription } from './useRemoteVoiceTranscription'
 import type {
+  MeetingSessionOptions,
   SpeechAudioInputStatus,
   SpeechCapabilities,
   SpeechSessionState,
@@ -37,6 +38,11 @@ interface UseVoiceTranscriptionInput {
   maxDurationSeconds?: number
   onCompleted?: (text: string) => void
   captureSystemAudio?: boolean
+  captureMicrophone?: boolean
+  /** Speakers the diarization must find; `null` lets it decide. */
+  expectedSpeakers?: number | null
+  /** The session records a Meeting. */
+  meeting?: MeetingSessionOptions | null
 }
 
 export function hasNewRecognizedSpeech(previous: string, next: string): boolean {
@@ -53,7 +59,18 @@ export function stabilizePartialTranscript(previous: string, next: string): stri
   return nextWords > previousWords ? normalizedNext : normalizedPrevious
 }
 
-function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, maxDurationSeconds = 900, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
+function useLocalVoiceTranscription({
+  draft,
+  setDraft,
+  pauseDetectionMs = null,
+  continuousSession = false,
+  maxDurationSeconds = 900,
+  onCompleted,
+  captureSystemAudio = false,
+  captureMicrophone = true,
+  expectedSpeakers = null,
+  meeting = null,
+}: UseVoiceTranscriptionInput) {
   const speechRecognition = useAppSelector(selectSpeechRecognitionSettings)
   // The backend preloads the saved model at startup; asking before the saved
   // preferences arrive would prepare the default model instead.
@@ -311,14 +328,15 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
       })
       return false
     }
-    if (!currentAudioInput) {
+    // Recording only the computer audio does not need a microphone.
+    if (captureMicrophone && !currentAudioInput) {
       setState({
         status: 'error',
         error: { code: 'microphone-unavailable', message: 'No se pudo comprobar el micrófono.' },
       })
       return false
     }
-    if (currentCapabilities.permission === 'granted' && !currentAudioInput.available) {
+    if (captureMicrophone && currentAudioInput && currentCapabilities.permission === 'granted' && !currentAudioInput.available) {
       setState({
         status: 'error',
         error: {
@@ -344,6 +362,9 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
         diarizationEnabled: !continuousSession,
         maxDurationSeconds,
         captureSystemAudio,
+        captureMicrophone,
+        ...(expectedSpeakers ? { expectedSpeakers } : {}),
+        ...(meeting ? { meeting } : {}),
       })
       sessionIdRef.current = result.sessionId
       setState({ status: 'recording', elapsedMs: 0, hasSpeech: false })
@@ -359,7 +380,7 @@ function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, 
       setState({ status: 'error', error: { code: 'internal', message } })
       return false
     }
-  }, [audioInput, capabilities, captureSystemAudio, continuousSession, draft, maxDurationSeconds, speechRecognition])
+  }, [audioInput, capabilities, captureMicrophone, captureSystemAudio, continuousSession, draft, expectedSpeakers, maxDurationSeconds, meeting, speechRecognition])
 
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current

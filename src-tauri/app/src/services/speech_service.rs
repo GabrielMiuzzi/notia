@@ -46,6 +46,23 @@ pub struct SpeechRuntimeState {
     /// model is never loaded twice at once.
     #[cfg(any(target_os = "windows", target_os = "android"))]
     preparation: StdMutex<()>,
+    /// Audio check before recording: the sources open only to measure them.
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    monitor: Mutex<Option<AudioMonitor>>,
+    /// Session whose speaker separation the person asked to skip.
+    skip_diarization: Mutex<Option<String>>,
+}
+
+/// Longest an audio check stays open without being stopped.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const AUDIO_MONITOR_LIFETIME: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct AudioMonitor {
+    id: String,
+    // Dropped first: it stops emitting before the capture closes.
+    _levels: crate::services::speech_levels::LevelReporter,
+    _capture: crate::services::speech_audio::PlatformAudioCapture,
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -183,7 +200,10 @@ fn commit_external_update(
 #[cfg(any(target_os = "windows", target_os = "android"))]
 struct ActivePlatformSpeechSession {
     session_id: String,
+    // Dropped first: it stops emitting before the capture closes.
+    _levels: Option<crate::services::speech_levels::LevelReporter>,
     audio_capture: crate::services::speech_audio::PlatformAudioCapture,
+    meter: crate::services::speech_audio::SharedCaptureMeter,
     worker: crate::services::speech_worker::SpeechWorker,
     started_at: Instant,
     confirmed_text: Arc<StdMutex<String>>,
@@ -199,6 +219,9 @@ impl Default for SpeechRuntimeState {
             preloaded_recognizer: Arc::new(StdMutex::new(None)),
             #[cfg(any(target_os = "windows", target_os = "android"))]
             preparation: StdMutex::new(()),
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            monitor: Mutex::new(None),
+            skip_diarization: Mutex::new(None),
         }
     }
 }
@@ -243,6 +266,16 @@ pub fn runtime_integrated() -> bool {
     cfg!(any(target_os = "windows", target_os = "android"))
 }
 
+/// What a session records besides the recognizer model.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub struct SessionCapture {
+    pub sources: crate::services::speech_audio::CaptureSources,
+    pub max_duration_seconds: u32,
+    pub expected_speakers: Option<u32>,
+    /// Emit `speech://levels` while recording (Meeting).
+    pub report_levels: bool,
+}
+
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub fn start_platform_session(
     app: &AppHandle,
@@ -250,8 +283,7 @@ pub fn start_platform_session(
     session_id: String,
     model: OfflineNemoTransducerConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
-    max_duration_seconds: u32,
-    capture_system_audio: bool,
+    capture: SessionCapture,
 ) -> Result<(), String> {
     let mut slot = state
         .active_session
@@ -260,6 +292,11 @@ pub fn start_platform_session(
     if slot.is_some() {
         return Err("Ya existe una sesion de voz activa.".to_string());
     }
+    stop_any_audio_monitor(state);
+    if let Ok(mut skip) = state.skip_diarization.lock() {
+        *skip = None;
+    }
+    let SessionCapture { sources, max_duration_seconds, expected_speakers, report_levels } = capture;
     let diarization_runtime_path = diarization_model
         .as_ref()
         .map(|_| crate::services::sherpa_runtime::resolve_platform_runtime_path(app))
@@ -268,10 +305,23 @@ pub fn start_platform_session(
     let recognizer_cache = Arc::clone(&state.preloaded_recognizer);
     let recycler_cache = Arc::clone(&recognizer_cache);
     let buffer = crate::services::speech_audio::create_shared_pcm_buffer();
-    let capture = crate::services::speech_audio::PlatformAudioCapture::start_with_buffer(
-        Arc::clone(&buffer),
-        capture_system_audio,
+    let meter: crate::services::speech_audio::SharedCaptureMeter = Arc::default();
+    let audio_capture = crate::services::speech_audio::PlatformAudioCapture::start(
+        Some(Arc::clone(&buffer)),
+        sources,
+        Some(Arc::clone(&meter)),
     )?;
+    let levels = report_levels
+        .then(|| {
+            crate::services::speech_levels::LevelReporter::start(
+                app.clone(),
+                session_id.clone(),
+                Arc::clone(&meter),
+                sources,
+                None,
+            )
+        })
+        .transpose()?;
     let started_at = Instant::now();
     let confirmed_text = Arc::new(StdMutex::new(String::new()));
     let callback_app = app.clone();
@@ -299,8 +349,11 @@ pub fn start_platform_session(
                 &callback_session_id,
                 started_at,
                 &callback_confirmed,
-                diarization_runtime_path.as_deref(),
-                diarization_model.as_ref(),
+                DiarizationSetup {
+                    runtime_path: diarization_runtime_path.as_deref(),
+                    model: diarization_model.as_ref(),
+                    expected_speakers,
+                },
                 event,
             );
         },
@@ -312,12 +365,134 @@ pub fn start_platform_session(
     )?;
     *slot = Some(ActivePlatformSpeechSession {
         session_id,
-        audio_capture: capture,
+        _levels: levels,
+        audio_capture,
+        meter,
         worker,
         started_at,
         confirmed_text,
     });
     Ok(())
+}
+
+/// Position of the recording of `session_id`, without its pauses.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub fn session_position_ms(state: &SpeechRuntimeState, session_id: &str) -> Result<u64, String> {
+    let slot = state
+        .active_session
+        .lock()
+        .map_err(|_| "No se pudo bloquear la sesion de voz.".to_string())?;
+    slot.as_ref()
+        .filter(|session| session.session_id == session_id)
+        .map(|session| session.meter.position_ms())
+        .ok_or_else(|| "La grabación ya terminó.".to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
+pub fn session_position_ms(_state: &SpeechRuntimeState, _session_id: &str) -> Result<u64, String> {
+    Err(not_integrated_error())
+}
+
+/// Opens `sources` only to measure them and emits their levels under a new
+/// id until stopped, a recording starts or two minutes pass.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub fn start_audio_monitor(
+    app: &AppHandle,
+    state: &SpeechRuntimeState,
+    sources: crate::services::speech_audio::CaptureSources,
+) -> Result<String, String> {
+    if state
+        .active_session
+        .lock()
+        .map_err(|_| "No se pudo bloquear la sesion de voz.".to_string())?
+        .is_some()
+    {
+        return Err("No se puede probar el audio mientras se graba.".to_string());
+    }
+    stop_any_audio_monitor(state);
+    let id = uuid::Uuid::new_v4().to_string();
+    let meter: crate::services::speech_audio::SharedCaptureMeter = Arc::default();
+    let capture = crate::services::speech_audio::PlatformAudioCapture::start(None, sources, Some(Arc::clone(&meter)))?;
+    let expiry_app = app.clone();
+    let expiry_id = id.clone();
+    let levels = crate::services::speech_levels::LevelReporter::start(
+        app.clone(),
+        id.clone(),
+        meter,
+        sources,
+        Some((
+            AUDIO_MONITOR_LIFETIME,
+            Box::new(move || {
+                let _ = stop_audio_monitor(&expiry_app.state::<SpeechRuntimeState>(), &expiry_id);
+            }),
+        )),
+    )?;
+    *state
+        .monitor
+        .lock()
+        .map_err(|_| "No se pudo bloquear la prueba de audio.".to_string())? =
+        Some(AudioMonitor { id: id.clone(), _levels: levels, _capture: capture });
+    Ok(id)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
+pub fn start_audio_monitor(
+    _app: &crate::host::AppHandle,
+    _state: &SpeechRuntimeState,
+    _sources: crate::services::speech_audio::CaptureSources,
+) -> Result<String, String> {
+    Err(not_integrated_error())
+}
+
+/// Closes the audio check `id`; another check or none is left as is.
+pub fn stop_audio_monitor(state: &SpeechRuntimeState, id: &str) -> Result<(), String> {
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    {
+        let stopped = {
+            let mut slot = state
+                .monitor
+                .lock()
+                .map_err(|_| "No se pudo bloquear la prueba de audio.".to_string())?;
+            if slot.as_ref().is_some_and(|monitor| monitor.id == id) { slot.take() } else { None }
+        };
+        drop(stopped);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
+    let _ = (state, id);
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn stop_any_audio_monitor(state: &SpeechRuntimeState) {
+    let stopped = state.monitor.lock().ok().and_then(|mut slot| slot.take());
+    drop(stopped);
+}
+
+/// Asks to finish `session_id` without separating its speakers. Only while
+/// it is finalizing.
+pub fn skip_diarization(state: &SpeechRuntimeState, session_id: &str) -> Result<(), String> {
+    let finalizing = state
+        .phase
+        .lock()
+        .map(|phase| *phase == SpeechPhase::Finalizing)
+        .unwrap_or(false);
+    if !finalizing {
+        return Err("La grabación no está separando hablantes.".to_string());
+    }
+    *state
+        .skip_diarization
+        .lock()
+        .map_err(|_| "No se pudo bloquear el estado de voz.".to_string())? = Some(session_id.to_string());
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn diarization_skipped(app: &AppHandle, session_id: &str) -> bool {
+    app.state::<SpeechRuntimeState>()
+        .skip_diarization
+        .lock()
+        .map(|skip| skip.as_deref() == Some(session_id))
+        .unwrap_or(false)
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -435,6 +610,8 @@ pub fn stop_platform_session(state: &SpeechRuntimeState) -> Result<(), String> {
         .take()
         .ok_or_else(|| "No hay una sesion de voz activa.".to_string())?;
     session.audio_capture.pause()?;
+    // Nothing to measure while the speakers are separated.
+    drop(session._levels);
     session.worker.stop()?;
     session.worker.join()
 }
@@ -472,14 +649,25 @@ pub fn validate_active_session(
     Err("No hay una sesion de voz activa.".to_string())
 }
 
+/// How a finished session separates its speakers.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct DiarizationSetup<'a> {
+    runtime_path: Option<&'a std::path::Path>,
+    model: Option<&'a crate::services::speech_model_repository::ResolvedDiarizationModel>,
+    expected_speakers: Option<u32>,
+}
+
+/// Returned when the person skipped the speaker separation.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const DIARIZATION_SKIPPED: &str = "La separación de hablantes se omitió.";
+
 #[cfg(any(target_os = "windows", target_os = "android"))]
 fn handle_worker_event(
     app: &AppHandle,
     session_id: &str,
     started_at: Instant,
     confirmed_text: &Arc<StdMutex<String>>,
-    diarization_runtime_path: Option<&std::path::Path>,
-    diarization_model: Option<&crate::services::speech_model_repository::ResolvedDiarizationModel>,
+    diarization: DiarizationSetup<'_>,
     event: crate::services::speech_worker::SpeechWorkerEvent,
 ) {
     use crate::services::speech_worker::SpeechWorkerEvent;
@@ -506,7 +694,9 @@ fn handle_worker_event(
                 return;
             };
             let partial = if update.endpoint_detected {
-                append_text(&mut confirmed, &update.text);
+                let appended = append_text(&mut confirmed, &update.text);
+                let span = update.span.map(|span| (span.start_ms(), span.end_ms()));
+                crate::meeting::on_line(app, session_id, span, &appended);
                 String::new()
             } else {
                 unconfirmed_suffix(&confirmed, &update.text)
@@ -521,20 +711,35 @@ fn handle_worker_event(
             );
         }
         SpeechWorkerEvent::Finished { update, audio } => {
+            let span = update.span.map(|span| (span.start_ms(), span.end_ms()));
             let text = match confirmed_text.lock() {
                 Ok(mut confirmed) => {
-                    append_text(&mut confirmed, &update.text);
+                    let appended = append_text(&mut confirmed, &update.text);
+                    crate::meeting::on_line(app, session_id, span, &appended);
                     confirmed.clone()
                 }
                 Err(_) => update.text,
             };
-            let transcript = match diarization_model {
-                Some(model) => match diarization_runtime_path
+            crate::meeting::on_processing(app, session_id, audio.duration_ms());
+            let transcript = match diarization.model {
+                Some(model) => match diarization
+                    .runtime_path
                     .ok_or_else(|| "No se encontró el runtime de diarización.".to_string())
                     .and_then(|runtime_path| {
-                        diarize_recorded_audio(app, runtime_path, model, &audio)
+                        diarize_recorded_audio(
+                            app,
+                            session_id,
+                            runtime_path,
+                            model,
+                            diarization.expected_speakers,
+                            &audio,
+                        )
                     }) {
                     Ok(transcript) => transcript,
+                    Err(message) if message == DIARIZATION_SKIPPED => {
+                        log::info!("[notia:speech] speaker separation skipped by the person");
+                        transcript_without_diarization(&text, audio.duration_ms())
+                    }
                     Err(message) => {
                         log::warn!(
                             "[notia:speech] diarization failed; preserving ASR transcript: {message}"
@@ -544,6 +749,7 @@ fn handle_worker_event(
                 },
                 None => transcript_without_diarization(&text, audio.duration_ms()),
             };
+            crate::meeting::on_completed(app, session_id, &transcript, audio.duration_ms());
             let _ = app.emit(
                 "speech://segments",
                 SpeechSegmentsEventDto {
@@ -559,6 +765,7 @@ fn handle_worker_event(
             set_runtime_phase(app, SpeechPhase::Idle);
         }
         SpeechWorkerEvent::Error(message) => {
+            crate::meeting::on_interrupted(app, session_id);
             emit_error(app, session_id, "internal", &message);
             set_runtime_phase(app, SpeechPhase::Idle);
         }
@@ -566,12 +773,29 @@ fn handle_worker_event(
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
+fn emit_finalizing(app: &AppHandle, session_id: &str, stage: &'static str, progress: f32) {
+    emit_state(
+        app,
+        session_id,
+        SpeechSessionStateDto::Finalizing {
+            progress: Some(progress.clamp(0.0, 1.0)),
+            stage: Some(stage),
+        },
+    );
+}
+
+/// Separates the speakers of the recording window by window. Reports the
+/// stage and progress of each window and stops when the person skips it.
+#[cfg(any(target_os = "windows", target_os = "android"))]
 fn diarize_recorded_audio(
     app: &AppHandle,
+    session_id: &str,
     runtime_path: &std::path::Path,
     model: &crate::services::speech_model_repository::ResolvedDiarizationModel,
+    expected_speakers: Option<u32>,
     audio: &crate::services::speech_worker::RecordedAudio,
 ) -> Result<DiarizedTranscriptDto, String> {
+    let chunk_count = audio.sample_count().div_ceil(DIARIZATION_CHUNK_SAMPLES).max(1) as f32;
     let embedding_extractor =
         match crate::services::sherpa_diarization::SpeakerEmbeddingExtractor::new(
             runtime_path,
@@ -594,8 +818,21 @@ fn diarize_recorded_audio(
     let mut chunk_index = 0_usize;
     let mut chunk_start_ms = 0_u64;
     audio.for_each_chunk(DIARIZATION_CHUNK_SAMPLES, |samples| {
-        let diarization =
-            crate::services::sherpa_diarization::process(runtime_path, model, samples)?;
+        let window = chunk_index as f32;
+        if diarization_skipped(app, session_id) {
+            return Err(DIARIZATION_SKIPPED.to_string());
+        }
+        emit_finalizing(app, session_id, "detecting-speakers", window / chunk_count);
+        let diarization = crate::services::sherpa_diarization::process(
+            runtime_path,
+            model,
+            samples,
+            expected_speakers,
+        )?;
+        if diarization_skipped(app, session_id) {
+            return Err(DIARIZATION_SKIPPED.to_string());
+        }
+        emit_finalizing(app, session_id, "assigning-turns", (window + 0.5) / chunk_count);
         let embeddings = match embedding_extractor.as_ref() {
             Some(extractor) => match extractor.extract(samples, &diarization) {
                 Ok(embeddings) => embeddings,
@@ -609,7 +846,18 @@ fn diarize_recorded_audio(
             None => Vec::new(),
         };
         let speaker_mapping = speaker_registry.remap_chunk(&diarization, &embeddings);
-        let chunk = transcribe_diarized_turns(app, samples, &diarization)?;
+        let mut last_reported = -1.0_f32;
+        let chunk = transcribe_diarized_turns(app, samples, &diarization, &mut |done, total| {
+            if diarization_skipped(app, session_id) {
+                return Err(DIARIZATION_SKIPPED.to_string());
+            }
+            let progress = (window + 0.5 + 0.5 * done as f32 / total.max(1) as f32) / chunk_count;
+            if progress - last_reported >= 0.01 {
+                last_reported = progress;
+                emit_finalizing(app, session_id, "assigning-turns", progress);
+            }
+            Ok(())
+        })?;
         append_diarized_chunk(
             &mut transcript,
             chunk,
@@ -828,22 +1076,26 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn append_text(target: &mut String, text: &str) {
+/// Appends the words of `text` that `target` does not already end with and
+/// returns them.
+fn append_text(target: &mut String, text: &str) -> String {
     let text = text.trim();
     if text.is_empty() {
-        return;
+        return String::new();
     }
     let target_words = target.split_whitespace().collect::<Vec<_>>();
     let incoming_words = text.split_whitespace().collect::<Vec<_>>();
     let overlap = matching_boundary_words(&target_words, &incoming_words);
     if overlap == incoming_words.len() {
-        return;
+        return String::new();
     }
     normalize_transcript_chunk_boundary(target, incoming_words[overlap]);
     if !target.is_empty() {
         target.push(' ');
     }
-    target.push_str(&incoming_words[overlap..].join(" "));
+    let appended = incoming_words[overlap..].join(" ");
+    target.push_str(&appended);
+    appended
 }
 
 fn normalize_transcript_chunk_boundary(target: &mut String, next_word: &str) {
@@ -959,11 +1211,14 @@ fn transcript_without_diarization(text: &str, elapsed_ms: u64) -> DiarizedTransc
     }
 }
 
+/// Transcribes each speaker turn of a window again. `on_turn` hears the
+/// progress before each turn and stops the pass with an error.
 #[cfg(any(target_os = "windows", target_os = "android"))]
 fn transcribe_diarized_turns(
     app: &AppHandle,
     samples: &[f32],
     diarization: &crate::services::sherpa_diarization::DiarizationResult,
+    on_turn: &mut dyn FnMut(usize, usize) -> Result<(), String>,
 ) -> Result<DiarizedTranscriptDto, String> {
     use crate::services::speech_worker::StreamingRecognizer;
 
@@ -987,7 +1242,9 @@ fn transcribe_diarized_turns(
     let result = (|| {
         let mut transcript_segments = Vec::with_capacity(turns.len());
         let mut complete_text = String::new();
-        for turn in turns {
+        let turn_count = turns.len();
+        for (turn_index, turn) in turns.into_iter().enumerate() {
+            on_turn(turn_index, turn_count)?;
             let start = (turn.start_seconds.max(0.0) * SAMPLE_RATE).round() as usize;
             let end = (turn.end_seconds.max(turn.start_seconds) * SAMPLE_RATE).round() as usize;
             let start = start.min(samples.len());
@@ -1184,6 +1441,7 @@ pub fn current_capabilities(
         permission: permission.to_string(),
         asr_model_installed: asr_ready,
         diarization_model_installed: diarization_ready,
+        system_audio_supported: cfg!(target_os = "windows"),
         unavailable_reason: (!supported).then(|| {
             if platform_supported {
                 "not-integrated"
@@ -1346,6 +1604,7 @@ mod tests {
                 &RecognitionUpdate {
                     text: "Que es Spring Boot.".to_string(),
                     endpoint_detected: false,
+                    span: None,
                 },
                 false,
             ));
@@ -1355,6 +1614,7 @@ mod tests {
             &RecognitionUpdate {
                 text: "Que es Spring Boot.".to_string(),
                 endpoint_detected: false,
+                span: None,
             },
             true,
         );
