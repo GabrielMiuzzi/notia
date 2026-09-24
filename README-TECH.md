@@ -6257,6 +6257,16 @@ Eventos: `meeting://changed { meetingId }` después de cada cambio, `meeting://a
 - `tsc -p tsconfig.app.json`, `tsc -p tsconfig.node.json`, ESLint de los archivos tocados y Vitest 223 (4 nuevos de los paneles de Meeting).
 - Pendiente de prueba manual: grabación real en Windows (micrófono, audio de la computadora y solo audio de la computadora), prueba de audio y medidores, minutos de las líneas y momentos después de pausar, separación con cantidad fija y cancelada, respuestas en vivo y «Pasar por IA» con un proveedor real, guardado, actualización con conflicto y exportación PDF/DOCX; lo mismo en un dispositivo Android con SAF y permiso de micrófono; y que `Ctrl + Shift + R` no recargue el WebView2.
 
+### Ancho y responsive
+
+La vista ocupa todo el ancho del área de trabajo en los cuatro estados: se quitaron el ancho máximo de 820 px de «Lista para grabar» y los de 880 y 480 px de «Separando hablantes». `.notia-meeting-view` es un contenedor (`container: meeting / inline-size`) y los cortes usan `@container meeting`, no el ancho de la ventana, así que también se adaptan cuando el Explorador o el Asistente achican el área:
+
+- Con 960 px de contenido o menos, la transcripción y la columna lateral (respuestas en vivo, notas, momentos, «Pasar por IA» y preguntas) se apilan.
+- Con 680 px o menos, el encabezado, las fuentes, las opciones y los pasos pasan a una columna y los botones de acción ocupan todo el ancho.
+- Los márgenes de la vista son porcentuales (`clamp(16px, 3%, 40px)`), así que también siguen su ancho. `pointer: coarse` sigue agrandando los controles a 44 px.
+
+Solo cambió CSS (`src/styles/notia.css`). Se revisaron los cuatro estados con Chrome sin ventana a 1920 px y con la vista reducida a 800 y 420 px dentro de una ventana de 1920 px. `vitest run` (229) y `vite build` aprobados. Pendiente: prueba en la app de Windows con los paneles abiertos y en Android.
+
 ## Agente de Notia por Telegram
 
 > **Actualizado:** el bot corre en el worker Rust `telegram_worker.rs`. Las referencias de esta sección a `useTelegramAgentBridge`, `notiaChatRuntime` y checkpoints en `localStorage` describen la implementación anterior; el estado vigente está en «Estado sincronizado de esta iteración: runtime de aplicación en Rust y correcciones del store de Task Manager».
