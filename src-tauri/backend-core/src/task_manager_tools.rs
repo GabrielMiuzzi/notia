@@ -3280,11 +3280,14 @@ fn default_task_order() -> f64 {
 fn library_snapshot(library_id: &str, library: &LibraryState) -> TaskManagerLibrarySnapshotDto {
     let mut users = library.users.iter().cloned().collect::<Vec<_>>();
     users.sort();
+    // Groups are keyed by id; consumers list them in the order people set.
+    let mut groups = library.groups.values().cloned().collect::<Vec<_>>();
+    groups.sort_by_key(|group| group.order);
     TaskManagerLibrarySnapshotDto {
         library_id: library_id.to_string(),
         users,
         boards: library.boards.values().cloned().collect(),
-        groups: library.groups.values().cloned().collect(),
+        groups,
         tickets: library.tickets.values().cloned().collect(),
         comments: library.comments.values().cloned().collect(),
         generation: library.generation,
@@ -3987,6 +3990,49 @@ mod tests {
             manager.seed_ticket(wrong_board).unwrap_err().code,
             BackendErrorCode::InvalidInput
         );
+    }
+
+    #[test]
+    fn snapshot_lists_groups_in_their_saved_order() {
+        let (manager, context) = setup();
+        manager
+            .seed_group(TaskGroupDto {
+                library_id: "library-a".into(),
+                group_id: "group-b".into(),
+                board_id: "board-a".into(),
+                name: "Sprint".into(),
+                color: "#654321".into(),
+                revision: 1,
+                order: 1,
+            })
+            .unwrap();
+        manager
+            .preview_mutation(&TaskMutationRequestDto {
+                context: context.clone(),
+                operation_id: "op-reorder".into(),
+                idempotency_key: "idem-reorder".into(),
+                mutation: TaskMutationDto::ReorderGroups {
+                    board_id: "board-a".into(),
+                    group_ids: vec!["group-b".into(), "group-a".into()],
+                },
+            })
+            .unwrap();
+        manager
+            .apply_mutation(&TaskMutationApplyRequestDto {
+                context: context.clone(),
+                operation_id: "op-reorder".into(),
+                idempotency_key: "idem-reorder".into(),
+                confirmed: true,
+            })
+            .unwrap();
+
+        let snapshot = manager.read_snapshot(&context).unwrap();
+        let group_ids = snapshot
+            .groups
+            .iter()
+            .map(|group| group.group_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(group_ids, vec!["group-b", "group-a"]);
     }
 
     #[test]

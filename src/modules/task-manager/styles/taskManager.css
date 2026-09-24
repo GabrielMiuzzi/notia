@@ -446,28 +446,19 @@
   overflow-x: hidden;
 }
 
+/* Groups keep a minimum width and wrap onto new rows when they don't fit. */
 .tareas-board {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(272px, 100%), 1fr));
   gap: 16px;
-  align-items: flex-start;
+  align-items: start;
   padding: var(--tareas-radius-xs) var(--tareas-radius-xs) var(--tareas-size-sm);
   width: 100%;
   min-width: 0;
-  overflow-x: auto;
   box-sizing: border-box;
 }
 
-.tareas-board::-webkit-scrollbar {
-  height: 8px;
-}
-
-.tareas-board::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
-  border-radius: 999px;
-}
-
 .tareas-group {
-  flex: 0 0 min(272px, 86vw);
   border: 1px solid var(--background-modifier-border);
   border-radius: 14px;
   background: var(--background-primary-alt);
@@ -489,6 +480,7 @@
   padding: 10px 12px 10px 14px;
   cursor: pointer;
   user-select: none;
+  -webkit-touch-callout: none;
   --tareas-group-color: var(--tareas-group-color-base, var(--background-modifier-border));
   border-top: 3px solid var(--tareas-group-color, var(--background-modifier-border));
   border-bottom: 1px solid var(--background-modifier-border);
@@ -504,8 +496,9 @@
   border: 1px dashed var(--interactive-accent);
 }
 
-.tareas-group-header.is-drop-target {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+.tareas-group.is-drop-target {
+  border-color: color-mix(in srgb, var(--interactive-accent) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 55%, transparent);
 }
 
 .tareas-toggle {
@@ -573,8 +566,8 @@
   opacity: 0.5;
 }
 
-.notia-published-task-manager .tareas-task-drag-wrap {
-  touch-action: none;
+.tareas-task-drag-wrap {
+  -webkit-touch-callout: none;
 }
 
 .notia-published-task-manager .tareas-task-drag-wrap.is-dragging .tareas-task-card {

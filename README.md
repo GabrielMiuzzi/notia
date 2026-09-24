@@ -308,7 +308,7 @@ Gestor de credenciales cifradas integrado en Notia.
 Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 
 - **Tableros personalizables**: creá múltiples tableros para diferentes áreas de tu vida (trabajo, personal, proyectos). Cada tablero vive como una carpeta dentro de tu librería.
-- **Vista Kanban**: organizá tareas en columnas (grupos) con arrastre visual.
+- **Vista Kanban**: organizá tareas en columnas (grupos) con arrastre visual. El tablero se adapta al ancho disponible: cuando los grupos no entran en la pantalla, se apilan en filas hacia abajo en lugar de requerir desplazamiento horizontal. Para reordenar los grupos, arrastrá el encabezado de uno y soltalo en cualquier parte de otro grupo: ocupa su lugar. En pantallas táctiles, mantené pulsado el encabezado y arrastralo con el dedo. Los tickets se mueven igual: arrastralos (o mantenelos pulsados y arrastralos con el dedo) y el hueco resaltado marca exactamente dónde van a quedar; al soltarlos aparecen en su nuevo lugar de inmediato mientras Notia guarda el cambio.
 - **Vista de tabla**: alterná a una vista tabular para ver y ordenar tareas por estado, prioridad o fecha de fin.
 - **Tareas con subtareas**: cada tarea puede tener subtareas anidadas mediante wikilinks.
 - **Estados**: pendiente, en progreso, completada, cancelada.
