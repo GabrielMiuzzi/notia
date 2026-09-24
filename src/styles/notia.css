@@ -5444,10 +5444,28 @@
 
 .notia-properties-row {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 180px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 28px;
+}
+
+/* Delete button of a property, in its own column at the end of the row. */
+.notia-button.notia-properties-delete-button {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--color-icon-muted);
+  font-size: 15px;
+}
+
+@media (pointer: coarse) {
+  .notia-button.notia-properties-delete-button {
+    width: 40px;
+    height: 40px;
+  }
 }
 
 .notia-properties-key {

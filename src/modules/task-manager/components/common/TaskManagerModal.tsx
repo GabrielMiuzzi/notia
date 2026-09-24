@@ -6,6 +6,8 @@ interface TaskManagerModalProps {
   onClose: () => void
   children: ReactNode
   size?: 'sm' | 'md' | 'lg' | 'xl'
+  /** Fixed large surface, for editors (see NotiaModalShell). */
+  fill?: boolean
   panelClassName?: string
   panelStyle?: CSSProperties
 }
@@ -15,6 +17,7 @@ export function TaskManagerModal({
   onClose,
   children,
   size = 'lg',
+  fill = false,
   panelClassName,
   panelStyle,
 }: TaskManagerModalProps) {
@@ -25,6 +28,7 @@ export function TaskManagerModal({
       open={open}
       onClose={onClose}
       size={size}
+      fill={fill}
       panelClassName={mergedPanelClassName}
       panelStyle={panelStyle}
     >

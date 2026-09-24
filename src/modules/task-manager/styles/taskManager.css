@@ -109,6 +109,38 @@
   overflow: auto;
 }
 
+/* Task editor: the notes' Markdown editor (Milkdown) inside a large dialog.
+   The body takes the height left by the header and the actions; the editor
+   scrolls inside it. */
+.tareas-source-dialog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tareas-source-dialog-body .notia-markdown-editor-root .milkdown .ProseMirror {
+  min-height: 12rem;
+}
+
+.tareas-source-dialog-status {
+  margin: 16px 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.tareas-source-dialog-status--error {
+  color: var(--tareas-color-danger);
+}
+
+.tareas-source-dialog-notice {
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: 12.5px;
+  color: var(--tareas-color-warning);
+}
+
 .tareas-dialog-actions {
   padding: 10px 14px;
   border-top: 1px solid var(--background-modifier-border);

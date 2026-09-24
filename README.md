@@ -642,6 +642,7 @@ En Linux, el servidor se compila desde `src-tauri` con `cargo build --release --
 2. Creá un **tablero** nuevo dándole un nombre (ej. "Proyecto Alpha"). Notia creará automáticamente la carpeta `task-mannager/Proyecto Alpha/` en tu librería.
 3. Agregá **tareas** al tablero. Podés definir prioridad, estado, fecha de fin, subtareas y comentarios.
 4. Cambiá entre la **vista Kanban** (columnas visuales) y la **vista Tabla** (listado ordenable) según prefieras.
+   - Hacé **doble clic** en una tarea para editarla con el mismo editor de las notas: arriba sus propiedades y abajo el cuerpo con formato (títulos, listas, tablas, diagramas). **Guardar** se habilita cuando cambiás algo.
 5. Al completar o cancelar una tarea, ésta se archiva automáticamente en la carpeta `finished/` o `cancelled/` respectivamente.
 6. Para usar el **Pomodoro**:
    - Abrí el panel Pomodoro desde la barra lateral del Task Manager.

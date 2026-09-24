@@ -392,6 +392,9 @@ function TaskManagerAppComponent({
               onLoadTaskSource={manager.loadTaskSource}
               onSaveTaskSource={manager.saveTaskSource}
               onOpenTaskFile={handleOpenTaskFileWrapped}
+              onOpenLinkedFile={onOpenTaskFile}
+              libraryId={vault?.libraryId}
+              contexts={contexts}
               onCreateGroup={manager.openGroupCreateDialog}
               onEditGroup={manager.openGroupEditDialog}
               onOpenPomodoroTask={handleOpenPomodoroTaskWrapped}

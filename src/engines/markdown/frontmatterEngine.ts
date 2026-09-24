@@ -154,6 +154,16 @@ function shouldQuoteString(value: string): boolean {
     return true
   }
 
+  // Text that would read back as another type (or lose its quotes) keeps them,
+  // so "7954508202859205" or "true" stay strings after a round trip.
+  if (value === 'null' || value === '~' || value === 'true' || value === 'false' || isNumericValue(value)) {
+    return true
+  }
+
+  if (/^["']/.test(value)) {
+    return true
+  }
+
   if (/^\s|\s$/.test(value)) {
     return true
   }

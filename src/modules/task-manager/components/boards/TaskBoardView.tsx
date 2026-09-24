@@ -5,6 +5,8 @@ import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstan
 import type { Group, TaskCreationRequest, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { TaskManagerModal } from '../common/TaskManagerModal'
+import { TaskSourceDialog, type TaskSourceDialogState } from '../dialogs/TaskSourceDialog'
+import type { LibraryContext } from '../../../../services/contexts/libraryContexts'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
 
 interface TaskBoardViewProps {
@@ -21,6 +23,11 @@ interface TaskBoardViewProps {
   onLoadTaskSource: (taskPath: string) => Promise<string>
   onSaveTaskSource: (taskPath: string, content: string) => Promise<void>
   onOpenTaskFile?: (taskPath: string) => void
+  /** Opens a library file linked from the task editor. */
+  onOpenLinkedFile?: (path: string) => void
+  /** Library of the board, for the task editor's links and properties. */
+  libraryId?: string
+  contexts?: readonly LibraryContext[]
   onCreateGroup: () => void
   onEditGroup: (group: Group) => void
   onOpenPomodoroTask: (taskPath: string) => void
@@ -77,13 +84,6 @@ interface TaskCommentDialogState {
   text: string
 }
 
-interface TaskSourceDialogState {
-  task: TaskItem
-  source: string
-  isLoading: boolean
-  isSaving: boolean
-}
-
 interface BoardTaskDerivations {
   boardTasks: TaskItem[]
   groupedTopLevelTasks: Record<string, TaskItem[]>
@@ -106,6 +106,9 @@ export function TaskBoardView({
   onLoadTaskSource,
   onSaveTaskSource,
   onOpenTaskFile,
+  onOpenLinkedFile,
+  libraryId,
+  contexts,
   onCreateGroup,
   onEditGroup,
   onOpenPomodoroTask,
@@ -450,12 +453,20 @@ export function TaskBoardView({
   }
 
   const openTaskSourceDialog = useCallback(async (task: TaskItem) => {
-    setSourceDialog({ task, source: '', isLoading: true, isSaving: false })
+    setSourceDialog({ task, originalSource: '', source: '', isLoading: true, isSaving: false, loadError: null })
     try {
       const source = await onLoadTaskSource(task.filePath)
-      setSourceDialog({ task, source, isLoading: false, isSaving: false })
-    } catch {
-      setSourceDialog({ task, source: '', isLoading: false, isSaving: false })
+      setSourceDialog({ task, originalSource: source, source, isLoading: false, isSaving: false, loadError: null })
+    } catch (error) {
+      // Without the content there is nothing to edit: saving would wipe the task.
+      setSourceDialog({
+        task,
+        originalSource: '',
+        source: '',
+        isLoading: false,
+        isSaving: false,
+        loadError: error instanceof Error && error.message ? error.message : 'No se pudo leer la tarea.',
+      })
     }
   }, [onLoadTaskSource])
 
@@ -822,34 +833,19 @@ export function TaskBoardView({
         </div>
       </TaskManagerModal>
 
-      <TaskManagerModal open={Boolean(sourceDialog)} onClose={() => setSourceDialog(null)} size="xl" >
-        <div className="tareas-dialog-header">
-          <h2>Editar markdown de tarea</h2>
-        </div>
-        <div className="tareas-dialog-body">
-          <TextField
-            multiline
-            minRows={18}
-            fullWidth
-            value={sourceDialog?.source ?? ''}
-            disabled={Boolean(sourceDialog?.isLoading) || Boolean(sourceDialog?.isSaving)}
-            onChange={(event) => {
-              setSourceDialog((previous) => previous ? { ...previous, source: event.target.value } : previous)
-            }}
-            sx={{ mt: 1 }}
-          />
-        </div>
-        <div className="tareas-dialog-actions">
-          <NotiaButton onClick={() => setSourceDialog(null)}>Cancelar</NotiaButton>
-          <NotiaButton
-            variant="primary"
-            onClick={() => void saveTaskSourceDialog()}
-            disabled={Boolean(sourceDialog?.isLoading) || Boolean(sourceDialog?.isSaving)}
-          >
-            Guardar markdown
-          </NotiaButton>
-        </div>
-      </TaskManagerModal>
+      {sourceDialog ? (
+        <TaskSourceDialog
+          state={sourceDialog}
+          libraryId={libraryId}
+          contexts={contexts}
+          onSourceChange={(source) => {
+            setSourceDialog((previous) => previous ? { ...previous, source } : previous)
+          }}
+          onSave={() => void saveTaskSourceDialog()}
+          onClose={() => setSourceDialog(null)}
+          onOpenLinkedFile={onOpenLinkedFile}
+        />
+      ) : null}
     </>
   )
 }

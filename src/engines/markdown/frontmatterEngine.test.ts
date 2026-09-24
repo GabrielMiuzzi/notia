@@ -3,6 +3,8 @@ import assert from 'node:assert'
 import {
   getFrontmatterValue,
   hasFrontmatterKey,
+  parseFrontmatterDocument,
+  serializeFrontmatterDocument,
   setFrontmatterValue,
   removeFrontmatterValue,
   validatePageLinkValue,
@@ -67,5 +69,28 @@ describe('frontmatterEngine helpers', () => {
 
   it('validatePageLinkValue rejects number', () => {
     assert.strictEqual(validatePageLinkValue(42), false)
+  })
+})
+
+describe('frontmatter round trip', () => {
+  it('keeps strings that look like other types as strings after a body edit', () => {
+    const source = [
+      '---',
+      'revision: "7954508202859205"',
+      'codigo: "007"',
+      'activo: "true"',
+      'vacio: "null"',
+      `cita: '"hola"'`,
+      'estado: "Pendiente"',
+      'orden: 3',
+      'hecho: false',
+      '---',
+      '',
+      'Cuerpo',
+    ].join('\n')
+    const parsed = parseFrontmatterDocument(source)
+    const again = parseFrontmatterDocument(serializeFrontmatterDocument({ ...parsed, body: 'Cuerpo editado' }))
+    assert.deepStrictEqual(again.frontmatter, parsed.frontmatter)
+    assert.deepStrictEqual(parsed.frontmatter.slice(0, 5).map((entry) => entry.value), ['7954508202859205', '007', 'true', 'null', '"hola"'])
   })
 })
