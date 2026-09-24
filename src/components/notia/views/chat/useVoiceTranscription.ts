@@ -16,7 +16,9 @@ import {
   startSpeechSession,
   stopSpeechSession,
 } from '../../../../services/speech/speechService'
-import { formatDiarizedTranscript, mergeVoiceTextIntoDraft } from '../../../../services/speech/speechTranscript'
+import { mergeVoiceTextIntoDraft } from '../../../../services/speech/speechTranscript'
+import { backendKind } from '../../../../services/transport'
+import { useRemoteVoiceTranscription } from './useRemoteVoiceTranscription'
 import type {
   SpeechAudioInputStatus,
   SpeechCapabilities,
@@ -51,7 +53,7 @@ export function stabilizePartialTranscript(previous: string, next: string): stri
   return nextWords > previousWords ? normalizedNext : normalizedPrevious
 }
 
-export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, maxDurationSeconds = 900, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
+function useLocalVoiceTranscription({ draft, setDraft, pauseDetectionMs = null, continuousSession = false, maxDurationSeconds = 900, onCompleted, captureSystemAudio = false }: UseVoiceTranscriptionInput) {
   const qwen3Asr = useAppSelector(selectQwen3AsrSettings)
   // The backend preloads the saved model at startup; asking before the saved
   // preferences arrive would prepare the default model instead.
@@ -158,7 +160,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
           if (event.sessionId !== sessionIdRef.current) return
           setState(event.state)
           if (event.state.status === 'completed') {
-            const transcript = formatDiarizedTranscript(event.state.transcript)
+            const transcript = event.state.transcript.formattedText
             setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, transcript))
             sessionIdRef.current = null
             consumingTurnRef.current = null
@@ -198,7 +200,7 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
         }),
         listenSpeechSegments((event) => {
           if (event.sessionId !== sessionIdRef.current) return
-          const observedSpeech = formatDiarizedTranscript(event.transcript).trim()
+          const observedSpeech = event.transcript.formattedText.trim()
           setDraft(mergeVoiceTextIntoDraft(baseDraftRef.current, observedSpeech))
           if (pauseDetectionMs && hasNewRecognizedSpeech(lastObservedSpeechRef.current, observedSpeech)) {
             lastObservedSpeechRef.current = observedSpeech
@@ -413,3 +415,13 @@ export function useVoiceTranscription({ draft, setDraft, pauseDetectionMs = null
     dismissError: () => setState(INITIAL_STATE),
   }
 }
+
+/**
+ * Dictation hook of this interface. The app records through the native
+ * speech session of its own backend; a browser connected to a Notia server
+ * records here and sends the audio. The transport is installed before the
+ * interface loads and never changes, so the choice is fixed per page.
+ */
+export const useVoiceTranscription: typeof useLocalVoiceTranscription = backendKind() === 'remote'
+  ? useRemoteVoiceTranscription
+  : useLocalVoiceTranscription

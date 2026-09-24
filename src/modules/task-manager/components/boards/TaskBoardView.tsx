@@ -1,7 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { TextField } from '@mui/material'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
-import { buildMinimalTaskOrderUpdates } from '../../engines/orderEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
 import type { Group, TaskCreationRequest, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
@@ -26,7 +25,8 @@ interface TaskBoardViewProps {
   onEditGroup: (group: Group) => void
   onOpenPomodoroTask: (taskPath: string) => void
   onReorderGroups: (boardName: string, orderedGroupNames: string[]) => Promise<void>
-  onApplyTaskArrangement: (updates: Array<{ taskPath: string; order: number; group?: string; parentTaskName?: string }>) => Promise<void>
+  /** Drop of a task: the destination list as displayed, including the task. */
+  onPlaceTask: (placement: { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }) => Promise<void>
 }
 
 const STATUS_ACTIONS = [
@@ -86,7 +86,7 @@ export function TaskBoardView({
   onEditGroup,
   onOpenPomodoroTask,
   onReorderGroups,
-  onApplyTaskArrangement,
+  onPlaceTask,
 }: TaskBoardViewProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(groups.map((group) => getGroupKey(group))))
   const previousGroupKeysRef = useRef<Set<string>>(new Set(groups.map((group) => getGroupKey(group))))
@@ -310,16 +310,14 @@ export function TaskBoardView({
     const nextTargetIndex = Math.max(0, Math.min(targetIndex, targetTasks.length))
     targetTasks.splice(nextTargetIndex, 0, draggedTask)
 
-    const targetGroupValue = actualTargetGroup
-    const updates = buildMinimalTaskOrderUpdates(targetTasks, nextTargetIndex).map((update) => ({
-      ...update,
-      group: targetGroupValue,
-      parentTaskName: '',
-    }))
-
     clearTopLevelTaskDrag()
-    await onApplyTaskArrangement(updates)
-  }, [clearTopLevelTaskDrag, onApplyTaskArrangement, topLevelTasks])
+    await onPlaceTask({
+      taskPath: draggedTask.filePath,
+      orderedPaths: targetTasks.map((task) => task.filePath),
+      group: actualTargetGroup,
+      parentTaskName: '',
+    })
+  }, [clearTopLevelTaskDrag, onPlaceTask, topLevelTasks])
 
   const handleSubtaskDrop = useCallback(async (targetParentTask: TaskItem, targetIndex: number) => {
     if (!draggedSubtaskPath) {
@@ -347,16 +345,15 @@ export function TaskBoardView({
     const nextTargetIndex = Math.max(0, Math.min(targetIndex, targetSubtasks.length))
     targetSubtasks.splice(nextTargetIndex, 0, draggedSubtask)
 
-    const updates = buildMinimalTaskOrderUpdates(targetSubtasks, nextTargetIndex).map((update) => ({
-      ...update,
-      group: targetParentTask.group,
-      parentTaskName: targetParentTask.fileName,
-    }))
-
     setDraggedSubtaskPath(null)
     setSubtaskDropTarget(null)
-    await onApplyTaskArrangement(updates)
-  }, [boardTasks, draggedSubtaskPath, onApplyTaskArrangement, parentTaskBySubtaskPath, subtasksByParentPath])
+    await onPlaceTask({
+      taskPath: draggedSubtask.filePath,
+      orderedPaths: targetSubtasks.map((task) => task.filePath),
+      group: targetParentTask.group,
+      parentTaskName: targetParentTask.fileName,
+    })
+  }, [boardTasks, draggedSubtaskPath, onPlaceTask, parentTaskBySubtaskPath, subtasksByParentPath])
 
   const resolveTaskDropIndexFromPointer = (
     groupName: string,

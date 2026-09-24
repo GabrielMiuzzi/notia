@@ -83,10 +83,124 @@ pub fn pcm_s16le_to_mono(bytes: &[u8], channels: u16) -> Vec<f32> {
         .collect()
 }
 
+/// Sample rate the speech recognizer works at.
+pub const RECOGNIZER_SAMPLE_RATE: u32 = 16_000;
+
+/// Linear interpolation between sample rates. Enough for speech recognition,
+/// whose models only look below 8 kHz.
+pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let output_len = (samples.len() as u64 * u64::from(to_rate) / u64::from(from_rate)).max(1) as usize;
+    let step = f64::from(from_rate) / f64::from(to_rate);
+    (0..output_len)
+        .map(|index| {
+            let position = index as f64 * step;
+            let left = position.floor() as usize;
+            let right = (left + 1).min(samples.len() - 1);
+            let weight = (position - left as f64) as f32;
+            let left = left.min(samples.len() - 1);
+            samples[left] * (1.0 - weight) + samples[right] * weight
+        })
+        .collect()
+}
+
+/// Joins the chunks of one remote recording, in order and with one format,
+/// into mono samples for the recognizer. Only PCM is accepted: browsers
+/// capture it directly and it needs no decoder.
+#[derive(Debug)]
+pub struct RemoteAudioAssembler {
+    session_id: String,
+    next_sequence: u64,
+    format: Option<(u32, u16)>,
+    samples: Vec<f32>,
+    max_seconds: u32,
+}
+
+impl RemoteAudioAssembler {
+    pub fn new(session_id: &str, max_seconds: u32) -> Self {
+        Self { session_id: session_id.to_string(), next_sequence: 0, format: None, samples: Vec::new(), max_seconds }
+    }
+
+    /// Adds a chunk; returns whether it was the last one of the recording.
+    pub fn push(&mut self, chunk: &RemoteAudioChunk) -> Result<bool, BackendError> {
+        if chunk.session_id != self.session_id {
+            return Err(BackendError::invalid_input("El fragmento pertenece a otra grabación."));
+        }
+        if chunk.encoding != RemoteAudioEncoding::PcmS16le {
+            return Err(BackendError::invalid_input("El audio remoto debe enviarse como PCM de 16 bits."));
+        }
+        let bytes = chunk.validate(self.next_sequence)?;
+        let format = (chunk.sample_rate, chunk.channels);
+        if self.format.is_some_and(|known| known != format) {
+            return Err(BackendError::invalid_input("El formato de audio cambió durante la grabación."));
+        }
+        let mono = pcm_s16le_to_mono(&bytes, chunk.channels);
+        let limit = self.max_seconds as usize * chunk.sample_rate as usize;
+        if self.samples.len() + mono.len() > limit {
+            return Err(BackendError::invalid_input("La grabación supera la duración permitida."));
+        }
+        self.format = Some(format);
+        self.samples.extend(mono);
+        self.next_sequence += 1;
+        Ok(chunk.last)
+    }
+
+    /// The whole recording at the recognizer sample rate.
+    pub fn into_recognizer_samples(self) -> Vec<f32> {
+        match self.format {
+            Some((rate, _)) => resample_linear(&self.samples, rate, RECOGNIZER_SAMPLE_RATE),
+            None => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine as _;
+
+    #[test]
+    fn assembles_ordered_chunks_and_resamples_to_the_recognizer_rate() {
+        let mut assembler = RemoteAudioAssembler::new("session-1", 10);
+        let mut first = chunk(0, &[0x00, 0x40, 0x00, 0x40]);
+        first.sample_rate = 48_000;
+        first.channels = 1;
+        assert!(!assembler.push(&first).expect("first chunk"));
+        let mut last = chunk(1, &[0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40]);
+        last.sample_rate = 48_000;
+        last.channels = 1;
+        last.last = true;
+        assert!(assembler.push(&last).expect("last chunk"));
+        let samples = assembler.into_recognizer_samples();
+        assert_eq!(samples.len(), 2);
+        assert!(samples.iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn rejects_other_sessions_formats_encodings_and_long_recordings() {
+        let mut assembler = RemoteAudioAssembler::new("session-1", 1);
+        let mut other = chunk(0, &[0, 0, 0, 0]);
+        other.session_id = "otra".into();
+        assert!(assembler.push(&other).is_err());
+        let mut opus = chunk(0, &[0, 0, 0, 0]);
+        opus.encoding = RemoteAudioEncoding::OggOpus;
+        assert!(assembler.push(&opus).is_err());
+        assert!(assembler.push(&chunk(0, &[0, 0, 0, 0])).is_ok());
+        let mut changed = chunk(1, &[0, 0, 0, 0]);
+        changed.sample_rate = 8_000;
+        assert!(assembler.push(&changed).is_err());
+        let too_long = chunk(1, &vec![0; 16_000 * 4]);
+        assert!(assembler.push(&too_long).is_err());
+    }
+
+    #[test]
+    fn linear_resampling_keeps_duration() {
+        assert_eq!(resample_linear(&[0.0; 480], 48_000, 16_000).len(), 160);
+        assert_eq!(resample_linear(&[0.0; 80], 8_000, 16_000).len(), 160);
+        assert_eq!(resample_linear(&[0.25, 0.75], 16_000, 16_000), vec![0.25, 0.75]);
+    }
 
     fn chunk(sequence: u64, bytes: &[u8]) -> RemoteAudioChunk {
         RemoteAudioChunk {

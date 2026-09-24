@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { searchWikiLinkTargets } from '../../../../engines/markdown/wikiLinkEngine'
+import { suggestLinkTargets } from '../../../../services/libraries/libraryLinkRuntime'
 import type { MarkdownWikiLinkTarget } from '../../../../types/views/markdownWikiLink'
 import { NotiaButton } from '../../../common/NotiaButton'
 
@@ -7,7 +7,8 @@ const MAX_SUGGESTIONS = 10
 
 interface WikiLinkPropertyInputProps {
   value: string
-  targets: MarkdownWikiLinkTarget[]
+  /** Library whose notes the backend suggests. */
+  libraryId?: string
   onChange: (value: string) => void
   onConfirm?: () => void
   onCancel?: () => void
@@ -17,7 +18,7 @@ interface WikiLinkPropertyInputProps {
 
 export function WikiLinkPropertyInput({
   value,
-  targets,
+  libraryId,
   onChange,
   onConfirm,
   onCancel,
@@ -34,6 +35,7 @@ export function WikiLinkPropertyInput({
   } | null>(null)
 
   const inputRef = useRef<HTMLInputElement>(null)
+  const suggestionRequestRef = useRef(0)
 
   const detectWikiLinkQuery = useCallback(
     (inputValue: string, cursorPos: number): { query: string; replaceFrom: number; replaceTo: number } | null => {
@@ -52,25 +54,27 @@ export function WikiLinkPropertyInput({
   const updateMenu = useCallback(
     (inputValue: string, cursorPos: number) => {
       const context = detectWikiLinkQuery(inputValue, cursorPos)
-      if (!context || !context.query) {
+      const request = ++suggestionRequestRef.current
+      if (!context || !context.query || !libraryId) {
         setMenuState(null)
         return
       }
-      const suggestions = searchWikiLinkTargets(targets, context.query, MAX_SUGGESTIONS)
-      if (suggestions.length === 0) {
-        setMenuState(null)
-        return
-      }
-      setMenuState({
-        query: context.query,
-        suggestions,
-        selectedIndex: 0,
-        active: true,
-        replaceFrom: context.replaceFrom,
-        replaceTo: context.replaceTo,
-      })
+      // The backend ranks the suggestions; only the latest request is shown.
+      void suggestLinkTargets(libraryId, context.query, MAX_SUGGESTIONS)
+        .catch(() => [])
+        .then((suggestions) => {
+          if (request !== suggestionRequestRef.current) return
+          setMenuState(suggestions.length === 0 ? null : {
+            query: context.query,
+            suggestions,
+            selectedIndex: 0,
+            active: true,
+            replaceFrom: context.replaceFrom,
+            replaceTo: context.replaceTo,
+          })
+        })
     },
-    [detectWikiLinkQuery, targets],
+    [detectWikiLinkQuery, libraryId],
   )
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {

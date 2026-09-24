@@ -331,6 +331,8 @@ export interface FinanceServiceOccurrence {
   source: string;
   createdAt?: string | null;
   updatedAt?: string | null;
+  /** Paid minus expected, computed by the backend when the occurrence was paid. */
+  difference?: string | null;
 }
 
 export interface FinanceServiceOccurrenceVersion extends FinanceServiceOccurrence {

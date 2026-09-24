@@ -4,11 +4,8 @@ import { useConfirmationEngine } from '../../../context/confirmation/useConfirma
 import { NotiaButton } from '../../../components/common/NotiaButton'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../types/taskManagerTypes'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
-import { isTaskInCancelledFolder, isTaskInFinishedFolder } from '../engines/taskEngine'
-import { resolveTaskManagerPanelChatPaths } from '../engines/taskChatContextEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
 import { useTaskManager } from '../hooks/useTaskManager'
-import { toAbsoluteVaultPath } from '../utils/path'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
 import { TaskBoardView } from './boards/TaskBoardView'
 import { TaskTableView } from './boards/TaskTableView'
@@ -82,7 +79,7 @@ function TaskManagerAppComponent({
 
   const activeBoard = manager.settings.activeTab
   const deferredTasks = useDeferredValue(manager.snapshot.tasks)
-  const deferredDocuments = useDeferredValue(manager.snapshot.documents)
+  const panelPaths = manager.snapshot.panelPaths
   const deferredGroups = useDeferredValue(manager.settings.groups)
   const publishedBoardNameSet = useMemo(() => (
     publishedBoardNames
@@ -106,18 +103,11 @@ function TaskManagerAppComponent({
       return null
     }
 
-    const filePaths = resolveTaskManagerPanelChatPaths(
-      activeBoard,
-      deferredDocuments.map((document) => document.path),
-    )
-      .map((pathValue) => toAbsoluteVaultPath(manager.settings.activeVaultPath as string, pathValue))
-      .sort((left, right) => left.localeCompare(right, 'es'))
-
     return {
       scopeKey: `task-manager:panel:${activeBoard}`,
-      filePaths,
+      filePaths: panelPaths[activeBoard] ?? [],
     } satisfies TaskManagerChatContext
-  }, [activeBoard, deferredDocuments, manager.settings.activeVaultPath])
+  }, [activeBoard, panelPaths, manager.settings.activeVaultPath])
 
   useEffect(() => {
     onActiveChatContextChange?.(activeBoardChatContext)
@@ -127,9 +117,8 @@ function TaskManagerAppComponent({
     if (!manager.settings.activeVaultPath || !publishedBoardNameSet) return null
     return {
       scopeKey: `task-manager:panel:${activeBoard}`,
-      filePaths: Array.from(new Set(visibleTasks.map((task) => (
-        toAbsoluteVaultPath(manager.settings.activeVaultPath as string, task.filePath)
-      )))).sort((left, right) => left.localeCompare(right, 'es')),
+      filePaths: Array.from(new Set(visibleTasks.map((task) => task.path)))
+        .sort((left, right) => left.localeCompare(right, 'es')),
     } satisfies TaskManagerChatContext
   }, [activeBoard, manager.settings.activeVaultPath, publishedBoardNameSet, visibleTasks])
 
@@ -142,14 +131,21 @@ function TaskManagerAppComponent({
     [activeBoard, deferredGroups],
   )
 
+  const finishedPaths = useMemo(() => new Set(panelPaths[FINISHED_TAB_ID] ?? []), [panelPaths])
+  const cancelledPaths = useMemo(() => new Set(panelPaths[CANCELLED_TAB_ID] ?? []), [panelPaths])
+  const isArchived = useCallback(
+    (taskPath: string) => finishedPaths.has(taskPath) || cancelledPaths.has(taskPath),
+    [cancelledPaths, finishedPaths],
+  )
+
   const finishedTasks = useMemo(
-    () => visibleTasks.filter((task) => isTaskInFinishedFolder(task.filePath)),
-    [visibleTasks],
+    () => visibleTasks.filter((task) => finishedPaths.has(task.filePath)),
+    [finishedPaths, visibleTasks],
   )
 
   const cancelledTasks = useMemo(
-    () => visibleTasks.filter((task) => isTaskInCancelledFolder(task.filePath)),
-    [visibleTasks],
+    () => visibleTasks.filter((task) => cancelledPaths.has(task.filePath)),
+    [cancelledPaths, visibleTasks],
   )
 
   const activeBoardTasks = useMemo(
@@ -158,14 +154,13 @@ function TaskManagerAppComponent({
   )
 
   const activeBoardTasksCount = useMemo(
-    () => activeBoardTasks
-      .filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath)).length,
-    [activeBoardTasks],
+    () => activeBoardTasks.filter((task) => !isArchived(task.filePath)).length,
+    [activeBoardTasks, isArchived],
   )
 
   const activePomodoroTasks = useMemo(
-    () => visibleTasks.filter((task) => !isTaskInFinishedFolder(task.filePath) && !isTaskInCancelledFolder(task.filePath)),
-    [visibleTasks],
+    () => visibleTasks.filter((task) => !isArchived(task.filePath)),
+    [isArchived, visibleTasks],
   )
 
   const activeBoardConfig = manager.settings.boards.find((board) => board.name === activeBoard) ?? null
@@ -250,9 +245,11 @@ function TaskManagerAppComponent({
     if (!onOpenTaskFile || !manager.settings.activeVaultPath) {
       return
     }
-
-    onOpenTaskFile(toAbsoluteVaultPath(manager.settings.activeVaultPath, taskPath))
-  }, [onOpenTaskFile, manager.settings.activeVaultPath])
+    // The board sends the ticket's logical path; the editor opens the path
+    // the explorer shows, as the backend reported it.
+    const task = manager.snapshot.tasks.find((item) => item.filePath === taskPath)
+    if (task) onOpenTaskFile(task.path)
+  }, [onOpenTaskFile, manager.settings.activeVaultPath, manager.snapshot.tasks])
 
   const handleOpenPomodoroTaskWrapped = useCallback((taskPath: string) => {
     manager.selectPomodoroTask(taskPath)
@@ -272,7 +269,7 @@ function TaskManagerAppComponent({
           <div className="tareas-header-heading">
             <h2 className="tareas-header-title">Tareas</h2>
             <div className="tareas-header-path">
-              {manager.settings.activeVaultPath || 'Selecciona un vault para empezar'}
+              {manager.settings.activeVaultPath || 'Abrí una biblioteca para usar Task Manager'}
             </div>
           </div>
 
@@ -280,13 +277,6 @@ function TaskManagerAppComponent({
             <span className="tareas-header-summary">
               <strong>{finishedTasks.length}</strong> completadas · <strong>{cancelledTasks.length}</strong> canceladas
             </span>
-
-            {!manager.isVaultExternallyControlled ? (
-              <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.selectVault()}>
-                <TaskManagerIcon name={TASK_ICON_NAME.folderKanban} size={14} />
-                Vault
-              </NotiaButton>
-            ) : null}
 
             <NotiaButton className="tareas-btn-ghost" onClick={() => void manager.reload()}>
               <TaskManagerIcon name={TASK_ICON_NAME.refresh} size={14} />
@@ -406,7 +396,7 @@ function TaskManagerAppComponent({
               onEditGroup={manager.openGroupEditDialog}
               onOpenPomodoroTask={handleOpenPomodoroTaskWrapped}
               onReorderGroups={manager.reorderGroupsInBoard}
-              onApplyTaskArrangement={manager.applyTaskArrangement}
+              onPlaceTask={manager.placeTask}
             />
           ) : null}
 

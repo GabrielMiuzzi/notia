@@ -30,6 +30,8 @@ export interface DiarizedTranscript {
   text: string
   segments: SpeechTranscriptSegment[]
   speakerCount: number
+  /** Text labelled by speaker (`Hablante N:`), composed by the backend. */
+  formattedText: string
 }
 
 export type SpeechErrorCode =

@@ -1,100 +1,45 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const { invoke, pickDirectory } = vi.hoisted(() => ({
-  invoke: vi.fn(),
-  pickDirectory: vi.fn(),
-}))
+const { callBackend } = vi.hoisted(() => ({ callBackend: vi.fn() }))
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke }))
+vi.mock('../transport', () => ({ callBackend }))
 
-vi.mock('../files/filesystemEngine', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../files/filesystemEngine')>()),
-  pickDirectory,
-}))
+import { mutateLibraryEntry, openLibrary, pickLibraryDirectory, refreshLibrary } from './libraryRuntime'
 
-vi.mock('../../utils/platform/getRuntimeDevice', () => ({
-  getRuntimeDevice: () => 'Android',
-}))
+afterEach(() => {
+  callBackend.mockReset()
+})
 
-import { pickLibraryDirectory, registerLibraryBinding } from './libraryRuntime'
+describe('libraryRuntime', () => {
+  it('opens and refreshes a library by its id', async () => {
+    callBackend.mockResolvedValueOnce({ nodes: [], lazy: true, watched: false })
+    await expect(openLibrary('lib-1')).resolves.toEqual({ nodes: [], lazy: true, watched: false })
+    expect(callBackend).toHaveBeenCalledWith('library_open', { payload: { libraryId: 'lib-1' } })
 
-describe('pickLibraryDirectory', () => {
-  afterEach(() => {
-    vi.useRealTimers()
-    pickDirectory.mockReset()
-    invoke.mockReset()
+    callBackend.mockResolvedValueOnce({ changed: false })
+    await refreshLibrary('lib-1')
+    expect(callBackend).toHaveBeenLastCalledWith('library_refresh', { payload: { libraryId: 'lib-1', force: false } })
   })
 
-  it('does not leave the Android picker pending forever', async () => {
-    vi.useFakeTimers()
-    pickDirectory.mockReturnValue(new Promise(() => undefined))
-
-    const pendingSelection = pickLibraryDirectory()
-    const rejection = expect(pendingSelection).rejects.toThrow(
-      'El selector de carpetas tardó demasiado. Intenta nuevamente.',
-    )
-    await vi.advanceTimersByTimeAsync(60_000)
-
-    await rejection
+  it('surfaces the backend error message', async () => {
+    callBackend.mockRejectedValueOnce({ code: 'timeout', message: 'El selector de carpetas tardó demasiado.' })
+    await expect(pickLibraryDirectory('lib-1')).rejects.toThrow('El selector de carpetas tardó demasiado.')
   })
 
-  it('rejects a picker response without a tree grant', async () => {
-    pickDirectory.mockResolvedValue({
-      path: 'content://provider/tree/root',
+  it('sends entry mutations with the paths the explorer shows', async () => {
+    callBackend.mockResolvedValueOnce({ ok: true })
+    await mutateLibraryEntry({ id: 'lib-1' }, {
+      action: 'paste',
+      sourcePath: 'C:/lib/a.md',
+      targetDirectoryPath: 'C:/lib/docs',
+      mode: 'move',
+    })
+    expect(callBackend).toHaveBeenCalledWith('library_mutate_entry', {
+      payload: { libraryId: 'lib-1', action: 'paste', path: 'C:/lib/docs', sourcePath: 'C:/lib/a.md', mode: 'move' },
     })
 
-    await expect(pickLibraryDirectory()).rejects.toThrow('URI SAF valida')
-  })
-
-  it('preserves one consistent tree URI in the selected library', async () => {
-    const treeUri = 'content://provider/tree/root'
-    pickDirectory.mockResolvedValue({ path: treeUri, uri: treeUri })
-
-    await expect(pickLibraryDirectory()).resolves.toMatchObject({
-      path: treeUri,
-      androidTreeUri: treeUri,
-    })
-  })
-
-  it('forwards the library identity to the native picker registration flow', async () => {
-    const treeUri = 'content://provider/tree/root'
-    pickDirectory.mockResolvedValue({ path: treeUri, uri: treeUri })
-
-    await pickLibraryDirectory('library-one')
-
-    expect(pickDirectory).toHaveBeenCalledWith('Seleccionar libreria', 'library-one')
-  })
-
-  it('uses the decoded Android folder name for the library title', async () => {
-    const treeUri = 'content://provider/tree/primary%3Asyncthing%2FWork-sync'
-    pickDirectory.mockResolvedValue({ path: treeUri, uri: treeUri })
-
-    await expect(pickLibraryDirectory()).resolves.toMatchObject({
-      name: 'Work-sync',
-    })
-  })
-
-  it('rejects a path and URI that identify different grants', async () => {
-    pickDirectory.mockResolvedValue({
-      path: 'content://provider/tree/other',
-      uri: 'content://provider/tree/root',
-    })
-
-    await expect(pickLibraryDirectory()).rejects.toThrow('URI SAF valida')
-  })
-
-  it('rehydrates a persisted desktop binding by library identity', async () => {
-    await registerLibraryBinding({
-      id: 'library-one',
-      name: 'Notas',
-      path: 'C:/Libraries/Notas',
-    })
-
-    expect(invoke).toHaveBeenCalledWith('register_library_binding', {
-      payload: {
-        libraryId: 'library-one',
-        libraryPath: 'C:/Libraries/Notas',
-      },
-    })
+    callBackend.mockRejectedValueOnce(new Error('La ruta está fuera de la biblioteca activa.'))
+    await expect(mutateLibraryEntry({ id: 'lib-1' }, { action: 'delete', targetPath: 'D:/x.md' }))
+      .resolves.toEqual({ ok: false, error: 'La ruta está fuera de la biblioteca activa.' })
   })
 })

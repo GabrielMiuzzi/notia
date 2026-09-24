@@ -1,113 +1,133 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { NotiaLibrary } from '../../../types/notia'
-import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
-import type { MultichatDynamic, MultichatMessage, MultichatRoom } from '../../../types/multichat'
-import { chooseAutomaticRoundLimit, dynamicAllowsAutomaticTurns, selectMultichatParticipants, serializeMultichatHistory, validateAgentSelection } from '../../../engines/multichat/multichatEngine'
-import { listMultichatAgentPrompts, listMultichatDynamics, loadMultichatAgent, loadMultichatDynamic, validateMultichatLoadedSelection } from '../../../services/multichat/multichatLibraryRuntime'
+import { MULTICHAT_MAX_AGENTS } from '../../../types/multichat'
 import { clearMultichatPanelContext, setMultichatPanelContext } from '../../../services/multichat/multichatSessionStore'
-import { runMultichatRound } from '../../../services/multichat/multichatRuntime'
+import {
+  cancelMultichatRound,
+  closeMultichatRoom,
+  loadMultichatCatalog,
+  openMultichatRoom,
+  sendMultichatMessage,
+  subscribeMultichatEvents,
+  type MultichatCatalog,
+  type MultichatRoomView,
+} from '../../../services/multichat/multichatRuntime'
+
+const MULTICHAT_PALETTE = ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#059669', '#0891b2'] as const
+const MULTICHAT_ICONS = ['●', '◆', '▲', '■', '★', '✦'] as const
 
 interface MultichatViewProps {
   library: NotiaLibrary | null
-  aiPreferences: AiPreferences
 }
 
-export function MultichatView({ library, aiPreferences }: MultichatViewProps) {
-  const [dynamics, setDynamics] = useState<MultichatDynamic[]>([])
-  const [prompts, setPrompts] = useState<{ fileName: string; name: string }[]>([])
+interface StreamingTurn {
+  agentId: string
+  agentName: string
+  thinking: string
+  response: string
+}
+
+/** Color and icon of each agent, by its position in the room. */
+function agentLook(room: MultichatRoomView, agentId: string): { color: string; icon: string } {
+  const index = Math.max(0, room.agents.findIndex((agent) => `agent:${agent.fileName}` === agentId))
+  return { color: MULTICHAT_PALETTE[index % MULTICHAT_PALETTE.length], icon: MULTICHAT_ICONS[index % MULTICHAT_ICONS.length] }
+}
+
+/**
+ * Multichat room. The backend keeps the room, runs the agents' rounds and
+ * streams their answers; this view picks the setup, sends messages and
+ * renders the room and the turn being streamed.
+ */
+export function MultichatView({ library }: MultichatViewProps) {
+  const [catalog, setCatalog] = useState<MultichatCatalog>({ dynamics: [], agents: [] })
   const [dynamicFile, setDynamicFile] = useState('')
   const [contextDraft, setContextDraft] = useState('')
-  const [selectedPromptFiles, setSelectedPromptFiles] = useState<string[]>([])
-  const [invalidPromptFiles, setInvalidPromptFiles] = useState<Set<string>>(new Set())
-  const [room, setRoom] = useState<MultichatRoom | null>(null)
+  const [selectedAgentFiles, setSelectedAgentFiles] = useState<string[]>([])
+  const [room, setRoom] = useState<MultichatRoomView | null>(null)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [streaming, setStreaming] = useState<{
-    agentId: string
-    agentName: string
-    agentColor: string
-    agentIcon: string
-    thinking: string
-    response: string
-  } | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
+  const [streaming, setStreaming] = useState<StreamingTurn | null>(null)
+  const roomIdRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    if (!library) return
-    let current = true
-    void Promise.all([listMultichatDynamics(library), listMultichatAgentPrompts(library)])
-      .then(async ([nextDynamics, nextPrompts]) => {
-        if (!current) return
-        setDynamics(nextDynamics)
-        setPrompts(nextPrompts)
-        const invalid = new Set<string>()
-        await Promise.all(nextPrompts.map(async (prompt) => {
-          try { await loadMultichatAgent(library, prompt.fileName, 0) } catch { invalid.add(prompt.fileName) }
-        }))
-        if (current) setInvalidPromptFiles(invalid)
-      })
-      .catch(() => current && setError('No se pudieron cargar dinámicas y agentes.'))
-    return () => { current = false }
-  }, [library])
-
-  useEffect(() => {
-    if (room && (!library || room.libraryId !== library.id)) {
-      abortRef.current?.abort()
-      clearMultichatPanelContext(room.id)
-      setRoom(null)
-    }
-  }, [library, room])
-
-  useEffect(() => {
-    // Room messages update frequently. Keep cancellation tied to the view
-    // lifecycle rather than to the room object, otherwise every new message
-    // would run the previous effect cleanup and abort the active round.
-    return () => {
-      abortRef.current?.abort()
-      clearMultichatPanelContext()
-    }
-  }, [])
-
-  const updatePanelContext = useCallback((nextRoom: MultichatRoom | null) => {
+  const updatePanelContext = useCallback((nextRoom: MultichatRoomView | null) => {
     if (!nextRoom) {
       clearMultichatPanelContext()
       return
     }
-    setMultichatPanelContext({
-      roomId: nextRoom.id,
-      label: 'Contexto activo: sala Multichat',
-      dynamicName: nextRoom.dynamic.name,
-      agentNames: nextRoom.agents.map((agent) => agent.name),
-      contextContent: nextRoom.contextContent,
-      messages: serializeMultichatHistory(nextRoom.messages),
+    setMultichatPanelContext({ roomId: nextRoom.roomId, label: 'Contexto activo: sala Multichat' })
+  }, [])
+
+  const showRoom = useCallback((nextRoom: MultichatRoomView) => {
+    setRoom(nextRoom)
+    updatePanelContext(nextRoom)
+    if (!nextRoom.round.activeAgentId) setStreaming(null)
+  }, [updatePanelContext])
+
+  useEffect(() => {
+    if (!library) return
+    let current = true
+    void loadMultichatCatalog(library.id)
+      .then((nextCatalog) => { if (current) setCatalog(nextCatalog) })
+      .catch((cause: unknown) => { if (current) setError(cause instanceof Error ? cause.message : 'No se pudieron cargar dinámicas y agentes.') })
+    return () => { current = false }
+  }, [library])
+
+  // Events of the active room: room changes and the streamed turn.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    void subscribeMultichatEvents((event) => {
+      if (event.roomId !== roomIdRef.current) return
+      if (event.kind === 'room') {
+        showRoom(event.room)
+      } else if (event.kind === 'agentStart') {
+        setStreaming({ agentId: event.agentId, agentName: event.agentName, thinking: '', response: '' })
+      } else {
+        setStreaming((currentTurn) => currentTurn?.agentId === event.agentId
+          ? event.kind === 'thinking'
+            ? { ...currentTurn, thinking: currentTurn.thinking + event.delta }
+            : { ...currentTurn, response: currentTurn.response + event.delta }
+          : currentTurn)
+      }
+    }).then((stop) => {
+      if (disposed) stop()
+      else unlisten = stop
     })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [showRoom])
+
+  // A room belongs to its library and to this view.
+  useEffect(() => {
+    if (room && (!library || room.libraryId !== library.id)) {
+      void closeMultichatRoom(room.roomId)
+      roomIdRef.current = null
+      clearMultichatPanelContext(room.roomId)
+      setRoom(null)
+    }
+  }, [library, room])
+
+  useEffect(() => () => {
+    if (roomIdRef.current) void closeMultichatRoom(roomIdRef.current)
+    clearMultichatPanelContext()
   }, [])
 
   const startRoom = async () => {
     if (!library) return
     setError(null)
-    const dynamic = dynamics.find((item) => item.fileName === dynamicFile) ?? null
-    if (!dynamic) { setError('Seleccioná una dinámica válida.'); return }
-    if (selectedPromptFiles.length < 1 || selectedPromptFiles.length > 6) { setError('Seleccioná entre uno y seis agentes.'); return }
     setLoading(true)
     try {
-      const loadedDynamic = await loadMultichatDynamic(library, dynamic.fileName)
-      const loadedAgents = await Promise.all(selectedPromptFiles.map((fileName, index) => loadMultichatAgent(library, fileName, index)))
-      const validation = validateMultichatLoadedSelection(loadedDynamic, loadedAgents) ?? validateAgentSelection(loadedAgents)
-      if (validation) { setError(validation); return }
-      const nextRoom: MultichatRoom = {
-        id: crypto.randomUUID(),
-        dynamic: loadedDynamic,
-        agents: loadedAgents,
-        contextContent: contextDraft.trim(),
-        messages: [],
-        round: { status: 'empty', automaticRounds: 0, automaticRoundLimit: chooseAutomaticRoundLimit(), activeAgentId: null, error: null },
-        cancelled: false,
+      const nextRoom = await openMultichatRoom({
         libraryId: library.id,
-      }
-      setRoom(nextRoom)
-      updatePanelContext(nextRoom)
+        dynamicFile,
+        agentFiles: selectedAgentFiles,
+        context: contextDraft,
+      })
+      roomIdRef.current = nextRoom.roomId
+      showRoom(nextRoom)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'No se pudo crear la sala.')
     } finally {
@@ -116,99 +136,24 @@ export function MultichatView({ library, aiPreferences }: MultichatViewProps) {
   }
 
   const sendMessage = async () => {
-    if (!room || !library || !draft.trim() || loading) return
+    if (!room || !draft.trim() || loading) return
     const content = draft.trim()
     setDraft('')
-    const userMessage: MultichatMessage = { id: crypto.randomUUID(), speakerId: 'user', speakerName: 'Usuario', content, createdAt: Date.now() }
-    let nextRoom: MultichatRoom = { ...room, messages: [...room.messages, userMessage], round: { ...room.round, status: 'agent-turn', automaticRounds: 0, error: null } }
-    setRoom(nextRoom)
-    updatePanelContext(nextRoom)
     setLoading(true)
-    const controller = new AbortController()
-    abortRef.current = controller
     try {
-      let automaticRounds = 0
-      let emptyAgentName: string | null = null
-      let pendingParticipants = selectMultichatParticipants({ agents: nextRoom.agents, dynamicContent: nextRoom.dynamic.content })
-      while (pendingParticipants.length > 0 && automaticRounds < nextRoom.round.automaticRoundLimit) {
-        const replies = await runMultichatRound({
-          aiPreferences, dynamic: nextRoom.dynamic, agents: pendingParticipants, contextContent: nextRoom.contextContent,
-          messages: nextRoom.messages, signal: controller.signal,
-          onAgentStart: (agent) => {
-            setStreaming({ agentId: `agent:${agent.fileName}`, agentName: agent.name, agentColor: agent.color, agentIcon: agent.icon, thinking: '', response: '' })
-            nextRoom = { ...nextRoom, round: { ...nextRoom.round, status: 'agent-turn', activeAgentId: `agent:${agent.fileName}` } }
-            setRoom(nextRoom)
-            updatePanelContext(nextRoom)
-          },
-          onAgentThinking: (agent, delta) => {
-            setStreaming((current) => current?.agentId === `agent:${agent.fileName}`
-              ? { ...current, thinking: current.thinking + delta }
-              : current)
-          },
-          onAgentMessageDelta: (agent, delta) => {
-            setStreaming((current) => current?.agentId === `agent:${agent.fileName}`
-              ? { ...current, response: current.response + delta }
-              : current)
-          },
-          onAgentComplete: (agent, message) => {
-            setStreaming(null)
-            if (message) {
-              nextRoom = {
-                ...nextRoom,
-                messages: nextRoom.messages.some((current) => current.id === message.id)
-                  ? nextRoom.messages
-                  : [...nextRoom.messages, message],
-                round: { ...nextRoom.round, activeAgentId: null },
-              }
-              setRoom(nextRoom)
-              updatePanelContext(nextRoom)
-            } else {
-              emptyAgentName = agent.name
-              nextRoom = { ...nextRoom, round: { ...nextRoom.round, activeAgentId: null, error: `${agent.name} no devolvió una respuesta.` } }
-              setRoom(nextRoom)
-              updatePanelContext(nextRoom)
-            }
-          },
-        })
-        if (replies.length === 0) {
-          nextRoom = { ...nextRoom, round: { ...nextRoom.round, status: 'agent-no-response', activeAgentId: null, error: 'Un agente no devolvió una respuesta.' } }
-          break
-        }
-        automaticRounds += 1
-        nextRoom = {
-          ...nextRoom,
-          round: {
-            ...nextRoom.round,
-            status: emptyAgentName ? 'agent-no-response' : 'waiting-user',
-            automaticRounds,
-            activeAgentId: null,
-            error: emptyAgentName ? `${emptyAgentName} no devolvió una respuesta.` : null,
-          },
-        }
-        setRoom(nextRoom)
-        updatePanelContext(nextRoom)
-        if (emptyAgentName) break
-        // A dynamic can ask for automatic turns, but every chain is capped.
-        if (!dynamicAllowsAutomaticTurns(nextRoom.dynamic.content) || automaticRounds >= nextRoom.round.automaticRoundLimit) break
-        pendingParticipants = selectMultichatParticipants({ agents: nextRoom.agents, dynamicContent: nextRoom.dynamic.content })
-      }
-      setRoom(nextRoom)
-      updatePanelContext(nextRoom)
+      showRoom(await sendMultichatMessage(room.roomId, content))
     } catch (cause) {
-      setStreaming(null)
-      const cancelled = controller.signal.aborted
-      nextRoom = { ...nextRoom, cancelled, round: { ...nextRoom.round, status: cancelled ? 'cancelled' : 'error', activeAgentId: null, error: cancelled ? null : (cause instanceof Error ? cause.message : 'Falló un agente.') } }
-      setRoom(nextRoom)
-      updatePanelContext(nextRoom)
+      setError(cause instanceof Error ? cause.message : 'Falló un agente.')
     } finally {
-      abortRef.current = null
       setStreaming(null)
       setLoading(false)
     }
   }
 
-  const cancel = () => abortRef.current?.abort()
-  const agentNames = useMemo(() => new Set(selectedPromptFiles), [selectedPromptFiles])
+  const cancel = () => {
+    if (room) void cancelMultichatRound(room.roomId)
+  }
+  const selectedAgents = useMemo(() => new Set(selectedAgentFiles), [selectedAgentFiles])
 
   if (!library) return <main className="notia-main"><div className="notia-empty-state">Seleccioná una biblioteca para usar Multichat.</div></main>
   if (!room) return (
@@ -219,7 +164,7 @@ export function MultichatView({ library, aiPreferences }: MultichatViewProps) {
          <label className="multichat-field">Dinámica
            <select className="multichat-select" value={dynamicFile} onChange={(event) => setDynamicFile(event.target.value)}>
             <option value="">Seleccionar dinámica</option>
-            {dynamics.map((dynamic) => <option key={dynamic.fileName} value={dynamic.fileName} disabled={!dynamic.content.trim()}>{dynamic.name}{dynamic.content.trim() ? '' : ' (vacía o inválida)'}</option>)}
+            {catalog.dynamics.map((dynamic) => <option key={dynamic.fileName} value={dynamic.fileName} disabled={!dynamic.valid}>{dynamic.name}{dynamic.valid ? '' : ' (vacía o inválida)'}</option>)}
           </select>
          </label>
          <label className="multichat-field">Contexto adicional (opcional)
@@ -232,8 +177,8 @@ export function MultichatView({ library, aiPreferences }: MultichatViewProps) {
            />
            <span className="multichat-field-help">Se incluirá junto con la dinámica y el prompt de cada agente en cada turno.</span>
          </label>
-         <fieldset className="multichat-choice-group"><legend>Agentes ({selectedPromptFiles.length}/6)</legend>
-           {prompts.map((prompt) => <label className="multichat-choice" key={prompt.fileName}><input type="checkbox" disabled={invalidPromptFiles.has(prompt.fileName)} checked={agentNames.has(prompt.fileName)} onChange={() => setSelectedPromptFiles((current) => current.includes(prompt.fileName) ? current.filter((name) => name !== prompt.fileName) : current.length < 6 ? [...current, prompt.fileName] : current)} /> {prompt.name}{invalidPromptFiles.has(prompt.fileName) ? ' (vacío o inválido)' : ''}</label>)}
+         <fieldset className="multichat-choice-group"><legend>Agentes ({selectedAgentFiles.length}/{MULTICHAT_MAX_AGENTS})</legend>
+           {catalog.agents.map((agent) => <label className="multichat-choice" key={agent.fileName}><input type="checkbox" disabled={!agent.valid} checked={selectedAgents.has(agent.fileName)} onChange={() => setSelectedAgentFiles((current) => current.includes(agent.fileName) ? current.filter((name) => name !== agent.fileName) : current.length < MULTICHAT_MAX_AGENTS ? [...current, agent.fileName] : current)} /> {agent.name}{agent.valid ? '' : ' (vacío o inválido)'}</label>)}
          </fieldset>
          {error ? <p role="alert">{error}</p> : null}
          <button className="notia-button notia-button--primary" type="button" disabled={loading} onClick={() => void startRoom()}>Crear sala</button>
@@ -241,13 +186,14 @@ export function MultichatView({ library, aiPreferences }: MultichatViewProps) {
     </main>
   )
 
+  const streamingLook = streaming ? agentLook(room, streaming.agentId) : null
   return <main className="notia-main multichat-view">
     <section className="multichat-room" aria-labelledby="multichat-room-title">
        <header><h1 id="multichat-room-title">{room.dynamic.name}</h1><span>Ollama · sin tools</span></header>
        {room.contextContent ? <details className="multichat-room-context"><summary>Contexto adicional de la sala</summary><p>{room.contextContent}</p></details> : null}
-      <div className="multichat-agents" aria-label="Agentes seleccionados">{room.agents.map((agent) => <span key={agent.fileName} style={{ color: agent.color }}>{agent.icon} {agent.name}</span>)}</div>
-       <div className="multichat-messages" aria-live="polite">{room.messages.map((message) => <article key={message.id} className={`multichat-message multichat-message--${message.speakerId === 'user' ? 'user' : 'agent'}`}><strong style={{ color: message.speakerId === 'user' ? undefined : room.agents.find((agent) => `agent:${agent.fileName}` === message.speakerId)?.color }}>{message.speakerName}</strong><p>{message.content}</p></article>)}{streaming ? <article className="multichat-message multichat-message--agent multichat-message--streaming"><strong style={{ color: streaming.agentColor }}>{streaming.agentIcon} {streaming.agentName}</strong>{streaming.thinking ? <details open><summary>Pensando…</summary><p>{streaming.thinking}</p></details> : null}<p>{streaming.response || 'Generando respuesta…'}</p></article> : null}{room.messages.length === 0 && !streaming ? <p>La sala está vacía. Escribí el primer mensaje.</p> : null}</div>
-      <p role="status">{loading ? 'Los agentes están respondiendo en secuencia…' : room.round.status === 'waiting-user' ? 'Esperando tu próximo mensaje.' : room.round.error ?? ''}</p>
+      <div className="multichat-agents" aria-label="Agentes seleccionados">{room.agents.map((agent) => { const look = agentLook(room, `agent:${agent.fileName}`); return <span key={agent.fileName} style={{ color: look.color }}>{look.icon} {agent.name}</span> })}</div>
+       <div className="multichat-messages" aria-live="polite">{room.messages.map((message) => <article key={message.id} className={`multichat-message multichat-message--${message.speakerId === 'user' ? 'user' : 'agent'}`}><strong style={{ color: message.speakerId === 'user' ? undefined : agentLook(room, message.speakerId).color }}>{message.speakerName}</strong><p>{message.content}</p></article>)}{streaming && streamingLook ? <article className="multichat-message multichat-message--agent multichat-message--streaming"><strong style={{ color: streamingLook.color }}>{streamingLook.icon} {streaming.agentName}</strong>{streaming.thinking ? <details open><summary>Pensando…</summary><p>{streaming.thinking}</p></details> : null}<p>{streaming.response || 'Generando respuesta…'}</p></article> : null}{room.messages.length === 0 && !streaming ? <p>La sala está vacía. Escribí el primer mensaje.</p> : null}</div>
+      <p role="status">{loading ? 'Los agentes están respondiendo en secuencia…' : room.round.status === 'waiting-user' ? 'Esperando tu próximo mensaje.' : room.round.error ?? error ?? ''}</p>
       <textarea aria-label="Mensaje para Multichat" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={loading} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} />
        <div className="multichat-composer-actions"><button className="notia-button notia-button--primary" type="button" disabled={loading || !draft.trim()} onClick={() => void sendMessage()}>Enviar</button>{loading ? <button className="notia-button notia-button--danger" type="button" onClick={cancel}>Cancelar</button> : null}</div>
     </section>

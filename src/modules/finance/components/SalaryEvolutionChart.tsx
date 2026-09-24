@@ -1,14 +1,16 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { financeErrorMessage } from '../engines/financeError'
-import { buildSalaryChartPoints, buildSalaryChartScale, buildSalaryInflationBenchmark, compareSalaryPointToPrevious, salaryChartWidth, summarizeLatestSalaryYear, summarizeSalaryYearAtPeriod, type SalaryChartPoint, type SalaryInflationBenchmark } from '../engines/salaryEvolutionChartEngine'
-import { getOfficialHistoricalDollarQuotes } from '../services/argentinaDollarHistoryService'
-import { getArgentinaInflationIndices } from '../services/argentinaInflationService'
-import type { ArgentinaInflationIndex } from '../services/argentinaInflationService'
-import type { FinanceSalaryEvolution } from '../types/financeTypes'
+import { buildSalaryChartScale, salaryChartWidth, type SalaryChartPoint } from '../engines/salaryEvolutionChartEngine'
+import { getFinanceSalaryAnalysis, type FinanceSalaryAnalysis, type FinanceSalaryInflationBenchmark } from '../services/financeService'
+import type { NotiaLibrary } from '../../../types/notia'
 
 interface SalaryEvolutionChartProps {
-  salaries: FinanceSalaryEvolution[]
+  library: NotiaLibrary
+  /** Changes when the salaries change, to read the analysis again. */
+  refreshKey: unknown
 }
+
+type AnalysedPoint = FinanceSalaryAnalysis['points'][number]
 
 const CHART_HEIGHT = 220
 const CHART_PADDING = { top: 18, right: 24, bottom: 34, left: 96 }
@@ -41,73 +43,30 @@ function linePath(points: SalaryChartPoint[], field: 'ars' | 'usd', maximum: num
   }).join(' ')
 }
 
-export function SalaryEvolutionChart({ salaries }: SalaryEvolutionChartProps) {
-  const [points, setPoints] = useState<SalaryChartPoint[]>([])
+export function SalaryEvolutionChart({ library, refreshKey }: SalaryEvolutionChartProps) {
+  const [analysis, setAnalysis] = useState<FinanceSalaryAnalysis | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [inflationBenchmark, setInflationBenchmark] = useState<SalaryInflationBenchmark | null>(null)
-  const [monthlyInflation, setMonthlyInflation] = useState<ArgentinaInflationIndex[]>([])
-  const [inflationError, setInflationError] = useState<string | null>(null)
-  const [isLoadingInflation, setIsLoadingInflation] = useState(false)
-  const yearlySummary = summarizeLatestSalaryYear(points)
+  const points = analysis?.points ?? []
+  const yearlySummary = analysis?.yearSummary ?? null
 
+  // The backend converts each salary with the dollar of its payment day and
+  // compares it with inflation.
   useEffect(() => {
     let isCurrent = true
-    if (salaries.length === 0) {
-      setPoints([])
-      setError(null)
-      return () => { isCurrent = false }
-    }
     setIsLoading(true)
     setError(null)
-    void getOfficialHistoricalDollarQuotes()
-      .then((quotes) => {
-        if (isCurrent) setPoints(buildSalaryChartPoints(salaries, quotes))
-      })
+    void getFinanceSalaryAnalysis(library)
+      .then((value) => { if (isCurrent) setAnalysis(value) })
       .catch((reason) => {
-        if (isCurrent) setError(financeErrorMessage(reason, 'No se pudo cargar la cotización histórica del dólar.'))
+        if (isCurrent) {
+          setAnalysis(null)
+          setError(financeErrorMessage(reason, 'No se pudo cargar la cotización histórica del dólar.'))
+        }
       })
       .finally(() => { if (isCurrent) setIsLoading(false) })
     return () => { isCurrent = false }
-  }, [salaries])
-
-  useEffect(() => {
-    let isCurrent = true
-    const summary = summarizeLatestSalaryYear(points)
-    if (!summary) {
-      setInflationBenchmark(null)
-      setMonthlyInflation([])
-      setInflationError(null)
-      setIsLoadingInflation(false)
-      return () => { isCurrent = false }
-    }
-    setIsLoadingInflation(true)
-    setInflationError(null)
-    setMonthlyInflation([])
-    void getArgentinaInflationIndices()
-      .then((indices) => {
-        if (isCurrent) setMonthlyInflation(indices.monthly)
-        const salaryPeriods = [...new Set(points.map((point) => point.period))].sort((left, right) => right.localeCompare(left))
-        for (const period of salaryPeriods) {
-          const alignedSummary = summarizeSalaryYearAtPeriod(points, period)
-          if (!alignedSummary) continue
-          const benchmark = buildSalaryInflationBenchmark(alignedSummary, indices)
-          if (benchmark) {
-            if (isCurrent) setInflationBenchmark(benchmark)
-            return
-          }
-        }
-        if (isCurrent) setInflationBenchmark(null)
-      })
-      .catch((reason) => {
-        if (isCurrent) {
-          setMonthlyInflation([])
-          setInflationError(financeErrorMessage(reason, 'No se pudieron cargar los índices de inflación.'))
-        }
-      })
-      .finally(() => { if (isCurrent) setIsLoadingInflation(false) })
-    return () => { isCurrent = false }
-  }, [points])
+  }, [library, refreshKey])
 
   return <article className="finance-card finance-salary-chart-card" aria-labelledby="finance-salary-chart-title">
     <div className="finance-section-heading">
@@ -120,14 +79,14 @@ export function SalaryEvolutionChart({ salaries }: SalaryEvolutionChartProps) {
     {error && <p className="finance-error" role="alert">{error}</p>}
     {!isLoading && !error && points.length === 0 && <p className="finance-muted">Cargá recibos de sueldo con fecha de cobro para ver su evolución.</p>}
     {points.length > 0 && <>
-      <div className="finance-salary-charts"><SalaryLineChart points={points} monthlyInflation={monthlyInflation} currency="ARS" field="ars" title="Sueldo neto en pesos" /><SalaryLineChart points={points} monthlyInflation={monthlyInflation} currency="USD" field="usd" title="Sueldo neto en dólares" /></div>
+      <div className="finance-salary-charts"><SalaryLineChart points={points} currency="ARS" field="ars" title="Sueldo neto en pesos" /><SalaryLineChart points={points} currency="USD" field="usd" title="Sueldo neto en dólares" /></div>
       {yearlySummary ? <div className="finance-salary-summary" aria-label={`Resumen salarial móvil hasta ${yearlySummary.currentPeriod}`}>
         <SalarySummaryCard title="Variación anual en dólares" value={formatPercent(yearlySummary.usdVariationPercent)} detail={`${yearlySummary.comparisonPeriod} vs. ${yearlySummary.currentPeriod}`} />
         <SalarySummaryCard title="Variación anual en pesos" value={formatPercent(yearlySummary.arsVariationPercent)} detail={`${yearlySummary.comparisonPeriod} vs. ${yearlySummary.currentPeriod}`} />
         <SalarySummaryCard title="Promedio mensual en pesos" value={formatExactCurrency(yearlySummary.averageArs, 'ARS')} detail={`Últimos ${yearlySummary.monthCount} meses hasta ${yearlySummary.currentPeriod}`} />
         <SalarySummaryCard title="Promedio mensual en dólares" value={formatExactCurrency(yearlySummary.averageUsd, 'USD')} detail={`Últimos ${yearlySummary.monthCount} meses hasta ${yearlySummary.currentPeriod}`} />
       </div> : <p className="finance-muted finance-salary-summary-unavailable">El resumen estará disponible al tener un sueldo del mismo período de hace 12 meses.</p>}
-      {yearlySummary && <SalaryInflationComparison period={yearlySummary.currentPeriod} benchmark={inflationBenchmark} error={inflationError} isLoading={isLoadingInflation} />}
+      {yearlySummary && <SalaryInflationComparison period={yearlySummary.currentPeriod} benchmark={analysis?.inflationBenchmark ?? null} error={analysis?.inflationError ?? null} />}
     </>}
   </article>
 }
@@ -140,8 +99,7 @@ function SalarySummaryCard({ title, value, detail }: { title: string; value: str
   </section>
 }
 
-function SalaryInflationComparison({ period, benchmark, error, isLoading }: { period: string; benchmark: SalaryInflationBenchmark | null; error: string | null; isLoading: boolean }) {
-  if (isLoading) return <p className="finance-muted finance-salary-inflation-status" role="status">Comparando con IPC e inflación interanual…</p>
+function SalaryInflationComparison({ period, benchmark, error }: { period: string; benchmark: FinanceSalaryInflationBenchmark | null; error: string | null }) {
   if (error) return <p className="finance-warning finance-salary-inflation-status" role="status">{error}</p>
   if (!benchmark) return <p className="finance-muted finance-salary-inflation-status">Aguardando el IPC y la inflación interanual de {period} para compararlos.</p>
   return <section className="finance-salary-inflation" aria-label={`Comparación salarial con inflación hasta ${benchmark.period}`}>
@@ -164,7 +122,7 @@ function SalaryInflationCard({ title, ipcDifference, annualDifference }: { title
   </section>
 }
 
-function SalaryLineChart({ points, monthlyInflation, currency, field, title }: { points: SalaryChartPoint[]; monthlyInflation: ArgentinaInflationIndex[]; currency: 'ARS' | 'USD'; field: 'ars' | 'usd'; title: string }) {
+function SalaryLineChart({ points, currency, field, title }: { points: AnalysedPoint[]; currency: 'ARS' | 'USD'; field: 'ars' | 'usd'; title: string }) {
   const [activePointIndex, setActivePointIndex] = useState<number | null>(null)
   const scale = buildSalaryChartScale(points.map((point) => point[field]))
   const chartWidth = salaryChartWidth(points.length)
@@ -178,7 +136,7 @@ function SalaryLineChart({ points, monthlyInflation, currency, field, title }: {
   }))
   const activePoint = activePointIndex === null ? null : points[activePointIndex]
   const activeCoordinates = activePointIndex === null ? null : coordinates[activePointIndex]
-  const activeComparison = activePointIndex === null ? null : compareSalaryPointToPrevious(points, activePointIndex, field, monthlyInflation)
+  const activeComparison = activePoint ? (field === 'ars' ? activePoint.arsComparison : activePoint.usdComparison) : null
   const tooltipWidth = 250
   const tooltipHeight = activeComparison ? 82 : 46
   const tooltipCenterX = activeCoordinates

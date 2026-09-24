@@ -1,12 +1,8 @@
-import { invoke } from '@tauri-apps/api/core'
-import { join } from '../../utils/files/pathUtils'
+import { callBackend } from '../transport'
 import type { AiPreferences } from '../preferences/aiSettingsStorage'
 import type { InkMathPreferences } from '../preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../preferences/telegramSettingsStorage'
 import type { LibraryContext } from '../contexts/libraryContexts'
-
-const NOTIA_CONFIG_DIR = '.notia'
-const NOTIA_CONFIG_FILE = 'notiaConfig.json'
 
 export interface NotiaLibraryConfig {
   version: number
@@ -30,21 +26,13 @@ interface LibraryConfigResult {
   error?: string | null
 }
 
-export function getLibraryConfigPath(libraryPath: string): string {
-  return join(libraryPath, NOTIA_CONFIG_DIR, NOTIA_CONFIG_FILE)
-}
-
-export function getLibraryConfigDir(libraryPath: string): string {
-  return join(libraryPath, NOTIA_CONFIG_DIR)
-}
-
 async function invokeLibraryConfig(
   command: 'backend_read_library_config' | 'backend_write_library_config' | 'backend_ensure_library_config',
   libraryId: string,
   config?: NotiaLibraryConfig,
 ): Promise<LibraryConfigResult> {
   try {
-    return await invoke<LibraryConfigResult>(command, {
+    return await callBackend<LibraryConfigResult>(command, {
       payload: { libraryId, ...(config ? { config } : {}) },
     })
   } catch (error) {
@@ -64,13 +52,15 @@ export async function readLibraryConfig(libraryId: string): Promise<NotiaLibrary
   return result.ok ? result.config ?? null : null
 }
 
-/** Stores the configuration; the backend normalizes it before persisting. */
+/** Stores the sections sent; the backend normalizes them and returns what it stored. */
 export async function writeLibraryConfig(
   libraryId: string,
   config: NotiaLibraryConfig,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; config?: NotiaLibraryConfig; error?: string }> {
   const result = await invokeLibraryConfig('backend_write_library_config', libraryId, config)
-  return result.ok ? { ok: true } : { ok: false, error: result.error ?? 'Error al escribir configuracion.' }
+  return result.ok
+    ? { ok: true, config: result.config ?? undefined }
+    : { ok: false, error: result.error ?? 'Error al escribir configuracion.' }
 }
 
 /** Creates the default configuration when the library has none. */

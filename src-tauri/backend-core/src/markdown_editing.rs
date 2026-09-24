@@ -1634,9 +1634,12 @@ mod tests {
         .expect("materialized")
         .expect("selected hunk");
         assert_eq!(selected, preview.new_content);
-        assert!(materialize_markdown_preview(&preview, &[])
-            .expect("empty selection")
-            .is_none());
+        // Without an explicit selection every hunk of the preview applies.
+        assert_eq!(
+            materialize_markdown_preview(&preview, &[]).expect("empty selection"),
+            Some(preview.new_content.clone())
+        );
+        assert!(materialize_markdown_preview(&preview, &["desconocido".to_string()]).is_err());
     }
 
     #[test]

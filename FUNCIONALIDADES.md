@@ -27,10 +27,12 @@
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor y títulos visibles con separadores de ruta.
-- Mutaciones embebidas de Task Manager en desktop con preview/apply/receipt Rust y fallback local explícito para Android o vaults sin identidad.
+- Operaciones de Task Manager (tareas, tableros, grupos, orden por arrastre y registro Pomodoro) resueltas y validadas en Rust en Windows y Android.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
-- Temporizador Pomodoro integrado en Task Manager.
+- Temporizador Pomodoro integrado en Task Manager, guardado en el backend para cada biblioteca y usuario.
 - Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.
+- Modo servidor sin ventana (`notia --headless`, Windows y Linux): API HTTPS con contraseña del dueño, eventos por WebSocket, registro de bibliotecas por consola y bloqueo exclusivo de la carpeta de datos compartida con la aplicación.
+- Uso de Notia desde el navegador contra un servidor headless: ingreso con la contraseña del dueño, la misma interfaz con eventos en vivo, imágenes de las bibliotecas y dictado grabado en el navegador; recupera los eventos perdidos al reconectar o avisa que hay que recargar; las funciones que dependen del equipo servidor se ocultan.
 - Finanzas personales con cuentas, movimientos, tickets, sueldos, tarjetas, inversiones, servicios mensuales integrados en Home, facturas/boletas, conciliación determinista de consumos de tarjeta con matching por límites de palabra y control integral mediante tools tipadas de IA con confirmaciones individuales, reforzadas cuando corresponde al canal.
 - Auditoría financiera con propuestas de acciones estructuradas, preview sin escritura, aplicación individual con huella vigente, resolución manual validada e invalidación ante cambios.
 - Calendario con feriados nacionales y bancarios de Argentina.

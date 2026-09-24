@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useState,
   type FormEvent,
 } from "react";
@@ -12,17 +11,15 @@ import {
   getFinanceDashboard,
   saveFinanceAccount,
   saveFinanceCategory,
-  saveFinanceTransaction,
   saveFinanceSavingsReserve,
-  saveFinanceSavingsMovement,
-  listFinanceSalaries,
   linkFinanceSavingsAccount,
   deleteFinanceAccount,
   deleteFinanceCategory,
   deleteFinanceTransaction,
-  queueFinanceAudit,
-  getFinancePeriodSummary,
+  applyFinanceUiChange,
+  getFinanceDashboardInsights,
   getFinanceRelationAudit,
+  type FinanceDashboardInsights,
 } from "../services/financeService";
 import type {
   FinanceAccount,
@@ -31,19 +28,13 @@ import type {
   FinanceTransaction,
   FinanceSavingsMovement,
   FinanceSavingsReserve,
-  FinanceSalaryReceipt,
 } from "../types/financeTypes";
 import { financeErrorMessage } from "../engines/financeError";
-import {
-  formatFinanceCents,
-  parseFinanceCents,
-} from "../engines/financeAmounts";
-import { formatDebtToIncomeRatio } from "../engines/debtRatio";
 import { FinanceRecordsPanel } from "./FinanceRecordsPanel";
 import { DollarQuotesCards } from "./DollarQuotesCards";
 import { subscribeToFinanceDataChanges } from "../services/financeDataEvents";
 import { getDollarQuotes } from "../services/dollarQuotesService";
-import type { FinanceDailySummary, FinanceDateRange, FinanceRelationAudit } from "../types/financeViews";
+import type { FinanceRelationAudit } from "../types/financeViews";
 
 interface FinanceDashboardProps {
   library: NotiaLibrary;
@@ -78,76 +69,25 @@ function formatRates(values: Record<string, string | null>) {
   return entries.length === 0 ? "—" : entries.map(([currency, value]) => `${currency} ${value}%`).join(" · ");
 }
 
-function formatDateOnly(date: Date) {
-  return date.toISOString().slice(0, 10);
+/** Debt over income per currency, as the backend computed it. */
+function formatRatios(ratios: FinanceDashboardInsights["debtRatio"]["ratios"]) {
+  if (ratios.length === 0) return "—";
+  const percent = (value: number) => `${value.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%`;
+  return ratios.length === 1
+    ? percent(ratios[0].percentage)
+    : ratios.map(({ currency, percentage }) => `${currency} ${percent(percentage)}`).join(" · ");
 }
 
-function monthRange(month: string): FinanceDateRange {
-  const [year, monthNumber] = month.split("-").map(Number);
-  return { from: `${month}-01`, to: formatDateOnly(new Date(Date.UTC(year, monthNumber, 0))) };
-}
-
-function previousMonth(month: string) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  return new Date(Date.UTC(year, monthNumber - 2, 1)).toISOString().slice(0, 7);
-}
-
-function summaryRange(view: "day" | "week" | "month", month: string, selectedDate: string): FinanceDateRange {
-  if (view === "month") return monthRange(month);
-  const date = new Date(`${selectedDate}T00:00:00Z`);
-  if (view === "day") return { from: selectedDate, to: selectedDate };
-  const day = date.getUTCDay() || 7;
-  const from = new Date(date);
-  from.setUTCDate(date.getUTCDate() - day + 1);
-  const to = new Date(from);
-  to.setUTCDate(from.getUTCDate() + 6);
-  return { from: formatDateOnly(from), to: formatDateOnly(to) };
-}
-
-function formatSavingsToIncomeRatio(
-  reserves: FinanceSavingsReserve[],
-  savingsMovements: FinanceSavingsMovement[],
-  transactions: FinanceTransaction[],
-  salary: FinanceSalaryReceipt | null,
-  dollarRate: number | null,
-): string {
-  if (!salary) return "—";
-  const salaryAmount = Number(salary.netAmount);
-  if (!Number.isFinite(salaryAmount) || salaryAmount <= 0) return "—";
-  const latestExchange = transactions
-    .filter((transaction) => transaction.status === "confirmed" && transaction.source === "savings_exchange")
-    .sort((left, right) => right.effectiveDate.localeCompare(left.effectiveDate))[0];
-  const latestExchangeMovement = savingsMovements
-    .filter((movement) => movement.status === "confirmed" && movement.source === "savings_exchange")
-    .sort((left, right) => right.effectiveDate.localeCompare(left.effectiveDate))[0];
-  let savingsAmount = 0;
-  if (latestExchange) {
-    savingsAmount = salary.currency === latestExchange.currency
-      ? Number(latestExchange.amount)
-      : latestExchangeMovement && salary.currency === latestExchangeMovement.currency
-        ? Number(latestExchangeMovement.amount)
-        : dollarRate && dollarRate > 0
-          ? salary.currency === "ARS" ? Number(latestExchange.amount) : Number(latestExchange.amount) / dollarRate
-          : 0;
-  } else {
-    for (const reserve of reserves) {
-      const balance = Number(reserve.balance);
-      if (!Number.isFinite(balance)) continue;
-      savingsAmount += reserve.currency === salary.currency
-        ? balance
-        : dollarRate && dollarRate > 0
-          ? salary.currency === "ARS" ? balance * dollarRate : balance / dollarRate
-          : 0;
-    }
-  }
-  return `${((savingsAmount / salaryAmount) * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 })}%`;
+function formatPercent(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "—"
+    : `${value.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%`;
 }
 
 export function FinanceDashboard({ library }: FinanceDashboardProps) {
   const { confirm } = useConfirmationEngine();
   const [month, setMonth] = useState(currentMonth);
   const [data, setData] = useState<DashboardData | null>(null);
-  const [comparisonData, setComparisonData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [savingsReserveFilter, setSavingsReserveFilter] = useState("");
@@ -162,7 +102,6 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   const [editingCategory, setEditingCategory] = useState<FinanceCategory | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<FinanceTransaction | null>(null);
   const [transactionPage, setTransactionPage] = useState(0);
-  const [latestSalary, setLatestSalary] = useState<FinanceSalaryReceipt | null>(null);
   const [dollarRate, setDollarRate] = useState<number | null>(null);
   const [summaryView, setSummaryView] = useState<"day" | "week" | "month">("day");
   const [summaryDate, setSummaryDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -184,9 +123,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const currentData = await getFinanceDashboard(library, month);
-      setData(currentData);
-      try { setComparisonData(await getFinanceDashboard(library, previousMonth(month))); } catch { setComparisonData(null); }
+      setData(await getFinanceDashboard(library, month));
     } catch (reason) {
       setError(financeErrorMessage(reason, "No se pudo cargar Finanzas."));
     } finally {
@@ -201,111 +138,47 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
   }), [refresh]);
   useEffect(() => {
     let active = true;
-    void listFinanceSalaries(library).then((salaries) => {
-      if (!active) return;
-      const latest = [...salaries]
-        .sort((left, right) => `${right.salary.period}-${right.salary.paymentDate}`.localeCompare(`${left.salary.period}-${left.salary.paymentDate}`))[0]?.salary ?? null;
-      setLatestSalary(latest);
-    }).catch(() => undefined);
     void getDollarQuotes().then((quotes) => {
       if (active) setDollarRate(quotes.find((quote) => quote.kind === "oficial")?.sell ?? null);
     }).catch(() => undefined);
     return () => { active = false; };
   }, [library]);
 
-  const filteredTransactions = useMemo(() => {
-    const normalizedSearch = transactionSearch.trim().toLocaleLowerCase("es");
-    return (data?.transactions ?? []).filter((transaction) =>
-      (!normalizedSearch || transaction.description.toLocaleLowerCase("es").includes(normalizedSearch) || transaction.source.toLocaleLowerCase("es").includes(normalizedSearch))
-      && (!transactionCategoryFilter || transaction.categoryId === transactionCategoryFilter)
-      && (!transactionCurrencyFilter || transaction.currency === transactionCurrencyFilter)
-      && (!transactionStatusFilter || transaction.status === transactionStatusFilter)
-      && (!transactionAccountFilter || transaction.accountId === transactionAccountFilter)
-      && (!transactionSourceFilter || transaction.source === transactionSourceFilter)
-      && (!transactionServiceFilter || transaction.serviceId === transactionServiceFilter),
-    );
-  }, [data, transactionAccountFilter, transactionCategoryFilter, transactionCurrencyFilter, transactionSearch, transactionServiceFilter, transactionSourceFilter, transactionStatusFilter]);
-
-  const expensesByCategory = useMemo(() => {
-    if (!data) return [];
-    const totals = new Map<string, bigint>();
-    filteredTransactions
-      .filter(
-        (item) =>
-          item.status === "confirmed" && item.transactionType === "expense",
-      )
-      .forEach((item) => {
-        const key =
-          data.categories.find((category) => category.id === item.categoryId)
-            ?.name ?? "Sin categoría";
-        totals.set(
-          key,
-          (totals.get(key) ?? 0n) + parseFinanceCents(item.amount),
-        );
-      });
-    return [...totals.entries()].sort((a, b) =>
-      b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0,
-    );
-  }, [data, filteredTransactions]);
-
-  const savingsMovements = useMemo(() => data?.savingsMovements.filter((movement) => (!savingsReserveFilter || movement.reserveId === savingsReserveFilter) && (!savingsCurrencyFilter || movement.currency === savingsCurrencyFilter)) ?? [], [data, savingsCurrencyFilter, savingsReserveFilter]);
-  const savingsBreakdown = useMemo(() => {
-    const totals = new Map<string, bigint>();
-    for (const movement of savingsMovements.filter((item) => item.status === "confirmed")) totals.set(movement.movementType, (totals.get(movement.movementType) ?? 0n) + parseFinanceCents(movement.amount));
-    return totals;
-  }, [savingsMovements]);
-  const transactionPageSize = 50;
-  const visibleTransactions = filteredTransactions.slice(transactionPage * transactionPageSize, (transactionPage + 1) * transactionPageSize);
-  const debtRatioSummary = useMemo(() => {
-    if (!data) return { value: "—", period: month };
-    const selectedValue = formatDebtToIncomeRatio(data.debtByCurrency, data.salaryByCurrency);
-    if (selectedValue !== "—") return { value: selectedValue, period: month };
-    const fallback = [...data.debtRatioHistory]
-      .sort((left, right) => right.period.localeCompare(left.period))
-      .map((point) => ({
-        value: formatDebtToIncomeRatio(point.debtByCurrency, point.salaryByCurrency),
-        period: point.period,
-      }))
-      .find((point) => point.value !== "—");
-    return fallback ?? { value: "—", period: month };
-  }, [data, month]);
+  const [insights, setInsights] = useState<FinanceDashboardInsights | null>(null);
+  const [relationAudit, setRelationAudit] = useState<FinanceRelationAudit | null>(null);
   useEffect(() => setTransactionPage(0), [month, transactionAccountFilter, transactionCategoryFilter, transactionCurrencyFilter, transactionSearch, transactionServiceFilter, transactionSourceFilter, transactionStatusFilter]);
   useEffect(() => {
     if (summaryDate.slice(0, 7) !== month) setSummaryDate(`${month}-01`);
   }, [month, summaryDate]);
-
-  const selectedSummaryRange = useMemo(() => summaryRange(summaryView, month, summaryDate), [month, summaryDate, summaryView]);
-  const [dailySummary, setDailySummary] = useState<FinanceDailySummary | null>(null);
-  const [comparisonSummary, setComparisonSummary] = useState<FinanceDailySummary | null>(null);
-  const [relationAudit, setRelationAudit] = useState<FinanceRelationAudit | null>(null);
-  // `data` and `comparisonData` change after every reload, so the derived
-  // views are requested again from the backend.
+  // The backend filters the movements, totals them and summarizes the chosen
+  // period; `data` changes after every reload, so they are requested again.
   useEffect(() => {
     let isCurrent = true;
-    if (!data) { setDailySummary(null); setRelationAudit(null); return; }
-    void getFinancePeriodSummary(library, selectedSummaryRange).then((summary) => { if (isCurrent) setDailySummary(summary); }).catch(() => { if (isCurrent) setDailySummary(null); });
+    if (!data) { setInsights(null); setRelationAudit(null); return; }
+    void getFinanceDashboardInsights(library, {
+      month,
+      summaryView,
+      summaryDate,
+      page: transactionPage,
+      dollarRate,
+      filters: {
+        search: transactionSearch,
+        categoryId: transactionCategoryFilter,
+        currency: transactionCurrencyFilter,
+        status: transactionStatusFilter,
+        accountId: transactionAccountFilter,
+        source: transactionSourceFilter,
+        serviceId: transactionServiceFilter,
+      },
+      savingsFilters: { reserveId: savingsReserveFilter, currency: savingsCurrencyFilter },
+    }).then((value) => { if (isCurrent) setInsights(value); }).catch(() => { if (isCurrent) setInsights(null); });
     void getFinanceRelationAudit(library, month).then((audit) => { if (isCurrent) setRelationAudit(audit); }).catch(() => { if (isCurrent) setRelationAudit(null); });
     return () => { isCurrent = false; };
-  }, [data, library, month, selectedSummaryRange]);
-  useEffect(() => {
-    let isCurrent = true;
-    if (summaryView !== "month" || !comparisonData) { setComparisonSummary(null); return; }
-    void getFinancePeriodSummary(library, monthRange(previousMonth(month))).then((summary) => { if (isCurrent) setComparisonSummary(summary); }).catch(() => { if (isCurrent) setComparisonSummary(null); });
-    return () => { isCurrent = false; };
-  }, [comparisonData, library, month, summaryView]);
-  const categoryVariation = useMemo(() => {
-    if (!dailySummary || !comparisonSummary || summaryView !== "month") return new Map<string, number | null>();
-    const previous = new Map(comparisonSummary.expenseByCategory.map((item) => [`${item.categoryId ?? "uncategorized"}:${item.currency}`, item.amount]));
-    return new Map(dailySummary.expenseByCategory.map((item) => {
-      const oldValue = Number(previous.get(`${item.categoryId ?? "uncategorized"}:${item.currency}`) ?? "0");
-      const currentValue = Number(item.amount);
-      return [`${item.categoryId ?? "uncategorized"}:${item.currency}`, oldValue > 0 ? ((currentValue - oldValue) / oldValue) * 100 : null];
-    }));
-  }, [comparisonSummary, dailySummary, summaryView]);
+  }, [data, dollarRate, library, month, savingsCurrencyFilter, savingsReserveFilter, summaryDate, summaryView, transactionAccountFilter, transactionCategoryFilter, transactionCurrencyFilter, transactionPage, transactionSearch, transactionServiceFilter, transactionSourceFilter, transactionStatusFilter]);
+  const dailySummary = insights?.summary ?? null;
 
   async function submitTransaction(transaction: FinanceTransaction) {
-    await saveFinanceTransaction(library, transaction);
-    await queueFinanceAudit(library, transaction.effectiveDate.slice(0, 7), `ui:transaction:${transaction.id}`, "Alta de movimiento desde Finanzas");
+    await applyFinanceUiChange(library, { kind: "create-transaction", transaction });
     setIsFormOpen(false);
     await refresh();
   }
@@ -380,7 +253,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               <article><span>Tasa de ahorro registrada</span><strong>{formatRates(dailySummary.savingsRateByCurrency)}</strong><small className="finance-muted">Aportes confirmados sobre ingresos del período.</small></article>
             </div>
             <div className="finance-grid">
-              <article><h3>Gastos por categoría</h3>{dailySummary.expenseByCategory.length === 0 ? <p className="finance-muted">No hay gastos confirmados en el período.</p> : <ul className="finance-category-list">{dailySummary.expenseByCategory.map((item) => { const variation = categoryVariation.get(`${item.categoryId ?? "uncategorized"}:${item.currency}`); return <li key={`${item.categoryId ?? "uncategorized"}-${item.currency}`}><span>{item.categoryName}<small>{item.count} movimiento(s){variation !== undefined && (variation === null ? " · nuevo en el período" : ` · ${variation >= 0 ? "+" : ""}${variation.toLocaleString("es-AR", { maximumFractionDigits: 1 })}% vs. período anterior`)}</small></span><strong>{formatPreciseAmount(item.amount, item.currency)}</strong></li> })}</ul>}</article>
+              <article><h3>Gastos por categoría</h3>{dailySummary.expenseByCategory.length === 0 ? <p className="finance-muted">No hay gastos confirmados en el período.</p> : <ul className="finance-category-list">{dailySummary.expenseByCategory.map((item) => { const variation = insights?.categoryVariation[`${item.categoryId ?? "uncategorized"}:${item.currency}`]; return <li key={`${item.categoryId ?? "uncategorized"}-${item.currency}`}><span>{item.categoryName}<small>{item.count} movimiento(s){variation !== undefined && (variation === null ? " · nuevo en el período" : ` · ${variation >= 0 ? "+" : ""}${variation.toLocaleString("es-AR", { maximumFractionDigits: 1 })}% vs. período anterior`)}</small></span><strong>{formatPreciseAmount(item.amount, item.currency)}</strong></li> })}</ul>}</article>
               <article><h3>Movimientos de ahorro</h3>{dailySummary.savings.movementCount === 0 ? <p className="finance-muted">No hay movimientos de ahorro confirmados.</p> : <ul className="finance-category-list">{(["contribution", "withdrawal", "return", "loss", "adjustment"] as const).flatMap((kind) => Object.entries(dailySummary.savings.byCurrency).map(([currency, values]) => ({ kind, currency, value: values[kind] })).filter((item) => item.value !== "0.00")).map((item) => <li key={`${item.kind}-${item.currency}`}><span>{item.kind === "contribution" ? "Aportes" : item.kind === "withdrawal" ? "Retiros" : item.kind === "return" ? "Rendimientos" : item.kind === "loss" ? "Pérdidas" : "Ajustes"}</span><strong>{formatPreciseAmount(item.value, item.currency)}</strong></li>)}</ul>}</article>
             </div>
             {(dailySummary.coverage.pendingTransactions > 0 || dailySummary.coverage.uncategorizedExpenses > 0 || dailySummary.coverage.invalidTransactionAmounts > 0 || dailySummary.coverage.invalidSavingsAmounts > 0 || data.transactionsTruncated || data.savingsMovementsTruncated) && <p className="finance-warning" role="status">Revisión necesaria: {dailySummary.coverage.pendingTransactions ? `${dailySummary.coverage.pendingTransactions} pendiente(s)` : ""}{dailySummary.coverage.uncategorizedExpenses ? ` · ${dailySummary.coverage.uncategorizedExpenses} sin categoría` : ""}{dailySummary.coverage.invalidTransactionAmounts || dailySummary.coverage.invalidSavingsAmounts ? " · hay importes inválidos excluidos" : ""}{data.transactionsTruncated ? " · el listado de movimientos está limitado" : ""}{data.savingsMovementsTruncated ? " · el listado de ahorro está limitado" : ""}</p>}
@@ -388,17 +261,17 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
           <section className="finance-grid">
             <article className="finance-card finance-expenses-card">
               <h2>Gastos por categoría</h2>
-              {expensesByCategory.length === 0 ? (
+              {(insights?.expensesByCategory ?? []).length === 0 ? (
                 <p className="finance-muted">
                   Todavía no hay gastos confirmados.
                 </p>
               ) : (
                 <ul className="finance-category-list">
-                  {expensesByCategory.map(([name, amount]) => (
+                  {(insights?.expensesByCategory ?? []).map(({ name, amount }) => (
                     <li key={name}>
                       <span>{name}</span>
                       <strong>
-                        {formatAmount(formatFinanceCents(amount))}
+                        {formatAmount(amount)}
                       </strong>
                     </li>
                   ))}
@@ -437,7 +310,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
             </article>
             <article>
               <span>Ahorro / sueldo</span>
-              <strong>{formatSavingsToIncomeRatio(data.savings, data.savingsMovements, data.transactions, latestSalary, dollarRate)}</strong>
+              <strong>{formatPercent(insights?.savingsToIncome)}</strong>
               <small className="finance-muted">Saldo de ahorro respecto del sueldo en la misma moneda.</small>
             </article>
             <article>
@@ -446,15 +319,15 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
             </article>
             <article>
               <span>Deuda / sueldo</span>
-              <strong>{debtRatioSummary.value}</strong>
+              <strong>{formatRatios(insights?.debtRatio.ratios ?? [])}</strong>
               <small className="finance-muted">
-                {debtRatioSummary.period === month
+                {(insights?.debtRatio.period ?? month) === month
                   ? "Tarjetas y deudas registradas contra el sueldo del mes."
-                  : `Último período con datos: ${debtRatioSummary.period}.`}
+                  : `Último período con datos: ${insights?.debtRatio.period}.`}
               </small>
             </article>
           </section>
-          {data.transactions.some((transaction) => transaction.status === "pending") && <section className="finance-card finance-pending" role="status"><h2>Cargas pendientes</h2><p>{data.transactions.filter((transaction) => transaction.status === "pending").length} operaciones esperan revisión.</p></section>}
+          {(insights?.pendingCount ?? 0) > 0 && <section className="finance-card finance-pending" role="status"><h2>Cargas pendientes</h2><p>{insights?.pendingCount} operaciones esperan revisión.</p></section>}
           <section className="finance-card">
             <h2>Movimientos recientes</h2>
             <div className="finance-form-row" aria-label="Filtros de movimientos">
@@ -463,10 +336,10 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               <label>Moneda<select value={transactionCurrencyFilter} onChange={(event) => setTransactionCurrencyFilter(event.target.value)}><option value="">Todas</option><option value="ARS">ARS</option><option value="USD">USD</option></select></label>
               <label>Estado<select value={transactionStatusFilter} onChange={(event) => setTransactionStatusFilter(event.target.value)}><option value="">Todos</option><option value="confirmed">Confirmado</option><option value="corrected">Corregido</option><option value="pending">Pendiente</option><option value="discarded">Descartado</option></select></label>
               <label>Cuenta<select value={transactionAccountFilter} onChange={(event) => setTransactionAccountFilter(event.target.value)}><option value="">Todas</option>{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-              <label>Origen<select value={transactionSourceFilter} onChange={(event) => setTransactionSourceFilter(event.target.value)}><option value="">Todos</option>{[...new Set(data.transactions.map((transaction) => transaction.source))].sort().map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
-              <label>Servicio<select value={transactionServiceFilter} onChange={(event) => setTransactionServiceFilter(event.target.value)}><option value="">Todos</option>{[...new Set(data.transactions.map((transaction) => transaction.serviceId).filter((serviceId): serviceId is string => Boolean(serviceId)))].sort().map((serviceId) => <option key={serviceId} value={serviceId}>{serviceId}</option>)}</select></label>
+              <label>Origen<select value={transactionSourceFilter} onChange={(event) => setTransactionSourceFilter(event.target.value)}><option value="">Todos</option>{(insights?.sources ?? []).map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
+              <label>Servicio<select value={transactionServiceFilter} onChange={(event) => setTransactionServiceFilter(event.target.value)}><option value="">Todos</option>{(insights?.serviceIds ?? []).map((serviceId) => <option key={serviceId} value={serviceId}>{serviceId}</option>)}</select></label>
             </div>
-            {filteredTransactions.length === 0 ? (
+            {(insights?.transactionCount ?? 0) === 0 ? (
               <p className="finance-muted">
                 No hay movimientos en este período.
               </p>
@@ -485,7 +358,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleTransactions.map((item) => (
+                    {(insights?.transactions ?? []).map((item) => (
                       <tr key={item.id}>
                         <td>{item.effectiveDate}</td>
                         <td><span>{item.description || "Sin descripción"}</span><small className="finance-table-secondary">{data.accounts.find((account) => account.id === item.accountId)?.name ?? "Cuenta no disponible"} · {data.categories.find((category) => category.id === item.categoryId)?.name ?? "Sin categoría"}{item.serviceId ? ` · Servicio ${item.serviceId}` : ""} · {item.sourceArtifactId ? "Con evidencia" : "Sin evidencia"}</small></td>
@@ -495,8 +368,8 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                         <td>{item.source}</td>
                         <td className="finance-row-actions">
                           <button type="button" onClick={() => setEditingTransaction(item)}>Editar</button>
-                          {item.status === "pending" && <button type="button" onClick={async () => { await saveFinanceTransaction(library, { ...item, status: "confirmed" }); await queueFinanceAudit(library, item.effectiveDate.slice(0, 7), `ui:transaction:${item.id}`, "Confirmación de movimiento desde Finanzas"); await refresh(); }}>Confirmar</button>}
-                          {item.status !== "discarded" && <button type="button" onClick={async () => { await saveFinanceTransaction(library, { ...item, status: "discarded" }); await queueFinanceAudit(library, item.effectiveDate.slice(0, 7), `ui:transaction:${item.id}`, "Descarte de movimiento desde Finanzas"); await refresh(); }}>Descartar</button>}
+                          {item.status === "pending" && <button type="button" onClick={async () => { await applyFinanceUiChange(library, { kind: "confirm-transaction", id: item.id }); await refresh(); }}>Confirmar</button>}
+                          {item.status !== "discarded" && <button type="button" onClick={async () => { await applyFinanceUiChange(library, { kind: "discard-transaction", id: item.id }); await refresh(); }}>Descartar</button>}
                           <button type="button" onClick={async () => { if (window.confirm("¿Eliminar lógicamente este movimiento?")) { await deleteFinanceTransaction(library, item.id); await refresh(); } }}>Eliminar</button>
                         </td>
                       </tr>
@@ -505,7 +378,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                 </table>
               </div>
             )}
-            {filteredTransactions.length > transactionPageSize && <nav className="finance-pagination" aria-label="Páginas de movimientos"><button type="button" disabled={transactionPage === 0} onClick={() => setTransactionPage((page) => Math.max(0, page - 1))}>Anterior</button><span>Página {transactionPage + 1} de {Math.ceil(filteredTransactions.length / transactionPageSize)}</span><button type="button" disabled={(transactionPage + 1) * transactionPageSize >= filteredTransactions.length} onClick={() => setTransactionPage((page) => page + 1)}>Siguiente</button></nav>}
+            {insights && insights.pageCount > 1 && <nav className="finance-pagination" aria-label="Páginas de movimientos"><button type="button" disabled={insights.page === 0} onClick={() => setTransactionPage(Math.max(0, insights.page - 1))}>Anterior</button><span>Página {insights.page + 1} de {insights.pageCount}</span><button type="button" disabled={insights.page + 1 >= insights.pageCount} onClick={() => setTransactionPage(insights.page + 1)}>Siguiente</button></nav>}
            </section>
         </div>)}
        {data && (
@@ -537,13 +410,13 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
                     </strong>
                   </li>
                 ))}
-            </ul><div className="finance-savings-breakdown" aria-label="Resumen de ahorro del mes">{["contribution", "withdrawal", "return", "loss", "adjustment"].map((kind) => <span key={kind}>{kind}: <strong>{formatFinanceCents(savingsBreakdown.get(kind) ?? 0n)}</strong></span>)}</div><div className="finance-table-wrap"><table><thead><tr><th>Fecha</th><th>Reserva</th><th>Tipo</th><th>Importe</th><th>Motivo</th></tr></thead><tbody>{savingsMovements.map((movement) => <tr key={movement.id}><td>{movement.effectiveDate}</td><td>{data.savings.find((reserve) => reserve.id === movement.reserveId)?.name}</td><td>{movement.movementType}</td><td>{movement.currency} {movement.amount}</td><td>{movement.reason || movement.description || "—"}</td></tr>)}</tbody></table></div></>
+            </ul><div className="finance-savings-breakdown" aria-label="Resumen de ahorro del mes">{["contribution", "withdrawal", "return", "loss", "adjustment"].map((kind) => <span key={kind}>{kind}: <strong>{insights?.savingsBreakdown[kind] ?? "0.00"}</strong></span>)}</div><div className="finance-table-wrap"><table><thead><tr><th>Fecha</th><th>Reserva</th><th>Tipo</th><th>Importe</th><th>Motivo</th></tr></thead><tbody>{(insights?.savingsMovements ?? []).map((movement) => <tr key={movement.id}><td>{movement.effectiveDate}</td><td>{data.savings.find((reserve) => reserve.id === movement.reserveId)?.name}</td><td>{movement.movementType}</td><td>{movement.currency} {movement.amount}</td><td>{movement.reason || movement.description || "—"}</td></tr>)}</tbody></table></div></>
             )}
           </section>
          )}
        {relationAudit && relationAudit.incompleteEntityCount > 0 && data && <FinanceRelationReview audit={relationAudit} transactions={data.transactions} onReview={setEditingTransaction} />}
        {data && <section className="finance-card" aria-labelledby="finance-category-settings"><div className="finance-section-heading"><h2 id="finance-category-settings">Configuración de categorías</h2><button type="button" onClick={() => setIsCategoryFormOpen(true)}>Nueva categoría</button></div><ul className="finance-category-list">{data.categories.map((category) => <li key={category.id}><span>{category.name}<small>{category.kind} · {category.active ? "activa" : "inactiva"}{category.parentId ? " · subcategoría" : ""}</small></span><span className="finance-row-actions"><button type="button" onClick={() => setEditingCategory(category)}>Editar</button>{category.active && <button type="button" onClick={async () => { if (window.confirm(`¿Desactivar ${category.name}?`)) { await deleteFinanceCategory(library, category.id); await refresh(); } }}>Desactivar</button>}</span></li>)}</ul></section>}
-      {data && <FinanceRecordsPanel library={library} accounts={data.accounts} debtRatioHistory={data.debtRatioHistory} historyFrom={historyStartPeriod(month)} historyTo={month} onChanged={refresh} />}
+      {data && <FinanceRecordsPanel library={library} accounts={data.accounts} debtRatioSeries={insights?.debtRatioSeries ?? { periods: [], series: [] }} historyFrom={historyStartPeriod(month)} historyTo={month} onChanged={refresh} />}
       {isFormOpen && (
         <FinanceTransactionForm
           accounts={data?.accounts ?? []}
@@ -575,7 +448,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
         />
       )}
       {editingCategory && <FinanceCategoryForm initial={editingCategory} categories={data?.categories ?? []} onCancel={() => setEditingCategory(null)} onSubmit={async (category) => { await saveFinanceCategory(library, category); setEditingCategory(null); await refresh(); }} />}
-      {editingTransaction && <FinanceTransactionForm initial={editingTransaction} accounts={data?.accounts ?? []} categories={data?.categories ?? []} onCancel={() => setEditingTransaction(null)} onSubmit={async (transaction) => { await saveFinanceTransaction(library, { ...transaction, status: transaction.status === "pending" ? "corrected" : transaction.status }); await queueFinanceAudit(library, transaction.effectiveDate.slice(0, 7), `ui:transaction:${transaction.id}`, "Corrección de movimiento desde Finanzas"); setEditingTransaction(null); await refresh(); }} />}
+      {editingTransaction && <FinanceTransactionForm initial={editingTransaction} accounts={data?.accounts ?? []} categories={data?.categories ?? []} onCancel={() => setEditingTransaction(null)} onSubmit={async (transaction) => { await applyFinanceUiChange(library, { kind: "edit-transaction", transaction }); setEditingTransaction(null); await refresh(); }} />}
       {isSavingsFormOpen && (
         <FinanceSavingsForm
           accounts={data?.accounts ?? []}
@@ -590,7 +463,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
         />
       )}
       {isQuickExpenseOpen && <FinanceQuickExpenseForm accounts={data?.accounts ?? []} categories={data?.categories ?? []} recentTransactions={data?.transactions ?? []} onCancel={() => setIsQuickExpenseOpen(false)} onSubmit={async (transaction) => { const accepted = await confirm({ title: "Confirmar gasto", message: `Se registrará ${transaction.amount} ${transaction.currency} como gasto${transaction.description ? `: ${transaction.description}` : ""}.`, confirmLabel: "Guardar gasto" }); if (!accepted) return false; await submitTransaction(transaction); return true; }} />}
-      {isQuickSavingsOpen && <FinanceQuickSavingsForm reserves={data?.savings ?? []} accounts={data?.accounts ?? []} onCancel={() => setIsQuickSavingsOpen(false)} onSubmit={async (movement) => { const accepted = await confirm({ title: "Confirmar ahorro", message: `Se registrará ${movement.amount} ${movement.currency} como ${movement.movementType} en la reserva seleccionada.`, confirmLabel: "Guardar ahorro" }); if (!accepted) return false; await saveFinanceSavingsMovement(library, movement); await queueFinanceAudit(library, movement.effectiveDate.slice(0, 7), `ui:quick-savings:${movement.id}`, "Alta rápida de ahorro desde Finanzas"); await refresh(); return true; }} />}
+      {isQuickSavingsOpen && <FinanceQuickSavingsForm reserves={data?.savings ?? []} accounts={data?.accounts ?? []} onCancel={() => setIsQuickSavingsOpen(false)} onSubmit={async (movement) => { const accepted = await confirm({ title: "Confirmar ahorro", message: `Se registrará ${movement.amount} ${movement.currency} como ${movement.movementType} en la reserva seleccionada.`, confirmLabel: "Guardar ahorro" }); if (!accepted) return false; await applyFinanceUiChange(library, { kind: "save-savings-movement", movement }); await refresh(); return true; }} />}
     </section>
   );
 }

@@ -101,7 +101,7 @@ Con Parakeet, el texto en vivo se actualiza aproximadamente cada medio segundo m
 - **Local-first**: todos tus datos viven en carpetas locales de tu dispositivo. No hay servidor externo que almacene tu información.
 - **Offline-first**: la aplicación funciona completamente sin conexión a internet. La integración con IA es opcional y requiere un servicio local (Ollama).
 - **Privacy-first**: tus credenciales en ColdPass se cifran con estándares robustos (AES-256-GCM) y nunca salen de tu dispositivo en texto plano.
-- **Cross-platform**: disponible para Windows, macOS, Linux y Android.
+- **Cross-platform**: disponible para Windows, macOS, Linux y Android. Además, el mismo programa puede correr como servidor sin ventana en Windows o Linux, para usar Notia desde el navegador de otros equipos de tu red.
 
 ---
 
@@ -119,7 +119,7 @@ Con Parakeet, el texto en vivo se actualiza aproximadamente cada medio segundo m
 - **Multichat**: sala efímera accesible debajo de Calendario para combinar una dinámica Markdown, un contexto adicional opcional y entre uno y seis agentes de la biblioteca, con turnos secuenciales y respuesta en streaming. Por defecto, cada ronda elige un subconjunto no vacío y un orden aleatorios de los agentes fijados; la dinámica puede nombrar agentes concretos o pedir explícitamente todos. No ofrece tools, búsqueda web, mutaciones, confirmaciones ni permisos propios de sala.
 - **ColdPass**: gestor de credenciales cifradas con generador de contraseñas y sincronización segura entre dispositivos vía Bluetooth.
 - **Task Manager**: tableros Kanban personalizables con grupos/columnas, tareas con estados, prioridad, subtareas, comentarios y temporizador Pomodoro integrado.
-- En desktop, las mutaciones del Task Manager embebido se validan localmente mediante preview/apply/receipt del backend Rust cuando la biblioteca tiene identidad; Android y vaults sin identidad conservan el flujo local TypeScript.
+- Task Manager trabaja sobre la biblioteca abierta: crear, editar, mover y ordenar tareas, administrar tableros y grupos y registrar los ciclos Pomodoro se resuelve y valida en el backend de Notia, igual en Windows y Android. Sin una biblioteca abierta, el tablero lo indica y no ofrece elegir otra carpeta. El temporizador Pomodoro lo lleva el backend para cada biblioteca y usuario: sigue corriendo si cerrás y volvés a abrir Notia, y cada persona de un tablero publicado tiene el suyo.
 - Cada tablero de Task Manager tiene un contexto seleccionable al crearlo o editarlo; todos sus archivos `.md` se sincronizan con la propiedad `contexto` del tablero.
 <!-- La descripción histórica siguiente se conserva fuera de la vista para evitar reintroducir el flujo retirado de contraseña de tablero y aprobación de dispositivos.
 - **Publicación de Task Manager en red local (Windows)**: desde **Configuraciones → Publicar** podés seleccionar tableros, configurar una contraseña y abrir el mismo `TaskManagerApp` en un navegador de la red local mediante HTTPS y la ruta estable `/task-manager`, con las vistas Kanban/tabla y las mismas operaciones de tareas, incluida la creación de tarjetas, subtareas, comentarios y movimiento. Las tarjetas nuevas conservan el contexto configurado en su tablero, y el backend de publicación también conserva ese contexto al sanitizar y distribuir los settings. “Nueva tarea” inicia siempre una tarea principal; “Subtarea” es la única acción que precarga un padre. Al crear una subtarea, Notia valida que la tarea padre siga existiendo como tarea principal del mismo tablero antes de crear el archivo; si el estado publicado quedó desactualizado, conserva el tablero y muestra un error para recargar, evitando archivos huérfanos. Los cambios realizados por cualquier navegador autorizado se notifican inmediatamente a los demás navegadores y a la instancia host de Notia. La barra superior publicada permite abrir un chat lateral efímero que usa el mismo runtime y tool calling nativo de la app, mostrando feedback operativo y la respuesta en streaming; puede consultar y modificar únicamente archivos y tickets de los tableros publicados, sin reglas, memorias ni documentos globales de la biblioteca. La página publicada no permite crear, editar ni eliminar tableros; solo expone los elegidos por el anfitrión. En Android, mantené pulsado un ticket y arrastralo con el dedo hasta otra posición o grupo para moverlo; el toque normal conserva las demás acciones visibles. Notia recuerda los tableros, el hash de contraseña y los dispositivos autorizados, y vuelve a publicar automáticamente al iniciar cuando hay una biblioteca activa. Un dispositivo nuevo queda esperando aprobación en esa sección; desde allí se puede aceptar o revocar un acceso ya otorgado, cerrando sus sesiones activas de inmediato. En un navegador autorizado, el checkbox **Recordar contraseña en este dispositivo** conserva la contraseña cifrada para los próximos ingresos en ese mismo navegador. El servidor escucha en la interfaz LAN, exige una sesión autenticada y autoriza el filesystem exclusivamente para los tableros publicados mientras Notia está abierta. Genera y conserva un certificado autofirmado, que cada dispositivo remoto debe aceptar o instalar una vez. La contraseña no se persiste: se conserva únicamente su hash PBKDF2-HMAC-SHA256 con salt.
@@ -270,9 +270,9 @@ El chat principal, los chats desplegables, Meeting, Telegram y la publicación u
 - Soporte para modelos multimodales: enviá una o varias imágenes (capturas, fotos) para que la IA las analice (requiere modelo con soporte de visión). En el chat lateral de un `.md`, podés adjuntarlas junto con PDF o texto y pedir **"Insertá esto en el documento"**: la IA conserva el orden, transcribe el contenido respetando párrafos, listas y encabezados, convierte las fórmulas en bloques LaTeX `$$...$$`, muestra una vista previa con confirmación y actualiza la nota abierta.
 - El botón **Adjuntar archivo** permite seleccionar varios archivos locales —imágenes, PDF y texto— para enviarlos en una misma consulta, además de los archivos de la librería. Los archivos de texto se agregan como bloques de contexto separados; las imágenes y las páginas renderizadas de los PDF se combinan en una colección visual ordenada para Ollama. Notia valida el tipo MIME o la extensión admitida, el tamaño individual y el procesamiento de cada archivo antes de iniciar la consulta: rechaza archivos de texto vacíos o demasiado extensos, archivos individuales de más de 40 MB y PDF que no pueden procesarse. No hay un límite ejecutable de tamaño total del lote ni una cantidad máxima implementada de imágenes, por lo que esas condiciones no provocan por sí solas el rechazo del lote. Al pedir **"Transcribí estos PDF a este archivo .md"**, Notia procesa las páginas en orden, incluidos PDFs escaneados, y puede insertar el resultado en el Markdown activo con texto, listas, tablas y fórmulas en bloques LaTeX `$$...$$`. Los PDF de más de 24 páginas se rechazan antes de enviarse para evitar una transcripción incompleta; se requiere un modelo con soporte de visión cuando el lote incluye imágenes o PDF.
 - Generación automática de títulos para las sesiones de chat.
-- Streaming progresivo de respuestas en escritorio y Android mediante el bridge nativo; el navegador solo usa el adapter separado de la publicación.
+- Streaming progresivo de respuestas en escritorio y Android mediante el bridge nativo. En un navegador conectado a un servidor Notia, las respuestas llegan en vivo desde ese servidor; la página publicada de Task Manager usa su propio canal.
 - Cancelación de respuestas en curso.
-- Soporte tanto en escritorio como en Android a través de comandos Tauri y un bridge versionado; la implementación Kotlin y la prueba en dispositivo Android siguen siendo requisitos de plataforma.
+- Soporte en escritorio, Android y navegador (contra un servidor Notia) a través del mismo backend de Notia; la prueba en dispositivo Android sigue siendo un requisito de plataforma.
 
 ### Multichat
 
@@ -495,14 +495,28 @@ Para integraciones o diagnóstico, el flujo HTTP usa `POST /task-manager/login` 
   "messageId": "mensaje-opaco",
   "operationId": "operacion-opaca",
   "baseRevision": 12,
-  "command": "write_library_file",
-  "args": { "payload": { "filePath": "published-vault/task-mannager/board/task.md", "content": "..." } }
+  "command": "task_manager_board_execute",
+  "args": { "payload": { "intent": { "kind": "change-state", "taskPath": "task-mannager/board/task.md", "state": "En progreso" } } }
 }
 ```
 
 El servidor responde con un `ack` y distribuye un evento `changed` con `publicationEpoch`, `sequence`, `revision` y `messageId`. Las rutas locales, credenciales, contenido no autorizado y preferencias privadas no forman parte del protocolo.
 
 `GET /task-manager/status` requiere la misma cookie autenticada y devuelve solo métricas agregadas del host para diagnóstico; nunca expone rutas locales, credenciales ni contenido de tareas.
+
+### Servidor Notia sin ventana (headless)
+
+El mismo `notia.exe` puede quedar corriendo como servidor, sin abrir la ventana, para que otros equipos de la red usen Notia. En Linux se compila solo el servidor. Usa las mismas bibliotecas y datos que la aplicación, así que no pueden estar abiertas las dos a la vez sobre la misma carpeta de datos. Si se intenta, Notia avisa que ya está en uso.
+
+1. Definí la contraseña del dueño: `notia --headless --set-owner-password`.
+2. Si hace falta, agregá bibliotecas de ese equipo: `notia --headless --add-library "D:\Notas"`.
+3. Arrancá el servidor: `notia --headless`. Muestra la dirección `https://<ip>:52480/`. Con `--static-dir` sirve también la interfaz web, y `--bind` cambia la dirección o el puerto.
+
+Desde otro equipo o un teléfono, abrí esa dirección en el navegador. El certificado es autofirmado, por eso el navegador pide confirmarlo la primera vez. Después de ingresar la contraseña del dueño se usa la misma interfaz de Notia: bibliotecas, notas, chat, Task Manager, Finanzas y el resto, con los cambios en vivo. El dictado del chat graba con el micrófono del dispositivo desde el que usás Notia y el texto aparece al finalizar. Lo que depende del equipo servidor no se ofrece en el navegador: Meeting, el Bluetooth de ColdPass, importar un vault CSV, elegir la carpeta de backups y agregar librerías con el selector. Para que el servidor sirva la interfaz, indicá `--static-dir` con la carpeta `dist` compilada o dejala junto al ejecutable.
+
+Si el navegador pierde la conexión, se reconecta solo y recibe los cambios que ocurrieron mientras tanto. Si pasó demasiado tiempo o el servidor se reinició, aparece un aviso arriba con el botón **Recargar** para volver a leer todo.
+
+En Linux, el servidor se compila desde `src-tauri` con `cargo build --release --no-default-features`. Allí no hay dictado ni Bluetooth.
 
 ### Búsqueda de Archivos
 
@@ -725,7 +739,7 @@ npm run install:android:release
 
 ## ⚙️ Configuración de Entorno y Preferencias
 
-Notia almacena las preferencias del usuario localmente en el navegador (localStorage). Las siguientes configuraciones están disponibles:
+Notia guarda las preferencias en su backend: las del dispositivo en los datos de la aplicación y las de IA, Telegram y contextos en la configuración de cada biblioteca. En el navegador o WebView solo quedan preferencias visuales, como el tema, el ancho de paneles o las carpetas expandidas. Las siguientes configuraciones están disponibles:
 
 ### Apariencia
 - **Tema**: claro u oscuro. Persiste entre sesiones.
@@ -771,6 +785,16 @@ Las ediciones documentales se proponen con diff por hunks, revisión exacta, con
 - Ejecutá `npm run build -- --minify=false` para validar el build multipágina de desarrollo. `npm run dev:tauri:windows` ya lo ejecuta sin minificación y reintenta una vez si el proceso nativo de esbuild termina con error.
 - Si el segundo intento también falla, cerrá instancias duplicadas de Node/Vite y revisá el antivirus. El fallo observado correspondía a `STATUS_ACCESS_VIOLATION` de esbuild `0.27.3`, no a la minificación de la aplicación.
 
+### «Notia ya está en uso» al abrir la app o el servidor
+- La app y el servidor sin ventana (`notia --headless`) comparten la misma carpeta de datos, y solo uno puede usarla a la vez. Cerrá el otro proceso (o la otra ventana de Notia) y volvé a abrir.
+
+### El navegador avisa que la conexión con el servidor Notia no es segura
+- El servidor usa un certificado propio (autofirmado). Confirmá la excepción una vez para esa dirección. Si cambiaste de red y la IP es otra, puede pedirlo de nuevo.
+
+### El dictado no funciona desde el navegador
+- El navegador solo permite el micrófono en páginas HTTPS: entrá con la dirección `https://…` que muestra el servidor y aceptá el permiso de micrófono.
+- La transcripción la hace el servidor: necesita el reconocimiento de voz activado en **Configuraciones → Voz** y un servidor Windows. En Linux no está disponible.
+
 ### El tema no se guarda entre sesiones
 - Verificá que tu navegador o WebView no esté en modo privado/incógnito (bloquea localStorage).
 - Si estás en Android, asegurate de que la app tenga permisos de almacenamiento local.
@@ -799,7 +823,7 @@ Las ediciones documentales se proponen con diff por hunks, revisión exacta, con
 - `vite.config.ts` agrupa dependencias grandes en chunks separados (`vendor-milkdown`, `vendor-mermaid`, `vendor-iconify-packs`, `vendor-mui`, `vendor-cytoscape`, `vendor-lucide`, etc.), manteniendo el bundle inicial en ~460 KB gzip.
 - Los icon packs de Mermaid (`@iconify-json/*`) y las librerías de exportación PDF (`jspdf`, `html2canvas`) se cargan dinámicamente solo cuando se abre el menú de iconos o se exporta un PDF, respectivamente.
 - El backend Rust se compila con perfil de release optimizado (`lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`) para reducir tamaño de binario y mejorar rendimiento en Android.
-- Los commands de lectura de árbol (`read_library_tree`, `search_library_files`, `read_markdown_files`) se ejecutan de forma asíncrona en un thread pool (`tokio::task::spawn_blocking`) para no bloquear el hilo principal de Tauri en bibliotecas grandes.
+- La lectura del árbol, la búsqueda y la lectura masiva de Markdown corren en el backend en un pool de hilos (`spawn_blocking`), sin bloquear la interfaz. Lo mismo vale en el servidor sin ventana.
 - En Android, Notia cachea resoluciones SAF en una LRU Rust-side de 500 entradas y throttlea refrescos de cache a 200 ms, reduciendo llamadas JNI.
 - Los eventos de cambio en el árbol de archivos (`notia-library-tree-changed`) se agrupan (batch) 160 ms para evitar refrescos en cascada durante guardados o pegados múltiples.
 - Considerá dividir tu conocimiento en múltiples librerías más pequeñas si un solo árbol supera varios miles de archivos.

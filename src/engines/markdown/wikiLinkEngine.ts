@@ -1,9 +1,6 @@
 import { resolveFileViewKind } from '../../services/views/fileViewResolver'
-import type { NotiaFileNode } from '../../types/notia'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
 import { getFileExtension } from '../../utils/files/getFileExtension'
-
-const MAX_WIKI_LINK_SUGGESTIONS = 10
 
 export interface InlineWikiLinkContext {
   query: string
@@ -19,109 +16,13 @@ export interface WikiLinkTextMatch {
   displayLabel: string
 }
 
+/*
+ * Wikilinks inside the editor: finding the link being typed and the links of
+ * a text, and resolving each one against the targets the backend listed
+ * (`library_link_targets`). Suggestions come from the backend.
+ */
+
 export type MarkdownWikiLinkLookup = Map<string, MarkdownWikiLinkTarget>
-
-function normalizePath(pathValue: string): string {
-  return pathValue.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')
-}
-
-function stripFileExtension(fileName: string): string {
-  const dotIndex = fileName.lastIndexOf('.')
-  if (dotIndex <= 0) {
-    return fileName
-  }
-
-  return fileName.slice(0, dotIndex)
-}
-
-function toRelativePath(filePath: string, rootPath: string | null): string {
-  const normalizedFilePath = normalizePath(filePath)
-  if (!rootPath) {
-    return normalizedFilePath.split('/').pop() ?? normalizedFilePath
-  }
-
-  const normalizedRootPath = normalizePath(rootPath)
-  if (normalizedFilePath === normalizedRootPath) {
-    return normalizedFilePath.split('/').pop() ?? normalizedFilePath
-  }
-
-  if (normalizedFilePath.startsWith(`${normalizedRootPath}/`)) {
-    return normalizedFilePath.slice(normalizedRootPath.length + 1)
-  }
-
-  return normalizedFilePath.split('/').pop() ?? normalizedFilePath
-}
-
-function collectWikiLinkTargets(
-  nodes: NotiaFileNode[],
-  rootPath: string | null,
-  targets: MarkdownWikiLinkTarget[],
-): void {
-  for (const node of nodes) {
-    if (node.type === 'folder') {
-      collectWikiLinkTargets(node.children ?? [], rootPath, targets)
-      continue
-    }
-
-    if (!node.path) {
-      continue
-    }
-
-    const extension = getFileExtension(node.path)
-    const viewKind = resolveFileViewKind(extension)
-    if (viewKind !== 'markdown') {
-      continue
-    }
-
-    const relativePathWithExtension = toRelativePath(node.path, rootPath)
-    const relativePath = stripFileExtension(relativePathWithExtension)
-    const title = stripFileExtension(node.name)
-
-    targets.push({
-      path: node.path,
-      name: node.name,
-      title,
-      relativePath,
-      relativePathWithExtension,
-      wikiLink: title,
-    })
-  }
-}
-
-export function buildWikiLinkTargets(
-  nodes: NotiaFileNode[],
-  rootPath: string | null,
-): MarkdownWikiLinkTarget[] {
-  const collectedTargets: MarkdownWikiLinkTarget[] = []
-  collectWikiLinkTargets(nodes, rootPath, collectedTargets)
-
-  const repeatedTitles = new Set<string>()
-  const titleCounts = new Map<string, number>()
-  for (const target of collectedTargets) {
-    const key = target.title.toLowerCase()
-    const nextCount = (titleCounts.get(key) ?? 0) + 1
-    titleCounts.set(key, nextCount)
-    if (nextCount > 1) {
-      repeatedTitles.add(key)
-    }
-  }
-
-  const normalizedTargets = collectedTargets
-    .map((target) => ({
-      ...target,
-      wikiLink: repeatedTitles.has(target.title.toLowerCase()) ? target.relativePath : target.title,
-    }))
-    .sort((left, right) => {
-      const titleCompare = left.title.localeCompare(right.title, undefined, { sensitivity: 'base' })
-      if (titleCompare !== 0) {
-        return titleCompare
-      }
-
-      return left.relativePath.localeCompare(right.relativePath, undefined, { sensitivity: 'base' })
-    })
-
-  return normalizedTargets
-}
 
 export function normalizeWikiLinkReference(value: string): string {
   const rawReference = value.split('|')[0]?.trim() ?? ''
@@ -181,75 +82,6 @@ export function resolveWikiLinkTarget(
   }
 
   return lookup.get(normalizedReference) ?? null
-}
-
-function scoreWikiLinkTarget(target: MarkdownWikiLinkTarget, query: string): number | null {
-  const normalizedQuery = normalizeWikiLinkReference(query)
-  if (!normalizedQuery) {
-    return 100
-  }
-
-  const title = normalizeWikiLinkReference(target.title)
-  const wikiLink = normalizeWikiLinkReference(target.wikiLink)
-  const relativePath = normalizeWikiLinkReference(target.relativePath)
-
-  if (title === normalizedQuery || wikiLink === normalizedQuery || relativePath === normalizedQuery) {
-    return 0
-  }
-
-  if (title.startsWith(normalizedQuery)) {
-    return 1
-  }
-
-  if (wikiLink.startsWith(normalizedQuery)) {
-    return 2
-  }
-
-  if (relativePath.startsWith(normalizedQuery)) {
-    return 3
-  }
-
-  if (title.includes(normalizedQuery)) {
-    return 4
-  }
-
-  if (wikiLink.includes(normalizedQuery)) {
-    return 5
-  }
-
-  if (relativePath.includes(normalizedQuery)) {
-    return 6
-  }
-
-  return null
-}
-
-export function searchWikiLinkTargets(
-  targets: MarkdownWikiLinkTarget[],
-  query: string,
-  limit = MAX_WIKI_LINK_SUGGESTIONS,
-): MarkdownWikiLinkTarget[] {
-  const scoredTargets = targets
-    .map((target) => ({
-      target,
-      score: scoreWikiLinkTarget(target, query),
-    }))
-    .filter((item): item is { target: MarkdownWikiLinkTarget; score: number } => item.score !== null)
-    .sort((left, right) => {
-      if (left.score !== right.score) {
-        return left.score - right.score
-      }
-
-      const leftDistance = Math.abs(left.target.wikiLink.length - query.length)
-      const rightDistance = Math.abs(right.target.wikiLink.length - query.length)
-      if (leftDistance !== rightDistance) {
-        return leftDistance - rightDistance
-      }
-
-      return left.target.title.localeCompare(right.target.title, undefined, { sensitivity: 'base' })
-    })
-
-  return scoredTargets.slice(0, Math.max(limit, 1)).map((item) => item.target)
 }
 
 export function findActiveWikiLinkContext(text: string, cursorOffset: number): InlineWikiLinkContext | null {

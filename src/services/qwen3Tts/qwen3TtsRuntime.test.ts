@@ -3,8 +3,8 @@ import { resolveQwen3TtsPlaybackRate, speakWithQwen3Tts, stopQwen3TtsSpeech } fr
 
 // The speech plan (markup removal and chunks) is covered in Rust
 // (`backend-core::speech_text`).
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(async (command: string, args: { markdown?: string }) => (
+vi.mock('../transport', () => ({
+  callBackend: vi.fn(async (command: string, args: { markdown?: string }) => (
     command === 'qwen3_tts_speech_plan' ? [args.markdown] : [0, 1, 2]
   )),
 }))

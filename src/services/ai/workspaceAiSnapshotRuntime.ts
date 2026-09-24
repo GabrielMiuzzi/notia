@@ -1,5 +1,4 @@
 import type {
-  WorkspaceAiCapabilities,
   WorkspaceAiDocumentKind,
   WorkspaceAiDocumentSnapshot,
   WorkspaceAiLibrarySnapshot,
@@ -92,33 +91,6 @@ function toOpenTabSnapshot(document: WorkspaceAiDocumentInput): WorkspaceAiOpenT
   }
 }
 
-export function workspaceAiCapabilities(scope: WorkspaceAiScope): WorkspaceAiCapabilities {
-  const canReadActiveDocument = scope === 'document'
-  const canWriteActiveDocument = scope === 'document'
-  const canReadTasks = scope === 'task-manager'
-  const canWriteTasks = scope === 'task-manager'
-  const canReadFinance = scope === 'finance'
-  const canWriteFinance = scope === 'finance'
-  const canReadLibrary = scope === 'library' || scope === 'graph' || scope === 'document' || scope === 'published'
-  const canWriteLibrary = scope === 'library' || scope === 'graph'
-
-  return {
-    canReadActiveDocument,
-    canReadLibrary,
-    canReadTasks,
-    canReadFinance,
-    canWriteActiveDocument,
-    canWriteLibrary,
-    canWriteTasks,
-    canWriteFinance,
-    canSearchWeb: scope !== 'finance' && scope !== 'published',
-    canAskClarification: true,
-    canRequestConfirmation: true,
-    canPlan: scope !== 'finance' && scope !== 'published',
-    canUndo: scope === 'document',
-  }
-}
-
 export function buildWorkspaceAiSnapshot({
   view,
   scope,
@@ -146,7 +118,6 @@ export function buildWorkspaceAiSnapshot({
     activeDocumentDirty: activeDocumentSnapshot?.dirty ?? false,
     selection,
     openTabs: openTabs.map(toOpenTabSnapshot),
-    capabilities: workspaceAiCapabilities(scope),
     capturedAt,
   }
 }

@@ -1,8 +1,5 @@
 import type { StoredChatMessage } from '../../../services/chat/chatDocumentStorage'
-import type { TaskExecutionStep } from '../../../services/chat/chatAgentTypes'
-import { createGlobalAiAgent, runGlobalAiChat } from '../../../services/chat/globalAiChatRuntime'
-import { createGlobalAiRequest, type AiActor } from '../../../types/ai/globalAiContract'
-import { buildWorkspaceAiSnapshot } from '../../../services/ai/workspaceAiSnapshotRuntime'
+import { startChatTurn } from '../../../services/chat/aiChatRuntime'
 import type { AiPreferences } from '../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../types/notia'
 import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
@@ -10,23 +7,33 @@ import type { AgentProgressEvent } from '../../../types/ai/agentContracts'
 interface PublishedTaskManagerChatInput {
   aiPreferences: AiPreferences
   library: NotiaLibrary
-  taskManagerScopeKey?: string | null
-  scopePaths: string[]
+  /** Library user of the person asking from the published boards. */
+  libraryUserId: string
   prompt: string
   previousMessages: StoredChatMessage[]
   signal: AbortSignal
-  onExecutionPlanChange?: (steps: TaskExecutionStep[]) => void
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
   onAgentProgress?: (event: AgentProgressEvent) => void
-  actor?: AiActor
-  publishedBoardNames?: readonly string[]
 }
 
+/**
+ * Answers a question of a published Task Manager on the host. The backend
+ * runs it on the published channel, restricted to the published boards and
+ * without memory; the agent's questions are answered on the host.
+ */
 export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskManagerChatInput): Promise<string> {
-  const agent = createGlobalAiAgent({
-    library: input.library,
-    actor: input.actor,
+  const turn = startChatTurn({
+    libraryId: input.library.id,
+    mode: 'published',
+    preferences: input.aiPreferences,
+    message: input.prompt,
+    libraryUserId: input.libraryUserId,
+    chat: { kind: 'transient', messages: input.previousMessages },
+  }, {
+    onMessageDelta: input.onMessageDelta,
+    onThinkingDelta: input.onThinkingDelta,
+    onAgentProgress: input.onAgentProgress,
     requestClarification: async (question, signal, choices) => {
       if (signal.aborted) throw new DOMException('Consulta cancelada.', 'AbortError')
       const suffix = choices?.length ? `\n\nOpciones:\n${choices.map((choice) => `- ${choice}`).join('\n')}` : ''
@@ -39,34 +46,11 @@ export async function runPublishedTaskManagerHostChatReply(input: PublishedTaskM
       ),
     }),
   })
-
-  const workspaceSnapshot = buildWorkspaceAiSnapshot({
-    view: 'task-manager',
-    scope: 'published',
-    library: input.library,
-    activeDocument: null,
-    openTabs: [],
-  })
-  const replyInput = {
-    agent,
-    previousMessages: input.previousMessages,
+  if (input.signal.aborted) turn.abort()
+  input.signal.addEventListener('abort', turn.abort, { once: true })
+  try {
+    return (await turn.promise).answer
+  } finally {
+    input.signal.removeEventListener('abort', turn.abort)
   }
-  return runGlobalAiChat(input.aiPreferences, {
-    request: createGlobalAiRequest({
-      libraryId: input.library.id,
-      requestId: crypto.randomUUID(),
-      actor: agent.actor ?? input.actor ?? { libraryUserId: 'user-owner' },
-      source: { channel: 'public-url' },
-      workspaceSnapshot,
-      requestedScope: 'published-task-manager',
-      persistencePolicy: 'published-no-memory',
-      prompt: input.prompt,
-    }),
-    ...replyInput,
-  }, {
-    abortSignal: input.signal,
-    onMessageDelta: input.onMessageDelta,
-    onThinkingDelta: input.onThinkingDelta,
-    onAgentProgress: input.onAgentProgress,
-  })
 }

@@ -24,5 +24,17 @@ fn main() {
             .try_init();
     }
 
-    notia_lib::run()
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if notia_app::server::headless::requested(std::env::args()) {
+        std::process::exit(notia_app::server::headless::run(std::env::args().skip(1).collect()));
+    }
+
+    #[cfg(feature = "app")]
+    notia_lib::run();
+
+    #[cfg(not(feature = "app"))]
+    {
+        eprintln!("Esta compilación de Notia solo incluye el modo servidor: ejecutala con --headless.");
+        std::process::exit(2);
+    }
 }

@@ -1,48 +1,46 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  runGlobalAiChat: vi.fn(),
+  startChatTurn: vi.fn(),
 }))
 
-vi.mock('../../../services/chat/notiaChatRuntime', () => ({
-  runGlobalAiChat: mocks.runGlobalAiChat,
-  createAppAiRequest: vi.fn(),
+vi.mock('../../../services/chat/aiChatRuntime', () => ({
+  startChatTurn: mocks.startChatTurn,
 }))
 
 import { runPublishedTaskManagerHostChatReply } from './publishedTaskManagerChatRuntime'
 
 // The published scope (boards, tools, no memory) is enforced by the Rust
-// runtime from the request context; the client only sends the request.
-describe('runPublishedTaskManagerChatReply', () => {
+// runtime from the turn mode; the client only sends the question.
+describe('runPublishedTaskManagerHostChatReply', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('sends a published-board request without memory through the backend facade', async () => {
-    mocks.runGlobalAiChat.mockResolvedValue('respuesta')
-    const signal = new AbortController().signal
+  it('sends a published turn for the asking library user', async () => {
+    mocks.startChatTurn.mockReturnValue({
+      requestId: 'request-1',
+      abort: vi.fn(),
+      promise: Promise.resolve({ answer: 'respuesta', dataChanged: false }),
+    })
     const onAgentProgress = vi.fn()
-    const aiPreferences = {
-      ollamaUrl: 'https://127.0.0.1:1', apiKey: '', selectedModel: 'qwen3',
-      thinkingEnabled: true, thinkingLevel: 'medium' as const,
-    }
     await expect(runPublishedTaskManagerHostChatReply({
-      aiPreferences,
+      aiPreferences: {
+        ollamaUrl: 'https://127.0.0.1:1', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: true, thinkingLevel: 'medium' as const,
+      },
       library: { id: 'published', name: 'Publicada', path: 'C:/Vault' },
-      taskManagerScopeKey: 'task-manager:panel:equipo',
-      scopePaths: ['C:/Vault/task-mannager/equipo/a.md'],
-      publishedBoardNames: ['equipo'],
+      libraryUserId: 'user-ana',
       prompt: 'Move el ticket',
-      previousMessages: [],
-      signal,
+      previousMessages: [{ role: 'user', content: 'Hola' }],
+      signal: new AbortController().signal,
       onAgentProgress,
     })).resolves.toBe('respuesta')
 
-    expect(mocks.runGlobalAiChat).toHaveBeenCalledWith(aiPreferences, expect.objectContaining({
-      agent: expect.objectContaining({ libraryId: 'published' }),
-      request: expect.objectContaining({
-        prompt: 'Move el ticket',
-        requestedScope: 'published-task-manager',
-        persistencePolicy: 'published-no-memory',
-      }),
-    }), expect.objectContaining({ abortSignal: signal, onAgentProgress }))
+    expect(mocks.startChatTurn).toHaveBeenCalledWith(expect.objectContaining({
+      libraryId: 'published',
+      mode: 'published',
+      message: 'Move el ticket',
+      libraryUserId: 'user-ana',
+      chat: { kind: 'transient', messages: [{ role: 'user', content: 'Hola' }] },
+    }), expect.objectContaining({ onAgentProgress }))
   })
 })

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 
 export interface LibraryDatabaseContext {
   libraryPath: string
@@ -46,7 +46,7 @@ function payload(context: LibraryDatabaseContext): LibraryDatabaseContext {
 
 async function invokeLibrary<T>(command: string, value: unknown): Promise<T> {
   try {
-    return await invoke<T>(command, { payload: value })
+    return await callBackend<T>(command, { payload: value })
   } catch (error) {
     throw new LibraryUsersError(error)
   }

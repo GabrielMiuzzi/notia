@@ -294,57 +294,17 @@ describe('TaskManagerPublicationClient', () => {
     client.close()
   })
 
-  it('keeps shared settings from an acknowledgement when it wins the event race', async () => {
-    vi.stubGlobal('window', {
-      location: { protocol: 'https:', host: 'localhost:52471' },
-      setTimeout,
-      clearTimeout,
-    })
-    vi.stubGlobal('WebSocket', FakeWebSocket)
-
-    const client = new TaskManagerPublicationClient('/task-manager', {
-      publicationEpoch: 'epoch-1',
-      revision: 0,
-      sequence: 0,
-      settings,
-    })
-    const changes: Array<{ settings?: unknown }> = []
-    client.subscribe((change) => changes.push(change))
-    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
-    FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 0, sequence: 0, replay: [] })
-
-    const mutation = client.invokeMutation('update_task_manager_publication_settings', {
-      settings: { boards: [], groups: [] },
-    })
-    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
-    const request = JSON.parse(FakeWebSocket.latest?.sent[1] ?? '{}') as Record<string, unknown>
-    const nextSettings = { boards: [{ name: 'producto', color: '#123456' }], groups: [] }
-    FakeWebSocket.latest?.receive({
-      type: 'ack',
-      protocolVersion: 1,
-      messageId: request.messageId,
-      operationId: request.operationId,
-      ok: true,
-      changed: true,
-      sequence: 1,
-      revision: 1,
-      result: { ok: true, settings: nextSettings },
-    })
-
-    await expect(mutation).resolves.toMatchObject({ settings: nextSettings })
-    expect(changes.at(-1)).toMatchObject({ type: 'changed', settings: nextSettings })
-    client.close()
-  })
-
   it('accepts only the publication mutation commands', () => {
     expect(isTaskManagerPublicationMutationCommand('task_manager_write_ticket_source')).toBe(true)
-    expect(isTaskManagerPublicationMutationCommand('task_manager_append_pomodoro')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('task_manager_board_execute')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('task_manager_pomodoro')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('task_manager_apply_mutation')).toBe(false)
     expect(isTaskManagerPublicationMutationCommand('write_library_file')).toBe(false)
     expect(isTaskManagerPublicationMutationCommand('append_task_comment')).toBe(false)
     expect(isTaskManagerPublicationMutationCommand('read_library_file')).toBe(false)
     expect(isTaskManagerPublicationMutationCommand('begin_task_manager_publication_batch')).toBe(true)
     expect(isTaskManagerPublicationMutationCommand('end_task_manager_publication_batch')).toBe(true)
-    expect(isTaskManagerPublicationMutationCommand('update_task_manager_publication_settings')).toBe(true)
+    expect(isTaskManagerPublicationMutationCommand('update_task_manager_publication_settings')).toBe(false)
   })
 
   it('rejects new mutations after the publication client is closed', async () => {
@@ -513,7 +473,9 @@ describe('TaskManagerPublicationClient', () => {
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     FakeWebSocket.latest?.receive({ type: 'welcome', protocolVersion: 1, publicationEpoch: 'epoch-1', revision: 8, sequence: 8, replay: [] })
 
-    const mutation = client.invokeMutation('update_task_manager_publication_settings', { settings })
+    const mutation = client.invokeMutation('task_manager_board_execute', {
+      payload: { intent: { kind: 'delete-board', name: 'producto' } },
+    })
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
     const request = JSON.parse(FakeWebSocket.latest?.sent[1] ?? '{}') as Record<string, unknown>
     FakeWebSocket.latest?.receive({

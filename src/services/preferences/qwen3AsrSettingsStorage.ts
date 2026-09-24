@@ -18,22 +18,13 @@ export const DEFAULT_QWEN3_ASR_PREFERENCES: Qwen3AsrPreferences = {
   language: 'es',
 }
 
-export function normalizeQwen3AsrPreferences(value: Partial<Qwen3AsrPreferences> | null | undefined): Qwen3AsrPreferences {
-  return {
-    model: value?.model === '0.6b' || value?.model === '1.7b' ? value.model : 'parakeet-v3',
-    device: value?.device === 'gpu' ? 'gpu' : 'cpu',
-    enabled: value?.enabled !== false,
-    language: value?.language?.trim().toLowerCase() || 'es',
-  }
-}
-
-/** Copy kept by older versions in the WebView; read once to migrate it. */
-export function loadQwen3AsrPreferences(): Qwen3AsrPreferences {
+/** Copy kept by older versions in the WebView, as stored; the backend normalizes it once. */
+export function loadQwen3AsrPreferences(): unknown {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    return normalizeQwen3AsrPreferences(raw ? JSON.parse(raw) as Partial<Qwen3AsrPreferences> : null)
+    return raw ? JSON.parse(raw) as unknown : null
   } catch {
-    return DEFAULT_QWEN3_ASR_PREFERENCES
+    return null
   }
 }
 

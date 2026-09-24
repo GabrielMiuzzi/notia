@@ -1,10 +1,8 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
-import type { NotiaLibrary } from '../../../../types/notia'
 import type { StoredChatDocument, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
-import { loadChatDocument, saveChatDocument } from '../../../../services/chat/chatDocumentStorage'
+import { loadChatDocument, matchChat, setChatViewContext } from '../../../../services/chat/chatDocumentStorage'
 import { checkAiHealth, resolveActiveModel } from '../../../../services/ai/aiRuntime'
 import { useVirtualList } from '../../../../hooks/useVirtualList'
-import { toStoredLibraryPath } from '../../../../services/libraries/libraryPathMapping'
 import {
   buildAttachmentDisplayName,
   type ChatFileContextMode,
@@ -18,7 +16,6 @@ import type {
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
 const CHAT_HISTORY_ITEM_HEIGHT = 74
-const MINIMAL_HISTORY_HYDRATION_CHAT_LIMIT = 8
 
 export function normalizeChatTitle(value: string): string {
   const trimmed = value.trim()
@@ -92,81 +89,13 @@ export function arePreviousChatArraysEqual(
   })
 }
 
-export function normalizeComparableContextPath(
-  library: NotiaLibrary | null,
-  pathValue: string,
-): string {
-  const trimmedPath = pathValue.trim()
-  if (!trimmedPath) {
-    return ''
-  }
-
-  const storedPath = library
-    ? toStoredLibraryPath(library.path, trimmedPath)
-    : trimmedPath
-  return storedPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
-}
-
-export function buildComparableContextPaths(
-  library: NotiaLibrary | null,
-  pathValues: string[],
-): string[] {
-  return pathValues
-    .map((pathValue) => normalizeComparableContextPath(library, pathValue))
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right, 'es'))
-}
-
-export function areComparableContextPathsEqual(
-  library: NotiaLibrary | null,
-  left: string[],
-  right: string[],
-): boolean {
-  return areStringArraysEqual(
-    buildComparableContextPaths(library, left),
-    buildComparableContextPaths(library, right),
-  )
-}
-
-export function inferTaskManagerBoardPrefix(
-  library: NotiaLibrary | null,
-  scopeKey: string | null,
-  contextPaths: string[],
-): string | null {
-  if (!scopeKey?.startsWith('task-manager:board:')) {
-    return null
-  }
-
-  const firstPath = contextPaths[0]
-  if (!firstPath) {
-    return null
-  }
-
-  const normalizedPath = normalizeComparableContextPath(library, firstPath)
-  const marker = 'task-manager/'
-  const legacyMarker = 'task-mannager/'
-  const markerIndex = normalizedPath.indexOf(marker)
-  const legacyMarkerIndex = normalizedPath.indexOf(legacyMarker)
-  const resolvedMarker = markerIndex >= 0
-    ? marker
-    : legacyMarkerIndex >= 0
-      ? legacyMarker
-      : null
-  const resolvedMarkerIndex = markerIndex >= 0 ? markerIndex : legacyMarkerIndex
-  if (!resolvedMarker || resolvedMarkerIndex < 0) {
-    return null
-  }
-
-  const boardName = scopeKey.slice('task-manager:board:'.length).trim().toLowerCase()
-  if (!boardName) {
-    return null
-  }
-
-  return `${normalizedPath.slice(0, resolvedMarkerIndex)}${resolvedMarker}${boardName}/`
+/** Whether two lists name the same explorer paths, in any order. */
+export function areSameContextPaths(left: string[], right: string[]): boolean {
+  const normalize = (paths: string[]) => paths.map((path) => path.trim()).filter(Boolean).sort()
+  return areStringArraysEqual(normalize(left), normalize(right))
 }
 
 export function doesChatDocumentMatchPreferredContext(
-  library: NotiaLibrary | null,
   document: StoredChatDocument | null,
   preferredContextMode: ChatFileContextMode | null,
   preferredContextScopeKey: string | null,
@@ -179,7 +108,7 @@ export function doesChatDocumentMatchPreferredContext(
   const matchesScopeKey = (document.contextScopeKey ?? null) === (preferredContextScopeKey ?? null)
   if (preferredContextMode && resolvedPreferredContextPaths.length > 0) {
     return document.selectedContextMode === preferredContextMode
-      && areComparableContextPathsEqual(library, document.selectedContextFiles, resolvedPreferredContextPaths)
+      && areSameContextPaths(document.selectedContextFiles, resolvedPreferredContextPaths)
       && matchesScopeKey
   }
 
@@ -288,7 +217,6 @@ export interface UseChatStateResult {
   resolvedPreferredContextPaths: string[]
   resolvedTransientContextPaths: string[]
   preferredContextSignature: string
-  preferredTaskManagerBoardPrefix: string | null
   canSubmit: boolean
   isAiAvailable: boolean
   aiHealthMessage: string | null
@@ -317,7 +245,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     transientContextMode = null,
     transientContextSummary = null,
     selectMatchingChatOnly = false,
-    historyHydrationMode = 'full',
   } = props
 
   const [locallyDeletedChatPaths, setLocallyDeletedChatPaths] = useState<string[]>([])
@@ -373,14 +300,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     () => deferredPreviousChats.filter((chat) => !locallyDeletedChatPathSet.has(chat.filePath)),
     [deferredPreviousChats, locallyDeletedChatPathSet],
   )
-  const historyHydrationCandidates = useMemo(
-    () => (
-      historyHydrationMode === 'minimal'
-        ? availablePreviousChats.slice(0, MINIMAL_HISTORY_HYDRATION_CHAT_LIMIT)
-        : availablePreviousChats
-    ),
-    [availablePreviousChats, historyHydrationMode],
-  )
   const resolvedPreviousChats = useMemo(
     () => availablePreviousChats.map((chat) => ({
       ...chat,
@@ -424,13 +343,9 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     () => [
       preferredContextMode ?? '',
       preferredContextScopeKey ?? '',
-      buildComparableContextPaths(library, resolvedPreferredContextPaths).join('\n'),
+      [...resolvedPreferredContextPaths].sort().join('\n'),
     ].join('::'),
-    [library, preferredContextMode, preferredContextScopeKey, resolvedPreferredContextPaths],
-  )
-  const preferredTaskManagerBoardPrefix = useMemo(
-    () => inferTaskManagerBoardPrefix(library, preferredContextScopeKey, resolvedPreferredContextPaths),
-    [library, preferredContextScopeKey, resolvedPreferredContextPaths],
+    [preferredContextMode, preferredContextScopeKey, resolvedPreferredContextPaths],
   )
   const preferredContextOption = useMemo(() => {
     if (resolvedPreferredContextPaths.length !== 1) {
@@ -548,7 +463,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
         !matchedPreferredChatFilePath
         && selectedChatFilePath
         && doesChatDocumentMatchPreferredContext(
-          library,
           activeChatDocument,
           preferredContextMode,
           preferredContextScopeKey,
@@ -567,7 +481,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
         !matchedPreferredChatFilePath
         && selectedChatFilePath
         && doesChatDocumentMatchPreferredContext(
-          library,
           activeChatDocument,
           preferredContextMode,
           preferredContextScopeKey,
@@ -626,47 +539,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     }
   }, [isHistoryPanelOpen, resolvedPreviousChats, scrollChatHistoryToIndex, selectedChatFilePath])
 
-  // Hydrate chat titles from documents
-  useEffect(() => {
-    if (availablePreviousChats.length === 0) {
-      setChatTitleOverrides((current) => (Object.keys(current).length === 0 ? current : {}))
-      return
-    }
-
-    if (historyHydrationCandidates.length === 0) {
-      return
-    }
-
-    if (!library) {
-      return
-    }
-
-    let cancelled = false
-    void Promise.all(historyHydrationCandidates.map(async (chat) => {
-      try {
-        const document = await loadChatDocument(chat.filePath, chat.title, library)
-        return [chat.filePath, normalizeChatTitle(document.title)] as const
-      } catch {
-        return [chat.filePath, normalizeChatTitle(chat.title)] as const
-      }
-    })).then((entries) => {
-      if (cancelled) {
-        return
-      }
-
-      const nextOverrides = Object.fromEntries(entries)
-      setChatTitleOverrides((current) => (
-        areChatTitleOverrideMapsEqual(current, nextOverrides)
-          ? current
-          : nextOverrides
-      ))
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [availablePreviousChats.length, historyHydrationCandidates, library])
-
   // Reset matched preferred chat when preferred context changes
   useEffect(() => {
     if (selectMatchingChatOnly) {
@@ -679,79 +551,24 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     selectMatchingChatOnly,
   ])
 
-  // Match preferred context with existing chats
+  // The backend picks the chat that fits the preferred context.
   useEffect(() => {
-    if (!preferredContextScopeKey && resolvedPreferredContextPaths.length === 0) {
+    if ((!preferredContextScopeKey && resolvedPreferredContextPaths.length === 0) || availablePreviousChats.length === 0) {
       setMatchedPreferredChatFilePath(null)
       return
     }
-
-    if (availablePreviousChats.length === 0) {
-      setMatchedPreferredChatFilePath(null)
-      return
-    }
-
-    if (historyHydrationCandidates.length === 0) {
-      setMatchedPreferredChatFilePath(null)
-      return
-    }
-
     if (!library) {
       return
     }
 
     let cancelled = false
-    void Promise.all(historyHydrationCandidates.map(async (chat) => {
-      try {
-        const document = await loadChatDocument(chat.filePath, chat.title, library)
-        const boardPrefix = preferredTaskManagerBoardPrefix
-        const exactScopeMatch = Boolean(preferredContextScopeKey) && document.contextScopeKey === preferredContextScopeKey
-        const exactPathsMatch = (
-          Boolean(preferredContextMode)
-          && resolvedPreferredContextPaths.length > 0
-          && document.selectedContextMode === preferredContextMode
-          && areComparableContextPathsEqual(library, document.selectedContextFiles, resolvedPreferredContextPaths)
-        )
-        const boardFallbackMatch = (
-          Boolean(boardPrefix)
-          && Boolean(preferredContextMode)
-          && document.selectedContextMode === preferredContextMode
-          && document.selectedContextFiles.length > 0
-          && document.selectedContextFiles.every((pathValue) => (
-            normalizeComparableContextPath(library, pathValue).startsWith(boardPrefix ?? '')
-          ))
-        )
-
-        const score = exactScopeMatch ? 3 : exactPathsMatch ? 2 : boardFallbackMatch ? 1 : 0
-        return score > 0 ? { filePath: chat.filePath, score } : null
-      } catch {
-        return null
-      }
-    })).then((matches) => {
-      if (cancelled) {
-        return
-      }
-
-      const candidates = matches.filter((match): match is { filePath: string; score: number } => Boolean(match))
-      if (candidates.length === 0) {
-        setMatchedPreferredChatFilePath(null)
-        return
-      }
-
-      const currentMatch = selectedChatFilePath
-        ? candidates.find((candidate) => candidate.filePath === selectedChatFilePath)
-        : null
-      const bestScore = Math.max(...candidates.map((candidate) => candidate.score))
-
-      if (currentMatch && currentMatch.score === bestScore) {
-        setMatchedPreferredChatFilePath(currentMatch.filePath)
-        return
-      }
-
-      setMatchedPreferredChatFilePath(
-        candidates.find((candidate) => candidate.score === bestScore)?.filePath ?? null,
-      )
-    })
+    void matchChat(library.id, {
+      scopeKey: preferredContextScopeKey,
+      mode: preferredContextMode,
+      files: resolvedPreferredContextPaths,
+    }, selectedChatFilePath)
+      .then((match) => { if (!cancelled) setMatchedPreferredChatFilePath(match) })
+      .catch(() => { if (!cancelled) setMatchedPreferredChatFilePath(null) })
 
     return () => {
       cancelled = true
@@ -759,9 +576,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   }, [
     preferredContextMode,
     preferredContextScopeKey,
-    preferredTaskManagerBoardPrefix,
-    availablePreviousChats.length,
-    historyHydrationCandidates,
+    availablePreviousChats,
     library,
     resolvedPreferredContextPaths,
     selectedChatFilePath,
@@ -885,7 +700,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
         && preferredContextMode
         && activeChatDocument.selectedContextMode === preferredContextMode
         && activeChatDocument.selectedContextFiles.some((pathValue) => (
-          areComparableContextPathsEqual(library, [pathValue], [preferredContextOption.path])
+          areSameContextPaths([pathValue], [preferredContextOption.path])
         ))
       ) {
         const nextOptions = current.filter((option) => option.path !== preferredContextOption.path)
@@ -900,7 +715,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
         ? current
         : activeChatDocument.selectedContextMode
     ))
-  }, [activeChatDocument, library, preferredContextMode, preferredContextOption])
+  }, [activeChatDocument, preferredContextMode, preferredContextOption])
 
   // Persist preferred context changes to active document
   useEffect(() => {
@@ -920,7 +735,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
         || resolvedPreferredContextPaths.length === 0
         || (
           activeChatDocument.selectedContextMode === preferredContextMode
-          && areComparableContextPathsEqual(library, activeChatDocument.selectedContextFiles, resolvedPreferredContextPaths)
+          && areSameContextPaths(activeChatDocument.selectedContextFiles, resolvedPreferredContextPaths)
         )
       )
 
@@ -928,24 +743,25 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
       return
     }
 
-    const nextDocument: StoredChatDocument = {
-      ...activeChatDocument,
-      contextScopeKey: preferredContextScopeKey,
-      selectedContextMode: preferredContextMode ?? activeChatDocument.selectedContextMode,
-      selectedContextFiles: preferredContextMode && resolvedPreferredContextPaths.length > 0
-        ? resolvedPreferredContextPaths
-        : activeChatDocument.selectedContextFiles,
-    }
-
-    setActiveChatDocument(nextDocument)
-
-    void saveChatDocument(selectedChatFilePath, nextDocument, library).catch((error) => {
-      setDialogMessage(
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : 'No se pudo guardar el contexto activo del chat.',
-      )
+    // The backend gives the chat the view's context and stores it.
+    let cancelled = false
+    void setChatViewContext(library.id, selectedChatFilePath, {
+      scopeKey: preferredContextScopeKey,
+      mode: preferredContextMode,
+      files: resolvedPreferredContextPaths,
     })
+      .then((document) => { if (!cancelled) setActiveChatDocument(document) })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setDialogMessage(
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : 'No se pudo guardar el contexto activo del chat.',
+        )
+      })
+    return () => {
+      cancelled = true
+    }
   }, [
     activeChatDocument,
     preferredContextMode,
@@ -1034,7 +850,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     resolvedPreferredContextPaths,
     resolvedTransientContextPaths,
     preferredContextSignature,
-    preferredTaskManagerBoardPrefix,
     canSubmit,
     isAiAvailable,
     aiHealthMessage,

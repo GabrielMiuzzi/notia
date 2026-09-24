@@ -1,6 +1,5 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 import type { NotiaLibrary } from '../../types/notia'
-import { joinLibraryPath } from '../libraries/libraryPathMapping'
 
 /*
  * The backend records every undoable change the agent applies and marks
@@ -27,16 +26,17 @@ export interface AiOperationDiff {
 }
 
 interface BackendHistoryEntry extends Omit<AiOperationHistoryEntry, 'documentPath'> {
-  logicalPath: string
+  /** Path of the document as the explorer shows it. */
+  path: string
 }
 
 export async function listAiOperationHistory(library: NotiaLibrary): Promise<AiOperationHistoryEntry[]> {
-  const entries = await invoke<BackendHistoryEntry[]>('backend_agent_history', { payload: { libraryId: library.id } })
-  return entries.map(({ logicalPath, ...entry }) => ({ ...entry, documentPath: joinLibraryPath(library.path, logicalPath) }))
+  const entries = await callBackend<BackendHistoryEntry[]>('backend_agent_history', { payload: { libraryId: library.id } })
+  return entries.map(({ path, ...entry }) => ({ ...entry, documentPath: path }))
 }
 
 export async function loadAiOperationDiff(library: NotiaLibrary, operationId: string): Promise<AiOperationDiff | null> {
-  const diff = await invoke<{ operationId: string; summary: string; logicalPath: string; previousSource: string; nextSource: string } | null>(
+  const diff = await callBackend<{ operationId: string; summary: string; path: string; previousSource: string; nextSource: string } | null>(
     'backend_agent_history_diff',
     { payload: { libraryId: library.id, operationId } },
   )
@@ -44,7 +44,7 @@ export async function loadAiOperationDiff(library: NotiaLibrary, operationId: st
     ? {
         operationId: diff.operationId,
         summary: diff.summary,
-        files: [{ path: joinLibraryPath(library.path, diff.logicalPath), previousSource: diff.previousSource, nextSource: diff.nextSource }],
+        files: [{ path: diff.path, previousSource: diff.previousSource, nextSource: diff.nextSource }],
       }
     : null
 }

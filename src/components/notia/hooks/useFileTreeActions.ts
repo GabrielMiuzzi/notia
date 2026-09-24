@@ -5,8 +5,6 @@ import { setPendingCreation, setRenamingPath, setContextMenu, setDialogState } f
 import { mutateLibraryEntry } from '../../../services/libraries/libraryRuntime'
 import { findTreeNodeByPath } from '../../../utils/tree/findTreeNodeByPath'
 import { isSameOrNestedPath, getParentDirectory, joinParentPath } from './useTabManager'
-import { loadTaskManagerSettings } from '../../../modules/task-manager/services/taskManagerStorage'
-import { reconcileBoardMarkdownContext } from '../../../modules/task-manager/services/taskManagerService'
 import type { NotiaFileNode, NotiaLibrary } from '../../../types/notia'
 
 interface UseFileTreeActionsParams {
@@ -41,15 +39,6 @@ export function useFileTreeActions({
     if (!result.ok) {
       dispatch(setDialogState({ type: 'info', title: 'No se pudo crear', message: result.error ?? 'No se pudo crear el elemento.' }))
       return
-    }
-    if (currentPendingCreation.kind === 'note') {
-      const boardName = resolveTaskBoardName(currentPendingCreation.parentPath)
-      const boardContext = boardName
-        ? loadTaskManagerSettings().boards.find((board) => board.name === boardName)?.contexto
-        : undefined
-      if (boardName && boardContext) {
-        await reconcileBoardMarkdownContext(activeLibrary.path, boardName, boardContext)
-      }
     }
     dispatch(setPendingCreation(null))
     notifyLibraryTreeChanged(currentPendingCreation.parentPath)
@@ -111,13 +100,6 @@ export function useFileTreeActions({
         dispatch(setDialogState({ type: 'info', title: 'No se pudo mover', message: moveResult.error ?? 'No se pudo mover el elemento.' }))
         return
       }
-      const boardName = resolveTaskBoardName(normalizedTargetDirectoryPath)
-      const boardContext = boardName
-        ? loadTaskManagerSettings().boards.find((board) => board.name === boardName)?.contexto
-        : undefined
-      if (boardName && boardContext) {
-        await reconcileBoardMarkdownContext(activeLibrary.path, boardName, boardContext)
-      }
       await closeTabsByPath(normalizedSourcePath)
       notifyLibraryTreeChanged(normalizedSourcePath)
       notifyLibraryTreeChanged(normalizedTargetDirectoryPath)
@@ -139,9 +121,4 @@ export function useFileTreeActions({
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
-}
-
-function resolveTaskBoardName(pathValue: string): string | undefined {
-  const match = normalizePath(pathValue).match(/(?:^|\/)(?:task-mannager|task-manager)\/([^/]+)/i)
-  return match?.[1]?.toLowerCase()
 }

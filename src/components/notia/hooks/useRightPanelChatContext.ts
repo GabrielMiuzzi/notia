@@ -255,15 +255,8 @@ export function useRightPanelChatContext({
     rightPanelChatContextLabel,
     transientContextMode,
     transientContextPaths,
-    transientContextSummary: activeWorkspaceView === 'multichat'
-      ? [
-        multichatContext?.dynamicName ? `Dinámica: ${multichatContext.dynamicName}` : null,
-        multichatContext?.agentNames.length ? `Agentes: ${multichatContext.agentNames.join(', ')}` : null,
-        multichatContext?.contextContent ? `Contexto adicional:\n${multichatContext.contextContent}` : null,
-        multichatContext?.messages.length
-          ? `Conversación activa:\n${multichatContext.messages.map((message) => `${message.speaker === 'user' ? 'Usuario' : message.name}: ${message.content}`).join('\n\n')}`
-          : 'La sala aún no tiene mensajes.',
-      ].filter(Boolean).join('\n\n')
-      : graphChatHasExplicitSelection ? graphChatContextSummary : null,
+    transientContextSummary: activeWorkspaceView !== 'multichat' && graphChatHasExplicitSelection ? graphChatContextSummary : null,
+    /** Multichat room beside the chat; the backend adds its conversation as context. */
+    multichatRoomId: activeWorkspaceView === 'multichat' ? multichatContext?.roomId ?? null : null,
   }
 }

@@ -1,35 +1,23 @@
 import { useEffect, useRef } from 'react'
-import { appendChatMessages, loadChatDocument, saveChatDocument, type StoredChatDocument, type StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
-import { buildChatMemoryWindow, resolvePersistedChatTitle } from '../../../../services/chat/chatConversationRuntime'
+import type { StoredChatDocument, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import { createChatDraftFile } from '../../../../services/chat/chatSessionStorage'
-import { scheduleLongTermMemoriesForTurn } from '../../../../services/chat/chatLongTermMemorySync'
-import { scheduleAiChatTitle } from '../../../../services/chat/chatTitleSync'
-import {
-  checkAiHealth,
-  type CancelableAiReplyHandle,
-} from '../../../../services/ai/aiRuntime'
-import { createAppAiRequest, startGlobalAiChat, startNotiaChatReply } from '../../../../services/chat/notiaChatRuntime'
-import { createGlobalAiAgent } from '../../../../services/chat/globalAiChatRuntime'
-import { loadAgentMemories } from '../../../../services/ai/agentPromptRuntime'
+import { checkAiHealth } from '../../../../services/ai/aiRuntime'
+import { startChatTurn, subscribeChatTitles, type ChatTurnHandle } from '../../../../services/chat/aiChatRuntime'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
-import { readLibraryFileContent, resolveLibraryDocumentLogicalPath } from '../../../../services/libraries/libraryDocumentRuntime'
+import { readLibraryDocument } from '../../../../services/libraries/libraryDocumentRuntime'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
 import type {
   UseChatSubmitMessageDependencies,
   UseChatSubmitMessageState,
 } from './ChatWorkspaceViewTypes'
-import type { AgentProgressEvent } from '../../../../types/ai/agentContracts'
 import { describeAiFeedbackError } from '../../../../services/ai/aiFeedbackRuntime'
 
-function resolveAppAiSurface(scope: string, view: string | undefined): import('../../../../types/ai/globalAiContract').AiAppSurface {
-  if (scope === 'document') return 'document'
-  if (scope === 'task-manager') return 'task-manager'
-  if (scope === 'graph') return 'graph-view'
-  if (scope === 'finance') return 'finance'
-  if (view === 'meeting') return 'meeting'
-  return 'main-chat'
-}
-
+/**
+ * Sends the composer's message as a chat turn. The backend picks the
+ * messages the agent sees, runs it, saves the turn and names new chats; this
+ * hook shows the turn optimistically, streams the answer and restores the
+ * composer when the turn fails.
+ */
 export function useChatSubmitMessage(
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
@@ -62,7 +50,7 @@ export function useChatSubmitMessage(
     persistTransientContext,
     hasTransientContext,
     transientContextContent,
-    markdownSelection,
+    multichatRoomId,
     activeMarkdownSource,
     workspaceSnapshot,
     onActiveMarkdownDocumentChanged,
@@ -89,8 +77,11 @@ export function useChatSubmitMessage(
     setDialogMessage,
   } = state
 
-  const activeReplyRef = useRef<CancelableAiReplyHandle | null>(null)
+  const activeReplyRef = useRef<ChatTurnHandle | null>(null)
   const mountedRef = useRef(true)
+  const selectedChatFilePathRef = useRef(selectedChatFilePath)
+  selectedChatFilePathRef.current = selectedChatFilePath
+  const libraryId = library?.id ?? null
 
   useEffect(() => {
     mountedRef.current = true
@@ -108,6 +99,27 @@ export function useChatSubmitMessage(
       cancelOnPageHide()
     }
   }, [])
+
+  // The backend names a new chat after its first turn.
+  useEffect(() => {
+    if (!libraryId) return
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    void subscribeChatTitles((event) => {
+      if (event.libraryId !== libraryId) return
+      setActiveChatDocument((current) => (
+        current && selectedChatFilePathRef.current === event.path ? { ...current, title: event.title } : current
+      ))
+      setChatTitleOverrides((current) => ({ ...current, [event.path]: normalizeChatTitle(event.title) }))
+    }).then((stop) => {
+      if (disposed) stop()
+      else unlisten = stop
+    })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [libraryId, setActiveChatDocument, setChatTitleOverrides])
 
   function cancelActiveReply(): void {
     activeReplyRef.current?.abort()
@@ -138,62 +150,36 @@ export function useChatSubmitMessage(
       return
     }
 
+    const selection = {
+      scopeKey: preferredContextScopeKey,
+      files: effectiveSelectedContextPaths,
+      mode: effectiveSelectedContextMode,
+      keepChatContext: hasTransientContext && !persistTransientContext,
+    }
     let targetChatDocument = activeChatDocument
     let targetChatFilePath = selectedChatFilePath
 
     if (!targetChatDocument || !targetChatFilePath) {
       if (ephemeralChat) {
-        const autoCreatePayload = buildAutoCreateChatPayload(showHistoryPanel)
         targetChatDocument = {
           title: 'Chat efímero',
-          ...autoCreatePayload,
+          ...buildAutoCreateChatPayload(showHistoryPanel),
           longTermMemoryEnabled: false,
           contextScopeKey: preferredContextScopeKey,
-          selectedContextMode: persistTransientContext ? effectiveSelectedContextMode : 'direct',
-          selectedContextFiles: persistTransientContext ? effectiveSelectedContextPaths : [],
+          selectedContextMode: 'direct',
+          selectedContextFiles: [],
           messages: [],
         }
         targetChatFilePath = null
       } else try {
-        const { filePath } = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel))
+        const created = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel), selection)
         if (!mountedRef.current) return
-        setPendingAutoCreatedChatFilePath(filePath)
-        setSelectedChatFilePath(filePath)
-        await onChatCreated?.(filePath)
+        setPendingAutoCreatedChatFilePath(created.filePath)
+        setSelectedChatFilePath(created.filePath)
+        await onChatCreated?.(created.filePath)
         if (!mountedRef.current) return
-        const createdDocument = await loadChatDocument(filePath, 'Chat', library)
-        if (!mountedRef.current) return
-        const shouldDisableLongTermMemoryForAutoCreatedIndexChat =
-          effectiveSelectedContextMode === 'index'
-          && effectiveSelectedContextPaths.length > 0
-
-        const preparedDocument: StoredChatDocument = shouldDisableLongTermMemoryForAutoCreatedIndexChat
-          ? {
-            ...createdDocument,
-            contextScopeKey: preferredContextScopeKey ?? createdDocument.contextScopeKey,
-            longTermMemoryEnabled: false,
-            selectedContextMode: persistTransientContext ? 'index' : createdDocument.selectedContextMode,
-            selectedContextFiles: persistTransientContext ? effectiveSelectedContextPaths : createdDocument.selectedContextFiles,
-          }
-          : {
-            ...createdDocument,
-            contextScopeKey: preferredContextScopeKey ?? createdDocument.contextScopeKey,
-            selectedContextMode: persistTransientContext ? effectiveSelectedContextMode : createdDocument.selectedContextMode,
-            selectedContextFiles: persistTransientContext ? effectiveSelectedContextPaths : createdDocument.selectedContextFiles,
-          }
-
-        if (
-          preparedDocument.longTermMemoryEnabled !== createdDocument.longTermMemoryEnabled
-          || preparedDocument.contextScopeKey !== createdDocument.contextScopeKey
-          || preparedDocument.selectedContextMode !== createdDocument.selectedContextMode
-          || preparedDocument.selectedContextFiles.join('\n') !== createdDocument.selectedContextFiles.join('\n')
-        ) {
-          await saveChatDocument(filePath, preparedDocument, library)
-          if (!mountedRef.current) return
-        }
-
-        targetChatDocument = preparedDocument
-        targetChatFilePath = filePath
+        targetChatDocument = created.document
+        targetChatFilePath = created.filePath
       } catch (error) {
         submitMeasurement.error(error, {
           stage: 'create_chat',
@@ -212,47 +198,13 @@ export function useChatSubmitMessage(
       content: trimmedMessage,
       ...(selectedImageAttachments.length > 0 ? { attachments: selectedImageAttachments } : {}),
     } satisfies StoredChatMessage
-
-    let longTermMemories: string[] = []
     const previousImageAttachments = selectedImageAttachments
     const previousLibraryFilePaths = selectedLibraryFilePaths
     const previousLibraryFileOptions = selectedLibraryFileOptions
     const previousFileContextMode = selectedFileContextMode
-
-    if (targetChatDocument.longTermMemoryEnabled) {
-      try {
-        longTermMemories = await loadAgentMemories(library)
-        if (!mountedRef.current) return
-      } catch (error) {
-        submitMeasurement.error(error, {
-          stage: 'load_long_term_memory',
-        })
-        setDialogMessage(
-          error instanceof Error && error.message.trim()
-            ? error.message
-            : 'No se pudo leer la memoria persistente del agente.',
-        )
-        return
-      }
-    }
-
-    const previousMessages = targetChatDocument.messages
-    const chatMemory = buildChatMemoryWindow(targetChatDocument)
-    const memoryAttachments = chatMemory.flatMap((message) => message.attachments ?? [])
-    const conversationAttachments = [...memoryAttachments, ...selectedImageAttachments]
-    const optimisticMessages = [...previousMessages, userMessage]
+    const previousChatDocument: StoredChatDocument = targetChatDocument
+    const optimisticMessages = [...targetChatDocument.messages, userMessage]
     const previousDraft = draft
-    const nextChatDocumentBase: StoredChatDocument = {
-      ...targetChatDocument,
-      contextScopeKey: preferredContextScopeKey ?? targetChatDocument.contextScopeKey,
-      selectedContextFiles: hasTransientContext && !persistTransientContext
-        ? targetChatDocument.selectedContextFiles
-        : effectiveSelectedContextPaths,
-      selectedContextMode: hasTransientContext && !persistTransientContext
-        ? targetChatDocument.selectedContextMode
-        : effectiveSelectedContextMode,
-      messages: optimisticMessages,
-    }
 
     setDraft('')
     setIsSubmitting(true)
@@ -261,7 +213,7 @@ export function useChatSubmitMessage(
     setStreamingThinking('')
     setStreamingAssistantMessage('')
     setSelectedImageAttachments([])
-    setActiveChatDocument(nextChatDocumentBase)
+    setActiveChatDocument({ ...targetChatDocument, messages: optimisticMessages })
 
     const aiReplyMeasurement = startPerformanceMeasurement('chat.ai_reply', {
       contextFileCount: effectiveSelectedContextPaths.length,
@@ -271,148 +223,63 @@ export function useChatSubmitMessage(
     })
 
     try {
-      // The backend reports writes as changed tool results; the open note is
-      // reloaded after the reply so the editor shows the agent's edit.
-      let dataChanged = false
-      const streamCallbacks = {
-        onThinkingDelta: (delta: string) => {
-          setStreamingThinking((current) => current + delta)
-        },
-        onMessageDelta: (delta: string) => {
-          setStreamingAssistantMessage((current) => current + delta)
-        },
-        onAgentProgress: (event: AgentProgressEvent) => {
-          if (event.type === 'tool-completed' && event.changed) dataChanged = true
-          onAgentProgress?.(event)
-        },
-      }
       const effectiveAgentScope = agentScope ?? 'library'
-      const requestId = crypto.randomUUID()
       if (!keepExecutionPlan) onAgentExecutionPlanChange([])
-      const agent = createGlobalAiAgent({
-        library,
-        actor: { libraryUserId: 'user-owner' },
-        promptFileName: agentPromptFileName,
+      const turn = startChatTurn({
+        libraryId: library.id,
+        mode: 'chat',
+        preferences: aiPreferences,
+        scope: effectiveAgentScope,
+        message: trimmedMessage,
+        context: transientContextContent,
+        multichatRoomId: multichatRoomId ?? undefined,
+        attachments: selectedImageAttachments,
+        promptName: agentPromptFileName || undefined,
         undoOperationId,
+        workspace: workspaceSnapshot,
+        selection,
+        chat: targetChatFilePath
+          ? { kind: 'saved', path: targetChatFilePath }
+          : { kind: 'ephemeral', document: targetChatDocument },
+      }, {
+        onThinkingDelta: (delta) => setStreamingThinking((current) => current + delta),
+        onMessageDelta: (delta) => setStreamingAssistantMessage((current) => current + delta),
+        onAgentProgress,
         requestClarification: requestAgentClarification,
         requestConfirmation: requestAgentConfirmation,
         requestExecutionPlanApproval: requestAgentExecutionPlanApproval,
       })
-      const globalPrompt = [
-        trimmedMessage,
-        transientContextContent?.trim()
-          ? `Contexto auxiliar de la sala o vista activa (solo consulta; no sos participante de esa sala):\n${transientContextContent.trim()}`
-          : null,
-      ].filter(Boolean).join('\n\n')
-      const replyInput = {
-        agent,
-        attachments: conversationAttachments,
-        previousMessages: chatMemory,
-        longTermMemories,
-        intentContext: {
-          hasActiveDocument: Boolean(effectiveAgentScope === 'document' && agentCorpusPaths[0]),
-          hasSelection: Boolean(effectiveAgentScope === 'document' && markdownSelection?.selectedText.trim()),
-          hasConversationHistory: previousMessages.length > 0,
-          hasLastAppliedOperation: Boolean(undoOperationId),
-        },
-      }
-      const replyHandle: CancelableAiReplyHandle = workspaceSnapshot
-        ? startGlobalAiChat(aiPreferences, {
-          request: createAppAiRequest({
-            libraryId: library.id,
-             requestId,
-            actor: agent.actor ?? { libraryUserId: 'user-owner' },
-            workspaceSnapshot,
-            requestedScope: effectiveAgentScope,
-            persistencePolicy: 'persistent',
-            prompt: globalPrompt,
-            appSurface: resolveAppAiSurface(effectiveAgentScope, workspaceSnapshot.view),
-          }),
-          ...replyInput,
-        }, streamCallbacks)
-        : startNotiaChatReply(aiPreferences, { ...replyInput, prompt: globalPrompt }, streamCallbacks)
-      activeReplyRef.current = replyHandle
-      const streamedAnswer = await replyHandle.promise
+      activeReplyRef.current = turn
+      const outcome = await turn.promise
       if (!mountedRef.current) return
       activeReplyRef.current = null
-      const activeDocumentPath = effectiveAgentScope === 'document' ? agentCorpusPaths[0] : undefined
-      if (dataChanged && activeDocumentPath && onActiveMarkdownDocumentChanged) {
-        const refreshed = await readLibraryFileContent(activeDocumentPath, {
-          androidDirectoryUri: library.androidTreeUri,
-          libraryId: library.id,
-          logicalPath: resolveLibraryDocumentLogicalPath(library.path, activeDocumentPath),
+      if (outcome.undoneOperationId) {
+        onAgentProgress?.({
+          type: 'tool-completed',
+          requestId: turn.requestId,
+          operationId: outcome.undoneOperationId,
+          round: 0,
+          toolName: 'undo_ai_operation',
+          ok: true,
+          changed: true,
         })
+      }
+      // The open note is reloaded after the reply so the editor shows the agent's edit.
+      const activeDocumentPath = effectiveAgentScope === 'document' ? agentCorpusPaths[0] : undefined
+      if (outcome.dataChanged && activeDocumentPath && onActiveMarkdownDocumentChanged) {
+        const refreshed = await readLibraryDocument(library.id, activeDocumentPath)
         if (refreshed.ok && refreshed.content !== activeMarkdownSource) {
           await onActiveMarkdownDocumentChanged(activeDocumentPath, refreshed.content, refreshed.revision)
         }
       }
       aiReplyMeasurement.success({
-        responseLength: streamedAnswer.length,
+        responseLength: outcome.answer.length,
       })
 
-      const resolvedTitle = resolvePersistedChatTitle(
-        targetChatDocument.title || 'Chat',
-        previousMessages,
-        trimmedMessage,
-      )
-
-      const persistedDocument: StoredChatDocument = {
-        ...nextChatDocumentBase,
-        title: resolvedTitle,
-        messages: [...optimisticMessages, {
-          role: 'assistant',
-          content: streamedAnswer,
-        }],
+      const persistedDocument: StoredChatDocument = outcome.document ?? {
+        ...targetChatDocument,
+        messages: [...optimisticMessages, { role: 'assistant', content: outcome.answer }],
       }
-
-      if (targetChatFilePath) {
-        const titleChanged = resolvedTitle !== targetChatDocument.title
-        if (titleChanged) {
-          await saveChatDocument(targetChatFilePath, persistedDocument, library)
-        } else {
-          // The backend rewrites the whole chat when the turn cannot be appended.
-          await appendChatMessages(targetChatFilePath, persistedDocument, library)
-        }
-
-        if (previousMessages.length === 0) {
-          scheduleAiChatTitle(
-          {
-            library,
-            filePath: targetChatFilePath,
-            prompt: trimmedMessage,
-          },
-          {
-            onPersisted: (title) => {
-              if (!mountedRef.current) return
-              setActiveChatDocument((current) => (
-                current?.messages === persistedDocument.messages
-                  ? { ...current, title }
-                  : current
-              ))
-              setChatTitleOverrides((current) => (
-                current[targetChatFilePath] === title
-                  ? current
-                  : {
-                    ...current,
-                    [targetChatFilePath]: normalizeChatTitle(title),
-                  }
-              ))
-            },
-          },
-          )
-        }
-      }
-
-      if (persistedDocument.longTermMemoryEnabled) {
-        if (!mountedRef.current) return
-        scheduleLongTermMemoriesForTurn({
-          library,
-          prompt: trimmedMessage,
-          assistantReply: streamedAnswer,
-          previousMessages,
-        })
-      }
-
       setActiveChatDocument(persistedDocument)
       setOptimisticThreadMessages(null)
       setStreamingThinking('')
@@ -426,7 +293,7 @@ export function useChatSubmitMessage(
       submitMeasurement.success({
         autoCreatedChat: !selectedChatFilePath,
         contextFileCount: effectiveSelectedContextPaths.length,
-        responseLength: streamedAnswer.length,
+        responseLength: outcome.answer.length,
         totalMessageCount: persistedDocument.messages.length,
       })
     } catch (error) {
@@ -439,7 +306,7 @@ export function useChatSubmitMessage(
       setPendingAutoCreatedChatFilePath((current) => (targetChatFilePath && current === targetChatFilePath ? null : current))
       setOptimisticThreadMessages(null)
       setDraft(previousDraft)
-      setActiveChatDocument(targetChatDocument)
+      setActiveChatDocument(previousChatDocument)
       setStreamingThinking('')
       setStreamingAssistantMessage('')
       setSelectedImageAttachments(previousImageAttachments)

@@ -8,17 +8,10 @@ import { selectIsSearchActive, selectActiveWorkspaceView, selectActiveTabPath } 
 import { selectActiveLibrary } from '../../../features/library/librarySelectors'
 import { selectExplorerRefreshIntervalMs } from '../../../features/preferences/preferencesSelectors'
 import { bumpIndexRevision, setLibraryStatus } from '../../../features/library/librarySlice'
-import { notiaLog, notiaTimer } from '../../../services/runtime/notiaLogger'
-import {
-  readLibraryTree,
-  readLibraryTreeSignature,
-  readLibraryDirectory,
-  invalidateLibraryRuntimeCache,
-  registerLibraryBinding,
-} from '../../../services/libraries/libraryRuntime'
+import { notiaLog } from '../../../services/runtime/notiaLogger'
+import { openLibrary, readLibraryFolder, refreshLibrary } from '../../../services/libraries/libraryRuntime'
 import { dispatchLibraryTreeChanged } from '../../../services/libraries/libraryTreeEvents'
 import {
-  startDesktopLibraryTreeWatch,
   stopDesktopLibraryTreeWatch,
   subscribeToDesktopLibraryTreeWatchBridge,
 } from '../../../services/libraries/libraryTreeWatchRuntime'
@@ -26,34 +19,15 @@ import {
   loadExplorerFolderExpandedState,
   saveExplorerFolderExpandedState,
 } from '../../../services/preferences/explorerPanelStorage'
-import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
 import { setAllFoldersExpanded } from '../../../utils/tree/setAllFoldersExpanded'
 import { setSelectedFileByPath } from '../../../utils/tree/setSelectedFileByPath'
 import { toggleFolderNodeExpanded } from '../../../utils/tree/toggleFolderNodeExpanded'
 import { reconcileTreeNodes } from '../../../utils/tree/reconcileTreeNodes'
-import { ensureChatLibraryStructure } from '../../../services/chat/chatLibraryStructure'
-import { ensureAgentPromptFile } from '../../../services/ai/agentPromptRuntime'
-import { initializeLibraryDatabase } from '../../../services/libraries/libraryDatabase'
-import { reindexLibrary } from '../../../services/libraries/libraryInventoryRuntime'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
 import type { NotiaFileNode } from '../../../types/notia'
 import type { SetStateAction } from 'react'
 
-// --- Pure helper functions (tree sync only) ---
-
-function countTreeNodes(nodes: NotiaFileNode[]): number {
-  let count = 0
-  const visit = (currentNodes: NotiaFileNode[]) => {
-    for (const node of currentNodes) {
-      count += 1
-      if (node.children && node.children.length > 0) {
-        visit(node.children)
-      }
-    }
-  }
-  visit(nodes)
-  return count
-}
+// --- Visual tree state helpers (expansion, selection, equality) ---
 
 function collectFolderExpandedState(
   nodes: NotiaFileNode[],
@@ -148,24 +122,6 @@ function resolveTreeNodeUpdate(
     : update
 }
 
-function buildTreeNodesStructureSignature(nodes: NotiaFileNode[]): string {
-  let hash = 2166136261
-  const visit = (list: NotiaFileNode[]) => {
-    for (const node of list) {
-      const token = `${node.type}|${node.path ?? ''}|${node.name}`
-      for (let index = 0; index < token.length; index += 1) {
-        hash ^= token.charCodeAt(index)
-        hash = Math.imul(hash, 16777619)
-      }
-      if (node.children && node.children.length > 0) {
-        visit(node.children)
-      }
-    }
-  }
-  visit(nodes)
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
 }
@@ -196,57 +152,68 @@ export interface UseLibraryTreeSyncActions {
   bumpLibraryIndexRevision: () => void
 }
 
+/** What the backend reported when it opened the library. */
+interface OpenedLibrary {
+  libraryId: string
+  /** Folders load their children on demand. */
+  lazy: boolean
+  /** The backend watches the library; no periodic refresh is needed. */
+  watched: boolean
+}
+
+interface RefreshState {
+  inFlight: boolean
+  /** A refresh requested while another was running (`true` when forced). */
+  queuedForce: boolean | null
+  /** A change arrived while the explorer was hidden. */
+  deferred: boolean
+  lastRequestAt: number
+}
+
+const IDLE_REFRESH: RefreshState = { inFlight: false, queuedForce: null, deferred: false, lastRequestAt: 0 }
+
+/**
+ * Explorer tree of the active library. The backend opens the library,
+ * reads and orders its tree, watches it and decides whether a refresh needs
+ * a new read; this hook keeps the visible state (expanded folders,
+ * selection) and asks for refreshes while the explorer is visible.
+ */
 export function useLibraryTreeSync({
   activeLibraryId,
   persistDirtyTextDocuments,
   resetTabsAndClearDrawioControllers,
 }: UseLibraryTreeSyncParams): UseLibraryTreeSyncActions {
-  // These selectors are ONLY consumed by tree sync logic
   const isSidebarOpen = useAppSelector(selectIsSidebarOpen)
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const isSearchActive = useAppSelector(selectIsSearchActive)
   const explorerRefreshIntervalMs = useAppSelector(selectExplorerRefreshIntervalMs)
-
-  // These selectors are shared with other code outside this hook, but are needed internally
   const activeLibrary = useAppSelector(selectActiveLibrary)
   const activeTabPath = useAppSelector(selectActiveTabPath)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
 
-  const isAndroidRuntime = getRuntimeDevice() === 'Android'
-
-  // --- Refs ---
   const treeNodesRef = useRef<NotiaFileNode[]>([])
-  const libraryTreeRefreshTimerRef = useRef<number | null>(null)
-  const isTreeRefreshInFlightRef = useRef(false)
-  const isTreeSignatureProbeInFlightRef = useRef(false)
-  const hasQueuedTreeRefreshRef = useRef(false)
-  const hasDeferredTreeRefreshRef = useRef(false)
-  const lastAutomaticTreeProbeAtRef = useRef(0)
-  const lastKnownTreeSignatureRef = useRef('')
   const treeNodesLibraryIdRef = useRef<string | null>(null)
   const activeTabPathRef = useRef<string | null>(null)
+  const openedLibraryRef = useRef<OpenedLibrary | null>(null)
+  const refreshStateRef = useRef<RefreshState>({ ...IDLE_REFRESH })
+  const treeChangeTimerRef = useRef<number | null>(null)
 
-  // Sync activeTabPath into ref
   useEffect(() => {
     activeTabPathRef.current = activeTabPath
   }, [activeTabPath])
 
-  // Sync treeNodes from Redux into ref
   useEffect(() => {
     treeNodesRef.current = store.getState().documents.treeNodes
   })
 
-  // --- Computed shouldRefresh flags ---
-  const shouldRefreshVisibleExplorerTree =
+  const shouldRefreshActiveLibraryTree = (
     activeWorkspaceView !== 'task-manager' && (
       activeWorkspaceView === 'graph'
       || activeWorkspaceView === 'chat'
       || isRightChatPanelOpen
       || isSidebarOpen
     )
-  const shouldRefreshActiveLibraryTree = shouldRefreshVisibleExplorerTree || isSearchActive
-
-  // --- Callbacks ---
+  ) || isSearchActive
 
   const persistExplorerFolderState = useCallback((libraryId: string | null, nodes: NotiaFileNode[]) => {
     if (!libraryId) {
@@ -274,26 +241,8 @@ export function useLibraryTreeSync({
     store.dispatch(setTreeNodes(next))
   }, [persistExplorerFolderState])
 
-  // The backend walks the library and publishes the inventory used by the
-  // agent tools, search and Graph View; the explorer snapshot is not sent.
-  const synchronizeLibraryInventory = useCallback(async (
-    library: NonNullable<typeof activeLibrary>,
-    signal?: AbortSignal,
-  ) => {
-    try {
-      const result = await reindexLibrary(library.id, signal)
-      if (!result.ok) {
-        console.warn('[notia] failed to reindex library:', result.error)
-      }
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        console.warn('[notia] failed to reindex library:', error)
-      }
-    }
-  }, [])
-
+  /** Shows a tree read by the backend, keeping expansion and selection. */
   const commitTreeNodesSnapshot = useCallback((libraryId: string, nodes: NotiaFileNode[]) => {
-    lastKnownTreeSignatureRef.current = buildTreeNodesStructureSignature(nodes)
     const library = store.getState().library.libraries.find((entry) => entry.id === libraryId) ?? null
     const expandedStateByPath = treeNodesLibraryIdRef.current === libraryId
       ? collectFolderExpandedState(treeNodesRef.current)
@@ -304,109 +253,58 @@ export function useLibraryTreeSync({
     const withExpandedState = applyFolderExpandedState(reconciledNodes, expandedStateByPath)
     const selectedNodes = setSelectedFileByPath(withExpandedState, activeTabPathRef.current)
     setTreeNodesForLibrary(libraryId, (current) => (
-      areTreeNodeListsEqual(current, selectedNodes)
-        ? current
-        : selectedNodes
+      areTreeNodeListsEqual(current, selectedNodes) ? current : selectedNodes
     ))
   }, [setTreeNodesForLibrary])
 
-  const refreshActiveLibraryTree = useCallback(async () => {
-    if (!activeLibrary) {
+  /** Asks the backend for the current tree; overlapping requests collapse. */
+  const refreshActiveLibraryTree = useCallback(async (force: boolean): Promise<void> => {
+    const opened = openedLibraryRef.current
+    if (!opened) {
       return
     }
-    if (isTreeRefreshInFlightRef.current) {
-      hasQueuedTreeRefreshRef.current = true
-      notiaLog('treeSync', 'refresh queued (already in flight)', {
-        libraryId: activeLibrary.id,
-      })
+    const state = refreshStateRef.current
+    if (state.inFlight) {
+      state.queuedForce = Boolean(state.queuedForce) || force
       return
     }
-    isTreeRefreshInFlightRef.current = true
-    const refreshMeasurement = startPerformanceMeasurement('explorer.refresh_tree', {
-      libraryId: activeLibrary.id,
-      libraryPath: activeLibrary.path,
-    })
-    const refreshTimer = notiaTimer('treeSync', 'refreshActiveLibraryTree', {
-      libraryId: activeLibrary.id,
-    })
+    state.inFlight = true
+    const measurement = startPerformanceMeasurement('explorer.refresh_tree', { libraryId: opened.libraryId })
     try {
-      const refreshedNodes = await readLibraryTree(activeLibrary.path, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      })
-      if (store.getState().library.selectedLibraryId !== activeLibrary.id) {
-        return
+      const refresh = await refreshLibrary(opened.libraryId, force)
+      if (refresh.changed && refresh.nodes && store.getState().library.selectedLibraryId === opened.libraryId) {
+        commitTreeNodesSnapshot(opened.libraryId, refresh.nodes)
       }
-      commitTreeNodesSnapshot(activeLibrary.id, refreshedNodes)
-      void synchronizeLibraryInventory(activeLibrary)
-      refreshMeasurement.success({ nodeCount: countTreeNodes(refreshedNodes) })
-      refreshTimer.success({ nodeCount: countTreeNodes(refreshedNodes) })
+      measurement.success({ changed: refresh.changed })
     } catch (error) {
-      refreshMeasurement.error(error)
-      refreshTimer.error(error)
-      throw error
+      measurement.error(error)
+      notiaLog('treeSync', 'refresh failed', { libraryId: opened.libraryId }, 'warn')
     } finally {
-      isTreeRefreshInFlightRef.current = false
-      if (hasQueuedTreeRefreshRef.current) {
-        hasQueuedTreeRefreshRef.current = false
-        void refreshActiveLibraryTree()
+      state.inFlight = false
+      const queuedForce = state.queuedForce
+      state.queuedForce = null
+      if (queuedForce !== null) {
+        void refreshActiveLibraryTree(queuedForce)
       }
     }
-  }, [activeLibrary, commitTreeNodesSnapshot, synchronizeLibraryInventory])
+  }, [commitTreeNodesSnapshot])
 
-  const probeActiveLibraryTreeChanges = useCallback(async () => {
-    if (!activeLibrary?.path || isTreeRefreshInFlightRef.current || isTreeSignatureProbeInFlightRef.current) {
+  /** Refresh while the explorer is visible, at most once per interval. */
+  const requestVisibleRefresh = useCallback(() => {
+    if (!openedLibraryRef.current || !shouldRefreshActiveLibraryTree) {
       return
     }
-    isTreeSignatureProbeInFlightRef.current = true
-    const probeTimer = notiaTimer('treeSync', 'probeActiveLibraryTreeChanges', {
-      libraryId: activeLibrary.id,
-    })
-    try {
-      const nextSignature = await readLibraryTreeSignature(activeLibrary.path, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      })
-      if (!nextSignature) { return }
-      if (!lastKnownTreeSignatureRef.current) {
-        lastKnownTreeSignatureRef.current = nextSignature
-        probeTimer.success({ action: 'initial_signature' })
-        return
-      }
-      if (nextSignature === lastKnownTreeSignatureRef.current) {
-        probeTimer.success({ action: 'no_change' })
-        return
-      }
-      lastKnownTreeSignatureRef.current = nextSignature
-      notiaLog('treeSync', 'tree change detected, refreshing', {
-        libraryId: activeLibrary.id,
-      })
-      probeTimer.success({ action: 'change_detected' })
-      await refreshActiveLibraryTree()
-    } finally {
-      isTreeSignatureProbeInFlightRef.current = false
-    }
-  }, [activeLibrary, refreshActiveLibraryTree])
-
-  const requestAutomaticTreeProbe = useCallback(() => {
-    if (!activeLibrary?.path || !shouldRefreshActiveLibraryTree) {
-      return
-    }
-    if (isAndroidRuntime) { return }
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
       return
     }
-    const minimumIntervalMs = Math.max(1000, explorerRefreshIntervalMs)
-    if (minimumIntervalMs <= 0) { return }
     const now = Date.now()
-    if ((now - lastAutomaticTreeProbeAtRef.current) < minimumIntervalMs) { return }
-    lastAutomaticTreeProbeAtRef.current = now
-    void probeActiveLibraryTreeChanges()
-  }, [
-    activeLibrary?.path,
-    explorerRefreshIntervalMs,
-    isAndroidRuntime,
-    probeActiveLibraryTreeChanges,
-    shouldRefreshActiveLibraryTree,
-  ])
+    const state = refreshStateRef.current
+    if (now - state.lastRequestAt < Math.max(1000, explorerRefreshIntervalMs)) {
+      return
+    }
+    state.lastRequestAt = now
+    void refreshActiveLibraryTree(false)
+  }, [explorerRefreshIntervalMs, refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])
 
   const notifyLibraryTreeChanged = useCallback((pathHint?: string) => {
     dispatchLibraryTreeChanged({
@@ -421,91 +319,68 @@ export function useLibraryTreeSync({
 
   const handleToggleFolder = useCallback((folderId: string) => {
     const libraryId = store.getState().library.selectedLibraryId
-    const currentTreeNodes = treeNodesRef.current
-
-    // On Android with lazy loading, a folder may have hasChildren=true but
-    // children not yet loaded. In that case, we need to fetch the children
-    // before toggling expansion.
-    if (isAndroidRuntime) {
-      const findFolder = (nodes: NotiaFileNode[]): NotiaFileNode | null => {
-        for (const node of nodes) {
-          if (node.id === folderId) return node
-          if (node.type === 'folder' && node.expanded && node.children) {
-            const found = findFolder(node.children)
-            if (found) return found
-          }
-        }
-        return null
-      }
-
-      const folder = findFolder(currentTreeNodes)
-      if (folder && folder.type === 'folder' && folder.hasChildren && !folder.children?.length) {
-        // This folder hasn't loaded its children yet — fetch them lazily.
-        const folderPath = folder.path
-        // Always pass the owning library's tree grant. A child document URI is
-        // an I/O result, not a library grant, and must never become the context
-        // for another command or another library.
-        const library = store.getState().library.libraries.find((l) => l.id === libraryId)
-        const androidUri = library?.androidTreeUri
-
-        if (folderPath) {
-          store.dispatch(setFolderLoadError(null))
-          store.dispatch(addLoadingFolderId(folderId))
-          void readLibraryDirectory(folderPath, { androidDirectoryUri: androidUri })
-            .then((children) => {
-              if (store.getState().library.selectedLibraryId !== libraryId) {
-                return
-              }
-              // Inject the loaded children into the tree
-              const injectChildren = (nodes: NotiaFileNode[]): NotiaFileNode[] => {
-                let changed = false
-                const nextNodes = nodes.map((node) => {
-                  if (node.id === folderId) {
-                    changed = true
-                    return {
-                      ...node,
-                      expanded: true,
-                      hasChildren: Boolean(children.length) || node.hasChildren,
-                      children: children.length > 0 ? children : undefined,
-                    }
-                  }
-                  if (node.type === 'folder' && node.expanded && node.children) {
-                    const nextChildren = injectChildren(node.children)
-                    if (nextChildren !== node.children) {
-                      changed = true
-                      return { ...node, children: nextChildren }
-                    }
-                  }
-                  return node
-                })
-                return changed ? nextNodes : nodes
-              }
-
-              setTreeNodesForLibrary(libraryId, (current) => injectChildren(current))
-            })
-            .catch((error) => {
-              notiaLog('useLibraryTreeSync', 'failed to load folder children', {
-                folderPath,
-              }, 'error')
-              if (store.getState().library.selectedLibraryId === libraryId) {
-                store.dispatch(setFolderLoadError({
-                  folderId,
-                  message: error instanceof Error && error.message.trim()
-                    ? error.message
-                    : 'No se pudo leer el contenido de la carpeta. Toca para reintentar.',
-                }))
-              }
-            })
-            .finally(() => {
-              store.dispatch(removeLoadingFolderId(folderId))
-            })
-          return
+    const findFolder = (nodes: NotiaFileNode[]): NotiaFileNode | null => {
+      for (const node of nodes) {
+        if (node.id === folderId) return node
+        if (node.type === 'folder' && node.expanded && node.children) {
+          const found = findFolder(node.children)
+          if (found) return found
         }
       }
+      return null
     }
-
+    const folder = openedLibraryRef.current?.lazy ? findFolder(treeNodesRef.current) : null
+    // A folder listed without its children loads them before expanding.
+    if (libraryId && folder?.path && folder.hasChildren && !folder.children?.length) {
+      store.dispatch(setFolderLoadError(null))
+      store.dispatch(addLoadingFolderId(folderId))
+      void readLibraryFolder(libraryId, folder.path)
+        .then((children) => {
+          if (store.getState().library.selectedLibraryId !== libraryId) {
+            return
+          }
+          const injectChildren = (nodes: NotiaFileNode[]): NotiaFileNode[] => {
+            let changed = false
+            const nextNodes = nodes.map((node) => {
+              if (node.id === folderId) {
+                changed = true
+                return {
+                  ...node,
+                  expanded: true,
+                  hasChildren: Boolean(children.length) || node.hasChildren,
+                  children: children.length > 0 ? children : undefined,
+                }
+              }
+              if (node.type === 'folder' && node.expanded && node.children) {
+                const nextChildren = injectChildren(node.children)
+                if (nextChildren !== node.children) {
+                  changed = true
+                  return { ...node, children: nextChildren }
+                }
+              }
+              return node
+            })
+            return changed ? nextNodes : nodes
+          }
+          setTreeNodesForLibrary(libraryId, (current) => injectChildren(current))
+        })
+        .catch((error: unknown) => {
+          if (store.getState().library.selectedLibraryId === libraryId) {
+            store.dispatch(setFolderLoadError({
+              folderId,
+              message: error instanceof Error && error.message.trim()
+                ? error.message
+                : 'No se pudo leer el contenido de la carpeta. Toca para reintentar.',
+            }))
+          }
+        })
+        .finally(() => {
+          store.dispatch(removeLoadingFolderId(folderId))
+        })
+      return
+    }
     setTreeNodesForLibrary(libraryId, (current) => toggleFolderNodeExpanded(current, folderId))
-  }, [isAndroidRuntime, setTreeNodesForLibrary])
+  }, [setTreeNodesForLibrary])
 
   const handleCollapseAllFolders = useCallback(() => {
     if (!activeLibrary) { return }
@@ -517,128 +392,54 @@ export function useLibraryTreeSync({
     setTreeNodesForLibrary(activeLibrary.id, (current) => setAllFoldersExpanded(current, true))
   }, [activeLibrary, setTreeNodesForLibrary])
 
-  // --- Effects ---
-
-  // Library load effect
+  // Opening the active library.
   useEffect(() => {
-    // A library change can happen from outside the sidebar callback (for
-    // example, after restoring state). Persist before resetting the tree so
-    // the autosave debounce cannot discard the current editor contents.
+    // Persist before resetting the tree so the autosave debounce cannot
+    // discard the current editor contents.
     void persistDirtyTextDocuments()
+    openedLibraryRef.current = null
+    refreshStateRef.current = { ...IDLE_REFRESH }
 
     if (!activeLibrary) {
       store.dispatch(setTreeNodes([]))
       treeNodesRef.current = []
       treeNodesLibraryIdRef.current = null
       store.dispatch(setPendingCreation(null))
-      lastKnownTreeSignatureRef.current = ''
-      lastAutomaticTreeProbeAtRef.current = 0
-      isTreeRefreshInFlightRef.current = false
-      isTreeSignatureProbeInFlightRef.current = false
-      hasQueuedTreeRefreshRef.current = false
-      hasDeferredTreeRefreshRef.current = false
-      if (libraryTreeRefreshTimerRef.current !== null) {
-        window.clearTimeout(libraryTreeRefreshTimerRef.current)
-        libraryTreeRefreshTimerRef.current = null
-      }
       store.dispatch(setLibraryStatus('idle'))
       return
     }
 
-    lastKnownTreeSignatureRef.current = ''
-    lastAutomaticTreeProbeAtRef.current = 0
-    isTreeRefreshInFlightRef.current = false
-    isTreeSignatureProbeInFlightRef.current = false
-    hasQueuedTreeRefreshRef.current = false
-    hasDeferredTreeRefreshRef.current = false
     store.dispatch(setLibraryStatus('loading'))
-
-    notiaLog('treeSync', 'library loading started', {
-      libraryId: activeLibrary.id,
-      libraryPath: activeLibrary.path,
-      refreshIntervalMs: explorerRefreshIntervalMs,
-      isAndroid: isAndroidRuntime,
-    })
-
     let isCurrent = true
-    const inventoryAbortController = new AbortController()
-    const libraryLoadMeasurement = startPerformanceMeasurement('library.switch_load', {
-      libraryId: activeLibrary.id,
-      libraryPath: activeLibrary.path,
-    })
-    void (async () => {
-      try {
-        // The backend only reads and writes inside registered libraries, so
-        // the binding must exist before the first structure/tree access.
-        try {
-          await registerLibraryBinding(activeLibrary)
-        } catch (error) {
-          console.warn('[notia] could not register the active library binding', error)
-        }
-        try {
-          await Promise.all([
-            ensureChatLibraryStructure(activeLibrary),
-            ensureAgentPromptFile(activeLibrary),
-            initializeLibraryDatabase(activeLibrary.path, activeLibrary.androidTreeUri).then((result) => {
-              if (!result.ok) {
-                throw new Error(result.error ?? 'No se pudo inicializar la base SQLite.')
-              }
-            }),
-          ])
-        } catch (error) {
-          console.warn('[notia] could not ensure auxiliary library structure', {
-            libraryPath: activeLibrary.path,
-            error,
-          })
-        }
-
-        const nodes = isAndroidRuntime
-          ? await readLibraryDirectory(activeLibrary.path, {
-              androidDirectoryUri: activeLibrary.androidTreeUri,
-            })
-          : await readLibraryTree(activeLibrary.path, {
-              androidDirectoryUri: activeLibrary.androidTreeUri,
-            })
+    const measurement = startPerformanceMeasurement('library.switch_load', { libraryId: activeLibrary.id })
+    void openLibrary(activeLibrary.id)
+      .then((view) => {
         if (!isCurrent) {
-          libraryLoadMeasurement.cancel()
+          measurement.cancel()
           return
         }
-        notiaLog('treeSync', 'tree read completed', {
-          libraryId: activeLibrary.id,
-          nodeCount: nodes.length,
-        })
-        commitTreeNodesSnapshot(activeLibrary.id, nodes)
+        openedLibraryRef.current = { libraryId: activeLibrary.id, lazy: view.lazy, watched: view.watched }
+        commitTreeNodesSnapshot(activeLibrary.id, view.nodes)
         store.dispatch(setLibraryStatus('ready'))
-        notiaLog('treeSync', 'library ready', {
-          libraryId: activeLibrary.id,
-          nodeCount: nodes.length,
-        })
-        libraryLoadMeasurement.success({ nodeCount: countTreeNodes(nodes) })
-
-        // Build the persistent inventory in the background. The complete
-        // projection is never dispatched to Redux; the Explorer keeps only
-        // its visible tree while search/Graph View query the runtime index.
-        if (isCurrent) {
-          void synchronizeLibraryInventory(activeLibrary, inventoryAbortController.signal)
-        }
-      } catch (error) {
+        measurement.success({ nodeCount: view.nodes.length })
+      })
+      .catch((error: unknown) => {
         if (!isCurrent) {
-          libraryLoadMeasurement.cancel()
+          measurement.cancel()
           return
         }
+        notiaLog('treeSync', 'library open failed', { libraryId: activeLibrary.id }, 'error')
         store.dispatch(setLibraryStatus('error'))
-        libraryLoadMeasurement.error(error instanceof Error ? error : new Error(String(error)))
-      }
-    })()
+        measurement.error(error instanceof Error ? error : new Error(String(error)))
+      })
 
     return () => {
       isCurrent = false
-      inventoryAbortController.abort()
-      libraryLoadMeasurement.cancel({ stage: 'cleanup' })
+      measurement.cancel({ stage: 'cleanup' })
     }
-  }, [activeLibrary, commitTreeNodesSnapshot, explorerRefreshIntervalMs, isAndroidRuntime, persistDirtyTextDocuments, synchronizeLibraryInventory])
+  }, [activeLibrary, commitTreeNodesSnapshot, persistDirtyTextDocuments])
 
-  // Library ID reset effect
+  // Visible state that belongs to the previous library.
   useEffect(() => {
     resetTabsAndClearDrawioControllers()
     store.dispatch(setPendingCreation(null))
@@ -650,39 +451,29 @@ export function useLibraryTreeSync({
     store.dispatch(setSearchMatchedPaths([]))
     store.dispatch(setIsSearchLoading(false))
     store.dispatch(setActiveHeaderAction(''))
-    lastKnownTreeSignatureRef.current = ''
-    lastAutomaticTreeProbeAtRef.current = 0
-    isTreeSignatureProbeInFlightRef.current = false
-    hasDeferredTreeRefreshRef.current = false
-    hasQueuedTreeRefreshRef.current = false
-    isTreeRefreshInFlightRef.current = false
-    if (libraryTreeRefreshTimerRef.current !== null) {
-      window.clearTimeout(libraryTreeRefreshTimerRef.current)
-      libraryTreeRefreshTimerRef.current = null
+    if (treeChangeTimerRef.current !== null) {
+      window.clearTimeout(treeChangeTimerRef.current)
+      treeChangeTimerRef.current = null
     }
   }, [activeLibraryId, resetTabsAndClearDrawioControllers])
 
-  // Selection sync effect
   useEffect(() => {
     const libraryId = store.getState().library.selectedLibraryId
     setTreeNodesForLibrary(libraryId, (current) => setSelectedFileByPath(current, activeTabPath))
   }, [activeTabPath, setTreeNodesForLibrary])
 
-  // Deferred refresh effect
+  // A change announced while the explorer was hidden is applied when it shows.
   useEffect(() => {
-    if (!activeLibrary?.path || !shouldRefreshActiveLibraryTree) { return }
-    if (!hasDeferredTreeRefreshRef.current) { return }
-    hasDeferredTreeRefreshRef.current = false
-    void refreshActiveLibraryTree()
-  }, [activeLibrary?.path, refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])
+    if (!shouldRefreshActiveLibraryTree || !refreshStateRef.current.deferred) { return }
+    refreshStateRef.current.deferred = false
+    void refreshActiveLibraryTree(true)
+  }, [refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])
 
-  // Auto-probe trigger effect
   useEffect(() => {
-    if (!activeLibrary?.path || !shouldRefreshActiveLibraryTree) { return }
-    requestAutomaticTreeProbe()
-  }, [activeLibrary?.path, requestAutomaticTreeProbe, shouldRefreshActiveLibraryTree])
+    requestVisibleRefresh()
+  }, [requestVisibleRefresh])
 
-  // Tree change event listener
+  // Changes announced by the watcher or by the interface's own mutations.
   useEffect(() => {
     const handleLibraryTreeChanged = (event: Event) => {
       const customEvent = event as CustomEvent<{ vaultPath?: string; pathHint?: string }>
@@ -690,7 +481,6 @@ export function useLibraryTreeSync({
       const changedPathHint = normalizePath(customEvent.detail?.pathHint ?? '')
       const currentActiveLibraryPath = normalizePath(activeLibrary?.path ?? '')
       if (!currentActiveLibraryPath) { return }
-
       const matchesCurrentLibrary = changedVaultPath
         ? changedVaultPath === currentActiveLibraryPath
         : changedPathHint
@@ -698,105 +488,71 @@ export function useLibraryTreeSync({
           : true
       if (!matchesCurrentLibrary) { return }
 
-      if (libraryTreeRefreshTimerRef.current !== null) {
-        window.clearTimeout(libraryTreeRefreshTimerRef.current)
+      if (treeChangeTimerRef.current !== null) {
+        window.clearTimeout(treeChangeTimerRef.current)
       }
-
-      invalidateLibraryRuntimeCache(currentActiveLibraryPath, changedPathHint ?? currentActiveLibraryPath)
-
-      libraryTreeRefreshTimerRef.current = window.setTimeout(() => {
-        libraryTreeRefreshTimerRef.current = null
+      treeChangeTimerRef.current = window.setTimeout(() => {
+        treeChangeTimerRef.current = null
+        bumpLibraryIndexRevision()
         if (!shouldRefreshActiveLibraryTree) {
-          hasDeferredTreeRefreshRef.current = true
-          bumpLibraryIndexRevision()
+          refreshStateRef.current.deferred = true
           return
         }
-        hasDeferredTreeRefreshRef.current = false
-        void refreshActiveLibraryTree()
-        bumpLibraryIndexRevision()
+        void refreshActiveLibraryTree(true)
       }, 120)
     }
 
     window.addEventListener('notia:library-tree-changed', handleLibraryTreeChanged)
     return () => {
       window.removeEventListener('notia:library-tree-changed', handleLibraryTreeChanged)
-      if (libraryTreeRefreshTimerRef.current !== null) {
-        window.clearTimeout(libraryTreeRefreshTimerRef.current)
-        libraryTreeRefreshTimerRef.current = null
+      if (treeChangeTimerRef.current !== null) {
+        window.clearTimeout(treeChangeTimerRef.current)
+        treeChangeTimerRef.current = null
       }
     }
   }, [activeLibrary?.path, bumpLibraryIndexRevision, refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])
 
-  // Visibility/focus listeners
+  // Refresh on focus and, for libraries the backend cannot watch, on an interval.
   useEffect(() => {
-    if (!activeLibrary?.path) { return }
-
-    const requestProbe = () => {
-      if (!shouldRefreshActiveLibraryTree) { return }
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') { return }
-      if (isAndroidRuntime) {
-        invalidateLibraryRuntimeCache(activeLibrary.path)
-        void refreshActiveLibraryTree()
-        return
-      }
-      requestAutomaticTreeProbe()
-    }
-
+    if (!activeLibrary) { return }
     const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') { return }
-      requestProbe()
+      if (document.visibilityState === 'visible') requestVisibleRefresh()
     }
-
-    window.addEventListener('focus', requestProbe)
-    window.addEventListener('pageshow', requestProbe)
+    window.addEventListener('focus', requestVisibleRefresh)
+    window.addEventListener('pageshow', requestVisibleRefresh)
     document.addEventListener('visibilitychange', handleVisibilityChange)
-    const refreshTimer = isAndroidRuntime && explorerRefreshIntervalMs > 0
-      ? window.setInterval(requestProbe, Math.max(1000, explorerRefreshIntervalMs))
+    const intervalId = explorerRefreshIntervalMs > 0
+      ? window.setInterval(() => {
+        if (openedLibraryRef.current && !openedLibraryRef.current.watched) requestVisibleRefresh()
+      }, Math.max(1000, explorerRefreshIntervalMs))
       : null
-
     return () => {
-      window.removeEventListener('focus', requestProbe)
-      window.removeEventListener('pageshow', requestProbe)
+      window.removeEventListener('focus', requestVisibleRefresh)
+      window.removeEventListener('pageshow', requestVisibleRefresh)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
-      if (refreshTimer !== null) {
-        window.clearInterval(refreshTimer)
-      }
+      if (intervalId !== null) window.clearInterval(intervalId)
     }
-  }, [activeLibrary, explorerRefreshIntervalMs, isAndroidRuntime, refreshActiveLibraryTree, requestAutomaticTreeProbe, shouldRefreshActiveLibraryTree])
+  }, [activeLibrary, explorerRefreshIntervalMs, requestVisibleRefresh])
 
-  // File watcher effect (desktop only)
+  // Watcher events of the backend reach the explorer as tree changes.
   useEffect(() => {
-    if (isAndroidRuntime || !activeLibrary?.path) { return }
-
+    if (!activeLibrary) { return }
     let isDisposed = false
     let unsubscribe: (() => void) | null = null
-
-    void (async () => {
-      try {
-        const nextUnsubscribe = await subscribeToDesktopLibraryTreeWatchBridge()
-        if (isDisposed) {
-          nextUnsubscribe()
-          return
-        }
-        unsubscribe = nextUnsubscribe
-        await startDesktopLibraryTreeWatch(activeLibrary.path)
-      } catch (error) {
-        console.warn('[notia] could not start desktop library tree watch bridge', {
-          libraryPath: activeLibrary.path,
-          error,
-        })
-      }
-    })()
-
+    void subscribeToDesktopLibraryTreeWatchBridge()
+      .then((nextUnsubscribe) => {
+        if (isDisposed) nextUnsubscribe()
+        else unsubscribe = nextUnsubscribe
+      })
+      .catch((error: unknown) => {
+        console.warn('[notia] library watch events unavailable', error)
+      })
     return () => {
       isDisposed = true
-      if (unsubscribe) {
-        unsubscribe()
-        unsubscribe = null
-      }
+      unsubscribe?.()
       void stopDesktopLibraryTreeWatch()
     }
-  }, [activeLibrary?.path, isAndroidRuntime])
+  }, [activeLibrary])
 
   return {
     setTreeNodesForLibrary,

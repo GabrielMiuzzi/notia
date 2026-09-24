@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { BookPlus, Trash2, X } from 'lucide-react'
 import { pickLibraryDirectory } from '../../services/libraries/libraryRuntime'
+import { backendSupports } from '../../services/transport'
 import { ensureLibraryConfigExists } from '../../services/libraries/libraryConfig'
 import { generateUUID } from '../../utils/uuid'
 import type { NotiaLibrary } from '../../types/notia'
@@ -131,15 +132,21 @@ export function LibraryManagerModal({
             )}
           </div>
           <aside className="notia-library-manager-menu">
-            <NotiaButton
-              className="notia-library-manager-menu-item"
-              variant="primary"
-              onClick={handleAddLibrary}
-              disabled={isAdding}
-            >
-              <BookPlus size={14} />
-              <span>{phaseLabel ?? 'Agregar nueva libreria'}</span>
-            </NotiaButton>
+            {backendSupports('library_pick_directory') ? (
+              <NotiaButton
+                className="notia-library-manager-menu-item"
+                variant="primary"
+                onClick={handleAddLibrary}
+                disabled={isAdding}
+              >
+                <BookPlus size={14} />
+                <span>{phaseLabel ?? 'Agregar nueva libreria'}</span>
+              </NotiaButton>
+            ) : (
+              <p className="notia-library-manager-hint">
+                Las librerías se agregan en el equipo servidor con <code>notia --headless --add-library &lt;carpeta&gt;</code>.
+              </p>
+            )}
             {addErrorMessage ? (
               <div className="notia-library-manager-error" role="status">
                 {addErrorMessage}

@@ -1,11 +1,19 @@
+// Only the window build (feature `app`) prepares bundles and Android sources.
+#![cfg_attr(not(feature = "app"), allow(dead_code))]
+
 fn main() {
-    validate_bundled_speech_models();
-    prepare_android_speech_runtime();
-    prepare_android_directory_picker_plugin();
-    prepare_android_database_plugin();
-    prepare_android_ai_plugin();
-    prepare_android_continuity_plugin();
-    tauri_build::build()
+    // The headless-only build (`--no-default-features`) bundles no window,
+    // no Android project and no speech models.
+    #[cfg(feature = "app")]
+    {
+        validate_bundled_speech_models();
+        prepare_android_speech_runtime();
+        prepare_android_directory_picker_plugin();
+        prepare_android_database_plugin();
+        prepare_android_ai_plugin();
+        prepare_android_continuity_plugin();
+        tauri_build::build()
+    }
 }
 
 fn prepare_android_directory_picker_plugin() {

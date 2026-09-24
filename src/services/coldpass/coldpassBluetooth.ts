@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 
 export const COLDPASS_BLUETOOTH_DEVICE_NAME = 'ColdPass'
 export const COLDPASS_BLUETOOTH_SERVICE_UUID = '8f95d4ef-6b74-4b7a-84b1-75a0ad8e4b61'
@@ -32,33 +32,33 @@ function normalizeBluetoothStatus(value: ColdPassBluetoothStatus): ColdPassBluet
 }
 
 export async function getColdPassBluetoothStatus(): Promise<ColdPassBluetoothStatus> {
-  return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_status'))
+  return normalizeBluetoothStatus(await callBackend<ColdPassBluetoothStatus>('coldpass_bluetooth_status'))
 }
 
 export async function connectColdPassBluetooth(): Promise<ColdPassBluetoothStatus> {
-  return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_connect'))
+  return normalizeBluetoothStatus(await callBackend<ColdPassBluetoothStatus>('coldpass_bluetooth_connect'))
 }
 
 export async function disconnectColdPassBluetooth(): Promise<ColdPassBluetoothStatus> {
-  return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_disconnect'))
+  return normalizeBluetoothStatus(await callBackend<ColdPassBluetoothStatus>('coldpass_bluetooth_disconnect'))
 }
 
 export async function submitColdPassBluetoothPin(pin: string): Promise<ColdPassBluetoothStatus> {
-  return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_submit_pin', {
+  return normalizeBluetoothStatus(await callBackend<ColdPassBluetoothStatus>('coldpass_bluetooth_submit_pin', {
     payload: { pin },
   }))
 }
 
 /** The backend encrypts the challenge and keeps the passkey for the session. */
 export async function authenticateColdPassBluetooth(challenge: string, passkey: string): Promise<ColdPassBluetoothStatus> {
-  return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_authenticate', {
+  return normalizeBluetoothStatus(await callBackend<ColdPassBluetoothStatus>('coldpass_bluetooth_authenticate', {
     payload: { challenge, passkey },
   }))
 }
 
 /** The backend encrypts the message with the session passkey. */
 export async function sendColdPassBluetoothMessage(message: string): Promise<ColdPassBluetoothStatus> {
-  return normalizeBluetoothStatus(await invoke<ColdPassBluetoothStatus>('coldpass_bluetooth_send_message', {
+  return normalizeBluetoothStatus(await callBackend<ColdPassBluetoothStatus>('coldpass_bluetooth_send_message', {
     payload: { message },
   }))
 }

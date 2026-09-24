@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 
 /** Key used by older versions to keep the destination in WebView storage. */
 const LEGACY_BACKUP_SETTINGS_STORAGE_KEY = 'notia:backup-settings:v1'
@@ -36,11 +36,11 @@ function errorMessage(error: unknown, fallback: string): string {
  * in older versions is migrated from WebView storage and then removed.
  */
 export async function loadBackupStatus(): Promise<BackupStatus> {
-  const status = await invoke<BackupStatus>('backend_backup_status')
+  const status = await callBackend<BackupStatus>('backend_backup_status')
   if (status.initialized || !status.supported) {
     return status
   }
-  const migrated = await invoke<BackupStatus>('backend_migrate_backup_directory', {
+  const migrated = await callBackend<BackupStatus>('backend_migrate_backup_directory', {
     directoryPath: readLegacyDirectory(),
   })
   try {
@@ -54,7 +54,7 @@ export async function loadBackupStatus(): Promise<BackupStatus> {
 /** Opens the native folder picker in the backend. */
 export async function pickBackupDirectory(): Promise<BackupStatus> {
   try {
-    return await invoke<BackupStatus>('backend_pick_backup_directory')
+    return await callBackend<BackupStatus>('backend_pick_backup_directory')
   } catch (error) {
     throw new Error(errorMessage(error, 'No se pudo elegir la carpeta.'))
   }
@@ -62,7 +62,7 @@ export async function pickBackupDirectory(): Promise<BackupStatus> {
 
 export async function disableBackups(): Promise<BackupStatus> {
   try {
-    return await invoke<BackupStatus>('backend_disable_backups')
+    return await callBackend<BackupStatus>('backend_disable_backups')
   } catch (error) {
     throw new Error(errorMessage(error, 'No se pudieron desactivar los backups.'))
   }

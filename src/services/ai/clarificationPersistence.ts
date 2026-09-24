@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 
 /*
  * The last clarification the agent asked in a library lives in the backend
@@ -24,18 +24,18 @@ export async function savePendingClarification(
   choices: string[],
   context: ClarificationContext,
 ): Promise<void> {
-  await invoke('backend_save_pending_clarification', { payload: { libraryId, question, choices, ...context } })
+  await callBackend('backend_save_pending_clarification', { payload: { libraryId, question, choices, ...context } })
 }
 
 export function loadPendingClarification(libraryId: string, context: ClarificationContext): Promise<PendingClarification> {
-  return invoke<PendingClarification>('backend_pending_clarification', { payload: { libraryId, ...context } })
+  return callBackend<PendingClarification>('backend_pending_clarification', { payload: { libraryId, ...context } })
 }
 
 export async function clearPendingClarification(libraryId: string): Promise<void> {
-  await invoke('backend_clear_pending_clarification', { payload: { libraryId } })
+  await callBackend('backend_clear_pending_clarification', { payload: { libraryId } })
 }
 
 /** Continuation prompt for the answer, or `null` when the user cancelled. */
 export function answerPendingClarification(libraryId: string, answer: string): Promise<string | null> {
-  return invoke<string | null>('backend_answer_pending_clarification', { payload: { libraryId, answer } })
+  return callBackend<string | null>('backend_answer_pending_clarification', { payload: { libraryId, answer } })
 }

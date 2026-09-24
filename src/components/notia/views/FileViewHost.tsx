@@ -40,7 +40,6 @@ interface FileViewHostProps {
   markdownZoom: number
   onMarkdownZoomChange: (zoom: number) => void
   libraryId?: string
-  libraryPath?: string
   contexts?: readonly LibraryContext[]
 }
 
@@ -55,7 +54,6 @@ function FileViewHostComponent({
   markdownZoom,
   onMarkdownZoomChange,
   libraryId,
-  libraryPath,
   contexts = [],
 }: FileViewHostProps) {
   const handleMermaidSourcePersist = useCallback(async (nextSource: string) => {
@@ -92,8 +90,8 @@ function FileViewHostComponent({
           key={document.path}
           source={document.source}
           documentPath={document.path}
+          lockedContextTag={document.lockedContext}
           libraryId={libraryId}
-          libraryPath={libraryPath}
           onSourceChange={onTextSourceChange}
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}

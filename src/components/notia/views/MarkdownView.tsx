@@ -1,3 +1,4 @@
+import { callBackend } from '../../../services/transport'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
@@ -28,11 +29,8 @@ import {
 } from '../../../engines/markdown/frontmatterEngine'
 import {
   buildWikiLinkLookup,
-  searchWikiLinkTargets,
   type MarkdownWikiLinkLookup,
 } from '../../../engines/markdown/wikiLinkEngine'
-import { resolveLibraryDocumentLogicalPath } from '../../../services/libraries/libraryDocumentRuntime'
-import { invoke } from '@tauri-apps/api/core'
 import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../../types/views/markdownSelection'
 import { buildMarkdownSelectionContext } from '../../../engines/markdown/selectionEngine'
@@ -56,7 +54,6 @@ import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/nord.css'
 import '../../../modules/inkmath/inkmath.css'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
-import { loadTaskManagerSettings } from '../../../modules/task-manager/services/taskManagerStorage'
 import {
   extendTableCellSchemaWithBlocks,
   tableCellBlocksRemark,
@@ -64,6 +61,7 @@ import {
 import { shouldShowMarkdownBlockHandle } from '../../../engines/markdown/markdownBlockHandleEngine'
 import { markdownTableBlockView } from './markdown/markdownTableBlockView'
 import { ChatAttachmentImages } from './ChatAttachmentImages'
+import { suggestLinkTargets } from '../../../services/libraries/libraryLinkRuntime'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -75,8 +73,9 @@ const INLINE_LATEX_BUTTON_SELECTOR = '[data-notia-inkmath-inline-button]'
 interface MarkdownViewProps {
   source: string
   documentPath: string
+  /** Context the note keeps because it lives in a Task Manager board. */
+  lockedContextTag?: string
   libraryId?: string
-  libraryPath?: string
   onSourceChange: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
@@ -136,14 +135,9 @@ function isSameMenuState(
 function buildWikiLinkMenuState(
   context: WikiLinkMenuContext | null,
   currentState: WikiLinkSuggestionMenuState | null,
-  targets: MarkdownWikiLinkTarget[],
+  suggestions: MarkdownWikiLinkTarget[],
 ): WikiLinkSuggestionMenuState | null {
-  if (!context) {
-    return null
-  }
-
-  const suggestions = searchWikiLinkTargets(targets, context.query)
-  if (suggestions.length === 0) {
+  if (!context || suggestions.length === 0) {
     return null
   }
 
@@ -329,8 +323,8 @@ function replaceInlineLatexEditorText(editorElement: HTMLElement, latex: string)
 function MarkdownViewInner({
   source,
   documentPath,
+  lockedContextTag,
   libraryId,
-  libraryPath,
   onSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
@@ -342,12 +336,6 @@ function MarkdownViewInner({
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
-  const lockedContextTag = useMemo(() => {
-    const normalizedPath = documentPath.replace(/\\/g, '/')
-    const match = normalizedPath.match(/(?:^|\/)(?:task-mannager|task-manager)\/([^/]+)\//i)
-    if (!match) return undefined
-    return loadTaskManagerSettings().boards.find((board) => board.name.toLowerCase() === match[1].toLowerCase())?.contexto
-  }, [documentPath])
 
   const [wikiLinkMenuState, setWikiLinkMenuState] = useState<WikiLinkSuggestionMenuState | null>(null)
   const [isEditorReady, setIsEditorReady] = useState(false)
@@ -365,7 +353,8 @@ function MarkdownViewInner({
   const hasFrontmatterRef = useRef(parsedDocument.hasFrontmatter)
   const documentPathRef = useRef(documentPath)
   const onSourceChangeRef = useRef(onSourceChange)
-  const wikiLinkTargetsRef = useRef(wikiLinkTargets)
+  const wikiLinkSuggestionRequestRef = useRef(0)
+  const libraryIdRef = useRef(libraryId)
   const wikiLinkLookupRef = useRef<MarkdownWikiLinkLookup>(wikiLinkLookup)
   const wikiLinkMenuStateRef = useRef<WikiLinkSuggestionMenuState | null>(null)
   const isWikiLinkMenuOpenRef = useRef(false)
@@ -414,9 +403,9 @@ function MarkdownViewInner({
   }, [onSourceChange])
 
   useEffect(() => {
-    wikiLinkTargetsRef.current = wikiLinkTargets
+    libraryIdRef.current = libraryId
     wikiLinkLookupRef.current = wikiLinkLookup
-  }, [wikiLinkLookup, wikiLinkTargets])
+  }, [libraryId, wikiLinkLookup])
 
   useEffect(() => {
     documentPathRef.current = documentPath
@@ -701,10 +690,22 @@ function MarkdownViewInner({
         getLookup: () => wikiLinkLookupRef.current,
         isMenuOpen: () => isWikiLinkMenuOpenRef.current,
         onMenuContextChange: (context) => {
-          setWikiLinkMenuState((currentState) => {
-            const nextState = buildWikiLinkMenuState(context, currentState, wikiLinkTargetsRef.current)
-            return isSameMenuState(currentState, nextState) ? currentState : nextState
-          })
+          // The backend ranks the suggestions; only the latest request is shown.
+          const request = ++wikiLinkSuggestionRequestRef.current
+          const currentLibraryId = libraryIdRef.current
+          if (!context || !currentLibraryId) {
+            setWikiLinkMenuState(null)
+            return
+          }
+          void suggestLinkTargets(currentLibraryId, context.query)
+            .catch(() => [])
+            .then((suggestions) => {
+              if (request !== wikiLinkSuggestionRequestRef.current) return
+              setWikiLinkMenuState((currentState) => {
+                const nextState = buildWikiLinkMenuState(context, currentState, suggestions)
+                return isSameMenuState(currentState, nextState) ? currentState : nextState
+              })
+            })
         },
         onMoveMenuSelection: (direction) => {
           setWikiLinkMenuState((currentState) => {
@@ -944,13 +945,12 @@ function MarkdownViewInner({
     // Page links are bidirectional: the backend checks cycles and updates
     // the opposite link of the previous and new target notes.
     const lowerKey = key.toLowerCase()
-    const logicalPath = libraryPath ? resolveLibraryDocumentLogicalPath(libraryPath, documentPath) : undefined
-    if ((lowerKey === 'nextpage' || lowerKey === 'previouspage') && libraryId && logicalPath) {
+    if ((lowerKey === 'nextpage' || lowerKey === 'previouspage') && libraryId) {
       try {
-        const result = await invoke<{ currentValue: string; changed: boolean; error?: string | null }>('backend_sync_page_link', {
+        const result = await callBackend<{ currentValue: string; changed: boolean; error?: string | null }>('backend_sync_page_link', {
           payload: {
             libraryId,
-            logicalPath,
+            logicalPath: documentPath,
             key: lowerKey === 'nextpage' ? 'nextPage' : 'previousPage',
             oldValue: typeof oldValue === 'string' ? oldValue : '',
             newValue: typeof value === 'string' ? value : '',
@@ -1020,7 +1020,7 @@ function MarkdownViewInner({
           <MarkdownPropertiesPanel
             entries={parsedDocument.frontmatter}
             wikiLinkLookup={wikiLinkLookup}
-            wikiLinkTargets={wikiLinkTargets}
+            libraryId={libraryId}
             onAddProperty={handleAddProperty}
             onEditProperty={handleEditProperty}
             onDeleteProperty={handleDeleteProperty}

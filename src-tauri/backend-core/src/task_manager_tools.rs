@@ -352,7 +352,7 @@ pub struct TaskBoardSummaryDto {
     pub by_group: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskUpdateFieldsDto {
     #[serde(default)]
@@ -473,12 +473,17 @@ pub enum TaskMutationDto {
         name: String,
         color: String,
         context: Option<String>,
+        /// Hours of work per day used to schedule the board's tickets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity_hours_per_day: Option<f64>,
     },
     UpdateBoard {
         board_id: String,
         name: Option<String>,
         color: Option<String>,
         context: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity_hours_per_day: Option<f64>,
     },
     DeleteBoard {
         board_id: String,
@@ -1903,7 +1908,9 @@ fn validate_mutation(
             name,
             color,
             context: board_context,
+            activity_hours_per_day,
         } => {
+            validate_activity_hours(*activity_hours_per_day)?;
             validate_id("boardId", board_id)?;
             validate_name("boardName", name, MAX_TASK_NAME_CHARS)?;
             validate_color(color)?;
@@ -1922,7 +1929,9 @@ fn validate_mutation(
             name,
             color,
             context: board_context,
+            activity_hours_per_day,
         } => {
+            validate_activity_hours(*activity_hours_per_day)?;
             let board = accessible_board(library, context, board_id)?;
             if let Some(name) = name {
                 validate_name("boardName", name, MAX_TASK_NAME_CHARS)?;
@@ -2272,7 +2281,14 @@ fn apply_mutation_to_library(
             name,
             color,
             context: board_context,
+            activity_hours_per_day,
         } => {
+            if let Some(hours) = activity_hours_per_day {
+                library
+                    .config
+                    .activity_hours_per_day
+                    .insert(board_id.clone(), *hours);
+            }
             library.boards.insert(
                 board_id.clone(),
                 TaskBoardDto {
@@ -2292,7 +2308,14 @@ fn apply_mutation_to_library(
             name,
             color,
             context: board_context,
+            activity_hours_per_day,
         } => {
+            if let Some(hours) = activity_hours_per_day {
+                library
+                    .config
+                    .activity_hours_per_day
+                    .insert(board_id.clone(), *hours);
+            }
             let board = library
                 .boards
                 .get_mut(board_id)
@@ -2771,7 +2794,9 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
             name,
             color,
             context,
+            activity_hours_per_day,
         } => {
+            validate_activity_hours(*activity_hours_per_day)?;
             validate_id("boardId", board_id)?;
             validate_name("boardName", name, MAX_TASK_NAME_CHARS)?;
             validate_color(color)?;
@@ -2784,7 +2809,9 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
             name,
             color,
             context,
+            activity_hours_per_day,
         } => {
+            validate_activity_hours(*activity_hours_per_day)?;
             validate_id("boardId", board_id)?;
             if let Some(name) = name {
                 validate_name("boardName", name, MAX_TASK_NAME_CHARS)?;
@@ -3489,6 +3516,14 @@ fn validate_title(field: &str, value: &str, max: usize) -> Result<(), BackendErr
         return Err(invalid(format!("{field} contiene caracteres inválidos.")));
     }
     Ok(())
+}
+fn validate_activity_hours(value: Option<f64>) -> Result<(), BackendError> {
+    match value {
+        Some(hours) if !hours.is_finite() || !(0.0..=24.0).contains(&hours) => {
+            Err(invalid("activityHoursPerDay no es válido."))
+        }
+        _ => Ok(()),
+    }
 }
 fn validate_color(value: &str) -> Result<(), BackendError> {
     if value.len() != 7

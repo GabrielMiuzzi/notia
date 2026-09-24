@@ -248,7 +248,12 @@ mod tests {
                 library_user_id: user.into(),
                 external_identity: None,
             },
-            channel: BackendChannel::App,
+            // A published policy only exists on the published channel.
+            channel: if policy == PersistencePolicy::PublishedNoMemory {
+                BackendChannel::Published
+            } else {
+                BackendChannel::App
+            },
             scope: BackendScope::Library,
             persistence_policy: policy,
         }

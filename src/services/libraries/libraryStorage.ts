@@ -1,7 +1,5 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 import type { NotiaLibrary } from '../../types/notia'
-import { normalizeFilesystemPath } from '../../utils/files/normalizeFilesystemPath'
-import { getSafTreeDisplayName, isSafTreeUri } from '../../utils/files/safUri'
 
 /** Keys of the catalog kept by older versions in WebView storage. */
 const LEGACY_LIBRARIES_STORAGE_KEY = 'notia:libraries'
@@ -16,35 +14,19 @@ interface BackendLibraryCatalog extends LibraryCatalogSnapshot {
   initialized: boolean
 }
 
-function isValidLibrary(value: unknown): value is NotiaLibrary {
+/** Shape of a library kept by older versions; the backend validates the rest. */
+function isStoredLibrary(value: unknown): value is NotiaLibrary {
   if (!value || typeof value !== 'object') {
     return false
   }
-
   const candidate = value as NotiaLibrary
-  return (
-    typeof candidate.id === 'string' &&
-    typeof candidate.name === 'string' &&
-    typeof candidate.path === 'string' &&
-    (typeof candidate.androidTreeUri === 'undefined' || isSafTreeUri(candidate.androidTreeUri))
-  )
-}
-
-/** Display form of a stored library (SAF trees are named after their folder). */
-function toDisplayLibrary(library: NotiaLibrary): NotiaLibrary {
-  const androidTreeUri = isSafTreeUri(library.androidTreeUri) ? library.androidTreeUri.trim() : undefined
-  return {
-    ...library,
-    name: getSafTreeDisplayName(androidTreeUri) ?? library.name,
-    path: normalizeFilesystemPath(library.path),
-    androidTreeUri,
-  }
+  return typeof candidate.id === 'string' && typeof candidate.name === 'string' && typeof candidate.path === 'string'
 }
 
 function readLegacyCatalog(): LibraryCatalogSnapshot {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(LEGACY_LIBRARIES_STORAGE_KEY) ?? '[]')
-    const libraries = Array.isArray(parsed) ? parsed.filter(isValidLibrary) : []
+    const libraries = Array.isArray(parsed) ? parsed.filter(isStoredLibrary) : []
     return { libraries, selectedLibraryId: localStorage.getItem(LEGACY_ACTIVE_LIBRARY_STORAGE_KEY) }
   } catch {
     return { libraries: [], selectedLibraryId: null }
@@ -60,16 +42,14 @@ function clearLegacyCatalog(): void {
   }
 }
 
+/** The catalog as the backend returns it, ready to show (names and paths). */
 function toSnapshot(catalog: LibraryCatalogSnapshot): LibraryCatalogSnapshot {
-  return {
-    libraries: catalog.libraries.map(toDisplayLibrary),
-    selectedLibraryId: catalog.selectedLibraryId ?? null,
-  }
+  return { libraries: catalog.libraries, selectedLibraryId: catalog.selectedLibraryId ?? null }
 }
 
 /** Stores the catalog in the backend and returns what it kept. */
 export async function saveLibraryCatalog(snapshot: LibraryCatalogSnapshot): Promise<LibraryCatalogSnapshot> {
-  const saved = await invoke<BackendLibraryCatalog>('backend_save_library_catalog', {
+  const saved = await callBackend<BackendLibraryCatalog>('backend_save_library_catalog', {
     catalog: {
       libraries: snapshot.libraries.map(({ id, name, path, androidTreeUri }) => ({
         id,
@@ -88,7 +68,7 @@ export async function saveLibraryCatalog(snapshot: LibraryCatalogSnapshot): Prom
  * kept by older versions in WebView storage is migrated and then removed.
  */
 export async function loadLibraryCatalog(): Promise<LibraryCatalogSnapshot> {
-  const catalog = await invoke<BackendLibraryCatalog>('backend_library_catalog')
+  const catalog = await callBackend<BackendLibraryCatalog>('backend_library_catalog')
   if (catalog.initialized) {
     return toSnapshot(catalog)
   }

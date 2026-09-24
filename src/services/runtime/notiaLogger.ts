@@ -88,25 +88,13 @@ export function notiaLog(
     console.info(logLine)
   }
 
-  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    try {
-      import('@tauri-apps/api/core').then(({ invoke }) => {
-        void invoke('notia_log', {
-          payload: {
-            level,
-            module,
-            message: safeMessage,
-            data: dataSuffix || undefined,
-          },
-        }).catch(() => {
-          // Silently ignore if the command is not available
-        })
-      }).catch(() => {
-        // Dynamic import failed; ignore
-      })
-    } catch {
-      // Ignore all errors
-    }
+  if (typeof window !== 'undefined') {
+    // Loaded on demand so the logger stays free of the host in tests.
+    import('../window/windowRuntime').then(({ logToHost }) => {
+      logToHost({ level, module, message: safeMessage, data: dataSuffix || undefined })
+    }).catch(() => {
+      // The host log is best effort; the console already has the line.
+    })
   }
 }
 

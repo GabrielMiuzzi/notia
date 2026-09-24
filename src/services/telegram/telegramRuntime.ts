@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 
 /*
  * The Telegram bot runs in the backend (`telegram_worker.rs`): polling,
@@ -8,4 +8,4 @@ import { invoke } from '@tauri-apps/api/core'
 
 export interface TelegramIdentity { id: number; username?: string; displayName: string }
 
-export const checkTelegramBot = (token: string) => invoke<TelegramIdentity>('check_telegram_bot', { payload: { token } })
+export const checkTelegramBot = (token: string) => callBackend<TelegramIdentity>('check_telegram_bot', { payload: { token } })

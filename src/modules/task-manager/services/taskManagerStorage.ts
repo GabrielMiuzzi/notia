@@ -1,59 +1,45 @@
 import { APP_STORAGE_KEY } from '../constants/taskManagerConstants'
-import type { TaskManagerSettings } from '../types/taskManagerTypes'
-import { createDefaultTaskManagerSettings, normalizeTaskManagerSettings } from '../utils/settings'
 
-let lastPublishedSharedSettings: string | undefined
+/*
+ * Board preferences of this device: only the active tab. Boards, groups,
+ * tasks and the Pomodoro timer come from the backend.
+ */
 
-function sharedSettingsFingerprint(settings: TaskManagerSettings): string {
-  return JSON.stringify({ boards: settings.boards, groups: settings.groups })
-}
-
-export function loadTaskManagerSettings(): TaskManagerSettings {
+function readStored(): Record<string, unknown> | null {
   try {
     const rawValue = window.localStorage.getItem(APP_STORAGE_KEY)
-    if (!rawValue) {
-      return createDefaultTaskManagerSettings()
-    }
-
-    return normalizeTaskManagerSettings(JSON.parse(rawValue))
+    const parsed = rawValue ? JSON.parse(rawValue) as unknown : null
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
   } catch {
-    return createDefaultTaskManagerSettings()
+    return null
   }
 }
 
-export function saveTaskManagerSettings(settings: TaskManagerSettings, options?: { syncPublication?: boolean }): void {
+export function loadActiveTaskTab(): string {
+  const activeTab = readStored()?.activeTab
+  return typeof activeTab === 'string' ? activeTab : ''
+}
+
+export function saveActiveTaskTab(activeTab: string): void {
   try {
-    window.localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(settings))
+    const stored = readStored()
+    window.localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(
+      stored?.pomodoro ? { activeTab, pomodoro: stored.pomodoro } : { activeTab },
+    ))
   } catch {
     // Storage failures are non-fatal.
   }
-  if (typeof window === 'undefined' || !window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
-    return
+}
+
+/** Timer older versions kept on this device, for the backend to adopt once. */
+export function loadLegacyPomodoroState(): unknown {
+  return readStored()?.pomodoro ?? null
+}
+
+export function clearLegacyPomodoroState(): void {
+  try {
+    window.localStorage.setItem(APP_STORAGE_KEY, JSON.stringify({ activeTab: loadActiveTaskTab() }))
+  } catch {
+    // Storage failures are non-fatal.
   }
-  const fingerprint = sharedSettingsFingerprint(settings)
-  if (options?.syncPublication === false) {
-    lastPublishedSharedSettings = fingerprint
-    return
-  }
-  if (lastPublishedSharedSettings === fingerprint) {
-    return
-  }
-  const bridge = (window as Window & {
-    __TAURI_INTERNALS__?: {
-      invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>
-    }
-  }).__TAURI_INTERNALS__
-  if (!bridge) {
-    return
-  }
-  lastPublishedSharedSettings = fingerprint
-  void bridge.invoke('update_task_manager_publication_settings', {
-    settings: {
-      boards: settings.boards,
-      groups: settings.groups,
-    },
-  }).catch((error: unknown) => {
-    lastPublishedSharedSettings = undefined
-    console.warn('[task-manager] no se pudieron sincronizar los settings publicados', error)
-  })
 }

@@ -1,7 +1,6 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 
 export interface SearchIndexedLibraryFilesParams {
-  libraryPath: string
   libraryId: string
   query: string
   /** Index revision; a new value makes the backend re-read the sources. */
@@ -10,11 +9,10 @@ export interface SearchIndexedLibraryFilesParams {
 
 /**
  * Explorer search over names, paths and Markdown contents. The backend keeps
- * the index (the same one Graph View uses) and returns logical paths, which
- * are mapped to the visible library path for the tree.
+ * the index (the same one Graph View uses) and returns the paths the
+ * explorer shows.
  */
 export async function searchIndexedLibraryFiles({
-  libraryPath,
   libraryId,
   query,
   revision,
@@ -23,11 +21,9 @@ export async function searchIndexedLibraryFiles({
     return []
   }
   try {
-    const logicalPaths = await invoke<string[]>('backend_library_search', {
+    return await callBackend<string[]>('backend_library_search', {
       payload: { libraryId, revision, query },
     })
-    const root = libraryPath.replace(/[\\/]+$/, '')
-    return logicalPaths.map((logicalPath) => `${root}/${logicalPath}`)
   } catch (error) {
     console.warn('[notia] library search failed', error)
     return []

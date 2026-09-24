@@ -50,7 +50,8 @@ pub fn markdown_to_speech_text(markdown: &str) -> String {
     for rule in rules() {
         text = rule.pattern.replace_all(&text, rule.replacement).into_owned();
     }
-    text.trim().to_string()
+    // Removed markup leaves spaces at line ends; the voice would pause on them.
+    text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
 fn char_prefix(text: &str, chars: usize) -> &str {
@@ -121,6 +122,79 @@ pub fn speech_plan(markdown: &str) -> Vec<String> {
     }
 }
 
+/// Text of a transcript with its speakers: consecutive segments of the same
+/// speaker join in one paragraph labelled `Hablante N:` (numbered by first
+/// appearance). A transcript of one speaker is its plain text.
+pub fn format_diarized(text: &str, segments: &[(Option<&str>, &str)], speaker_count: u32) -> String {
+    if speaker_count <= 1 {
+        return text.trim().to_string();
+    }
+    let mut labels = Vec::<(String, String)>::new();
+    let mut blocks = Vec::<(Option<String>, String)>::new();
+    for (speaker, segment) in segments {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let label = speaker.map(|speaker| match labels.iter().find(|(id, _)| id == speaker) {
+            Some((_, label)) => label.clone(),
+            None => {
+                let label = format!("Hablante {}", labels.len() + 1);
+                labels.push((speaker.to_string(), label.clone()));
+                label
+            }
+        });
+        match blocks.last_mut() {
+            Some((previous, block)) if *previous == label => {
+                block.push(' ');
+                block.push_str(segment);
+            }
+            _ => blocks.push((label, segment.to_string())),
+        }
+    }
+    let formatted = blocks
+        .into_iter()
+        .map(|(label, block)| match label {
+            Some(label) => format!("{label}: {block}"),
+            None => block,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if formatted.trim().is_empty() { text.trim().to_string() } else { formatted.trim().to_string() }
+}
+
+/// Speakers named in a transcript (`Hablante N:` at the start of a line), in order.
+pub fn transcript_speakers(transcript: &str) -> Vec<String> {
+    let mut numbers = transcript
+        .lines()
+        .filter_map(|line| {
+            line.get(..9).filter(|prefix| prefix.eq_ignore_ascii_case("hablante "))?;
+            let (digits, _) = line[9..].split_once(':')?;
+            (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())).then(|| digits.parse::<u32>().ok()).flatten()
+        })
+        .collect::<Vec<_>>();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers.into_iter().map(|number| format!("Hablante {number}")).collect()
+}
+
+/// Renames a speaker at the start of every line it speaks.
+pub fn rename_speaker(transcript: &str, previous: &str, next: &str) -> String {
+    let (previous, next) = (previous.trim(), next.trim());
+    if previous.is_empty() || next.is_empty() {
+        return transcript.to_string();
+    }
+    let prefix = format!("{previous}:");
+    transcript
+        .split('\n')
+        .map(|line| match line.strip_prefix(&prefix) {
+            Some(rest) => format!("{next}:{rest}"),
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +225,15 @@ mod tests {
         assert_eq!(speech_plan("Hola **vos**."), vec!["Hola vos.".to_string()]);
         assert!(speech_plan("**  **").is_empty());
         assert!(speech_plan(&"palabra ".repeat(1_000)).len() > 1);
+    }
+
+    #[test]
+    fn diarized_transcripts_are_labelled_and_speakers_renamed() {
+        let segments = [(Some("b"), "Hola."), (Some("b"), "¿Todo bien?"), (Some("a"), "Sí."), (None, "ruido")];
+        let text = format_diarized("todo", &segments, 2);
+        assert_eq!(text, "Hablante 1: Hola. ¿Todo bien?\n\nHablante 2: Sí.\n\nruido");
+        assert_eq!(format_diarized(" solo ", &segments, 1), "solo");
+        assert_eq!(transcript_speakers(&text), ["Hablante 1", "Hablante 2"]);
+        assert_eq!(rename_speaker(&text, "Hablante 1", "Ana"), "Ana: Hola. ¿Todo bien?\n\nHablante 2: Sí.\n\nruido");
     }
 }

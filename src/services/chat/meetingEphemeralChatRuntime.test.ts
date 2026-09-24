@@ -2,19 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runMeetingEphemeralChatReply } from './meetingEphemeralChatRuntime'
 
 const mocks = vi.hoisted(() => ({
-  runGlobalAiChat: vi.fn(),
+  startChatTurn: vi.fn(),
 }))
 
-vi.mock('./notiaChatRuntime', () => ({
-  runGlobalAiChat: mocks.runGlobalAiChat,
-  runNotiaChatReply: vi.fn(),
-  createAppAiRequest: vi.fn((input: Record<string, unknown>) => ({ ...input, version: 1, source: { channel: 'app', appSurface: input.appSurface } })),
+vi.mock('./aiChatRuntime', () => ({
+  startChatTurn: mocks.startChatTurn,
 }))
 vi.mock('../ai/agentPromptRuntime', () => ({
   loadSelectedAgentPromptFileName: vi.fn(async () => 'default.md'),
-}))
-vi.mock('../ai/workspaceAiSnapshotRuntime', () => ({
-  buildWorkspaceAiSnapshot: vi.fn(() => ({ snapshotVersion: 1 })),
 }))
 
 // Meeting runs in the Rust runtime with channel `meeting`, no memory and no
@@ -22,12 +17,15 @@ vi.mock('../ai/workspaceAiSnapshotRuntime', () => ({
 describe('meetingEphemeralChatRuntime', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.runGlobalAiChat.mockResolvedValue('respuesta')
+    mocks.startChatTurn.mockReturnValue({
+      requestId: 'request-1',
+      abort: vi.fn(),
+      promise: Promise.resolve({ answer: 'respuesta', dataChanged: false }),
+    })
   })
 
-  it('pasa Meeting por la fachada común como sesión efímera', async () => {
+  it('sends the question with the transcript as a Meeting turn', async () => {
     const library = { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never
-    const controller = new AbortController()
     const onAgentProgress = vi.fn()
     const answer = await runMeetingEphemeralChatReply({
       aiPreferences: {
@@ -41,18 +39,37 @@ describe('meetingEphemeralChatRuntime', () => {
       transcript: 'Se acordó revisar el documento.',
       prompt: '¿Qué se acordó?',
       previousMessages: [],
-      signal: controller.signal,
+      signal: new AbortController().signal,
       onAgentProgress,
     })
 
     expect(answer).toBe('respuesta')
-    expect(mocks.runGlobalAiChat).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(mocks.startChatTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        agent: expect.objectContaining({ libraryId: 'library-1', promptName: 'default.md' }),
-        previousMessages: [],
+        libraryId: 'library-1',
+        mode: 'meeting',
+        message: '¿Qué se acordó?',
+        context: 'Se acordó revisar el documento.',
+        promptName: 'default.md',
+        chat: { kind: 'transient', messages: [] },
       }),
-      expect.objectContaining({ abortSignal: controller.signal, onAgentProgress }),
+      expect.objectContaining({ onAgentProgress }),
     )
+  })
+
+  it('cancels the turn when the question is aborted', async () => {
+    const abort = vi.fn()
+    mocks.startChatTurn.mockReturnValue({ requestId: 'request-2', abort, promise: Promise.resolve({ answer: '', dataChanged: false }) })
+    const controller = new AbortController()
+    controller.abort()
+    await runMeetingEphemeralChatReply({
+      aiPreferences: { ollamaUrl: '', apiKey: '', selectedModel: '', thinkingEnabled: false, thinkingLevel: 'medium' },
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      transcript: '',
+      prompt: 'Hola',
+      previousMessages: [],
+      signal: controller.signal,
+    })
+    expect(abort).toHaveBeenCalled()
   })
 })

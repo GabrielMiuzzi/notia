@@ -40,10 +40,11 @@ export interface ChatWorkspaceViewProps {
   persistTransientContext?: boolean
   ephemeralChat?: boolean
   selectMatchingChatOnly?: boolean
-  historyHydrationMode?: 'full' | 'minimal'
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
   markdownSelection?: MarkdownSelectionContext | null
+  /** Multichat room beside the chat, whose conversation the backend adds as context. */
+  multichatRoomId?: string | null
   activeMarkdownSource?: string | null
   onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
 }
@@ -169,7 +170,7 @@ export interface UseChatSubmitMessageDependencies {
   persistTransientContext: boolean
   hasTransientContext: boolean
   transientContextContent?: string | null
-  markdownSelection: MarkdownSelectionContext | null
+  multichatRoomId?: string | null
   activeMarkdownSource: string | null
   workspaceSnapshot: WorkspaceAiSnapshot | null
   onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
@@ -304,7 +305,6 @@ export interface UseChatStateResult {
   resolvedPreferredContextPaths: string[]
   resolvedTransientContextPaths: string[]
   preferredContextSignature: string
-  preferredTaskManagerBoardPrefix: string | null
   canSubmit: boolean
   isAiAvailable: boolean
   aiHealthMessage: string | null

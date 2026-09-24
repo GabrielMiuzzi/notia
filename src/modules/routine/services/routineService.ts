@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { callBackend, subscribeBackend, type Unsubscribe } from '../../../services/transport'
 import type { NotiaLibrary } from '../../../types/notia'
 import type { RoutineContext, RoutineDashboard, RoutineMutation, RoutineMutationResponse } from '../types/routineTypes'
 
@@ -18,17 +17,17 @@ function routineContext(library: NotiaLibrary): RoutineContext {
 }
 
 export function getRoutineDashboard(library: NotiaLibrary): Promise<RoutineDashboard> {
-  return invoke<RoutineDashboard>('routine_get_dashboard', { context: routineContext(library) })
+  return callBackend<RoutineDashboard>('routine_get_dashboard', { context: routineContext(library) })
 }
 
 export function applyRoutineMutation(library: NotiaLibrary, mutation: RoutineMutation): Promise<RoutineMutationResponse> {
-  return invoke<RoutineMutationResponse>('routine_apply_mutation', {
+  return callBackend<RoutineMutationResponse>('routine_apply_mutation', {
     payload: { context: routineContext(library), mutation },
   })
 }
 
-export function subscribeToRoutineDataChanges(listener: () => void): Promise<UnlistenFn> {
-  return listen(ROUTINE_DATA_CHANGED_EVENT, () => listener())
+export function subscribeToRoutineDataChanges(listener: () => void): Promise<Unsubscribe> {
+  return subscribeBackend(ROUTINE_DATA_CHANGED_EVENT, () => listener())
 }
 
 export function routineErrorMessage(reason: unknown): string {

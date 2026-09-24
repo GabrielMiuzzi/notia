@@ -1,5 +1,5 @@
+import { subscribeBackend } from '../../../services/transport'
 import { useEffect, useRef } from 'react'
-import { listen } from '@tauri-apps/api/event'
 
 const LIBRARY_CHANGED_EVENT = 'notia://telegram-library-changed'
 
@@ -13,8 +13,8 @@ export function useTelegramLibraryChanges(libraryId: string | null | undefined, 
     if (!libraryId) return
     let active = true
     let unlisten: (() => void) | null = null
-    void listen<string>(LIBRARY_CHANGED_EVENT, (event) => {
-      if (event.payload === libraryId) onChangedRef.current()
+    void subscribeBackend<string>(LIBRARY_CHANGED_EVENT, (changedLibraryId) => {
+      if (changedLibraryId === libraryId) onChangedRef.current()
     }).then((stop) => {
       if (active) unlisten = stop
       else stop()

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Check, Copy, Eye, EyeOff, X } from 'lucide-react'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaSubmenuPanel } from './NotiaSubmenuPanel'
@@ -6,8 +6,8 @@ import { NotiaButton } from '../common/NotiaButton'
 import type { ColdPassEntry } from '../../types/coldpass'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
 import { ColdPassPasswordGeneratorPopover } from './ColdPassPasswordGeneratorPopover'
+import { generateColdPassPassword } from '../../services/coldpass/coldpassStorage'
 import {
-  generateColdPassPassword,
   type ColdPassPasswordOptions,
 } from '../../services/coldpass/passwordGenerator'
 
@@ -112,7 +112,16 @@ export function ColdPassCredentialModal({
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [isPasswordGeneratorOpen, setIsPasswordGeneratorOpen] = useState(false)
   const [passwordOptions, setPasswordOptions] = useState<ColdPassPasswordOptions>(DEFAULT_PASSWORD_OPTIONS)
-  const [generatedPassword, setGeneratedPassword] = useState(() => generateColdPassPassword(DEFAULT_PASSWORD_OPTIONS))
+  const [generated, setGenerated] = useState<{ password: string; bruteForceSeconds: number }>({ password: '', bruteForceSeconds: 0 })
+  const generatedPassword = generated.password
+  // The backend generates each password; only the latest request is shown.
+  const generationRef = useRef(0)
+  const regeneratePassword = useCallback((options: ColdPassPasswordOptions) => {
+    const request = ++generationRef.current
+    void generateColdPassPassword(options)
+      .then((next) => { if (request === generationRef.current) setGenerated(next) })
+      .catch(() => undefined)
+  }, [])
   const { triggerRef: passwordGeneratorTriggerRef, panelRef: passwordGeneratorPanelRef } = useSubmenuEngine<
     HTMLButtonElement,
     HTMLDivElement
@@ -129,7 +138,6 @@ export function ColdPassCredentialModal({
       setCopiedField(null)
       setIsPasswordGeneratorOpen(false)
       setPasswordOptions(DEFAULT_PASSWORD_OPTIONS)
-      setGeneratedPassword(generateColdPassPassword(DEFAULT_PASSWORD_OPTIONS))
       return
     }
 
@@ -140,8 +148,8 @@ export function ColdPassCredentialModal({
   }, [initialEntry, open])
 
   useEffect(() => {
-    setGeneratedPassword(generateColdPassPassword(passwordOptions))
-  }, [passwordOptions])
+    if (open) regeneratePassword(passwordOptions)
+  }, [open, passwordOptions, regeneratePassword])
 
   if (!open) {
     return null
@@ -279,9 +287,8 @@ export function ColdPassCredentialModal({
                     password={generatedPassword}
                     options={passwordOptions}
                     onOptionsChange={setPasswordOptions}
-                    onRefresh={() => {
-                      setGeneratedPassword(generateColdPassPassword(passwordOptions))
-                    }}
+                    bruteForceSeconds={generated.bruteForceSeconds}
+                    onRefresh={() => regeneratePassword(passwordOptions)}
                     onUsePassword={() => {
                       setDraft((current) => ({ ...current, password: generatedPassword }))
                       setIsPasswordGeneratorOpen(false)

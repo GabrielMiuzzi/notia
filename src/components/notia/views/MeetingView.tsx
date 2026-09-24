@@ -5,7 +5,7 @@ import { useVoiceTranscription } from './chat/useVoiceTranscription'
 import { useAppSelector } from '../../../store/hooks'
 import { selectAiSettings } from '../../../features/preferences/preferencesSelectors'
 import { improveMeetingTranscript } from '../../../services/ai/aiRuntime'
-import { extractSpeakerNames, replaceSpeakerName } from '../../../services/speech/speechTranscript'
+import { listTranscriptSpeakers, renameTranscriptSpeaker } from '../../../services/speech/speechService'
 import { clearMeetingTranscriptContext, setMeetingTranscriptContext } from '../../../services/meeting/meetingTranscriptContext'
 
 const MEETING_MAX_DURATION_SECONDS = 12 * 60 * 60
@@ -28,8 +28,10 @@ function MeetingViewComponent() {
   }, [transcript])
   useEffect(() => clearMeetingTranscriptContext, [])
   const handleCompleted = useCallback((text: string) => {
-    setSpeakerNames(extractSpeakerNames(text).map((name) => ({ applied: name, draft: name })))
     setAiError(null)
+    void listTranscriptSpeakers(text)
+      .then((names) => setSpeakerNames(names.map((name) => ({ applied: name, draft: name }))))
+      .catch(() => setSpeakerNames([]))
   }, [])
   const voice = useVoiceTranscription({
     draft: transcript,
@@ -56,7 +58,9 @@ function MeetingViewComponent() {
       ? { applied: normalizedName || entry.applied, draft: nextName }
       : entry))
     if (!normalizedName) return
-    setTranscript((current) => replaceSpeakerName(current, speaker.applied, normalizedName))
+    void renameTranscriptSpeaker(transcript, speaker.applied, normalizedName)
+      .then(setTranscript)
+      .catch(() => undefined)
   }
   const improveTranscript = async () => {
     setIsImproving(true)

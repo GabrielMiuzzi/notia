@@ -36,7 +36,6 @@ export function useLibrarySearch({ treeNodes, treeNodesLibraryId, flatFileList }
 
     const timeoutId = window.setTimeout(() => {
       void searchIndexedLibraryFiles({
-        libraryPath: activeLibrary.path,
         libraryId: activeLibrary.id,
         query: normalizedSearchQuery,
         revision: libraryIndexRevision,

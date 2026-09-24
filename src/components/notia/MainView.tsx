@@ -100,9 +100,8 @@ function MainViewComponent({
       const { exportMarkdownDocument } = await import('../../modules/markdown-export/markdownExportEngine')
       // Exports are rendered and written next to the source document by the
       // Rust backend on Windows and Android (SAF); the WebView never writes.
-      const exported = await exportMarkdownDocument(activeDocument.source, activeDocument.name, format, {
+      const exported = await exportMarkdownDocument(format, {
         libraryId: activeLibrary?.id ?? null,
-        libraryPath: activeLibrary?.path ?? null,
         sourceDocumentPath: activeDocument.path,
       })
       if (exported) setIsExportModalOpen(false)
@@ -208,7 +207,6 @@ function MainViewComponent({
           markdownZoom={markdownZoom}
           onMarkdownZoomChange={setMarkdownZoom}
           libraryId={activeLibrary?.id}
-          libraryPath={activeLibrary?.path}
           contexts={contexts}
         />
       </section>

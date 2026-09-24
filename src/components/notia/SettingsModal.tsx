@@ -12,16 +12,15 @@ import {
   getDefaultOllamaApiUrl,
   getSessionAiApiKey,
   subscribeSessionAiApiKey,
-  normalizeAiSettingsInput,
   type AiPreferences,
 } from '../../services/preferences/aiSettingsStorage'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { getExplorerRefreshIntervalBounds } from '../../services/preferences/explorerPanelStorage'
 import { getAppVersion } from '../../services/runtime/appVersion'
-import { checkAiHealth, invalidateAiHealthCache, listAiModels, type AiModelOption } from '../../services/ai/aiRuntime'
+import { checkAiHealth, listAiModels, type AiModelOption } from '../../services/ai/aiRuntime'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
-import { normalizeTelegramPreferences, type TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
+import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
 import { selectQwen3AsrSettings, selectQwen3TtsSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { setQwen3AsrSettings, setQwen3TtsSettings } from '../../features/preferences/preferencesSlice'
@@ -39,10 +38,12 @@ import { NotiaSelectMenu } from '../common/NotiaSelectMenu'
 import { disableBackups, loadBackupStatus, pickBackupDirectory, type BackupStatus } from '../../services/preferences/backupSettingsStorage'
 import { saveDevicePreferences } from '../../services/preferences/devicePreferencesStorage'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
-import { loadTaskManagerSettings } from '../../modules/task-manager/services/taskManagerStorage'
+import { readTaskBoardView } from '../../modules/task-manager/services/taskManagerService'
+import { TASK_MANAGER_LOCAL_LIBRARY_USER_ID, type Board } from '../../modules/task-manager/types/taskManagerTypes'
 import { getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, openTaskManagerPublication, publishTaskManagerBoards, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
 import { loadTaskManagerPublicationTelemetry, recordTaskManagerPublicationTelemetry } from '../../modules/task-manager/services/taskManagerPublicationTelemetry'
-import { normalizeContextTag, normalizeLibraryContexts, type LibraryContext } from '../../services/contexts/libraryContexts'
+import { normalizeContextTag, type LibraryContext } from '../../services/contexts/libraryContexts'
+import { backendPlatform, backendSupports } from '../../services/transport'
 import {
   createLibraryRole,
   createLibraryUser,
@@ -126,8 +127,13 @@ export function SettingsModal({
   const [isCheckingQwen3Tts, setIsCheckingQwen3Tts] = useState(false)
   const [qwen3TtsLoadedSelection, setQwen3TtsLoadedSelection] = useState<{ model: string, device: string } | null>(null)
   const sessionApiKey = useSyncExternalStore(subscribeSessionAiApiKey, getSessionAiApiKey)
-  const normalizedIncomingAiPreferences = {
-    ...normalizeAiSettingsInput(aiPreferences),
+  // The backend normalizes the preferences when it stores them.
+  const incomingAiPreferences = {
+    ...aiPreferences,
+    progressMode: aiPreferences.progressMode ?? 'minimal',
+    showPlan: aiPreferences.showPlan ?? true,
+    showReasoningSummary: aiPreferences.showReasoningSummary ?? true,
+    editProgressMessage: aiPreferences.editProgressMessage ?? true,
     apiKey: sessionApiKey,
   }
   const requestedSection = useAppSelector(selectSettingsActiveSection)
@@ -160,15 +166,15 @@ export function SettingsModal({
       })
     return () => { active = false }
   }, [activeSection, open, qwen3TtsLoadedSelection, qwen3TtsPreferences.model, qwen3TtsPreferences.device])
-  const [ollamaUrlDraft, setOllamaUrlDraft] = useState(normalizedIncomingAiPreferences.ollamaUrl)
-  const [apiKeyDraft, setApiKeyDraft] = useState(normalizedIncomingAiPreferences.apiKey)
-  const [selectedModelDraft, setSelectedModelDraft] = useState(normalizedIncomingAiPreferences.selectedModel)
-  const [thinkingEnabledDraft, setThinkingEnabledDraft] = useState(normalizedIncomingAiPreferences.thinkingEnabled)
-  const [thinkingLevelDraft, setThinkingLevelDraft] = useState(normalizedIncomingAiPreferences.thinkingLevel)
-  const [progressModeDraft, setProgressModeDraft] = useState(normalizedIncomingAiPreferences.progressMode)
-  const [showPlanDraft, setShowPlanDraft] = useState(normalizedIncomingAiPreferences.showPlan)
-  const [showReasoningSummaryDraft, setShowReasoningSummaryDraft] = useState(normalizedIncomingAiPreferences.showReasoningSummary)
-  const [editProgressMessageDraft, setEditProgressMessageDraft] = useState(normalizedIncomingAiPreferences.editProgressMessage)
+  const [ollamaUrlDraft, setOllamaUrlDraft] = useState(incomingAiPreferences.ollamaUrl)
+  const [apiKeyDraft, setApiKeyDraft] = useState(incomingAiPreferences.apiKey)
+  const [selectedModelDraft, setSelectedModelDraft] = useState(incomingAiPreferences.selectedModel)
+  const [thinkingEnabledDraft, setThinkingEnabledDraft] = useState(incomingAiPreferences.thinkingEnabled)
+  const [thinkingLevelDraft, setThinkingLevelDraft] = useState(incomingAiPreferences.thinkingLevel)
+  const [progressModeDraft, setProgressModeDraft] = useState(incomingAiPreferences.progressMode)
+  const [showPlanDraft, setShowPlanDraft] = useState(incomingAiPreferences.showPlan)
+  const [showReasoningSummaryDraft, setShowReasoningSummaryDraft] = useState(incomingAiPreferences.showReasoningSummary)
+  const [editProgressMessageDraft, setEditProgressMessageDraft] = useState(incomingAiPreferences.editProgressMessage)
   const [telegramTokenDraft, setTelegramTokenDraft] = useState(telegramPreferences.botToken)
   const [telegramStatus, setTelegramStatus] = useState('Todavia no se probo la conexion.')
   const [isCheckingTelegram, setIsCheckingTelegram] = useState(false)
@@ -228,16 +234,18 @@ export function SettingsModal({
   })
   const [isCheckingAiHealth, setIsCheckingAiHealth] = useState(false)
   const projectVersion = getAppVersion()
+  // Backups, publication and Telegram run in the backend: what counts is the
+  // platform of the backend (the server's, for a browser), not this device.
+  const platform = backendPlatform()
   const runtimeDevice = getRuntimeDevice()
-  const isAndroidRuntime = runtimeDevice === 'Android'
-  const visibleSections = runtimeDevice === 'Windows'
+  const isAndroidBackend = platform === 'android'
+  const visibleSections = platform === 'windows'
     ? SECTIONS
-    : SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar' && (!isAndroidRuntime || section !== 'Telegram'))
+    : SECTIONS.filter((section) => section !== 'Backups' && section !== 'Publicar' && (!isAndroidBackend || section !== 'Telegram'))
 
   useEffect(() => {
-    if (isAndroidRuntime && activeSection === 'Telegram') setActiveSection('General')
-  }, [activeSection, isAndroidRuntime])
-  const taskManagerSettings = loadTaskManagerSettings()
+    if (isAndroidBackend && activeSection === 'Telegram') setActiveSection('General')
+  }, [activeSection, isAndroidBackend])
   const publishedBoardNames = new Set(taskManagerPublicationPreferences.publishedBoardNames)
   const refreshBounds = getExplorerRefreshIntervalBounds()
   const refreshSliderMin = refreshBounds.allowDisabled ? 0 : refreshBounds.minSeconds
@@ -251,7 +259,7 @@ export function SettingsModal({
     : `Cooldown del chequeo automatico (${refreshBounds.minSeconds}s a ${refreshBounds.maxSeconds}s)`
   const ocrDebounceMs = clampOcrDebounceMs(inkMathPreferences.debounceMs)
   const ocrDebounceLabel = `${ocrDebounceMs} ms`
-  const normalizedAiPreferences = normalizeAiSettingsInput({
+  const draftAiPreferences: AiPreferences = {
     ollamaUrl: ollamaUrlDraft,
     apiKey: apiKeyDraft,
     selectedModel: selectedModelDraft,
@@ -261,7 +269,7 @@ export function SettingsModal({
     showPlan: showPlanDraft,
     showReasoningSummary: showReasoningSummaryDraft,
     editProgressMessage: editProgressMessageDraft,
-  })
+  }
   const selectedModelOption = availableModels.find((model) => model.name === selectedModelDraft) ?? null
 
   useEffect(() => {
@@ -269,25 +277,25 @@ export function SettingsModal({
       return
     }
 
-    setOllamaUrlDraft(normalizedIncomingAiPreferences.ollamaUrl)
-    setApiKeyDraft(normalizedIncomingAiPreferences.apiKey)
-    setSelectedModelDraft(normalizedIncomingAiPreferences.selectedModel)
-    setThinkingEnabledDraft(normalizedIncomingAiPreferences.thinkingEnabled)
-    setThinkingLevelDraft(normalizedIncomingAiPreferences.thinkingLevel)
-    setProgressModeDraft(normalizedIncomingAiPreferences.progressMode)
-    setShowPlanDraft(normalizedIncomingAiPreferences.showPlan)
-    setShowReasoningSummaryDraft(normalizedIncomingAiPreferences.showReasoningSummary)
-    setEditProgressMessageDraft(normalizedIncomingAiPreferences.editProgressMessage)
+    setOllamaUrlDraft(incomingAiPreferences.ollamaUrl)
+    setApiKeyDraft(incomingAiPreferences.apiKey)
+    setSelectedModelDraft(incomingAiPreferences.selectedModel)
+    setThinkingEnabledDraft(incomingAiPreferences.thinkingEnabled)
+    setThinkingLevelDraft(incomingAiPreferences.thinkingLevel)
+    setProgressModeDraft(incomingAiPreferences.progressMode)
+    setShowPlanDraft(incomingAiPreferences.showPlan)
+    setShowReasoningSummaryDraft(incomingAiPreferences.showReasoningSummary)
+    setEditProgressMessageDraft(incomingAiPreferences.editProgressMessage)
   }, [
-    normalizedIncomingAiPreferences.apiKey,
-    normalizedIncomingAiPreferences.ollamaUrl,
-    normalizedIncomingAiPreferences.selectedModel,
-    normalizedIncomingAiPreferences.thinkingEnabled,
-    normalizedIncomingAiPreferences.thinkingLevel,
-    normalizedIncomingAiPreferences.progressMode,
-    normalizedIncomingAiPreferences.showPlan,
-    normalizedIncomingAiPreferences.showReasoningSummary,
-    normalizedIncomingAiPreferences.editProgressMessage,
+    incomingAiPreferences.apiKey,
+    incomingAiPreferences.ollamaUrl,
+    incomingAiPreferences.selectedModel,
+    incomingAiPreferences.thinkingEnabled,
+    incomingAiPreferences.thinkingLevel,
+    incomingAiPreferences.progressMode,
+    incomingAiPreferences.showPlan,
+    incomingAiPreferences.showReasoningSummary,
+    incomingAiPreferences.editProgressMessage,
     open,
   ])
 
@@ -298,6 +306,21 @@ export function SettingsModal({
   useEffect(() => {
     if (!open) setIsFinanceDeleteConfirmationOpen(false)
   }, [open])
+
+  // Boards of the active library, to choose what to publish and to show
+  // which contexts are in use.
+  const [taskManagerBoards, setTaskManagerBoards] = useState<Board[]>([])
+  useEffect(() => {
+    if (!open || !activeLibrary) {
+      setTaskManagerBoards([])
+      return
+    }
+    let current = true
+    void readTaskBoardView({ libraryId: activeLibrary.id, libraryUserId: TASK_MANAGER_LOCAL_LIBRARY_USER_ID })
+      .then((view) => { if (current) setTaskManagerBoards(view.boards) })
+      .catch(() => { if (current) setTaskManagerBoards([]) })
+    return () => { current = false }
+  }, [activeLibrary, open])
 
   useEffect(() => {
     libraryDataGenerationRef.current += 1
@@ -333,7 +356,7 @@ export function SettingsModal({
   }, [activeLibrary, open])
 
   useEffect(() => {
-    if (!open || runtimeDevice !== 'Windows') return
+    if (!open || platform !== 'windows') return
     let cancelled = false
     void getTaskManagerPublicationUrl()
       .then((url) => {
@@ -343,7 +366,7 @@ export function SettingsModal({
         if (!cancelled) setPublicationUrl(null)
       })
     return () => { cancelled = true }
-  }, [open, runtimeDevice])
+  }, [open, platform])
 
   useEffect(() => {
     if (!open || activeSection !== 'Publicar') return
@@ -364,7 +387,7 @@ export function SettingsModal({
     }
 
     let cancelled = false
-    const currentPreferences = normalizeAiSettingsInput(aiPreferences)
+    const currentPreferences = aiPreferences
 
     setIsLoadingModels(true)
     setModelsErrorMessage(null)
@@ -415,28 +438,7 @@ export function SettingsModal({
   }, [aiPreferences, onAiPreferencesChange, open])
 
   const commitAiPreferences = () => {
-    const normalized = normalizeAiSettingsInput({
-      ollamaUrl: ollamaUrlDraft,
-      apiKey: apiKeyDraft,
-      selectedModel: selectedModelDraft,
-      thinkingEnabled: thinkingEnabledDraft,
-      thinkingLevel: thinkingLevelDraft,
-      progressMode: progressModeDraft,
-      showPlan: showPlanDraft,
-      showReasoningSummary: showReasoningSummaryDraft,
-      editProgressMessage: editProgressMessageDraft,
-    })
-
-    setOllamaUrlDraft(normalized.ollamaUrl)
-    setApiKeyDraft(normalized.apiKey)
-    setSelectedModelDraft(normalized.selectedModel)
-    setThinkingEnabledDraft(normalized.thinkingEnabled)
-    setThinkingLevelDraft(normalized.thinkingLevel)
-    setProgressModeDraft(normalized.progressMode)
-    setShowPlanDraft(normalized.showPlan)
-    setShowReasoningSummaryDraft(normalized.showReasoningSummary)
-    setEditProgressMessageDraft(normalized.editProgressMessage)
-    onAiPreferencesChange(normalized)
+    onAiPreferencesChange(draftAiPreferences)
   }
 
   // Save pending changes when modal closes
@@ -449,20 +451,10 @@ export function SettingsModal({
   }, [open])
 
   const handleCheckAiConnection = async () => {
-    const normalized = normalizeAiSettingsInput({
-      ollamaUrl: ollamaUrlDraft,
-      apiKey: apiKeyDraft,
-      selectedModel: selectedModelDraft,
-    })
-
-    setOllamaUrlDraft(normalized.ollamaUrl)
-    setApiKeyDraft(normalized.apiKey)
-    setSelectedModelDraft(normalized.selectedModel)
-    onAiPreferencesChange(normalized)
-    invalidateAiHealthCache()
+    onAiPreferencesChange(draftAiPreferences)
     setIsCheckingAiHealth(true)
 
-    const result = await checkAiHealth(normalized)
+    const result = await checkAiHealth(draftAiPreferences, { fresh: true })
     setAiHealthStatus({
       tone: result.ok ? 'success' : 'error',
       message: result.message,
@@ -471,7 +463,7 @@ export function SettingsModal({
   }
 
   const commitTelegramToken = () => {
-    onTelegramPreferencesChange(normalizeTelegramPreferences({ ...telegramPreferences, botToken: telegramTokenDraft }))
+    onTelegramPreferencesChange({ ...telegramPreferences, botToken: telegramTokenDraft })
   }
 
   const handleCheckTelegram = async () => {
@@ -753,7 +745,7 @@ export function SettingsModal({
                     onClick={() => {
                       const tag = normalizeContextTag(newContextTag)
                       if (!tag || contexts.some((item) => item.tag.toLowerCase() === tag.toLowerCase())) return
-                      onContextsChange(normalizeLibraryContexts([...contexts, { tag, color: newContextColor }]))
+                      onContextsChange([...contexts, { tag, color: newContextColor }])
                       setNewContextTag('')
                     }}
                     disabled={!newContextTag.trim()}
@@ -773,7 +765,7 @@ export function SettingsModal({
                   </thead>
                   <tbody>
                     {contexts.map((context) => {
-                      const isUsedByBoard = taskManagerSettings.boards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
+                      const isUsedByBoard = taskManagerBoards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
                       return (
                         <tr key={context.tag}>
                           <td>
@@ -993,7 +985,7 @@ export function SettingsModal({
             <>
                 <div className="notia-settings-card">
                 <div className="notia-settings-card-label">Host de Ollama Cloud</div>
-                <div className="notia-settings-card-value">{normalizedAiPreferences.ollamaUrl}</div>
+                <div className="notia-settings-card-value">{draftAiPreferences.ollamaUrl}</div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Por defecto usa Ollama Cloud (`https://ollama.com`). Si querés, podés reemplazarlo por una URL local propia.
                 </div>
@@ -1019,7 +1011,7 @@ export function SettingsModal({
               <div className="notia-settings-card">
                 <div className="notia-settings-card-label">Modelo de Ollama</div>
                 <div className="notia-settings-card-value">
-                  {normalizedAiPreferences.selectedModel || 'Sin seleccionar'}
+                  {draftAiPreferences.selectedModel || 'Sin seleccionar'}
                 </div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Selecciona cualquier modelo disponible. Para enviar imagenes, elegi uno con capacidad de vision.
@@ -1050,13 +1042,7 @@ export function SettingsModal({
                           onClick={() => {
                             const nextValue = model.name
                             setSelectedModelDraft(nextValue)
-                            onAiPreferencesChange(normalizeAiSettingsInput({
-                              ollamaUrl: ollamaUrlDraft,
-                              apiKey: apiKeyDraft,
-                              selectedModel: nextValue,
-                              thinkingEnabled: thinkingEnabledDraft,
-                              thinkingLevel: thinkingLevelDraft,
-                            }))
+                            onAiPreferencesChange({ ...draftAiPreferences, selectedModel: nextValue })
                             setIsModelMenuOpen(false)
                           }}
                         >
@@ -1089,7 +1075,7 @@ export function SettingsModal({
                           const nextEnabled = !thinkingEnabledDraft
                           setThinkingEnabledDraft(nextEnabled)
                           onAiPreferencesChange({
-                            ...normalizedAiPreferences,
+                            ...draftAiPreferences,
                             thinkingEnabled: nextEnabled,
                           })
                         }}
@@ -1108,7 +1094,7 @@ export function SettingsModal({
                             onClick={() => {
                               setThinkingLevelDraft(level)
                               onAiPreferencesChange({
-                                ...normalizedAiPreferences,
+                                ...draftAiPreferences,
                                 thinkingLevel: level,
                               })
                             }}
@@ -1139,7 +1125,7 @@ export function SettingsModal({
                       onChange={(value) => {
                         if (value !== 'minimal' && value !== 'standard' && value !== 'detailed' && value !== 'off') return
                         setProgressModeDraft(value)
-                        onAiPreferencesChange({ ...normalizedAiPreferences, progressMode: value })
+                        onAiPreferencesChange({ ...draftAiPreferences, progressMode: value })
                       }}
                     />
                   </label>
@@ -1147,21 +1133,21 @@ export function SettingsModal({
                     <span>Mostrar TO-DO</span>
                     <input type="checkbox" checked={showPlanDraft} onChange={(event) => {
                       setShowPlanDraft(event.target.checked)
-                      onAiPreferencesChange({ ...normalizedAiPreferences, showPlan: event.target.checked })
+                      onAiPreferencesChange({ ...draftAiPreferences, showPlan: event.target.checked })
                     }} />
                   </label>
                   <label className="notia-settings-checkbox-row">
                     <span>Mostrar resumen del enfoque</span>
                     <input type="checkbox" checked={showReasoningSummaryDraft} onChange={(event) => {
                       setShowReasoningSummaryDraft(event.target.checked)
-                      onAiPreferencesChange({ ...normalizedAiPreferences, showReasoningSummary: event.target.checked })
+                      onAiPreferencesChange({ ...draftAiPreferences, showReasoningSummary: event.target.checked })
                     }} />
                   </label>
                   <label className="notia-settings-checkbox-row">
                     <span>Editar un único mensaje de progreso</span>
                     <input type="checkbox" checked={editProgressMessageDraft} onChange={(event) => {
                       setEditProgressMessageDraft(event.target.checked)
-                      onAiPreferencesChange({ ...normalizedAiPreferences, editProgressMessage: event.target.checked })
+                      onAiPreferencesChange({ ...draftAiPreferences, editProgressMessage: event.target.checked })
                     }} />
                   </label>
                 </div>
@@ -1174,7 +1160,7 @@ export function SettingsModal({
               <div className="notia-settings-card">
                 <div className="notia-settings-card-label">API key</div>
                 <div className="notia-settings-card-value">
-                  {normalizedAiPreferences.apiKey ? 'Configurada' : 'No configurada'}
+                  {draftAiPreferences.apiKey ? 'Configurada' : 'No configurada'}
                 </div>
                 <div className="notia-settings-card-label notia-settings-card-label--spaced">
                   Se envía como header `Authorization: Bearer ...`
@@ -1407,7 +1393,7 @@ export function SettingsModal({
                 {backupSettings?.lastError ? ` Último error: ${backupSettings.lastError}` : ''}
               </div>
               <div className="notia-settings-actions">
-                <NotiaButton variant="secondary" disabled={backupSettings?.supported === false} onClick={() => {
+                <NotiaButton variant="secondary" disabled={backupSettings?.supported === false || !backendSupports('backend_pick_backup_directory')} onClick={() => {
                   void pickBackupDirectory().then((status) => {
                     setBackupSettings(status)
                     if (status.directoryPath) setBackupStatus('Carpeta de backups configurada.')
@@ -1429,7 +1415,7 @@ export function SettingsModal({
                 Disponible solo en Windows. Abre el mismo Task Manager, con sus vistas y funciones de edición, para los tableros seleccionados en cualquier navegador de la red local. Notia debe permanecer abierta.
               </div>
               <div className="notia-settings-actions" role="group" aria-label="Tableros publicados">
-                {taskManagerSettings.boards.map((board) => (
+                {taskManagerBoards.map((board) => (
                   <label key={board.name} className="notia-settings-checkbox-label">
                     <input
                       type="checkbox"
@@ -1440,7 +1426,7 @@ export function SettingsModal({
                   </label>
                 ))}
               </div>
-              {taskManagerSettings.boards.length === 0 ? <div className="notia-settings-status">Todavía no hay tableros disponibles.</div> : null}
+              {taskManagerBoards.length === 0 ? <div className="notia-settings-status">Todavía no hay tableros disponibles.</div> : null}
               <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Puerto fijo de publicación</span><input className="notia-settings-input" type="number" min="1024" max="65535" value={taskManagerPublicationPreferences.port} onChange={(event) => { const port = Number(event.target.value); if (Number.isInteger(port) && port >= 1024 && port <= 65535) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, port }) }} /></label>
               <label className="notia-settings-input-wrap"><span className="notia-settings-card-label">Clientes simultáneos máximos</span><input className="notia-settings-input" type="number" min="1" max="64" value={taskManagerPublicationPreferences.maxClients} onChange={(event) => { const maxClients = Number(event.target.value); if (Number.isInteger(maxClients) && maxClients >= 1 && maxClients <= 64) onTaskManagerPublicationPreferencesChange({ ...taskManagerPublicationPreferences, maxClients }) }} /></label>
               <div className="notia-settings-actions">

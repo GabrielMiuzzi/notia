@@ -75,12 +75,12 @@ export function ChatWorkspaceViewComponent({
   transientContextMode = null,
   transientContextSummary = null,
   transientContextContent = transientContextSummary,
+  multichatRoomId = null,
   transientContextDisplayPaths = EMPTY_CONTEXT_PATHS,
   onTransientContextPathRemove,
   persistTransientContext = false,
   ephemeralChat = false,
   selectMatchingChatOnly = false,
-  historyHydrationMode = 'full',
   onChatCreated,
   onChatDeleted,
   markdownSelection = null,
@@ -93,7 +93,6 @@ export function ChatWorkspaceViewComponent({
       showHistoryPanel,
       ephemeralChat,
       selectMatchingChatOnly,
-      historyHydrationMode,
     }),
   )
   useEffect(() => {
@@ -128,7 +127,6 @@ export function ChatWorkspaceViewComponent({
     transientContextSummary,
     persistTransientContext,
     selectMatchingChatOnly,
-    historyHydrationMode,
   })
   const [agentPromptOptions, setAgentPromptOptions] = useState<AgentPromptOption[]>([
     { fileName: 'default.md', name: 'default' },
@@ -507,11 +505,11 @@ export function ChatWorkspaceViewComponent({
       persistTransientContext,
       hasTransientContext,
       transientContextContent,
+      multichatRoomId,
       onChatCreated: async (filePath) => {
         if (ephemeralChat) ephemeralChatPathsRef.current.add(filePath)
         await onChatCreated?.(filePath)
       },
-      markdownSelection,
       activeMarkdownSource,
       workspaceSnapshot,
       onActiveMarkdownDocumentChanged,
@@ -1155,6 +1153,10 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
+  if (previous.multichatRoomId !== next.multichatRoomId) {
+    return false
+  }
+
   if (!areStringArraysEqual(previous.transientContextDisplayPaths ?? EMPTY_CONTEXT_PATHS, next.transientContextDisplayPaths ?? EMPTY_CONTEXT_PATHS)) {
     return false
   }
@@ -1168,10 +1170,6 @@ function areChatWorkspaceViewPropsEqual(
   }
 
   if (previous.selectMatchingChatOnly !== next.selectMatchingChatOnly) {
-    return false
-  }
-
-  if (previous.historyHydrationMode !== next.historyHydrationMode) {
     return false
   }
 

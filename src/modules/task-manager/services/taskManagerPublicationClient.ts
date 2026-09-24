@@ -17,13 +17,11 @@ export type {
 } from './taskManagerPublicationProtocol'
 
 const MUTATING_COMMAND_NAMES = [
-  'task_manager_preview_mutation',
-  'task_manager_apply_mutation',
+  'task_manager_board_execute',
+  'task_manager_pomodoro',
   'task_manager_write_ticket_source',
-  'task_manager_append_pomodoro',
   'begin_task_manager_publication_batch',
   'end_task_manager_publication_batch',
-  'update_task_manager_publication_settings',
 ] as const
 const MUTATING_COMMANDS = new Set<string>(MUTATING_COMMAND_NAMES)
 const INITIAL_RECONNECT_DELAY_MS = 250
@@ -38,11 +36,17 @@ const MAX_PROTOCOL_TEXT_LENGTH = 2_000
 export type TaskManagerPublicationMutationCommand = typeof MUTATING_COMMAND_NAMES[number]
 
 export interface TaskManagerPublicationMutationArgs {
-  task_manager_preview_mutation: {
-    request: Record<string, unknown>
+  task_manager_board_execute: {
+    payload: {
+      intent: Record<string, unknown>
+    }
   }
-  task_manager_apply_mutation: {
-    request: Record<string, unknown>
+  task_manager_pomodoro: {
+    payload: {
+      localDate: string
+      localTime: string
+      action: Record<string, unknown>
+    }
   }
   task_manager_write_ticket_source: {
     payload: {
@@ -51,18 +55,8 @@ export interface TaskManagerPublicationMutationArgs {
       expectedRevision: string
     }
   }
-  task_manager_append_pomodoro: {
-    payload: {
-      localDate: string
-      localTime: string
-      entry: Record<string, unknown>
-    }
-  }
   begin_task_manager_publication_batch: Record<string, never>
   end_task_manager_publication_batch: Record<string, never>
-  update_task_manager_publication_settings: {
-    settings: Pick<TaskManagerSettings, 'boards' | 'groups'>
-  }
 }
 
 export type TaskManagerPublicationMutationRequest = {

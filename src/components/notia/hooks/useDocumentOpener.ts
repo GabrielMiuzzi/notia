@@ -8,33 +8,27 @@ import {
   setRenamingPath,
   setDialogState,
 } from '../../../features/documents/documentsSlice'
-import {
-  readLibraryFileContent,
-  readMarkdownWithDefaults,
-} from '../../../services/libraries/libraryDocumentRuntime'
+import { readLibraryDocument } from '../../../services/libraries/libraryDocumentRuntime'
 import { resolveFileViewKind, isTextualViewKind } from '../../../services/views/fileViewResolver'
 import { getFileExtension } from '../../../utils/files/getFileExtension'
-import { toFileUrl } from '../../../utils/files/toFileUrl'
+import { backendFileUrl } from '../../../services/transport'
 import { startPerformanceMeasurement } from '../../../services/runtime/performanceBaseline'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
-import { resolveLibraryDocumentLogicalPath } from '../../../services/libraries/libraryDocumentRuntime'
 
 interface UseDocumentOpenerParams {
   openDocumentInTab: (document: OpenFileDocument, latestSavedSource: string, latestSavedRevision?: string) => void
-  resolveActiveLibraryAndroidDirectoryUri: (pathValue?: string | null) => string | undefined
   activeLibrary: { id: string; path: string } | null
 }
 
 export function useDocumentOpener({
   openDocumentInTab,
-  resolveActiveLibraryAndroidDirectoryUri,
   activeLibrary,
 }: UseDocumentOpenerParams) {
   const dispatch = useAppDispatch()
   const openingDocumentPathsRef = useRef<Set<string>>(new Set())
 
-  const handleOpenFile = useCallback(async (filePath: string, androidDocumentUri?: string) => {
+  const handleOpenFile = useCallback(async (filePath: string) => {
     const openTimer = notiaTimer('document', 'useDocumentOpener.handleOpenFile', { filePath })
     const existingTab = store.getState().documents.openTabs.find((tab) => tab.document.path === filePath)
     if (existingTab) { dispatch(setActiveTabPath(filePath)); openTimer.success({ stage: 'existing_tab' }); return }
@@ -51,15 +45,9 @@ export function useDocumentOpener({
     if (isTextualViewKind(viewKind)) {
       openingDocumentPathsRef.current.add(filePath)
       try {
-        const isMarkdown = extension === 'md'
-        const readFn = isMarkdown ? readMarkdownWithDefaults : readLibraryFileContent
-        const result = await readFn(androidDocumentUri ?? filePath, {
-          androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(filePath),
-          libraryId: activeLibrary?.id,
-          logicalPath: activeLibrary
-            ? resolveLibraryDocumentLogicalPath(activeLibrary.path, filePath)
-            : undefined,
-        })
+        const result = activeLibrary
+          ? await readLibraryDocument(activeLibrary.id, filePath, { markdownDefaults: extension === 'md' })
+          : { ok: false, content: '', error: 'No hay una biblioteca abierta.' }
         if (!result.ok) {
           openFileMeasurement.error(new Error(result.error ?? 'Could not read file.'))
           dispatch(setDialogState({
@@ -76,7 +64,7 @@ export function useDocumentOpener({
           extension,
           viewKind,
           source: result.content,
-          androidDocumentUri,
+          ...(result.lockedContext ? { lockedContext: result.lockedContext } : {}),
         }
         openDocumentInTab(nextDocument, result.content, result.revision)
         openFileMeasurement.success({ sourceLength: result.content.length })
@@ -88,13 +76,13 @@ export function useDocumentOpener({
     }
 
     const name = filePath.split('/').pop() ?? filePath
-    openDocumentInTab({ path: filePath, name, extension, viewKind, imageUrl: toFileUrl(filePath) }, '')
+    openDocumentInTab({ path: filePath, name, extension, viewKind, imageUrl: backendFileUrl(filePath) }, '')
     openFileMeasurement.success()
     openTimer.success({ stage: 'binary_loaded' })
-  }, [activeLibrary, dispatch, openDocumentInTab, resolveActiveLibraryAndroidDirectoryUri])
+  }, [activeLibrary, dispatch, openDocumentInTab])
 
   const handleOpenFileFromView = useCallback(
-    (filePath: string, androidDocumentUri?: string) => { void handleOpenFile(filePath, androidDocumentUri) },
+    (filePath: string) => { void handleOpenFile(filePath) },
     [handleOpenFile],
   )
 

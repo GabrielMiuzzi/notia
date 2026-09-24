@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { callBackend, subscribeBackend, type Unsubscribe } from '../transport'
 import type {
   DiarizedTranscript,
   SherpaRuntimeStatus,
@@ -83,8 +82,10 @@ export function parseDiarizedTranscript(value: unknown): DiarizedTranscript {
   if (!isRecord(value) || !Array.isArray(value.segments) || !isNonNegativeNumber(value.speakerCount)) {
     throw new Error('Transcripcion diarizada invalida.')
   }
+  const text = readString(value.text, 'text')
   return {
-    text: readString(value.text, 'text'),
+    text,
+    formattedText: typeof value.formattedText === 'string' ? value.formattedText : text,
     speakerCount: value.speakerCount,
     segments: value.segments.map((segment, index) => {
       if (!isRecord(segment)
@@ -146,8 +147,18 @@ function parseSpeechSessionState(value: unknown): SpeechSessionState {
   }
 }
 
+/** Speakers named in a Meeting transcript, in order. */
+export function listTranscriptSpeakers(transcript: string): Promise<string[]> {
+  return callBackend<string[]>('speech_transcript_speakers', { payload: { transcript } })
+}
+
+/** The transcript with a speaker renamed at the start of each line it speaks. */
+export function renameTranscriptSpeaker(transcript: string, previousName: string, nextName: string): Promise<string> {
+  return callBackend<string>('speech_rename_speaker', { payload: { transcript, previousName, nextName } })
+}
+
 export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
-  return parseSpeechCapabilities(await invoke<unknown>('get_speech_capabilities'))
+  return parseSpeechCapabilities(await callBackend<unknown>('get_speech_capabilities'))
 }
 
 export async function prepareSpeechModel(preferences: Qwen3AsrPreferences): Promise<void> {
@@ -158,7 +169,7 @@ export async function prepareSpeechModel(preferences: Qwen3AsrPreferences): Prom
     await pendingModelPreparation.catch(() => undefined)
     return prepareSpeechModel(preferences)
   }
-  const preparation = invoke<void>('prepare_speech_model', {
+  const preparation = callBackend<void>('prepare_speech_model', {
     payload: {
       model: preferences.model,
       device: preferences.device,
@@ -218,7 +229,7 @@ export function parseSpeechModelStatus(value: unknown): SpeechModelStatus {
 }
 
 export async function getSpeechModelStatus(): Promise<SpeechModelStatus> {
-  return parseSpeechModelStatus(await invoke<unknown>('get_speech_model_status'))
+  return parseSpeechModelStatus(await callBackend<unknown>('get_speech_model_status'))
 }
 
 export function parseSpeechAudioInputStatus(value: unknown): SpeechAudioInputStatus {
@@ -242,7 +253,7 @@ export function parseSpeechAudioInputStatus(value: unknown): SpeechAudioInputSta
 }
 
 export async function probeSpeechAudioInput(): Promise<SpeechAudioInputStatus> {
-  return parseSpeechAudioInputStatus(await invoke<unknown>('probe_speech_audio_input'))
+  return parseSpeechAudioInputStatus(await callBackend<unknown>('probe_speech_audio_input'))
 }
 
 export function parseSherpaRuntimeStatus(value: unknown): SherpaRuntimeStatus {
@@ -268,22 +279,22 @@ export function parseSherpaRuntimeStatus(value: unknown): SherpaRuntimeStatus {
 }
 
 export async function probeSherpaRuntime(): Promise<SherpaRuntimeStatus> {
-  return parseSherpaRuntimeStatus(await invoke<unknown>('probe_sherpa_runtime'))
+  return parseSherpaRuntimeStatus(await callBackend<unknown>('probe_sherpa_runtime'))
 }
 
 export async function startSpeechSession(input: StartSpeechSessionInput): Promise<StartSpeechSessionResult> {
-  const value = await invoke<unknown>('start_speech_session', { payload: input })
+  const value = await callBackend<unknown>('start_speech_session', { payload: input })
   if (!isRecord(value)) throw new Error('No se pudo iniciar la sesion de voz.')
   return { sessionId: readString(value.sessionId, 'sessionId') }
 }
 
 const invokeSessionCommand = async (command: string, sessionId: string): Promise<void> => {
-  await invoke(command, { payload: { sessionId } })
+  await callBackend(command, { payload: { sessionId } })
 }
 
 export const pauseSpeechSession = (sessionId: string) => invokeSessionCommand('pause_speech_session', sessionId)
 export const resumeSpeechSession = (sessionId: string) => invokeSessionCommand('resume_speech_session', sessionId)
-export const consumeSpeechTurn = (sessionId: string) => invoke<string>('consume_speech_turn', { payload: { sessionId } })
+export const consumeSpeechTurn = (sessionId: string) => callBackend<string>('consume_speech_turn', { payload: { sessionId } })
 export const stopSpeechSession = (sessionId: string) => invokeSessionCommand('stop_speech_session', sessionId)
 export const cancelSpeechSession = (sessionId: string) => invokeSessionCommand('cancel_speech_session', sessionId)
 
@@ -291,7 +302,7 @@ const listenValidated = <T>(
   eventName: string,
   validate: (value: unknown) => T,
   callback: (payload: T) => void,
-): Promise<UnlistenFn> => listen<unknown>(eventName, (event) => callback(validate(event.payload)))
+): Promise<Unsubscribe> => subscribeBackend<unknown>(eventName, (payload) => callback(validate(payload)))
 
 export const listenSpeechState = (callback: (payload: SpeechSessionEvent) => void) => (
   listenValidated(SPEECH_STATE_EVENT, (value) => {
@@ -320,3 +331,23 @@ export const listenSpeechSegments = (callback: (payload: SpeechSegmentsEvent) =>
     }
   }, callback)
 )
+
+/** A chunk of dictation recorded by a remote client (16-bit PCM). */
+export interface RemoteSpeechChunk {
+  sessionId: string
+  sequence: number
+  sampleRate: number
+  last: boolean
+  dataBase64: string
+}
+
+/** Sends a chunk; with the last one the server answers the recognized text. */
+export async function sendRemoteSpeechChunk(chunk: RemoteSpeechChunk): Promise<string | null> {
+  const result = await callBackend<{ done: boolean; text: string | null }>('speech_remote_audio', {
+    payload: { chunk: { ...chunk, encoding: 'pcm-s16le', channels: 1 } },
+  })
+  return result.done ? result.text ?? '' : null
+}
+
+export const cancelRemoteSpeech = (sessionId: string) =>
+  callBackend<void>('speech_remote_audio_cancel', { payload: { sessionId } })

@@ -6,11 +6,18 @@ import { selectIsSidebarOpen, selectActiveRailActionId } from '../../features/ui
 import { selectLibraries, selectSelectedLibraryId, selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes, selectLoadingFolderIds, selectFolderLoadError } from '../../features/documents/documentsSelectors'
 import { LEFT_RAIL_ACTIONS } from '../../constants/notiaMenu'
+import { backendSupports } from '../../services/transport'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { FileTree } from './FileTree'
 import { IconRail } from './IconRail'
 import { WorkspaceFooter } from './WorkspaceFooter'
 import { applySearchMatchesToTree } from '../../engines/tree/applySearchMatchesToTree'
+
+/** Meeting records with the microphone of the computer running Notia, so a
+ * browser connected to a server does not offer it. */
+const railActions = backendSupports('start_speech_session')
+  ? LEFT_RAIL_ACTIONS
+  : LEFT_RAIL_ACTIONS.filter((action) => action.id !== 'meeting')
 
 function NotiaSidebarComponent() {
   const isSidebarOpen = useAppSelector(selectIsSidebarOpen)
@@ -69,7 +76,7 @@ function NotiaSidebarComponent() {
     <aside className={`notia-sidebar ${isSidebarOpen ? 'notia-sidebar--open' : 'notia-sidebar--closed'}`} data-notia-prevent-menu-close>
       <div className="notia-primary-rail" data-notia-prevent-menu-close>
         <IconRail
-          actions={LEFT_RAIL_ACTIONS}
+          actions={railActions}
           activeActionId={activeRailActionId}
           onActionClick={handleRailActionClick}
         />

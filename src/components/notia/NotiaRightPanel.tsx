@@ -34,9 +34,9 @@ interface NotiaRightPanelProps {
   rightPanelTransientContextPaths: string[]
   rightPanelTransientContextMode: ChatFileContextMode | null
   rightPanelTransientContextSummary: string | null
+  rightPanelMultichatRoomId: string | null
   rightPanelTransientSelectedPaths: string[]
   onRightPanelTransientSelectedPathsChange: (paths: string[]) => void
-  isAndroidRuntime: boolean
   markdownSelection: MarkdownSelectionContext | null
   onActiveMarkdownDocumentChanged: (documentPath: string, source: string, revision?: string) => void | Promise<void>
 }
@@ -56,9 +56,9 @@ function NotiaRightPanelComponent({
   rightPanelTransientContextPaths,
   rightPanelTransientContextMode,
   rightPanelTransientContextSummary,
+  rightPanelMultichatRoomId,
   rightPanelTransientSelectedPaths,
   onRightPanelTransientSelectedPathsChange,
-  isAndroidRuntime,
   markdownSelection,
   onActiveMarkdownDocumentChanged,
 }: NotiaRightPanelProps) {
@@ -178,12 +178,12 @@ function NotiaRightPanelComponent({
                 transientContextMode={rightPanelTransientContextMode}
                 transientContextSummary={rightPanelTransientContextSummary}
                 transientContextContent={rightPanelTransientContextSummary}
+                multichatRoomId={rightPanelMultichatRoomId}
                 transientContextDisplayPaths={rightPanelTransientSelectedPaths}
                  onTransientContextPathRemove={handleTransientContextPathRemove}
                 persistTransientContext={false}
                 ephemeralChat={agentScope === 'graph' || isMultichatContext}
                 selectMatchingChatOnly={shouldSelectMatchingRightPanelChat(rightPanelPreferredContextScopeKey, rightPanelPreferredContextPaths)}
-                historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
                 onChatCreated={chatCallbacks.onChatCreated}
                 onChatDeleted={chatCallbacks.onChatDeleted}
                 markdownSelection={markdownSelection}

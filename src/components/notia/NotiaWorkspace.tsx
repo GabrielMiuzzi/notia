@@ -15,7 +15,7 @@ import { FinanceView } from './views/FinanceView'
 import { CalendarView } from './views/CalendarView'
 import { RoutineView } from './views/RoutineView'
 import { MultichatView } from './views/MultichatView'
-import { buildWikiLinkTargets } from '../../engines/markdown/wikiLinkEngine'
+import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
@@ -117,10 +117,7 @@ function NotiaWorkspaceComponent({
   const appTheme = useAppSelector(selectTheme)
   const isMarkdownDocumentActive = activeDocument?.viewKind === 'markdown'
 
-  const markdownWikiLinkTargets = useMemo(
-    () => (isMarkdownDocumentActive ? buildWikiLinkTargets(treeNodes, activeLibrary?.path ?? null) : []),
-    [activeLibrary?.path, isMarkdownDocumentActive, treeNodes],
-  )
+  const markdownWikiLinkTargets = useWikiLinkTargets(isMarkdownDocumentActive ? activeLibrary?.id : undefined, treeNodes)
 
   const shouldDeferHeavyWorkspaceMount =
     isAndroidRuntime
@@ -179,7 +176,6 @@ function NotiaWorkspaceComponent({
           library={activeLibrary}
           aiPreferences={aiPreferences}
           previousChats={previousChatFiles}
-          historyHydrationMode={isAndroidRuntime ? 'minimal' : 'full'}
           onChatCreated={chatCallbacks.onChatCreated}
           onChatDeleted={chatCallbacks.onChatDeleted}
         />
@@ -233,7 +229,7 @@ function NotiaWorkspaceComponent({
   }
 
   if (activeWorkspaceView === 'multichat') {
-    return <MultichatView library={activeLibrary} aiPreferences={aiPreferences} />
+    return <MultichatView library={activeLibrary} />
   }
 
   return (

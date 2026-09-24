@@ -1,12 +1,10 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../transport'
 import type { NotiaLibrary } from '../../types/notia'
-import { fromStoredLibraryPath, toStoredLibraryPath } from '../libraries/libraryPathMapping'
-import { resolveLibraryDocumentLogicalPath } from '../libraries/libraryDocumentRuntime'
 
 /*
  * Chat history files are read, written and parsed by the Rust backend
- * (`chat_history.rs`, `backend-core::chat_history`). The client only maps
- * the selected context files between visible and stored paths.
+ * (`chat_history.rs`, `backend-core::chat_history`), which also stores the
+ * selected context files relative to the library.
  */
 
 export interface StoredChatMessage {
@@ -44,43 +42,13 @@ export interface StoredChatDocument {
   messages: StoredChatMessage[]
 }
 
-function chatLogicalPath(library: NotiaLibrary, filePath: string): string {
-  const logicalPath = resolveLibraryDocumentLogicalPath(library.path, filePath)
-  if (!logicalPath) throw new Error('El chat no pertenece a la biblioteca activa.')
-  return logicalPath
-}
-
-function toRuntimeChatDocument(document: StoredChatDocument, library: NotiaLibrary): StoredChatDocument {
-  return {
-    ...document,
-    selectedContextFiles: document.selectedContextFiles
-      .map((pathValue) => fromStoredLibraryPath(library.path, pathValue))
-      .filter(Boolean),
-  }
-}
-
-function toPersistedChatDocument(document: StoredChatDocument, library: NotiaLibrary): StoredChatDocument {
-  return {
-    ...document,
-    selectedContextFiles: document.selectedContextFiles
-      .map((pathValue) => toStoredLibraryPath(library.path, pathValue))
-      .filter(Boolean),
-  }
-}
-
 function chatPayload(filePath: string, document: StoredChatDocument, library: NotiaLibrary) {
-  return {
-    payload: {
-      libraryId: library.id,
-      logicalPath: chatLogicalPath(library, filePath),
-      document: toPersistedChatDocument(document, library),
-    },
-  }
+  return { payload: { libraryId: library.id, logicalPath: filePath, document } }
 }
 
 /** Raster images attached to a chat document, capped by the backend. */
 export function loadChatImageAttachmentPreviews(source: string): Promise<ChatImageAttachmentPreview[]> {
-  return invoke<ChatImageAttachmentPreview[]>('backend_chat_image_previews', { payload: { source } })
+  return callBackend<ChatImageAttachmentPreview[]>('backend_chat_image_previews', { payload: { source } })
 }
 
 export async function loadChatDocument(
@@ -88,10 +56,9 @@ export async function loadChatDocument(
   fallbackTitle: string,
   library: NotiaLibrary,
 ): Promise<StoredChatDocument> {
-  const document = await invoke<StoredChatDocument>('backend_load_chat', {
-    payload: { libraryId: library.id, logicalPath: chatLogicalPath(library, filePath), fallbackTitle },
+  return callBackend<StoredChatDocument>('backend_load_chat', {
+    payload: { libraryId: library.id, logicalPath: filePath, fallbackTitle },
   })
-  return toRuntimeChatDocument(document, library)
 }
 
 export async function saveChatDocument(
@@ -99,14 +66,39 @@ export async function saveChatDocument(
   document: StoredChatDocument,
   library: NotiaLibrary,
 ): Promise<void> {
-  await invoke('backend_save_chat', chatPayload(filePath, document, library))
+  await callBackend('backend_save_chat', chatPayload(filePath, document, library))
 }
 
-/** Appends the last turn; the backend rewrites the file when it cannot. */
-export function appendChatMessages(
-  filePath: string,
-  document: StoredChatDocument,
-  library: NotiaLibrary,
-): Promise<{ appended: boolean }> {
-  return invoke<{ appended: boolean }>('backend_append_chat', chatPayload(filePath, document, library))
+export interface ChatListItem {
+  /** Logical path, stable across platforms. */
+  id: string
+  /** Path of the chat as the explorer shows it. */
+  filePath: string
+  title: string
+}
+
+/** Context a view asks its chat to keep. */
+export interface ChatViewContext {
+  scopeKey: string | null
+  mode: 'direct' | 'index' | null
+  files: string[]
+}
+
+/** Chats of the library, newest first, with their titles. */
+export function listChats(libraryId: string): Promise<ChatListItem[]> {
+  return callBackend<ChatListItem[]>('backend_list_chats', { payload: { libraryId } })
+}
+
+/** The chat that best fits a view's context (the open one wins a tie). */
+export function matchChat(libraryId: string, context: ChatViewContext, selected: string | null): Promise<string | null> {
+  return callBackend<string | null>('backend_match_chat', {
+    payload: { libraryId, scopeKey: context.scopeKey, mode: context.mode, files: context.files, selected },
+  })
+}
+
+/** Gives a chat the context of the view it is open in; returns the chat. */
+export function setChatViewContext(libraryId: string, filePath: string, context: ChatViewContext): Promise<StoredChatDocument> {
+  return callBackend<StoredChatDocument>('backend_set_chat_context', {
+    payload: { libraryId, logicalPath: filePath, scopeKey: context.scopeKey, mode: context.mode, files: context.files },
+  })
 }

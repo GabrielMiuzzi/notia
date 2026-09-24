@@ -4,7 +4,6 @@ import type { NotiaFileNode } from '../../types/notia'
 import { useVirtualList } from '../../hooks/useVirtualList'
 import { useCoarsePointer } from '../../hooks/useCoarsePointer'
 import { joinFileName, splitFileName } from '../../utils/files/splitFileName'
-import { isSafDocumentUri } from '../../utils/files/safUri'
 
 interface PendingCreation {
   id: string
@@ -19,7 +18,7 @@ interface FileTreeProps {
   isSearchActive: boolean
   searchMatchedFilePaths: ReadonlySet<string>
   onToggleFolder: (folderId: string) => void
-  onOpenFile: (filePath: string, androidDocumentUri?: string) => void
+  onOpenFile: (filePath: string) => void
   pendingCreation: PendingCreation | null
   onSubmitPendingCreation: (name: string) => void
   onCancelPendingCreation: () => void
@@ -39,7 +38,7 @@ interface TreeRowProps {
   isSearchActive: boolean
   searchMatchedFilePaths: ReadonlySet<string>
   onToggleFolder: (folderId: string) => void
-  onOpenFile: (filePath: string, androidDocumentUri?: string) => void
+  onOpenFile: (filePath: string) => void
   renamingPath: string | null
   onSubmitRename: (path: string, name: string) => void
   onCancelRename: () => void
@@ -183,7 +182,7 @@ const TreeRow = memo(function TreeRow({
     }
     if (!canToggle) {
       if (canOpenFile && node.path) {
-        onOpenFile(node.path, isSafDocumentUri(node.id) ? node.id : undefined)
+        onOpenFile(node.path)
       }
       return
     }

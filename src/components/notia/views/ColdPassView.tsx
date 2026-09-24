@@ -5,6 +5,7 @@ import type { ColdPassEntry } from '../../../types/coldpass'
 import { useSubmenuEngine } from '../../../hooks/useSubmenuEngine'
 import { NotiaSubmenuPanel } from '../NotiaSubmenuPanel'
 import { ColdPassBluetoothCard } from '../ColdPassBluetoothCard'
+import { backendSupports } from '../../../services/transport'
 
 const COLDPASS_COLUMNS = [
   { id: 'name', label: 'name', width: '14%' },
@@ -125,12 +126,14 @@ function ColdPassViewComponent({
   return (
     <main className="notia-main notia-coldpass-view" data-notia-prevent-menu-close>
       <section className="notia-coldpass-hero" data-notia-prevent-menu-close>
-        <ColdPassBluetoothCard />
+        {backendSupports('coldpass_bluetooth_status') ? <ColdPassBluetoothCard /> : null}
         <div className="notia-coldpass-actions" data-notia-prevent-menu-close>
           <NotiaButton variant="primary" onClick={onCreateCredential} disabled={!isUnlocked}>Nueva credencial</NotiaButton>
-          <NotiaButton variant="secondary" onClick={onImportVault} disabled={!isUnlocked || isImportingVault}>
-            {isImportingVault ? 'Importando...' : 'Importar vault'}
-          </NotiaButton>
+          {backendSupports('coldpass_pick_csv_import') ? (
+            <NotiaButton variant="secondary" onClick={onImportVault} disabled={!isUnlocked || isImportingVault}>
+              {isImportingVault ? 'Importando...' : 'Importar vault'}
+            </NotiaButton>
+          ) : null}
         </div>
         <label className="notia-coldpass-search-bar" aria-label="Buscar credenciales" data-notia-prevent-menu-close>
           <Search size={16} />

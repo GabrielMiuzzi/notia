@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../../../services/transport'
 
 export type HolidayKind = 'national' | 'bank'
 
@@ -15,7 +15,7 @@ export interface CalendarHoliday {
  */
 export async function getArgentinaHolidays(year: number): Promise<CalendarHoliday[]> {
   try {
-    return await invoke<CalendarHoliday[]>('calendar_argentina_holidays', { year })
+    return await callBackend<CalendarHoliday[]>('calendar_argentina_holidays', { year })
   } catch (error) {
     if (error instanceof Error) throw error
     const message = error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'

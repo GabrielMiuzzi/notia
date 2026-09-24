@@ -4,7 +4,7 @@ import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
 
 export interface NotiaActions {
   openFile: (filePath: string) => Promise<void>
-  openFileFromView: (filePath: string, androidDocumentUri?: string) => void
+  openFileFromView: (filePath: string) => void
   closeTab: (tabPath: string) => void
   closeActiveTab: () => void
   cycleToNextTab: () => void

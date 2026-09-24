@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../../../services/transport'
 
 export interface ArgentinaInflationIndex {
   period: string
@@ -12,5 +12,5 @@ export interface ArgentinaInflationIndices {
 
 /** Monthly and year-on-year inflation from ArgentinaDatos, fetched and validated by the backend. */
 export function getArgentinaInflationIndices(): Promise<ArgentinaInflationIndices> {
-  return invoke<ArgentinaInflationIndices>('finance_inflation_indices')
+  return callBackend<ArgentinaInflationIndices>('finance_inflation_indices')
 }

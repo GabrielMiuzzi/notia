@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   buildWorkspaceAiSnapshot,
   computeWorkspaceDocumentRevision,
-  workspaceAiCapabilities,
 } from './workspaceAiSnapshotRuntime'
 
 const library = { id: 'library-1', name: 'Notas', path: 'C:/Notas' }
@@ -58,21 +57,5 @@ describe('workspaceAiSnapshotRuntime', () => {
       dirty: false,
     }])
     expect(snapshot.openTabs[0]).not.toHaveProperty('source')
-  })
-
-  it('does not advertise capabilities that the current scope cannot perform', () => {
-    expect(workspaceAiCapabilities('document')).toMatchObject({
-      canReadActiveDocument: true,
-      canWriteActiveDocument: true,
-      canReadLibrary: true,
-      canSearchWeb: true,
-    })
-    expect(workspaceAiCapabilities('task-manager')).toMatchObject({
-      canReadTasks: true,
-      canWriteTasks: true,
-      canPlan: true,
-      canWriteActiveDocument: false,
-    })
-    expect(workspaceAiCapabilities('finance').canSearchWeb).toBe(false)
   })
 })

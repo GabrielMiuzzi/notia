@@ -25,7 +25,7 @@ Opciones:
   --load-mutations N        Ejecuta N mutaciones secuenciales y mide p50/p95/p99 (1-48).
   --file ALIAS              Archivo lógico, por ejemplo published-vault/task-mannager/equipo/a.md.
   --append-comment TEXTO    Ejecuta una mutación real y valida su propagación.
-  --concurrent-conflict     Envía dos comentarios con la misma revisión base.
+  --concurrent-conflict     Envía dos ediciones del ticket con la misma revisión leída.
   --reconnect               Desconecta un cliente antes de la mutación y valida replay.
   --insecure                Acepta el certificado autofirmado para una prueba LAN explícita.
   --status                  Imprime las mÃ©tricas agregadas autenticadas del host.
@@ -673,9 +673,8 @@ async function verifyConvergence(baseUrl, probes, file) {
   const results = await Promise.all(probes.map((probe) => fetchJson(baseUrl, '/invoke', probe.cookie, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ command: 'read_library_file', args: { payload: { filePath: file } } }),
+    body: JSON.stringify({ command: 'task_manager_read_ticket_source', args: { payload: { logicalPath: file } } }),
   })))
-  assertOk(results.every((body) => body.result?.ok === true), 'La lectura convergente fue rechazada por el servidor.')
   const contents = results.map((body) => body.result?.content)
   assertOk(contents.every((content) => typeof content === 'string'), 'La lectura convergente no devolvió contenido.')
   const hashes = new Set(contents.map((content) => sha256(content)))
@@ -696,8 +695,8 @@ async function runMutation(probes, file, comment, timeoutMs, reconnectProbe) {
     `changed ${operationId}`,
   ))
   const startedAt = performance.now()
-  const ack = await probes[0].sendMutation('append_task_comment', {
-    payload: { filePath: file, comment },
+  const ack = await probes[0].sendMutation('task_manager_board_execute', {
+    payload: { intent: { kind: 'add-comment', taskPath: file, comment } },
   }, operationId)
   assertOk(ack.message.ok === true, `La mutación E2E fue rechazada: ${ack.message.error ?? 'error desconocido'}.`)
   const events = await Promise.all(eventWaits)
@@ -718,7 +717,17 @@ async function runMutation(probes, file, comment, timeoutMs, reconnectProbe) {
   return { ack: ack.message, events, propagationMs }
 }
 
-async function runConcurrentConflict(probes, file, comment, timeoutMs) {
+/** Two clients edit the same ticket from the same read revision: the
+ * backend applies one write and rejects the other as stale. */
+async function runConcurrentConflict(baseUrl, probes, file, comment, timeoutMs) {
+  const source = await fetchJson(baseUrl, '/invoke', probes[0].cookie, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ command: 'task_manager_read_ticket_source', args: { payload: { logicalPath: file } } }),
+  })
+  const content = source.result?.content
+  const expectedRevision = source.result?.revision
+  assertOk(typeof content === 'string' && typeof expectedRevision === 'string', 'No se pudo leer el ticket para el conflicto.')
   const operationIds = [`e2e-${randomUUID()}`, `e2e-${randomUUID()}`]
   const eventWaits = probes.map((probe) => probe.waitFor(
     (message) => message.type === 'changed' && operationIds.includes(message.operationId),
@@ -726,17 +735,17 @@ async function runConcurrentConflict(probes, file, comment, timeoutMs) {
   ))
   const firstComment = `${comment} [actor-0]`
   const secondComment = `${comment} [actor-1]`
-  const first = probes[0].sendMutation('append_task_comment', {
-    payload: { filePath: file, comment: firstComment },
+  const first = probes[0].sendMutation('task_manager_write_ticket_source', {
+    payload: { logicalPath: file, content: `${content}\n${firstComment}\n`, expectedRevision },
   }, operationIds[0])
-  const second = probes[1].sendMutation('append_task_comment', {
-    payload: { filePath: file, comment: secondComment },
+  const second = probes[1].sendMutation('task_manager_write_ticket_source', {
+    payload: { logicalPath: file, content: `${content}\n${secondComment}\n`, expectedRevision },
   }, operationIds[1])
   const [firstAck, secondAck] = await Promise.all([first, second])
   const applied = [firstAck.message, secondAck.message].filter((ack) => ack.ok === true)
-  const conflicts = [firstAck.message, secondAck.message].filter((ack) => ack.ok === false && ack.conflict)
+  const rejected = [firstAck.message, secondAck.message].filter((ack) => ack.ok === false)
   assertOk(applied.length === 1, `La concurrencia esperaba una sola mutación aplicada y obtuvo ${applied.length}.`)
-  assertOk(conflicts.length === 1, 'La concurrencia no devolvió exactamente un conflicto recuperable.')
+  assertOk(rejected.length === 1, 'La concurrencia no rechazó exactamente una escritura obsoleta.')
   const events = await Promise.all(eventWaits)
   const appliedOperationId = applied[0]?.operationId
   assertOk(typeof appliedOperationId === 'string', 'La mutación aplicada no devolvió operationId.')
@@ -758,8 +767,8 @@ async function runLoad(probes, file, commentPrefix, mutationCount, timeoutMs) {
     ))
     const probe = probes[index % probes.length]
     const startedAt = performance.now()
-    const ack = await probe.sendMutation('append_task_comment', {
-      payload: { filePath: file, comment: `${commentPrefix} #${index + 1}` },
+    const ack = await probe.sendMutation('task_manager_board_execute', {
+      payload: { intent: { kind: 'add-comment', taskPath: file, comment: `${commentPrefix} #${index + 1}` } },
     }, operationId)
     assertOk(ack.message.ok === true, `La mutacion de carga ${index + 1} fue rechazada: ${ack.message.error ?? 'error desconocido'}.`)
     const events = await Promise.all(eventWaits)
@@ -828,7 +837,7 @@ async function main() {
 
     if (options.appendComment !== undefined) {
       if (options.concurrentConflict) {
-        const result = await runConcurrentConflict(probes, options.file, options.appendComment, options.timeoutMs)
+        const result = await runConcurrentConflict(baseUrl, probes, options.file, options.appendComment, options.timeoutMs)
         const metrics = result.propagationMs
         console.log(`Conflicto concurrente verificado: applied=${result.first.ok ? result.first.operationId : result.second.operationId}, conflict=${result.first.ok ? result.second.operationId : result.first.operationId}.`)
         console.log(`Propagación WebSocket (sin render): p50=${percentile(metrics, 0.5).toFixed(1)}ms p95=${percentile(metrics, 0.95).toFixed(1)}ms p99=${percentile(metrics, 0.99).toFixed(1)}ms.`)

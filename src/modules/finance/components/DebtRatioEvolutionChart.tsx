@@ -1,8 +1,8 @@
-import { buildDebtRatioChartData } from '../engines/debtRatioEvolutionChartEngine'
-import type { FinanceDebtRatioHistoryPoint } from '../types/financeTypes'
+import type { FinanceDebtRatioSeries } from '../services/financeService'
 
 interface DebtRatioEvolutionChartProps {
-  history: FinanceDebtRatioHistoryPoint[]
+  /** Debt over income per month, computed by the backend. */
+  data: FinanceDebtRatioSeries
 }
 
 const CHART_WIDTH = 960
@@ -26,8 +26,7 @@ function linePath(values: Array<number | null>, maximum: number): string {
   }).join(' ')
 }
 
-export function DebtRatioEvolutionChart({ history }: DebtRatioEvolutionChartProps) {
-  const data = buildDebtRatioChartData(history)
+export function DebtRatioEvolutionChart({ data }: DebtRatioEvolutionChartProps) {
   const maximum = Math.max(1, ...data.series.flatMap((series) => series.values.filter((value): value is number => value !== null)))
   const chartBottom = CHART_HEIGHT - CHART_PADDING.bottom
   const chartWidth = CHART_WIDTH - CHART_PADDING.left - CHART_PADDING.right

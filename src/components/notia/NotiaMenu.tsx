@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
 import { shallowEqual } from 'react-redux'
 import {
   EXPLORER_HEADER_ACTIONS,
@@ -7,7 +6,7 @@ import {
   TITLEBAR_RIGHT_ACTIONS,
   TOP_TOOLBAR_ACTIONS,
 } from '../../constants/notiaMenu'
-import { controlWindow, exitApplication } from '../../services/window/windowRuntime'
+import { controlWindow, exitApplication, hasHostWindow, subscribeExitRequest } from '../../services/window/windowRuntime'
 import { NotiaActionsProvider } from '../../context/notiaActions/NotiaActionsContext'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
 import { NotiaSidebar } from './NotiaSidebar'
@@ -32,7 +31,6 @@ import { useLibraryManagerActions } from './hooks/useLibraryManagerActions'
 import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
-import { useLibraryLinkCacheAutoRebuild } from './hooks/useLibraryLinkCacheAutoRebuild'
 import { useTelegramLibraryChanges } from './hooks/useTelegramLibraryChanges'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
@@ -40,7 +38,7 @@ import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
 import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSlice'
 import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSelectors'
 import { setSelectedLibraryId } from '../../features/library/librarySlice'
-import { selectSelectedLibraryId, selectActiveLibrary, selectLibraries } from '../../features/library/librarySelectors'
+import { selectSelectedLibraryId, selectActiveLibrary } from '../../features/library/librarySelectors'
 import { setActiveTabPath, COLDPASS_WORKSPACE_TAB_PATH } from '../../features/documents/documentsSlice'
 import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selectFlatFileList } from '../../features/documents/documentsSelectors'
 import { notiaTimer } from '../../services/runtime/notiaLogger'
@@ -52,14 +50,7 @@ import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manage
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../services/contexts/libraryContexts'
 import { TASK_MANAGER_LOCAL_LIBRARY_USER_ID } from '../../modules/task-manager/types/taskManagerTypes'
-import { registerLibraryBinding } from '../../services/libraries/libraryRuntime'
 import { PerformanceProfiler } from './PerformanceProfiler'
-
-// --- Pure helper function ---
-
-function normalizePath(pathValue: string): string {
-  return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
-}
 
 function NotiaMenuComponent() {
   const dispatch = useAppDispatch()
@@ -72,7 +63,6 @@ function NotiaMenuComponent() {
   const taskManagerPublicationPreferences = useAppSelector(selectTaskManagerPublicationPreferences, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
-  const libraries = useAppSelector(selectLibraries)
   const treeNodes = useAppSelector(selectTreeNodes)
   const flatFileList = useAppSelector(selectFlatFileList)
   const activeDocument = useAppSelector(selectActiveDocument)
@@ -87,22 +77,6 @@ function NotiaMenuComponent() {
       mountTimer.success()
     }
   }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    void Promise.all(libraries.map(async (library) => {
-      try {
-        await registerLibraryBinding(library)
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('[notia] no se pudo rehidratar el binding de biblioteca', error)
-        }
-      }
-    }))
-    return () => {
-      cancelled = true
-    }
-  }, [libraries])
 
   const [taskManagerActivePanelId, setTaskManagerActivePanelId] = useState('default')
   const [taskManagerChatContext, setTaskManagerChatContext] = useState<TaskManagerChatContext | null>(null)
@@ -143,23 +117,11 @@ function NotiaMenuComponent() {
   const runtimeDevice = useMemo(() => getRuntimeDevice(), [])
   const isAndroidRuntime = runtimeDevice === 'Android'
   const titlebarRightActions = useMemo(
-    () => (isAndroidRuntime ? [] : TITLEBAR_RIGHT_ACTIONS),
+    () => (isAndroidRuntime || !hasHostWindow() ? [] : TITLEBAR_RIGHT_ACTIONS),
     [isAndroidRuntime],
   )
 
   const activeLibraryPath = activeLibrary?.path
-  const activeLibraryAndroidTreeUri = activeLibrary?.androidTreeUri
-
-  const resolveActiveLibraryAndroidDirectoryUri = useCallback((pathValue?: string | null): string | undefined => {
-    if (!activeLibraryAndroidTreeUri) { return undefined }
-    if (!pathValue) { return activeLibraryAndroidTreeUri }
-    const normalizedLibraryPath = normalizePath(activeLibraryPath ?? '')
-    const normalizedPath = normalizePath(pathValue)
-    if (normalizedPath === normalizedLibraryPath || normalizedPath.startsWith(`${normalizedLibraryPath}/`)) {
-      return activeLibraryAndroidTreeUri
-    }
-    return undefined
-  }, [activeLibraryAndroidTreeUri, activeLibraryPath])
 
   // --- Stable callback refs for circular dependencies between hooks ---
   const persistTextDocumentSourceRef = useRef<((targetPath: string, targetSource: string) => Promise<boolean>) | null>(null)
@@ -205,12 +167,10 @@ function NotiaMenuComponent() {
   const bumpLibraryIndexRevisionCallback = useCallback(() => { bumpLibraryIndexRevisionRef.current() }, [])
 
   const tabManager = useTabManager({
-    resolveActiveLibraryAndroidDirectoryUri,
     clearPendingTextSaveByPath,
     bumpLibraryIndexRevision: bumpLibraryIndexRevisionCallback,
     resetColdPassSession,
     activeLibraryId,
-    activeLibraryPath: activeLibraryPath,
   })
   const { persistDirtyTextDocuments } = tabManager
 
@@ -227,7 +187,7 @@ function NotiaMenuComponent() {
     let isMounted = true
     let unlisten: (() => void) | null = null
 
-    void listen('notia:request-app-exit', () => {
+    void subscribeExitRequest(() => {
       if (isExitingApplicationRef.current) { return }
       isExitingApplicationRef.current = true
       void (async () => {
@@ -269,7 +229,6 @@ function NotiaMenuComponent() {
     handleOpenFileFromView,
   } = useDocumentOpener({
     openDocumentInTab: tabManager.openDocumentInTab,
-    resolveActiveLibraryAndroidDirectoryUri,
     activeLibrary: activeLibrary ? { id: activeLibrary.id, path: activeLibrary.path } : null,
   })
 
@@ -349,9 +308,6 @@ function NotiaMenuComponent() {
   const handleTelegramPreferencesChange = useCallback<(value: Parameters<typeof setTelegramSettings>[0]) => void>(
     (next) => dispatch(setTelegramSettings(next)), [dispatch],
   )
-  const handleTaskManagerPublicationPreferencesChange = useCallback<(value: Parameters<typeof setTaskManagerPublicationPreferences>[0]) => void>(
-    (next) => dispatch(setTaskManagerPublicationPreferences(next)), [dispatch],
-  )
 
   useLibraryConfigSync({
     activeLibrary: activeLibraryForToolbar,
@@ -363,8 +319,6 @@ function NotiaMenuComponent() {
     setInkMathPreferences: handleInkMathPreferencesChange,
     telegramPreferences,
     setTelegramPreferences: handleTelegramPreferencesChange,
-    taskManagerPublicationPreferences,
-    setTaskManagerPublicationPreferences: handleTaskManagerPublicationPreferencesChange,
     contexts: libraryContexts,
     setContexts: setLibraryContexts,
   })
@@ -372,7 +326,6 @@ function NotiaMenuComponent() {
   useTaskManagerPublicationAiHostBridge({
     activeLibrary,
     aiPreferences,
-    publicationPreferences: taskManagerPublicationPreferences,
   })
 
   useTelegramLibraryChanges(activeLibraryId, () => notifyLibraryTreeChanged(activeLibraryPath ?? undefined))
@@ -383,7 +336,6 @@ function NotiaMenuComponent() {
     flatFileList,
   })
 
-  useLibraryLinkCacheAutoRebuild()
 
   const handleWindowAction = useCallback((action: NotiaWindowAction) => {
     if (action !== 'close') {
@@ -432,7 +384,7 @@ function NotiaMenuComponent() {
   // --- Derived values ---
 
   const previousChatFiles = useRightPanelChatFiles({
-    activeLibraryPath: activeLibrary?.path,
+    libraryId: activeLibrary?.id,
     activeWorkspaceView,
     isRightChatPanelOpen,
     treeNodes,
@@ -475,6 +427,7 @@ function NotiaMenuComponent() {
     transientContextMode: rightPanelTransientContextMode,
     transientContextPaths: rightPanelTransientContextPaths,
     transientContextSummary: rightPanelTransientContextSummary,
+    multichatRoomId: rightPanelMultichatRoomId,
   } = useRightPanelChatContext({
     activeDocument,
     activeWorkspaceView,
@@ -612,9 +565,9 @@ function NotiaMenuComponent() {
               rightPanelTransientContextPaths={rightPanelTransientContextPaths}
               rightPanelTransientContextMode={rightPanelTransientContextMode}
               rightPanelTransientContextSummary={rightPanelTransientContextSummary}
+              rightPanelMultichatRoomId={rightPanelMultichatRoomId}
               rightPanelTransientSelectedPaths={graphChatSelectedPaths}
               onRightPanelTransientSelectedPathsChange={setGraphChatSelectedPaths}
-              isAndroidRuntime={isAndroidRuntime}
               markdownSelection={markdownSelection}
               onActiveMarkdownDocumentChanged={handleActiveMarkdownDocumentChanged}
             />

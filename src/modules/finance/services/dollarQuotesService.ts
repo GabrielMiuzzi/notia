@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../../../services/transport'
 
 export type DollarQuoteKind = 'oficial' | 'blue' | 'tarjeta'
 
@@ -12,5 +12,5 @@ export interface DollarQuote {
 
 /** Current quotes from DolarApi, fetched and validated by the backend. */
 export function getDollarQuotes(): Promise<DollarQuote[]> {
-  return invoke<DollarQuote[]>('finance_dollar_quotes')
+  return callBackend<DollarQuote[]>('finance_dollar_quotes')
 }

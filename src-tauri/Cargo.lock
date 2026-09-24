@@ -2784,6 +2784,21 @@ dependencies = [
 name = "notia"
 version = "1.0.12"
 dependencies = [
+ "android_logger",
+ "env_logger",
+ "log",
+ "notia-app",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+]
+
+[[package]]
+name = "notia-app"
+version = "0.1.0"
+dependencies = [
  "aes",
  "android_logger",
  "anyhow",
@@ -2819,9 +2834,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
  "tokio",
  "tungstenite",
  "unicode-normalization",

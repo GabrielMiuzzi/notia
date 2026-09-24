@@ -8,13 +8,12 @@ import {
   deleteColdPassEntry,
   lockColdPassSession,
   pickColdPassCsvImport,
-  resolveColdPassPaths,
+  getColdPassStatus,
   saveColdPassEntry,
   unlockColdPassSession,
   type ColdPassImportPreview,
   type ColdPassSessionData,
 } from '../../../services/coldpass/coldpassStorage'
-import { pathExists } from '../../../services/files/filesystemEngine'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 
 const EMPTY_COLDPASS_ENTRIES: ColdPassEntry[] = []
@@ -128,10 +127,9 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     let cancelled = false
 
     const openColdPassPrompt = async () => {
-      const { filePath } = resolveColdPassPaths(activeLibrary.path)
-      const coldPassFileExists = await pathExists(filePath, {
-        androidDirectoryUri: activeLibrary.androidTreeUri,
-      })
+      const coldPassFileExists = await getColdPassStatus(activeLibrary.id)
+        .then((status) => status.exists)
+        .catch(() => false)
       if (cancelled) {
         return
       }

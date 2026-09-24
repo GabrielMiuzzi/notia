@@ -1,96 +1,38 @@
+import { subscribeBackend, type Unsubscribe } from '../../../services/transport'
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { TASK_PRIORITIES, TASK_STATES } from '../constants/taskManagerConstants'
+import type {
+  Board,
+  Group,
+  PomodoroDurations,
+  PomodoroState,
+  TaskCreationRequest,
+  TaskFormData,
+  TaskItem,
+  TaskManagerSettings,
+  TaskManagerVaultRef,
+  TaskPriority,
+  TaskState,
+} from '../types/taskManagerTypes'
+import { clearLegacyPomodoroState, loadActiveTaskTab, loadLegacyPomodoroState, saveActiveTaskTab } from '../services/taskManagerStorage'
 import {
-  DEFAULT_BOARD_NAME,
-  DEFAULT_BOARDS,
-  TASKS_ROOT_FOLDER,
-  TASK_PRIORITIES,
-  TASK_STATES,
-} from '../constants/taskManagerConstants'
-import {
-  advancePomodoroState,
-  applyPomodoroDurations,
-  enterPomodoroDeviation,
-  exitPomodoroDeviation,
-  getDeviationElapsedSeconds,
-  getPhaseDurationSeconds,
-  getPomodoroPhaseLabel,
-  getPomodoroRemainingSeconds,
-  pausePomodoro,
-  resetPomodoro,
-  resumePomodoro,
-  startPomodoro,
-} from '../engines/pomodoroEngine'
-import {
-  normalizeTaskArrangementUpdates,
-  selectChangedTaskArrangementUpdates,
-} from '../engines/orderEngine'
-import type { Board, Group, PomodoroDurations, TaskCreationRequest, TaskFormData, TaskItem, TaskManagerSettings, TaskPriority, TaskState } from '../types/taskManagerTypes'
-import type { TaskManagerVaultRef } from '../types/taskManagerTypes'
-import { sanitizeFilename } from '../utils/sanitizeFilename'
-import { loadTaskManagerSettings, saveTaskManagerSettings } from '../services/taskManagerStorage'
-import { normalizeTaskManagerSettings } from '../utils/settings'
-import {
-  appendPomodoroEntry,
-  cleanupEmptyWorkspaceBoards,
   deletePomodoroEntry,
-  ensureTaskWorkspace,
-  loadTaskManagerSnapshot,
-  loadTaskManagerSnapshotForChangedPaths,
-  readPomodoroEntries,
-  readTaskMarkdownSourceWithRevision,
-  resolveTaskManagerSnapshotChangedPaths,
-  resolveTaskManagerMutationJournalPath,
-  setTaskManagerRuntimeRootPolicy,
-  syncTaskIndexesAndMetadata,
-  updateTaskFrontmatter as updateTaskFrontmatterInSource,
+  EMPTY_TASK_MANAGER_SNAPSHOT,
+  executeTaskBoardIntent,
+  readTaskBoardView,
+  readTaskMarkdownSource,
+  runPomodoroAction,
   writeTaskMarkdownSource,
+  type PomodoroAction,
+  type TaskBoardIntent,
+  type TaskManagerBackendContext,
   type TaskManagerSnapshot,
 } from '../services/taskManagerService'
 import {
-  mergeTaskManagerBoards,
-  readTaskManagerSharedMetadata,
-  writeTaskManagerSharedMetadata,
-  type TaskManagerSharedMetadata,
-} from '../services/taskManagerSharedMetadata'
-import {
-  flushPendingTaskManagerLibraryTreeChanges,
-  pickVaultDirectory,
-  setActiveTaskManagerVaultContext,
-} from '../services/vaultRuntime'
-import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
-import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
-import { DEFAULT_CONTEXT_TAG, normalizeContextTag } from '../../../services/contexts/libraryContexts'
-import { readTaskManagerVaultCache, writeTaskManagerVaultCache } from '../services/taskManagerVaultCache'
-import { dispatchTaskManagerMutation, subscribeTaskManagerMutations } from '../services/taskManagerMutationEvents'
-import {
-  beginTaskManagerPublicationBatch,
-  endTaskManagerPublicationBatch,
-  notifyTaskManagerPublicationChanged,
-  setTaskManagerPublicationRecovery,
-  syncTaskManagerPublicationSettings,
-  withTaskManagerPublicationBatch,
-  type TaskManagerPublicationCursor,
-} from '../services/taskManagerPublicationRuntime'
-import {
   subscribeTaskManagerPublicationChanges,
   TaskManagerPublicationMutationError,
-  type TaskManagerPublicationConflict,
 } from '../services/taskManagerPublicationClient'
-import { enqueueTaskManagerMutation, type TaskManagerMutationContext } from '../services/taskManagerMutationCoordinator'
-import {
-  executeTaskManagerAgentMutation,
-  type TaskManagerAgentMutation,
-} from '../services/taskManagerAgentMutationService'
-import {
-  drainTaskManagerReloadQueue,
-  getTaskManagerReloadRetryDelay,
-} from '../services/taskManagerReloadCoordinator'
-import {
-  beginTaskManagerMutationJournal,
-  completeTaskManagerMutationJournal,
-  recordTaskManagerMutationJournalChangedPaths,
-} from '../services/taskManagerMutationJournal'
+import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
 
 interface TaskDialogState {
   open: boolean
@@ -110,6 +52,15 @@ interface GroupDialogState {
   group: Group | null
 }
 
+export interface TaskManagerConflictDetails {
+  operationId: string
+  command: string
+  expectedRevision?: number
+  currentRevision?: number
+  actorId?: string
+  conflictingOperationId?: string
+}
+
 export interface UseTaskManagerResult {
   settings: TaskManagerSettings
   snapshot: TaskManagerSnapshot
@@ -118,7 +69,6 @@ export interface UseTaskManagerResult {
   error: string | null
   infoMessage: string | null
   publicationConflict: TaskManagerConflictDetails | null
-  publicationCursor: TaskManagerPublicationCursor | null
   taskDialog: TaskDialogState
   taskCreateDefaults: {
     parentTaskName?: string
@@ -133,8 +83,6 @@ export interface UseTaskManagerResult {
   clearPublicationConflict: () => void
   reloadPublicationConflict: () => Promise<void>
   setActiveTab: (tab: string) => void
-  setActiveVaultPath: (vault: TaskManagerVaultRef | null) => Promise<void>
-  selectVault: () => Promise<void>
   reload: () => Promise<void>
   openTaskCreateDialog: (request?: TaskCreationRequest) => void
   openTaskEditDialog: (task: TaskItem) => void
@@ -160,7 +108,7 @@ export interface UseTaskManagerResult {
   submitGroupDialog: (payload: { name: string; color: string; board: string }) => Promise<void>
   removeGroup: (groupName: string, board: string) => Promise<void>
   reorderGroupsInBoard: (board: string, orderedGroupNames: string[]) => Promise<void>
-  applyTaskArrangement: (updates: Array<{ taskPath: string; order: number; group?: string; parentTaskName?: string }>) => Promise<void>
+  placeTask: (placement: { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }) => Promise<void>
   selectPomodoroTask: (taskPath: string | null) => void
   startPomodoroCycle: () => Promise<void>
   pausePomodoroCycle: () => void
@@ -170,1471 +118,242 @@ export interface UseTaskManagerResult {
   exitPomodoroDeviationMode: () => Promise<void>
   setPomodoroDurations: (durations: PomodoroDurations) => void
   deletePomodoroLogEntry: (entryId: string) => Promise<void>
-  isVaultExternallyControlled: boolean
 }
 
-const EMPTY_SNAPSHOT: TaskManagerSnapshot = {
-  documents: [],
-  tasks: [],
-  pomodoroEntries: [],
-}
-
-function isTransientPublishedEmptySnapshot(
-  previousSnapshot: TaskManagerSnapshot,
-  nextSnapshot: TaskManagerSnapshot,
-): boolean {
-  return typeof window !== 'undefined'
-    && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
-    && previousSnapshot.tasks.length > 0
-    && nextSnapshot.tasks.length === 0
-    && nextSnapshot.documents.length === 0
-}
-
-const AUTO_COLOR_PALETTE = ['#64748b', '#6c8eff', '#ffb86b', '#4fd1c5', '#d9b44a', '#a78bfa', '#ff6b6b', '#6fcf97']
+const TASK_MANAGER_CHANGED_EVENT = 'task-manager-changed'
+const PUBLICATION_CHANGED_EVENT = 'task-manager-publication-changed'
 const FINISHED_TAB_ID = '__finished__'
 const CANCELLED_TAB_ID = '__cancelled__'
 const POMODORO_TAB_ID = '__pomodoro__'
+
+/** Shown until the backend returns the user's timer. */
+const INITIAL_POMODORO: PomodoroState = {
+  phase: 'work',
+  runState: 'idle',
+  remainingSeconds: 25 * 60,
+  endTimestamp: null,
+  completedWorkCycles: 0,
+  selectedTaskPath: null,
+  isDeviationActive: false,
+  deviationStartedAt: null,
+  deviationBaseRemainingSeconds: 0,
+  phaseDeviationSeconds: 0,
+  durations: { workMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15 },
+}
 const NON_BOARD_TABS = new Set([FINISHED_TAB_ID, CANCELLED_TAB_ID, POMODORO_TAB_ID])
 
-function normalizeBoardCandidate(name: string): string | null {
-  const normalized = name.trim().toLowerCase()
-  if (!normalized) {
-    return null
-  }
+/** Last view of each library, so reopening the board renders at once. */
+const viewCache = new Map<string, TaskManagerSnapshot>()
 
-  if (normalized === 'finished' || normalized === 'cancelled') {
-    return null
-  }
-
-  if (normalized.endsWith('.md')) {
-    return null
-  }
-
-  if (normalized.includes('/') || normalized.includes('\\')) {
-    return null
-  }
-
-  return normalized
+function isPublishedTaskManager(): boolean {
+  return typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
 }
 
-function resolveBootstrapBoardsFromSnapshot(snapshot: TaskManagerSnapshot): Board[] {
-  const boardsByName = new Map<string, Board>()
-
-  for (const defaultBoard of DEFAULT_BOARDS) {
-    if (!boardsByName.has(defaultBoard.name)) {
-      boardsByName.set(defaultBoard.name, defaultBoard)
-    }
-  }
-
-  for (const document of snapshot.documents) {
-    const segments = document.path.split('/').filter(Boolean)
-    if (segments.length < 2 || segments[0] !== TASKS_ROOT_FOLDER) {
-      continue
-    }
-
-    const boardName = normalizeBoardCandidate(segments[1] ?? '')
-    if (!boardName || boardsByName.has(boardName)) {
-      continue
-    }
-
-    boardsByName.set(boardName, {
-      name: boardName,
-      color: AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
-      activityHoursPerDay: 24,
-    })
-  }
-
-  for (const task of snapshot.tasks) {
-    const boardName = normalizeBoardCandidate(task.board) ?? DEFAULT_BOARD_NAME
-    if (boardsByName.has(boardName)) {
-      continue
-    }
-
-    boardsByName.set(boardName, {
-      name: boardName,
-      color: AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
-      activityHoursPerDay: 24,
-    })
-  }
-
-  return Array.from(boardsByName.values())
+function backendContextOf(libraryId?: string, libraryUserId?: string): TaskManagerBackendContext | null {
+  const library = libraryId?.trim()
+  const user = libraryUserId?.trim()
+  return library && user ? { libraryId: library, libraryUserId: user } : null
 }
 
-function resolveCleanupBoardCandidates(snapshot: TaskManagerSnapshot, extraBoardNames: string[] = []): string[] {
-  const candidates = new Set<string>()
-
-  for (const task of snapshot.tasks) {
-    const boardName = normalizeBoardCandidate(task.board)
-    if (boardName) {
-      candidates.add(boardName)
-    }
-  }
-
-  for (const document of snapshot.documents) {
-    const segments = document.path.split('/').filter(Boolean)
-    if (segments.length < 2 || segments[0] !== TASKS_ROOT_FOLDER) {
-      continue
-    }
-
-    const boardName = normalizeBoardCandidate(segments[1] ?? '')
-    if (boardName) {
-      candidates.add(boardName)
-    }
-  }
-
-  for (const boardName of extraBoardNames) {
-    const normalized = normalizeBoardCandidate(boardName)
-    if (normalized) {
-      candidates.add(normalized)
-    }
-  }
-
-  return Array.from(candidates)
-}
-
-function roundHours(value: number): number {
-  return Number(value.toFixed(2))
-}
-
-function normalizeBoardActivityHours(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 24
-  }
-
-  return Math.min(24, Math.max(0, Number(value.toFixed(2))))
-}
-
-function resolvePomodoroDurationChoice(durations: PomodoroDurations): string {
-  return `${durations.workMinutes}/${durations.shortBreakMinutes}/${durations.longBreakMinutes}`
-}
-
-function resolveSettingsForEmptySnapshot(previousSettings: TaskManagerSettings): TaskManagerSettings {
-  const nextActiveTab = NON_BOARD_TABS.has(previousSettings.activeTab)
-    ? previousSettings.activeTab
-    : previousSettings.boards.some((board) => board.name === previousSettings.activeTab)
-      ? previousSettings.activeTab
-      : previousSettings.boards[0]?.name ?? DEFAULT_BOARD_NAME
-
-  return {
-    ...previousSettings,
-    activeTab: nextActiveTab,
-  }
-}
-
-function areSameVaultRef(left: TaskManagerVaultRef | null, right: TaskManagerVaultRef | null): boolean {
-  return (left?.path ?? '') === (right?.path ?? '')
-    && (left?.libraryId ?? '') === (right?.libraryId ?? '')
-    && (left?.libraryUserId ?? '') === (right?.libraryUserId ?? '')
-    && (left?.androidTreeUri ?? '') === (right?.androidTreeUri ?? '')
-}
-
-function resolveCachedViewStateActiveTab(
-  activeTab: string,
-  boards: Board[],
-): string {
-  if (NON_BOARD_TABS.has(activeTab)) {
+function resolveActiveTab(activeTab: string, boards: Board[]): string {
+  if (NON_BOARD_TABS.has(activeTab) || boards.some((board) => board.name === activeTab)) {
     return activeTab
   }
-
-  return boards.some((board) => board.name === activeTab)
-    ? activeTab
-    : boards[0]?.name ?? DEFAULT_BOARD_NAME
+  return boards[0]?.name ?? activeTab
 }
 
-type TaskManagerReloadRequest = (
-  changedPaths?: string[],
-  options?: { notifyExternalChange?: boolean; forceFullReload?: boolean },
-) => Promise<void>
-
-export interface TaskManagerConflictDetails {
-  operationId: string
-  command: string
-  expectedRevision?: number
-  currentRevision?: number
-  actorId?: string
-  conflictingOperationId?: string
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message.trim() : ''
 }
 
-function areTaskManagerSnapshotsEqual(
-  leftSnapshot: TaskManagerSnapshot,
-  rightSnapshot: TaskManagerSnapshot,
-): boolean {
-  if (leftSnapshot.documents.length !== rightSnapshot.documents.length) {
-    return false
+function conflictOf(error: unknown): TaskManagerConflictDetails | null {
+  if (!(error instanceof TaskManagerPublicationMutationError) || !error.conflict) {
+    return null
   }
-
-  return leftSnapshot.documents.every((document, index) => {
-    const rightDocument = rightSnapshot.documents[index]
-    return rightDocument?.path === document.path && rightDocument.content === document.content
-  })
-}
-
-function sharedTaskManagerSettingsFingerprint(settings: TaskManagerSettings): string {
-  return JSON.stringify({ boards: settings.boards, groups: settings.groups })
-}
-
-function isSameOrNestedFilesystemPath(basePath: string, candidatePath: string): boolean {
-  const normalizedBasePath = normalizeFilesystemPath(basePath).replace(/[\\/]+$/, '')
-  const normalizedCandidatePath = normalizeFilesystemPath(candidatePath).replace(/[\\/]+$/, '')
-  return normalizedCandidatePath === normalizedBasePath
-    || normalizedCandidatePath.startsWith(`${normalizedBasePath}/`)
-}
-
-function reorderGroupsForBoard(
-  groups: Group[],
-  board: string,
-  orderedGroupNames: string[],
-): Group[] {
-  const boardGroups = groups.filter((group) => (group.board ?? DEFAULT_BOARD_NAME) === board)
-  if (boardGroups.length === 0) {
-    return groups
+  return {
+    operationId: error.operationId,
+    command: error.command,
+    expectedRevision: error.conflict.expectedRevision,
+    currentRevision: error.conflict.currentRevision,
+    actorId: error.conflict.actorId,
+    conflictingOperationId: error.conflict.operationId,
   }
+}
 
-  const byName = new Map(boardGroups.map((group) => [group.name, group]))
-  const orderedBoardGroups: Group[] = []
-  for (const name of orderedGroupNames) {
-    const group = byName.get(name)
-    if (group) {
-      orderedBoardGroups.push(group)
-      byName.delete(name)
-    }
-  }
+/**
+ * Task Manager board state for the interface. The board, its tasks and the
+ * Pomodoro log come from the backend view; this hook keeps only what is
+ * shown (dialogs, active tab, messages) and the device's Pomodoro timer,
+ * and sends every change to the backend as an intent.
+ */
+export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTaskManagerResult {
+  const libraryId = vault?.libraryId
+  const libraryUserId = vault?.libraryUserId
+  const context = useMemo(() => backendContextOf(libraryId, libraryUserId), [libraryId, libraryUserId])
+  const vaultPath = vault?.path ?? null
+  const cacheKey = context ? `${context.libraryId}::${context.libraryUserId}` : null
 
-  orderedBoardGroups.push(...Array.from(byName.values()))
-  const boardGroupNameSet = new Set(boardGroups.map((group) => group.name))
-  const outsideBoard = groups.filter((group) => !(
-    (group.board ?? DEFAULT_BOARD_NAME) === board
-    && boardGroupNameSet.has(group.name)
+  const [snapshot, setSnapshot] = useState<TaskManagerSnapshot>(() => (
+    (cacheKey && viewCache.get(cacheKey)) || EMPTY_TASK_MANAGER_SNAPSHOT
   ))
-  return [...outsideBoard, ...orderedBoardGroups]
-}
-
-export function useTaskManager(externalVault: TaskManagerVaultRef | null = null): UseTaskManagerResult {
-  const activeVaultRef = useRef<TaskManagerVaultRef | null>(null)
-  const taskSourceRevisionsRef = useRef(new Map<string, string>())
-  const reloadStateRef = useRef<{
-    inFlight: Promise<void> | null
-    pending: boolean
-    generation: number
-    changedPaths: Set<string>
-    forceFullReload: boolean
-    notifyExternalChange: boolean
-  }>({
-    inFlight: null,
-    pending: false,
-    generation: 0,
-    changedPaths: new Set(),
-    forceFullReload: false,
-    notifyExternalChange: false,
-  })
-  const reloadRequestRef = useRef<TaskManagerReloadRequest>(async () => undefined)
-  const reloadRetryRef = useRef<{ timer: number | null; attempt: number }>({
-    timer: null,
-    attempt: 0,
-  })
-  const isAndroidRuntime = useMemo(() => getRuntimeDevice() === 'Android', [])
-  const [settings, setSettings] = useState<TaskManagerSettings>(() => loadTaskManagerSettings())
-  const [snapshot, setSnapshot] = useState<TaskManagerSnapshot>(EMPTY_SNAPSHOT)
-  // Snapshot commits update this ref before scheduling React's transition.
-  // An urgent render may still see older state and must not roll the ref back.
   const snapshotRef = useRef(snapshot)
-  const localSyncInFlightRef = useRef(0)
-  const [publicationCursor, setPublicationCursor] = useState<TaskManagerPublicationCursor | null>(null)
-  const pendingExternalChangeRef = useRef<{
-    fullReload: boolean
-    paths: Set<string>
-  }>({ fullReload: false, paths: new Set() })
+  const [activeTab, setActiveTabState] = useState(loadActiveTaskTab)
+  const [pomodoro, setPomodoro] = useState<PomodoroState>(INITIAL_POMODORO)
+  const pomodoroRef = useRef(pomodoro)
   const [isLoading, setIsLoading] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [publicationConflict, setPublicationConflict] = useState<TaskManagerConflictDetails | null>(null)
+  const [taskDialog, setTaskDialog] = useState<TaskDialogState>({ open: false, mode: 'create', task: null })
+  const [taskCreateDefaults, setTaskCreateDefaults] = useState<{ parentTaskName?: string; group?: string }>({})
+  const [boardDialog, setBoardDialog] = useState<BoardDialogState>({ open: false, mode: 'create', board: null })
+  const [groupDialog, setGroupDialog] = useState<GroupDialogState>({ open: false, mode: 'create', group: null })
+  const taskSourceRevisionsRef = useRef(new Map<string, string>())
+  const reloadStateRef = useRef<{ inFlight: Promise<void> | null; pending: boolean }>({ inFlight: null, pending: false })
 
-  const [taskDialog, setTaskDialog] = useState<TaskDialogState>({
-    open: false,
-    mode: 'create',
-    task: null,
-  })
-  const [taskCreateDefaults, setTaskCreateDefaults] = useState<{
-    parentTaskName?: string
-    group?: string
-  }>({})
-  const [boardDialog, setBoardDialog] = useState<BoardDialogState>({
-    open: false,
-    mode: 'create',
-    board: null,
-  })
-  const [groupDialog, setGroupDialog] = useState<GroupDialogState>({
-    open: false,
-    mode: 'create',
-    group: null,
-  })
-  const isExternallyControlled = Boolean(externalVault?.path)
+  const settings = useMemo<TaskManagerSettings>(() => ({
+    activeVaultPath: vaultPath,
+    boards: snapshot.boards,
+    groups: snapshot.groups,
+    pomodoro,
+    activeTab: resolveActiveTab(activeTab, snapshot.boards),
+  }), [activeTab, pomodoro, snapshot.boards, snapshot.groups, vaultPath])
 
+  // Device preference: the active tab.
   useEffect(() => {
-    if (!externalVault?.path) {
-      return undefined
-    }
+    saveActiveTaskTab(activeTab)
+  }, [activeTab])
 
-    setTaskManagerRuntimeRootPolicy(externalVault.path, {
-      forceInsideVault: true,
-    })
-
-    return () => {
-      setTaskManagerRuntimeRootPolicy(externalVault.path, {
-        forceInsideVault: false,
-      })
-    }
-  }, [externalVault?.path])
-
-  const updateSettings = useCallback((
-    updater: (previous: TaskManagerSettings) => TaskManagerSettings,
-    options?: { syncPublication?: boolean },
-  ) => {
-    setSettings((previousSettings) => {
-      const nextSettings = updater(previousSettings)
-      const controlledVaultPath = isExternallyControlled
-        ? activeVaultRef.current?.path ?? previousSettings.activeVaultPath
-        : nextSettings.activeVaultPath
-      const resolvedSettings = isExternallyControlled
-        ? { ...nextSettings, activeVaultPath: controlledVaultPath }
-        : nextSettings
-      saveTaskManagerSettings(
-        isExternallyControlled
-          ? {
-            ...resolvedSettings,
-            activeVaultPath: null,
-          }
-          : resolvedSettings,
-        { syncPublication: options?.syncPublication === true },
-      )
-      return resolvedSettings
-    })
-  }, [isExternallyControlled])
-
-  const hydrateSharedMetadata = useCallback(async (vaultPath: string): Promise<TaskManagerSharedMetadata | null> => {
-    if (isExternallyControlled) {
-      return null
-    }
-
-    const metadata = await readTaskManagerSharedMetadata(vaultPath)
-    if (!metadata) {
-      return null
-    }
-
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      boards: metadata.boards,
-      groups: metadata.groups,
-    }), { syncPublication: false })
-    return metadata
-  }, [isExternallyControlled, updateSettings])
-
-  const persistSharedMetadata = useCallback((vaultPath: string, nextSettings: Pick<TaskManagerSettings, 'boards' | 'groups'>, options?: { throwOnError?: boolean; enqueueMutation?: boolean }): Promise<void> => {
-    if (isExternallyControlled) {
-      return Promise.resolve()
-    }
-
-    const writeMetadata = () => writeTaskManagerSharedMetadata(vaultPath, nextSettings)
-    const write = options?.enqueueMutation
-      ? enqueueTaskManagerMutation(() => writeMetadata())
-      : writeMetadata()
-    return write.catch((metadataError: unknown) => {
-      console.warn('[task-manager] no se pudo guardar la metadata compartida', metadataError)
-      if (options?.throwOnError) {
-        throw metadataError
-      }
-    })
-  }, [isExternallyControlled])
-
-  const hydrateSettingsFromSnapshot = useCallback((nextSnapshot: TaskManagerSnapshot) => {
-    updateSettings((previousSettings) => {
-      const previousBoardsByName = new Map(previousSettings.boards.map((board) => [board.name, board]))
-      const previousGroupsByKey = new Map(
-        previousSettings.groups.map((group) => [`${group.board ?? DEFAULT_BOARD_NAME}::${group.name}`, group]),
-      )
-      const boardsByName = new Map<string, Board>()
-
-      for (const defaultBoard of DEFAULT_BOARDS) {
-        boardsByName.set(defaultBoard.name, {
-          ...defaultBoard,
-          ...(previousBoardsByName.get(defaultBoard.name) ?? {}),
-          activityHoursPerDay: normalizeBoardActivityHours(previousBoardsByName.get(defaultBoard.name)?.activityHoursPerDay ?? defaultBoard.activityHoursPerDay),
-          contexto: previousBoardsByName.get(defaultBoard.name)?.contexto ?? defaultBoard.contexto ?? DEFAULT_CONTEXT_TAG,
-        })
-      }
-
-      for (const document of nextSnapshot.documents) {
-        const segments = document.path.split('/').filter(Boolean)
-        if (segments.length < 2 || segments[0] !== TASKS_ROOT_FOLDER) {
-          continue
-        }
-
-        const boardName = normalizeBoardCandidate(segments[1] ?? '')
-        if (!boardName || boardsByName.has(boardName)) {
-          continue
-        }
-
-        const previousBoard = previousBoardsByName.get(boardName)
-        boardsByName.set(boardName, {
-          name: boardName,
-          color: previousBoard?.color ?? AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
-          activityHoursPerDay: normalizeBoardActivityHours(previousBoard?.activityHoursPerDay ?? 24),
-          contexto: previousBoard?.contexto ?? DEFAULT_CONTEXT_TAG,
-        })
-      }
-
-      for (const task of nextSnapshot.tasks) {
-        const boardName = normalizeBoardCandidate(task.board) ?? DEFAULT_BOARD_NAME
-        if (!boardsByName.has(boardName)) {
-          const previousBoard = previousBoardsByName.get(boardName)
-          boardsByName.set(boardName, {
-            name: boardName,
-            color: previousBoard?.color ?? AUTO_COLOR_PALETTE[boardsByName.size % AUTO_COLOR_PALETTE.length],
-            activityHoursPerDay: normalizeBoardActivityHours(previousBoard?.activityHoursPerDay ?? 24),
-            contexto: previousBoard?.contexto ?? DEFAULT_CONTEXT_TAG,
-          })
-        }
-      }
-
-      // Groups are user-managed settings. Tasks can reveal legacy groups that are
-      // missing from settings, but an empty group must remain present after sync.
-      const groupsByKey = new Map(previousGroupsByKey)
-      for (const task of nextSnapshot.tasks) {
-        if (task.state === 'Finalizada' || task.state === 'Cancelada') {
-          continue
-        }
-
-        const boardName = normalizeBoardCandidate(task.board) ?? DEFAULT_BOARD_NAME
-
-        const groupName = task.group.trim()
-        if (!groupName) {
-          continue
-        }
-
-        const key = `${boardName}::${groupName}`
-        if (!groupsByKey.has(key)) {
-          const previousGroup = previousGroupsByKey.get(key)
-          groupsByKey.set(key, {
-            name: groupName,
-            color: previousGroup?.color ?? AUTO_COLOR_PALETTE[groupsByKey.size % AUTO_COLOR_PALETTE.length],
-            board: boardName,
-          })
-        }
-      }
-
-      const nextBoards = Array.from(boardsByName.values())
-      const nextGroups = Array.from(groupsByKey.values())
-      const nextActiveTab = NON_BOARD_TABS.has(previousSettings.activeTab)
-        ? previousSettings.activeTab
-        : nextBoards.some((board) => board.name === previousSettings.activeTab)
-          ? previousSettings.activeTab
-          : nextBoards[0]?.name ?? DEFAULT_BOARD_NAME
-
-      const sameBoards = nextBoards.length === previousSettings.boards.length
-        && nextBoards.every((board, index) => (
-          board.name === previousSettings.boards[index]?.name
-          && board.color === previousSettings.boards[index]?.color
-          && board.activityHoursPerDay === previousSettings.boards[index]?.activityHoursPerDay
-          && board.contexto === previousSettings.boards[index]?.contexto
-        ))
-      const sameGroups = nextGroups.length === previousSettings.groups.length
-        && nextGroups.every((group, index) => (
-          group.name === previousSettings.groups[index]?.name
-          && group.color === previousSettings.groups[index]?.color
-          && (group.board ?? DEFAULT_BOARD_NAME) === (previousSettings.groups[index]?.board ?? DEFAULT_BOARD_NAME)
-        ))
-      if (sameBoards && sameGroups && nextActiveTab === previousSettings.activeTab) {
-        return previousSettings
-      }
-
-      return {
-        ...previousSettings,
-        boards: nextBoards,
-        groups: nextGroups,
-        activeTab: nextActiveTab,
-      }
-    })
-  }, [updateSettings])
-
-  const applySnapshotState = useCallback((nextSnapshot: TaskManagerSnapshot) => {
+  const applySnapshot = useCallback((nextSnapshot: TaskManagerSnapshot) => {
     snapshotRef.current = nextSnapshot
-    startTransition(() => {
-      setSnapshot(nextSnapshot)
-      hydrateSettingsFromSnapshot(nextSnapshot)
-    })
-  }, [hydrateSettingsFromSnapshot])
-
-  const resetReloadRetry = useCallback(() => {
-    const retryState = reloadRetryRef.current
-    if (retryState.timer !== null) {
-      window.clearTimeout(retryState.timer)
-      retryState.timer = null
+    if (cacheKey) {
+      viewCache.set(cacheKey, nextSnapshot)
     }
-    retryState.attempt = 0
-  }, [])
+    startTransition(() => setSnapshot(nextSnapshot))
+  }, [cacheKey])
 
-  const scheduleReloadRetry = useCallback(() => {
-    const retryState = reloadRetryRef.current
-    if (retryState.timer !== null) return
-    const delay = getTaskManagerReloadRetryDelay(retryState.attempt)
-    retryState.attempt += 1
-    retryState.timer = window.setTimeout(() => {
-      retryState.timer = null
-      void reloadRequestRef.current([], { forceFullReload: true })
-    }, delay)
-  }, [])
-
-  useEffect(() => {
-    resetReloadRetry()
-    return resetReloadRetry
-  }, [resetReloadRetry, settings.activeVaultPath])
-
-  const updateTaskFrontmatterCompat = useCallback(async (
-    vaultPath: string,
-    taskPath: string,
-    updates: Record<string, unknown>,
-  ): Promise<void> => {
-    const normalizedTaskPath = normalizeFilesystemPath(taskPath).toLowerCase()
-    const baseContent = snapshotRef.current.documents.find((document) => {
-      const normalizedDocumentPath = normalizeFilesystemPath(document.path).toLowerCase()
-      return normalizedDocumentPath === normalizedTaskPath || normalizedTaskPath.endsWith(`/${normalizedDocumentPath}`)
-    })?.content
-    await updateTaskFrontmatterInSource(vaultPath, taskPath, updates, { baseContent })
-  }, [])
-
-  const applyCachedVaultState = useCallback((vault: TaskManagerVaultRef | null): boolean => {
-    const cachedEntry = readTaskManagerVaultCache(vault)
-    if (!cachedEntry) {
-      return false
-    }
-
-    snapshotRef.current = cachedEntry.snapshot
-    startTransition(() => {
-      setSnapshot(cachedEntry.snapshot)
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        activeVaultPath: vault?.path ?? previousSettings.activeVaultPath,
-        boards: cachedEntry.viewState.boards,
-        groups: cachedEntry.viewState.groups,
-        activeTab: resolveCachedViewStateActiveTab(cachedEntry.viewState.activeTab, cachedEntry.viewState.boards),
-      }))
-    })
-
-    return true
-  }, [updateSettings])
-
-  useEffect(() => {
-    if (!activeVaultRef.current?.path || !settings.activeVaultPath) {
+  /** Reads the view; overlapping requests collapse into one more read. */
+  const reload = useCallback(async (): Promise<void> => {
+    if (!context) {
+      applySnapshot(EMPTY_TASK_MANAGER_SNAPSHOT)
       return
     }
-
-    writeTaskManagerVaultCache(activeVaultRef.current, {
-      snapshot,
-      viewState: {
-        boards: settings.boards,
-        groups: settings.groups,
-        activeTab: settings.activeTab,
-      },
-    })
-  }, [settings.activeTab, settings.activeVaultPath, settings.boards, settings.groups, snapshot])
-
-  const reload = useCallback(async (
-    changedPaths: string[] = [],
-    options?: { notifyExternalChange?: boolean; forceFullReload?: boolean },
-  ) => {
     const reloadState = reloadStateRef.current
-    if (options?.notifyExternalChange) {
-      reloadState.notifyExternalChange = true
+    if (reloadState.inFlight) {
+      reloadState.pending = true
+      return reloadState.inFlight
     }
-    if (options?.forceFullReload) {
-      reloadState.forceFullReload = true
-    }
-    for (const changedPath of changedPaths) {
-      if (changedPath.trim()) {
-        reloadState.changedPaths.add(changedPath)
-      }
-    }
-    reloadState.generation += 1
-    reloadState.pending = true
-    await drainTaskManagerReloadQueue(reloadState, () => (
-      // Accumulate watcher events before entering the FIFO so one read can
-      // cover a burst without allowing reloads to race a mutation.
-      enqueueTaskManagerMutation(async (mutationContext) => {
-        while (reloadState.pending) {
-          reloadState.pending = false
-          const generation = reloadState.generation
-          const pendingChangedPaths = Array.from(reloadState.changedPaths)
-          reloadState.changedPaths.clear()
-          const useTargetedReload = pendingChangedPaths.length > 0 && !reloadState.forceFullReload
-          const shouldNotifyExternalChange = reloadState.notifyExternalChange
-          reloadState.notifyExternalChange = false
-          reloadState.forceFullReload = false
-          if (!settings.activeVaultPath) {
-            if (generation === reloadState.generation) applySnapshotState(EMPTY_SNAPSHOT)
-            continue
-          }
-
-          try {
-            const nextSnapshot = useTargetedReload
-              ? await loadTaskManagerSnapshotForChangedPaths(
-                settings.activeVaultPath,
-                snapshotRef.current,
-                pendingChangedPaths,
-              )
-              : await loadTaskManagerSnapshot(settings.activeVaultPath)
-            if (
-              isTransientPublishedEmptySnapshot(snapshotRef.current, nextSnapshot)
-              && reloadRetryRef.current.attempt < 3
-            ) {
-              scheduleReloadRetry()
-              continue
-            }
-            if (generation === reloadState.generation) {
-              if (
-                shouldNotifyExternalChange
-                && !window.__NOTIA_PUBLISHED_TASK_MANAGER__
-                && !areTaskManagerSnapshotsEqual(snapshotRef.current, nextSnapshot)
-              ) {
-                try {
-                  const publicationCursor = await notifyTaskManagerPublicationChanged(
-                    settings.activeVaultPath,
-                    loadTaskManagerSettings(),
-                    resolveTaskManagerSnapshotChangedPaths(snapshotRef.current, nextSnapshot),
-                    mutationContext,
-                  )
-                  setPublicationCursor(publicationCursor)
-                } catch (publicationError) {
-                  console.warn('[task-manager] external change publication notification failed', publicationError)
-                }
-              }
-              applySnapshotState(nextSnapshot)
-              resetReloadRetry()
-            } else {
-              reloadState.forceFullReload = true
-              reloadState.notifyExternalChange ||= shouldNotifyExternalChange
-            }
-          } catch (reloadError) {
-            console.warn('[task-manager] reload failed', reloadError)
-            scheduleReloadRetry()
-          }
+    const run = async () => {
+      do {
+        reloadState.pending = false
+        try {
+          applySnapshot(await readTaskBoardView(context))
+          setError(null)
+        } catch (reloadError) {
+          console.warn('[task-manager] no se pudo leer el tablero', reloadError)
+          setError(errorMessage(reloadError) || 'No se pudo leer el estado del gestor de tareas.')
         }
-      })
-    ))
-  }, [applySnapshotState, resetReloadRetry, scheduleReloadRetry, settings.activeVaultPath])
-
-  useEffect(() => {
-    reloadRequestRef.current = reload
-  }, [reload])
-
-  useEffect(() => subscribeTaskManagerMutations((event) => {
-    if (settings.activeVaultPath === event.vaultPath) {
-      if (!window.__NOTIA_PUBLISHED_TASK_MANAGER__ && !isExternallyControlled) {
-        setSettings(loadTaskManagerSettings())
-      }
-      void reload(event.changedPaths, { forceFullReload: event.forceFullReload === true })
+      } while (reloadState.pending)
     }
-  }), [isExternallyControlled, reload, settings.activeVaultPath])
+    reloadState.inFlight = run().finally(() => {
+      reloadState.inFlight = null
+    })
+    return reloadState.inFlight
+  }, [applySnapshot, context])
 
   useEffect(() => {
-    if (typeof window === 'undefined' || window.__NOTIA_PUBLISHED_TASK_MANAGER__ || !settings.activeVaultPath) {
+    const cached = cacheKey ? viewCache.get(cacheKey) : undefined
+    applySnapshot(cached ?? EMPTY_TASK_MANAGER_SNAPSHOT)
+    if (!context) {
+      return
+    }
+    setIsLoading(!cached)
+    void reload().finally(() => setIsLoading(false))
+  }, [applySnapshot, cacheKey, context, reload])
+
+  // Changes made elsewhere: the backend, the publication or another app.
+  useEffect(() => {
+    if (!context) {
       return undefined
     }
-
-    const activeVaultPath = normalizeFilesystemPath(settings.activeVaultPath)
-    const handleFilesystemChange = (event: Event) => {
-      const detail = (event as CustomEvent<{ vaultPath?: string; pathHint?: string; source?: 'external' | 'internal' }>).detail
-      if (detail?.source === 'internal') {
-        return
-      }
-      const changedVaultPath = normalizeFilesystemPath(detail?.vaultPath ?? '')
-      const changedPathHint = normalizeFilesystemPath(detail?.pathHint ?? '')
-      const matchesVault = changedVaultPath
-        ? changedVaultPath === activeVaultPath
-        : changedPathHint
-          ? isSameOrNestedFilesystemPath(activeVaultPath, changedPathHint)
-          : true
-      if (!matchesVault) {
-        return
-      }
-
-      const targetedPath = changedPathHint.toLowerCase().endsWith('.md')
-        ? [changedPathHint]
-        : []
-      if (localSyncInFlightRef.current > 0) {
-        if (targetedPath.length === 0) {
-          pendingExternalChangeRef.current.fullReload = true
-        } else {
-          targetedPath.forEach((path) => pendingExternalChangeRef.current.paths.add(path))
-        }
-        return
-      }
-      void reload(targetedPath, { notifyExternalChange: true })
-    }
-
-    window.addEventListener('notia:library-tree-changed', handleFilesystemChange)
-    return () => window.removeEventListener('notia:library-tree-changed', handleFilesystemChange)
-  }, [reload, settings.activeVaultPath])
-
-  useEffect(() => {
-    const vaultPath = settings.activeVaultPath
-    if (!vaultPath || typeof window === 'undefined') {
-      return undefined
-    }
-
-    if (window.__NOTIA_PUBLISHED_TASK_MANAGER__) {
+    if (isPublishedTaskManager()) {
       return subscribeTaskManagerPublicationChanges((change) => {
-        const sequence = change.sequence
-        const revision = change.revision
-        if (
-          typeof change.publicationEpoch === 'string'
-          && typeof sequence === 'number'
-          && typeof revision === 'number'
-          && Number.isSafeInteger(sequence)
-          && Number.isSafeInteger(revision)
-          && sequence >= 0
-          && revision >= 0
-        ) {
-          setPublicationCursor({
-            publicationEpoch: change.publicationEpoch,
-            sequence,
-            revision,
-          })
-        }
-        if (change.settings && typeof change.settings === 'object') {
-          const nextSettings = normalizeTaskManagerSettings(change.settings)
-          setSettings((previousSettings) => {
-            const sharedSettings = {
-              ...nextSettings,
-              activeVaultPath: previousSettings.activeVaultPath,
-              activeTab: previousSettings.activeTab,
-              pomodoro: previousSettings.pomodoro,
-            }
-            saveTaskManagerSettings(sharedSettings, { syncPublication: false })
-            return sharedSettings
-          })
-        }
         if (change.type === 'changed' || change.type === 'resync-required') {
-          // A publication event can represent a move/rename. Its path hints
-          // are intentionally bounded and may contain only the source or the
-          // destination, so the published client must reconcile from the
-          // complete snapshot through the same queue as local interactions.
-          dispatchTaskManagerMutation(vaultPath, change.changedPaths ?? [], { forceFullReload: true })
+          void reload()
         }
       })
     }
 
     let disposed = false
-    let unlisten: UnlistenFn | undefined
-    void listen<unknown>('task-manager-publication-changed', (event) => {
-      const payload = event.payload
-      if (!payload || typeof payload !== 'object' || !('vaultPath' in payload)) {
-        return
-      }
-      const changedVaultPath = payload.vaultPath
-      if (typeof changedVaultPath === 'string' && changedVaultPath === vaultPath) {
-        const publicationEpoch = 'publicationEpoch' in payload && typeof payload.publicationEpoch === 'string'
-          ? payload.publicationEpoch
-          : undefined
-        const sequence = 'sequence' in payload && typeof payload.sequence === 'number' && Number.isSafeInteger(payload.sequence)
-          ? payload.sequence
-          : undefined
-        const revision = 'revision' in payload && typeof payload.revision === 'number' && Number.isSafeInteger(payload.revision)
-          ? payload.revision
-          : undefined
-        if (publicationEpoch && sequence !== undefined && revision !== undefined && sequence >= 0 && revision >= 0) {
-          setPublicationCursor({ publicationEpoch, sequence, revision })
+    const unlisteners: Unsubscribe[] = []
+    const subscribe = (event: string, matches: (payload: Record<string, unknown>) => boolean) => {
+      void subscribeBackend<unknown>(event, (payload) => {
+        if (payload && typeof payload === 'object' && matches(payload as Record<string, unknown>)) {
+          void reload()
         }
-        if ('settings' in payload && payload.settings && typeof payload.settings === 'object') {
-          const nextSettings = normalizeTaskManagerSettings(payload.settings)
-          setSettings((previousSettings) => {
-            const sharedSettings = {
-              ...nextSettings,
-              activeVaultPath: previousSettings.activeVaultPath,
-              activeTab: previousSettings.activeTab,
-              pomodoro: previousSettings.pomodoro,
-            }
-            saveTaskManagerSettings(sharedSettings, { syncPublication: false })
-            return sharedSettings
-          })
-        }
-        const changedPaths = 'changedPaths' in payload && Array.isArray(payload.changedPaths)
-          ? payload.changedPaths.filter((path): path is string => typeof path === 'string')
-          : []
-        dispatchTaskManagerMutation(vaultPath, changedPaths, { forceFullReload: true })
-      }
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening()
-        return
-      }
-      unlisten = stopListening
-    }).catch((error: unknown) => {
-      console.warn('[task-manager] publication event listener unavailable', error)
-    })
+      }).then((unlisten) => {
+        if (disposed) unlisten()
+        else unlisteners.push(unlisten)
+      }).catch((listenError: unknown) => {
+        console.warn(`[task-manager] ${event} no está disponible`, listenError)
+      })
+    }
+    subscribe(TASK_MANAGER_CHANGED_EVENT, (payload) => payload.libraryId === context.libraryId)
+    subscribe(PUBLICATION_CHANGED_EVENT, (payload) => payload.vaultPath === vaultPath)
 
+    const activeVaultPath = normalizeFilesystemPath(vaultPath ?? '')
+    const handleTreeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ vaultPath?: string; source?: 'external' | 'internal' }>).detail
+      if (detail?.source === 'internal') return
+      const changedVaultPath = normalizeFilesystemPath(detail?.vaultPath ?? '')
+      if (!changedVaultPath || changedVaultPath === activeVaultPath) {
+        void reload()
+      }
+    }
+    window.addEventListener('notia:library-tree-changed', handleTreeChange)
     return () => {
       disposed = true
-      unlisten?.()
+      unlisteners.forEach((unlisten) => unlisten())
+      window.removeEventListener('notia:library-tree-changed', handleTreeChange)
     }
-  }, [settings.activeVaultPath])
+  }, [context, reload, vaultPath])
 
-  const recoverPartialTaskManagerPublicationBatch = useCallback(async (
-    vaultPath: string,
-    initialSnapshot: TaskManagerSnapshot,
-    initialSettings: TaskManagerSettings,
-    mutationContext: TaskManagerMutationContext,
-  ): Promise<void> => {
-    const recoverySnapshot = await loadTaskManagerSnapshot(vaultPath)
-    const recoverySettings = loadTaskManagerSettings()
-    const snapshotChanged = !areTaskManagerSnapshotsEqual(initialSnapshot, recoverySnapshot)
-    const sharedSettingsChanged = sharedTaskManagerSettingsFingerprint(initialSettings)
-      !== sharedTaskManagerSettingsFingerprint(recoverySettings)
-    if (!snapshotChanged && !sharedSettingsChanged) {
-      return
+  const reportFailure = useCallback((failure: unknown, action: string) => {
+    console.error(failure)
+    const conflict = conflictOf(failure)
+    if (conflict) {
+      setPublicationConflict(conflict)
     }
+    const message = errorMessage(failure)
+    setError(failure instanceof TaskManagerPublicationMutationError && failure.outcome === 'unknown'
+      ? 'La operación no fue confirmada por la publicación. Actualizá el tablero antes de reintentar.'
+      : message ? `${action}: ${message}` : `${action}.`)
+  }, [])
 
-    const publicationCursor = await notifyTaskManagerPublicationChanged(
-      vaultPath,
-      recoverySettings,
-      resolveTaskManagerSnapshotChangedPaths(initialSnapshot, recoverySnapshot),
-      mutationContext,
-    )
-    setPublicationCursor(publicationCursor)
-    if (snapshotChanged) {
-      applySnapshotState(recoverySnapshot)
-      flushPendingTaskManagerLibraryTreeChanges()
+  /** Sends an intent and renders the backend's resulting view. */
+  const runIntent = useCallback(async (intent: TaskBoardIntent, failure: string): Promise<boolean> => {
+    if (!context) {
+      setError('El Task Manager necesita una biblioteca abierta.')
+      return false
     }
-  }, [applySnapshotState])
-
-  const ensureTaskWorkspaceWithPublication = useCallback(async (
-    vaultPath: string,
-    boards: Board[],
-  ): Promise<void> => {
-    const initialSnapshot = await loadTaskManagerSnapshot(vaultPath)
-    const initialSettings = loadTaskManagerSettings()
-    await withTaskManagerPublicationBatch(async () => {
-      await ensureTaskWorkspace(vaultPath, boards)
-    }, async (_result, mutationContext) => {
-      const nextSnapshot = await loadTaskManagerSnapshot(vaultPath)
-      if (areTaskManagerSnapshotsEqual(initialSnapshot, nextSnapshot)) {
-        return
-      }
-
-      const publicationCursor = await notifyTaskManagerPublicationChanged(
-        vaultPath,
-        loadTaskManagerSettings(),
-        resolveTaskManagerSnapshotChangedPaths(initialSnapshot, nextSnapshot),
-        mutationContext,
-      )
-      setPublicationCursor(publicationCursor)
-    }, {
-      onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-        vaultPath,
-        initialSnapshot,
-        initialSettings,
-        mutationContext,
-      ),
-    })
-  }, [recoverPartialTaskManagerPublicationBatch])
-
-  const cleanupEmptyWorkspaceBoardsWithPublication = useCallback(async (
-    vaultPath: string,
-    boardNames: string[],
-  ): Promise<void> => {
-    const initialSnapshot = await loadTaskManagerSnapshot(vaultPath)
-    const initialSettings = loadTaskManagerSettings()
-    await withTaskManagerPublicationBatch(async () => {
-      await cleanupEmptyWorkspaceBoards(vaultPath, boardNames)
-    }, async (_result, mutationContext) => {
-      const nextSnapshot = await loadTaskManagerSnapshot(vaultPath)
-      if (areTaskManagerSnapshotsEqual(initialSnapshot, nextSnapshot)) {
-        return
-      }
-
-      const publicationCursor = await notifyTaskManagerPublicationChanged(
-        vaultPath,
-        loadTaskManagerSettings(),
-        resolveTaskManagerSnapshotChangedPaths(initialSnapshot, nextSnapshot),
-        mutationContext,
-      )
-      setPublicationCursor(publicationCursor)
-    }, {
-      onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-        vaultPath,
-        initialSnapshot,
-        initialSettings,
-        mutationContext,
-      ),
-    })
-  }, [recoverPartialTaskManagerPublicationBatch])
-
-  const setActiveVaultPath = useCallback(async (vault: TaskManagerVaultRef | null) => {
-    if (!vault?.path) {
-      activeVaultRef.current = null
-      setActiveTaskManagerVaultContext(null)
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        activeVaultPath: null,
-      }))
-      snapshotRef.current = EMPTY_SNAPSHOT
-      setSnapshot(EMPTY_SNAPSHOT)
-      return
-    }
-
-    const normalizedVault: TaskManagerVaultRef = {
-      path: vault.path,
-      androidTreeUri: vault.androidTreeUri,
-      libraryId: vault.libraryId,
-      libraryUserId: vault.libraryUserId,
-    }
-    activeVaultRef.current = normalizedVault
-    setActiveTaskManagerVaultContext(normalizedVault)
-    applyCachedVaultState(normalizedVault)
-    setIsLoading(true)
-    try {
-      if (isExternallyControlled) {
-        const publishedSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
-        applySnapshotState(publishedSnapshot)
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          activeVaultPath: normalizedVault.path,
-        }))
-        setInfoMessage(null)
-        return
-      }
-
-      const sharedMetadata = await hydrateSharedMetadata(normalizedVault.path)
-      const bootstrapSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
-      if (bootstrapSnapshot.tasks.length === 0) {
-        updateSettings((previousSettings) => resolveSettingsForEmptySnapshot(previousSettings))
-        await cleanupEmptyWorkspaceBoardsWithPublication(
-          normalizedVault.path,
-          resolveCleanupBoardCandidates(bootstrapSnapshot),
-        )
-      }
-      const storedSettings = loadTaskManagerSettings()
-      const bootstrapBoards = sharedMetadata?.boards ?? mergeTaskManagerBoards(
-        storedSettings.boards,
-        resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot),
-      )
-      await ensureTaskWorkspaceWithPublication(normalizedVault.path, bootstrapBoards)
-      const nextSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
-      applySnapshotState(nextSnapshot)
-      if (!sharedMetadata) {
-        persistSharedMetadata(normalizedVault.path, {
-          boards: bootstrapBoards,
-          groups: storedSettings.groups,
-        }, { enqueueMutation: true })
-      }
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        activeVaultPath: normalizedVault.path,
-      }))
-      setInfoMessage('Vault sincronizado.')
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo inicializar el vault seleccionado: ${runtimeMessage}`
-        : 'No se pudo inicializar el vault seleccionado.')
-    } finally {
-      setIsLoading(false)
-    }
-  }, [applyCachedVaultState, applySnapshotState, cleanupEmptyWorkspaceBoardsWithPublication, ensureTaskWorkspaceWithPublication, hydrateSharedMetadata, isExternallyControlled, persistSharedMetadata, updateSettings])
-
-  const selectVault = useCallback(async () => {
-    const selected = await pickVaultDirectory()
-    if (!selected) {
-      return
-    }
-
-    await setActiveVaultPath(selected)
-  }, [setActiveVaultPath])
-
-  const bootstrapExternalVaultFast = useCallback(async (vault: TaskManagerVaultRef) => {
-    const normalizedVault: TaskManagerVaultRef = {
-      path: vault.path,
-      androidTreeUri: vault.androidTreeUri,
-      libraryId: vault.libraryId,
-      libraryUserId: vault.libraryUserId,
-    }
-
-    activeVaultRef.current = normalizedVault
-    setActiveTaskManagerVaultContext(normalizedVault)
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      activeVaultPath: normalizedVault.path,
-    }))
-    applyCachedVaultState(normalizedVault)
-    setIsLoading(true)
-
-    try {
-      const bootstrapSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
-      applySnapshotState(bootstrapSnapshot)
-      setInfoMessage(null)
-
-      void (async () => {
-        try {
-          if (bootstrapSnapshot.tasks.length === 0) {
-            updateSettings((previousSettings) => resolveSettingsForEmptySnapshot(previousSettings))
-            await cleanupEmptyWorkspaceBoardsWithPublication(
-              normalizedVault.path,
-              resolveCleanupBoardCandidates(bootstrapSnapshot),
-            )
-          }
-
-          await ensureTaskWorkspaceWithPublication(
-            normalizedVault.path,
-            resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot),
-          )
-
-          const refreshedSnapshot = await loadTaskManagerSnapshot(normalizedVault.path)
-          applySnapshotState(refreshedSnapshot)
-        } catch (runtimeError) {
-          console.warn('[task-manager] Android fast bootstrap finalize failed', runtimeError)
-        }
-      })()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo inicializar el vault seleccionado: ${runtimeMessage}`
-        : 'No se pudo inicializar el vault seleccionado.')
-    } finally {
-      setIsLoading(false)
-    }
-  }, [applyCachedVaultState, applySnapshotState, cleanupEmptyWorkspaceBoardsWithPublication, ensureTaskWorkspaceWithPublication, updateSettings])
-
-  useEffect(() => {
-    if (isExternallyControlled) {
-      return
-    }
-
-    if (!settings.activeVaultPath) {
-      activeVaultRef.current = null
-      setActiveTaskManagerVaultContext(null)
-      return
-    }
-
-    activeVaultRef.current = {
-      path: settings.activeVaultPath,
-    }
-    setActiveTaskManagerVaultContext(activeVaultRef.current)
-    applyCachedVaultState({
-      path: settings.activeVaultPath,
-    })
-    setIsLoading(true)
-    void hydrateSharedMetadata(settings.activeVaultPath)
-      .then((sharedMetadata) => loadTaskManagerSnapshot(settings.activeVaultPath as string)
-        .then(async (bootstrapSnapshot) => {
-          if (bootstrapSnapshot.tasks.length === 0) {
-            updateSettings((previousSettings) => resolveSettingsForEmptySnapshot(previousSettings))
-            await cleanupEmptyWorkspaceBoardsWithPublication(
-              settings.activeVaultPath as string,
-              resolveCleanupBoardCandidates(bootstrapSnapshot),
-            )
-          }
-
-          const storedSettings = loadTaskManagerSettings()
-          const bootstrapBoards = sharedMetadata?.boards ?? mergeTaskManagerBoards(
-            storedSettings.boards,
-            resolveBootstrapBoardsFromSnapshot(bootstrapSnapshot),
-          )
-          await ensureTaskWorkspaceWithPublication(
-            settings.activeVaultPath as string,
-            bootstrapBoards,
-          )
-          if (!sharedMetadata) {
-            persistSharedMetadata(settings.activeVaultPath as string, {
-              boards: bootstrapBoards,
-              groups: storedSettings.groups,
-            }, { enqueueMutation: true })
-          }
-        }))
-      .then(() => loadTaskManagerSnapshot(settings.activeVaultPath as string))
-      .then((nextSnapshot) => {
-        applySnapshotState(nextSnapshot)
-      })
-      .catch((runtimeError) => {
-        console.error(runtimeError)
-        const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-        setError(runtimeMessage
-          ? `No se pudo cargar el estado del gestor de tareas: ${runtimeMessage}`
-          : 'No se pudo cargar el estado del gestor de tareas.')
-      })
-      .finally(() => setIsLoading(false))
-  }, [applyCachedVaultState, applySnapshotState, cleanupEmptyWorkspaceBoardsWithPublication, ensureTaskWorkspaceWithPublication, hydrateSharedMetadata, isExternallyControlled, persistSharedMetadata, settings.activeVaultPath, updateSettings])
-
-  useEffect(() => {
-    if (!externalVault?.path) {
-      return
-    }
-
-    if (areSameVaultRef(externalVault, activeVaultRef.current)) {
-      return
-    }
-
-    if (isAndroidRuntime) {
-      void bootstrapExternalVaultFast(externalVault)
-      return
-    }
-
-    void setActiveVaultPath(externalVault)
-  }, [bootstrapExternalVaultFast, externalVault, isAndroidRuntime, setActiveVaultPath])
-
-  useEffect(() => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    const interval = window.setInterval(() => {
-      const now = Date.now()
-      const completedPhases: string[] = []
-      let didTransition = false
-
-      setSettings((previousSettings) => {
-        const transition = advancePomodoroState(previousSettings.pomodoro, now)
-        didTransition = transition.transitioned
-        completedPhases.push(...transition.completedPhases)
-
-        const nextSettings = {
-          ...previousSettings,
-          pomodoro: transition.state,
-        }
-        saveTaskManagerSettings(nextSettings, { syncPublication: false })
-        return nextSettings
-      })
-
-      if (!didTransition || completedPhases.length === 0 || !settings.activeVaultPath) {
-        return
-      }
-
-      const selectedTask = snapshot.tasks.find((task) => task.filePath === settings.pomodoro.selectedTaskPath)
-      const completedWorkCycles = completedPhases.filter((phase) => phase === 'work').length
-      const workedHours = roundHours((completedWorkCycles * settings.pomodoro.durations.workMinutes) / 60)
-      const deviationHours = roundHours(settings.pomodoro.phaseDeviationSeconds / 3600)
-      const initialSharedSettings = loadTaskManagerSettings()
-
-      void (async () => {
-        try {
-          await withTaskManagerPublicationBatch(async () => {
-            for (const [index, phase] of completedPhases.entries()) {
-              await appendPomodoroEntry(settings.activeVaultPath as string, {
-                timestampMs: now,
-                type: getPomodoroPhaseLabel(phase as 'work' | 'short-break' | 'long-break'),
-                durationChoice: resolvePomodoroDurationChoice(settings.pomodoro.durations),
-                task: selectedTask?.title ?? '-',
-                durationMinutes: (phase === 'work' ? settings.pomodoro.durations.workMinutes : phase === 'short-break' ? settings.pomodoro.durations.shortBreakMinutes : settings.pomodoro.durations.longBreakMinutes),
-                deviationHours: index === completedPhases.length - 1 ? deviationHours : 0,
-                finalized: true,
-              })
-            }
-
-            if (selectedTask && (workedHours > 0 || deviationHours > 0)) {
-              await updateTaskFrontmatterCompat(settings.activeVaultPath as string, selectedTask.filePath, {
-                dedicado: roundHours(selectedTask.dedicatedHours + workedHours),
-                desvio: roundHours(selectedTask.deviationHours + deviationHours),
-              })
-            }
-          }, async (_result, mutationContext) => {
-            if (deviationHours > 0) {
-              updateSettings((previousSettings) => ({
-                ...previousSettings,
-                pomodoro: {
-                  ...previousSettings.pomodoro,
-                  phaseDeviationSeconds: 0,
-                },
-              }))
-            }
-
-            const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath as string)
-            applySnapshotState(nextSnapshot)
-            await notifyTaskManagerPublicationChanged(
-              settings.activeVaultPath as string,
-              loadTaskManagerSettings(),
-              resolveTaskManagerSnapshotChangedPaths(snapshot, nextSnapshot),
-              mutationContext,
-            )
-          }, {
-            vaultPath: settings.activeVaultPath as string,
-            scopes: ['task-manager', 'pomodoro'],
-            changedPaths: [`${TASKS_ROOT_FOLDER}/pomodoro.md`],
-            onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-              settings.activeVaultPath as string,
-              snapshot,
-              initialSharedSettings,
-              mutationContext,
-            ),
-          })
-        } catch (runtimeError) {
-          console.error(runtimeError)
-        }
-      })()
-    }, 1000)
-
-    return () => window.clearInterval(interval)
-  }, [applySnapshotState, recoverPartialTaskManagerPublicationBatch, settings.activeVaultPath, settings.pomodoro, snapshot, updateSettings, updateTaskFrontmatterCompat])
-
-  const runSync = useCallback(async (
-    runner: () => Promise<void>,
-    syncBoardsOverride?: Board[],
-    options?: {
-      syncStrategy?: 'full' | 'snapshot-only'
-      publicationSettings?: TaskManagerSettings
-    },
-  ) => {
-    return enqueueTaskManagerMutation(async (mutationContext) => {
-      if (!settings.activeVaultPath) {
-        throw new Error('No hay un vault activo.')
-      }
-
-      setIsSyncing(true)
-      localSyncInFlightRef.current += 1
-      const initialSnapshot = snapshotRef.current
-      const initialSharedSettings = loadTaskManagerSettings()
-      let journalPath: string | undefined
-      let journalActive = false
-      let publicationBatchActive = false
-      let publicationNotificationVerified = true
-      try {
-      if (!(typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true)) {
-        journalPath = await resolveTaskManagerMutationJournalPath(settings.activeVaultPath)
-        await beginTaskManagerMutationJournal(journalPath, mutationContext.operationId, ['task-manager'])
-        journalActive = true
-      }
-      publicationBatchActive = await beginTaskManagerPublicationBatch(mutationContext.operationId)
-      await runner()
-      if (
-        (options?.syncStrategy ?? 'full') === 'full'
-        && !(typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true)
-      ) {
-        try {
-          await syncTaskIndexesAndMetadata(
-            settings.activeVaultPath,
-            (syncBoardsOverride ?? settings.boards).map((board) => board.name),
-            syncBoardsOverride ?? settings.boards,
-          )
-        } catch (syncError) {
-          console.warn('[task-manager] syncTaskIndexesAndMetadata failed after action', syncError)
-          throw syncError
-        }
-      }
-      if (options?.publicationSettings) {
-        await persistSharedMetadata(settings.activeVaultPath, options.publicationSettings, { throwOnError: true })
-        if (typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true) {
-          await syncTaskManagerPublicationSettings(
-            settings.activeVaultPath,
-            options.publicationSettings,
-            mutationContext,
-          )
-        }
-      }
-      const loadedSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
-      const nextSnapshot = isTransientPublishedEmptySnapshot(initialSnapshot, loadedSnapshot)
-        ? initialSnapshot
-        : loadedSnapshot
-      const snapshotChanged = !areTaskManagerSnapshotsEqual(initialSnapshot, nextSnapshot)
-      const changedPaths = resolveTaskManagerSnapshotChangedPaths(initialSnapshot, nextSnapshot)
-      if (journalPath && journalActive) {
-        await recordTaskManagerMutationJournalChangedPaths(
-          journalPath,
-          mutationContext.operationId,
-          changedPaths,
-        )
-      }
-      if (snapshotChanged || options?.publicationSettings) {
-        try {
-          const publicationCursor = await notifyTaskManagerPublicationChanged(
-            settings.activeVaultPath,
-            options?.publicationSettings ?? loadTaskManagerSettings(),
-            changedPaths,
-            mutationContext,
-          )
-          setPublicationCursor(publicationCursor)
-        } catch (publicationError) {
-          publicationNotificationVerified = false
-          try {
-            await setTaskManagerPublicationRecovery(true)
-          } catch (recoveryError) {
-            console.warn('[task-manager] no se pudo marcar la notificación de publicación como pendiente', recoveryError)
-          }
-          console.warn('[task-manager] publication change notification failed', publicationError)
-        }
-      }
-      applySnapshotState(nextSnapshot)
-      flushPendingTaskManagerLibraryTreeChanges()
-      setPublicationConflict(null)
-      if (publicationBatchActive) {
-        const completedCursor = await endTaskManagerPublicationBatch(mutationContext.operationId)
-        publicationBatchActive = false
-        if (completedCursor) {
-          setPublicationCursor(completedCursor)
-        }
-      }
-      if (journalPath && journalActive) {
-        try {
-          await completeTaskManagerMutationJournal(journalPath, mutationContext.operationId, 'committed')
-          journalActive = false
-        } catch (journalError) {
-          console.warn('[task-manager] no se pudo cerrar el journal de la mutación aplicada', journalError)
-        }
-      }
-      if ((!journalPath || !journalActive) && publicationNotificationVerified) {
-        try {
-          await setTaskManagerPublicationRecovery(false)
-        } catch (recoveryError) {
-          console.warn('[task-manager] no se pudo confirmar el estado verificado de la publicación', recoveryError)
-        }
-      }
-    } catch (runtimeError) {
-      try {
-        await setTaskManagerPublicationRecovery(true)
-      } catch (recoveryError) {
-        console.warn('[task-manager] no se pudo marcar la publicación en recuperación', recoveryError)
-      }
-      try {
-        const recoverySnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath)
-        const recoverySettings = loadTaskManagerSettings()
-        const sharedSettingsChanged = sharedTaskManagerSettingsFingerprint(initialSharedSettings)
-          !== sharedTaskManagerSettingsFingerprint(recoverySettings)
-        const snapshotChanged = !areTaskManagerSnapshotsEqual(initialSnapshot, recoverySnapshot)
-        const changedPaths = resolveTaskManagerSnapshotChangedPaths(initialSnapshot, recoverySnapshot)
-        if (journalPath && journalActive) {
-          try {
-            await recordTaskManagerMutationJournalChangedPaths(
-              journalPath,
-              mutationContext.operationId,
-              changedPaths,
-            )
-          } catch (journalError) {
-            console.warn('[task-manager] no se pudo registrar el alcance parcial de la mutación', journalError)
-          }
-        }
-        if (snapshotChanged || sharedSettingsChanged) {
-          try {
-            await notifyTaskManagerPublicationChanged(
-              settings.activeVaultPath,
-              recoverySettings,
-              changedPaths,
-              mutationContext,
-            )
-          } catch (publicationError) {
-            console.warn('[task-manager] no se pudo anunciar una mutación parcial', publicationError)
-          }
-          try {
-            await setTaskManagerPublicationRecovery(true)
-          } catch (recoveryError) {
-            console.warn('[task-manager] no se pudo marcar la publicación en recuperación', recoveryError)
-          }
-          applySnapshotState(recoverySnapshot)
-          flushPendingTaskManagerLibraryTreeChanges()
-        } else if (journalPath && journalActive) {
-          try {
-            await setTaskManagerPublicationRecovery(true)
-          } catch (recoveryError) {
-            console.warn('[task-manager] no se pudo preparar el estado de recuperación', recoveryError)
-          }
-          try {
-            await completeTaskManagerMutationJournal(journalPath, mutationContext.operationId, 'rolled-back')
-            journalActive = false
-            await setTaskManagerPublicationRecovery(false)
-          } catch (journalError) {
-            console.warn('[task-manager] no se pudo marcar el rollback de la mutación', journalError)
-          }
-        }
-      } catch (recoveryError) {
-        console.warn('[task-manager] no se pudo recuperar el snapshot tras un error', recoveryError)
-        try {
-          await setTaskManagerPublicationRecovery(true)
-        } catch (publicationRecoveryError) {
-          console.warn('[task-manager] no se pudo marcar la recuperación pendiente', publicationRecoveryError)
-        }
-      }
-      if (runtimeError instanceof TaskManagerPublicationMutationError && runtimeError.conflict) {
-        const conflict: TaskManagerPublicationConflict = runtimeError.conflict
-        setPublicationConflict({
-          operationId: runtimeError.operationId,
-          command: runtimeError.command,
-          expectedRevision: conflict.expectedRevision,
-          currentRevision: conflict.currentRevision,
-          actorId: conflict.actorId,
-          conflictingOperationId: conflict.operationId,
-        })
-      }
-      throw runtimeError
-    } finally {
-      if (publicationBatchActive) {
-        try {
-          const completedCursor = await endTaskManagerPublicationBatch(mutationContext.operationId)
-          publicationBatchActive = false
-          if (completedCursor) {
-            setPublicationCursor(completedCursor)
-          }
-        } catch (batchError) {
-          console.warn('[task-manager] no se pudo cerrar el lote de publicación', batchError)
-        }
-      }
-      localSyncInFlightRef.current = Math.max(0, localSyncInFlightRef.current - 1)
-      if (localSyncInFlightRef.current === 0) {
-        const pendingExternalChange = pendingExternalChangeRef.current
-        pendingExternalChangeRef.current = { fullReload: false, paths: new Set() }
-        if (pendingExternalChange.fullReload || pendingExternalChange.paths.size > 0) {
-          void reload(
-            pendingExternalChange.fullReload ? [] : Array.from(pendingExternalChange.paths),
-            { notifyExternalChange: true },
-          )
-        }
-      }
-      setIsSyncing(false)
-      }
-    })
-  }, [applySnapshotState, persistSharedMetadata, reload, settings.activeVaultPath, settings.boards])
-
-  /**
-   * Every Task Manager write goes to the Rust store: the backend validates,
-   * previews, applies with revisions and renders indexes and metadata. The
-   * WebView keeps no fallback that writes the workspace itself.
-   */
-  const runEmbeddedMutation = useCallback(async (
-    mutation: TaskManagerAgentMutation | TaskManagerAgentMutation[],
-    _syncBoardsOverride?: Board[],
-    options?: {
-      syncStrategy?: 'full' | 'snapshot-only'
-      publicationSettings?: TaskManagerSettings
-    },
-  ): Promise<void> => {
-    const vault = activeVaultRef.current
-    if (!vault?.path || !vault.libraryId || !vault.libraryUserId) {
-      throw new Error('El Task Manager necesita una biblioteca registrada y un usuario activo.')
-    }
-
     setIsSyncing(true)
     try {
-      for (const nextMutation of Array.isArray(mutation) ? mutation : [mutation]) {
-        await executeTaskManagerAgentMutation(
-          vault.path,
-          nextMutation,
-          {},
-          {
-            libraryId: vault.libraryId,
-            libraryUserId: vault.libraryUserId,
-            published: typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true,
-            android: isAndroidRuntime,
-            publicationSettings: options?.publicationSettings,
-          },
-        )
-      }
-      await reload([], { forceFullReload: true })
+      await executeTaskBoardIntent(context, intent)
+      await reload()
       setPublicationConflict(null)
+      return true
+    } catch (intentError) {
+      reportFailure(intentError, failure)
+      return false
     } finally {
       setIsSyncing(false)
     }
-  }, [isAndroidRuntime, reload])
+  }, [context, reload, reportFailure])
 
-  const clearPublicationConflict = useCallback(() => {
-    setPublicationConflict(null)
-  }, [])
+  const setActiveTab = useCallback((tab: string) => setActiveTabState(tab), [])
+
+  const clearPublicationConflict = useCallback(() => setPublicationConflict(null), [])
 
   const reloadPublicationConflict = useCallback(async () => {
     await reload()
@@ -1658,224 +377,99 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
   }, [])
 
   const submitTaskDialog = useCallback(async (formData: TaskFormData) => {
-    if (!settings.activeVaultPath) {
-      setError('Seleccioná un vault antes de crear tareas.')
+    const editedTask = taskDialog.mode === 'edit' ? taskDialog.task : null
+    if (taskDialog.mode === 'edit' && !editedTask) {
+      setError('No se encontró la tarea que se intenta editar.')
       return
     }
-
-    try {
-      if (taskDialog.mode === 'edit' && !taskDialog.task) {
-        throw new Error('No se encontró la tarea que se intenta editar.')
+    const intent: TaskBoardIntent = editedTask
+      ? {
+        kind: 'edit-task',
+        taskPath: editedTask.filePath,
+        title: formData.title,
+        detail: formData.detail,
+        state: formData.state,
+        priority: formData.priority || null,
+        group: formData.group,
+        endDate: formData.endDate,
+        dynamicEndDate: formData.dynamicEndDate,
+        estimatedHours: formData.estimatedHours,
+        parentTaskName: formData.parentTaskName,
       }
-      const taskPath = taskDialog.task?.filePath ?? ''
-      const isCreating = taskDialog.mode === 'create' || !taskDialog.task
-      const mutation: TaskManagerAgentMutation = isCreating
-        ? {
-          kind: 'create',
-          board: formData.board,
-          title: formData.title,
-          content: formData.detail,
-          group: formData.group,
-          priority: formData.priority || 'Media',
-          state: formData.state,
-          parentTaskName: formData.parentTaskName,
-          fields: {
-            fechaFin: formData.endDate,
-            fechaFinDinamica: formData.dynamicEndDate,
-            estimacion: formData.estimatedHours,
-            contexto: settings.boards.find((board) => board.name === formData.board)?.contexto ?? DEFAULT_CONTEXT_TAG,
-          },
-        }
-        : {
-          kind: 'update-fields',
-          taskPath,
-          fields: {
-            tarea: formData.title,
-            content: formData.detail,
-            estado: formData.state,
-            prioridad: formData.priority,
-            equipo: formData.group,
-            fechaFin: formData.endDate,
-            fechaFinDinamica: formData.dynamicEndDate,
-            estimacion: formData.estimatedHours,
-            parent: formData.parentTaskName,
-          },
-        }
-      await runEmbeddedMutation(mutation)
+      : {
+        kind: 'create-task',
+        board: formData.board,
+        title: formData.title,
+        detail: formData.detail,
+        group: formData.group,
+        priority: formData.priority || null,
+        state: formData.state,
+        parentTaskName: formData.parentTaskName,
+        endDate: formData.endDate,
+        dynamicEndDate: formData.dynamicEndDate,
+        estimatedHours: formData.estimatedHours,
+      }
+    if (await runIntent(intent, 'No se pudo guardar la tarea')) {
       closeTaskDialog()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      const publicationError = runtimeError instanceof TaskManagerPublicationMutationError
-      setError(publicationError && runtimeError.outcome === 'unknown'
-        ? 'La operación no fue confirmada por la publicación. Actualizá el tablero antes de volver a crear la tarea.'
-        : runtimeMessage
-          ? `No se pudo guardar la tarea: ${runtimeMessage}`
-          : 'No se pudo guardar la tarea.')
     }
-  }, [closeTaskDialog, runEmbeddedMutation, settings.activeVaultPath, settings.boards, taskDialog.mode, taskDialog.task])
+  }, [closeTaskDialog, runIntent, taskDialog.mode, taskDialog.task])
 
   const updateTaskState = useCallback(async (task: TaskItem, nextState: string) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({ kind: 'change-state', taskPath: task.filePath, state: nextState as TaskState })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo cambiar el estado de la tarea: ${runtimeMessage}`
-        : 'No se pudo cambiar el estado de la tarea.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'change-state', taskPath: task.filePath, state: nextState as TaskState }, 'No se pudo cambiar el estado de la tarea')
+  }, [runIntent])
 
   const updateTaskPriority = useCallback(async (task: TaskItem, nextPriority: TaskPriority) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({ kind: 'change-priority', taskPath: task.filePath, priority: nextPriority }, undefined, { syncStrategy: 'snapshot-only' })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo cambiar la prioridad de la tarea: ${runtimeMessage}`
-        : 'No se pudo cambiar la prioridad de la tarea.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'change-priority', taskPath: task.filePath, priority: nextPriority }, 'No se pudo cambiar la prioridad de la tarea')
+  }, [runIntent])
 
   const updateTaskDedicatedHours = useCallback(async (task: TaskItem, nextDedicatedHours: number) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({ kind: 'update-fields', taskPath: task.filePath, fields: {
-        dedicado: roundHours(Math.max(0, nextDedicatedHours)),
-      } }, undefined, { syncStrategy: 'snapshot-only' })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo actualizar horas dedicadas: ${runtimeMessage}`
-        : 'No se pudo actualizar horas dedicadas.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'set-dedicated-hours', taskPath: task.filePath, hours: nextDedicatedHours }, 'No se pudo actualizar horas dedicadas')
+  }, [runIntent])
 
   const markTaskAsUrgent = useCallback(async (task: TaskItem) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({ kind: 'update-fields', taskPath: task.filePath, fields: {
-        prioridad: 'Urgente',
-        estado: task.state === 'Pendiente' ? 'En progreso' : task.state,
-      } }, undefined, { syncStrategy: 'snapshot-only' })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo marcar la tarea como urgente: ${runtimeMessage}`
-        : 'No se pudo marcar la tarea como urgente.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'mark-urgent', taskPath: task.filePath }, 'No se pudo marcar la tarea como urgente')
+  }, [runIntent])
 
   const deleteTaskItem = useCallback(async (task: TaskItem) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({ kind: 'delete', taskPath: task.filePath })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo eliminar la tarea: ${runtimeMessage}`
-        : 'No se pudo eliminar la tarea.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'delete-task', taskPath: task.filePath }, 'No se pudo eliminar la tarea')
+  }, [runIntent])
 
   const toggleSubtaskDone = useCallback(async (task: TaskItem, done: boolean) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({
-        kind: 'change-state',
-        taskPath: task.filePath,
-        state: done ? 'Finalizada' : 'Pendiente',
-      }, undefined, { syncStrategy: 'snapshot-only' })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo actualizar la subtarea.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'change-state', taskPath: task.filePath, state: done ? 'Finalizada' : 'Pendiente' }, 'No se pudo actualizar la subtarea')
+  }, [runIntent])
 
   const addTaskComment = useCallback(async (task: TaskItem, comment: string) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    const normalizedComment = comment.trim()
-    if (!normalizedComment) {
-      return
-    }
-
-    try {
-      await runEmbeddedMutation({ kind: 'add-comment', taskPath: task.filePath, comment: normalizedComment }, undefined, { syncStrategy: 'snapshot-only' })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo agregar el comentario.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    await runIntent({ kind: 'add-comment', taskPath: task.filePath, comment }, 'No se pudo agregar el comentario')
+  }, [runIntent])
 
   const loadTaskSource = useCallback(async (taskPath: string): Promise<string> => {
-    if (!settings.activeVaultPath) {
-      throw new Error('No hay un vault activo.')
+    if (!context) {
+      throw new Error('El Task Manager necesita una biblioteca abierta.')
     }
-
-    const source = await readTaskMarkdownSourceWithRevision(settings.activeVaultPath, taskPath)
-    if (source.revision) {
-      taskSourceRevisionsRef.current.set(taskPath, source.revision)
-    }
+    const source = await readTaskMarkdownSource(context, taskPath)
+    taskSourceRevisionsRef.current.set(taskPath, source.revision)
     return source.content
-  }, [settings.activeVaultPath])
+  }, [context])
 
   const saveTaskSource = useCallback(async (taskPath: string, content: string) => {
-    if (!settings.activeVaultPath) {
+    if (!context) {
       return
     }
-
     try {
-      await runSync(async () => {
-        await writeTaskMarkdownSource(
-          settings.activeVaultPath as string,
-          taskPath,
-          content,
-          taskSourceRevisionsRef.current.get(taskPath),
-        )
-        taskSourceRevisionsRef.current.delete(taskPath)
-      })
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message : ''
-      const publicationConflict = runtimeError instanceof TaskManagerPublicationMutationError
-        ? runtimeError.conflict
-        : undefined
-      setError(publicationConflict
-        ? `Los cambios compartidos cambiaron (revisión ${publicationConflict.currentRevision ?? 'nueva'}). Revisá y reintentá.`
-        : runtimeMessage.includes('cambió')
-        ? 'La tarea cambió en otra sesión. Recargá el ticket antes de guardar.'
-        : 'No se pudo guardar el markdown de la tarea.')
-      throw runtimeError instanceof Error ? runtimeError : new Error('No se pudo guardar el markdown de la tarea.')
+      await writeTaskMarkdownSource(context, taskPath, content, taskSourceRevisionsRef.current.get(taskPath))
+      taskSourceRevisionsRef.current.delete(taskPath)
+      await reload()
+    } catch (saveError) {
+      console.error(saveError)
+      const conflict = conflictOf(saveError)
+      setError(conflict
+        ? `Los cambios compartidos cambiaron (revisión ${conflict.currentRevision ?? 'nueva'}). Revisá y reintentá.`
+        : errorMessage(saveError).includes('cambió')
+          ? 'La tarea cambió en otra sesión. Recargá el ticket antes de guardar.'
+          : 'No se pudo guardar el markdown de la tarea.')
+      throw saveError instanceof Error ? saveError : new Error('No se pudo guardar el markdown de la tarea.')
     }
-  }, [runSync, settings.activeVaultPath])
+  }, [context, reload])
 
   const openBoardCreateDialog = useCallback(() => {
     setBoardDialog({ open: true, mode: 'create', board: null })
@@ -1890,139 +484,26 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
   }, [])
 
   const submitBoardDialog = useCallback(async (payload: { name: string; color: string; activityHoursPerDay: number; contexto: string }) => {
-    const normalizedName = sanitizeFilename(payload.name).toLowerCase()
-    if (!normalizedName) {
-      setError('El tablero necesita un nombre válido.')
+    const previousName = boardDialog.mode === 'edit' ? boardDialog.board?.name : undefined
+    const saved = await runIntent(previousName
+      ? { kind: 'update-board', previousName, ...payload }
+      : { kind: 'create-board', ...payload }, 'No se pudo guardar el tablero')
+    if (!saved) {
       return
     }
-
-    const normalizedColor = payload.color || '#2e6db0'
-    const normalizedActivityHoursPerDay = normalizeBoardActivityHours(payload.activityHoursPerDay)
-    const normalizedContexto = normalizeContextTag(payload.contexto) ?? DEFAULT_CONTEXT_TAG
-
-    try {
-      if (!settings.activeVaultPath) {
-        return
-      }
-
-      if (boardDialog.mode === 'create') {
-        if (settings.boards.some((board) => board.name === normalizedName)) {
-          setError(`Ya existe un tablero llamado "${normalizedName}".`)
-          return
-        }
-
-        const nextBoards = [...settings.boards, {
-          name: normalizedName,
-          color: normalizedColor,
-          activityHoursPerDay: normalizedActivityHoursPerDay,
-          contexto: normalizedContexto,
-        }]
-        const nextPublicationSettings = {
-          ...settings,
-          boards: nextBoards,
-          activeTab: normalizedName,
-        }
-        await runEmbeddedMutation({
-          kind: 'create-board',
-          name: normalizedName,
-          color: normalizedColor,
-          contexto: normalizedContexto,
-          activityHoursPerDay: normalizedActivityHoursPerDay,
-        }, nextBoards, { publicationSettings: nextPublicationSettings })
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          boards: nextBoards,
-          activeTab: normalizedName,
-        }))
-      } else if (boardDialog.board) {
-        const previousName = boardDialog.board.name
-
-        if (previousName !== normalizedName && settings.boards.some((board) => board.name === normalizedName)) {
-          setError(`Ya existe un tablero llamado "${normalizedName}".`)
-          return
-        }
-
-        const canRenameOrRecolor = previousName !== DEFAULT_BOARD_NAME
-        const effectiveName = canRenameOrRecolor ? normalizedName : previousName
-        const effectiveColor = canRenameOrRecolor ? normalizedColor : boardDialog.board.color
-
-        const nextBoards = settings.boards.map((board) => {
-          if (board.name !== previousName) {
-            return board
-          }
-
-            return {
-              name: effectiveName,
-              color: effectiveColor,
-              activityHoursPerDay: normalizedActivityHoursPerDay,
-              contexto: normalizedContexto,
-            }
-        })
-        const nextGroups = settings.groups.map((group) => {
-          if ((group.board ?? DEFAULT_BOARD_NAME) !== previousName) {
-            return group
-          }
-
-          return {
-            ...group,
-            board: effectiveName,
-          }
-        })
-        const nextPublicationSettings = {
-          ...settings,
-          boards: nextBoards,
-          groups: nextGroups,
-          activeTab: settings.activeTab === previousName ? effectiveName : settings.activeTab,
-        }
-
-        await runEmbeddedMutation({
-          kind: 'update-board',
-          previousName,
-          name: effectiveName,
-          color: effectiveColor,
-          contexto: normalizedContexto,
-          activityHoursPerDay: normalizedActivityHoursPerDay,
-        }, nextBoards, { publicationSettings: nextPublicationSettings })
-        updateSettings((previousSettings) => ({
-          ...previousSettings,
-          boards: nextBoards,
-          groups: nextGroups,
-          activeTab: previousSettings.activeTab === previousName ? effectiveName : previousSettings.activeTab,
-        }))
-      }
-      closeBoardDialog()
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo guardar el tablero.')
+    // The backend owns the resulting name; follow it with the view's tab.
+    const createdOrRenamed = snapshotRef.current.boards.find((board) => (
+      board.name.toLowerCase() === payload.name.trim().toLowerCase()
+    ))
+    if (createdOrRenamed && (!previousName || activeTab === previousName)) {
+      setActiveTabState(createdOrRenamed.name)
     }
-  }, [boardDialog.board, boardDialog.mode, closeBoardDialog, runEmbeddedMutation, settings, updateSettings])
+    closeBoardDialog()
+  }, [activeTab, boardDialog.board, boardDialog.mode, closeBoardDialog, runIntent])
 
   const removeBoard = useCallback(async (boardName: string) => {
-    if (!settings.activeVaultPath || boardName === DEFAULT_BOARD_NAME) {
-      return
-    }
-
-    try {
-      const nextBoards = settings.boards.filter((board) => board.name !== boardName)
-      const nextGroups = settings.groups.filter((group) => (group.board ?? DEFAULT_BOARD_NAME) !== boardName)
-      const nextPublicationSettings = {
-        ...settings,
-        boards: nextBoards,
-        groups: nextGroups,
-        activeTab: settings.activeTab === boardName ? DEFAULT_BOARD_NAME : settings.activeTab,
-      }
-      await runEmbeddedMutation({ kind: 'delete-board', board: boardName }, nextBoards, { publicationSettings: nextPublicationSettings })
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        boards: nextBoards,
-        groups: nextGroups,
-        activeTab: previousSettings.activeTab === boardName ? DEFAULT_BOARD_NAME : previousSettings.activeTab,
-      }))
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      setError('No se pudo eliminar el tablero.')
-    }
-  }, [runEmbeddedMutation, settings, updateSettings])
+    await runIntent({ kind: 'delete-board', name: boardName }, 'No se pudo eliminar el tablero')
+  }, [runIntent])
 
   const openGroupCreateDialog = useCallback(() => {
     setGroupDialog({ open: true, mode: 'create', group: null })
@@ -2037,470 +518,130 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
   }, [])
 
   const submitGroupDialog = useCallback(async (payload: { name: string; color: string; board: string }) => {
-    if (!settings.activeVaultPath) {
-      setError('Seleccioná un vault antes de modificar grupos.')
-      return
-    }
-
-    const normalizedName = payload.name.trim()
-    const normalizedBoard = payload.board.trim().toLowerCase() || DEFAULT_BOARD_NAME
-    const normalizedColor = payload.color || '#2e6db0'
-
-    if (!normalizedName) {
-      setError('El grupo necesita un nombre válido.')
-      return
-    }
-
-    if (!settings.boards.some((board) => board.name === normalizedBoard)) {
-      setError(`No se encontró el tablero "${normalizedBoard}" para el grupo.`)
-      return
-    }
-
-    if (groupDialog.mode === 'create') {
-      const alreadyExists = settings.groups.some((group) => (
-        group.name === normalizedName
-        && (group.board ?? DEFAULT_BOARD_NAME) === normalizedBoard
-      ))
-      if (alreadyExists) {
-        setError(`Ya existe un grupo llamado "${normalizedName}" en "${normalizedBoard}".`)
-        return
-      }
-    } else if (groupDialog.group) {
-      const originalBoard = groupDialog.group.board ?? DEFAULT_BOARD_NAME
-      const originalName = groupDialog.group.name
-      const collidesWithOtherGroup = settings.groups.some((group) => (
-        group.name === normalizedName
-        && (group.board ?? DEFAULT_BOARD_NAME) === normalizedBoard
-        && !(group.name === originalName && (group.board ?? DEFAULT_BOARD_NAME) === originalBoard)
-      ))
-      if (collidesWithOtherGroup) {
-        setError(`Ya existe un grupo llamado "${normalizedName}" en "${normalizedBoard}".`)
-        return
-      }
-    }
-
-    const nextGroups = (() => {
-      if (groupDialog.mode === 'create') {
-        return [
-          ...settings.groups,
-          {
-            name: normalizedName,
-            color: normalizedColor,
-            board: normalizedBoard,
-          },
-        ]
-      }
-
-      if (!groupDialog.group) {
-        return settings.groups
-      }
-
-      return settings.groups.map((group) => {
-        if (group.name !== groupDialog.group?.name || (group.board ?? DEFAULT_BOARD_NAME) !== (groupDialog.group.board ?? DEFAULT_BOARD_NAME)) {
-          return group
-        }
-
-        return {
-          name: normalizedName,
-          color: normalizedColor,
-          board: normalizedBoard,
-        }
-      })
-    })()
-
-    const nextSettings = {
-      ...settings,
-      groups: nextGroups,
-    }
-    const groupMutation: TaskManagerAgentMutation = groupDialog.mode === 'create'
-      ? { kind: 'create-group', board: normalizedBoard, name: normalizedName, color: normalizedColor }
-      : {
+    const editedGroup = groupDialog.mode === 'edit' ? groupDialog.group : null
+    const saved = await runIntent(editedGroup
+      ? {
         kind: 'update-group',
-        board: normalizedBoard,
-        previousBoard: groupDialog.group?.board ?? DEFAULT_BOARD_NAME,
-        previousName: groupDialog.group?.name ?? normalizedName,
-        name: normalizedName,
-        color: normalizedColor,
+        previousBoard: editedGroup.board ?? payload.board,
+        previousName: editedGroup.name,
+        name: payload.name,
+        color: payload.color,
       }
-
-    try {
-      await runEmbeddedMutation(groupMutation, undefined, { publicationSettings: nextSettings })
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        groups: nextGroups,
-      }))
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      if (runtimeError instanceof TaskManagerPublicationMutationError && runtimeError.conflict) {
-        setPublicationConflict({
-          operationId: runtimeError.operationId,
-          command: runtimeError.command,
-          expectedRevision: runtimeError.conflict.expectedRevision,
-          currentRevision: runtimeError.conflict.currentRevision,
-          actorId: runtimeError.conflict.actorId,
-          conflictingOperationId: runtimeError.conflict.operationId,
-        })
-      }
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage || 'No se pudo sincronizar el grupo con la publicación.')
-      return
+      : { kind: 'create-group', board: payload.board, name: payload.name, color: payload.color }, 'No se pudo guardar el grupo')
+    if (saved) {
+      closeGroupDialog()
+      setInfoMessage('Grupo actualizado.')
     }
-
-    closeGroupDialog()
-    setInfoMessage('Grupo actualizado.')
-  }, [closeGroupDialog, groupDialog.group, groupDialog.mode, runEmbeddedMutation, settings, updateSettings])
+  }, [closeGroupDialog, groupDialog.group, groupDialog.mode, runIntent])
 
   const removeGroup = useCallback(async (groupName: string, board: string) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    try {
-      const nextPublicationSettings = {
-        ...settings,
-        groups: settings.groups.filter((group) => !(
-          group.name === groupName
-          && (group.board ?? DEFAULT_BOARD_NAME) === board
-        )),
-      }
-      await runEmbeddedMutation({ kind: 'delete-group', board, name: groupName }, undefined, { publicationSettings: nextPublicationSettings })
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        groups: nextPublicationSettings.groups,
-      }))
-
+    if (await runIntent({ kind: 'delete-group', board, name: groupName }, 'No se pudo eliminar el grupo')) {
       closeGroupDialog()
       setInfoMessage('Grupo eliminado.')
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo eliminar el grupo: ${runtimeMessage}`
-        : 'No se pudo eliminar el grupo.')
     }
-  }, [closeGroupDialog, runEmbeddedMutation, settings, updateSettings])
+  }, [closeGroupDialog, runIntent])
 
   const reorderGroupsInBoard = useCallback(async (board: string, orderedGroupNames: string[]) => {
-    const normalizedBoard = board.trim().toLowerCase() || DEFAULT_BOARD_NAME
-    const uniqueNames = Array.from(new Set(orderedGroupNames.map((name) => name.trim()).filter(Boolean)))
-    if (uniqueNames.length === 0) {
+    await runIntent({ kind: 'reorder-groups', board, groupNames: orderedGroupNames }, 'No se pudo reordenar los grupos')
+  }, [runIntent])
+
+  const placeTask = useCallback(async (placement: { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }) => {
+    await runIntent({ kind: 'place-task', ...placement }, 'No se pudo reordenar la tarea')
+  }, [runIntent])
+
+  // --- Pomodoro -----------------------------------------------------------
+  // The backend keeps the timer of each library user, advances its phases,
+  // logs each event and adds the hours to the selected task. The panel shows
+  // the countdown; this hook sends the actions.
+
+  const pomodoroInFlightRef = useRef(false)
+
+  const runPomodoro = useCallback(async (action: PomodoroAction): Promise<void> => {
+    if (!context) {
       return
     }
-
-    const nextGroups = reorderGroupsForBoard(settings.groups, normalizedBoard, uniqueNames)
-    const groupsChanged = nextGroups.length !== settings.groups.length
-      || nextGroups.some((group, index) => group !== settings.groups[index])
-    if (!groupsChanged) {
-      return
-    }
-
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    const nextSettings = {
-      ...settings,
-      groups: nextGroups,
-    }
+    pomodoroInFlightRef.current = true
     try {
-      await runEmbeddedMutation({ kind: 'reorder-groups', board: normalizedBoard, groupNames: uniqueNames }, undefined, { publicationSettings: nextSettings })
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        groups: nextGroups,
-      }))
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      if (runtimeError instanceof TaskManagerPublicationMutationError && runtimeError.conflict) {
-        setPublicationConflict({
-          operationId: runtimeError.operationId,
-          command: runtimeError.command,
-          expectedRevision: runtimeError.conflict.expectedRevision,
-          currentRevision: runtimeError.conflict.currentRevision,
-          actorId: runtimeError.conflict.actorId,
-          conflictingOperationId: runtimeError.conflict.operationId,
-        })
-      }
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage || 'No se pudo reordenar los grupos en la publicación.')
+      const result = await runPomodoroAction(context, action, action.kind === 'read' ? loadLegacyPomodoroState() : undefined)
+      if (action.kind === 'read') clearLegacyPomodoroState()
+      pomodoroRef.current = result.state
+      setPomodoro(result.state)
+      if (result.recordError) reportFailure(new Error(result.recordError), 'No se pudo registrar el pomodoro')
+      if (result.changed) await reload()
+    } catch (pomodoroError) {
+      reportFailure(pomodoroError, 'No se pudo actualizar el pomodoro')
+    } finally {
+      pomodoroInFlightRef.current = false
     }
-  }, [runEmbeddedMutation, settings, updateSettings])
+  }, [context, reload, reportFailure])
 
-  const applyTaskArrangement = useCallback(async (
-    updates: Array<{ taskPath: string; order: number; group?: string; parentTaskName?: string }>,
-  ) => {
-    if (!settings.activeVaultPath || updates.length === 0) {
-      return
+  useEffect(() => {
+    void runPomodoro({ kind: 'read' })
+  }, [runPomodoro])
+
+  // When the countdown reaches zero the backend advances the phase.
+  useEffect(() => {
+    if (!context) {
+      return undefined
     }
-
-    const sanitizedUpdates = normalizeTaskArrangementUpdates(updates)
-
-    if (sanitizedUpdates.length === 0) {
-      return
-    }
-
-    try {
-      const changedUpdates = selectChangedTaskArrangementUpdates(snapshotRef.current.tasks, sanitizedUpdates)
-      await runEmbeddedMutation(changedUpdates.map((update) => ({
-        kind: 'update-fields' as const,
-        taskPath: update.taskPath,
-        fields: {
-          order: update.order,
-          ...(typeof update.group === 'string' ? { equipo: update.group } : {}),
-          ...(update.parentTaskName !== undefined
-            ? { parent: update.parentTaskName ? `[[${update.parentTaskName}]]` : '' }
-            : {}),
-        },
-      })))
-    } catch (runtimeError) {
-      console.error(runtimeError)
-      const runtimeMessage = runtimeError instanceof Error ? runtimeError.message.trim() : ''
-      setError(runtimeMessage
-        ? `No se pudo reordenar tareas/grupos: ${runtimeMessage}`
-        : 'No se pudo reordenar tareas/grupos.')
-    }
-  }, [runEmbeddedMutation, settings.activeVaultPath])
+    const interval = window.setInterval(() => {
+      const current = pomodoroRef.current
+      const due = current.runState === 'running'
+        && !current.isDeviationActive
+        && current.endTimestamp !== null
+        && current.endTimestamp <= Date.now()
+      if (due && !pomodoroInFlightRef.current) void runPomodoro({ kind: 'tick' })
+    }, 1000)
+    return () => window.clearInterval(interval)
+  }, [context, runPomodoro])
 
   const selectPomodoroTask = useCallback((taskPath: string | null) => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      pomodoro: {
-        ...previousSettings.pomodoro,
-        selectedTaskPath: taskPath,
-      },
-    }))
-  }, [updateSettings])
+    void runPomodoro({ kind: 'select-task', taskPath })
+  }, [runPomodoro])
 
   const startPomodoroCycle = useCallback(async () => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      pomodoro: startPomodoro(previousSettings.pomodoro, Date.now()),
-    }))
-  }, [updateSettings])
+    await runPomodoro({ kind: 'start' })
+  }, [runPomodoro])
 
   const pausePomodoroCycle = useCallback(() => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      pomodoro: pausePomodoro(previousSettings.pomodoro, Date.now()),
-    }))
-  }, [updateSettings])
+    void runPomodoro({ kind: 'pause' })
+  }, [runPomodoro])
 
   const resumePomodoroCycle = useCallback(() => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      pomodoro: resumePomodoro(previousSettings.pomodoro, Date.now()),
-    }))
-  }, [updateSettings])
+    void runPomodoro({ kind: 'resume' })
+  }, [runPomodoro])
 
   const resetPomodoroCycle = useCallback(() => {
-    void (async () => {
-      const now = Date.now()
-      const currentPomodoro = settings.pomodoro
-      const selectedTask = snapshot.tasks.find((task) => task.filePath === currentPomodoro.selectedTaskPath)
-
-      const elapsedSeconds = currentPomodoro.isDeviationActive
-        ? getDeviationElapsedSeconds(currentPomodoro, now)
-        : Math.max(0, getPhaseDurationSeconds(currentPomodoro.durations, currentPomodoro.phase) - getPomodoroRemainingSeconds(currentPomodoro, now))
-
-      const workedHours = currentPomodoro.phase === 'work' && !currentPomodoro.isDeviationActive
-        ? roundHours(elapsedSeconds / 3600)
-        : 0
-      const deviationHours = roundHours((currentPomodoro.phaseDeviationSeconds + (currentPomodoro.isDeviationActive ? elapsedSeconds : 0)) / 3600)
-      const initialSharedSettings = loadTaskManagerSettings()
-
-      if (settings.activeVaultPath && (elapsedSeconds > 0 || deviationHours > 0)) {
-        try {
-          await withTaskManagerPublicationBatch(async () => {
-            await appendPomodoroEntry(settings.activeVaultPath as string, {
-              timestampMs: now,
-              type: getPomodoroPhaseLabel(currentPomodoro.phase),
-              durationChoice: resolvePomodoroDurationChoice(currentPomodoro.durations),
-              task: selectedTask?.title ?? '-',
-              durationMinutes: roundHours(elapsedSeconds / 60),
-              deviationHours,
-              finalized: false,
-            })
-
-            if (selectedTask && (workedHours > 0 || deviationHours > 0)) {
-              await updateTaskFrontmatterCompat(settings.activeVaultPath as string, selectedTask.filePath, {
-                dedicado: roundHours(selectedTask.dedicatedHours + workedHours),
-                desvio: roundHours(selectedTask.deviationHours + deviationHours),
-              })
-            }
-          }, async (_result, mutationContext) => {
-            const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath as string)
-            applySnapshotState(nextSnapshot)
-            await notifyTaskManagerPublicationChanged(
-              settings.activeVaultPath as string,
-              loadTaskManagerSettings(),
-              resolveTaskManagerSnapshotChangedPaths(snapshot, nextSnapshot),
-              mutationContext,
-            )
-          }, {
-            vaultPath: settings.activeVaultPath,
-            scopes: ['task-manager', 'pomodoro'],
-            changedPaths: [`${TASKS_ROOT_FOLDER}/pomodoro.md`],
-            onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-              settings.activeVaultPath as string,
-              snapshot,
-              initialSharedSettings,
-              mutationContext,
-            ),
-          })
-        } catch (runtimeError) {
-          console.error(runtimeError)
-        }
-      }
-
-      updateSettings((previousSettings) => ({
-        ...previousSettings,
-        pomodoro: resetPomodoro(previousSettings.pomodoro),
-      }))
-    })()
-  }, [applySnapshotState, recoverPartialTaskManagerPublicationBatch, settings.activeVaultPath, settings.pomodoro, snapshot, updateSettings, updateTaskFrontmatterCompat])
+    void runPomodoro({ kind: 'reset' })
+  }, [runPomodoro])
 
   const enterPomodoroDeviationMode = useCallback(() => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      pomodoro: enterPomodoroDeviation(previousSettings.pomodoro, Date.now()),
-    }))
-  }, [updateSettings])
+    void runPomodoro({ kind: 'enter-deviation' })
+  }, [runPomodoro])
 
   const exitPomodoroDeviationMode = useCallback(async () => {
-    const now = Date.now()
-    let elapsedSeconds = 0
-    let completedWork = false
-    let nextDurations: PomodoroDurations = settings.pomodoro.durations
-
-    updateSettings((previousSettings) => {
-      const result = exitPomodoroDeviation(previousSettings.pomodoro, now)
-      elapsedSeconds = result.elapsedSeconds
-      completedWork = result.completedWork
-      nextDurations = result.state.durations
-      return {
-        ...previousSettings,
-        pomodoro: result.state,
-      }
-    })
-
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    const selectedTask = snapshot.tasks.find((task) => task.filePath === settings.pomodoro.selectedTaskPath)
-    const deviationHours = roundHours(elapsedSeconds / 3600)
-    const activeVaultPath = settings.activeVaultPath
-    const initialSharedSettings = loadTaskManagerSettings()
-
-    const durations = nextDurations
-    await withTaskManagerPublicationBatch(async () => {
-      if (selectedTask && deviationHours > 0) {
-        await updateTaskFrontmatterCompat(activeVaultPath, selectedTask.filePath, {
-          desvio: roundHours(selectedTask.deviationHours + deviationHours),
-        })
-      }
-
-      if (completedWork) {
-        if (selectedTask) {
-          await updateTaskFrontmatterCompat(activeVaultPath, selectedTask.filePath, {
-            dedicado: roundHours(selectedTask.dedicatedHours + roundHours(durations.workMinutes / 60)),
-          })
-        }
-
-        await appendPomodoroEntry(activeVaultPath, {
-          timestampMs: now,
-          type: getPomodoroPhaseLabel('work'),
-          durationChoice: resolvePomodoroDurationChoice(durations),
-          task: selectedTask?.title ?? '-',
-          durationMinutes: durations.workMinutes,
-          deviationHours,
-          finalized: true,
-        })
-      } else {
-        await appendPomodoroEntry(activeVaultPath, {
-          timestampMs: now,
-          type: 'Desvío parcial',
-          durationChoice: resolvePomodoroDurationChoice(durations),
-          task: selectedTask?.title ?? '-',
-          durationMinutes: roundHours(elapsedSeconds / 60),
-          deviationHours,
-          finalized: false,
-        })
-      }
-    }, async (_result, mutationContext) => {
-      const nextSnapshot = await loadTaskManagerSnapshot(settings.activeVaultPath as string)
-      applySnapshotState(nextSnapshot)
-      await notifyTaskManagerPublicationChanged(
-        settings.activeVaultPath as string,
-        loadTaskManagerSettings(),
-        resolveTaskManagerSnapshotChangedPaths(snapshot, nextSnapshot),
-        mutationContext,
-      )
-    }, {
-      vaultPath: activeVaultPath,
-      scopes: ['task-manager', 'pomodoro'],
-      changedPaths: [`${TASKS_ROOT_FOLDER}/pomodoro.md`],
-      onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-        activeVaultPath,
-        snapshot,
-        initialSharedSettings,
-        mutationContext,
-      ),
-    })
-  }, [applySnapshotState, recoverPartialTaskManagerPublicationBatch, settings.activeVaultPath, settings.pomodoro.durations, settings.pomodoro.selectedTaskPath, snapshot, updateSettings, updateTaskFrontmatterCompat])
+    await runPomodoro({ kind: 'exit-deviation' })
+  }, [runPomodoro])
 
   const setPomodoroDurations = useCallback((durations: PomodoroDurations) => {
-    updateSettings((previousSettings) => ({
-      ...previousSettings,
-      pomodoro: applyPomodoroDurations(previousSettings.pomodoro, durations),
-    }))
-  }, [updateSettings])
+    void runPomodoro({ kind: 'set-durations', durations })
+  }, [runPomodoro])
 
   const deletePomodoroLogEntry = useCallback(async (entryId: string) => {
-    if (!settings.activeVaultPath) {
-      return
-    }
-
-    const initialSharedSettings = loadTaskManagerSettings()
-    const deleted = await withTaskManagerPublicationBatch(
-      () => deletePomodoroEntry(settings.activeVaultPath as string, entryId),
-      async (wasDeleted, mutationContext) => {
-        if (!wasDeleted) {
-          return
-        }
-
-        const nextEntries = await readPomodoroEntries(settings.activeVaultPath as string)
-        setSnapshot((previousSnapshot) => {
-          const nextSnapshot = {
-            ...previousSnapshot,
-            pomodoroEntries: nextEntries,
-          }
-          snapshotRef.current = nextSnapshot
-          return nextSnapshot
-        })
-        await notifyTaskManagerPublicationChanged(
-          settings.activeVaultPath as string,
-          loadTaskManagerSettings(),
-          [`${TASKS_ROOT_FOLDER}/pomodoro.md`],
-          mutationContext,
-        )
-      },
-      {
-        vaultPath: settings.activeVaultPath,
-        scopes: ['task-manager', 'pomodoro'],
-        changedPaths: [`${TASKS_ROOT_FOLDER}/pomodoro.md`],
-        onFailure: (_error, mutationContext) => recoverPartialTaskManagerPublicationBatch(
-          settings.activeVaultPath as string,
-          snapshot,
-          initialSharedSettings,
-          mutationContext,
-        ),
-      },
-    )
-    if (!deleted) {
+    if (!context || isPublishedTaskManager()) {
       setError('No se pudo eliminar el registro de pomodoro.')
       return
     }
-  }, [recoverPartialTaskManagerPublicationBatch, settings.activeVaultPath, snapshot])
+    try {
+      if (!(await deletePomodoroEntry(context, entryId))) {
+        setError('No se pudo eliminar el registro de pomodoro.')
+        return
+      }
+      await reload()
+    } catch (deleteError) {
+      reportFailure(deleteError, 'No se pudo eliminar el registro de pomodoro')
+    }
+  }, [context, reload, reportFailure])
 
   const taskStates = useMemo(() => TASK_STATES, [])
   const taskPriorities = useMemo(() => TASK_PRIORITIES, [])
@@ -2513,7 +654,6 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     error,
     infoMessage,
     publicationConflict,
-    publicationCursor,
     taskDialog,
     taskCreateDefaults,
     boardDialog,
@@ -2524,9 +664,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     setInfoMessage,
     clearPublicationConflict,
     reloadPublicationConflict,
-    setActiveTab: (tab: string) => updateSettings((previousSettings) => ({ ...previousSettings, activeTab: tab })),
-    setActiveVaultPath,
-    selectVault,
+    setActiveTab,
     reload,
     openTaskCreateDialog,
     openTaskEditDialog,
@@ -2552,7 +690,7 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     submitGroupDialog,
     removeGroup,
     reorderGroupsInBoard,
-    applyTaskArrangement,
+    placeTask,
     selectPomodoroTask,
     startPomodoroCycle,
     pausePomodoroCycle,
@@ -2562,6 +700,5 @@ export function useTaskManager(externalVault: TaskManagerVaultRef | null = null)
     exitPomodoroDeviationMode,
     setPomodoroDurations,
     deletePomodoroLogEntry,
-    isVaultExternallyControlled: Boolean(externalVault?.path),
   }
 }

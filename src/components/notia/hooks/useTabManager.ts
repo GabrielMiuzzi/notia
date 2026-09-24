@@ -23,10 +23,7 @@ import {
   MULTICHAT_WORKSPACE_TAB_PATH,
   ROUTINE_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
-import {
-  writeLibraryFileContent,
-  resolveLibraryDocumentLogicalPath,
-} from '../../../services/libraries/libraryDocumentRuntime'
+import { writeLibraryDocument } from '../../../services/libraries/libraryDocumentRuntime'
 import {
   isTextFileDocument,
   type OpenFileDocument,
@@ -141,21 +138,17 @@ export function joinParentPath(parentPath: string, originalPath: string, name: s
 }
 
 interface UseTabManagerParams {
-  resolveActiveLibraryAndroidDirectoryUri: (pathValue?: string | null) => string | undefined
   clearPendingTextSaveByPath: (path: string) => void
   bumpLibraryIndexRevision: () => void
   resetColdPassSession: () => void
   activeLibraryId: string | null
-  activeLibraryPath: string | undefined
 }
 
 export function useTabManager({
-  resolveActiveLibraryAndroidDirectoryUri,
   clearPendingTextSaveByPath,
   bumpLibraryIndexRevision,
   resetColdPassSession,
   activeLibraryId,
-  activeLibraryPath,
 }: UseTabManagerParams) {
   const dispatch = useAppDispatch()
 
@@ -165,13 +158,11 @@ export function useTabManager({
       if (!currentTab || !isTextFileDocument(currentTab.document) || currentTab.document.source !== targetSource) {
         return true
       }
+      if (!activeLibraryId) {
+        return false
+      }
       dispatch(updateTabSaveStatus({ path: targetPath, status: 'saving' }))
-      const result = await writeLibraryFileContent(currentTab.document.androidDocumentUri ?? targetPath, targetSource, {
-        androidDirectoryUri: resolveActiveLibraryAndroidDirectoryUri(targetPath),
-        libraryId: activeLibraryId ?? undefined,
-        logicalPath: activeLibraryPath
-          ? resolveLibraryDocumentLogicalPath(activeLibraryPath, targetPath)
-          : undefined,
+      const result = await writeLibraryDocument(activeLibraryId, targetPath, targetSource, {
         // Only the version the editor loaded or saved may be overwritten.
         ...(currentTab.latestSavedRevision ? { expectedRevision: currentTab.latestSavedRevision } : {}),
       })
@@ -194,7 +185,7 @@ export function useTabManager({
       }))
       return false
     },
-    [activeLibraryId, activeLibraryPath, bumpLibraryIndexRevision, dispatch, resolveActiveLibraryAndroidDirectoryUri],
+    [activeLibraryId, bumpLibraryIndexRevision, dispatch],
   )
 
   const persistOpenTabBeforeClose = useCallback(

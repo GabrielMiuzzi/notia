@@ -23,4 +23,18 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
     },
   },
+  {
+    // The interface reaches the backend only through services/transport;
+    // services/window keeps what belongs to the window hosting it.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/services/transport/**', 'src/services/window/**'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          group: ['@tauri-apps/*'],
+          message: 'Usá services/transport (backend) o services/window (ventana) en lugar de importar Tauri.',
+        }],
+      }],
+    },
+  },
 ])

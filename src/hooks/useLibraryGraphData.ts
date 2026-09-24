@@ -1,5 +1,5 @@
+import { callBackend } from '../services/transport'
 import { startTransition, useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { startPerformanceMeasurement } from '../services/runtime/performanceBaseline'
 import type { LibraryGraphModel } from '../types/graph/libraryGraph'
 
@@ -23,30 +23,10 @@ interface UseLibraryGraphDataParams {
   revision: number
 }
 
-/** Backend paths are logical; the UI opens files by their visible path. */
-function toVisiblePath(libraryPath: string, logicalPath: string): string {
-  return `${libraryPath.replace(/[\\/]+$/, '')}/${logicalPath}`
-}
-
-function mapGraphModel(model: LibraryGraphModel, libraryPath: string): LibraryGraphModel {
-  return {
-    nodes: model.nodes.map((node) => ({
-      ...node,
-      id: toVisiblePath(libraryPath, node.id),
-      path: toVisiblePath(libraryPath, node.path),
-    })),
-    edges: model.edges.map((edge) => ({
-      id: `${toVisiblePath(libraryPath, edge.sourcePath)}<=>${toVisiblePath(libraryPath, edge.targetPath)}`,
-      sourcePath: toVisiblePath(libraryPath, edge.sourcePath),
-      targetPath: toVisiblePath(libraryPath, edge.targetPath),
-    })),
-  }
-}
-
 /**
  * Graph View data. The backend builds the model (links, degrees, contexts)
- * from the library inventory and searches titles and contents; this hook
- * only requests it and maps paths for rendering.
+ * from the library inventory and searches titles and contents, with the
+ * paths the explorer shows; this hook only requests it.
  */
 export function useLibraryGraphData({
   enabled = true,
@@ -69,7 +49,7 @@ export function useLibraryGraphData({
     let isCurrent = true
     setIsGraphLoading(true)
     const measurement = startPerformanceMeasurement('graph.build_model', { libraryPath, revision })
-    invoke<LibraryGraphModel>('backend_library_graph', { payload: { libraryId, revision } })
+    callBackend<LibraryGraphModel>('backend_library_graph', { payload: { libraryId, revision } })
       .then((model) => {
         if (!isCurrent) {
           measurement.cancel()
@@ -77,7 +57,7 @@ export function useLibraryGraphData({
         }
         measurement.success({ nodeCount: model.nodes.length, edgeCount: model.edges.length })
         startTransition(() => {
-          setGraphModel(mapGraphModel(model, libraryPath))
+          setGraphModel(model)
           setIsGraphLoading(false)
         })
       })
@@ -97,10 +77,9 @@ export function useLibraryGraphData({
     if (!libraryId || !libraryPath || !query.trim()) {
       return []
     }
-    const results = await invoke<GraphSearchResult[]>('backend_library_graph_search', {
+    return callBackend<GraphSearchResult[]>('backend_library_graph_search', {
       payload: { libraryId, revision, query, maxResults: Math.max(8, graphModel.nodes.length) },
     })
-    return results.map((result) => ({ ...result, path: toVisiblePath(libraryPath, result.path) }))
   }, [graphModel.nodes.length, libraryId, libraryPath, revision])
 
   return {

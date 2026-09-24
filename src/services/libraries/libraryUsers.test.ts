@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const invokeMock = vi.hoisted(() => vi.fn())
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
+vi.mock('../transport', () => ({ callBackend: invokeMock }))
 
 import { createLibraryRole, createLibraryUser, findLibraryUser, listLibraryRoles, resolveLibraryTelegramUser, updateLibraryUserContexts } from './libraryUsers'
 

@@ -11,10 +11,8 @@ import {
   listFinanceCreditCardStatements,
   saveFinanceInstallmentPlan,
   saveFinanceInvestment,
-  saveFinancePurchase,
   saveFinanceSalary,
-  saveFinanceCreditCardStatement,
-  queueFinanceAudit,
+  applyFinanceUiChange,
   repairFinanceRelation,
   listFinanceRelationRepairs,
   listAllFinanceTransactions,
@@ -22,11 +20,11 @@ import {
   getFinanceRelationAudit,
   previewFinanceCardServices,
   validateFinancePurchase,
+  type FinanceDebtRatioSeries,
 } from "../services/financeService";
 import type {
   FinanceAccount,
   FinanceCreditCardStatement,
-  FinanceDebtRatioHistoryPoint,
   FinanceCurrency,
   FinanceNetWorth,
   FinanceNetWorthHistoryPoint,
@@ -50,7 +48,7 @@ import { SalaryEvolutionChart } from "./SalaryEvolutionChart";
 interface Props {
   library: NotiaLibrary;
   accounts: FinanceAccount[];
-  debtRatioHistory: FinanceDebtRatioHistoryPoint[];
+  debtRatioSeries: FinanceDebtRatioSeries;
   historyFrom: string;
   historyTo: string;
   onChanged: () => Promise<void>;
@@ -68,7 +66,7 @@ function formatSalaryNet(amount: string, currency: FinanceCurrency): string {
   return new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
 }
 
-export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, historyFrom, historyTo, onChanged }: Props) {
+export function FinanceRecordsPanel({ library, accounts, debtRatioSeries, historyFrom, historyTo, onChanged }: Props) {
   const { confirm } = useConfirmationEngine();
   const [form, setForm] = useState<FormKind>(null);
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
@@ -147,9 +145,9 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
           <button type="button" onClick={() => setForm("investment")}>Valuar activo/deuda</button>
         </div>
       </div>
-      <SalaryEvolutionChart salaries={salaries} />
+      <SalaryEvolutionChart library={library} refreshKey={salaries} />
       <CreditCardEvolutionChart accounts={accounts} statements={cardStatements} />
-      <DebtRatioEvolutionChart history={debtRatioHistory} />
+      <DebtRatioEvolutionChart data={debtRatioSeries} />
       {error && <p className="finance-error" role="alert">{error}</p>}
       <div className="finance-grid">
         <article className="finance-card">
@@ -201,8 +199,8 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
           <p className="finance-muted">Los consumos y cargos crean gastos en la cuenta de tarjeta. Pagos y créditos concilian el resumen; el total a pagar no se duplica como gasto.</p>
         </article>
       </div>
-      {form === "ticket" && <TicketForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (purchase) => { await saveFinancePurchase(library, purchase); await queueFinanceAudit(library, purchase.observedAt.slice(0, 7), `ui:purchase:${purchase.id}`, "Alta de compra desde Finanzas"); await saved(); }} />}
-      {form === "salary" && <SalaryForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (salary) => { await saveFinanceSalary(library, salary); await queueFinanceAudit(library, salary.paymentDate.slice(0, 7), `ui:salary:${salary.id}`, "Alta de sueldo desde Finanzas"); await saved(); }} />}
+      {form === "ticket" && <TicketForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (purchase) => { await applyFinanceUiChange(library, { kind: "save-purchase", purchase }); await saved(); }} />}
+      {form === "salary" && <SalaryForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (salary) => { await applyFinanceUiChange(library, { kind: "save-salary", salary }); await saved(); }} />}
       {form === "card-statement" && <CreditCardStatementForm library={library} accounts={accounts} onCancel={() => setForm(null)} onSave={async (statement) => {
         const preview = await previewFinanceCardServices(library, statement);
         const previewText = preview.assignments.map((assignment) => `${assignment.lineId} → ${assignment.period}`).join(", ") || "sin asignaciones automáticas";
@@ -211,8 +209,7 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioHistory, histo
         if (!accepted) return;
         const reinforced = await confirm({ title: "Confirmación reforzada", message: "Confirmá nuevamente para persistir el resumen y aplicar únicamente las asociaciones inequívocas.", confirmLabel: "Guardar resumen", tone: "danger" });
         if (!reinforced) return;
-        await saveFinanceCreditCardStatement(library, statement);
-        await queueFinanceAudit(library, statement.period, `ui:card-statement:${statement.id}`, "Alta de resumen de tarjeta desde Finanzas");
+        await applyFinanceUiChange(library, { kind: "save-card-statement", statement });
         await saved();
       }} />}
       {form === "installments" && <InstallmentForm accounts={accounts} onCancel={() => setForm(null)} onSave={async (plan) => { await saveFinanceInstallmentPlan(library, plan); await saved(); }} />}

@@ -5,13 +5,13 @@ interface OpenFileDocumentBase {
   name: string
   extension: string
   viewKind: NotiaFileViewKind
-  /** Real Android SAF document URI, kept separate from the logical library path. */
-  androidDocumentUri?: string
 }
 
 export interface OpenTextFileDocument extends OpenFileDocumentBase {
   viewKind: 'markdown' | 'text'
   source: string
+  /** Context of the Task Manager board the note lives in; it cannot change. */
+  lockedContext?: string
 }
 
 export interface OpenImageFileDocument extends OpenFileDocumentBase {

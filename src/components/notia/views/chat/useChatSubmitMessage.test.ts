@@ -5,17 +5,10 @@ const reactMocks = vi.hoisted(() => ({
 }))
 
 const mocks = vi.hoisted(() => ({
-  appendChatMessages: vi.fn(),
-  loadChatDocument: vi.fn(),
-  saveChatDocument: vi.fn(),
-  buildChatMemoryWindow: vi.fn(),
-  resolvePersistedChatTitle: vi.fn(),
   createChatDraftFile: vi.fn(),
-  scheduleLongTermMemoriesForTurn: vi.fn(),
-  scheduleAiChatTitle: vi.fn(),
   checkAiHealth: vi.fn(),
-  startNotiaChatReply: vi.fn(),
-  loadAgentMemories: vi.fn(),
+  startChatTurn: vi.fn(),
+  subscribeChatTitles: vi.fn(),
   startPerformanceMeasurement: vi.fn(),
   buildAutoCreateChatPayload: vi.fn(),
   normalizeChatTitle: vi.fn(),
@@ -32,32 +25,15 @@ vi.mock('react', async () => {
     },
   }
 })
-vi.mock('../../../../services/chat/chatDocumentStorage', () => ({
-  appendChatMessages: mocks.appendChatMessages,
-  loadChatDocument: mocks.loadChatDocument,
-  saveChatDocument: mocks.saveChatDocument,
-}))
-vi.mock('../../../../services/chat/chatConversationRuntime', () => ({
-  buildChatMemoryWindow: mocks.buildChatMemoryWindow,
-  resolvePersistedChatTitle: mocks.resolvePersistedChatTitle,
-}))
 vi.mock('../../../../services/chat/chatSessionStorage', () => ({
   createChatDraftFile: mocks.createChatDraftFile,
-}))
-vi.mock('../../../../services/chat/chatLongTermMemorySync', () => ({
-  scheduleLongTermMemoriesForTurn: mocks.scheduleLongTermMemoriesForTurn,
-}))
-vi.mock('../../../../services/chat/chatTitleSync', () => ({
-  scheduleAiChatTitle: mocks.scheduleAiChatTitle,
 }))
 vi.mock('../../../../services/ai/aiRuntime', () => ({
   checkAiHealth: mocks.checkAiHealth,
 }))
-vi.mock('../../../../services/chat/notiaChatRuntime', () => ({
-  startNotiaChatReply: mocks.startNotiaChatReply,
-}))
-vi.mock('../../../../services/ai/agentPromptRuntime', () => ({
-  loadAgentMemories: mocks.loadAgentMemories,
+vi.mock('../../../../services/chat/aiChatRuntime', () => ({
+  startChatTurn: mocks.startChatTurn,
+  subscribeChatTitles: mocks.subscribeChatTitles,
 }))
 vi.mock('../../../../services/runtime/performanceBaseline', () => ({
   startPerformanceMeasurement: mocks.startPerformanceMeasurement,
@@ -82,22 +58,21 @@ describe('useChatSubmitMessage lifecycle', () => {
       value: { visibilityState: 'visible', addEventListener: vi.fn(), removeEventListener: vi.fn() },
     })
     mocks.checkAiHealth.mockResolvedValue({ ok: true, message: '' })
-    mocks.buildChatMemoryWindow.mockReturnValue([])
-    mocks.resolvePersistedChatTitle.mockReturnValue('Chat')
+    mocks.subscribeChatTitles.mockResolvedValue(() => undefined)
     mocks.startPerformanceMeasurement.mockReturnValue({
       success: vi.fn(),
       error: vi.fn(),
       cancel: vi.fn(),
     })
-    mocks.appendChatMessages.mockResolvedValue({ appended: true })
   })
 
-  it('does not persist a late AI answer after the chat surface unmounts', async () => {
-    let resolveReply!: (answer: string) => void
+  it('cancels the turn and ignores a late answer after the chat surface unmounts', async () => {
+    let resolveReply!: (outcome: { answer: string; dataChanged: boolean }) => void
     const abort = vi.fn()
-    mocks.startNotiaChatReply.mockReturnValue({
+    mocks.startChatTurn.mockReturnValue({
+      requestId: 'request-1',
       abort,
-      promise: new Promise<string>((resolve) => { resolveReply = resolve }),
+      promise: new Promise((resolve) => { resolveReply = resolve }),
     })
 
     const library = { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never
@@ -137,7 +112,6 @@ describe('useChatSubmitMessage lifecycle', () => {
       preferredContextScopeKey: null,
       persistTransientContext: false,
       hasTransientContext: false,
-      markdownSelection: null,
       activeMarkdownSource: '# Borrador',
       workspaceSnapshot: null,
     }, {
@@ -161,19 +135,17 @@ describe('useChatSubmitMessage lifecycle', () => {
     })
 
     const submitPromise = submitMessage('Mejorá la selección')
-    await vi.waitFor(() => expect(mocks.startNotiaChatReply).toHaveBeenCalled())
+    await vi.waitFor(() => expect(mocks.startChatTurn).toHaveBeenCalled())
+    const callsBeforeAnswer = setState.mock.calls.length
     reactMocks.cleanups[0]?.()
     expect(abort).toHaveBeenCalledOnce()
-    resolveReply('respuesta tardía')
+    resolveReply({ answer: 'respuesta tardía', dataChanged: false })
     await submitPromise
 
-    expect(mocks.appendChatMessages).not.toHaveBeenCalled()
-    expect(mocks.saveChatDocument).not.toHaveBeenCalled()
-    expect(mocks.scheduleAiChatTitle).not.toHaveBeenCalled()
-    expect(mocks.scheduleLongTermMemoriesForTurn).not.toHaveBeenCalled()
+    expect(setState.mock.calls.length).toBe(callsBeforeAnswer)
   })
 
-  it('rehydrates attachments from previous messages for a follow-up query', async () => {
+  it('sends the saved chat and the message; the backend picks the history', async () => {
     const attachment = {
       name: 'teoria.png',
       mimeType: 'image/png',
@@ -194,10 +166,10 @@ describe('useChatSubmitMessage lifecycle', () => {
       ],
     }
     const setState = vi.fn()
-    mocks.buildChatMemoryWindow.mockReturnValue(activeChatDocument.messages)
-    mocks.startNotiaChatReply.mockReturnValue({
+    mocks.startChatTurn.mockReturnValue({
+      requestId: 'request-2',
       abort: vi.fn(),
-      promise: Promise.resolve('Listo.'),
+      promise: Promise.resolve({ answer: 'Listo.', dataChanged: false }),
     })
 
     const { submitMessage } = useChatSubmitMessage({
@@ -225,7 +197,6 @@ describe('useChatSubmitMessage lifecycle', () => {
       preferredContextScopeKey: null,
       persistTransientContext: false,
       hasTransientContext: false,
-      markdownSelection: null,
       activeMarkdownSource: '# Borrador',
       workspaceSnapshot: null,
     }, {
@@ -250,10 +221,14 @@ describe('useChatSubmitMessage lifecycle', () => {
 
     await submitMessage('Hacelo')
 
-    // The backend composes the attachment prompt; the client forwards the files.
-    expect(mocks.startNotiaChatReply).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ prompt: 'Hacelo', attachments: [attachment] }),
+    // The backend reads the chat and attaches the files of its history.
+    expect(mocks.startChatTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'chat',
+        message: 'Hacelo',
+        scope: 'document',
+        chat: { kind: 'saved', path: 'C:/vault/chat.md' },
+      }),
       expect.anything(),
     )
   })

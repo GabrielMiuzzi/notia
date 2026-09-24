@@ -19,10 +19,7 @@ const MAX_REFRESH_INTERVAL_MS: u64 = 24 * 60 * 60 * 1000;
 const DEFAULT_CONTEXT_COLOR: &str = "#64748B";
 const MAX_LLAMACLOUD_API_KEY_CHARS: usize = 256;
 const MAX_TELEGRAM_TOKEN_CHARS: usize = 256;
-const MAX_TELEGRAM_PROCESSED_UPDATES: usize = 500;
 const MAX_CONTEXTS: usize = 200;
-/// Largest integer JavaScript represents exactly (`Number.MAX_SAFE_INTEGER`).
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// Tag assigned to new notes and to documents without a context.
 pub const DEFAULT_CONTEXT_TAG: &str = "#Personal";
@@ -92,12 +89,13 @@ pub fn normalize_library_config(value: &Value) -> NormalizedLibraryConfig {
         "panelDesplegable".into(),
         json!({ "refreshIntervalMs": normalize_refresh_interval(candidate.get("panelDesplegable")) }),
     );
-    // Presentation and provider preferences are opaque to the backend; only
-    // their container shape is enforced.
-    for section in ["inkMath", "ia"] {
-        if let Some(object) = candidate.get(section).filter(|value| value.is_object()) {
-            config.insert(section.into(), object.clone());
-        }
+    // InkMath preferences are presentation settings; only their container
+    // shape is enforced.
+    if let Some(object) = candidate.get("inkMath").filter(|value| value.is_object()) {
+        config.insert("inkMath".into(), object.clone());
+    }
+    if let Some(ai) = candidate.get("ia").filter(|value| value.is_object()) {
+        config.insert("ia".into(), normalize_ai(ai));
     }
     if let Some(telegram) = candidate.get("telegram").filter(|value| !value.is_null()) {
         config.insert("telegram".into(), normalize_telegram(telegram));
@@ -212,73 +210,58 @@ fn normalize_llamacloud(value: Option<&Value>) -> Option<Value> {
         .then(|| json!({ "apiKey": api_key }))
 }
 
-fn safe_non_negative_integer(value: Option<&Value>) -> Option<u64> {
-    value
-        .and_then(Value::as_u64)
-        .filter(|number| *number <= MAX_SAFE_INTEGER)
-}
-
-fn safe_integer(value: Option<&Value>) -> Option<i64> {
-    value
-        .and_then(Value::as_i64)
-        .filter(|number| number.unsigned_abs() <= MAX_SAFE_INTEGER)
-}
-
 fn truncate_chars(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn normalize_telegram_peer(value: Option<&Value>) -> Value {
-    let Some(peer) = value.filter(|value| value.is_object()) else {
-        return Value::Null;
+/// Provider preferences of the library: normalized provider settings (older
+/// files used `baseUrl` and `model`) and how Telegram shows progress.
+fn normalize_ai(value: &Value) -> Value {
+    let text = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string()
     };
-    let (Some(chat_id), Some(user_id)) = (
-        safe_integer(peer.get("chatId")),
-        safe_integer(peer.get("userId")),
-    ) else {
-        return Value::Null;
+    let settings = crate::ai_settings::AiSettingsInput {
+        ollama_url: text(&["ollamaUrl", "baseUrl"]),
+        api_key: text(&["apiKey"]),
+        selected_model: text(&["selectedModel", "model"]),
+        thinking_enabled: value.get("thinkingEnabled").and_then(Value::as_bool) != Some(false),
+        thinking_level: match value.get("thinkingLevel").and_then(Value::as_str) {
+            Some("low") => crate::ai_settings::ThinkingLevel::Low,
+            Some("high") => crate::ai_settings::ThinkingLevel::High,
+            _ => crate::ai_settings::ThinkingLevel::Medium,
+        },
+    }
+    .normalize();
+    let progress_mode = match value.get("progressMode").and_then(Value::as_str) {
+        Some(mode @ ("minimal" | "standard" | "detailed" | "off")) => mode,
+        _ => "minimal",
     };
+    let enabled = |key: &str| value.get(key).and_then(Value::as_bool) != Some(false);
     json!({
-        "chatId": chat_id,
-        "userId": user_id,
-        "displayName": truncate_chars(peer.get("displayName").and_then(Value::as_str).unwrap_or_default(), 160),
-        "username": truncate_chars(peer.get("username").and_then(Value::as_str).unwrap_or_default(), 64),
+        "ollamaUrl": settings.ollama_url,
+        "apiKey": settings.api_key,
+        "selectedModel": settings.selected_model,
+        "thinkingEnabled": settings.thinking_enabled,
+        "thinkingLevel": settings.thinking_level.as_str(),
+        "progressMode": progress_mode,
+        "showPlan": enabled("showPlan"),
+        "showReasoningSummary": enabled("showReasoningSummary"),
+        "editProgressMessage": enabled("editProgressMessage"),
     })
 }
 
+/// Telegram bot of the library. The backend worker keeps the polling offset
+/// and the processed updates in its own state, not in the configuration.
 fn normalize_telegram(value: &Value) -> Value {
-    if !value.is_object() {
-        return json!({
-            "enabled": false,
-            "botToken": "",
-            "authorizedPeer": null,
-            "pendingPeer": null,
-            "updateOffset": 0,
-            "processedUpdateIds": [],
-        });
-    }
-    let processed = value
-        .get("processedUpdateIds")
-        .and_then(Value::as_array)
-        .map(|ids| {
-            let ids = ids
-                .iter()
-                .filter_map(|id| safe_non_negative_integer(Some(id)))
-                .collect::<Vec<_>>();
-            let start = ids.len().saturating_sub(MAX_TELEGRAM_PROCESSED_UPDATES);
-            ids[start..].to_vec()
-        })
-        .unwrap_or_default();
     json!({
         "enabled": value.get("enabled").and_then(Value::as_bool) == Some(true),
         "botToken": truncate_chars(
             value.get("botToken").and_then(Value::as_str).unwrap_or_default().trim(),
             MAX_TELEGRAM_TOKEN_CHARS,
         ),
-        "authorizedPeer": normalize_telegram_peer(value.get("authorizedPeer")),
-        "pendingPeer": normalize_telegram_peer(value.get("pendingPeer")),
-        "updateOffset": safe_non_negative_integer(value.get("updateOffset")).unwrap_or(0),
-        "processedUpdateIds": processed,
     })
 }
 
@@ -333,26 +316,36 @@ mod tests {
     }
 
     #[test]
-    fn telegram_preferences_are_bounded() {
-        let ids = (0..600).collect::<Vec<u64>>();
+    fn telegram_keeps_only_the_switch_and_a_bounded_token() {
         let normalized = normalize_library_config(&json!({
             "contextDefaultsVersion": 1,
             "telegram": {
                 "enabled": true,
                 "botToken": format!("  {}  ", "t".repeat(300)),
-                "updateOffset": -3,
-                "processedUpdateIds": ids,
+                "updateOffset": 42,
+                "processedUpdateIds": [1, 2],
                 "authorizedPeer": { "chatId": 1, "userId": 2, "displayName": "Ana" },
             },
         }));
         let telegram = &normalized.config["telegram"];
         assert_eq!(telegram["enabled"], true);
         assert_eq!(telegram["botToken"].as_str().expect("token").len(), MAX_TELEGRAM_TOKEN_CHARS);
-        assert_eq!(telegram["updateOffset"], 0);
-        assert_eq!(telegram["processedUpdateIds"].as_array().expect("ids").len(), 500);
-        assert_eq!(telegram["processedUpdateIds"][0], 100);
-        assert_eq!(telegram["authorizedPeer"]["username"], "");
-        assert_eq!(telegram["pendingPeer"], Value::Null);
+        assert_eq!(telegram.as_object().expect("object").len(), 2);
+    }
+
+    #[test]
+    fn ai_preferences_are_normalized_and_legacy_keys_are_read() {
+        let normalized = normalize_library_config(&json!({
+            "contextDefaultsVersion": 1,
+            "ia": { "baseUrl": " http://Host:11434/api ", "model": " qwen3 ", "thinkingLevel": "x", "showPlan": false },
+        }));
+        let ai = &normalized.config["ia"];
+        assert_eq!(ai["ollamaUrl"], "http://host:11434");
+        assert_eq!(ai["selectedModel"], "qwen3");
+        assert_eq!(ai["thinkingLevel"], "medium");
+        assert_eq!(ai["progressMode"], "minimal");
+        assert_eq!(ai["showPlan"], false);
+        assert_eq!(ai["thinkingEnabled"], true);
     }
 
     #[test]

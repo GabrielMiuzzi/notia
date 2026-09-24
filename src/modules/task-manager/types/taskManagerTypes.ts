@@ -43,7 +43,10 @@ export interface TaskFrontmatter {
 
 export interface TaskItem {
   id?: string
+  /** Logical path, the identity of every intent. */
   filePath: string
+  /** Path the explorer shows, to open the ticket. */
+  path: string
   fileName: string
   title: string
   detail: string

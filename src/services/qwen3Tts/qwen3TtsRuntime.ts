@@ -1,5 +1,5 @@
-import { invoke } from '@tauri-apps/api/core'
-import { normalizeQwen3TtsPreferences, type Qwen3TtsPreferences } from '../preferences/qwen3TtsSettingsStorage'
+import { callBackend } from '../transport'
+import type { Qwen3TtsPreferences } from '../preferences/qwen3TtsSettingsStorage'
 
 export interface Qwen3TtsStatus {
   supported: boolean
@@ -67,16 +67,16 @@ export async function playConversationReadyCue(): Promise<void> {
 }
 
 export async function getQwen3TtsStatus(): Promise<Qwen3TtsStatus> {
-  return invoke<Qwen3TtsStatus>('get_qwen3_tts_status')
+  return callBackend<Qwen3TtsStatus>('get_qwen3_tts_status')
 }
 
 export async function reloadQwen3Tts(): Promise<void> {
-  await invoke('reload_qwen3_tts')
+  await callBackend('reload_qwen3_tts')
   preparedModelKey = null
 }
 
 export async function prepareQwen3Tts(preferences: Qwen3TtsPreferences): Promise<void> {
-  const settings = normalizeQwen3TtsPreferences(preferences)
+  const settings = preferences
   const key = `${settings.model}:${settings.device}`
   if (preparedModelKey === key) return
   if (pendingModelPreparation) {
@@ -84,7 +84,7 @@ export async function prepareQwen3Tts(preferences: Qwen3TtsPreferences): Promise
     await pendingModelPreparation.catch(() => undefined)
     return prepareQwen3Tts(preferences)
   }
-  const preparation = invoke<void>('prepare_qwen3_tts', {
+  const preparation = callBackend<void>('prepare_qwen3_tts', {
     input: { model: settings.model, device: settings.device },
   })
   pendingModelPreparation = preparation
@@ -107,9 +107,9 @@ function normalizeInvokeError(error: unknown): Error {
 }
 
 async function requestSpeech(text: string, preferences: Qwen3TtsPreferences): Promise<Blob> {
-  const settings = normalizeQwen3TtsPreferences(preferences)
+  const settings = preferences
   try {
-    const bytes = await invoke<number[]>('synthesize_qwen3_tts_speech', {
+    const bytes = await callBackend<number[]>('synthesize_qwen3_tts_speech', {
     input: { text: text.trim(), voice: settings.voice, language: settings.language, speed: settings.speed, model: settings.model, device: settings.device },
     })
     return new Blob([Uint8Array.from(bytes)], { type: 'audio/wav' })
@@ -158,7 +158,7 @@ export async function speakWithQwen3Tts(text: string, preferences: Qwen3TtsPrefe
   stopQwen3TtsSpeech()
   const generation = speechGeneration
   // The backend strips the markup and decides the chunks to synthesize.
-  const chunks = await invoke<string[]>('qwen3_tts_speech_plan', { markdown: text })
+  const chunks = await callBackend<string[]>('qwen3_tts_speech_plan', { markdown: text })
   if (generation !== speechGeneration || chunks.length === 0) return
   let pendingSpeech = requestSpeech(chunks[0] as string, preferences)
   try {
@@ -167,7 +167,7 @@ export async function speakWithQwen3Tts(text: string, preferences: Qwen3TtsPrefe
       const speech = await pendingSpeech
       const nextChunk = chunks[index + 1]
       if (nextChunk) pendingSpeech = requestSpeech(nextChunk, preferences)
-      await playSpeechBlob(speech, generation, normalizeQwen3TtsPreferences(preferences).speed)
+      await playSpeechBlob(speech, generation, preferences.speed)
     }
   } catch (error) {
     void pendingSpeech.catch(() => undefined)

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../../../../services/transport'
 import type { StoredChatAttachment } from '../../../../services/chat/chatDocumentStorage'
 
 export type SelectedImageAttachment = StoredChatAttachment
@@ -14,7 +14,7 @@ export type SelectedImageAttachment = StoredChatAttachment
 type AttachmentKind = StoredChatAttachment['kind']
 
 function classifyFile(file: File): Promise<AttachmentKind> {
-  return invoke<AttachmentKind>('backend_classify_chat_file', {
+  return callBackend<AttachmentKind>('backend_classify_chat_file', {
     payload: { name: file.name, mediaType: file.type, byteLength: file.size },
   })
 }

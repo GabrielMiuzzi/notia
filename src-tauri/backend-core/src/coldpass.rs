@@ -204,6 +204,10 @@ pub fn upsert_coldpass_entry(
     new_id: &mut dyn FnMut() -> String,
 ) -> Result<(), BackendError> {
     entry.validate()?;
+    // The form saves only named credentials; imported rows may lack a name.
+    if entry.name.trim().is_empty() {
+        return Err(BackendError::invalid_input("La credencial necesita un nombre."));
+    }
     match editing_id {
         Some(editing_id) => {
             let current = entries
@@ -312,6 +316,49 @@ pub fn parse_coldpass_csv(content: &str, new_id: &mut dyn FnMut() -> String) -> 
     Ok(ColdPassCsvImport { entries, skipped_row_count: skipped })
 }
 
+/// Options of the password generator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordOptions {
+    pub length: u32,
+    pub include_numbers: bool,
+    pub include_special_characters: bool,
+}
+
+const PASSWORD_LETTERS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const PASSWORD_NUMBERS: &str = "0123456789";
+const PASSWORD_SPECIAL: &str = "!@#$%^&*()-_=+[]{};:,.<>/?";
+/// Guesses per second of the attacker the estimate assumes.
+const GUESSES_PER_SECOND: f64 = 10_000_000_000.0;
+
+/// Between 8 and 64 characters.
+pub fn password_length(options: &PasswordOptions) -> usize {
+    options.length.clamp(8, 64) as usize
+}
+
+pub fn password_charset(options: &PasswordOptions) -> Vec<char> {
+    let mut charset = PASSWORD_LETTERS.to_string();
+    if options.include_numbers {
+        charset.push_str(PASSWORD_NUMBERS);
+    }
+    if options.include_special_characters {
+        charset.push_str(PASSWORD_SPECIAL);
+    }
+    charset.chars().collect()
+}
+
+/// A password of the chosen length and characters; `index(n)` returns a
+/// uniform random index below `n`.
+pub fn generate_password(options: &PasswordOptions, index: &mut dyn FnMut(usize) -> usize) -> String {
+    let charset = password_charset(options);
+    (0..password_length(options)).map(|_| charset[index(charset.len())]).collect()
+}
+
+/// Seconds a brute-force attack would need to try every password.
+pub fn brute_force_seconds(options: &PasswordOptions) -> f64 {
+    (password_charset(options).len() as f64).powi(password_length(options) as i32) / GUESSES_PER_SECOND
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +414,17 @@ mod tests {
         assert_eq!(import.entries[0].password, "a,\"b");
         assert_eq!(import.entries[0].notes, "x\ny");
         assert!(parse_coldpass_csv("name,password\n", &mut ids()).is_err());
+    }
+
+    #[test]
+    fn passwords_follow_the_options_and_their_strength_is_estimated() {
+        let options = PasswordOptions { length: 3, include_numbers: true, include_special_characters: false };
+        let mut next = 0;
+        let password = generate_password(&options, &mut |size| { next = (next + 61) % size; next });
+        assert_eq!(password.chars().count(), 8);
+        assert!(password.chars().all(|character| character.is_ascii_alphanumeric()));
+        assert_eq!(password_charset(&options).len(), 62);
+        let strong = PasswordOptions { length: 64, include_numbers: true, include_special_characters: true };
+        assert!(brute_force_seconds(&strong) > brute_force_seconds(&options));
     }
 }

@@ -1,11 +1,5 @@
-import type { NotiaFileNode, NotiaLibrary } from '../../types/notia'
-import { toStoredLibraryPath } from '../libraries/libraryPathMapping'
-import { getPathBaseName, readTextFile } from '../files/filesystemEngine'
-import { readLibraryTree } from '../libraries/libraryRuntime'
-import {
-  getLibraryMarkdownDocumentOptions,
-  readLibraryFileContent,
-} from '../libraries/libraryDocumentRuntime'
+import { callBackend } from '../transport'
+import type { NotiaLibrary } from '../../types/notia'
 
 export type ChatFileContextMode = 'direct' | 'index'
 
@@ -22,50 +16,18 @@ export interface ChatInlineFileAttachment {
   revision?: string
 }
 
+function baseName(pathValue: string): string {
+  return pathValue.split(/[\\/]/).filter(Boolean).pop() ?? pathValue
+}
+
 export function buildAttachmentDisplayName(pathValue: string, options: ChatLibraryFileOption[] = []): string {
   const matchingOption = options.find((option) => option.path === pathValue)
-  return matchingOption?.name ?? getPathBaseName(pathValue)
+  return matchingOption?.name ?? baseName(pathValue)
 }
 
-function buildRelativePath(rootPath: string, absolutePath: string): string {
-  const normalizedRoot = rootPath.replace(/[\\/]+$/, '')
-  if (absolutePath.startsWith(`${normalizedRoot}/`)) {
-    return absolutePath.slice(normalizedRoot.length + 1)
-  }
-  if (absolutePath.startsWith(`${normalizedRoot}\\`)) {
-    return absolutePath.slice(normalizedRoot.length + 1)
-  }
-  return absolutePath
-}
-
-function collectFileOptions(
-  nodes: NotiaFileNode[],
-  libraryPath: string,
-  target: ChatLibraryFileOption[],
-): void {
-  for (const node of nodes) {
-    if (node.type === 'file' && node.path) {
-      target.push({
-        path: node.path,
-        name: node.name,
-        relativePath: buildRelativePath(libraryPath, node.path),
-      })
-      continue
-    }
-
-    if (node.children && node.children.length > 0) {
-      collectFileOptions(node.children, libraryPath, target)
-    }
-  }
-}
-
-export async function loadLibraryFileOptions(library: NotiaLibrary): Promise<ChatLibraryFileOption[]> {
-  const tree = await readLibraryTree(library.path, {
-    androidDirectoryUri: library.androidTreeUri,
-  })
-  const collected: ChatLibraryFileOption[] = []
-  collectFileOptions(tree, library.path, collected)
-  return collected.sort((left, right) => left.relativePath.localeCompare(right.relativePath, 'es'))
+/** Files of the library from the backend inventory, sorted by path. */
+export function loadLibraryFileOptions(library: NotiaLibrary): Promise<ChatLibraryFileOption[]> {
+  return callBackend<ChatLibraryFileOption[]>('library_list_files', { payload: { libraryId: library.id } })
 }
 
 export function filterLibraryFileOptions(
@@ -83,29 +45,4 @@ export function filterLibraryFileOptions(
       || option.relativePath.toLowerCase().includes(normalizedQuery)
     ))
     .slice(0, 60)
-}
-
-export async function loadInlineFileAttachments(
-  library: NotiaLibrary,
-  selectedPaths: string[],
-  options: ChatLibraryFileOption[] = [],
-): Promise<ChatInlineFileAttachment[]> {
-  const loadedFiles = await Promise.all(selectedPaths.map(async (selectedPath) => {
-    const markdownOptions = getLibraryMarkdownDocumentOptions(library, selectedPath)
-    const result = markdownOptions
-      ? await readLibraryFileContent(selectedPath, markdownOptions)
-      : await readTextFile(selectedPath, { androidDirectoryUri: library.androidTreeUri })
-    if (!result.ok) {
-      throw new Error(result.error || `No se pudo leer ${selectedPath}.`)
-    }
-
-    return {
-      path: toStoredLibraryPath(library.path, selectedPath),
-      name: buildAttachmentDisplayName(selectedPath, options),
-      content: result.content,
-      revision: result.revision,
-    } satisfies ChatInlineFileAttachment
-  }))
-
-  return loadedFiles
 }

@@ -17,15 +17,1279 @@ Este cambio define la arquitectura exigida para el desarrollo, pero no migró c�
 - No se ejecutaron tests ni builds porque la intervención solo cambia reglas y documentación.
 - Queda pendiente migrar y validar cada flujo heredado que aún conserve lógica funcional en React o TypeScript; cada migración deberá cubrir sus contratos Rust, errores, límites y regresiones en Windows y Android. No se verificó en esta iteración que el runtime completo funcione sin React/WebView ni que se hayan eliminado todos los fallbacks funcionales del frontend.
 
+## Arquitectura vigente: backend Rust, hosts y transporte
+
+Esta sección es la referencia vigente de cómo se conectan interfaz y backend. Las secciones «Estado sincronizado de esta iteración: separación backend/frontend — fase 1 … fase 5» registran cómo se llegó a este estado.
+
+### Resumen
+
+- **Backend:** todo corre en Rust.
+  - `notia-backend-core` es el dominio puro.
+  - `notia-app` tiene los casos de uso, el estado, los adaptadores de plataforma, el registro de comandos y el servidor.
+  - Ninguno de los dos depende de Tauri.
+- **Hosts:** tres procesos ejecutan ese mismo backend.
+  - la ventana Tauri, en Windows y Android;
+  - el servidor headless (`notia --headless`, Windows y Linux);
+  - la publicación de Task Manager, dentro del proceso de escritorio.
+- **Interfaz:** React es solo presentación. Habla con el backend únicamente por `src/services/transport`, que tiene tres implementaciones: local (Tauri), remota (HTTP + WebSocket) y publicada.
+
+```mermaid
+graph TB
+    subgraph UI["Interfaz React (src/)"]
+        Views["Vistas, hooks y stores visuales"]
+        Transport["services/transport<br/>callBackend · subscribeBackend · backendFileUrl<br/>backendKind · backendPlatform · backendSupports"]
+        Window["services/window<br/>controles, arrastre, salida, log del host"]
+        Views --> Transport
+        Views --> Window
+    end
+
+    subgraph Hosts["Hosts"]
+        Tauri["Ventana Tauri (src-tauri/src/tauri_host.rs)<br/>app_invoke + comandos de ventana<br/>plugins Kotlin, diálogos, bandeja"]
+        Headless["Servidor headless (app/src/server/headless.rs)<br/>/api/* HTTPS + WebSocket"]
+        Publication["Publicación Task Manager<br/>(app/src/task_manager_publication.rs)"]
+    end
+
+    subgraph App["notia-app (src-tauri/app)"]
+        Registry["registry.rs<br/>184 comandos · dispatch · app_invoke<br/>dispatch_published"]
+        HostLayer["host/<br/>AppContext · Manager · Emitter · puertos"]
+        UseCases["casos de uso y adaptadores<br/>biblioteca, IA, Task Manager, Finanzas, voz, Telegram…"]
+        Server["server/<br/>http · tls · network · rate · assets · events · owner"]
+        Registry --> UseCases
+        UseCases --> HostLayer
+    end
+
+    Core["notia-backend-core<br/>dominio puro"]
+
+    Transport -- "local: invoke('app_invoke')" --> Tauri
+    Transport -- "remoto: POST /api/invoke, WS /api/events" --> Headless
+    Transport -- "publicada: /task-manager/invoke + WS" --> Publication
+    Window --> Tauri
+    Tauri --> Registry
+    Headless --> Registry
+    Headless --> Server
+    Publication --> Server
+    Publication -- "dispatch_published" --> Registry
+    UseCases --> Core
+```
+
+### Crates y responsabilidades
+
+| Crate | Ruta | Responsabilidad | Depende de Tauri |
+|---|---|---|---|
+| `notia-backend-core` | `src-tauri/backend-core` | Dominio: protocolo, agente, prompts, tools, Task Manager, Finanzas, audio remoto, etc. | No |
+| `notia-app` | `src-tauri/app` | Casos de uso, estado, adaptadores (filesystem desktop y SAF, SQLite, IA, voz, Telegram, Bluetooth), registro de comandos y servidor | No |
+| `notia` | `src-tauri` (raíz del workspace) | Binario y host Tauri detrás de la feature `app` | Solo con `app` |
+
+Dentro de `notia-app`, la capa `host/` reemplaza la API de Tauri que usaban los casos de uso:
+
+| Pieza | Qué ofrece |
+|---|---|
+| `AppContext` | Alias `AppHandle`; es la aplicación en ejecución. |
+| `Manager` | Estado por tipo, rutas (`AppPaths`: datos y recursos) y `app_handle`. |
+| `Emitter` | Eventos, entregados por el puerto `EventSink`. |
+| `Window` | Etiqueta del cliente que llama. |
+| `async_runtime` | Tokio compartido con Tauri. |
+| `plugin` | Ganchos de arranque y `PluginHandle` sobre el puerto `MobilePlugin`. |
+| `ipc::Channel` | Canal que crea el host. |
+| `dialog` | Selectores, por el puerto `DialogPort`. |
+| `AssetResolver` | Archivos de la interfaz, por el puerto `AssetSource`. |
+| `DataDirLock` | Bloqueo exclusivo de la carpeta de datos. |
+
+Cada host construye la aplicación con `notia_app::create_app(paths, ports)` y ejecuta en orden `notia_app::startup_hooks()`:
+
+1. registro de bibliotecas;
+2. backups;
+3. supervisor de Telegram;
+4. autoinicio de la publicación;
+5. base de datos;
+6. plugins Android (puente de IA, continuidad, selector de carpetas y permiso de micrófono);
+7. precarga de voz.
+
+### Registro de comandos (`src-tauri/app/src/registry.rs`)
+
+- `dispatch(app, window_label, command, args) -> Option<Dispatch>` enruta un comando del registro.
+  - `Dispatch::Ready(reply)` corre en el hilo que llama; `Dispatch::Pending(future)` corresponde a los comandos `async`.
+  - `reply` es `Result<Value, Value>`: el resultado o el error del caso de uso, serializados en JSON.
+- `dispatch_app_invoke(app, window_label, body)` recibe `{ command, args }`.
+  - Si `args` falta o es `null`, cuenta como `{}`.
+  - Errores: `invalid app_invoke body: …` y `command X not found`.
+- Los argumentos se leen de `args` con la clave camelCase del parámetro, igual que Tauri. Errores de argumentos:
+  - `command X missing required key Y`;
+  - `` invalid args `Y` for command `X`: … ``.
+- El registro inyecta la aplicación, el estado del servicio (`State`) o la ventana que llama.
+- `COMMAND_NAMES` enumera los comandos.
+- `LOCAL_ONLY_COMMANDS` marca los que actúan sobre dispositivos del equipo que ejecuta Notia (micrófono, Bluetooth, selectores nativos). `is_remote_command` decide qué acepta el servidor headless.
+- Un test comprueba que cada nombre tenga ruta y que los locales no sean remotos.
+- `PUBLISHED_COMMANDS` enumera los comandos que alcanza la publicación de Task Manager. `dispatch_published(app, scope, command, args)` los ejecuta con el principal restringido `PublishedScope { library_id, library_user_id, board_ids }`: el usuario de la sesión publicada y los tableros publicados. Para otro comando devuelve `None`.
+
+**Agregar un comando:**
+1. Escribir la función en el módulo de `notia-app`. Si hay lógica pura, va en `backend-core`.
+2. Agregar su ruta al `match` de `route`, una función de ruta con la misma forma que las demás y el nombre en `COMMAND_NAMES`.
+3. Si usa hardware del equipo servidor, agregarlo a `LOCAL_ONLY_COMMANDS`.
+4. Llamarlo desde TypeScript con `callBackend('nombre', { … })`.
+
+No hay `#[tauri::command]` ni `generate_handler!` para comandos de la aplicación.
+
+### Hosts y entradas
+
+| Host | Entrada | Autenticación | Qué queda fuera del registro |
+|---|---|---|---|
+| Ventana Tauri (`tauri_host.rs`) | Comando único `app_invoke { command, args }` | Proceso local: el usuario del sistema es el dueño | `notia_log`, `window_control`, `exit_application`, `start_window_dragging`, `start_window_dragging_with_restore`; bandeja de Windows; plugins Kotlin; `tauri-plugin-dialog` |
+| Servidor headless (`server/headless.rs`) | `POST /api/invoke` y WS `/api/events` | Contraseña del dueño y cookie de sesión | Comandos de `LOCAL_ONLY_COMMANDS` (responden 403) |
+| Publicación de Task Manager | `/task-manager/invoke`, WS `/task-manager/ws` y streaming de IA | Usuario de biblioteca y tableros publicados | Todo salvo `PUBLISHED_COMMANDS`, que entran por `dispatch_published`; además atiende sus mensajes de protocolo (lotes, `hello`, streaming de IA) |
+
+- **Ventana Tauri:** el plugin `notia-host` construye la aplicación y toma `DataDirLock`. Cada gancho de arranque se registra como plugin de Tauri con su nombre, así los plugins Kotlin conservan el nombre que esperan.
+- **Headless:** usa la misma carpeta de datos que la app, con el mismo bloqueo.
+- **Publicación:** comparte con el headless la infraestructura de red (`server/http`, `tls`, `network` y `rate`). Sus comandos entran al registro por `dispatch_published`; la publicación solo agrega sesión, lotes y difusión.
+
+### Contrato del transporte en TypeScript (`src/services/transport/`)
+
+```ts
+type BackendKind = 'local' | 'remote' | 'published'
+type BackendPlatform = 'windows' | 'linux' | 'android' | 'macos' | 'unknown'
+
+interface BackendTransport {
+  kind: BackendKind
+  platform(): BackendPlatform
+  call<T>(command: string, args?: Record<string, unknown>): Promise<T>
+  subscribe<T>(event: string, handler: (payload: T) => void): Promise<Unsubscribe>
+  fileUrl(path: string): string
+  supports(command: string): boolean
+}
+```
+
+- **Arranque:** `src/main.tsx` carga `App` si hay ventana nativa (`hasHostWindow()`). Si no, carga `components/remote/RemoteApp.tsx`:
+  1. verifica `/api/health`;
+  2. pide la contraseña si no hay sesión;
+  3. lee `/api/capabilities`;
+  4. instala el transporte remoto con `installBackendTransport`;
+  5. recién entonces carga `App`.
+
+  La página publicada instala su transporte en `publicTaskManager.tsx`.
+- **Cuándo se lee el transporte:** algunos módulos lo leen al cargarse (el hook de dictado y el riel sin Meeting). Por eso `App` se carga después de instalarlo.
+- **Rechazos de `call`:** el error del backend llega tal cual (objeto `{ code, message, … }` o texto), en los tres transportes. Los fallos del transporte (sin conexión, sesión vencida, 403, 429) llegan como `Error` con mensaje en español.
+- **`supports`:** solo oculta o deshabilita lo que el backend no ofrece. La autoridad sigue en Rust.
+- **`platform`:** decide funciones del backend (Backups y Publicar en Windows; sin Telegram en Android). El diseño de teléfono o escritorio sale de `getRuntimeDevice()`.
+- **Regla de ESLint** (`no-restricted-imports`, nivel `error`): prohíbe `@tauri-apps/*` fuera de `src/services/transport/` y `src/services/window/`.
+
+| Transporte | `call` | `subscribe` | `fileUrl` | `supports` |
+|---|---|---|---|---|
+| `tauriTransport` | `invoke('app_invoke', { command, args })` | `listen(event)`; el handler recibe el payload | `convertFileSrc`, con respaldo `file://` | Siempre verdadero |
+| `createRemoteTransport` | `POST /api/invoke`; un 401 recarga la página hacia el ingreso | Un único WebSocket `/api/events`; reconecta a los 1 a 15 s con `?since=<última secuencia>` | `/api/file?path=…` | `capabilities.commands` |
+| `createTaskManagerPublicationTransport` | Lecturas a `<ruta>/invoke`; mutaciones por el cliente WebSocket de la publicación | Sin eventos (llegan por ese cliente) | Ruta sin cambios | Siempre verdadero (autoriza el servidor) |
+
+### Protocolo del servidor headless
+
+Todas las respuestas llevan `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` y `Connection: close`. Las páginas HTML de la interfaz llevan además `Content-Security-Policy`. Todo `POST` exige `Origin: https://<host>`.
+
+| Ruta | Sesión | Respuesta |
+|---|---|---|
+| `GET /api/health` | No | `{ "ok": true, "protocolVersion": 1 }` |
+| `POST /api/auth/login` | No | `200 { ok }` con cookie · `401` contraseña incorrecta · `429` más de 30 intentos por minuto e IP |
+| `POST /api/auth/logout` | Opcional | `200 { ok }` y cookie vencida |
+| `GET /api/session` | Opcional | `{ "authenticated": bool }` |
+| `GET /api/capabilities` | Sí | `{ protocolVersion, platform, commands, localOnlyCommands }` |
+| `POST /api/invoke` | Sí | `200 { result }` · `400 { error }` (error del backend) · `403` comando local · `429` más de 600 por minuto y sesión |
+| `GET /api/file?path=…` | Sí | Archivo de una biblioteca registrada (máx. 64 MB, `Content-Security-Policy: sandbox`) · `403` fuera de bibliotecas · `404` · `413` |
+| `GET /api/events?since=N` (WebSocket) | Sí | `{ seq, event, payload }` por cada evento. Con `since`, primero los eventos posteriores que el servidor conserva (los últimos 512); si ya no están o `N` es de otra ejecución, `notia:events-lost`. Ping cada 30 s; se cierra al vencer la sesión |
+| Otro `GET` | No | Archivos de `--static-dir`, con `index.html` como respaldo de la SPA; sin carpeta, un texto informativo |
+
+Ingreso:
+
+```http
+POST /api/auth/login
+Origin: https://192.168.0.8:52480
+Content-Type: application/json
+
+{ "password": "…" }
+```
+
+```http
+HTTP/1.1 200 OK
+Set-Cookie: notia_session=<64 hex>; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200
+
+{ "ok": true }
+```
+
+Comando:
+
+```json
+{ "command": "calendar_argentina_holidays", "args": { "year": 2026 } }
+```
+
+```json
+{ "result": [ { "date": "2026-01-01", "name": "Año Nuevo", "kind": "national" } ] }
+```
+
+Error del backend (HTTP 400):
+
+```json
+{ "error": "command calendar_argentina_holidays missing required key year" }
+```
+
+Comando reservado al equipo servidor (HTTP 403):
+
+```json
+{ "error": "Esta operación solo está disponible en el equipo que ejecuta Notia." }
+```
+
+Evento por WebSocket:
+
+```json
+{ "seq": 1758671234567891, "event": "notia-library-tree-changed", "payload": { "watchedPath": "C:\\Notas", "changedPathHint": "C:\\Notas\\nueva.md" } }
+```
+
+Fragmento de dictado remoto (`speech_remote_audio`):
+
+```json
+{
+  "command": "speech_remote_audio",
+  "args": {
+    "payload": {
+      "chunk": {
+        "sessionId": "0b6c2f0e-3c1a-4e55-9d0e-6a2b1f7f8e21",
+        "sequence": 0,
+        "encoding": "pcm-s16le",
+        "sampleRate": 16000,
+        "channels": 1,
+        "last": false,
+        "dataBase64": "AAAAAA…"
+      }
+    }
+  }
+}
+```
+
+- La respuesta es `{ "result": { "done": false, "text": null } }` hasta el fragmento `last: true`, que devuelve `{ "done": true, "text": "…" }` o el error del reconocedor.
+- Los fragmentos van en orden desde 0, con un solo formato y hasta 256 KB cada uno.
+- Frecuencias admitidas: 8, 16, 22,05, 44,1 o 48 kHz; el servidor lleva todo a 16 kHz.
+- Una grabación dura como máximo 5 minutos y hay como máximo 4 abiertas.
+- `speech_remote_audio_cancel { sessionId }` descarta una grabación.
+- El reconocimiento funciona en Windows y Android. En Linux responde que no está disponible.
+
+### Eventos del backend
+
+Llegan por `subscribeBackend`: en la ventana por el `emit` de Tauri y en el navegador por `/api/events`.
+
+| Evento | Emisor (`notia-app`) | Consumidor TypeScript |
+|---|---|---|
+| `notia:backend-event` | `backend_tauri.rs` (sobre versionado con secuencia por request) | `aiChatRuntime` |
+| `ai-chat-interaction`, `ai-chat-title` | `ai_chat.rs` | `aiChatRuntime` |
+| `multichat-event` | `multichat.rs` | `multichatRuntime` |
+| `notia-library-tree-changed` | `filesystem/watch.rs` | `libraryTreeWatchRuntime` |
+| `task-manager-changed`, `task-manager-publication-changed` | `task_manager_commands.rs`, `task_manager_publication.rs` | `useTaskManager` |
+| `notia-task-manager-publication-ai-request` | `task_manager_publication.rs` | `useTaskManagerPublicationAiHostBridge` |
+| `notia:routine-data-changed` | `routine_tools.rs` | `routineService` |
+| `notia://telegram-library-changed` | `telegram_worker.rs` | `useTelegramLibraryChanges` |
+| `speech://state`, `speech://partial`, `speech://segments` | `services/speech_service.rs` | `speechService` |
+| `notia:events-lost` | `server/events.rs` (solo servidor headless, al reconectar) | `RemoteApp` (aviso con «Recargar») |
+| `notia:request-app-exit` | Bandeja de Windows (host Tauri, no el backend) | `services/window` |
+
+### Seguridad del servidor y de la carpeta de datos
+
+- **Contraseña del dueño:**
+  - se guarda como hash PBKDF2-HMAC-SHA256 con 210 000 iteraciones y sal aleatoria en `<datos>/headless-server/owner.json`;
+  - se define con `--set-owner-password`, desde `NOTIA_OWNER_PASSWORD` o la entrada estándar;
+  - debe tener entre 8 y 256 caracteres.
+- **Sesiones:** token aleatorio de 32 bytes en cookie `HttpOnly; Secure; SameSite=Strict`, válido 12 horas. Hay como máximo 64; al llegar al límite se descarta la más antigua. El logout la invalida.
+- **TLS:** certificado autofirmado (rcgen) en `<datos>/headless-server/tls`, para `localhost`, `127.0.0.1` y las IPv4 utilizables del equipo; se regenera si cambia su versión. Un pedido HTTP plano se redirige a HTTPS (308 para `GET`/`HEAD`, 426 para el resto) solo si el host es una IP o `localhost`.
+- **Límites:**
+  - 128 conexiones;
+  - pedidos de hasta 32 MB, con lectura que vence a los 5 s;
+  - mensajes del cliente por WebSocket de hasta 64 KB;
+  - límites de pedidos por minuto en login e invoke.
+- **Autorización:**
+  - la sesión da acceso de dueño a los comandos remotos;
+  - los comandos locales responden 403;
+  - `/api/file` solo sirve rutas dentro de bibliotecas registradas (`contains_desktop_path` resuelve enlaces y `..`) y con `sandbox`, para que un SVG o HTML no ejecute scripts en ese origen.
+- **Carpeta de datos:** `DataDirLock` usa `File::try_lock` sobre `<datos>/notia.lock`. Lo toman la ventana (Windows y Linux; en Android no aplica), el headless y `--add-library`.
+  - El sistema lo libera aunque el proceso termine de golpe.
+  - Si la carpeta está en uso, la ventana avisa «Notia ya está en uso» y se cierra, y el servidor termina con un mensaje.
+- **Política de contenido:** la ventana usa la CSP de `tauri.conf.json` y el servidor agrega una equivalente a sus páginas, con `frame-ancestors 'none'`. Scripts y estilos admiten `'unsafe-inline'` (y los scripts `'unsafe-eval'`) por XGraph, Emotion y Mermaid; el resto de las directivas queda en el propio origen.
+- **Logs:** no se registran contraseñas, tokens de sesión, URI SAF completas ni contenido de documentos.
+
+### Plataformas
+
+| Capacidad | Ventana Windows | Ventana Android | Headless Windows | Headless Linux | Navegador remoto |
+|---|---|---|---|---|---|
+| Registro de comandos | Sí (`app_invoke`) | Sí (`app_invoke`) | Sí (`/api/invoke`) | Sí | Cliente |
+| Filesystem | Raíz canónica | SAF tree/document | Raíz canónica | Raíz canónica | Por el servidor |
+| Alta de bibliotecas | Selector nativo | Selector SAF | `--add-library` | `--add-library` | No (se indica el comando) |
+| IA (Ollama) | HTTP nativo | `AiBridgePlugin` | HTTP nativo | HTTP nativo | Por el servidor |
+| Voz local y Meeting | Sí | Sí | No expuesto | No expuesto | No |
+| Dictado remoto | — | — | Sí | No disponible (sin reconocedor) | Captura en el navegador |
+| Telegram | Worker Rust | Worker Rust (se configura desde otro dispositivo) | Worker Rust | Worker Rust (sin transcripción de audios) | Por el servidor |
+| Backups y publicación | Sí | No | Sí | No (código de Windows) | Por el servidor Windows |
+| Bluetooth ColdPass | Sí (feature `bluetooth`) | No | No expuesto | No compilado | No |
+| Bandeja y controles de ventana | Sí | No | No | No | No |
+
+### Compilación y ejecución
+
+```bash
+# Interfaz y ventana (Windows/Android): igual que antes
+npm run dev:tauri:windows
+npm run dev:android
+
+# Servidor headless desde el ejecutable de la app
+notia --headless --set-owner-password
+notia --headless --add-library "D:\Notas"
+notia --headless --static-dir dist --bind 0.0.0.0:52480
+
+# Binario solo servidor (Linux), desde src-tauri
+cargo build --release --no-default-features
+```
+
+En Linux el binario solo servidor no necesita D-Bus ni WebKit. Si no hay un compilador C del sistema, sirve Zig como compilador y linker; la receta está en «cierre de pendientes».
+
+`--resource-dir` indica dónde están los modelos de voz y los runtimes; por defecto, la carpeta del ejecutable. Sin `--static-dir`, se usa `dist/` junto al ejecutable si existe.
+
+### Validaciones de referencia
+
+| Comando | Qué valida |
+|---|---|
+| `cargo check --offline` (app) y `cargo check --offline --no-default-features` | Compilación desktop y solo servidor. |
+| `cargo check --offline --target aarch64-linux-android` | Compilación Android, con las variables del NDK. |
+| `cargo test --offline -p notia-app` y `cargo test --offline -p notia-backend-core` | Tests de Rust. `notia-app` ya no enlaza Tauri, así que sus tests corren en Windows. |
+| `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint src`, `npx vitest run` | Frontend. |
+
+Estado al cierre de los pendientes de la separación:
+
+| Suite | Resultado |
+|---|---|
+| `notia-app` | 299 aprobados con la feature `bluetooth` y 297 sin ella; 1 ignorado. En Linux, 249. |
+| `notia-backend-core` | 230 aprobados (Windows y Linux). |
+| vitest | 206 aprobados. |
+| Warnings de `notia-app` | 44 en desktop, 63 en Android y 40 en el binario solo servidor; el host, 0. |
+
+### Límites y trabajo pendiente
+
+- **Pruebas manuales:** falta probar en Android real y en Chrome y Firefox, de escritorio y de teléfono. La interfaz remota se probó con Edge sin ventana contra servidores Windows y Linux.
+- **Publicación y backups:** siguen siendo solo de Windows.
+- **Dictado remoto:** no está disponible en Linux (no hay reconocedor).
+- **Excepciones visuales de TypeScript:** las que quedan (editor Milkdown, lienzo InkMath, Mermaid, pdf.js, lista virtual y expansión del árbol) están listadas en «cierre de la fase 1».
+
+## Estado sincronizado de esta iteración: separación backend/frontend — cierre de pendientes
+
+Esta iteración cierra lo que había quedado pendiente al terminar la fase 6.
+
+### Tests que fallaban
+
+Los 15 fallos de `notia-app` y los 5 de `notia-backend-core` se corrigieron. Cada corrección se hizo en el código o en el test, según cuál de los dos describía mal el contrato vigente:
+
+| Módulo | Corrección |
+|---|---|
+| `backend-core/coldpass.rs` | `upsert_coldpass_entry` rechaza una credencial sin nombre («La credencial necesita un nombre.»). |
+| `backend-core/markdown_editing.rs` | El test sigue el contrato: una selección vacía aplica todos los cambios y un id de cambio desconocido es un error. |
+| `backend-core/paths.rs`, `prompt.rs` | Los helpers de los tests usan el canal `Published` con la política `PublishedNoMemory`. |
+| `backend-core/speech_text.rs` | `markdown_to_speech_text` quita los espacios finales de cada línea. |
+| `filesystem/adapter.rs` | El test compara contra la raíz canónica (rutas `\\?\` en Windows). |
+| `database.rs` | `migrate_to(connection, target)` permite probar una migración intermedia; `migrate` llama a `migrate_to(CURRENT_SCHEMA_VERSION)`. |
+| `finance_reconciliation.rs` | El nombre de un servicio solo coincide como palabra completa («Internet» no coincide con «Internetshop»). |
+| `services/ai_service.rs` | El test acepta `:443` y rechaza `:8443`, como hace la validación. |
+| `finance.rs` | Los datos de demostración incluyen servicios, ocurrencias, versiones, facturas, auditorías, propuestas y decisiones (`INSERT OR IGNORE`); el test de auditoría de tarjeta usa su propia cuenta. |
+| `task_manager_store.rs` | Un bloque `---` vacío sigue marcando un comentario heredado. |
+| `task_manager_publication.rs` | Tests del p95 y del lote WebSocket inactivo ajustados al protocolo vigente (`operationId` por lote). |
+| `user_auth.rs` | Vector de referencia PBKDF2 y rechazo de contraseñas cortas; el helper de formato se reemplazó por `parse_password_hash`. |
+| `services/speech_service.rs` | `nearest_sentence_boundary` (solo de tests) ya no depende de la plataforma, así los tests compilan en Linux. |
+
+### Publicación de Task Manager sobre el registro
+
+- `registry.rs` define:
+  - `PublishedScope { library_id, library_user_id, board_ids }`: el principal restringido de una sesión publicada;
+  - `PUBLISHED_COMMANDS`: `task_manager_board_view`, `task_manager_board_execute`, `task_manager_read_ticket_source`, `task_manager_write_ticket_source` y `task_manager_pomodoro`;
+  - `is_published_command` y `dispatch_published(app, scope, command, args)`, que ejecuta esos comandos con `task_manager_execute_for_publication` limitado al usuario y a los tableros del alcance. Para cualquier otro comando devuelve `None`.
+- `execute_publication_invoke_unlocked` arma el alcance con el usuario de la sesión y los tableros publicados y llama a `dispatch_published`. Además de esos comandos solo atiende los mensajes de protocolo (lotes, `hello`, streaming de IA). Cualquier otro comando responde «La URL solo puede acceder a los tableros publicados.».
+- Se eliminó el despacho propio de la publicación:
+  - la rama genérica de filesystem, con su autorización por comando, rutas virtuales y filtros;
+  - las variantes `Preview`, `Apply`, `AppendPomodoro` y `UpdatePublicationSettings` de `PublicationMutationCommand`, con la revisión global y la validación de argumentos que solo usaban ellas;
+  - código heredado que solo existía para tests (aprobación de dispositivos, `serve_login`, un PBKDF2 duplicado).
+- Tests nuevos:
+  - `publications_reach_only_their_commands_with_the_published_user` (registro);
+  - `every_published_mutation_is_a_registry_command_or_a_protocol_command` (publicación).
+- `scripts/task-manager-publication-e2e.mjs` usa el protocolo vigente:
+  - lecturas con `task_manager_read_ticket_source`;
+  - mutaciones con `task_manager_board_execute` e intención `add-comment`;
+  - el conflicto concurrente envía dos `task_manager_write_ticket_source` con la misma `expectedRevision` y espera uno aplicado y uno rechazado.
+
+### Comandos retirados y código muerto
+
+- Se retiraron del registro los 64 comandos sin consumidor en la interfaz. El registro pasó de 248 a 184 comandos, todos con consumidor.
+  - filesystem por ruta: `read_library_tree`, `read_library_file`, `write_library_file`, `create_library_entry`, `library_entry_operation`, `path_exists`, `is_directory_path` y afines;
+  - prompts, memorias y reglas del agente por comando suelto; reindexado y caché de enlaces; inicialización e inventario de la base;
+  - listados de cuentas y categorías de Finanzas y guardado suelto de servicios;
+  - `validate_backend_request`, `replay_backend_events` y `run_backend_request`;
+  - IA de desktop y Android por comando (`check_desktop_ai_health`, `run_desktop_ai_chat_streaming`, `run_android_ai_chat`…), con el evento `notia-ai-chat-stream`;
+  - selectores y lecturas Android sueltas, `pick_library_directory` y `register_library_binding`;
+  - recuperación, aviso y publicación directa de la publicación de Task Manager;
+  - los `task_manager_*` previos al tablero en Rust.
+- Se eliminó `commands/ai.rs` y el código que solo usaban esos comandos, siempre que estuviera muerto tanto en Windows como en Android.
+- Warnings de `notia-app`: 44 en desktop (antes 50), 63 en Android (sin cambios) y 40 en el binario solo servidor.
+- Se eliminó `src-tauri/backend-core/Cargo.lock`: el workspace usa `src-tauri/Cargo.lock`.
+
+### Reproducción de eventos al reconectar
+
+- `server/events.rs` numera cada evento y guarda los últimos 512. Cada mensaje del WebSocket es `{ seq, event, payload }`.
+- `GET /api/events?since=N` envía primero los eventos con `seq > N` que el servidor conserva y después los nuevos. La reproducción y la suscripción se toman juntas, así no se pierde un evento entre ambas.
+- Si los eventos perdidos ya no se conservan, o `N` es de otra ejecución del servidor, el primer mensaje es `{ "seq": 0, "event": "notia:events-lost", "payload": null }`.
+  - La numeración de cada proceso empieza en su hora de inicio en microsegundos. Así, un cliente que vuelve después de un reinicio siempre queda detrás del servidor y recibe el aviso, en lugar de una reproducción vacía.
+- `remoteTransport.ts` guarda la última secuencia recibida y reconecta con `?since=`. `RemoteApp` escucha `notia:events-lost` (`EVENTS_LOST_EVENT`) y muestra el aviso `.notia-remote-banner` con el botón «Recargar».
+
+### Política de contenido (CSP)
+
+- `tauri.conf.json` ya no tiene `csp: null`:
+  - `default-src 'self' ipc: http://ipc.localhost`;
+  - `connect-src` agrega `asset:`, `data:` y `blob:`; en desarrollo (`devCsp`) también `ws:` y `http:`;
+  - imágenes, medios, fuentes, workers y frames solo del propio origen, `asset:`, `data:` y `blob:` (imágenes también `https:`);
+  - `object-src 'none'`; `base-uri` y `form-action` `'self'`.
+- `script-src` admite `'unsafe-inline'`, `'unsafe-eval'` y `'wasm-unsafe-eval'`, y `style-src` admite `'unsafe-inline'`. `dangerousDisableAssetCspModification` excluye ambas directivas para que Tauri no agregue nonces. Motivo:
+  - XGraph ejecuta JSXGraph en un iframe `srcdoc` que hereda la política;
+  - Emotion y Mermaid inyectan estilos en tiempo de ejecución.
+- El servidor headless agrega la misma política a sus páginas HTML (`INTERFACE_CONTENT_SECURITY_POLICY`), con `connect-src 'self'` y `frame-ancestors 'none'`.
+- El worklet de audio del dictado remoto pasó a ser un archivo del bundle (`src/services/speech/pcmCaptureWorklet.js`, importado con `?url&no-inline`). Antes era un `blob:` que la política bloqueaba; con `no-inline`, Vite no lo convierte en `data:`.
+
+### Bluetooth como feature
+
+- `btleplug` es opcional en `notia-app` (feature `bluetooth`). La feature `app` del crate raíz la activa.
+- Sin la feature, los comandos `coldpass_bluetooth_*` responden como en Android: Bluetooth no disponible.
+- Así, el binario solo servidor no necesita D-Bus en Linux.
+
+### Linux
+
+- `libloading` pasó a ser dependencia general de `notia-app`.
+- `qwen3_asr_service::load` responde «Qwen3-ASR no está disponible en esta plataforma.» fuera de Windows y Android.
+- Receta usada (WSL Ubuntu, sin compilador C del sistema):
+  1. `rustup` con perfil mínimo y Zig 0.14.1 como compilador C/C++ y linker.
+  2. Wrappers `zigcc`/`zigcxx`: descartan `--target=*` de Rust, cambian `-lgcc_s` por `-lunwind` y compilan con `-target x86_64-linux-gnu.2.31`.
+  3. `CC`, `CXX`, `AR` y `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` apuntan a esos wrappers.
+  4. `cargo build --locked --no-default-features` desde `src-tauri`.
+
+  Con un `gcc` del sistema alcanza con el paso 4.
+
+### Validaciones ejecutadas
+
+| Validación | Resultado |
+|---|---|
+| `cargo test --offline -p notia-backend-core` | 230 aprobados. |
+| `cargo test --offline -p notia-app` | 299 aprobados (297 sin la feature `bluetooth`) y 1 ignorado. |
+| `cargo check --offline`, `--no-default-features` y `--target aarch64-linux-android` | Sin errores. |
+| Linux (WSL): `cargo check` y `cargo build --no-default-features` | Sin errores. |
+| Linux (WSL): `cargo test -p notia-app -p notia-backend-core` | 249 y 230 aprobados. Los tests que necesitan el runtime de voz de Windows o Android no se compilan en Linux. |
+| `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint src` | Sin errores. |
+| `npx vitest run` | 206 aprobados. Test nuevo: «asks for the missed events when it reconnects». |
+| API HTTP contra el servidor Linux (desde Windows) | Aprobada: health, 401 sin sesión, contraseña incorrecta, login sin `Origin` rechazado, cookie `HttpOnly`, capacidades, invoke, comando local 403, error del backend, SPA, eventos y logout. |
+| Navegador real (Edge sin ventana, por DevTools) contra el servidor Windows | Aprobado: ingreso y contraseña incorrecta, interfaz y biblioteca, sin botones de ventana ni Meeting, sesión, `/api/file`, chat, dictado con micrófono simulado hasta la respuesta del servidor y sin violaciones de CSP. Las únicas respuestas de error fueron el 401 de la contraseña incorrecta y el 400 del reconocedor ante audio sin voz. |
+| Navegador real contra el servidor Linux | Aprobado lo mismo, salvo el dictado, que Linux no ofrece. |
+| `node --check scripts/task-manager-publication-e2e.mjs` | Sin errores. |
+
+### Pendientes
+
+- **Dispositivos y navegadores:** probar a mano en Android real (SAF, chat, voz), en Chrome y Firefox, y en un teléfono contra el servidor headless. Solo se probó Edge sin ventana.
+- **Publicación en vivo:** no se ejecutó `scripts/task-manager-publication-e2e.mjs` contra una publicación real; solo se verificó su sintaxis.
+- **Plataformas del servidor:** la publicación y los backups siguen siendo solo de Windows. El dictado remoto no está disponible en Linux.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — fase 5, cliente remoto
+
+Con la fase 5, un navegador de la red usa Notia contra un servidor `notia --headless`. La interfaz es la misma que la de la app, con otro transporte.
+
+### Transporte según dónde corre el backend (`src/services/transport/`)
+
+`BackendTransport` ahora tiene:
+- `kind`: `local` (Tauri), `remote` (servidor headless) o `published` (página publicada de Task Manager);
+- `platform()`: sistema del backend;
+- `supports(command)`: indica si el backend ofrece ese comando. Es solo visual, porque el backend igual rechaza lo que no permite.
+
+`installBackendTransport` lo instala el arranque antes de cargar la interfaz. Se exponen `backendKind()`, `backendPlatform()` y `backendSupports()`.
+
+| Transporte | Archivo | Qué hace |
+|---|---|---|
+| Local | `tauriTransport.ts` | Tauri. `supports` siempre es verdadero; `platform` sale de este dispositivo. |
+| Remoto | `remoteTransport.ts` | Ver el detalle debajo. |
+| Sesión remota | `remoteSession.ts` | `isRemoteServer` (`/api/health`), `fetchRemoteSession`, `loginRemote`, `logoutRemote` y `fetchRemoteCapabilities`, que valida la respuesta. |
+| Publicación | `modules/task-manager/services/taskManagerPublicationTransport.ts` | Reemplaza el shim que imitaba `window.__TAURI_INTERNALS__`, que se eliminó. |
+
+Detalle del transporte remoto:
+- **Comandos:** `POST /api/invoke` con la cookie de sesión.
+  - Un 400 rechaza con el error del backend tal cual, igual que el IPC de Tauri.
+  - Un 401 llama a `onSessionExpired`: la página se recarga y vuelve al ingreso.
+  - Un 403 o 429 rechaza con el mensaje del servidor.
+- **Eventos:** un único WebSocket a `/api/events`, compartido por todas las suscripciones. Reparte por nombre de evento y reconecta con espera creciente (1 a 15 s) mientras haya suscriptores.
+- **Archivos:** `fileUrl` devuelve `/api/file?path=…`.
+
+Detalle del transporte de publicación:
+- Las lecturas van a `<ruta>/invoke`, con la misma sesión vencida y los mismos límites de lecturas que tenía el shim.
+- Las mutaciones van por el cliente WebSocket de la publicación.
+- `subscribe` no escucha nada, porque los cambios llegan por ese cliente.
+- `publicTaskManager.tsx` instala este transporte.
+
+### Arranque (`src/main.tsx`) e ingreso (`src/components/remote/RemoteApp.tsx`)
+
+- Con ventana nativa (`hasHostWindow()`, en `services/window`) se carga `App` como siempre, ahora de forma diferida.
+- En un navegador se carga `RemoteApp`, que sigue estos pasos:
+  1. comprueba que la dirección sea un servidor Notia;
+  2. si no hay sesión, pide la contraseña del dueño con `input` accesible, foco visible y botones de 44 px;
+  3. lee las capacidades e instala el transporte remoto;
+  4. recién entonces carga `App`.
+- Los módulos de la interfaz leen el transporte al cargarse (por ejemplo, el hook de dictado y el riel lateral). Por eso `App` se importa después de instalarlo.
+- Estilos `notia-remote-*` con los tokens de la paleta. El tema claro u oscuro sale de `prefers-color-scheme` hasta que carga la app.
+
+### Lo que depende del equipo servidor
+
+Se oculta según `backendSupports`; el servidor además responde 403.
+
+| Función | En un navegador remoto |
+|---|---|
+| Meeting (micrófono del servidor) | No aparece en el riel. |
+| Tarjeta Bluetooth de ColdPass | No se muestra. |
+| «Importar vault» (selector de CSV) | No se muestra. |
+| «Elegir carpeta» de backups | Queda deshabilitado. |
+| Alta de librerías | En lugar del selector se indica `notia --headless --add-library`. |
+| Botones de ventana | Solo existen con ventana nativa. `controlWindow`, el arrastre, `exitApplication`, el pedido de salida de la bandeja y `logToHost` no hacen nada sin ella. |
+
+Configuración decide Backups, Publicar y Telegram según `backendPlatform()` (el sistema del servidor) y no según el `userAgent` del navegador. El diseño (teléfono o escritorio) sigue saliendo del dispositivo.
+
+### Dictado remoto
+
+- **Backend:**
+  - `backend-core::remote_audio` suma `RemoteAudioAssembler`: fragmentos PCM de 16 bits en orden, un solo formato y duración máxima. Rechaza otras sesiones, Ogg/Opus y cambios de formato.
+  - Suma también `resample_linear` a 16 kHz.
+  - `commands/remote_speech.rs` expone:
+    - `speech_remote_audio { chunk }`: el fragmento 0 abre la grabación y el último devuelve `{ done, text }`.
+    - `speech_remote_audio_cancel { sessionId }`.
+  - Tiene como máximo 4 grabaciones, 5 minutos por grabación y 5 minutos de inactividad.
+  - Transcribe con `transcribe_external_audio`, igual que las notas de voz de Telegram, en Windows y Android. Si el dictado local está activo, lo rechaza.
+- **Interfaz:**
+  - `services/speech/remoteSpeechCapture.ts` graba con `getUserMedia` y un AudioWorklet en línea: 16 kHz si el navegador lo permite, fragmentos de 0,5 s y PCM little-endian.
+  - `useRemoteVoiceTranscription` tiene la misma forma que el hook local: graba, pausa, reanuda, cancela, y al finalizar recibe el texto.
+  - `useVoiceTranscription` elige el hook según `backendKind()`.
+  - En remoto no hay texto parcial, hablantes ni modo conversación. Este último ya no estaba expuesto en el chat.
+
+### Servidor
+
+- `GET /api/file?path=…` sirve un archivo solo si `contains_desktop_path` lo ubica dentro de una biblioteca registrada, hasta 64 MB.
+  - Lo sirve con `Content-Security-Policy: sandbox`, así un SVG o HTML no ejecuta scripts en el origen del servidor.
+  - Requiere sesión, igual que el resto de `/api`.
+- `/api/capabilities` incluye `platform`.
+- `request_query_param` decodifica parámetros con porcentaje.
+
+### Decisiones respecto del plan
+
+- La publicación de Task Manager usa su propio transporte y no el remoto: su servidor tiene otro protocolo, con usuarios de biblioteca, lotes y conflictos por WebSocket. Lo que se cumple es quitar el shim.
+- Unificar la publicación con el registro (principal restringido por usuario de biblioteca y tableros) sigue pendiente, como se anotó en la fase 4.
+- No hay reproducción de eventos genéricos después de reconectar; las vistas vuelven a leer al recibir eventos.
+
+### Validación y pendientes
+
+- Frontend:
+  - `npx tsc --noEmit -p tsconfig.app.json` y `npx eslint src`: aprobados.
+  - `npx vitest run`: 56 archivos y 205 tests aprobados.
+  - Tests nuevos: transporte remoto (invoke, errores, sesión vencida, eventos compartidos, URL de archivos, capacidades), sesión remota, transporte de publicación y codificación PCM/Base64.
+- Checks de Rust:
+
+  | Comprobación | Resultado |
+  |---|---|
+  | `cargo check --offline`, app | Aprobado; `notia-app` 50 warnings. |
+  | `cargo check --offline --no-default-features` | Aprobado; `notia-app` 50 warnings. |
+  | `cargo check --offline --target aarch64-linux-android` | Aprobado; `notia-app` 63 warnings. |
+  | `cargo test -p notia-app` | 305 aprobados (15 fallos preexistentes). |
+  | `cargo test -p notia-backend-core` | 225 aprobados (5 preexistentes). |
+
+  Tests nuevos: ensamblado, remuestreo, sesiones de dictado remoto, `/api/file` dentro y fuera de bibliotecas y parámetros de consulta.
+- `npx vite build` compiló la interfaz en una carpeta temporal, sin tocar `dist`.
+- Prueba de punta a punta del binario sin Tauri sirviendo esa compilación:
+  - la raíz, los assets y las rutas de la SPA responden;
+  - `capabilities` informa `platform: "windows"` y el dictado;
+  - `/api/file` sirve una imagen de una biblioteca registrada, rechaza un archivo de afuera con 403 y sin sesión con 401;
+  - el dictado acepta el primer fragmento y rechaza uno fuera de orden;
+  - con silencio, el reconocedor responde «No se detecto voz en la grabación».
+- **Pendiente:**
+  - probar la interfaz remota en navegadores reales (Chrome y Firefox, escritorio y teléfono): ingreso, biblioteca, chat, eventos en vivo, imágenes y dictado con micrófono (necesita HTTPS; el certificado es autofirmado);
+  - la página publicada de Task Manager sin el shim;
+  - la app de Windows y Android con la carga diferida de `App`;
+  - compilar en Linux.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — fase 4, servidor headless
+
+Con la fase 4, el mismo ejecutable puede correr sin ventana (`notia --headless`) y servir la aplicación por HTTPS + WebSocket a otros equipos de la red. Windows compila la app y el servidor; Linux compila solo el servidor (`--no-default-features`).
+
+### Servidor compartido (`src-tauri/app/src/server/`, solo escritorio)
+
+Se extrajeron de `task_manager_publication.rs` las piezas de red, sin el `cfg(windows)`. La publicación de Task Manager las usa sin cambios de comportamiento.
+
+| Módulo | Contenido |
+|---|---|
+| `http.rs` | Lectura de pedidos con límite de tamaño, encabezados, cookies (`request_cookie`), respuestas con los encabezados de seguridad, detección de WebSocket, validación de `Origin`, redirección de HTTP a HTTPS y `PrefixedStream`. |
+| `tls.rs` | Certificado autofirmado (rcgen) guardado en una carpeta y regenerado si cambia la versión. `server_config(dir)` devuelve la configuración de rustls. |
+| `network.rs` | IPv4 utilizables del equipo: la interfaz con ruta de salida primero y, en Windows, las de `ipconfig`. En Linux solo la ruteada, sin dependencias nuevas. |
+| `rate.rs` | `RateWindows`: ventanas deslizantes por clave, con límite de claves. Reemplaza el mapa propio de la publicación. |
+| `assets.rs` | Archivos de la interfaz servidos desde una carpeta (`dist`). Rechaza `..`, raíces y `\`. |
+| `events.rs` | `EventHub`: `EventSink` que reparte cada evento `{ event, payload }` a los clientes conectados. Un cliente lento o cerrado se descarta y recarga al reconectar. |
+| `owner.rs` | Contraseña del dueño como hash PBKDF2 (`user_auth.rs`) en `headless-server/owner.json`. La contraseña nunca se guarda. |
+| `headless.rs` | Modo headless: opciones, arranque, rutas, sesiones y WebSocket de eventos. |
+
+`rcgen`, `rustls` y `tungstenite` pasaron de dependencias de Windows a dependencias de escritorio. `ipconfig` sigue siendo solo de Windows.
+
+### Modo headless
+
+`notia --headless [--data-dir D] [--resource-dir R] [--static-dir W] [--bind 0.0.0.0:52480]`:
+
+- Usa por defecto la misma carpeta de datos que la app: `%APPDATA%\com.gabriel.notia` en Windows, `$XDG_DATA_HOME` o `~/.local/share/com.gabriel.notia` en Linux.
+- Los recursos (modelos de voz, runtimes) se toman por defecto de la carpeta del ejecutable. La interfaz, de `--static-dir` o de `dist/` junto al ejecutable.
+- Construye la aplicación con `create_app`:
+  - el puerto de eventos es el `EventHub`;
+  - no hay diálogos: los selectores responden como cancelados;
+  - no hay registrador de plugins Android.
+
+  Después corre los mismos ganchos de arranque que la ventana: registro de bibliotecas, backups, Telegram, autoinicio de la publicación, base de datos y precarga de voz.
+- En Windows release se conecta a la consola que lo lanzó (`AttachConsole`), porque el ejecutable no tiene consola propia.
+- `--set-owner-password` guarda la contraseña del dueño, tomada de `NOTIA_OWNER_PASSWORD` o de la entrada estándar. Sin contraseña, el servidor no arranca.
+- `--add-library <carpeta>` (se puede repetir) registra una carpeta de ese equipo como biblioteca y termina.
+  - Agrega la carpeta al catálogo con su nombre y la vincula en el registro persistido.
+  - Si no había selección, la selecciona.
+  - Una carpeta ya registrada conserva su id.
+  - El catálogo guarda la ruta de unidad normal (`C:\...`), sin el prefijo `\\?\` de la ruta canónica.
+  - Es el camino para bibliotecas nuevas sin selector. Remotamente, `register_library_binding` solo acepta raíces conocidas o bibliotecas Notia existentes (con `.notia/`), igual que antes.
+
+Rutas, todas por HTTPS (un pedido HTTP plano se redirige):
+
+| Ruta | Uso |
+|---|---|
+| `GET /api/health` | Público: `{ ok, protocolVersion }`. |
+| `POST /api/auth/login` `{ password }` | Crea la cookie `notia_session` (`HttpOnly; Secure; SameSite=Strict`, 12 h). Máximo 64 sesiones y 30 intentos por minuto por IP. |
+| `POST /api/auth/logout` | Cierra la sesión. |
+| `GET /api/session` | `{ authenticated }`. |
+| `GET /api/capabilities` | Comandos que un cliente remoto puede usar y los que son solo locales. |
+| `POST /api/invoke` `{ command, args }` | Pasa por `dispatch_app_invoke` y responde `200 { result }` o `400 { error }`, con el error del backend tal cual. Un comando solo local responde 403. Límite de 600 por minuto por sesión. Los pedidos pueden medir hasta 32 MB (adjuntos del chat). |
+| `GET /api/events` (WebSocket) | Cada evento de la aplicación como `{ event, payload }`, con ping cada 30 s. Se cierra cuando la sesión vence o se cierra. |
+| Resto de `GET` | Archivos de la interfaz, con `index.html` como respaldo para las rutas de la SPA. |
+
+Todo `POST` exige que `Origin` coincida con `https://<host>`. Hay un máximo de 128 conexiones simultáneas.
+
+### Reglas de acceso del registro
+
+- `registry::COMMAND_NAMES` enumera los 246 comandos.
+- `LOCAL_ONLY_COMMANDS` marca los que actúan sobre dispositivos del equipo:
+  - sesiones de voz y micrófono;
+  - Bluetooth de ColdPass;
+  - selectores nativos.
+- `is_remote_command` decide qué acepta el servidor.
+- Un test verifica que cada nombre tenga ruta y que los locales no sean remotos.
+- El principal remoto es el dueño, igual que en la ventana local. Por eso no hacen falta metadatos de lectura/escritura por comando.
+
+### Carpeta de datos exclusiva
+
+- `notia_app::host::DataDirLock` toma un bloqueo exclusivo del sistema operativo (`File::try_lock`) sobre `notia.lock` en la carpeta de datos. El sistema lo libera aunque el proceso termine de golpe.
+- Lo toman la ventana (en el plugin `notia-host`, solo escritorio), el servidor headless y `--add-library`.
+- Si la carpeta ya está en uso, la ventana muestra «Notia ya está en uso» y se cierra, y el servidor termina con un mensaje. Por eso tampoco pueden correr dos ventanas de escritorio sobre los mismos datos.
+- El plugin de diálogo ahora se registra antes que `notia-host`, para poder mostrar ese aviso.
+
+### Crate `notia` y compilación
+
+- Feature `app` (por defecto): Tauri, `tauri-plugin-dialog` y `tauri-build`. El host Tauri pasó de `lib.rs` a `src-tauri/src/tauri_host.rs`; `lib.rs` solo lo reexporta con la feature.
+- `main.rs`: con `--headless` corre el servidor; si no, abre la ventana. Una compilación sin `app` solo acepta `--headless`.
+- `build.rs` valida modelos, prepara Android y llama a `tauri_build` solo con `app`.
+- Linux headless: `cargo build --release --no-default-features`.
+
+### Decisiones respecto del plan
+
+- **La publicación de Task Manager conserva su despacho y protocolo propios** (usuarios de biblioteca, tableros permitidos, rutas virtuales, lotes y conflictos por WebSocket). Ahora comparte con el headless toda la infraestructura de red.
+  - Unirla al registro requiere que el registro reciba un principal restringido (usuario de biblioteca más alcance), porque hoy todos sus comandos actúan como dueño. Queda como paso siguiente, junto con el cliente remoto de la fase 5.
+  - El servidor headless también corre el autoinicio de la publicación en Windows.
+- No se agregó una feature `server`: el servidor se compila en todo escritorio y queda fuera de Android por `cfg`. La única feature es `app`.
+- No hay reproducción de eventos genéricos. `notia:backend-event` conserva su reproducción por secuencia mediante el comando `replay_backend_events`; el resto de los eventos avisa cambios y el cliente vuelve a leer.
+
+### Validación y pendientes
+
+- Checks de compilación:
+
+  | Comprobación | Resultado |
+  |---|---|
+  | `cargo check --offline`, desktop | Aprobado; `notia-app` 50 warnings (línea base), host 0. |
+  | `cargo check --offline --no-default-features`, headless sin Tauri | Aprobado; `notia-app` 50, host 0. |
+  | `cargo check --offline --target aarch64-linux-android` | Aprobado; `notia-app` 63 (línea base), host 0. |
+
+- `cargo test --offline -p notia-app`: 301 aprobados; siguen los 15 fallos preexistentes.
+  - Tests nuevos: rate, tls, network, lock, assets, events, owner, opciones y capacidades del headless, invoke remoto, registro, catálogo y ruta sin prefijo `\\?\`.
+  - Los tests de TLS e IPv4 de la publicación pasaron a `server/`.
+- Prueba de punta a punta con el binario sin Tauri, en `127.0.0.1:52999` sobre una carpeta de datos temporal:
+  - sin contraseña, el servidor no arranca;
+  - `--set-owner-password` funciona;
+  - health responde;
+  - `invoke` sin sesión da 401;
+  - contraseña incorrecta da 401;
+  - login sin `Origin` da 403;
+  - login correcto crea la cookie `HttpOnly`/`Secure`;
+  - `capabilities` excluye los comandos locales;
+  - `invoke` ejecuta un comando del registro;
+  - rechaza uno local con 403;
+  - devuelve el error del backend;
+  - sirve `dist`;
+  - el WebSocket recibió el evento `notia-library-tree-changed` al crear un archivo en una carpeta vigilada;
+  - el logout invalida la sesión;
+  - una segunda instancia sobre la misma carpeta fue rechazada;
+  - `--add-library` registró la carpeta con la ruta `C:/...`.
+- **Pendiente:**
+  - compilar y probar en Linux: WSL no tiene Rust ni compilador C, e instalarlos requiere red;
+  - el cliente remoto (fase 5);
+  - pruebas manuales en Windows: la ventana con el bloqueo de datos, un segundo arranque, la publicación de Task Manager (TLS y redirección desde el módulo compartido) y el headless en release desde una consola.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — fase 3, entrada única y transporte
+
+Con la fase 3, la interfaz habla con el backend por un solo camino, en los dos extremos.
+
+### Backend: `app_invoke`
+
+- `notia_app::registry::dispatch_app_invoke(app, window_label, body)` recibe el cuerpo `{ command, args }` del comando único `APP_INVOKE` (`"app_invoke"`) y lo enruta al registro.
+  - Si `args` falta o es `null`, cuenta como `{}`.
+  - Un cuerpo mal formado responde `invalid app_invoke body: ...`.
+  - Un comando desconocido responde `command X not found`.
+  - Los errores de argumentos mantienen los textos de Tauri.
+- El host Tauri (`src-tauri/src/lib.rs`) solo acepta `app_invoke` y los comandos propios de la ventana: `notia_log`, `window_control`, `exit_application` y los dos de arrastre. Un comando de la aplicación llamado por su nombre ya no llega al registro. Si la aplicación todavía no terminó de construirse, `app_invoke` responde «Notia todavía se está iniciando.».
+- Tests nuevos en `registry.rs`:
+  - comando desconocido y cuerpo mal formado;
+  - clave faltante e inválida, con los mensajes de Tauri.
+
+### Interfaz: `src/services/transport/`
+
+- `callBackend(command, args?)`, `subscribeBackend(event, handler)` y `backendFileUrl(path)` son la única entrada al backend.
+  - El handler de `subscribeBackend` recibe directamente el payload del evento.
+  - La función que devuelve deja de escuchar.
+- `BackendTransport` (`types.ts`) define el contrato. `tauriTransport.ts` lo implementa:
+  - `invoke('app_invoke', { command, args })`;
+  - `listen` de Tauri;
+  - `convertFileSrc`, con respaldo `file://`.
+
+  En la fase 5 se agrega la implementación remota (HTTP + WebSocket) con el mismo contrato.
+- `src/services/window/windowRuntime.ts` conserva lo que pertenece a la ventana:
+  - controles, arrastre y salida;
+  - `logToHost` (antes, un import dinámico en `notiaLogger.ts`);
+  - `subscribeExitRequest`, el pedido de salida de la bandeja de Windows (antes escuchado en `NotiaMenu.tsx`).
+- Se migraron los 51 archivos que importaban `@tauri-apps/api` (servicios, hooks y tests):
+  - los tests ahora simulan `services/transport` en lugar de Tauri;
+  - se eliminó `utils/files/toFileUrl.ts`, que pasó al transporte.
+- ESLint (`eslint.config.js`) prohíbe con nivel `error` importar `@tauri-apps/*` fuera de `src/services/transport/` y `src/services/window/`.
+- La página publicada de Task Manager (`publicTaskManager.tsx`) sigue imitando `__TAURI_INTERNALS__` hasta la fase 5. Ahora desenvuelve `app_invoke`, así el servidor de publicación sigue recibiendo cada comando con su nombre.
+
+### Decisiones respecto del plan
+
+- Los eventos conservan sus nombres (`notia:backend-event`, `multichat-event`, etc.) en lugar de un único `notia:event`. El transporte ya los aísla de Tauri, y el cliente remoto los recibirá por WebSocket con el mismo nombre.
+- Los metadatos de acceso del registro (lectura, mutación, canales `local`/`remote`/`published` y alcance) se agregan en la fase 4, junto con el servidor que los usa. Si se agregan ahora, quedarían sin consumidor. Hoy la aplicación local tiene un solo principal (el dueño) y la publicación conserva su autorización propia.
+- No había usos de `Channel` en TypeScript: el streaming ya llegaba como eventos.
+
+### Validación y pendientes
+
+- `npx tsc --noEmit -p tsconfig.app.json`: aprobado.
+- `npx eslint src`: aprobado. Un archivo de prueba que importaba `@tauri-apps/api/core` fue rechazado por la regla nueva.
+- `npx vitest run`: 53 archivos y 194 tests aprobados, con 4 nuevos en `tauriTransport.test.ts`: la entrada única, el error del backend, el payload de eventos y el respaldo `file://`.
+- Checks de Rust:
+
+  | Comprobación | Resultado |
+  |---|---|
+  | `cargo check --offline`, desktop | Aprobado; `notia-app` 50 warnings, host 0. |
+  | `cargo check --offline --target aarch64-linux-android` | Aprobado; `notia-app` 63 warnings, host 0. |
+  | `cargo test --offline -p notia-app` | 289 aprobados; siguen los 15 fallos preexistentes de la fase 2. |
+
+- Pendiente manual en Windows y Android:
+  - recorrer la app completa, porque todos los comandos pasan ahora por `app_invoke`;
+  - la bandeja de Windows (pedido de salida);
+  - imágenes abiertas en pestañas (`backendFileUrl`);
+  - la página publicada de Task Manager: lecturas y mutaciones a través del shim.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — fase 2, crate `notia-app`
+
+La fase 2 del plan de separación sacó la aplicación del crate de Tauri. `src-tauri` ahora es un workspace de Cargo con tres crates:
+
+| Crate | Ruta | Contenido |
+|---|---|---|
+| `notia-backend-core` | `src-tauri/backend-core` | Dominio puro (sin cambios). |
+| `notia-app` | `src-tauri/app` | Casos de uso, estado de los servicios, adaptadores de plataforma (filesystem desktop y SAF, SQLite, voz, IA, Telegram, publicación) y el registro de comandos. No depende de Tauri. |
+| `notia` (host Tauri) | `src-tauri/src` | Solo `lib.rs`, `main.rs` y `windows_tray.rs`: construye la aplicación, enruta los comandos del WebView y conserva lo propio de la ventana. |
+
+Todos los módulos de `src-tauri/src` pasaron sin cambios de lógica a `src-tauri/app/src`, salvo `lib.rs`, `main.rs` y `windows_tray.rs`. Las rutas citadas más abajo en este documento se actualizaron a la nueva ubicación.
+
+### Capa host de `notia-app` (`app/src/host`)
+
+Los módulos se escribieron contra la API de Tauri. Para moverlos sin reescribirlos, `host` ofrece la misma forma sin depender de Tauri:
+
+- `AppContext` (alias `AppHandle`): la aplicación en ejecución. Reúne rutas, puertos de plataforma y el estado de cada servicio. Se clona barato.
+- `Manager`: `state`, `try_state`, `manage` (conserva el primero, como Tauri), `path` y `app_handle`.
+  - Los estados viven lo que dura el proceso. Por eso un `State` prestado sigue válido a través de un `await`.
+- `Emitter`: publica eventos por el puerto `EventSink`. `Window` (etiqueta más aplicación) emite igual que la aplicación, como en Tauri 2.
+- `AppPaths`: `app_data_dir` y `resource_dir`; si el host no los define, devuelven error.
+- `async_runtime`: runtime tokio multi-hilo propio del proceso (`spawn`, `spawn_blocking`, `block_on`). El host Tauri se lo entrega a Tauri con `tauri::async_runtime::set`, así ambos comparten un solo pool.
+- `plugin`: ganchos de arranque con nombre (`Builder::new(..).setup(..).build()`).
+  - `PluginApi::register_android_plugin` registra el plugin Kotlin mediante el host.
+  - `PluginHandle` llama al plugin nativo por el puerto `MobilePlugin`; los errores conservan el texto que devolvió el plugin.
+  - `PermissionState` mantiene el formato `granted`/`denied`/`prompt`/`prompt-with-rationale`.
+- `ipc::Channel`: canal que crea el host (lo usa el stream de IA de Android). Se serializa con la identidad del canal real.
+- `dialog`: selectores de archivo y carpeta por el puerto `DialogPort`. Un host sin selectores se comporta como si se hubiera cancelado. En Android, las carpetas de biblioteca se siguen eligiendo con el plugin SAF; las URI `content://` que devuelve el selector de archivos se conservan opacas.
+- `AssetResolver`: acceso a los archivos de la interfaz por el puerto `AssetSource`; lo usa el servidor de publicación.
+
+`notia_app::create_app(paths, ports)` construye la aplicación y registra el estado de todos los servicios, la lista que antes estaba en los `.manage(...)` del builder de Tauri. `notia_app::startup_hooks()` devuelve, en orden, los ganchos de arranque:
+
+1. registro de bibliotecas;
+2. backups;
+3. supervisor de Telegram;
+4. autoinicio de la publicación;
+5. base de datos;
+6. puente de IA, continuidad, selector de carpetas y permiso de micrófono de Android;
+7. precarga de voz.
+
+### Registro de comandos (`app/src/registry.rs`)
+
+- `registry::dispatch(app, window_label, command, args)` enruta los 246 comandos de la aplicación.
+  - Lee cada argumento de `args` con su clave en camelCase, igual que Tauri.
+  - Inyecta la aplicación, el estado del servicio o la ventana que llamó.
+  - Devuelve el resultado o el error serializados en JSON.
+- Los errores de argumentos mantienen los textos de Tauri: `command X missing required key Y` e `invalid args ...`.
+- Los comandos síncronos corren en el hilo que llama (el hilo principal, como antes); los `async` devuelven un futuro que conduce el host.
+- El archivo se generó a partir de la lista de `generate_handler!` y de las firmas de cada función. Se quitaron los atributos `#[tauri::command]`.
+- Es la mitad backend del despachador único de la fase 3; allí se agregarán los metadatos de lectura, mutación y canal.
+
+### Host Tauri (`src-tauri/src/lib.rs`, desde la fase 4 en `src-tauri/src/tauri_host.rs`)
+
+- El plugin `notia-host` se registra primero. Construye la aplicación con:
+  - las rutas de Tauri;
+  - un `EventSink` que emite al WebView;
+  - los assets embebidos;
+  - los diálogos de `tauri-plugin-dialog`.
+  Después la guarda como estado de Tauri.
+- Cada gancho de arranque se registra como un plugin de Tauri con su mismo nombre, así cada plugin Kotlin queda bajo el nombre que ya usaba (`notia-ai`, `notia-continuity`, `notia-library-database`, `notia-speech-permission`, etc.).
+- El `invoke_handler` pasa cada llamada del WebView a `registry::dispatch`, y responde al instante o con `respond_async`.
+  - Si la aplicación no tiene el comando, lo resuelven los comandos propios de la ventana: `notia_log`, `window_control`, `exit_application`, `start_window_dragging` y `start_window_dragging_with_restore`.
+- La bandeja de Windows sigue en `windows_tray.rs`.
+
+Para el frontend no cambió nada: los nombres de comandos, los argumentos, los eventos y los errores son los mismos.
+
+### Validación y pendientes
+
+- Checks de compilación:
+
+  | Comprobación | Resultado |
+  |---|---|
+  | `cargo check --offline`, desktop Windows | Aprobado. `notia-app`: 50 warnings (la línea base previa); host: 0. |
+  | `cargo check --offline --target aarch64-linux-android` | Aprobado. `notia-app`: 63 warnings (línea base); host: 0. |
+
+- `cargo test --offline -p notia-backend-core`: 222 aprobados y los 5 fallos conocidos (`coldpass`, `markdown_editing`, `paths`, `prompt`, `speech_text`).
+- `cargo test --offline -p notia-app`: por primera vez los tests del backend corren en esta máquina, porque ya no enlazan Tauri. Resultado: 287 aprobados, 15 fallidos y 1 ignorado.
+  - Los fallos son aserciones de dominio de tests que no podían ejecutarse antes, y ninguno involucra la capa host ni el registro. Se comprobó que la autorización de la publicación es idéntica a la de `HEAD`.
+  - Los fallos se reparten así:
+    - migraciones SQLite de categorías;
+    - conciliación y auditoría de Finanzas;
+    - seed de demo;
+    - endpoint de búsqueda web;
+    - rutas canónicas `\\?\` de Windows en `filesystem::adapter`;
+    - IDs heredados de tickets;
+    - siete tests de autorización, errores, latencia y lotes de la publicación.
+  - Quedan para una iteración propia.
+- `src-tauri/backend-core/Cargo.lock` ya no se usa, porque el workspace usa `src-tauri/Cargo.lock`; se dejó en el repositorio. (Se eliminó en «cierre de pendientes».)
+- Pendiente manual en Windows y Android:
+  - abrir una biblioteca;
+  - chat y streaming de IA (en Android, con el plugin);
+  - selector de carpeta de backups y de importación CSV de ColdPass;
+  - Telegram;
+  - publicación de Task Manager (assets del bundle);
+  - voz y permiso de micrófono;
+  - bandeja de Windows.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — cierre de la fase 1
+
+Cuarto y último paso de la fase 1 del plan de separación. Con esta iteración, la lógica de aplicación que quedaba en React pasó a Rust. Lo que sigue en TypeScript es presentación, las excepciones del editor listadas abajo y el cliente de la publicación, que se reemplaza en las fases 4 y 5.
+
+### Telegram
+
+- El long polling ya corría completo en Rust (`telegram_worker.rs`):
+  - un supervisor que sigue la biblioteca seleccionada y su configuración;
+  - `getUpdates` con el offset y los updates procesados guardados en `app_data/telegram/<biblioteca>-<bot>.json`;
+  - la cola durable, la vinculación, las confirmaciones y las respuestas.
+- El WebView no participa del polling.
+- Se retiraron de la configuración de la biblioteca los campos heredados `authorizedPeer`, `pendingPeer`, `updateOffset` y `processedUpdateIds`. `library_config.rs` reduce `telegram` a `{ enabled, botToken }` y descarta esos campos al reescribir el archivo. En TS, `TelegramPreferences` quedó con esos dos campos.
+
+### Configuración de la biblioteca
+
+- `backend-core/src/library_config.rs` normaliza también la sección `ia` con las reglas de `ai_settings`:
+  - URL de Ollama y URLs heredadas;
+  - credencial y modelo recortados;
+  - `thinkingLevel`;
+  - `progressMode`;
+  - interruptores de feedback con `true` por defecto;
+  - claves antiguas `baseUrl` y `model`.
+- `backend_write_library_config` devuelve lo que guardó.
+- `useLibraryConfigSync`:
+  - envía las secciones editadas y muestra la configuración normalizada que devuelve Rust;
+  - compara con JSON de claves ordenadas;
+  - descarta la respuesta de una escritura si hubo cambios locales posteriores (contador de ediciones).
+- Se eliminaron en TS la normalización de preferencias de IA, de Telegram y del catálogo de contextos. `normalizeContextTag` queda solo para no enviar un tag vacío mientras se escribe.
+- `SettingsModal` envía los borradores completos. Antes, «Probar conexión» y la elección de modelo reenviaban solo URL, credencial y modelo, y reiniciaban el thinking y el feedback a sus valores por defecto.
+- **Preferencias del dispositivo:** la migración desde `localStorage` envía los valores crudos a `backend_save_device_preferences`, que los normaliza. Se eliminaron `normalizeQwen3TtsPreferences`, `normalizeQwen3AsrPreferences` y `normalizeTaskManagerPublicationPreferences`.
+
+### Task Manager: Pomodoro y rutas
+
+- **Estado del temporizador.** `backend-core/src/pomodoro.rs` tiene la máquina de estados completa:
+  - fases trabajo, descanso corto y descanso largo cada 4 ciclos;
+  - duraciones de 1 a 180 minutos;
+  - pausa y reanudación;
+  - desvío con descanso extendido proporcional al tiempo extra;
+  - avance de varias fases vencidas;
+  - normalización del estado heredado.
+- **Comando.** `task_manager_pomodoro { context, localDate, localTime, action, legacyState? }`:
+  - `action` es `read`, `start`, `pause`, `resume`, `reset`, `select-task`, `set-durations`, `enter-deviation`, `exit-deviation` o `tick`;
+  - guarda el temporizador por biblioteca y usuario en `app_data/task-manager/pomodoro/`;
+  - registra el evento con el plan existente;
+  - devuelve `{ state, changed, recordError? }`.
+- Reemplaza a `task_manager_record_pomodoro`, también en la publicación: cada usuario publicado tiene su propio temporizador en el host.
+- La interfaz muestra la cuenta regresiva con `utils/pomodoroDisplay.ts` y envía `tick` al llegar a cero.
+- **Migración.** El primer `read` adopta el temporizador que guardaba el WebView y lo borra del `localStorage`. Allí solo queda la pestaña activa.
+- **Rutas visibles.** `task_manager_board_view` devuelve en cada tarea `path` (la ruta del explorador para abrirla) y en `panelPaths` las rutas del explorador. En la publicación usa el alias `published-vault/…`, así que no expone la ruta del host.
+- Se eliminaron `pomodoroEngine.ts`, `utils/settings.ts`, `utils/path.ts`, `utils/guards.ts` y las constantes del store TS.
+
+### Chat
+
+- `backend-core/src/chat_turn.rs` agrega:
+  - `ViewContext`;
+  - `board_prefix`;
+  - `context_match_score`: 3 si coincide el scope, 2 si coinciden modo y archivos, 1 si son archivos del mismo tablero;
+  - `best_match`: el chat abierto gana los empates;
+  - `apply_view_context`.
+- Comandos nuevos en `chat_history.rs`:
+  - `backend_list_chats { libraryId }` lista `chat/chats` con los títulos leídos, del más nuevo al más viejo. Lista la carpeta real, incluso en Android sin expandir el árbol.
+  - `backend_match_chat { libraryId, scopeKey, mode, files, selected }` elige el chat que corresponde a la vista.
+  - `backend_set_chat_context { libraryId, logicalPath, scopeKey, mode, files }` da al chat el contexto de la vista y lo guarda.
+- **Plataforma.** En Android se leen los 8 chats más recientes para títulos y coincidencias; en escritorio, todos. La decisión pasó a Rust y se eliminó la prop `historyHydrationMode`.
+- **Multichat.** El chat lateral envía `multichatRoomId`. `ai_chat_send` compone el contexto de la sala con `multichat::room_chat_context` (dinámica, agentes, contexto y últimos 40 mensajes). `MultichatPanelContext` quedó con `{ roomId, label }`.
+- **Snapshot.** La instantánea del workspace dejó de llevar capacidades: Rust las deriva del scope. También se eliminaron de `agentContracts.ts` las guardas sin uso (`isWorkspaceAiSnapshot`, `isToolResult`, `isWebSearchRequest`).
+
+### Enlaces wiki y exportación
+
+- **Destinos de enlaces.** `backend-core/src/wiki_links.rs` tiene:
+  - `build_targets`: notas Markdown del inventario; un título repetido se enlaza por su ruta;
+  - `normalize_reference`;
+  - `suggest`: exacto, prefijo y subcadena, con desempate por largo y título.
+- **Comandos.** `library_link_targets { libraryId }` y `library_link_suggestions { libraryId, query, limit? }`, en `library_graph.rs`.
+- **Editor.** Recibe los destinos (`useWikiLinkTargets`) y resuelve sincrónicamente los enlaces que dibuja. Las sugerencias del menú y del panel de propiedades se piden a Rust y solo se muestra la respuesta más reciente.
+- **Exportación.** Pasa siempre por `backend_export_markdown_document`. Se eliminó el render en el navegador (marked, KaTeX, html2canvas, jsPDF, docx) que duplicaba la exportación de Rust fuera de Tauri.
+
+### Finanzas
+
+- **Cambios desde la pantalla.** `finance_apply_ui_change { context, change }`, en `finance_ui.rs`:
+  - guarda la alta, edición, confirmación o descarte de movimientos, los ahorros rápidos, compras, sueldos, resúmenes, servicios, ocurrencias y facturas;
+  - aplica la regla de estado: un movimiento pendiente que se edita queda corregido;
+  - deja pendiente la auditoría del período con el fingerprint y el motivo que antes armaba TS.
+- El agente sigue usando los comandos de guardado directos.
+- **Figuras del tablero.** `finance_dashboard_insights`, con la aritmética en `backend-core/src/finance_insights.rs`, devuelve:
+  - movimientos filtrados y paginados de a 50, con opciones de filtro y cantidad de pendientes;
+  - gastos por categoría;
+  - movimientos y totales de ahorro por tipo;
+  - ratio deuda/sueldo, del mes o del último período con datos, y su serie para el gráfico;
+  - ratio ahorro/sueldo;
+  - resumen del día, la semana (lunes a domingo) o el mes;
+  - variación por categoría contra el mes anterior.
+- **Evolución salarial.** `finance_salary_analysis` devuelve:
+  - el sueldo por mes en pesos y en dólar oficial del día de cobro;
+  - la comparación de cada punto con el anterior y con el IPC;
+  - el resumen móvil de 12 meses;
+  - la comparación contra la inflación.
+
+  Si los índices no se pueden leer, lo informa en `inflationError` y el resto se muestra igual.
+- **Ocurrencias.** Llevan `difference` (pagado − esperado) calculada en Rust.
+- **Eliminados:** `financeAmounts`, `debtRatio`, `debtRatioEvolutionChartEngine`, `serviceEngine` (duplicaba `finance_reconciliation.rs`) y los cálculos del tablero y del motor salarial. El motor salarial quedó con el ancho y la escala de los gráficos.
+
+### ColdPass
+
+- `coldpass_status { libraryId }` informa si la biblioteca ya tiene bóveda. Reemplaza la ruta armada en TS y `pathExists`.
+- `coldpass_generate_password { options }` genera la contraseña con `ring::SystemRandom` y muestreo por rechazo, y estima el tiempo de fuerza bruta. Las reglas están en `backend-core/src/coldpass.rs`.
+- La interfaz solo formatea la estimación.
+- Se eliminaron `filesystemEngine.ts`, `resolveColdPassPaths` y el generador en TS.
+
+### Voz
+
+- `DiarizedTranscriptDto` se serializa con `formattedText`, compuesto por `speech_text::format_diarized`: `Hablante N:` por orden de aparición, agrupando segmentos contiguos del mismo hablante.
+- Meeting usa `speech_transcript_speakers` y `speech_rename_speaker` para listar y renombrar hablantes.
+- `speechTranscript.ts` quedó con la inserción del dictado en el borrador.
+
+### Bibliotecas
+
+- `backend_library_catalog` y `backend_save_library_catalog` devuelven el nombre visible de las bibliotecas Android (carpeta del grant) y rutas de escritorio con `/`.
+- Se eliminaron `utils/files/safUri.ts`, `pathUtils.ts` y la URI de documento que pasaba `FileTree`, que nadie leía porque guardar resuelve por ruta en Rust.
+- `agentPromptRuntime.ts` quedó como cliente: se eliminaron los prompts, reglas y clasificadores del agente TS anterior.
+
+### Excepciones visuales que quedan en TypeScript
+
+- **Editor Markdown** (Milkdown):
+  - composición del buffer (frontmatter + cuerpo) en cada pulsación, en `frontmatterEngine.ts`;
+  - sintaxis y resolución local de enlaces wiki;
+  - bloques de tabla y selección.
+
+  El guardado, el frontmatter por defecto y los enlaces entre páginas los valida Rust.
+- **Otros editores y visores:** editor Mermaid, lienzo de InkMath, render de Mermaid y XGraph, rasterización de PDF con pdf.js.
+- **Presentación:**
+  - listas virtuales, expansión del árbol y eventos de refresco;
+  - geometría de gráficos;
+  - formato de números y fechas;
+  - ayudas de los formularios de Finanzas (subtotal del ticket, neto y total calculados mientras se carga), que Rust valida al guardar;
+  - reproducción de audio del TTS.
+- **Cliente de la publicación** (`taskManagerPublicationClient`, `publicTaskManager`) y puente del host para el chat publicado: se reemplazan en las fases 4 y 5.
+
+### Validaciones ejecutadas y pendientes
+
+- `cargo test --offline` en `backend-core`: 222 aprobados, incluidas las pruebas nuevas de `pomodoro`, `chat_turn`, `wiki_links`, `finance_insights`, `coldpass`, `speech_text` y `library_config`. Siguen los 5 fallos preexistentes.
+- `cargo check --offline` en escritorio (50 warnings) y Android `aarch64-linux-android` (63 warnings): aprobados, igual que antes.
+- `npx tsc --noEmit -p tsconfig.app.json` y `npx eslint src`: aprobados.
+- `npx vitest run`: 190 aprobados, sin fallos. Las pruebas de `agentPromptRuntime`, que fallaban porque usaban `window` en Node, ahora usan un `localStorage` en memoria.
+- **Pendiente:**
+  - Prueba manual en Windows y Android de:
+    - configuración (IA, Telegram, contextos);
+    - Pomodoro (incluida la migración del temporizador y un usuario publicado);
+    - apertura de tareas desde el tablero;
+    - lista y elección de chats por vista;
+    - chat lateral de Multichat;
+    - sugerencias de enlaces;
+    - exportación;
+    - Finanzas (altas, auditoría pendiente, tablero, sueldos);
+    - ColdPass (primer uso y generador);
+    - Meeting (hablantes);
+    - catálogo en Android.
+  - `FinanceContext` y los contextos de Rutina siguen recibiendo la ruta de la biblioteca desde la interfaz. Pasan a identificarse por `libraryId` con el contrato único de la fase 3.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — Chat IA en Rust
+
+Tercer paso del plan de separación. Las tareas de IA del proveedor, Multichat y el turno completo de los chats dejaron de tener lógica en TypeScript. La interfaz envía el mensaje, el workspace visible y la selección de contexto; Rust decide qué mensajes ve el agente, lo ejecuta, guarda el turno y titula el chat. Esta sección reemplaza lo que las secciones anteriores describen sobre `runNotiaChatReply`, `runGlobalAiChat`, `backendRuntime.ts` y los comandos de título y aprendizaje llamados desde la interfaz.
+
+### Proveedor y tareas de IA (`ai_tasks.rs`, `backend-core/src/ai_settings.rs`)
+
+- `backend-core/src/ai_settings.rs` normaliza las preferencias (URL de Ollama, credencial, modelo y thinking) y tiene la lógica que antes estaba en TypeScript:
+  - las heurísticas de capacidades por nombre de modelo;
+  - el valor `think` de cada modelo;
+  - la elección del modelo activo;
+  - los prompts de InkMath y de mejora de transcripciones.
+- `ai_tasks.rs` guarda la salud del proveedor durante 10 s y la lista de modelos durante 30 s. Usa el transporte de cada plataforma: HTTP de Rust en escritorio y el puente Kotlin en Android.
+
+| Comando | Entrada (`payload`) | Salida |
+| --- | --- | --- |
+| `ai_check_health` | `{ settings, fresh? }` | `{ ok, message, defaultModel? }` |
+| `ai_list_models` | `{ settings }` | `[{ name, supportsThinking, supportsThinkingLevels, supportsVision, supportsTools }]` |
+| `ai_resolve_model` | `{ settings }` | nombre del modelo |
+| `ai_recognize_inkmath` | `{ settings, imageBase64 }` | LaTeX |
+| `ai_improve_transcript` | `{ settings, transcript }` | transcripción mejorada |
+
+### Multichat (`multichat.rs`, `backend-core/src/multichat.rs`)
+
+- **Reglas de la sala (en `backend-core`):**
+  - validación de dinámicas y agentes (uno a seis, sin repetidos, con prompt);
+  - elección de los participantes de cada ronda: los nombrados en la dinámica, todos si la dinámica lo pide, o un subconjunto aleatorio;
+  - límite de rondas automáticas de 1 a 4, salvo que la dinámica pida esperar a la persona;
+  - historial visible de 40 mensajes;
+  - instrucción de cada agente.
+- **Estado y ejecución (en `multichat.rs`):**
+  - guarda las salas en memoria;
+  - ejecuta las rondas con el proveedor de la biblioteca (`library_ai_provider`);
+  - emite `multichat-event`, con los tipos `room`, `agentStart`, `thinking` y `delta`.
+- Comandos:
+  - `multichat_catalog { libraryId }` devuelve `{ dynamics, agents }`.
+  - `multichat_open { libraryId, dynamicFile, agentFiles, context }` devuelve la vista de la sala.
+  - `multichat_send { roomId, content }` devuelve la sala al terminar las rondas.
+  - `multichat_cancel { roomId }` y `multichat_close { roomId }`.
+- `MultichatView.tsx` solo elige la configuración, envía mensajes y renderiza la sala y el turno en streaming. Se eliminaron `engines/multichat` y `multichatLibraryRuntime`.
+
+### Turno de chat (`ai_chat.rs`, `backend-core/src/chat_turn.rs`)
+
+- `backend-core/src/chat_turn.rs` contiene las reglas del turno:
+  - ventana de memoria de la conversación;
+  - últimos 100 mensajes para Meeting y publicación;
+  - título provisional desde la primera oración que no es un saludo, hasta 8 palabras;
+  - un chat nuevo que empieza desde un índice de archivos no aprende memorias;
+  - un contexto temporal (sala o vista activa) no reemplaza los archivos del chat;
+  - prompt de cada modo, incluida la plantilla de la transcripción de Meeting;
+  - mensajes con los adjuntos del historial y del turno;
+  - canal, scope y política de memoria;
+  - snapshot del workspace con capacidades derivadas del scope. El snapshot sigue sin autorizar nada por sí mismo.
+- `ai_chat.rs` ejecuta el turno completo en un worker bloqueante:
+  1. Lee el chat.
+  2. Arma la solicitud `Run` con la identidad `libraryId:requestId`.
+  3. Por cada `PendingInteraction`, emite `ai-chat-interaction` y espera la respuesta hasta 30 minutos. Admite hasta 4 preguntas por turno, como antes.
+  4. Guarda el turno: reescribe el chat si cambió el título; si no, agrega el turno al final.
+  5. Titula el chat nuevo en segundo plano (evento `ai-chat-title`) y aprende memorias si el chat las tiene activas.
+- **Deshacer.** Rust guarda, en memoria de la sesión, las últimas 50 operaciones que cambiaron datos y su solicitud. `undoOperationId` deshace la operación indicada con `GetOperation` y `Undo`.
+- **Modos:**
+
+| Modo | Canal | Memoria | Chat |
+| --- | --- | --- | --- |
+| `chat` | `app` (o `meeting` si un chat de biblioteca se abre sobre Meeting) | `persistent` | `saved { path }` o `ephemeral { document }` |
+| `meeting` | `meeting` | `ephemeral-no-memory` | `transient { messages }` |
+| `published` | `published` | `published-no-memory`, actor `libraryUserId` | `transient { messages }` |
+
+| Comando | Entrada (`payload`) | Salida |
+| --- | --- | --- |
+| `ai_chat_send` | `{ libraryId, requestId, mode, settings?, scope, message, context?, attachments, promptName?, undoOperationId?, workspace?, selection, libraryUserId?, chat }` | `{ answer, dataChanged, document?, undoneOperationId? }` |
+| `ai_chat_answer` | `{ requestId, answer }` con `answer` de tipo `clarification { answer }`, `confirmation { accepted, hunkIds }` o `plan { accepted, stepIds? }` | — |
+| `ai_chat_cancel` | `{ requestId }` | cancela la pregunta pendiente o la ejecución |
+
+- **Errores:** una cancelación devuelve `code: "cancelled"`, que el cliente convierte en `AbortError`. Una respuesta que no corresponde a la pregunta cancela el turno.
+- **Proveedor:** `settings` solo se usa como respaldo (`BackendRuntimeState::configure_fallback`) cuando la biblioteca no tiene la IA configurada. Se eliminó `configure_backend_provider`.
+- **Historial de chats:**
+  - `backend_create_chat` acepta `context` (la selección del compositor) y devuelve también `document`.
+  - `backend_load_chat` devuelve los archivos de contexto como rutas del explorador.
+  - `backend_save_chat` los guarda relativos a la biblioteca; los que están fuera de ella conservan la ruta recibida.
+  - Se eliminó `libraryPathMapping` del cliente de chats.
+
+### Interfaz
+
+- `services/chat/aiChatRuntime.ts` (`startChatTurn`, `subscribeChatTitles`):
+  - envía el turno;
+  - filtra los eventos `notia:backend-event` por `requestId` y secuencia;
+  - pasa las preguntas del agente a los diálogos existentes y responde con `ai_chat_answer`.
+- `useChatSubmitMessage` solo muestra el turno optimista, el streaming y la restauración del compositor si falla. Recarga la nota abierta cuando `dataChanged` es verdadero.
+- `aiRuntime.ts` y `multichatRuntime.ts` son clientes finos.
+- Meeting y la respuesta del host a un Task Manager publicado usan el mismo turno con sus modos. El puente del host ya no valida rutas de tableros: el turno no las usaba y el backend limita la consulta a los tableros publicados.
+- Se eliminaron `notiaChatRuntime.ts`, `globalAiChatRuntime.ts`, `chatConversationRuntime.ts`, `chatTitleSync.ts`, `chatLongTermMemorySync.ts`, `services/backend/backendRuntime.ts`, `types/ai/globalAiContract.ts` y sus pruebas.
+- Se eliminaron los comandos `backend_append_chat`, `backend_ensure_chat_structure`, `backend_title_chat`, `backend_learn_from_turn` y `configure_backend_provider`. `run_backend_request` y `replay_backend_events` siguen registrados como entrada genérica del protocolo, pero la interfaz ya no los usa.
+
+### Validaciones ejecutadas y pendientes
+
+- `cargo test --offline` en `backend-core`: aprobados 5 tests nuevos de `chat_turn`, 5 de `ai_settings` y 5 de `multichat`. Siguen los 5 fallos preexistentes.
+- `cargo check --offline` en escritorio (50 warnings, igual que antes) y Android `aarch64-linux-android` (63 warnings, igual que antes): aprobados.
+- `npx tsc --noEmit -p tsconfig.app.json` y `npx eslint src`: aprobados.
+- `npx vitest run`: 239 aprobados. Fallan los 3 tests preexistentes de `agentPromptRuntime` (usan `window` en el entorno `node`). El fallo preexistente de Meeting desapareció al reescribir su prueba sobre el nuevo cliente.
+- **Pendiente:**
+  - Prueba manual en Windows y Android de:
+    - chat nuevo y existente, con título IA y memorias;
+    - aclaración, confirmación con hunks y plan;
+    - cancelación durante la ejecución y durante una pregunta;
+    - deshacer en el documento;
+    - chat efímero de Graph/Multichat;
+    - Meeting;
+    - chat de un Task Manager publicado;
+    - Multichat y tareas de IA (salud, modelos, InkMath, transcripción).
+  - Siguen en TypeScript:
+    - la lista de chats derivada del árbol del explorador y las claves de comparación de rutas de contexto (`useRightPanelChatFiles`, `useChatState`);
+    - la composición del contexto del panel derecho (`useRightPanelChatContext`).
+  - El chat efímero sigue empezando un documento nuevo en cada turno, como antes.
+  - `ai_chat_send` acepta `mode: "published"` con cualquier `libraryUserId` desde el WebView local, que es de confianza. Antes de exponerlo a clientes remotos (Fases 3 a 5), el servidor debe fijar el actor desde la sesión y ejecutar la consulta publicada sin pasar por el WebView del host.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — Biblioteca en Rust
+
+Segundo paso del plan de separación. El explorador, los documentos y las entradas de la biblioteca dejaron de tener lógica en TypeScript: la interfaz nombra la biblioteca y las rutas que muestra, y Rust decide plataforma, ubicación física, orden, caché, vigilancia e índices.
+
+### Módulos y contratos
+
+- `backend-core/src/library_tree.rs`:
+  - `LibraryTreeNodeDto` es el nodo único del explorador para escritorio y Android.
+  - `normalize_tree` descarta ids repetidos entre hermanos, completa `expanded`, `hasChildren` y `children` de las carpetas y aplica el orden: carpetas primero, después las notas encadenadas por `previousPage`/`nextPage` (cada cadena según la fecha de creación de su cabeza) y al final las notas sueltas por fecha y nombre. Reemplaza a `pageLinkSortEngine.ts`.
+  - `library_logical_path` convierte la ruta que muestra el explorador (raíz de la biblioteca más la ruta relativa, en escritorio o como URI SAF visible) en ruta lógica; rechaza lo que queda fuera de la biblioteca. `library_visible_path` hace la conversión inversa.
+  - `library_display_name` deriva el nombre de la carpeta, incluido el id de documento codificado en una URI tree de Android.
+- `src-tauri/app/src/library_session.rs` (comandos nuevos):
+
+| Comando | Entrada | Salida |
+| --- | --- | --- |
+| `library_open` | `payload: { libraryId }` | `{ nodes, lazy, watched }` |
+| `library_refresh` | `payload: { libraryId, force? }` | `{ changed, nodes? }` |
+| `library_read_directory` | `payload: { libraryId, path }` | nodos de la carpeta |
+| `library_read_document` | `payload: { libraryId, path, markdownDefaults? }` | `{ ok, content, revision?, error?, logicalPath?, lockedContext? }` |
+| `library_write_document` | `payload: { libraryId, path, content, expectedRevision?, createIfMissing? }` | `{ ok, revision?, error?, conflict? }` |
+| `library_mutate_entry` | `payload: { libraryId, action, path, name?, kind?, sourcePath?, mode? }` | `{ ok, error? }` |
+| `library_pick_directory` | `payload: { libraryId }` | `{ name, path, androidTreeUri? } \| null` |
+| `library_list_files` | `payload: { libraryId }` | `[{ path, name, relativePath }]` desde el inventario |
+
+`path` acepta la ruta que muestra el explorador o una ruta lógica. La raíz sale del catálogo, nunca del cliente.
+
+- **Apertura.** `library_open` registra el binding desde el catálogo, prepara la estructura (chats, espacio del agente, SQLite) sin bloquear el explorador ante fallos, lee el árbol y reindexa en segundo plano.
+  - Escritorio: lee el árbol completo, guarda su firma y activa el watcher (`watched: true`).
+  - Android: lista la raíz sin descendientes (`lazy: true`); las carpetas se cargan con `library_read_directory` usando siempre el grant tree de la biblioteca.
+- **Refresco.** `library_refresh` omite la lectura en escritorio si la firma no cambió y no se pidió `force`. En Android, que no tiene watcher, vuelve a leer el árbol.
+- **Registro de bibliotecas.** Al iniciar, `library_registry::init` vuelve a registrar el binding de todas las bibliotecas del catálogo (`rehydrate_bindings`). Antes lo hacía `NotiaMenu` desde TypeScript.
+- **Selector de carpeta.** `library_pick_directory` usa el diálogo nativo en escritorio (ruta normalizada con `/`, como la guardaba el catálogo) o el selector SAF en Android, con 60 s de límite.
+- **Resolución de rutas visibles.** Los comandos existentes que recibían `logicalPath` ahora aceptan también la ruta visible y la resuelven en Rust (`resolve_logical_path`): chats (`backend_load_chat`, `backend_save_chat`, `backend_append_chat`), `backend_title_chat`, `backend_sync_page_link` y `backend_export_markdown_document`.
+- **Respuestas con ruta visible.** Estos comandos devuelven la ruta que muestra el explorador: `backend_library_graph` y `backend_library_graph_search` (en el campo `path`), `backend_library_search`, `backend_agent_history` y `backend_agent_history_diff` (nuevo campo `path`) y `backend_create_chat` (nuevo campo `path`).
+- **Caché de enlaces.** `.notia/linkCache.md` se regenera desde Rust con un debounce de 1,5 s por biblioteca (`schedule_link_cache_rebuild`) después de cada reindexado, de guardar una nota y de modificar una entrada. Se eliminaron el scheduler, el runtime y el hook TypeScript que decidían cuándo regenerarla.
+- **Contexto bloqueado.** `library_read_document` informa `lockedContext` para las notas que están dentro de un tablero de Task Manager (`task_manager_commands::board_context_of_document`). `MarkdownView` lo recibe desde el documento abierto y ya no lee la copia de tableros del `localStorage`.
+- **Frontmatter por defecto.** Solo se agrega al abrir una nota en el editor (`markdownDefaults: true`); las demás lecturas no modifican archivos.
+
+### Interfaz
+
+- Se reescribieron como clientes finos `libraryRuntime.ts` (abrir, refrescar, carpeta, selector, entradas) y `libraryDocumentRuntime.ts` (leer y escribir por biblioteca y ruta).
+- `useLibraryTreeSync` solo mantiene estado visual: expansión, selección, carga de carpetas y cuándo pedir un refresco (foco, visibilidad, eventos del árbol y un intervalo solo si la biblioteca no está vigilada).
+- Se eliminaron: la caché con invalidación por rutas, la deduplicación y los timeouts por plataforma, la elección de comandos Android o escritorio, la traducción de rutas visibles a lógicas y viceversa en documentos, entradas, Multichat, adjuntos del chat, búsqueda, grafo, historial y chats, `pageLinkSortEngine`, `pageLinkSyncEngine`, `libraryInventoryContract`, `libraryInventoryRuntime`, `libraryDatabase` y `chatLibraryStructure`.
+- De `filesystemEngine.ts` solo queda `pathExists`, que ColdPass usa hasta su migración.
+- Configuraciones → Publicar y el uso de contextos por tablero leen los tableros con `task_manager_board_view`. El `localStorage` de Task Manager guarda solo la pestaña activa y el temporizador.
+
+### Validaciones ejecutadas y pendientes
+
+- `cargo test --offline` en `backend-core`: 5 tests nuevos de `library_tree` (orden, rutas, nombres) aprobados; siguen los 5 fallos preexistentes.
+- `cargo check --offline` desktop y Android: aprobados.
+- `npx tsc --noEmit -p tsconfig.app.json` y `npx eslint src`: aprobados.
+- `npx vitest run`: 267 aprobados. Fallan 4 tests preexistentes (`agentPromptRuntime` usa `window` en el entorno `node`, y Meeting), comprobados también sobre `HEAD`.
+- Pendiente:
+  - Prueba manual en Windows y Android: abrir y cambiar de biblioteca, expandir carpetas en Android, crear, renombrar, mover y borrar, guardar y ver el contexto bloqueado de una nota de tablero, búsqueda, Graph View y selector de carpetas.
+  - Los comandos por ruta física (`read_library_tree`, `read_library_file`, `write_library_file`, `create_library_entry`, `library_entry_operation`, `register_library_binding`, `initialize_library_database`, etc.) siguen registrados para la publicación y ColdPass; se retiran con el dispatcher único.
+
+## Estado sincronizado de esta iteración: separación backend/frontend — Task Manager en Rust
+
+Primer paso del plan de separación completa (React como capa visual, un crate de aplicación sin Tauri, una interfaz de transporte única y un modo headless). En esta iteración, toda la lógica de Task Manager que quedaba en TypeScript pasó a Rust.
+
+### Módulos y contratos
+
+- `backend-core/src/task_manager_ui.rs` es el único lugar que traduce lo que hace la persona en el tablero (`TaskBoardIntent`) a mutaciones del store. Resuelve tableros y grupos por nombre, tareas por ruta lógica y padres por título o nombre de archivo (`[[nombre]]` incluido), y aplica las reglas del tablero:
+  - nombres de tablero saneados (sin `\ / : * ? " < > | # ^ [ ]`) y en minúsculas, sin duplicados;
+  - el tablero `default` conserva nombre y color y no se elimina;
+  - horas de actividad acotadas a 0–24 con dos decimales;
+  - contexto normalizado (`#Tag`) o `#Personal` por defecto; una tarea nueva hereda el contexto de su tablero;
+  - grupos sin nombres repetidos dentro de su tablero;
+  - «Marcar urgente» pasa a `En progreso` las tareas `Pendiente`;
+  - horas dedicadas nunca negativas y con dos decimales.
+- `place-task` recibe la lista de destino tal como se ve después de soltar la tarea y calcula el orden: toma el hueco entre vecinos (paso 10) o renumera la lista cuando no queda lugar. Solo escribe las tareas cuyo orden, grupo o padre cambia.
+- El registro Pomodoro recibe eventos del temporizador (`phases-completed`, `reset`, `deviation-ended`). Rust decide las filas del log (`Trabajo`, `Descanso corto`, `Descanso largo`, `Desvío parcial`), la duración elegida y las horas que se suman a `dedicado` y `desvio` de la tarea seleccionada, a partir de sus totales actuales. El temporizador sigue corriendo en el dispositivo como estado visual.
+- `project_board_view` proyecta el snapshot en la vista que renderiza la interfaz: tableros (con `activityHoursPerDay` y `contexto`), grupos, tarjetas con nombres de tablero/grupo/padre, entradas Pomodoro y rutas por panel (`__finished__`, `__cancelled__` y cada tablero), usadas como alcance del chat.
+- `CreateBoard` y `UpdateBoard` aceptan `activityHoursPerDay` opcional (0–24); antes ese valor se descartaba y el tablero volvía a 24 h al recargar.
+
+Comandos Tauri nuevos (`src-tauri/app/src/task_manager_commands.rs`):
+
+| Comando | Entrada | Salida |
+| --- | --- | --- |
+| `task_manager_board_view` | `payload: { libraryId, libraryUserId }` | `TaskBoardViewDto` |
+| `task_manager_board_execute` | `payload: { context, intent }` | `{ changed }` |
+| `task_manager_record_pomodoro` | `payload: { context, localDate, localTime, taskPath?, durations, event }` | `{ changed }` |
+
+Ejemplo:
+
+```json
+{
+  "payload": {
+    "context": { "libraryId": "biblioteca", "libraryUserId": "user-owner" },
+    "intent": {
+      "kind": "place-task",
+      "taskPath": "task-mannager/work/Tarea.md",
+      "orderedPaths": ["task-mannager/work/Tarea.md", "task-mannager/work/Otra.md"],
+      "group": "Backend",
+      "parentTaskName": ""
+    }
+  }
+}
+```
+
+Cada mutación resuelta se previsualiza y aplica como operación confirmada propia, así el store sigue controlando revisiones, idempotencia y alcance. Después de un cambio hecho desde el host, `announce_task_manager_change` emite `task-manager-changed { libraryId }` y, si la publicación sirve esa biblioteca, reconstruye desde el store los settings de los tableros publicados y notifica a los clientes (`announce_host_change`). Los clientes publicados usan los mismos tres comandos; la identidad y el alcance salen de la sesión, y `task_manager_board_execute` y `task_manager_record_pomodoro` viajan por WebSocket como mutaciones.
+
+### Interfaz
+
+- `useTaskManager` solo guarda estado visual (diálogos, pestaña activa, mensajes, temporizador Pomodoro) y envía intenciones. Tableros, grupos, tareas y registro salen de `task_manager_board_view`. La recarga se dispara con `task-manager-changed`, `task-manager-publication-changed`, cambios del árbol de la biblioteca o eventos de la publicación.
+- Task Manager necesita una biblioteca abierta; se retiró el selector de vault sin identidad y su flujo TypeScript.
+- Se eliminaron del frontend: el servicio que escribía el workspace sin identidad, el adaptador que resolvía nombres a IDs y generaba DTOs, el journal de mutaciones, la metadata compartida, los lotes de publicación y su recuperación, el cálculo de órdenes por arrastre, los motores de índice, fechas, frontmatter y tareas, y sus tests.
+- `taskManagerStorage` guarda en el dispositivo la pestaña y el temporizador, más una copia de los tableros que todavía leen `MarkdownView` (contexto bloqueado de una nota de tablero) y Configuraciones → Publicar. Esa copia es deuda de la migración de Biblioteca.
+
+### Validaciones ejecutadas y pendientes
+
+- `cargo test --offline` en `backend-core`: 186 aprobados; siguen los 5 fallos preexistentes (`coldpass`, `markdown_editing`, `paths`, `prompt`, `speech_text`). Los 8 tests nuevos de `task_manager_ui` pasan.
+- `cargo check --offline` desktop y `cargo check --offline --target aarch64-linux-android`: aprobados, sin warnings nuevos en desktop.
+- `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint src` y `npx vitest run src/modules/task-manager` (35 tests): aprobados.
+- Pendiente: prueba manual en Windows y Android (crear, editar, arrastrar, tableros y grupos, Pomodoro) y en la publicación. Los comandos Tauri anteriores (`task_manager_snapshot`, preview/apply, append de Pomodoro, lotes y notificación de publicación) siguen registrados y el servidor publicado aún los acepta; se retiran con el dispatcher único (fase 3) y el servidor general (fase 4).
+
 ## Estado sincronizado de esta iteración: Rutina (hábitos) en SQLite con tools de IA
 
 Se agregó el módulo **Rutina**, basado en el panel semanal de hábitos provisto como HTML, con un botón propio en la barra izquierda (ícono `CalendarCheck`) que abre la pestaña especial `__workspace_routine__`. Toda la lógica vive en Rust: persistencia, validaciones, resolución de referencias y el cálculo de rachas, porcentajes, heatmap, calendario, evolución, barras semanales, rueda de la vida y semana actual. React solo representa el DTO y envía intenciones.
 
 ### Módulos
 
-- `src-tauri/src/routine.rs`: contexto (`RoutineContext`), apertura de la base (desktop o copia SAF en Android), dominio (`TaskDays`, `RoutineTaskStatus`), carga (`load_data`), resolución por id o nombre (`resolve_routine`, `resolve_task`), mutaciones (`RoutineMutation`, `apply_mutation`), transacción con commit o rollback (`with_transaction`) y los comandos Tauri.
-- `src-tauri/src/routine_dashboard.rs`: derivación pura del `RoutineDashboard`.
-- `src-tauri/src/routine_tools.rs`: adaptador de las 13 tools del agente.
+- `src-tauri/app/src/routine.rs`: contexto (`RoutineContext`), apertura de la base (desktop o copia SAF en Android), dominio (`TaskDays`, `RoutineTaskStatus`), carga (`load_data`), resolución por id o nombre (`resolve_routine`, `resolve_task`), mutaciones (`RoutineMutation`, `apply_mutation`), transacción con commit o rollback (`with_transaction`) y los comandos Tauri.
+- `src-tauri/app/src/routine_dashboard.rs`: derivación pura del `RoutineDashboard`.
+- `src-tauri/app/src/routine_tools.rs`: adaptador de las 13 tools del agente.
 - `src/modules/routine/`: tipos del contrato, servicio `invoke`, hook `useRoutineDashboard` y componentes; `src/components/notia/views/RoutineView.tsx` monta la vista.
 
 ### Persistencia: esquema SQLite v24
@@ -94,9 +1358,9 @@ Esta iteración implementa las Fases 0 a 11 del plan de migración: el runtime d
 
 - **Ejecución:** en Windows y Android todo chat con agente se ejecuta con `run_backend_request` (sobres `Run`/`Resume`); `runNotiaChatReply` rechaza ejecutar tools en el WebView. Una operación pausada devuelve una `PendingInteraction` (aclaración, confirmación o plan) y se reanuda con un `ResumeDecision`. `chatScopedAgentRuntime.ts`, los motores TypeScript de tools y sus pruebas se eliminaron.
 - **Workspace `.agent`:** `agent_workspace.rs` y `backend-core/src/agent_workspace.rs` crean carpetas, reglas y memoria, migran la memoria heredada una sola vez con backup, sincronizan `default.md` y listan prompts desde el inventario. Las reglas se escriben dentro del bloque de reglas de IA y la memoria mantiene un máximo de 100 ítems. Comandos: `backend_agent_prompts`, `backend_agent_prompt`, `backend_select_agent_prompt`, `backend_agent_memories`, `backend_save_agent_memories`, `backend_agent_rules`, `backend_save_agent_rules`, `backend_append_agent_rule`.
-- **Historial de chats:** `chat_history.rs` y `backend-core/src/chat_history.rs` parsean y serializan el documento del chat, agregan mensajes (con reescritura completa si el append falla por una edición externa) y generan previews de imágenes. Comandos: `backend_ensure_chat_structure`, `backend_create_chat`, `backend_load_chat`, `backend_save_chat`, `backend_append_chat`, `backend_chat_image_previews`, `backend_classify_chat_file`.
+- **Historial de chats:** `chat_history.rs` y `backend-core/src/chat_history.rs` parsean y serializan el documento del chat, agregan mensajes (con reescritura completa si el append falla por una edición externa) y generan previews de imágenes. Comandos: `backend_ensure_chat_structure`, `backend_create_chat`, `backend_load_chat`, `backend_save_chat`, `backend_append_chat`, `backend_chat_image_previews`, `backend_classify_chat_file`. (`backend_ensure_chat_structure` y `backend_append_chat` se retiraron en «Chat IA en Rust».)
 - **Adjuntos:** `backend-core/src/chat_attachments.rs` clasifica y valida los adjuntos y compone el mensaje para el modelo; `BackendMessage.attachments` forma parte del contrato. El WebView sigue rasterizando PDFs con pdf.js porque Rust no tiene renderizador PDF.
-- **Título y aprendizaje:** `backend_title_chat` y `backend_learn_from_turn` (`agent_knowledge.rs`) generan el título del chat y las memorias de un turno.
+- **Título y aprendizaje:** `backend_title_chat` y `backend_learn_from_turn` (`agent_knowledge.rs`) generan el título del chat y las memorias de un turno. (Desde «Chat IA en Rust» los programa el turno de `ai_chat.rs` y ya no son comandos.)
 - **Historial y aclaraciones pendientes:** `agent_history.rs` guarda el historial y el diff de las operaciones del agente en `app_data/agent-history/<clave>.json`; `agent_pending.rs` guarda la aclaración pendiente en `app_data/agent-pending/<clave>.json`. Comandos: `backend_agent_history`, `backend_agent_history_diff`, `backend_save_pending_clarification`, `backend_pending_clarification`, `backend_clear_pending_clarification`, `backend_answer_pending_clarification`.
 - **Voz:** `backend-core/src/speech_text.rs` prepara el texto que lee el TTS (`qwen3_tts_speech_plan`); `backend-core/src/remote_audio.rs` valida fragmentos de audio para un futuro cliente remoto.
 
@@ -197,7 +1461,7 @@ No se ejecutó una prueba manual en Windows ni en un dispositivo Android; tampoc
 
 ## Estado sincronizado de esta iteración: lectura ampliada y previews seguros de imágenes de chats Markdown
 
-El límite de lectura de documentos quedó separado del límite de escritura y mutación en el core Rust. `MAX_DOCUMENT_CHARS` continúa en `500_000` caracteres para altas, previews y escrituras de documentos; `MAX_READ_DOCUMENT_CHARS` fija en `16 * 1024 * 1024` caracteres el máximo de una lectura. `src-tauri/backend-core/src/lib.rs` reexporta ambas constantes y `src-tauri/src/library_document_adapter.rs` aplica exclusivamente el segundo límite al contenido que abre desde la biblioteca. Esto permite abrir chats Markdown cuyo marcador oculto de adjuntos contiene imágenes codificadas y supera el límite de mutación, sin convertir ese límite ampliado en permiso para escribir documentos más grandes.
+El límite de lectura de documentos quedó separado del límite de escritura y mutación en el core Rust. `MAX_DOCUMENT_CHARS` continúa en `500_000` caracteres para altas, previews y escrituras de documentos; `MAX_READ_DOCUMENT_CHARS` fija en `16 * 1024 * 1024` caracteres el máximo de una lectura. `src-tauri/backend-core/src/lib.rs` reexporta ambas constantes y `src-tauri/app/src/library_document_adapter.rs` aplica exclusivamente el segundo límite al contenido que abre desde la biblioteca. Esto permite abrir chats Markdown cuyo marcador oculto de adjuntos contiene imágenes codificadas y supera el límite de mutación, sin convertir ese límite ampliado en permiso para escribir documentos más grandes.
 
 ### Flujo y contrato
 
@@ -228,7 +1492,7 @@ flowchart LR
 
 ### Regresiones, validaciones y pendientes
 
-`src/services/chat/chatDocumentStorage.test.ts` cubre la extracción de una imagen raster, la exclusión de texto y SVG y la preservación del marcador oculto. La regresión de `src-tauri/src/library_document_adapter.rs` acepta un Markdown por encima de 500.000 caracteres para lectura y rechaza uno por encima de 16 MiB. No se agregó una prueba manual del renderizado de la UI ni de un dispositivo Android; tampoco se midió un baseline nuevo de memoria o tiempo.
+`src/services/chat/chatDocumentStorage.test.ts` cubre la extracción de una imagen raster, la exclusión de texto y SVG y la preservación del marcador oculto. La regresión de `src-tauri/app/src/library_document_adapter.rs` acepta un Markdown por encima de 500.000 caracteres para lectura y rechaza uno por encima de 16 MiB. No se agregó una prueba manual del renderizado de la UI ni de un dispositivo Android; tampoco se midió un baseline nuevo de memoria o tiempo.
 
 Validaciones ejecutadas en esta iteración:
 
@@ -390,7 +1654,7 @@ El build Android por Gradle falló transitoriamente por conexión WebSocket rech
 
 ## Estado sincronizado de esta iteración: resolución de URI SAF sintéticas en Android
 
-El backend Android conserva el motor global de filesystem: `src/services/files/filesystemEngine.ts` invoca los comandos Tauri, Rust delega en `src-tauri/src/filesystem/android_saf.rs`, y esa capa usa `mobile_directory_picker.rs` y el plugin Kotlin para acceder al Storage Access Framework (SAF). No se creó un motor Android alternativo ni cambió el contrato de `androidDirectoryUri`.
+El backend Android conserva el motor global de filesystem: `src/services/files/filesystemEngine.ts` invoca los comandos Tauri, Rust delega en `src-tauri/app/src/filesystem/android_saf.rs`, y esa capa usa `mobile_directory_picker.rs` y el plugin Kotlin para acceder al Storage Access Framework (SAF). No se creó un motor Android alternativo ni cambió el contrato de `androidDirectoryUri`.
 
 ### Contrato, resolución y errores
 
@@ -413,7 +1677,7 @@ flowchart LR
     Resolved --> Picker
 ```
 
-La regresión Android en `src-tauri/src/filesystem/android_saf.rs` comprueba que solo una URI con `/document/` bypassa la resolución y que una ruta sintética sobre `/tree/` continúa por SAF. No hay migración, cambio de persistencia, permisos nuevos, DTO ni cambio de comandos.
+La regresión Android en `src-tauri/app/src/filesystem/android_saf.rs` comprueba que solo una URI con `/document/` bypassa la resolución y que una ruta sintética sobre `/tree/` continúa por SAF. No hay migración, cambio de persistencia, permisos nuevos, DTO ni cambio de comandos.
 
 ### Validaciones y pendientes
 
@@ -525,7 +1789,7 @@ La caché de rutas SAF conserva hasta 500 entradas LRU y usa una vigencia de 30 
 
 ### Regresiones, validaciones y pendientes
 
-`src/services/libraries/libraryConfig.test.ts` cubre que un archivo ausente use `createFile` y no `writeTextFile`, y que `{ ok: false, error }` se propague como error de `ensureLibraryConfigExists`. La regresión Android de `src-tauri/src/mobile_directory_picker.rs` comprueba que una ruta anidada desconocida no se resuelva a la URI raíz. `src/components/notia/LibraryManagerModal.test.tsx` conserva las regresiones de modal pendiente, persistencia antes del cierre y error de configuración.
+`src/services/libraries/libraryConfig.test.ts` cubre que un archivo ausente use `createFile` y no `writeTextFile`, y que `{ ok: false, error }` se propague como error de `ensureLibraryConfigExists`. La regresión Android de `src-tauri/app/src/mobile_directory_picker.rs` comprueba que una ruta anidada desconocida no se resuelva a la URI raíz. `src/components/notia/LibraryManagerModal.test.tsx` conserva las regresiones de modal pendiente, persistencia antes del cierre y error de configuración.
 
 Validaciones ejecutadas:
 
@@ -995,7 +2259,7 @@ El scope `finance` y el agente universal de Telegram cuando `enableFinanceTools`
 
 `list_finance_records` admite entidades financieras explícitas, filtros de mes/período/fechas/estado/actividad, `occurrenceId` o `planId`, y devuelve `{ items, total, limit, offset, hasMore }`. El límite solicitado se acota entre 1 y 200 y el offset nunca es negativo. Sin `month`, movimientos y ahorro usan las lecturas completas nativas; con `month` usan el dashboard del período. Las fuentes nativas acotan las lecturas completas a 5.000 movimientos y 5.000 movimientos de ahorro; otras consultas conservan sus límites propios (por ejemplo, compras, facturas, precios y lecturas históricas). Por eso `hasMore` describe la colección recibida por el runtime y no convierte una fuente nativa limitada en un inventario ilimitado. `get_finance_record` obtiene directamente un movimiento por ID; para las demás entidades resuelve sobre una lectura de hasta 200 elementos. Un ID ausente devuelve `notFound` y una entidad desconocida devuelve un error seguro que solicita aclaración.
 
-Los wrappers TypeScript de `financeService.ts` conservan `FinanceContext` con `libraryPath`, URI SAF opcional, `actorLibraryUserId` y `source`, y delegan las lecturas completas en los nuevos comandos Tauri registrados en `src-tauri/src/lib.rs`. Los DTO se serializan en `camelCase`. Las lecturas nativas validan biblioteca y actor antes de abrir SQLite; no reciben SQL ni credenciales del modelo.
+Los wrappers TypeScript de `financeService.ts` conservan `FinanceContext` con `libraryPath`, URI SAF opcional, `actorLibraryUserId` y `source`, y delegan las lecturas completas en los nuevos comandos registrados en `src-tauri/app/src/registry.rs`. Los DTO se serializan en `camelCase`. Las lecturas nativas validan biblioteca y actor antes de abrir SQLite; no reciben SQL ni credenciales del modelo.
 
 Esta ampliación no agrega una migración SQLite ni cambia el formato persistido: los comandos nuevos son lecturas sobre las tablas existentes y mantienen compatibilidad con las bases ya migradas. Los temporaries y lifetimes de Rust quedan acotados a la conexión y a cada iterador de filas antes de devolver los DTO; `cargo check` y la compilación de tests nativos validan ese contrato, pero no sustituyen la ejecución manual del flujo.
 
@@ -1098,7 +2362,7 @@ El agente debe elegir estas tools para preguntas de mercado, IPC, historial de c
 
 ### Servicios mensuales y auditoría asistida de Finanzas
 
-La implementación vigente está en `src-tauri/src/database.rs`, `finance.rs`, `finance_records.rs` y `services/finance_extraction.rs`, con DTOs TypeScript en `src/modules/finance/types/financeTypes.ts`, acceso Tauri en `financeService.ts`, matching en `engines/serviceEngine.ts`, la vista en `FinanceServicesView.tsx` y las tools en `chatScopedAgentRuntime.ts`. SQLite por biblioteca es la fuente de verdad; la UI no guarda entidades financieras en Redux ni en `localStorage`.
+La implementación vigente está en `src-tauri/app/src/database.rs`, `finance.rs`, `finance_records.rs` y `services/finance_extraction.rs`, con DTOs TypeScript en `src/modules/finance/types/financeTypes.ts`, acceso Tauri en `financeService.ts`, matching en `engines/serviceEngine.ts`, la vista en `FinanceServicesView.tsx` y las tools en `chatScopedAgentRuntime.ts`. SQLite por biblioteca es la fuente de verdad; la UI no guarda entidades financieras en Redux ni en `localStorage`.
 
 #### Esquema y migración SQLite v20
 
@@ -1252,7 +2516,7 @@ Validaciones ejecutadas para este bugfix: `cargo fmt --manifest-path src-tauri/C
 
 ### 1.1 Descripción Técnica del Servicio
 
-Notia es una aplicación de gestión de conocimiento **local-first** construida con **Tauri v2**, que combina un frontend React 19 compilado con Vite 7 y un backend en Rust (edición 2021). La aplicación opera sin servidor cloud: todos los datos (notas Markdown, diagramas Mermaid, credenciales ColdPass, tareas y sesiones de chat) persisten en el filesystem local del usuario. La comunicación entre frontend y backend se realiza exclusivamente mediante **Tauri Commands** (`invoke`/`listen`) y **Custom Events** internos del frontend.
+Notia es una aplicación de gestión de conocimiento **local-first** construida con **Tauri v2**, que combina un frontend React 19 compilado con Vite 7 y un backend en Rust (edición 2021). La aplicación opera sin servidor cloud: todos los datos (notas Markdown, diagramas Mermaid, credenciales ColdPass, tareas y sesiones de chat) persisten en el filesystem local del usuario. Toda la lógica de aplicación está en Rust (`notia-backend-core` y `notia-app`, sin Tauri). La interfaz habla con el backend únicamente mediante `src/services/transport`: en la ventana, por el comando Tauri `app_invoke` y sus eventos; en un navegador, por HTTPS y WebSocket contra `notia --headless`. Entre componentes de la interfaz se usan además **Custom Events** internos. Ver «Arquitectura vigente: backend Rust, hosts y transporte».
 
 ### 1.2 Stack de Tecnologías
 
@@ -1280,6 +2544,8 @@ Notia es una aplicación de gestión de conocimiento **local-first** construida 
 | Performance Timing Rust | `notia_timer.rs` (RAII scope timer) | internal |
 | Diálogos Nativos | tauri-plugin-dialog | ^2 |
 | Base local | SQLite embebido mediante `rusqlite` | ^0.32 |
+| Workspace Rust | `notia-backend-core`, `notia-app`, `notia` (host Tauri, feature `app`) | — |
+| Servidor HTTPS/WebSocket | rustls + rcgen + tungstenite | 0.23 / 0.13 / 0.24 |
 
 ### 1.3 Cómo Levantar el Proyecto en Local
 
@@ -1306,6 +2572,13 @@ npm run dev:tauri
 
 # 4. Desarrollo Android
 npm run dev:android
+
+# 5. Servidor sin ventana (desde src-tauri, con el ejecutable ya compilado)
+notia --headless --set-owner-password
+notia --headless --static-dir ../dist
+
+# 6. Binario solo servidor para Linux (desde src-tauri)
+cargo build --release --no-default-features
 ```
 
 #### Scripts relevantes (`package.json`)
@@ -1361,20 +2634,22 @@ No se ejecutaron Vitest, la suite Rust, el empaquetado release ni un ciclo compl
 ### 1.5 Decisiones Arquitectónicas Clave
 
 1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, Mermaid, ColdPass, Task Manager) se almacenan como archivos en el filesystem. SQLite se reserva para índices y datos estructurados de la aplicación; no hay servidor. El estado en Redux modela solo UI, selección y datos derivados.
-2. **Cifrado de ColdPass en frontend**: la passkey nunca viaja al backend. El cifrado/descifrado AES-256-GCM con PBKDF2 (250k iteraciones) se ejecuta en el navegador vía **Web Crypto API**. El backend Rust solo lee/escribe bytes opacos.
-3. **Renderizado 2D de Graph View con `react-force-graph-2d`**: el grafo de wikilinks se modela en el hilo principal (`useLibraryGraphData.ts`) y `GraphView.tsx` lo transforma a `graphData` para `ForceGraph2D`, que calcula el layout de fuerzas y pinta nodos/aristas en un canvas 2D. El renderer 2D se consume desde su entrypoint dedicado y Mermaid continúa aislado para el editor de diagramas.
+2. **Cifrado de ColdPass en Rust**: el vault se cifra con AES-256-GCM y PBKDF2-HMAC-SHA256 (250k iteraciones) en `notia-app` (`coldpass.rs`). La passkey queda en la sesión del backend y el WebView recibe solo las entradas que muestra.
+3. **Renderizado 2D de Graph View con `react-force-graph-2d`**: Rust construye el modelo del grafo de wikilinks (`backend_library_graph`, que pide `useLibraryGraphData.ts`) y `GraphView.tsx` lo transforma a `graphData` para `ForceGraph2D`, que calcula el layout de fuerzas y pinta nodos/aristas en un canvas 2D. El renderer 2D se consume desde su entrypoint dedicado y Mermaid continúa aislado para el editor de diagramas.
 
 4. **Contextos documentales**: `src/services/contexts/libraryContexts.ts` define el contrato `#tag` + color y sus valores por defecto (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` en rojo `#DC2626`). La colección se persiste en `.notia/notiaConfig.json`; las configuraciones existentes incorporan los defaults que falten al normalizarse. `SettingsModal` presenta el alta en un formulario superior y los contextos existentes en una tabla con edición del tag, selector de color y eliminación; conserva al menos un contexto y bloquea la eliminación de los usados por un tablero. `GraphView` construye su leyenda desde el catálogo completo y `libraryGraphEngine.ts` usa el contexto aplicado al tablero como fuente de verdad para sus tickets; el mapa se recalcula al cambiar de vista para tomar la configuración actual. `ensureMarkdownDefaults()` garantiza `contexto: "#Personal"` en Markdown nuevo o legado que todavía no tenga la propiedad; los tags se serializan entre comillas porque `#` inicia comentarios YAML.
 4. **Redux Toolkit para estado global**: 5 slices (`ui`, `preferences`, `library`, `documents`, `explorer`) con persistencia de preferencias en `localStorage` dentro de los propios reducers.
-5. **Separación commands/services/dto en Rust**: los Tauri commands (`commands/`, `filesystem/commands.rs`) son una capa delgada que deserializa, valida y delega a `services/`. La lógica de negocio nunca vive en los commands.
-6. **Filesystem module auto-contenido**: el módulo `src-tauri/src/filesystem/` tiene su propia capa de commands → desktop/android_saf → helpers/validation/types, facilitando el mantenimiento multiplataforma.
+5. **Registro único de comandos**: los comandos de `notia-app` son funciones delgadas que validan y delegan a casos de uso y a `notia-backend-core`. Se enrutan desde `registry.rs` (`dispatch`), al que llegan la ventana (`app_invoke`) y el servidor headless (`/api/invoke`). No hay `#[tauri::command]` para comandos de la aplicación.
+6. **Filesystem module auto-contenido**: el módulo `src-tauri/app/src/filesystem/` tiene su propia capa de commands → desktop/android_saf → helpers/validation/types, facilitando el mantenimiento multiplataforma.
 7. **SQLite por librería**: al cargar una librería se inicializa de forma idempotente `.notia/notia.db`. En desktop se abre directamente con SQLite compilado dentro del binario mediante `rusqlite`; en Android, `resources/database/android/LibraryDatabasePlugin.kt` se copia durante el build (sin editar `gen`) y mantiene una copia privada temporal sincronizada por SAF después de cada mutación. La pérdida de URI o revocación de permisos produce un error recuperable. Las versiones se mantienen en `notia_schema_migrations`; v2–v13 incorporan cuentas, categorías, movimientos, evidencias, compras/productos/precios, sueldos, ahorro, inversiones, huellas de deduplicación, cuotas, el catálogo inicial de diez categorías de gasto, su restauración para bases vaciadas y la evidencia de firma de recibos salariales; v15 incorpora usuarios/roles, v16 sus contextos permitidos, v17 el actor estable de biblioteca en registros financieros, v18 servicios mensuales y auditoría, v19 referencias de origen, contenido fuente bruto e índices de unicidad/consulta, y v20 el historial idempotente de reparaciones de relaciones. Las migraciones son transaccionales e idempotentes.
 
-8. **Plataforma condicional**: uso de `#[cfg(...)]` en Rust y `getRuntimeDevice()` en TypeScript para proveer stubs en plataformas no soportadas, nunca dejando un command sin implementación.
+8. **Plataforma condicional**: `#[cfg(...)]` en Rust provee alternativas en plataformas no soportadas, sin dejar un comando sin implementación. En TypeScript, `backendPlatform()` y `backendSupports()` deciden qué funciones del backend se muestran; `getRuntimeDevice()` decide solo el diseño.
 
-9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos Tauri tipados; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa. La pestaña especial `__workspace_calendar__` monta `CalendarView`, que consulta en paralelo `https://api.argentinadatos.com/v1/feriados/{año}` y `https://api.argentinadatos.com/v1/feriados-bancarios/{año}`, valida sus respuestas y diferencia ambos tipos en la grilla mensual.
+10. **Backend separado de la interfaz**: el mismo backend corre dentro de la ventana (Windows y Android) o como servidor `notia --headless` (Windows y Linux) para navegadores de la red. Ver «Arquitectura vigente: backend Rust, hosts y transporte».
 
-### Contratos financieros Tauri
+9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos tipados del backend; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa. La pestaña especial `__workspace_calendar__` monta `CalendarView`, que consulta en paralelo `https://api.argentinadatos.com/v1/feriados/{año}` y `https://api.argentinadatos.com/v1/feriados-bancarios/{año}`, valida sus respuestas y diferencia ambos tipos en la grilla mensual.
+
+### Contratos financieros del backend
 
 Estado vigente: `FinanceContext` incluye `actorLibraryUserId` y `source`. `validate_context` abre la biblioteca y verifica el usuario en `library_users`; un usuario que no sea Owner debe tener exactamente el contexto `#Confidencial` para cualquier lectura o escritura financiera. El agente transmite el actor estable en cada comando financiero, incluido patrimonio, historiales, cotizaciones y extraccion. La migracion SQLite de actor estable aplica a los registros financieros que ya tenian actor; el ID numerico de Telegram permanece separado como identidad externa historica.
 
@@ -1399,6 +2674,12 @@ Vigencia del contrato financiero: la autorización no se concede por canal ni po
 ## 2. Documentación Específica de Flujos
 
 > Para cada flujo documentado se incluyen: **entradas y salidas** (tipos, formatos, contratos), **validaciones aplicadas**, **pasos del proceso**, **comportamiento ante errores**, **dependencias con otros módulos**, y **ejemplos JSON completos** de request/response para los commands del backend.
+
+> **Vigencia:** los flujos de esta sección se escribieron antes de que la lógica pasara a Rust y de la separación del backend.
+> - Donde dicen `invoke('comando', …)`, hoy la llamada es `callBackend('comando', …)` desde `src/services/transport`, que llega al registro por `app_invoke` en la ventana o por `/api/invoke` en el servidor headless.
+> - Varios módulos TypeScript citados ya no existen: `filesystemEngine`, `frontmatterEngine`, `pomodoroEngine`, `serviceEngine`, el cifrado de ColdPass en el WebView y otros. Su lógica vive en `notia-app` y `notia-backend-core`.
+> - Los flujos vigentes de biblioteca, chat, Task Manager, Finanzas, ColdPass, voz y bibliotecas se describen en las secciones «Estado sincronizado de esta iteración: separación backend/frontend» y en «Arquitectura vigente: backend Rust, hosts y transporte».
+> - Los payloads JSON de los comandos que siguen existiendo continúan vigentes. Varios comandos citados aquí ya no existen: el filesystem por ruta (`read_library_tree`, `read_library_file`, `write_library_file`, `create_library_entry`, `library_entry_operation`…), la IA de desktop y Android por comando (`check_desktop_ai_health`, `run_desktop_ai_chat_streaming`, `run_android_ai_chat`…) y el evento `notia-ai-chat-stream`. La lista vigente es el mapa de la sección 4.
 
 ### 2.1 Filesystem — Sincronización de Árbol de Librería
 
@@ -2538,7 +3819,7 @@ Ninguno. Todo el renderizado ocurre en el frontend.
 ### 2.10 Window Controls / App Runtime
 
 #### Descripción
-Gestión de ventana nativa (minimizar, maximizar, fullscreen, cerrar) y arrastre de ventana sin decoraciones (titlebar custom). Solo aplica a desktop; en Android/iOS son no-ops.
+Gestión de ventana nativa (minimizar, maximizar, fullscreen, cerrar) y arrastre de ventana sin decoraciones (titlebar custom). Solo aplica a desktop; en Android/iOS son no-ops. Son los únicos comandos que el host Tauri atiende fuera del registro. En un navegador (`hasHostWindow()` falso), `windowRuntime` no los llama y la barra no muestra los botones de ventana.
 
 #### Endpoints (Commands Tauri)
 
@@ -2625,7 +3906,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 
 ### 2.12 Apéndice de Commands Tauri — Ejemplos JSON Completos
 
-> Esta sección complementa las descripciones de flujo con los JSON de request/response que faltaban para commands documentados en el mapa pero sin ejemplos previos.
+> Esta sección complementa las descripciones de flujo con los JSON de request/response que faltaban para commands documentados en el mapa pero sin ejemplos previos. Hoy los mismos `args` viajan con `callBackend('comando', args)`, dentro de `app_invoke { command, args }` en la ventana o de `POST /api/invoke` en el servidor headless.
 
 #### `create_library_file`
 **Request:**
@@ -2957,87 +4238,76 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 
 #### 3.1.1 Arquitectura del Sistema (Diagrama de Componentes / Despliegue)
 
+El diagrama de componentes vigente (interfaz, transportes, hosts, `notia-app` y `notia-backend-core`) está en «Arquitectura vigente: backend Rust, hosts y transporte», al comienzo de este documento. Este es el despliegue por plataforma:
+
 ```mermaid
 graph TB
-    subgraph Desktop["Desktop OS (Windows/macOS/Linux)"]
-        FS["Local Filesystem"]
-        Ollama["Ollama (opcional, localhost)"]
+    subgraph Windows["Windows"]
+        WinApp["notia.exe (ventana Tauri)<br/>app_invoke · bandeja · publicación Task Manager"]
+        WinHeadless["notia.exe --headless<br/>HTTPS + WebSocket"]
+        WinFS["Filesystem local + SQLite por biblioteca"]
+        WinApp --> WinFS
+        WinHeadless --> WinFS
     end
 
-    subgraph Android["Android OS"]
-        SAF["Storage Access Framework (SAF)"]
-        OllamaAndroid["Ollama (red local)"]
+    subgraph Linux["Linux"]
+        LinuxHeadless["notia --headless<br/>(compilación sin la feature app)"]
+        LinuxFS["Filesystem local + SQLite"]
+        LinuxHeadless --> LinuxFS
     end
 
-    subgraph Frontend["Frontend (WebView / Vite)"]
-        direction TB
-        React["React 19 Components"]
-        Redux["Redux Toolkit Store<br/>(ui | preferences | library | documents | explorer)"]
-        Services["src/services/<br/>{ai | chat | coldpass | files | libraries | preferences | runtime | views | window}"]
-        Engines["src/engines/<br/>{graph | markdown | tree}"]
-        Modules["src/modules/<br/>{inkmath | mermaid | task-manager}"]
-
-        React --> Redux
-        React --> Services
-        Services --> Engines
-        React --> Modules
+    subgraph Android["Android"]
+        AndroidApp["APK (ventana Tauri)<br/>app_invoke · plugins Kotlin"]
+        SAF["Storage Access Framework"]
+        AndroidApp --> SAF
     end
 
-    subgraph Backend["Backend (Tauri / Rust)"]
-        direction TB
-        Commands["commands/<br/>{ai.rs | bluetooth.rs}"]
-        FSCommands["filesystem/commands.rs"]
-        ServicesRust["services/<br/>{ai_service.rs | bluetooth_service.rs}"]
-        FSImpl["filesystem/<br/>{desktop.rs | android_saf.rs | watch.rs | validation.rs}"]
-        DTOs["dto/<br/>{bluetooth.rs}"]
-        State["state/<br/>bluetooth_state.rs"]
-        Mobile["mobile_ai_bridge.rs<br/>mobile_directory_picker.rs"]
-        NotiaTimer["notia_timer.rs<br/>RAII perf timer"]
+    Browser["Navegador de la red<br/>(RemoteApp + transporte remoto)"]
+    PublishedBrowser["Navegador invitado<br/>(Task Manager publicado)"]
+    Ollama["Ollama (localhost, red local o cloud)"]
+    Telegram["API de Telegram"]
 
-        Commands --> ServicesRust
-        FSCommands --> FSImpl
-        ServicesRust --> DTOs
-        Commands --> State
-        Mobile --> FSImpl
-        FSImpl --> NotiaTimer
-        ServicesRust --> NotiaTimer
-        Mobile --> NotiaTimer
-    end
-
-    Frontend --"invoke('command', payload)"--> Backend
-    Backend --"window.emit('event')"--> Frontend
-    Backend --"fs::read/write"--> FS
-    Backend --"SAF API"--> SAF
-    Services --"HTTP fetch"--> Ollama
-    Services --"HTTP (Android bridge)"--> OllamaAndroid
+    Browser -- "HTTPS /api/* + WSS /api/events" --> WinHeadless
+    Browser -- "HTTPS /api/* + WSS /api/events" --> LinuxHeadless
+    PublishedBrowser -- "HTTPS /task-manager + WSS" --> WinApp
+    WinApp --> Ollama
+    WinHeadless --> Ollama
+    LinuxHeadless --> Ollama
+    AndroidApp --> Ollama
+    WinApp --> Telegram
+    WinHeadless --> Telegram
+    LinuxHeadless --> Telegram
+    AndroidApp --> Telegram
 ```
+
+La ventana y el servidor headless de un mismo equipo no corren a la vez sobre la misma carpeta de datos: los separa `DataDirLock`.
 
 #### 3.1.2 Flujo de Datos General
 
 ```mermaid
 flowchart LR
-    UI["React Components<br/>(views / modals / panels)"]
-    Hooks["React Hooks<br/>(useLibraryTreeSync / useDocumentPersist)"]
-    ServicesTS["TypeScript Services<br/>(filesystemEngine / aiRuntime / coldpassStorage)"]
-    EnginesTS["Engines<br/>(frontmatterEngine / wikiLinkEngine / linkCacheMermaidEngine)"]
-    Redux["Redux Store<br/>(5 slices)"]
-    TauriAPI["Tauri API<br/>(invoke / listen)"]
-    CommandsRust["Rust Commands<br/>(#[tauri::command])"]
-    ServicesRust["Rust Services<br/>(ai_service / bluetooth_service)"]
-    FS["Filesystem<br/>(desktop / android_saf)"]
+    UI["Componentes React<br/>(vistas, modales, paneles)"]
+    Hooks["Hooks y stores visuales"]
+    Services["Servicios TS<br/>(clientes tipados de comandos)"]
+    Transport["services/transport<br/>callBackend / subscribeBackend"]
+    Host["Host<br/>(Tauri app_invoke o /api/invoke)"]
+    Registry["registry::dispatch"]
+    UseCases["Casos de uso notia-app"]
+    Core["notia-backend-core"]
+    Storage["Filesystem / SAF / SQLite"]
+    Events["EventSink<br/>(emit Tauri o WebSocket)"]
 
     UI --> Hooks
-    Hooks --> ServicesTS
-    Hooks --> Redux
-    UI --> Redux
-    ServicesTS --> EnginesTS
-    ServicesTS --> TauriAPI
-    TauriAPI --> CommandsRust
-    CommandsRust --> ServicesRust
-    CommandsRust --> FS
-    ServicesRust --> FS
-    FS --"notia-library-tree-changed"--> TauriAPI
-    TauriAPI --"CustomEvent"--> Hooks
+    Hooks --> Services
+    Services --> Transport
+    Transport --> Host
+    Host --> Registry
+    Registry --> UseCases
+    UseCases --> Core
+    UseCases --> Storage
+    UseCases --> Events
+    Events --> Transport
+    Transport --> Hooks
 ```
 
 #### 3.1.3 Modelo de Datos (Diagrama de Clases Simplificado)
@@ -3469,6 +4739,8 @@ sequenceDiagram
 ---
 
 ### 3.3 Diagramas por Unidad — Frontend
+
+> **Vigencia:** estos diagramas por unidad muestran la estructura previa a la separación backend/frontend. Las flechas `invoke('…')` hacia Tauri corresponden hoy a `callBackend('…')` a través de `services/transport`. Los motores TypeScript que figuran como dueños de lógica (filesystem, frontmatter, grafo, Pomodoro, Finanzas) pasaron a Rust. El diagrama de componentes vigente está en «Arquitectura vigente: backend Rust, hosts y transporte».
 
 #### 3.3.1 Explorador de Archivos / Librerías
 
@@ -4178,6 +5450,8 @@ sequenceDiagram
 
 ### 3.4 Diagrama General — Acoplamiento y Cohesión (UML de Paquetes)
 
+> **Vigencia:** el paquete «Backend» de este diagrama corresponde al crate único anterior. Hoy los módulos están en `src-tauri/app/src/` (`notia-app`) y el crate `notia` solo aloja el host Tauri. Ver «Crates y responsabilidades» en la arquitectura vigente.
+
 ```mermaid
 graph TB
     subgraph FrontendPackage["Frontend (src/)"]
@@ -4200,7 +5474,7 @@ graph TB
         end
     end
 
-    subgraph BackendPackage["Backend (src-tauri/src/)"]
+    subgraph BackendPackage["Backend (src-tauri/app/src/)"]
         direction TB
         RustCmds["commands/<br/>{ai.rs | bluetooth.rs}"]
         FSCmds["filesystem/commands.rs"]
@@ -4261,55 +5535,70 @@ graph TB
 
 ---
 
-## 4. Mapa de Commands Tauri
+## 4. Mapa de comandos del backend
 
-| Command | Módulo Rust | Servicio Frontend | Descripción |
-|---|---|---|---|
-| `read_library_tree` | `filesystem::commands` | `filesystemEngine.readLibraryTree` | Lee árbol recursivo desktop |
-| `read_library_tree_signature` | `filesystem::commands` | `filesystemEngine.readLibraryTreeSignature` | Hash FNV-1a del árbol |
-| `read_library_file` | `filesystem::commands` | `filesystemEngine.readTextFile` | Lee archivo de texto |
-| `write_library_file` | `filesystem::commands` | `filesystemEngine.writeTextFile` | Escribe archivo de texto |
-| `create_library_file` | `filesystem::commands` | `filesystemEngine.createFile` | Crea archivo con contenido |
-| `create_library_directory` | `filesystem::commands` | `filesystemEngine.createDirectory` | Crea carpeta |
-| `create_library_entry` | `filesystem::commands` | `filesystemEngine.createLibraryEntry` | Crea entrada tipada (note/mermaid/folder) |
-| `library_entry_operation` | `filesystem::commands` | `filesystemEngine.performLibraryEntryOperation` | Delete/rename/paste |
-| `path_exists` | `filesystem::commands` | `filesystemEngine.pathExists` | Verifica existencia |
-| `is_directory_path` | `filesystem::commands` | `filesystemEngine.isDirectoryPath` | Verifica si es directorio |
-| `search_library_files` | `filesystem::commands` | `filesystemEngine.searchLibraryFiles` | Búsqueda por nombre |
-| `read_markdown_files` | `filesystem::commands` | `filesystemEngine.readMarkdownDocuments` | Lee todos los `.md` |
-| `write_binary_file` | `filesystem::commands` | `filesystemEngine.writeBinaryFile` | Escribe archivo binario |
-| `start_library_tree_watch` | `filesystem::watch` | `libraryTreeWatchRuntime.startDesktopLibraryTreeWatch` | Inicia watcher nativo |
-| `stop_library_tree_watch` | `filesystem::watch` | `libraryTreeWatchRuntime.stopDesktopLibraryTreeWatch` | Detiene watcher |
-| `check_desktop_ai_health` | `commands::ai` | `aiRuntime.checkAiHealth` | Health check Ollama desktop |
-| `run_desktop_ai_chat` | `commands::ai` | `aiRuntime.streamAiChatReply` | Chat Ollama desktop |
-| `list_desktop_ai_models` | `commands::ai` | `aiRuntime.listAiModels` | Todos los modelos desktop de `/api/tags` |
-| `check_android_ai_health` | `mobile_ai_bridge` | `aiRuntime.checkAiHealth` | Health check Ollama Android |
-| `run_android_ai_chat` | `mobile_ai_bridge` | `aiRuntime.streamAiChatReply` | Chat Ollama Android |
-| `list_android_ai_models` | `mobile_ai_bridge` | `aiRuntime.listAiModels` | Todos los modelos Android de `/api/tags` |
-| `pick_android_directory_tree` | `mobile_directory_picker` | `filesystemEngine.pickDirectory` | Selector SAF Android |
-| `read_android_library_tree` | `mobile_directory_picker` | `filesystemEngine.readLibraryTree` | Lee árbol SAF Android |
-| `read_android_directory` | `mobile_directory_picker` | `filesystemEngine.readLibraryDirectory` | Lee directorio superficial Android |
-| `read_android_flat_file_list` | `mobile_directory_picker` | `filesystemEngine.readLibraryFlatFileList` | Lista plana SAF |
-| `coldpass_bluetooth_status` | `commands::bluetooth` | `coldpassBluetooth.getColdPassBluetoothStatus` | Estado BLE |
-| `coldpass_bluetooth_connect` | `commands::bluetooth` | `coldpassBluetooth.connectColdPassBluetooth` | Conectar BLE |
-| `coldpass_bluetooth_submit_pin` | `commands::bluetooth` | `coldpassBluetooth.submitColdPassBluetoothPin` | Enviar PIN |
-| `coldpass_bluetooth_authenticate` | `commands::bluetooth` | `coldpassBluetooth.authenticateColdPassBluetooth` | Autenticar app |
-| `coldpass_bluetooth_send_message` | `commands::bluetooth` | `coldpassBluetooth.sendColdPassBluetoothMessage` | Enviar mensaje cifrado |
-| `coldpass_bluetooth_disconnect` | `commands::bluetooth` | `coldpassBluetooth.disconnectColdPassBluetooth` | Desconectar BLE |
-| `window_control` | `lib.rs` | `windowRuntime.controlWindow` | Min/max/fullscreen/close |
-| `start_window_dragging` | `lib.rs` | `windowRuntime.startWindowDragging` | Inicia drag ventana |
-| `start_window_dragging_with_restore` | `lib.rs` | `windowRuntime.startWindowDraggingWithRestore` | Drag con unmaximize |
-| `notia_log` | `lib.rs` | `notiaLogger.notiaLog` | Bridge de logs JS → Rust/logcat |
+Todos los comandos de la aplicación están en el registro de `notia-app` (`src-tauri/app/src/registry.rs`). La interfaz los llama con `callBackend('comando', args)`, la ventana los recibe por `app_invoke` y el servidor headless por `POST /api/invoke`.
+
+- † marca los comandos de `LOCAL_ONLY_COMMANDS`, que el servidor headless no acepta.
+- Los comandos de `PUBLISHED_COMMANDS` (del módulo `task_manager_commands`) son además los únicos que alcanza la publicación de Task Manager.
+- La tabla se generó a partir de `COMMAND_NAMES`, de las rutas del registro y de los literales de comando en `src/` (sin tests).
+
+| Módulo Rust (`notia-app`) | Comandos | Consumidores TypeScript |
+|---|---|---|
+| `agent_history` | `backend_agent_history`, `backend_agent_history_diff` | `aiOperationHistory` |
+| `agent_pending` | `backend_save_pending_clarification`, `backend_pending_clarification`, `backend_clear_pending_clarification`, `backend_answer_pending_clarification` | `clarificationPersistence` |
+| `agent_workspace` | `backend_agent_prompts`, `backend_select_agent_prompt`, `backend_save_agent_memories` | `agentPromptRuntime` |
+| `ai_chat` | `ai_chat_send`, `ai_chat_answer`, `ai_chat_cancel` | `aiChatRuntime` |
+| `ai_tasks` | `ai_check_health`, `ai_list_models`, `ai_resolve_model`, `ai_recognize_inkmath`, `ai_improve_transcript` | `aiRuntime` |
+| `backup::service` | `backend_backup_status`, `backend_pick_backup_directory` †, `backend_disable_backups`, `backend_migrate_backup_directory` | `SettingsModal`, `backupSettingsStorage` |
+| `chat_history` | `backend_create_chat`, `backend_load_chat`, `backend_list_chats`, `backend_match_chat`, `backend_set_chat_context`, `backend_save_chat`, `backend_chat_image_previews`, `backend_classify_chat_file` | `chatDocumentStorage`, `chatImageAttachment`, `chatSessionStorage` |
+| `coldpass` | `coldpass_unlock`, `coldpass_status`, `coldpass_generate_password`, `coldpass_lock`, `coldpass_save_entry`, `coldpass_delete_entry`, `coldpass_pick_csv_import` †, `coldpass_confirm_import` | `ColdPassView`, `coldpassStorage` |
+| `commands::bluetooth` | `coldpass_bluetooth_status` †, `coldpass_bluetooth_connect` †, `coldpass_bluetooth_submit_pin` †, `coldpass_bluetooth_authenticate` †, `coldpass_bluetooth_send_message` †, `coldpass_bluetooth_disconnect` † | `ColdPassView`, `coldpassBluetooth` |
+| `commands::qwen3_tts` | `get_qwen3_tts_status`, `reload_qwen3_tts`, `synthesize_qwen3_tts_speech`, `qwen3_tts_speech_plan`, `prepare_qwen3_tts` | `qwen3TtsRuntime` |
+| `commands::remote_speech` | `speech_remote_audio`, `speech_remote_audio_cancel` | `speechService`, `useRemoteVoiceTranscription` |
+| `commands::speech` | `get_speech_capabilities`, `prepare_speech_model`, `get_speech_model_status`, `probe_speech_audio_input` †, `probe_sherpa_runtime`, `start_speech_session` †, `pause_speech_session` †, `resume_speech_session` †, `consume_speech_turn` †, `speech_transcript_speakers`, `speech_rename_speaker`, `stop_speech_session` †, `cancel_speech_session` † | `NotiaSidebar`, `speechService` |
+| `commands::telegram` | `check_telegram_bot` | `telegramRuntime` |
+| `device_preferences` | `backend_device_preferences`, `backend_save_device_preferences` | `devicePreferencesStorage` |
+| `filesystem::commands` | `backend_export_markdown_document` | `markdownExportEngine` |
+| `filesystem::watch` | `stop_library_tree_watch` | `libraryTreeWatchRuntime` |
+| `finance` | `finance_get_dashboard`, `finance_get_transaction`, `finance_list_all_transactions`, `finance_list_all_savings_movements`, `finance_dev_list_tables`, `finance_dev_query_table`, `finance_dev_query_sql`, `finance_dev_seed_demo_data`, `finance_save_account`, `finance_save_category`, `finance_save_transaction`, `finance_list_services`, `finance_set_service_active`, `finance_list_service_occurrences`, `finance_list_all_service_occurrences`, `finance_list_service_occurrence_versions`, `finance_list_all_service_occurrence_versions`, `finance_list_service_invoices`, `finance_save_audit_run`, `finance_run_audit`, `finance_list_audit_runs`, `finance_save_audit_proposal`, `finance_list_audit_proposals`, `finance_decide_audit_proposal`, `finance_repair_relation`, `finance_list_relation_repairs`, `finance_delete_transaction`, `finance_delete_account`, `finance_delete_category`, `finance_clear_all_data`, `finance_save_savings_reserve`, `finance_save_savings_movement`, `finance_save_savings_exchange`, `finance_link_savings_account` | `financeService` |
+| `finance_records` | `finance_save_purchase`, `finance_list_purchases`, `finance_list_price_history`, `finance_save_salary`, `finance_list_salaries`, `finance_save_credit_card_statement`, `finance_list_credit_card_statements`, `finance_save_installment_plan`, `finance_list_installment_plans`, `finance_list_installments`, `finance_save_investment`, `finance_list_investments`, `finance_get_net_worth`, `finance_list_net_worth_history` | `financeService` |
+| `finance_ui` | `finance_apply_ui_change` | `financeService` |
+| `finance_views` | `finance_period_summary`, `finance_dashboard_insights`, `finance_salary_analysis`, `finance_relation_audit`, `finance_validate_purchase`, `finance_preview_card_services`, `finance_salary_draft` | `financeService` |
+| `library_catalog` | `backend_library_catalog`, `backend_save_library_catalog` | `libraryStorage` |
+| `library_config` | `backend_read_library_config`, `backend_write_library_config`, `backend_ensure_library_config` | `libraryConfig` |
+| `library_graph` | `backend_library_graph`, `library_link_targets`, `library_link_suggestions`, `backend_library_graph_search`, `backend_library_search` | `libraryLinkRuntime`, `librarySearchGraphIndex`, `useLibraryGraphData` |
+| `library_registry` | `revoke_library_binding` | `libraryRuntime` |
+| `library_session` | `library_open`, `library_refresh`, `library_read_directory`, `library_read_document`, `library_write_document`, `library_mutate_entry`, `library_pick_directory` †, `library_list_files` | `LibraryManagerModal`, `chatAttachmentRuntime`, `libraryDocumentRuntime`, `libraryRuntime` |
+| `library_users` | `list_library_roles`, `create_library_role`, `list_library_users`, `create_library_user`, `update_library_user_password`, `delete_library_user`, `update_library_user_name`, `update_library_user_role`, `update_library_user_contexts`, `resolve_library_telegram_user`, `find_library_user`, `link_library_user_telegram`, `unlink_library_user_telegram` | `libraryUsers` |
+| `multichat` | `multichat_catalog`, `multichat_open`, `multichat_send`, `multichat_cancel`, `multichat_close` | `multichatRuntime` |
+| `page_links` | `backend_sync_page_link` | `MarkdownView` |
+| `routine` | `routine_get_dashboard`, `routine_apply_mutation` | `routineService` |
+| `services::calendar_holidays` | `calendar_argentina_holidays` | `argentinaHolidaysService` |
+| `services::finance_external` | `finance_dollar_quotes`, `finance_inflation_indices`, `finance_historical_dollar_quotes` | `argentinaDollarHistoryService`, `argentinaInflationService`, `dollarQuotesService` |
+| `services::finance_extraction` | `extract_finance_document`, `list_finance_artifacts` | `financeService` |
+| `task_manager_commands` | `task_manager_board_view`, `task_manager_board_execute`, `task_manager_pomodoro`, `task_manager_delete_pomodoro`, `task_manager_read_ticket_source`, `task_manager_write_ticket_source` | `taskManagerPublicationClient`, `taskManagerService` |
+| `task_manager_publication` | `publish_task_manager_ai_stream_event`, `get_task_manager_publication_url`, `get_task_manager_publication_status`, `open_task_manager_publication`, `stop_task_manager_publication`, `begin_task_manager_publication_batch`, `end_task_manager_publication_batch` | `taskManagerPublicationClient`, `taskManagerPublicationRuntime`, `useTaskManagerPublicationAiHostBridge` |
+| `task_manager_publication_source` | `backend_publish_task_manager` | `taskManagerPublicationRuntime` |
+
+Todos los comandos del registro tienen al menos un consumidor en la interfaz. Los 64 que no tenían se retiraron (ver «cierre de pendientes»).
+
+Comandos propios de la ventana, que atiende el host Tauri fuera del registro (`src-tauri/src/tauri_host.rs`), todos a través de `src/services/window/windowRuntime.ts`:
+
+| Comando | Uso |
+|---|---|
+| `window_control` | Minimizar, maximizar, pantalla completa o cerrar. |
+| `start_window_dragging`, `start_window_dragging_with_restore` | Arrastre de la ventana sin decoraciones. |
+| `exit_application` | Salida pedida desde la interfaz o la bandeja. |
+| `notia_log` | Log de la interfaz en la consola o logcat del host (`logToHost`). |
 
 ---
 
 ## 5. Eventos y Storage Keys
 
-### 5.1 Eventos Tauri (Backend → Frontend)
+### 5.1 Eventos del backend (Backend → Frontend)
 
-| Evento | Payload | Dirección | Uso |
-|---|---|---|---|
-| `notia-library-tree-changed` | `{ watchedPath?, changedPathHint? }` | Rust → JS | File watcher notifica cambio en árbol |
+La tabla vigente de eventos, con emisor y consumidor, está en «Eventos del backend» de la arquitectura vigente. Los eventos llegan por `subscribeBackend`: en la ventana, por el `emit` de Tauri; en un navegador, por el WebSocket `/api/events` como `{ event, payload }`.
 
 ### 5.2 Custom Events Frontend (Frontend → Frontend)
 
@@ -4323,8 +5612,7 @@ Las preferencias del dispositivo (publicación de Task Manager y voz) y la selec
 
 | Key | Servicio | Tipo | Descripción |
 |---|---|---|---|
-| `notia:libraries` | `libraryStorage` | JSON | Lista de librerías configuradas |
-| `notia:active-library-id` | `libraryStorage` | string | ID de la librería activa |
+| `notia:libraries` | `libraryStorage` | JSON | Copia heredada de las librerías; solo se lee una vez para migrarla al catálogo del backend (`app_data/library-catalog.json`) |
 | `notia:ai-settings:v1` | `aiSettingsStorage` | JSON | Configuración de IA (URL y modelo; la API key se redacciona) |
 | `notia:theme` | `themeStorage` | string | `light` \| `dark` |
 | `notia:inkmath-settings:v1` | `inkMathSettingsStorage` | JSON | Preferencias del reconocimiento InkMath |
@@ -4336,7 +5624,7 @@ Las preferencias del dispositivo (publicación de Task Manager y voz) y la selec
 
 ## 6. Notas de Performance
 
-- **Graph View en hilo principal + canvas 2D**: el modelo se construye sincrónicamente en `useLibraryGraphData.ts` y se renderiza con `ForceGraph2D` de `react-force-graph-2d`. El layout y el dibujo se calculan en el hilo principal; los colores y partículas se aplican solo a enlaces bajo hover y no hay Web Workers activos en el frontend actualmente.
+- **Graph View con modelo en Rust + canvas 2D**: el modelo lo construye Rust (`backend_library_graph`), lo pide `useLibraryGraphData.ts` y se renderiza con `ForceGraph2D` de `react-force-graph-2d`. El layout y el dibujo se calculan en el hilo principal; los colores y partículas se aplican solo a enlaces bajo hover y no hay Web Workers activos en el frontend actualmente.
 - **Lazy render de Mermaid inline**: `useMermaidLazyRender` usa `IntersectionObserver` para no renderizar diagramas embebidos fuera del viewport hasta que sean visibles.
 - **Cancelación de renders**: `renderMermaid` acepta `AbortSignal`; los hooks `useMermaidRender` y `useMermaidLazyRender` abortan renders pendientes al desmontar, reduciendo trabajo en segundo plano.
 - **Caché LRU con límite de peso**: `mermaidEngine.ts` usa `WeightedLruCache` (20 entradas / 5 MB) para evitar que SVGs grandes consuman memoria indefinidamente.
@@ -4379,11 +5667,19 @@ Las preferencias del dispositivo (publicación de Task Manager y voz) y la selec
 
 ## 7. Notas de Seguridad
 
-- **ColdPass cifrado en frontend**: la passkey nunca se envía al backend. La derivación de clave (PBKDF2) y el cifrado/descifrado (AES-256-GCM) ocurren en el WebView vía **Web Crypto API**. El archivo cifrado viaja como texto opaco a Rust, que solo lo escribe/lee del filesystem.
-- **ColdPass Bluetooth**: los paquetes Bluetooth se cifran con **AES-256-CBC + PBKDF2 (120k iteraciones)** antes de salir del frontend. El backend transmite bytes opacos por GATT.
-- **Validación de inputs**: `validation.rs` rechaza paths con `..`, nombres vacíos, caracteres separadores. Los errores al usuario están en español; errores técnicos no exponen paths internos.
-- **CSP**: actualmente `null` en `tauri.conf.json` — debe configurarse una CSP restrictiva para producción.
-- **Secrets**: nunca loggear credenciales, passkeys ni contenido descifrado. La API de logging (`notiaLog`) filtra estos datos por diseño.
+- **ColdPass:**
+  - el cifrado del vault (AES-256-GCM, PBKDF2-HMAC-SHA256 con 250 000 iteraciones) y la sesión desbloqueada están en Rust (`src-tauri/app/src/coldpass.rs`);
+  - la passkey queda en el backend y el WebView solo recibe las entradas que muestra;
+  - el enlace Bluetooth cifra en Rust (`services/coldpass_secure_link.rs`, PBKDF2 con 120 000 iteraciones) y no se ofrece a clientes remotos.
+- **Validación de entradas:**
+  - `validation.rs` y los adaptadores rechazan rutas con `..`, nombres vacíos y separadores embebidos;
+  - las escrituras por ruta de escritorio solo se aceptan dentro de bibliotecas registradas;
+  - las URI SAF se tratan como opacas;
+  - los errores para las personas usuarias están en español y no exponen rutas internas.
+- **Servidor headless:** contraseña del dueño con hash PBKDF2, cookie `HttpOnly; Secure; SameSite=Strict`, TLS autofirmado, validación de `Origin`, límites de pedidos y de conexiones, comandos locales rechazados y `/api/file` restringido y con `sandbox`. El detalle está en «Seguridad del servidor y de la carpeta de datos».
+- **Carpeta de datos:** un solo proceso a la vez (`DataDirLock`).
+- **CSP:** sigue en `null` en `tauri.conf.json`; falta configurar una CSP restrictiva para producción.
+- **Secretos:** nunca registrar credenciales, passkeys, tokens de sesión, contraseñas ni contenido descifrado. `notiaLog` los filtra por diseño.
 
 ---
 
@@ -4600,7 +5896,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 
 | Tipo de feature | Facilidad | Justificación |
 |---|---|---|
-| Nuevo command Tauri | ✅ Fácil | Registrar en `generate_handler![]`, seguir patrón command → service → domain. |
+| Nuevo comando del backend | ✅ Fácil | Agregar la función en `notia-app`, su ruta y su nombre en `registry.rs` (y `LOCAL_ONLY_COMMANDS` si usa hardware del equipo), y llamarlo con `callBackend`. |
 | Nuevo tipo de documento | ✅ Fácil | Extender `create_library_entry` con nuevo `kind`, agregar módulo en `src/modules/`. |
 | Nueva vista | ✅ Fácil | Crear componente en `components/notia/views/`, agregar ícono en `IconRail`, conectar a Redux si necesita estado global. |
 | Nuevo backend de IA | ⚠️ Media | Requiere nuevo bridge (plugin mobile) o nuevo service Rust. El patrón `ai_service.rs` es replicable. |
@@ -4633,7 +5929,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 | Facilidad para localizar funcionalidades | ✅ Alta | Estructura de carpetas por dominio (`services/ai/`, `modules/task-manager/`) permite encontrar código rápidamente. La nueva funcionalidad de preview inline Mermaid está claramente agrupada en `modules/mermaid/` (`InlineMermaidPreview.tsx`, `mermaidPreviewRuntime.tsx`). |
 | Código muerto / dependencias no usadas | ⚠️ Revisar | `drawio` aparece en `AGENTS.md` como módulo pero no existe en `src/modules/`. Revisar si hay imports huérfanos. |
 | Deuda técnica conocida | Documentada | `AGENTS.md` Sección 10 lista 15 mejoras sugeridas. Prioridad: CSP deshabilitado (`"csp": null`), falta de tests, `StorageAdapter`. |
-| Onboarding para nuevos desarrolladores | ✅ Bueno | `AGENTS.md` + `README-TECH.md` + `tasks.md` proporcionan contexto suficiente. La arquitectura por capas es predecible. |
+| Onboarding para nuevos desarrolladores | ✅ Bueno | `AGENTS.md` + `AGENTS-DOC.md` + `README-TECH.md` proporcionan contexto suficiente. La arquitectura por capas es predecible. |
 
 ### 11.3 Testabilidad
 
@@ -4696,7 +5992,7 @@ La complejidad ciclomática del sistema está controlada en la mayoría de las c
 | 2 | `filesystemEngine.ts` demasiado grande | `services/files/filesystemEngine.ts` | Subdividir en sub-módulos sin romper API pública. | Baja |
 | 3 | `localStorage` usado directamente en múltiples services | `libraryStorage.ts`, `aiSettingsStorage.ts`, `themeStorage.ts`, etc. | Introducir `StorageAdapter` con interfaz `getItem/setItem/removeItem`. | Media |
 | 4 | `taskManagerService.ts` concentra CRUD + índices + Pomodoro | `modules/task-manager/services/` | Dividir en `taskCrudService.ts`, `taskIndexService.ts`, `pomodoroService.ts`. | Baja |
-| 5 | `commands/bluetooth.rs` con lógica condicional extensa | `src-tauri/src/commands/bluetooth.rs` | Extraer flujo GATT Linux a `bluetooth_gatt_linux.rs`. | Baja |
+| 5 | `commands/bluetooth.rs` con lógica condicional extensa | `src-tauri/app/src/commands/bluetooth.rs` | Extraer flujo GATT Linux a `bluetooth_gatt_linux.rs`. | Baja |
 | 6 | Sin tests unitarios ni de integración | Todo el repo | Priorizar `engines/` y `validation.rs` (puro, sin side-effects). | Alta |
 
 ---

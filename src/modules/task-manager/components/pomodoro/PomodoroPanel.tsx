@@ -6,7 +6,7 @@ import {
   getPhaseDurationSeconds,
   getPomodoroPhaseLabel,
   getPomodoroRemainingSeconds,
-} from '../../engines/pomodoroEngine'
+} from '../../utils/pomodoroDisplay'
 import { getEntriesByDate, toLocalDateText } from '../../engines/pomodoroLogEngine'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import type { PomodoroDurations, PomodoroLogEntry, PomodoroState, TaskItem } from '../../types/taskManagerTypes'

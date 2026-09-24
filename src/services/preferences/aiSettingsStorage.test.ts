@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { getSessionAiApiKey, loadAiPreferences, normalizeAiSettingsInput, resolveAiPreferencesForTransport, saveAiPreferences } from './aiSettingsStorage'
+import { getSessionAiApiKey, loadAiPreferences, resolveAiPreferencesForTransport, saveAiPreferences } from './aiSettingsStorage'
 
 const values = new Map<string, string>()
 
@@ -18,29 +18,11 @@ beforeEach(() => {
   })
 })
 
-describe('normalizeAiSettingsInput', () => {
-  it('applies safe defaults to legacy preferences without thinking settings', () => {
-    expect(normalizeAiSettingsInput({ selectedModel: 'qwen3' })).toMatchObject({
-      selectedModel: 'qwen3',
-      thinkingEnabled: true,
-      thinkingLevel: 'medium',
-    })
-  })
-
-  it('preserves a disabled thinking mode and a supported level', () => {
-    expect(normalizeAiSettingsInput({
-      thinkingEnabled: false,
-      thinkingLevel: 'high',
-    })).toMatchObject({
-      thinkingEnabled: false,
-      thinkingLevel: 'high',
-    })
-  })
-
-  it('normalizes an unsupported thinking level to medium', () => {
-    expect(normalizeAiSettingsInput({
-      thinkingLevel: 'unsupported' as never,
-    }).thinkingLevel).toBe('medium')
+// The backend normalizes the preferences (`backend-core::library_config`,
+// `backend-core::ai_settings`); this storage only caches them on the device.
+describe('aiSettingsStorage', () => {
+  it('starts from the defaults when nothing is stored', () => {
+    expect(loadAiPreferences()).toMatchObject({ thinkingEnabled: true, thinkingLevel: 'medium', apiKey: '' })
   })
 
   it('keeps the provider key out of localStorage while exposing it only to transport resolution', () => {

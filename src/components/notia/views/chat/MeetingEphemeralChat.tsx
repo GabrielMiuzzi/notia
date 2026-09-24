@@ -77,7 +77,6 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
         prompt: question,
         previousMessages,
         signal: controller.signal,
-        onExecutionPlanChange: setExecutionPlan,
         onMessageDelta: (delta) => setStreamingMessage((current) => current + delta),
       })
       setMessages((current) => [...current, { role: 'assistant', content: answer }])

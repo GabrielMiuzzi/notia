@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { callBackend } from '../../../services/transport'
 
 export interface HistoricalDollarQuote {
   date: string
@@ -8,5 +8,5 @@ export interface HistoricalDollarQuote {
 
 /** Official dollar history from ArgentinaDatos, fetched and validated by the backend. */
 export function getOfficialHistoricalDollarQuotes(): Promise<HistoricalDollarQuote[]> {
-  return invoke<HistoricalDollarQuote[]>('finance_historical_dollar_quotes', { from: null, to: null })
+  return callBackend<HistoricalDollarQuote[]>('finance_historical_dollar_quotes', { from: null, to: null })
 }

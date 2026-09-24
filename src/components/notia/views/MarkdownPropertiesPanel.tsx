@@ -14,7 +14,6 @@ import {
   type FrontmatterValue,
 } from '../../../engines/markdown/frontmatterEngine'
 import { WikiLinkPropertyInput } from './markdown/WikiLinkPropertyInput'
-import type { MarkdownWikiLinkTarget } from '../../../types/views/markdownWikiLink'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 
 const PROTECTED_PROPERTY_KEYS = new Set([
@@ -26,7 +25,7 @@ const PROTECTED_PROPERTY_KEYS = new Set([
 interface MarkdownPropertiesPanelProps {
   entries: FrontmatterEntry[]
   wikiLinkLookup: MarkdownWikiLinkLookup
-  wikiLinkTargets: MarkdownWikiLinkTarget[]
+  libraryId?: string
   onAddProperty: (entry: FrontmatterEntry) => void
   onEditProperty: (key: string, value: FrontmatterValue) => void
   onDeleteProperty: (key: string) => void
@@ -169,7 +168,7 @@ function renderPropertyValue(
 export function MarkdownPropertiesPanel({
   entries,
   wikiLinkLookup,
-  wikiLinkTargets,
+  libraryId,
   onAddProperty,
   onEditProperty,
   onDeleteProperty,
@@ -254,7 +253,7 @@ export function MarkdownPropertiesPanel({
                     ) : entry.key.toLowerCase() === 'nextpage' || entry.key.toLowerCase() === 'previouspage' ? (
                       <WikiLinkPropertyInput
                         value={editValueInput}
-                        targets={wikiLinkTargets}
+                        libraryId={libraryId}
                         onChange={setEditValueInput}
                         onConfirm={submitEditProperty}
                         onCancel={cancelEditProperty}

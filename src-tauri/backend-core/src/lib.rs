@@ -8,10 +8,12 @@
 pub mod agent;
 pub mod agent_knowledge;
 pub mod agent_workspace;
+pub mod ai_settings;
 pub mod calendar;
 pub mod catalog;
 pub mod chat_attachments;
 pub mod chat_history;
+pub mod chat_turn;
 pub mod coldpass;
 pub mod context;
 pub mod device_preferences;
@@ -21,14 +23,18 @@ pub mod events;
 pub mod export;
 pub mod export_render;
 pub mod finance_answer;
+pub mod finance_insights;
 pub mod formatting;
 pub mod interaction;
 pub mod isolation;
 pub mod library_config;
 pub mod library_graph;
+pub mod library_tree;
+pub mod pomodoro;
 pub mod pomodoro_log;
 pub mod library_tools;
 pub mod markdown_editing;
+pub mod multichat;
 pub mod page_links;
 pub mod paths;
 pub mod ports;
@@ -40,9 +46,11 @@ pub mod runtime;
 pub mod speech_text;
 pub mod task_manager_tool_input;
 pub mod task_manager_tools;
+pub mod task_manager_ui;
 pub mod telegram_bot;
 pub mod tool_call_recovery;
 pub mod web_search;
+pub mod wiki_links;
 
 pub use agent::{
     contains_pending_action, run_agent, run_agent_with_interaction, run_agent_with_resume,
@@ -143,6 +151,11 @@ pub use protocol::{
 pub use runtime::InteractionRuntime;
 pub use task_manager_tool_input::{
     task_mutation_from_tool, ticket_ids_to_read, MAX_TASK_TOOL_READ_TICKETS,
+};
+pub use task_manager_ui::{
+    plan_pomodoro_record, pomodoro_hours_update, pomodoro_ticket, project_board_view, show_board_paths,
+    resolve_board_intent, PomodoroDurationsDto, PomodoroEvent, PomodoroRecordPlan,
+    TaskBoardIntent, TaskBoardViewDto,
 };
 pub use task_manager_tools::{
     task_manager_mutation_tool_contracts, task_manager_read_tool_contracts, ticket_detail_preview,

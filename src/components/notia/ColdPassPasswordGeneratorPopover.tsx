@@ -1,13 +1,14 @@
 import { RefreshCw } from 'lucide-react'
 import { NotiaButton } from '../common/NotiaButton'
 import {
-  estimateColdPassBruteForceSeconds,
   formatColdPassBruteForceEstimate,
   type ColdPassPasswordOptions,
 } from '../../services/coldpass/passwordGenerator'
 
 interface ColdPassPasswordGeneratorPopoverProps {
   password: string
+  /** Brute-force estimate the backend computed for the options. */
+  bruteForceSeconds: number
   options: ColdPassPasswordOptions
   onOptionsChange: (options: ColdPassPasswordOptions) => void
   onRefresh: () => void
@@ -16,14 +17,13 @@ interface ColdPassPasswordGeneratorPopoverProps {
 
 export function ColdPassPasswordGeneratorPopover({
   password,
+  bruteForceSeconds,
   options,
   onOptionsChange,
   onRefresh,
   onUsePassword,
 }: ColdPassPasswordGeneratorPopoverProps) {
-  const bruteForceEstimate = formatColdPassBruteForceEstimate(
-    estimateColdPassBruteForceSeconds(options),
-  )
+  const bruteForceEstimate = formatColdPassBruteForceEstimate(bruteForceSeconds)
 
   return (
     <div className="notia-coldpass-password-popover">
