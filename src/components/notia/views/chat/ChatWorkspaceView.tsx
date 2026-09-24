@@ -10,10 +10,11 @@ import { ChatLibraryFilesModal } from './ChatLibraryFilesModal'
 import { ChatThread } from './ChatThread'
 import { ChatComposer } from './ChatComposer'
 import {
-  ChatHeaderComponent,
   ChatHistoryPanel,
   ChatHistoryPanelHeaderCompact,
 } from './ChatHistoryPanel'
+import { ChatContextPanel, ChatStarterCards, ChatTopBar, ChatWelcomeHero } from './ChatWorkspacePanels'
+import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
 import {
   deleteChatDraftFile,
   createChatDraftFile,
@@ -30,7 +31,7 @@ import {
   saveSelectedAgentPromptFileName,
   type AgentPromptOption,
 } from '../../../../services/ai/agentPromptRuntime'
-import type { ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
+import type { ChatStarter, ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
 import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview } from '../../../../types/ai/agentContracts'
 import {
@@ -45,11 +46,25 @@ import type { AiOperationHistoryDiff } from './ChatThread'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
-const DEFAULT_SUGGESTIONS = [
-  'Resume estas notas',
-  'Conecta ideas relacionadas',
-  'Dame proximos pasos concretos',
+const DEFAULT_SUGGESTIONS: ChatStarter[] = [
+  {
+    title: 'Resumí estas notas',
+    description: 'Síntesis de las notas o carpetas que elijas como contexto.',
+    prompt: 'Resume estas notas',
+  },
+  {
+    title: 'Conectá ideas relacionadas',
+    description: 'Encontrá vínculos entre notas de la librería.',
+    prompt: 'Conecta ideas relacionadas',
+  },
+  {
+    title: 'Próximos pasos concretos',
+    description: 'Convertí pendientes en acciones claras.',
+    prompt: 'Dame proximos pasos concretos',
+  },
 ]
+/** The context panel starts open only where it fits beside the conversation. */
+const CONTEXT_PANEL_DOCKED_QUERY = '(min-width: 1280px)'
 
 function isNaturalUndoRequest(value: string): boolean {
   const normalized = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
@@ -127,11 +142,17 @@ export function ChatWorkspaceViewComponent({
     transientContextSummary,
     persistTransientContext,
     selectMatchingChatOnly,
+    showHistoryPanel,
   })
   const [agentPromptOptions, setAgentPromptOptions] = useState<AgentPromptOption[]>([
     { fileName: 'default.md', name: 'default' },
   ])
   const [agentPromptFileName, setAgentPromptFileName] = useState('default.md')
+  const [newChatAgentMemoryEnabled, setNewChatAgentMemoryEnabled] = useState(true)
+  const [isLibraryFoldersModalOpen, setIsLibraryFoldersModalOpen] = useState(false)
+  const [isContextPanelOpen, setIsContextPanelOpen] = useState(
+    () => typeof window === 'undefined' || window.matchMedia(CONTEXT_PANEL_DOCKED_QUERY).matches,
+  )
   const [pendingAgentQuestion, setPendingAgentQuestion] = useState<{
     question: string
     choices: string[]
@@ -214,8 +235,8 @@ export function ChatWorkspaceViewComponent({
     setIsChatToolsModalOpen,
     isLibraryFilesModalOpen,
     setIsLibraryFilesModalOpen,
-    isClearingLongTermMemory,
-    setIsClearingLongTermMemory,
+    isClearingAgentMemory,
+    setIsClearingAgentMemory,
     chatContextMenuState,
     setChatContextMenuState,
     setLocallyDeletedChatPaths,
@@ -232,6 +253,10 @@ export function ChatWorkspaceViewComponent({
     setSelectedLibraryFileOptions,
     selectedFileContextMode,
     setSelectedFileContextMode,
+    selectedLibraryFolderPaths,
+    setSelectedLibraryFolderPaths,
+    libraryRagEnabled,
+    setLibraryRagEnabled,
 
     streamingThinking,
     setStreamingThinking,
@@ -249,6 +274,9 @@ export function ChatWorkspaceViewComponent({
     transientContextSummaryLabel,
     selectedLibraryFileSummary,
     resolvedPreviousChats,
+    filteredPreviousChats,
+    chatHistoryQuery,
+    setChatHistoryQuery,
     availablePreviousChats,
     compactRecentChats,
     visibleSuggestions,
@@ -363,6 +391,21 @@ export function ChatWorkspaceViewComponent({
   const handleOpenAiSettings = useCallback(() => {
     dispatch(openSettingsToSection('IA'))
   }, [dispatch])
+
+  const workspaceContextFiles = [
+    ...resolvedSelectedLibraryFileSummary.map((option) => ({ path: option.path, name: option.name })),
+    ...resolvedSelectedLibraryFilePaths
+      .filter((path) => !resolvedSelectedLibraryFileSummary.some((option) => option.path === path))
+      .map((path) => ({ path, name: buildAttachmentDisplayName(path) })),
+  ]
+  // An open chat keeps the memory choice it was created with; the switch
+  // only decides it for the next new chat.
+  const isAgentMemoryChoiceLocked = Boolean(selectedChatFilePath)
+  const agentMemoryEnabled = isAgentMemoryChoiceLocked
+    ? activeChatDocument?.agentMemoryEnabled ?? true
+    : newChatAgentMemoryEnabled
+
+  const workspaceContextFolders = selectedLibraryFolderPaths.map((path) => ({ path, name: buildAttachmentDisplayName(path) }))
 
   const resolvedActiveModel = activeModelLabel
     ? `Modelo: ${activeModelLabel}`
@@ -499,7 +542,10 @@ export function ChatWorkspaceViewComponent({
       selectedLibraryFileOptions: resolvedSelectedLibraryFileOptions,
       selectedImageAttachments,
       selectedFileContextMode,
-      showHistoryPanel,
+      // Folders and turning the library search off belong to the main chat.
+      selectedLibraryFolderPaths: showHistoryPanel ? selectedLibraryFolderPaths : [],
+      libraryRagEnabled: showHistoryPanel ? libraryRagEnabled : true,
+      newChatAgentMemoryEnabled,
       ephemeralChat,
       preferredContextScopeKey,
       persistTransientContext,
@@ -571,7 +617,7 @@ export function ChatWorkspaceViewComponent({
     setIsCreateChatSubmitting(true)
 
     try {
-      const { filePath } = await createChatDraftFile(library, payload)
+      const { filePath } = await createChatDraftFile(library, { ...payload, agentMemoryEnabled: newChatAgentMemoryEnabled })
       setIsCreateChatModalOpen(false)
       setSelectedChatFilePath(filePath)
       setMatchedPreferredChatFilePath(filePath)
@@ -627,8 +673,8 @@ export function ChatWorkspaceViewComponent({
     }
   }
 
-  const handleClearLongTermMemory = async () => {
-    if (!library || isClearingLongTermMemory) {
+  const handleClearAgentMemory = async () => {
+    if (!library || isClearingAgentMemory) {
       return
     }
 
@@ -644,7 +690,7 @@ export function ChatWorkspaceViewComponent({
       return
     }
 
-    setIsClearingLongTermMemory(true)
+    setIsClearingAgentMemory(true)
 
     try {
       await writeAgentMemories(library, [])
@@ -656,7 +702,7 @@ export function ChatWorkspaceViewComponent({
           : 'No se pudo vaciar la memoria persistente del agente.',
       )
     } finally {
-      setIsClearingLongTermMemory(false)
+      setIsClearingAgentMemory(false)
     }
   }
 
@@ -680,6 +726,10 @@ export function ChatWorkspaceViewComponent({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const handleRemoveSelectedFolder = (path: string) => {
+    setSelectedLibraryFolderPaths((current) => current.filter((item) => item !== path))
+  }
 
   const handleRemoveSelectedFile = (path: string) => {
     setSelectedLibraryFilePaths((current) => current.filter((item) => item !== path))
@@ -706,8 +756,212 @@ export function ChatWorkspaceViewComponent({
     ?? [...displayedMessages].reverse().find((message) => message.role === 'assistant')?.content
     ?? null
 
+  const isWelcomeState = showHistoryPanel
+    && !isCheckingAiHealth
+    && !aiAvailabilityMessage
+    && !isChatLoading
+    && !isSubmitting
+    && displayedMessages.length === 0
+    && !pendingAgentQuestion
+    && !pendingAgentConfirmation
+    && agentExecutionPlan.length === 0
+
+  const thread = (
+    <ChatThread
+      messages={displayedMessages}
+      isSubmitting={isSubmitting}
+      isChatLoading={isChatLoading}
+      isCheckingAiHealth={isCheckingAiHealth}
+      aiAvailabilityMessage={aiAvailabilityMessage}
+      selectedChatFilePath={selectedChatFilePath}
+      showHistoryPanel={showHistoryPanel}
+      streamingThinking={streamingThinking}
+      streamingAssistantMessage={streamingAssistantMessage}
+      pendingAgentQuestion={pendingAgentQuestion}
+      pendingAgentAnswer={pendingAgentAnswer}
+      pendingAgentConfirmation={pendingAgentConfirmation}
+      pendingAgentPreview={pendingAgentPreview}
+      pendingAgentHunkIds={pendingAgentHunkIds}
+      agentExecutionPlan={agentExecutionPlan}
+      awaitingAgentExecutionPlanApproval={awaitingAgentExecutionPlanApproval}
+      onApproveAgentExecutionPlan={(steps) => planApprovalResolverRef.current?.({ approved: true, steps })}
+      onSuggestAgentExecutionPlanChanges={() => {
+        const planResolver = planApprovalResolverRef.current
+        if (!planResolver) return
+        setAwaitingAgentExecutionPlanApproval(false)
+        setPendingAgentQuestion({ question: '¿Qué cambios querés hacerle al TO-DO?', choices: [] })
+        clarificationResolverRef.current = (suggestion) => {
+          clarificationResolverRef.current = null
+          setPendingAgentQuestion(null)
+          planResolver({ approved: false, suggestion })
+        }
+      }}
+      onResumeAgentExecutionPlan={handleResumeAgentExecutionPlan}
+      onCancelAgentExecutionPlan={handleCancelAgentExecutionPlan}
+      lastAppliedOperationId={lastAppliedOperationId}
+      aiOperationHistory={activeDocumentPath
+        ? aiOperationHistory.filter((entry) => entry.documentPath === activeDocumentPath)
+        : []}
+      aiOperationDiff={aiOperationDiff}
+      onViewAiOperationDiff={handleViewAiOperationDiff}
+      onCloseAiOperationDiff={() => setAiOperationDiff(null)}
+      onUndoAiOperation={(operationId) => {
+        if (isSubmitting) return
+        setLastAppliedOperationId(null)
+        void submitMessage('Volvé atrás el cambio de IA seleccionado.', undefined, operationId)
+      }}
+      onUndoLastAiOperation={() => {
+        if (!lastAppliedOperationId || isSubmitting) return
+        const operationId = lastAppliedOperationId
+        setLastAppliedOperationId(null)
+        void submitMessage('Volvé atrás el último cambio de IA.', undefined, operationId)
+      }}
+      onConfirmAgentAction={() => confirmationResolverRef.current?.({ accepted: true, hunkIds: pendingAgentHunkIds })}
+      onDeclineAgentAction={() => confirmationResolverRef.current?.({ accepted: false })}
+      onEditAgentProposal={() => {
+        confirmationResolverRef.current?.({ accepted: false })
+        setDialogMessage('La propuesta se canceló. Indicame qué querés cambiar y preparo un nuevo preview.')
+      }}
+      onToggleAgentHunk={(hunkId) => {
+        setPendingAgentHunkIds((current) => current.includes(hunkId)
+          ? current.filter((id) => id !== hunkId)
+          : [...current, hunkId])
+      }}
+      onSelectAgentClarificationOption={(choice) => {
+        const resolver = clarificationResolverRef.current
+        if (!resolver) {
+          setPendingAgentQuestion(null)
+          void consumeRehydratedClarification(choice).then((resumePrompt) => {
+            if (!resumePrompt) {
+              setPendingAgentAnswer('Cancelada')
+              return
+            }
+            setPendingAgentAnswer(choice)
+            void submitMessage(resumePrompt)
+          })
+          return
+        }
+        setPendingAgentAnswer(choice)
+        setPendingAgentQuestion(null)
+        resolver(choice)
+      }}
+      threadRef={chatThreadRef}
+      onOpenAiSettings={handleOpenAiSettings}
+    />
+  )
+
+  const composer = (
+    <ChatComposer
+      variant={showHistoryPanel ? 'workspace' : 'panel'}
+      libraryRagEnabled={libraryRagEnabled}
+      onLibraryRagChange={showHistoryPanel ? setLibraryRagEnabled : undefined}
+      selectedLibraryFolderPaths={showHistoryPanel ? selectedLibraryFolderPaths : []}
+      onRemoveFolder={handleRemoveSelectedFolder}
+      onOpenLibraryFoldersModal={showHistoryPanel
+        ? () => {
+          setIsAttachmentMenuOpen(false)
+          setIsLibraryFoldersModalOpen(true)
+        }
+        : undefined}
+      draft={draft}
+      setDraft={setDraft}
+      canSubmit={canSubmit}
+      isSubmitting={isSubmitting}
+      awaitingAgentClarification={Boolean(pendingAgentQuestion && clarificationResolverRef.current)}
+      isAiAvailable={isAiAvailable}
+      library={library}
+      composerContextLabel={composerContextLabel}
+      activeModelLabel={resolvedActiveModel}
+      selectedImageAttachments={selectedImageAttachments}
+      selectedLibraryFileSummary={resolvedSelectedLibraryFileSummary}
+      selectedLibraryFilePaths={resolvedSelectedLibraryFilePaths}
+      effectiveSelectedContextPaths={resolvedEffectiveContextPaths}
+      effectiveSelectedContextMode={effectiveSelectedContextMode}
+      transientContextSummaryLabel={transientContextSummaryLabel}
+      transientContextDisplayPaths={transientContextDisplayPaths}
+      hasTransientContext={hasTransientContext}
+      isAttachmentMenuOpen={isAttachmentMenuOpen}
+      attachmentMenuPosition={attachmentMenuPosition}
+      onRemoveImage={(index) => {
+        setSelectedImageAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))
+      }}
+      onRemoveFile={handleRemoveSelectedFile}
+      onTransientContextPathRemove={onTransientContextPathRemove}
+      onToggleAttachmentMenu={handleOpenAttachmentMenu}
+      onSelectImage={() => {
+        setIsAttachmentMenuOpen(false)
+        imageInputRef.current?.click()
+      }}
+      onOpenLibraryFilesModal={() => {
+        setIsAttachmentMenuOpen(false)
+        setIsLibraryFilesModalOpen(true)
+      }}
+      onSubmit={() => {
+        const clarificationResolver = clarificationResolverRef.current
+        if (clarificationResolver) {
+          const answer = draft.trim()
+          if (!answer) return
+          setPendingAgentAnswer(answer)
+          setDraft('')
+          clarificationResolver(answer)
+          return
+        }
+        if (rehydratedClarificationRef.current) {
+          const answer = draft.trim()
+          if (!answer) return
+          setPendingAgentAnswer(answer)
+          setPendingAgentQuestion(null)
+          setDraft('')
+          void consumeRehydratedClarification(answer).then((resumePrompt) => {
+            if (resumePrompt) void submitMessage(resumePrompt)
+          })
+          return
+        }
+        setPendingAgentAnswer(null)
+        void submitComposerMessage(draft)
+      }}
+      onSubmitText={(text) => {
+        const normalizedVoiceAnswer = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+        if (confirmationResolverRef.current && /^(si|confirmo|acepto|confirmar)\b/.test(normalizedVoiceAnswer)) {
+          confirmationResolverRef.current({ accepted: true, hunkIds: pendingAgentHunkIds })
+          return Promise.resolve()
+        }
+        if (confirmationResolverRef.current && /^(no|cancelo|rechazo|cancelar)\b/.test(normalizedVoiceAnswer)) {
+          confirmationResolverRef.current({ accepted: false })
+          return Promise.resolve()
+        }
+        if (planApprovalResolverRef.current && awaitingAgentExecutionPlanApproval && /^(si|apruebo|acepto|confirmo)\b/.test(normalizedVoiceAnswer)) {
+          planApprovalResolverRef.current({ approved: true })
+          return Promise.resolve()
+        }
+        const clarificationResolver = clarificationResolverRef.current
+        if (clarificationResolver) {
+          setPendingAgentAnswer(text)
+          setPendingAgentQuestion(null)
+          clarificationResolver(text)
+          return Promise.resolve()
+        }
+        if (rehydratedClarificationRef.current) {
+          setPendingAgentAnswer(text)
+          setPendingAgentQuestion(null)
+          return consumeRehydratedClarification(text).then((resumePrompt) => (resumePrompt ? submitMessage(resumePrompt) : undefined))
+        }
+        setPendingAgentAnswer(null)
+        return submitComposerMessage(text)
+      }}
+      lastAssistantMessage={lastAssistantMessage}
+      onCancel={cancelActiveReply}
+      triggerRef={attachmentMenuTriggerRef}
+      panelRef={attachmentMenuPanelRef}
+      imageInputRef={imageInputRef}
+    />
+  )
+
   return (
-    <main className="notia-main notia-chat-view" data-notia-prevent-menu-close>
+    <main
+      className={`notia-main notia-chat-view${showHistoryPanel ? ' notia-chat-view--workspace' : ''}`}
+      data-notia-prevent-menu-close
+    >
       <section className="notia-chat-shell" data-notia-prevent-menu-close>
         <div className="notia-chat-layout" data-notia-prevent-menu-close>
           {showHistoryPanel ? (
@@ -715,13 +969,17 @@ export function ChatWorkspaceViewComponent({
               library={library}
               selectedChatFilePath={selectedChatFilePath}
               setSelectedChatFilePath={setSelectedChatFilePath}
-              setIsCreateChatModalOpen={setIsCreateChatModalOpen}
-              setCreateChatErrorMessage={setCreateChatErrorMessage}
-              setIsChatToolsModalOpen={setIsChatToolsModalOpen}
+              onCreateChat={() => {
+                setCreateChatErrorMessage(null)
+                setIsCreateChatModalOpen(true)
+              }}
               setChatContextMenuState={setChatContextMenuState}
               isHistoryPanelOpen={isHistoryPanelOpen}
               setIsHistoryPanelOpen={setIsHistoryPanelOpen}
               resolvedPreviousChats={resolvedPreviousChats}
+              filteredPreviousChats={filteredPreviousChats}
+              chatHistoryQuery={chatHistoryQuery}
+              setChatHistoryQuery={setChatHistoryQuery}
               availablePreviousChats={availablePreviousChats}
               compactRecentChats={compactRecentChats}
               virtualChatHistoryItems={virtualChatHistoryItems}
@@ -752,12 +1010,17 @@ export function ChatWorkspaceViewComponent({
               </label>
             ) : null}
             {showHistoryPanel ? (
-              <ChatHeaderComponent
-                title={title}
-                activeChatTitle={activeChatDocument?.title}
-                description={description}
-                suggestions={visibleSuggestions}
-                setDraft={setDraft}
+              <ChatTopBar
+                title={activeChatDocument?.title ?? 'Nuevo chat'}
+                isHistoryPanelOpen={isHistoryPanelOpen}
+                onOpenHistory={() => setIsHistoryPanelOpen(true)}
+                modelLabel={activeModelLabel}
+                isResolvingModel={isResolvingActiveModel}
+                isAiAvailable={isAiAvailable}
+                onOpenAiSettings={handleOpenAiSettings}
+                isAgentMemoryOff={!agentMemoryEnabled}
+                isContextPanelOpen={isContextPanelOpen}
+                onToggleContextPanel={() => setIsContextPanelOpen((current) => !current)}
               />
             ) : (
               <ChatHistoryPanelHeaderCompact
@@ -769,182 +1032,43 @@ export function ChatWorkspaceViewComponent({
               />
             )}
 
-            <ChatThread
-              messages={displayedMessages}
-              isSubmitting={isSubmitting}
-              isChatLoading={isChatLoading}
-              isCheckingAiHealth={isCheckingAiHealth}
-              aiAvailabilityMessage={aiAvailabilityMessage}
-              selectedChatFilePath={selectedChatFilePath}
-              showHistoryPanel={showHistoryPanel}
-              streamingThinking={streamingThinking}
-              streamingAssistantMessage={streamingAssistantMessage}
-              pendingAgentQuestion={pendingAgentQuestion}
-              pendingAgentAnswer={pendingAgentAnswer}
-              pendingAgentConfirmation={pendingAgentConfirmation}
-              pendingAgentPreview={pendingAgentPreview}
-              pendingAgentHunkIds={pendingAgentHunkIds}
-              agentExecutionPlan={agentExecutionPlan}
-              awaitingAgentExecutionPlanApproval={awaitingAgentExecutionPlanApproval}
-              onApproveAgentExecutionPlan={(steps) => planApprovalResolverRef.current?.({ approved: true, steps })}
-              onSuggestAgentExecutionPlanChanges={() => {
-                const planResolver = planApprovalResolverRef.current
-                if (!planResolver) return
-                setAwaitingAgentExecutionPlanApproval(false)
-                setPendingAgentQuestion({ question: '¿Qué cambios querés hacerle al TO-DO?', choices: [] })
-                clarificationResolverRef.current = (suggestion) => {
-                  clarificationResolverRef.current = null
-                  setPendingAgentQuestion(null)
-                  planResolver({ approved: false, suggestion })
-                }
-              }}
-              onResumeAgentExecutionPlan={handleResumeAgentExecutionPlan}
-              onCancelAgentExecutionPlan={handleCancelAgentExecutionPlan}
-              lastAppliedOperationId={lastAppliedOperationId}
-              aiOperationHistory={activeDocumentPath
-                ? aiOperationHistory.filter((entry) => entry.documentPath === activeDocumentPath)
-                : []}
-              aiOperationDiff={aiOperationDiff}
-              onViewAiOperationDiff={handleViewAiOperationDiff}
-              onCloseAiOperationDiff={() => setAiOperationDiff(null)}
-              onUndoAiOperation={(operationId) => {
-                if (isSubmitting) return
-                setLastAppliedOperationId(null)
-                void submitMessage('VolvÃ© atrÃ¡s el cambio de IA seleccionado.', undefined, operationId)
-              }}
-              onUndoLastAiOperation={() => {
-                if (!lastAppliedOperationId || isSubmitting) return
-                const operationId = lastAppliedOperationId
-                setLastAppliedOperationId(null)
-                void submitMessage('Volvé atrás el último cambio de IA.', undefined, operationId)
-              }}
-              onConfirmAgentAction={() => confirmationResolverRef.current?.({ accepted: true, hunkIds: pendingAgentHunkIds })}
-              onDeclineAgentAction={() => confirmationResolverRef.current?.({ accepted: false })}
-              onEditAgentProposal={() => {
-                confirmationResolverRef.current?.({ accepted: false })
-                setDialogMessage('La propuesta se canceló. Indicame qué querés cambiar y preparo un nuevo preview.')
-              }}
-              onToggleAgentHunk={(hunkId) => {
-                setPendingAgentHunkIds((current) => current.includes(hunkId)
-                  ? current.filter((id) => id !== hunkId)
-                  : [...current, hunkId])
-              }}
-              onSelectAgentClarificationOption={(choice) => {
-                const resolver = clarificationResolverRef.current
-                if (!resolver) {
-                  setPendingAgentQuestion(null)
-                  void consumeRehydratedClarification(choice).then((resumePrompt) => {
-                    if (!resumePrompt) {
-                      setPendingAgentAnswer('Cancelada')
-                      return
-                    }
-                    setPendingAgentAnswer(choice)
-                    void submitMessage(resumePrompt)
-                  })
-                  return
-                }
-                setPendingAgentAnswer(choice)
-                setPendingAgentQuestion(null)
-                resolver(choice)
-              }}
-              threadRef={chatThreadRef}
-              onOpenAiSettings={handleOpenAiSettings}
-            />
-
-            <ChatComposer
-              draft={draft}
-              setDraft={setDraft}
-              canSubmit={canSubmit}
-              isSubmitting={isSubmitting}
-              awaitingAgentClarification={Boolean(pendingAgentQuestion && clarificationResolverRef.current)}
-              isAiAvailable={isAiAvailable}
-              library={library}
-              composerContextLabel={composerContextLabel}
-              activeModelLabel={resolvedActiveModel}
-              selectedImageAttachments={selectedImageAttachments}
-              selectedLibraryFileSummary={resolvedSelectedLibraryFileSummary}
-              selectedLibraryFilePaths={resolvedSelectedLibraryFilePaths}
-              effectiveSelectedContextPaths={resolvedEffectiveContextPaths}
-              effectiveSelectedContextMode={effectiveSelectedContextMode}
-              transientContextSummaryLabel={transientContextSummaryLabel}
-              transientContextDisplayPaths={transientContextDisplayPaths}
-              hasTransientContext={hasTransientContext}
-              isAttachmentMenuOpen={isAttachmentMenuOpen}
-              attachmentMenuPosition={attachmentMenuPosition}
-              onRemoveImage={(index) => {
-                setSelectedImageAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))
-              }}
-              onRemoveFile={handleRemoveSelectedFile}
-              onTransientContextPathRemove={onTransientContextPathRemove}
-              onToggleAttachmentMenu={handleOpenAttachmentMenu}
-              onSelectImage={() => {
-                setIsAttachmentMenuOpen(false)
-                imageInputRef.current?.click()
-              }}
-              onOpenLibraryFilesModal={() => {
-                setIsAttachmentMenuOpen(false)
-                setIsLibraryFilesModalOpen(true)
-              }}
-                onSubmit={() => {
-                  const clarificationResolver = clarificationResolverRef.current
-                  if (clarificationResolver) {
-                  const answer = draft.trim()
-                  if (!answer) return
-                  setPendingAgentAnswer(answer)
-                  setDraft('')
-                    clarificationResolver(answer)
-                    return
-                  }
-                  if (rehydratedClarificationRef.current) {
-                    const answer = draft.trim()
-                    if (!answer) return
-                    setPendingAgentAnswer(answer)
-                    setPendingAgentQuestion(null)
-                    setDraft('')
-                    void consumeRehydratedClarification(answer).then((resumePrompt) => {
-                      if (resumePrompt) void submitMessage(resumePrompt)
-                    })
-                    return
-                  }
-                  setPendingAgentAnswer(null)
-                  void submitComposerMessage(draft)
-              }}
-              onSubmitText={(text) => {
-                const normalizedVoiceAnswer = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
-                if (confirmationResolverRef.current && /^(si|confirmo|acepto|confirmar)\b/.test(normalizedVoiceAnswer)) {
-                  confirmationResolverRef.current({ accepted: true, hunkIds: pendingAgentHunkIds })
-                  return Promise.resolve()
-                }
-                if (confirmationResolverRef.current && /^(no|cancelo|rechazo|cancelar)\b/.test(normalizedVoiceAnswer)) {
-                  confirmationResolverRef.current({ accepted: false })
-                  return Promise.resolve()
-                }
-                if (planApprovalResolverRef.current && awaitingAgentExecutionPlanApproval && /^(si|apruebo|acepto|confirmo)\b/.test(normalizedVoiceAnswer)) {
-                  planApprovalResolverRef.current({ approved: true })
-                  return Promise.resolve()
-                }
-                const clarificationResolver = clarificationResolverRef.current
-                if (clarificationResolver) {
-                  setPendingAgentAnswer(text)
-                  setPendingAgentQuestion(null)
-                  clarificationResolver(text)
-                  return Promise.resolve()
-                }
-                if (rehydratedClarificationRef.current) {
-                  setPendingAgentAnswer(text)
-                  setPendingAgentQuestion(null)
-                  return consumeRehydratedClarification(text).then((resumePrompt) => (resumePrompt ? submitMessage(resumePrompt) : undefined))
-                }
-                setPendingAgentAnswer(null)
-                return submitComposerMessage(text)
-              }}
-              lastAssistantMessage={lastAssistantMessage}
-              onCancel={cancelActiveReply}
-              triggerRef={attachmentMenuTriggerRef}
-              panelRef={attachmentMenuPanelRef}
-              imageInputRef={imageInputRef}
-            />
+            {showHistoryPanel ? (
+              <div className={`notia-chat-stage${isWelcomeState ? ' notia-chat-stage--welcome' : ''}`}>
+                {isWelcomeState ? <ChatWelcomeHero libraryName={library?.name ?? null} /> : thread}
+                <div className="notia-chat-composer-dock">{composer}</div>
+                {isWelcomeState ? (
+                  <ChatStarterCards starters={visibleSuggestions} onSelectStarter={setDraft} />
+                ) : null}
+              </div>
+            ) : (
+              <>
+                {thread}
+                {composer}
+              </>
+            )}
           </section>
+
+          {showHistoryPanel && isContextPanelOpen ? (
+            <ChatContextPanel
+              libraryName={library?.name ?? null}
+              contextFiles={workspaceContextFiles}
+              contextFolders={workspaceContextFolders}
+              contextMode={selectedFileContextMode}
+              libraryRagEnabled={libraryRagEnabled}
+              starters={visibleSuggestions}
+              isDisabled={!library || !isAiAvailable}
+              onChooseFiles={() => setIsLibraryFilesModalOpen(true)}
+              onChooseFolders={() => setIsLibraryFoldersModalOpen(true)}
+              onRemoveFile={handleRemoveSelectedFile}
+              onRemoveFolder={handleRemoveSelectedFolder}
+              onSelectStarter={setDraft}
+              agentMemoryEnabled={agentMemoryEnabled}
+              isAgentMemoryChoiceLocked={isAgentMemoryChoiceLocked}
+              onAgentMemoryChange={setNewChatAgentMemoryEnabled}
+              onOpenMemory={() => setIsChatToolsModalOpen(true)}
+              onClose={() => setIsContextPanelOpen(false)}
+            />
+          ) : null}
         </div>
 
         <ChatLibraryFilesModal
@@ -960,6 +1084,21 @@ export function ChatWorkspaceViewComponent({
             setSelectedLibraryFileOptions(selectedOptions)
             setSelectedFileContextMode(contextMode)
             setIsLibraryFilesModalOpen(false)
+          }}
+        />
+        <ChatLibraryFilesModal
+          kind="folders"
+          open={isLibraryFoldersModalOpen}
+          library={library}
+          selectedPaths={selectedLibraryFolderPaths}
+          contextMode={selectedFileContextMode}
+          onClose={() => {
+            setIsLibraryFoldersModalOpen(false)
+          }}
+          onApply={({ selectedPaths, contextMode }) => {
+            setSelectedLibraryFolderPaths(selectedPaths)
+            setSelectedFileContextMode(contextMode)
+            setIsLibraryFoldersModalOpen(false)
           }}
         />
         <CreateChatModal
@@ -979,15 +1118,15 @@ export function ChatWorkspaceViewComponent({
         />
         <AppDialogModal
           open={isChatToolsModalOpen}
-          title="Memoria del chat"
-          message="Administrá la memoria persistente compartida entre chats. Si la borrás, la IA deja de usar esas memorias hasta que vuelvas a completarla."
-          confirmLabel={isClearingLongTermMemory ? 'Borrando...' : 'Borrar memoria'}
+          title="Memoria del agente"
+          message="Notia usa las reglas de .agent/memory/rules.md y la memoria de .agent/memory/memory.md en todos los chats. Agrega una regla cuando le das una instrucción permanente y una memoria cuando mencionás un dato personal o duradero; después ordena memory.md en segundo plano. Borrar la memoria vacía memory.md; las reglas no cambian."
+          confirmLabel={isClearingAgentMemory ? 'Borrando...' : 'Borrar memoria'}
           cancelLabel="Cerrar"
           onConfirm={() => {
-            void handleClearLongTermMemory()
+            void handleClearAgentMemory()
           }}
           onClose={() => {
-            if (isClearingLongTermMemory) {
+            if (isClearingAgentMemory) {
               return
             }
             setIsChatToolsModalOpen(false)
@@ -1109,7 +1248,7 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
-  if (!areStringArraysEqual(previous.suggestions ?? DEFAULT_SUGGESTIONS, next.suggestions ?? DEFAULT_SUGGESTIONS)) {
+  if ((previous.suggestions ?? DEFAULT_SUGGESTIONS) !== (next.suggestions ?? DEFAULT_SUGGESTIONS)) {
     return false
   }
 

@@ -9,26 +9,29 @@ import {
   type ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
 import type {
+  ChatStarter,
   ChatWorkspaceViewProps,
   SelectedImageAttachment,
 } from './ChatWorkspaceViewTypes'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
-const CHAT_HISTORY_ITEM_HEIGHT = 74
+const CHAT_HISTORY_ITEM_HEIGHT = 60
+/** Below this width the chat history floats over the conversation instead of sitting beside it. */
+export const CHAT_HISTORY_DOCKED_QUERY = '(min-width: 981px)'
 
 export function normalizeChatTitle(value: string): string {
   const trimmed = value.trim()
   return trimmed || 'Chat sin titulo'
 }
 
-export function buildAutoCreateChatPayload(showHistoryPanel: boolean): {
-  longTermMemoryEnabled: boolean
+export function buildAutoCreateChatPayload(agentMemoryEnabled: boolean): {
+  agentMemoryEnabled: boolean
   contextMemoryEnabled: boolean
   contextMemoryMessageCount: number
 } {
   return {
-    longTermMemoryEnabled: showHistoryPanel,
+    agentMemoryEnabled,
     contextMemoryEnabled: true,
     contextMemoryMessageCount: 10,
   }
@@ -155,8 +158,8 @@ export interface UseChatStateResult {
   setIsChatToolsModalOpen: React.Dispatch<React.SetStateAction<boolean>>
   isLibraryFilesModalOpen: boolean
   setIsLibraryFilesModalOpen: React.Dispatch<React.SetStateAction<boolean>>
-  isClearingLongTermMemory: boolean
-  setIsClearingLongTermMemory: React.Dispatch<React.SetStateAction<boolean>>
+  isClearingAgentMemory: boolean
+  setIsClearingAgentMemory: React.Dispatch<React.SetStateAction<boolean>>
   chatContextMenuState: {
     chatId: string
     filePath: string
@@ -187,6 +190,10 @@ export interface UseChatStateResult {
   setSelectedLibraryFileOptions: React.Dispatch<React.SetStateAction<ChatLibraryFileOption[]>>
   selectedFileContextMode: ChatFileContextMode
   setSelectedFileContextMode: React.Dispatch<React.SetStateAction<ChatFileContextMode>>
+  selectedLibraryFolderPaths: string[]
+  setSelectedLibraryFolderPaths: React.Dispatch<React.SetStateAction<string[]>>
+  libraryRagEnabled: boolean
+  setLibraryRagEnabled: React.Dispatch<React.SetStateAction<boolean>>
 
   // Streaming
   streamingThinking: string
@@ -210,9 +217,12 @@ export interface UseChatStateResult {
   transientContextSummaryLabel: string | null
   selectedLibraryFileSummary: ChatLibraryFileOption[]
   resolvedPreviousChats: Array<{ id: string; title: string; filePath: string }>
+  filteredPreviousChats: Array<{ id: string; title: string; filePath: string }>
+  chatHistoryQuery: string
+  setChatHistoryQuery: React.Dispatch<React.SetStateAction<string>>
   availablePreviousChats: Array<{ id: string; title: string; filePath: string }>
   compactRecentChats: Array<{ id: string; title: string; filePath: string }>
-  visibleSuggestions: string[]
+  visibleSuggestions: ChatStarter[]
   preferredContextOption: ChatLibraryFileOption | null
   resolvedPreferredContextPaths: string[]
   resolvedTransientContextPaths: string[]
@@ -245,13 +255,17 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     transientContextMode = null,
     transientContextSummary = null,
     selectMatchingChatOnly = false,
+    showHistoryPanel = true,
   } = props
 
   const [locallyDeletedChatPaths, setLocallyDeletedChatPaths] = useState<string[]>([])
   const [pendingAutoCreatedChatFilePath, setPendingAutoCreatedChatFilePath] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(true)
+  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(
+    () => typeof window === 'undefined' || window.matchMedia(CHAT_HISTORY_DOCKED_QUERY).matches,
+  )
+  const [chatHistoryQuery, setChatHistoryQuery] = useState('')
   const [isCreateChatModalOpen, setIsCreateChatModalOpen] = useState(false)
   const [createChatErrorMessage, setCreateChatErrorMessage] = useState<string | null>(null)
   const [isCreateChatSubmitting, setIsCreateChatSubmitting] = useState(false)
@@ -264,7 +278,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   const [streamingThinking, setStreamingThinking] = useState('')
   const [streamingAssistantMessage, setStreamingAssistantMessage] = useState('')
   const [optimisticThreadMessages, setOptimisticThreadMessages] = useState<StoredChatMessage[] | null>(null)
-  const [isClearingLongTermMemory, setIsClearingLongTermMemory] = useState(false)
+  const [isClearingAgentMemory, setIsClearingAgentMemory] = useState(false)
   const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false)
   const [attachmentMenuPosition, setAttachmentMenuPosition] = useState<{ top: number; left: number } | null>(null)
   const [matchedPreferredChatFilePath, setMatchedPreferredChatFilePath] = useState<string | null>(null)
@@ -274,6 +288,8 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   const [selectedLibraryFilePaths, setSelectedLibraryFilePaths] = useState<string[]>([])
   const [selectedLibraryFileOptions, setSelectedLibraryFileOptions] = useState<ChatLibraryFileOption[]>([])
   const [selectedFileContextMode, setSelectedFileContextMode] = useState<ChatFileContextMode>('direct')
+  const [selectedLibraryFolderPaths, setSelectedLibraryFolderPaths] = useState<string[]>([])
+  const [libraryRagEnabled, setLibraryRagEnabled] = useState(true)
   const [selectedImageAttachments, setSelectedImageAttachments] = useState<SelectedImageAttachment[]>([])
   const [chatContextMenuState, setChatContextMenuState] = useState<{
     chatId: string
@@ -293,7 +309,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   const hasMessages = displayedMessages.length > 0
 
   const visibleSuggestions = useMemo(
-    () => suggestions.filter((suggestion) => suggestion.trim().length > 0).slice(0, 4),
+    () => suggestions.filter((suggestion) => suggestion.prompt.trim().length > 0).slice(0, 4),
     [suggestions],
   )
   const availablePreviousChats = useMemo(
@@ -307,13 +323,19 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     })),
     [availablePreviousChats, chatTitleOverrides],
   )
+  // Narrows the already loaded history list; it does not query the library.
+  const filteredPreviousChats = useMemo(() => {
+    const query = chatHistoryQuery.trim().toLocaleLowerCase()
+    if (!query) return resolvedPreviousChats
+    return resolvedPreviousChats.filter((chat) => chat.title.toLocaleLowerCase().includes(query))
+  }, [chatHistoryQuery, resolvedPreviousChats])
   const {
     containerRef: chatHistoryListRef,
     scrollToIndex: scrollChatHistoryToIndex,
     totalSize: chatHistoryTotalSize,
     virtualItems: virtualChatHistoryItems,
   } = useVirtualList({
-    itemCount: resolvedPreviousChats.length,
+    itemCount: filteredPreviousChats.length,
     itemSize: CHAT_HISTORY_ITEM_HEIGHT,
     overscan: 8,
   })
@@ -452,8 +474,13 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     setStreamingAssistantMessage('')
   }, [preferredContextSignature, selectMatchingChatOnly])
 
-  // Auto-select chat file path based on matching preferred context or first available
+  // Auto-select chat file path based on matching preferred context or first available.
+  // The full chat view opens on a new chat instead: it only changes the selection on request.
   useEffect(() => {
+    if (showHistoryPanel) {
+      return
+    }
+
     if (pendingAutoCreatedChatFilePath && selectedChatFilePath === pendingAutoCreatedChatFilePath) {
       return
     }
@@ -514,6 +541,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     resolvedPreferredContextPaths,
     selectMatchingChatOnly,
     selectedChatFilePath,
+    showHistoryPanel,
   ])
 
   // Keep the optimistic selection until context matching has hydrated the new chat.
@@ -533,11 +561,11 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
       return
     }
 
-    const selectedIndex = resolvedPreviousChats.findIndex((chat) => chat.filePath === selectedChatFilePath)
+    const selectedIndex = filteredPreviousChats.findIndex((chat) => chat.filePath === selectedChatFilePath)
     if (selectedIndex >= 0) {
       scrollChatHistoryToIndex(selectedIndex, 'nearest')
     }
-  }, [isHistoryPanelOpen, resolvedPreviousChats, scrollChatHistoryToIndex, selectedChatFilePath])
+  }, [isHistoryPanelOpen, filteredPreviousChats, scrollChatHistoryToIndex, selectedChatFilePath])
 
   // Reset matched preferred chat when preferred context changes
   useEffect(() => {
@@ -715,6 +743,13 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
         ? current
         : activeChatDocument.selectedContextMode
     ))
+    // A backend older than these fields omits them; read that as the old
+    // behavior (no folders, library search on) instead of failing to render.
+    const contextFolders = activeChatDocument.selectedContextFolders ?? []
+    setSelectedLibraryFolderPaths((current) => (
+      areStringArraysEqual(current, contextFolders) ? current : contextFolders
+    ))
+    setLibraryRagEnabled(activeChatDocument.libraryRagEnabled ?? true)
   }, [activeChatDocument, preferredContextMode, preferredContextOption])
 
   // Persist preferred context changes to active document
@@ -804,8 +839,8 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     setIsChatToolsModalOpen,
     isLibraryFilesModalOpen,
     setIsLibraryFilesModalOpen,
-    isClearingLongTermMemory,
-    setIsClearingLongTermMemory,
+    isClearingAgentMemory,
+    setIsClearingAgentMemory,
     chatContextMenuState,
     setChatContextMenuState,
     locallyDeletedChatPaths,
@@ -823,6 +858,10 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     setSelectedLibraryFileOptions,
     selectedFileContextMode,
     setSelectedFileContextMode,
+    selectedLibraryFolderPaths,
+    setSelectedLibraryFolderPaths,
+    libraryRagEnabled,
+    setLibraryRagEnabled,
 
     streamingThinking,
     setStreamingThinking,
@@ -843,6 +882,9 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     transientContextSummaryLabel,
     selectedLibraryFileSummary,
     resolvedPreviousChats,
+    filteredPreviousChats,
+    chatHistoryQuery,
+    setChatHistoryQuery,
     availablePreviousChats,
     compactRecentChats,
     visibleSuggestions,

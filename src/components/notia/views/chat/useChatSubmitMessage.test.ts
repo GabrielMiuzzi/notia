@@ -78,12 +78,14 @@ describe('useChatSubmitMessage lifecycle', () => {
     const library = { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never
     const activeChatDocument = {
       title: 'Chat',
-      longTermMemoryEnabled: false,
+      agentMemoryEnabled: true,
       contextMemoryEnabled: true,
       contextMemoryMessageCount: 10,
       contextScopeKey: null,
       selectedContextMode: 'direct' as const,
       selectedContextFiles: [],
+      selectedContextFolders: [],
+      libraryRagEnabled: true,
       messages: [],
     }
     const setState = vi.fn()
@@ -108,7 +110,6 @@ describe('useChatSubmitMessage lifecycle', () => {
       selectedLibraryFileOptions: [],
       selectedImageAttachments: [],
       selectedFileContextMode: 'direct',
-      showHistoryPanel: true,
       preferredContextScopeKey: null,
       persistTransientContext: false,
       hasTransientContext: false,
@@ -154,12 +155,14 @@ describe('useChatSubmitMessage lifecycle', () => {
     }
     const activeChatDocument = {
       title: 'Chat',
-      longTermMemoryEnabled: false,
+      agentMemoryEnabled: true,
       contextMemoryEnabled: true,
       contextMemoryMessageCount: 10,
       contextScopeKey: null,
       selectedContextMode: 'direct' as const,
       selectedContextFiles: [],
+      selectedContextFolders: [],
+      libraryRagEnabled: true,
       messages: [
         { role: 'user' as const, content: 'Analiza esta teoria.', attachments: [attachment] },
         { role: 'assistant' as const, content: 'Voy a revisarla.' },
@@ -193,7 +196,8 @@ describe('useChatSubmitMessage lifecycle', () => {
       selectedLibraryFileOptions: [],
       selectedImageAttachments: [],
       selectedFileContextMode: 'direct',
-      showHistoryPanel: true,
+      selectedLibraryFolderPaths: ['C:/vault/notas'],
+      libraryRagEnabled: false,
       preferredContextScopeKey: null,
       persistTransientContext: false,
       hasTransientContext: false,
@@ -228,6 +232,8 @@ describe('useChatSubmitMessage lifecycle', () => {
         message: 'Hacelo',
         scope: 'document',
         chat: { kind: 'saved', path: 'C:/vault/chat.md' },
+        // Folders and the library search switch travel to Rust, which expands and enforces them.
+        selection: expect.objectContaining({ folders: ['C:/vault/notas'], libraryRag: false }),
       }),
       expect.anything(),
     )

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Ellipsis, FileText, PencilLine, Search } from 'lucide-react'
+import { Ellipsis, FileText, MessageSquare, PencilLine, Search } from 'lucide-react'
 import { FileViewHost } from './views/FileViewHost' // memoized export
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
@@ -82,6 +82,7 @@ function MainViewComponent({
 
   const handleExplorerToolClick = useNotiaAction('explorerToolClick')
   const handleHeaderActionClick = useNotiaAction('headerActionClick')
+  const handleRailActionClick = useNotiaAction('railActionClick')
 
   const handleExport = useCallback(async (format: MarkdownExportFormat) => {
     if (!activeDocument || !isTextFileDocument(activeDocument) || activeDocument.viewKind !== 'markdown') return
@@ -126,6 +127,17 @@ function MainViewComponent({
                 Nueva nota
               </span>
               <kbd>Ctrl N</kbd>
+            </button>
+            <button
+              type="button"
+              className="notia-main-empty-action"
+              disabled={!activeLibrary}
+              onClick={() => handleRailActionClick('chat')}
+            >
+              <span className="notia-main-empty-action-label">
+                <MessageSquare size={15} strokeWidth={1.75} aria-hidden="true" />
+                Nuevo chat
+              </span>
             </button>
             <button
               type="button"

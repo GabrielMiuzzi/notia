@@ -15,11 +15,13 @@
 - Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
 - Exportación de notas a PDF y DOCX.
 - InkMath para reconocer fórmulas manuscritas.
+- Vista Chat IA con historial buscable, eliminación de chats también desde táctil, estado vacío con sugerencias, modelo activo visible, copia de respuestas y panel de contexto con alcance, acciones rápidas e interruptor para crear chats sin memoria del agente.
+- Chat IA con interruptor de búsqueda en toda la librería (RAG) y contexto fijo de archivos o carpetas completas de la librería.
 - Chat local con IA mediante Ollama, con prompt default del sistema embebido y visualizador sincronizado, prompts Markdown alternativos seleccionables, continuidad conversacional, análisis/comparaciones y reintento seguro de respuestas nativas vacías transitorias después de rondas de tools.
 - Adjuntos locales múltiples en el chat, conservados en los mensajes del historial y reutilizables en seguimientos, con eliminación individual, bloques separados para texto, colección visual ordenada para imágenes y páginas de PDF y previews acotados de imágenes raster persistidas al abrir chats Markdown.
 - Multichat efímero con dinámicas Markdown, contexto adicional opcional fijo, de uno a seis agentes, selección por ronda de subconjunto y orden aleatorios —o agentes concretos/todos según la dinámica—, turnos secuenciales, streaming separado de thinking/respuesta y contexto auxiliar del panel derecho, sin tools, búsqueda web ni mutaciones.
 - Memoria persistente y herramientas nativas para el agente de IA.
-- Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca; Meeting, Graph View, Multichat, publicación y Telegram de otros usuarios sin memoria global.
+- Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca, guardado de datos personales en el mismo turno y organización automática de memory.md en segundo plano; Meeting, Graph View, Multichat, publicación y Telegram de otros usuarios sin memoria global.
 - Chat efímero de Meeting con transcripción offline y diarización.
 - Dictado y síntesis de voz offline, con reconocimiento Parakeet TDT (por defecto) o Qwen3-ASR.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.

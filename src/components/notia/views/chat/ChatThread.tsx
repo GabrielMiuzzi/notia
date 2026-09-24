@@ -1,5 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, Circle, Files, LoaderCircle, OctagonX, User2 } from 'lucide-react'
+import { Bot, Check, Circle, Copy, Files, LoaderCircle, OctagonX, Sparkles, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
@@ -52,6 +52,40 @@ export interface AiOperationHistoryDiff {
     previousSource: string
     nextSource: string
   }[]
+}
+
+const COPY_FEEDBACK_MS = 1_600
+
+function CopyMessageButton({ source }: { source: string }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  useEffect(() => {
+    if (copyState === 'idle') return
+    const timer = window.setTimeout(() => setCopyState('idle'), COPY_FEEDBACK_MS)
+    return () => window.clearTimeout(timer)
+  }, [copyState])
+
+  const label = copyState === 'copied' ? 'Copiado' : copyState === 'failed' ? 'No se pudo copiar' : 'Copiar respuesta'
+  return (
+    <div className="notia-chat-message-actions">
+      <button
+        type="button"
+        className="notia-chat-icon-button notia-chat-icon-button--small"
+        aria-label={label}
+        title={label}
+        onClick={() => {
+          void navigator.clipboard.writeText(source)
+            .then(() => setCopyState('copied'))
+            .catch(() => setCopyState('failed'))
+        }}
+      >
+        {copyState === 'copied' ? <Check size={14} /> : <Copy size={14} />}
+      </button>
+      <span className="notia-chat-message-actions-status" role="status">
+        {copyState === 'idle' ? '' : label}
+      </span>
+    </div>
+  )
 }
 
 function ChatThreadComponent({
@@ -147,11 +181,11 @@ function ChatThreadComponent({
               className={`notia-chat-message notia-chat-message--${message.role}`}
             >
               <div className="notia-chat-message-avatar" aria-hidden="true">
-                {message.role === 'assistant' ? <Bot size={16} /> : <User2 size={16} />}
+                {message.role === 'assistant' ? <Sparkles size={16} /> : <User2 size={16} />}
               </div>
               <div className="notia-chat-message-bubble">
                 <span className="notia-chat-message-role">
-                  {message.role === 'assistant' ? 'Asistente' : 'Vos'}
+                  {message.role === 'assistant' ? 'Notia' : 'Vos'}
                 </span>
                 {message.attachments?.length ? (
                   <div className="notia-chat-message-attachments" role="status" aria-label="Archivos adjuntos conservados en este mensaje">
@@ -160,12 +194,13 @@ function ChatThreadComponent({
                   </div>
                 ) : null}
                 <ChatMarkdownMessage source={message.content} />
+                {message.role === 'assistant' ? <CopyMessageButton source={message.content} /> : null}
               </div>
             </article>
           ))}
           {agentExecutionPlan.length > 0 ? (
             <article className="notia-chat-message notia-chat-message--assistant">
-              <div className="notia-chat-message-avatar" aria-hidden="true"><Bot size={16} /></div>
+              <div className="notia-chat-message-avatar" aria-hidden="true"><Sparkles size={16} /></div>
               <div className="notia-chat-message-bubble notia-chat-agent-plan">
                 <span className="notia-chat-message-role">Plan de ejecución</span>
                 <ol className="notia-chat-agent-plan-list">
@@ -311,11 +346,11 @@ function ChatThreadComponent({
                   <div className="notia-chat-agent-operation-diff-columns">
                     <div>
                       <small>Antes</small>
-                      <pre>{file.previousSource || '(vacÃ­o)'}</pre>
+                      <pre>{file.previousSource || '(vacío)'}</pre>
                     </div>
                     <div>
-                      <small>DespuÃ©s</small>
-                      <pre>{file.nextSource || '(vacÃ­o)'}</pre>
+                      <small>Después</small>
+                      <pre>{file.nextSource || '(vacío)'}</pre>
                     </div>
                   </div>
                 </section>
@@ -327,10 +362,10 @@ function ChatThreadComponent({
               {pendingAgentQuestion ? (
                 <article className="notia-chat-message notia-chat-message--assistant">
                   <div className="notia-chat-message-avatar" aria-hidden="true">
-                    <Bot size={16} />
+                    <Sparkles size={16} />
                   </div>
                   <div className="notia-chat-message-bubble notia-chat-agent-confirmation">
-                    <span className="notia-chat-message-role">Asistente · necesita una aclaración</span>
+                    <span className="notia-chat-message-role">Notia · necesita una aclaración</span>
                     <ChatMarkdownMessage source={pendingAgentQuestion.question} />
                     {pendingAgentQuestion.choices.length > 0 ? (
                       <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Opciones de aclaración">
@@ -365,10 +400,10 @@ function ChatThreadComponent({
               {pendingAgentConfirmation ? (
                 <article className="notia-chat-message notia-chat-message--assistant">
                   <div className="notia-chat-message-avatar" aria-hidden="true">
-                    <Bot size={16} />
+                    <Sparkles size={16} />
                   </div>
                   <div className="notia-chat-message-bubble notia-chat-agent-confirmation">
-                    <span className="notia-chat-message-role">Asistente · requiere confirmación</span>
+                    <span className="notia-chat-message-role">Notia · requiere confirmación</span>
                     <ChatMarkdownMessage source={pendingAgentConfirmation} />
                     {pendingAgentPreview ? (
                       <div className="notia-chat-diff-preview" role="dialog" aria-modal="true" aria-label="Vista previa de cambios">
@@ -438,7 +473,7 @@ function ChatThreadComponent({
               {!pendingAgentQuestion && !pendingAgentConfirmation ? (
               <article className="notia-chat-message notia-chat-message--assistant">
                 <div className="notia-chat-message-avatar" aria-hidden="true">
-                  <Bot size={16} />
+                  <Sparkles size={16} />
                 </div>
                 <div className="notia-chat-message-bubble notia-chat-message-bubble--thinking">
                   <span className="notia-chat-message-role">Progreso</span>
@@ -463,10 +498,10 @@ function ChatThreadComponent({
               {streamingAssistantMessage.trim() ? (
                 <article className="notia-chat-message notia-chat-message--assistant">
                   <div className="notia-chat-message-avatar" aria-hidden="true">
-                    <Bot size={16} />
+                    <Sparkles size={16} />
                   </div>
                   <div className="notia-chat-message-bubble">
-                    <span className="notia-chat-message-role">Asistente</span>
+                    <span className="notia-chat-message-role">Notia</span>
                     <ChatMarkdownMessage source={streamingAssistantMessage} />
                   </div>
                 </article>

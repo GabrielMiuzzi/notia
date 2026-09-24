@@ -9,12 +9,14 @@ const library: NotiaLibrary = { id: 'library-1', name: 'Test', path: '/library' 
 
 const document: StoredChatDocument = {
   title: 'Chat',
-  longTermMemoryEnabled: true,
+  agentMemoryEnabled: true,
   contextMemoryEnabled: true,
   contextMemoryMessageCount: 10,
   contextScopeKey: null,
   selectedContextMode: 'direct',
   selectedContextFiles: ['/library/notas/a.md'],
+  selectedContextFolders: [],
+  libraryRagEnabled: true,
   messages: [{ role: 'user', content: 'Hola' }],
 }
 

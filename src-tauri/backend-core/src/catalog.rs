@@ -285,7 +285,9 @@ fn memory_tool(name: &str, description: &str) -> ToolDefinition {
         name: name.to_string(),
         description: description.to_string(),
         input_schema: serde_json::json!({"type": "object"}),
-        scopes: vec![BackendScope::Library],
+        // Every app chat of the owner can save memories and rules; finance
+        // stays out by design and graph chats are read-only.
+        scopes: vec![BackendScope::Library, BackendScope::Document, BackendScope::TaskManager],
         read_only: false,
         requires_confirmation: false,
     }
@@ -480,7 +482,11 @@ pub fn authorize_tool_call(
 
     match tool_policy(&tool.name) {
         ToolPolicy::Public | ToolPolicy::LibraryRead | ToolPolicy::LibraryWrite => Ok(()),
-        ToolPolicy::Memory if context.actor.is_library_owner() => Ok(()),
+        ToolPolicy::Memory
+            if context.actor.is_library_owner() && context.persistence_policy.allows_memory() =>
+        {
+            Ok(())
+        }
         ToolPolicy::Memory => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta no está autorizada para este usuario.",
@@ -673,6 +679,18 @@ mod tests {
         )
         .expect("catalog projects");
         assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn memory_tools_need_the_owner_and_a_memory_policy() {
+        let memory = tool("add_agent_memory", BackendScope::Library, false);
+        assert!(authorize_tool_call(&context(BackendScope::Library), &principal(), &memory, ToolCatalogProjection::Full).is_ok());
+        let note_chat_memory = canonical_tool_catalog().into_iter().find(|tool| tool.name == "add_agent_memory").expect("tool");
+        assert!(authorize_tool_call(&context(BackendScope::Document), &principal(), &note_chat_memory, ToolCatalogProjection::Full).is_ok());
+        assert!(authorize_tool_call(&context(BackendScope::Finance), &principal(), &note_chat_memory, ToolCatalogProjection::Full).is_err());
+        let mut without_memory = context(BackendScope::Library);
+        without_memory.persistence_policy = super::super::PersistencePolicy::EphemeralNoMemory;
+        assert!(authorize_tool_call(&without_memory, &principal(), &memory, ToolCatalogProjection::Full).is_err());
     }
 
     #[test]

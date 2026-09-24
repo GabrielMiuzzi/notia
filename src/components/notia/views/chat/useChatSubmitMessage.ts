@@ -44,7 +44,9 @@ export function useChatSubmitMessage(
     selectedLibraryFileOptions,
     selectedImageAttachments,
     selectedFileContextMode,
-    showHistoryPanel,
+    selectedLibraryFolderPaths = [],
+    libraryRagEnabled = true,
+    newChatAgentMemoryEnabled = true,
     ephemeralChat = false,
     preferredContextScopeKey,
     persistTransientContext,
@@ -153,7 +155,9 @@ export function useChatSubmitMessage(
     const selection = {
       scopeKey: preferredContextScopeKey,
       files: effectiveSelectedContextPaths,
+      folders: hasTransientContext ? [] : selectedLibraryFolderPaths,
       mode: effectiveSelectedContextMode,
+      libraryRag: libraryRagEnabled,
       keepChatContext: hasTransientContext && !persistTransientContext,
     }
     let targetChatDocument = activeChatDocument
@@ -163,16 +167,17 @@ export function useChatSubmitMessage(
       if (ephemeralChat) {
         targetChatDocument = {
           title: 'Chat efímero',
-          ...buildAutoCreateChatPayload(showHistoryPanel),
-          longTermMemoryEnabled: false,
+          ...buildAutoCreateChatPayload(newChatAgentMemoryEnabled),
           contextScopeKey: preferredContextScopeKey,
           selectedContextMode: 'direct',
           selectedContextFiles: [],
+          selectedContextFolders: [],
+          libraryRagEnabled: true,
           messages: [],
         }
         targetChatFilePath = null
       } else try {
-        const created = await createChatDraftFile(library, buildAutoCreateChatPayload(showHistoryPanel), selection)
+        const created = await createChatDraftFile(library, buildAutoCreateChatPayload(newChatAgentMemoryEnabled), selection)
         if (!mountedRef.current) return
         setPendingAutoCreatedChatFilePath(created.filePath)
         setSelectedChatFilePath(created.filePath)

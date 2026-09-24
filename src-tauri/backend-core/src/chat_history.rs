@@ -88,11 +88,22 @@ impl ChatContextMode {
     }
 }
 
+fn agent_memory_default() -> bool {
+    true
+}
+
+fn library_rag_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredChatDocument {
     pub title: String,
-    pub long_term_memory_enabled: bool,
+    /// Whether turns of this chat use the agent memory (`memory.md`).
+    /// Chosen when the chat is created; missing in older chats, which use it.
+    #[serde(default = "agent_memory_default")]
+    pub agent_memory_enabled: bool,
     pub context_memory_enabled: bool,
     pub context_memory_message_count: u32,
     pub context_scope_key: Option<String>,
@@ -100,21 +111,30 @@ pub struct StoredChatDocument {
     pub selected_context_mode: ChatContextMode,
     #[serde(default)]
     pub selected_context_files: Vec<String>,
+    /// Folders whose files (subfolders included) the chat uses as context.
+    #[serde(default)]
+    pub selected_context_folders: Vec<String>,
+    /// Whether the agent may search the whole library; missing in older
+    /// chats, which could.
+    #[serde(default = "library_rag_default")]
+    pub library_rag_enabled: bool,
     #[serde(default)]
     pub messages: Vec<StoredChatMessage>,
 }
 
 impl StoredChatDocument {
     /// Empty chat with the given settings.
-    pub fn new(title: String, long_term_memory: bool, context_memory: bool, context_count: u32) -> Self {
+    pub fn new(title: String, agent_memory: bool, context_memory: bool, context_count: u32) -> Self {
         Self {
             title,
-            long_term_memory_enabled: long_term_memory,
+            agent_memory_enabled: agent_memory,
             context_memory_enabled: context_memory,
             context_memory_message_count: clamp_context_count(i64::from(context_count)),
             context_scope_key: None,
             selected_context_mode: ChatContextMode::Direct,
             selected_context_files: Vec::new(),
+            selected_context_folders: Vec::new(),
+            library_rag_enabled: true,
             messages: Vec::new(),
         }
     }
@@ -345,7 +365,7 @@ pub fn parse_chat_document(source: &str, fallback_title: &str) -> StoredChatDocu
         Some(Value::Scalar(Scalar::Number(number))) if number.is_finite() => clamp_context_count(number.round() as i64),
         _ => 10,
     };
-    let files = match find("selectedContextFiles") {
+    let list = |key: &str| match find(key) {
         Some(Value::List(items)) => items
             .iter()
             .filter_map(|item| match item {
@@ -357,7 +377,7 @@ pub fn parse_chat_document(source: &str, fallback_title: &str) -> StoredChatDocu
     };
     StoredChatDocument {
         title: text("title").unwrap_or_else(|| fallback_title.to_string()),
-        long_term_memory_enabled: flag("longTermMemory"),
+        agent_memory_enabled: flag("agentMemory"),
         context_memory_enabled: flag("contextMemory"),
         context_memory_message_count: count,
         context_scope_key: text("contextScopeKey"),
@@ -366,7 +386,9 @@ pub fn parse_chat_document(source: &str, fallback_title: &str) -> StoredChatDocu
         } else {
             ChatContextMode::Direct
         },
-        selected_context_files: files,
+        selected_context_files: list("selectedContextFiles"),
+        selected_context_folders: list("selectedContextFolders"),
+        library_rag_enabled: flag("libraryRag"),
         messages: extract_messages(&body),
     }
 }
@@ -381,7 +403,7 @@ pub fn serialize_chat_document(document: &StoredChatDocument) -> String {
     let mut lines = vec![
         format!("title: {}", serialize_text(&document.title)),
         format!("contexto: {}", serialize_text(CONFIDENTIAL_CONTEXT)),
-        format!("longTermMemory: {}", document.long_term_memory_enabled),
+        format!("agentMemory: {}", document.agent_memory_enabled),
         format!("contextMemory: {}", document.context_memory_enabled),
         format!("contextMemoryMessageCount: {}", clamp_context_count(i64::from(document.context_memory_message_count))),
         format!(
@@ -390,12 +412,15 @@ pub fn serialize_chat_document(document: &StoredChatDocument) -> String {
         ),
         format!("selectedContextMode: {}", document.selected_context_mode.as_str()),
     ];
-    if document.selected_context_files.is_empty() {
-        lines.push("selectedContextFiles: []".to_string());
-    } else {
-        lines.push("selectedContextFiles:".to_string());
-        lines.extend(document.selected_context_files.iter().map(|path| format!("  - {}", serialize_text(path))));
+    for (key, paths) in [("selectedContextFiles", &document.selected_context_files), ("selectedContextFolders", &document.selected_context_folders)] {
+        if paths.is_empty() {
+            lines.push(format!("{key}: []"));
+        } else {
+            lines.push(format!("{key}:"));
+            lines.extend(paths.iter().map(|path| format!("  - {}", serialize_text(path))));
+        }
     }
+    lines.push(format!("libraryRag: {}", document.library_rag_enabled));
     format!("---\n{}\n---\n\n{}", lines.join("\n"), chat_body(document, &document.messages))
 }
 
@@ -509,8 +534,10 @@ mod tests {
     }
 
     fn document() -> StoredChatDocument {
-        let mut document = StoredChatDocument::new("Mi chat: prueba".into(), true, false, 12);
+        let mut document = StoredChatDocument::new("Mi chat: prueba".into(), false, false, 12);
         document.selected_context_files = vec!["notas/a.md".into()];
+        document.selected_context_folders = vec!["notas/2026".into()];
+        document.library_rag_enabled = false;
         document.context_scope_key = Some("library".into());
         document.messages = vec![
             StoredChatMessage { role: ChatRole::User, content: "Hola".into(), attachments: vec![attachment()] },
@@ -530,7 +557,8 @@ mod tests {
     fn defaults_apply_to_missing_settings() {
         let parsed = parse_chat_document("# Solo cuerpo\n", "Fallback");
         assert_eq!(parsed.title, "Fallback");
-        assert!(parsed.long_term_memory_enabled && parsed.context_memory_enabled);
+        assert!(parsed.agent_memory_enabled && parsed.context_memory_enabled && parsed.library_rag_enabled);
+        assert!(parsed.selected_context_folders.is_empty());
         assert_eq!(parsed.context_memory_message_count, 10);
         assert!(parsed.messages.is_empty());
     }

@@ -4,7 +4,7 @@ import { mutateLibraryEntry } from '../libraries/libraryRuntime'
 import type { StoredChatDocument } from './chatDocumentStorage'
 
 export interface CreateChatFileInput {
-  longTermMemoryEnabled: boolean
+  agentMemoryEnabled: boolean
   contextMemoryEnabled: boolean
   contextMemoryMessageCount: number
 }
@@ -19,7 +19,9 @@ function localStamp(now: Date): string {
 export interface CreateChatContext {
   scopeKey: string | null
   files: string[]
+  folders: string[]
   mode: 'direct' | 'index'
+  libraryRag: boolean
   keepChatContext: boolean
 }
 

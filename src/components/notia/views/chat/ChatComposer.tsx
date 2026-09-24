@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, FileImage, FileText, Files, Info, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, FileImage, FileText, Files, Folder, FolderSearch, Info, Library, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
@@ -11,6 +11,16 @@ import { selectQwen3TtsSettings } from '../../../../features/preferences/prefere
 import { playConversationReadyCue, speakWithQwen3Tts, stopQwen3TtsSpeech } from '../../../../services/qwen3Tts/qwen3TtsRuntime'
 
 interface ChatComposerProps {
+  /** `workspace` is the full chat view layout; `panel` keeps the compact side panel layout. */
+  variant?: 'panel' | 'workspace'
+  /** Workspace only: whether the agent may search the whole library (RAG). */
+  libraryRagEnabled?: boolean
+  onLibraryRagChange?: (enabled: boolean) => void
+  /** Folders whose files the chat uses as context. */
+  selectedLibraryFolderPaths?: string[]
+  onRemoveFolder?: (path: string) => void
+  /** Shows "Buscar carpetas de la librería" in the attachment menu. */
+  onOpenLibraryFoldersModal?: () => void
   draft: string
   setDraft: (value: string) => void
   canSubmit: boolean
@@ -46,6 +56,12 @@ interface ChatComposerProps {
 }
 
 function ChatComposerComponent({
+  variant = 'panel',
+  libraryRagEnabled = true,
+  onLibraryRagChange,
+  selectedLibraryFolderPaths = [],
+  onRemoveFolder,
+  onOpenLibraryFoldersModal,
   draft,
   setDraft,
   canSubmit,
@@ -151,10 +167,57 @@ function ChatComposerComponent({
     || selectedLibraryFileSummary.length > 0
     || transientContextSummaryLabel
     || effectiveSelectedContextPaths.length > 0
+    || selectedLibraryFolderPaths.length > 0
+
+  const attachmentMenu = isAttachmentMenuOpen ? (
+    <NotiaSubmenuPanel
+      ref={panelRef}
+      className="notia-chat-attachment-menu"
+      style={attachmentMenuPosition
+        ? {
+          position: 'fixed',
+          top: `${attachmentMenuPosition.top}px`,
+          left: `${attachmentMenuPosition.left}px`,
+        }
+        : {
+          position: 'fixed',
+          top: '0',
+          left: '0',
+          visibility: 'hidden',
+        }}
+    >
+      <button
+        type="button"
+        className="notia-chat-attachment-menu-item"
+        onClick={onSelectImage}
+      >
+        <FileText size={15} />
+        <span>Seleccionar archivo</span>
+      </button>
+      <button
+        type="button"
+        className="notia-chat-attachment-menu-item"
+        onClick={onOpenLibraryFilesModal}
+      >
+        <Files size={15} />
+        <span>Buscar archivos de la librería</span>
+      </button>
+      {onOpenLibraryFoldersModal ? (
+        <button
+          type="button"
+          className="notia-chat-attachment-menu-item"
+          onClick={onOpenLibraryFoldersModal}
+        >
+          <FolderSearch size={15} />
+          <span>Buscar carpetas de la librería</span>
+        </button>
+      ) : null}
+    </NotiaSubmenuPanel>
+  ) : null
 
   return (
     <form
-      className="notia-chat-composer"
+      className={`notia-chat-composer notia-chat-composer--${variant}`}
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit()
@@ -264,7 +327,25 @@ function ChatComposerComponent({
                 </button>
               </div>
             )) : null}
-          {effectiveSelectedContextPaths.length > 0 ? (
+          {selectedLibraryFolderPaths.map((path) => {
+            const displayName = buildAttachmentDisplayName(path)
+            return (
+              <div key={path} className="notia-chat-attachment-pill" title={path}>
+                <Folder size={14} />
+                <span>{displayName}</span>
+                {onRemoveFolder ? (
+                  <button
+                    type="button"
+                    aria-label={`Quitar la carpeta ${displayName}`}
+                    onClick={() => onRemoveFolder(path)}
+                  >
+                    <X size={12} />
+                  </button>
+                ) : null}
+              </div>
+            )
+          })}
+          {effectiveSelectedContextPaths.length > 0 || selectedLibraryFolderPaths.length > 0 ? (
             <div
               className="notia-chat-attachment-mode-badge"
               title={
@@ -290,7 +371,9 @@ function ChatComposerComponent({
           rows={1}
           placeholder={awaitingAgentClarification
             ? 'Escribí la aclaración para que el agente continúe...'
-            : library ? 'Escribi tu mensaje...' : 'Primero elegí una librería activa...'}
+            : !library
+              ? 'Primero elegí una librería activa...'
+              : variant === 'workspace' ? 'Preguntá sobre tus notas y tareas…' : 'Escribi tu mensaje...'}
           disabled={!library}
           readOnly={voice.isActive}
           onChange={(event) => {
@@ -334,86 +417,125 @@ function ChatComposerComponent({
           ) : null}
         </div>
       ) : null}
-      <div className="notia-chat-composer-footer">
-        <span>{activeModelLabel} · Enter para enviar. Shift + Enter para salto de linea.</span>
-        <div className="notia-chat-composer-actions">
-          <NotiaButton
-            type="button"
-            size="icon"
-            variant="secondary"
-            title="Dictar mensaje sin conexion"
-            aria-label="Iniciar dictado por microfono"
-            onClick={voice.start}
-            disabled={!library || voice.isActive || !voice.isModelReady}
-          >
-            <Mic size={16} />
-          </NotiaButton>
+      {variant === 'workspace' ? (
+        <div className="notia-chat-composer-toolbar">
           <div className="notia-chat-attachment-menu-shell">
-            <NotiaButton
+            <button
               ref={triggerRef}
-              size="icon"
-              variant="secondary"
+              type="button"
+              className="notia-chat-composer-tool"
               title="Adjuntar archivo"
               aria-label="Adjuntar archivo"
               onClick={onToggleAttachmentMenu}
               disabled={!library || isSubmitting || !isAiAvailable}
             >
               <Plus size={16} />
-            </NotiaButton>
-            {isAttachmentMenuOpen ? (
-              <NotiaSubmenuPanel
-                ref={panelRef}
-                className="notia-chat-attachment-menu"
-                style={attachmentMenuPosition
-                  ? {
-                    position: 'fixed',
-                    top: `${attachmentMenuPosition.top}px`,
-                    left: `${attachmentMenuPosition.left}px`,
-                  }
-                  : {
-                    position: 'fixed',
-                    top: '0',
-                    left: '0',
-                    visibility: 'hidden',
-                  }}
-              >
-                <button
-                  type="button"
-                  className="notia-chat-attachment-menu-item"
-                  onClick={onSelectImage}
-                >
-                  <FileText size={15} />
-                  <span>Seleccionar archivo</span>
-                </button>
-                <button
-                  type="button"
-                  className="notia-chat-attachment-menu-item"
-                  onClick={onOpenLibraryFilesModal}
-                >
-                  <Files size={15} />
-                  <span>Buscar archivos de la librería</span>
-                </button>
-              </NotiaSubmenuPanel>
-            ) : null}
+            </button>
+            {attachmentMenu}
           </div>
-          <NotiaButton type="submit" variant="primary" disabled={!canSubmit && !isSubmitting}>
-            {awaitingAgentClarification ? 'Responder' : isSubmitting ? 'Enviando...' : 'Enviar'}
-            <ArrowUp size={16} />
-          </NotiaButton>
-          {isSubmitting && onCancel ? (
-            <NotiaButton
+          {onLibraryRagChange ? (
+            <button
               type="button"
-              variant="secondary"
+              role="switch"
+              aria-checked={libraryRagEnabled}
+              className="notia-chat-rag-switch"
+              title={libraryRagEnabled
+                ? 'La IA puede buscar en toda la librería (RAG). Tocá para usar solo los archivos y carpetas elegidos.'
+                : 'La IA usa solo los archivos y carpetas elegidos. Tocá para que busque en toda la librería.'}
+              onClick={() => onLibraryRagChange(!libraryRagEnabled)}
+              disabled={!library || isSubmitting}
+            >
+              <Library size={14} aria-hidden="true" />
+              <span>Toda la librería</span>
+              <span className="notia-chat-switch" aria-hidden="true">
+                <span className="notia-chat-switch-thumb" />
+              </span>
+            </button>
+          ) : null}
+          <span className="notia-chat-composer-hint">Enter envía · Shift+Enter salto</span>
+          <button
+            type="button"
+            className="notia-chat-composer-tool notia-chat-composer-tool--plain"
+            title="Dictar mensaje sin conexion"
+            aria-label="Iniciar dictado por microfono"
+            onClick={voice.start}
+            disabled={!library || voice.isActive || !voice.isModelReady}
+          >
+            <Mic size={17} />
+          </button>
+          {isSubmitting && onCancel ? (
+            <button
+              type="button"
+              className="notia-chat-send-button notia-chat-send-button--stop"
+              title="Detener respuesta"
+              aria-label="Detener respuesta"
               onClick={(event) => {
                 event.preventDefault()
                 onCancel()
               }}
             >
-              Cancelar
-            </NotiaButton>
-          ) : null}
+              <Square size={14} />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="notia-chat-send-button"
+              title={awaitingAgentClarification ? 'Responder' : 'Enviar'}
+              aria-label={awaitingAgentClarification ? 'Responder' : 'Enviar mensaje'}
+              disabled={!canSubmit}
+            >
+              <ArrowUp size={17} />
+            </button>
+          )}
         </div>
-      </div>
+      ) : (
+        <div className="notia-chat-composer-footer">
+          <span>{activeModelLabel} · Enter para enviar. Shift + Enter para salto de linea.</span>
+          <div className="notia-chat-composer-actions">
+            <NotiaButton
+              type="button"
+              size="icon"
+              variant="secondary"
+              title="Dictar mensaje sin conexion"
+              aria-label="Iniciar dictado por microfono"
+              onClick={voice.start}
+              disabled={!library || voice.isActive || !voice.isModelReady}
+            >
+              <Mic size={16} />
+            </NotiaButton>
+            <div className="notia-chat-attachment-menu-shell">
+              <NotiaButton
+                ref={triggerRef}
+                size="icon"
+                variant="secondary"
+                title="Adjuntar archivo"
+                aria-label="Adjuntar archivo"
+                onClick={onToggleAttachmentMenu}
+                disabled={!library || isSubmitting || !isAiAvailable}
+              >
+                <Plus size={16} />
+              </NotiaButton>
+              {attachmentMenu}
+            </div>
+            <NotiaButton type="submit" variant="primary" disabled={!canSubmit && !isSubmitting}>
+              {awaitingAgentClarification ? 'Responder' : isSubmitting ? 'Enviando...' : 'Enviar'}
+              <ArrowUp size={16} />
+            </NotiaButton>
+            {isSubmitting && onCancel ? (
+              <NotiaButton
+                type="button"
+                variant="secondary"
+                onClick={(event) => {
+                  event.preventDefault()
+                  onCancel()
+                }}
+              >
+                Cancelar
+              </NotiaButton>
+            ) : null}
+          </div>
+        </div>
+      )}
     </form>
   )
 }

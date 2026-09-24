@@ -4,7 +4,6 @@ import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
 export interface CreateChatModalSubmitPayload {
-  longTermMemoryEnabled: boolean
   contextMemoryEnabled: boolean
   contextMemoryMessageCount: number
 }
@@ -26,7 +25,6 @@ export function CreateChatModal({
   onClose,
   onSubmit,
 }: CreateChatModalProps) {
-  const [longTermMemoryEnabled, setLongTermMemoryEnabled] = useState(true)
   const [contextMemoryEnabled, setContextMemoryEnabled] = useState(true)
   const [contextMemoryMessageCount, setContextMemoryMessageCount] = useState(DEFAULT_CONTEXT_MEMORY_COUNT)
 
@@ -35,7 +33,6 @@ export function CreateChatModal({
       return
     }
 
-    setLongTermMemoryEnabled(true)
     setContextMemoryEnabled(true)
     setContextMemoryMessageCount(DEFAULT_CONTEXT_MEMORY_COUNT)
   }, [open])
@@ -57,26 +54,11 @@ export function CreateChatModal({
         onSubmit={(event) => {
           event.preventDefault()
           onSubmit({
-            longTermMemoryEnabled,
             contextMemoryEnabled,
             contextMemoryMessageCount: Math.max(1, Math.round(contextMemoryMessageCount || DEFAULT_CONTEXT_MEMORY_COUNT)),
           })
         }}
       >
-        <label className="notia-create-chat-modal-check">
-          <input
-            type="checkbox"
-            checked={longTermMemoryEnabled}
-            onChange={(event) => {
-              setLongTermMemoryEnabled(event.target.checked)
-            }}
-          />
-          <div>
-            <strong>Memoria persistente</strong>
-            <span>Permite usar la memoria persistente del agente en este chat.</span>
-          </div>
-        </label>
-
         <label className="notia-create-chat-modal-check">
           <input
             type="checkbox"

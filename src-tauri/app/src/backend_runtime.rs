@@ -763,7 +763,8 @@ impl notia_backend_core::AgentStateRepository for TauriAgentStateRepository {
     }
 
     fn save_memory(&self, _library_id: &str, _library_user_id: &str, _content: &str) -> Result<(), BackendError> {
-        // Memory writes go through the confirmed `add_agent_memory` tool.
+        // Memory writes go through the `add_agent_memory` tool, which only
+        // the owner gets under a persistent policy.
         Err(unsupported("La memoria del agente solo se modifica con una herramienta confirmada."))
     }
 
@@ -951,6 +952,11 @@ struct TauriBackendToolExecutor {
 
 /// Documents a single multi-document apply may touch.
 const MAX_MULTI_DOCUMENT_APPLY: usize = 20;
+
+/// Tools the app runtime can execute; a turn may ask for a subset.
+pub(crate) fn supported_tool_names() -> &'static [&'static str] {
+    TauriBackendToolExecutor::supported_tool_names()
+}
 
 impl TauriBackendToolExecutor {
     fn supported_tool_names() -> &'static [&'static str] {
@@ -2085,6 +2091,11 @@ impl TauriBackendToolExecutor {
             ));
         }
         let changed = crate::agent_workspace::append_agent_item(&self.app, &context.library_id, kind, value)?;
+        if changed && matches!(kind, crate::agent_workspace::AgentItem::Memory) {
+            // A parallel call without tools and without memory context
+            // organizes memory.md; the turn does not wait for it.
+            crate::agent_knowledge::schedule_memory_organization(&self.app, &context.library_id);
+        }
         Ok(json!({ "changed": changed }))
     }
 

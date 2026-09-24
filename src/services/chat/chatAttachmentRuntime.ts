@@ -7,6 +7,8 @@ export interface ChatLibraryFileOption {
   path: string
   name: string
   relativePath: string
+  /** Folders only: files inside, subfolders included. */
+  fileCount?: number
 }
 
 export interface ChatInlineFileAttachment {
@@ -28,6 +30,11 @@ export function buildAttachmentDisplayName(pathValue: string, options: ChatLibra
 /** Files of the library from the backend inventory, sorted by path. */
 export function loadLibraryFileOptions(library: NotiaLibrary): Promise<ChatLibraryFileOption[]> {
   return callBackend<ChatLibraryFileOption[]>('library_list_files', { payload: { libraryId: library.id } })
+}
+
+/** Folders of the library that hold files, from the backend inventory. */
+export function loadLibraryFolderOptions(library: NotiaLibrary): Promise<ChatLibraryFileOption[]> {
+  return callBackend<ChatLibraryFileOption[]>('library_list_folders', { payload: { libraryId: library.id } })
 }
 
 export function filterLibraryFileOptions(

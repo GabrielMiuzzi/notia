@@ -12,6 +12,7 @@ pub mod ai_settings;
 pub mod calendar;
 pub mod catalog;
 pub mod chat_attachments;
+pub mod chat_context;
 pub mod chat_history;
 pub mod chat_turn;
 pub mod coldpass;

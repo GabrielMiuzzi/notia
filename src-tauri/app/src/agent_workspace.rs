@@ -270,7 +270,7 @@ pub(crate) async fn backend_select_agent_prompt(
     .await
 }
 
-/// Persistent memories of the library.
+/// Memories saved in `memory.md`.
 pub(crate) fn memories(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
     ensure_workspace(app, library_id)?;
     with_documents(app, library_id, |documents| {
@@ -278,6 +278,37 @@ pub(crate) fn memories(app: &AppHandle, library_id: &str) -> Result<Vec<String>,
             .read(workspace::MEMORY_PATH)?
             .map(|content| workspace::parse_memory_items(workspace::document_body(&content)))
             .unwrap_or_default())
+    })
+}
+
+/// Replaces the memories with `next` only when `memory.md` still holds
+/// `expected`, so a memory saved meanwhile is never overwritten. Returns
+/// whether it wrote.
+pub(crate) fn replace_memories_if_unchanged(
+    app: &AppHandle,
+    library_id: &str,
+    expected: &[String],
+    next: Vec<String>,
+) -> Result<bool, BackendError> {
+    validate_items(&next)?;
+    let next = workspace::merge_memories(next);
+    with_workspace_lock(app, || {
+        with_documents(app, library_id, |documents| {
+            let current = documents.read(workspace::MEMORY_PATH)?;
+            let saved = current
+                .as_deref()
+                .map(|content| workspace::parse_memory_items(workspace::document_body(content)))
+                .unwrap_or_default();
+            if saved != expected || saved == next {
+                return Ok(false);
+            }
+            documents.write(
+                workspace::MEMORY_PATH,
+                current.as_deref(),
+                &workspace::with_confidential_context(&workspace::render_memories(&next)),
+            )?;
+            Ok(true)
+        })
     })
 }
 
@@ -299,31 +330,15 @@ pub(crate) fn save_memories(app: &AppHandle, library_id: &str, items: Vec<String
     Ok(memories)
 }
 
-/// Rules the agent added to the library.
-pub(crate) fn rules(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
-    ensure_workspace(app, library_id)?;
-    with_documents(app, library_id, |documents| {
-        let current = documents.read(workspace::RULES_PATH)?;
-        Ok(workspace::ia_rules(current.as_deref().map(workspace::document_body).unwrap_or("")))
-    })
-}
-
-/// Replaces the rules the agent added; the managed defaults stay.
-pub(crate) fn save_rules(app: &AppHandle, library_id: &str, items: Vec<String>) -> Result<Vec<String>, BackendError> {
-    validate_items(&items)?;
-    ensure_workspace(app, library_id)?;
-    with_workspace_lock(app, || {
-        with_documents(app, library_id, |documents| {
-            let current = documents.read(workspace::RULES_PATH)?;
-            let body = workspace::replace_ia_rules(current.as_deref().map(workspace::document_body).unwrap_or(""), &items);
-            documents.write(workspace::RULES_PATH, current.as_deref(), &workspace::with_confidential_context(&body))?;
-            Ok(workspace::ia_rules(&body))
-        })
-    })
-}
-
 pub(crate) async fn backend_save_agent_memories(app: AppHandle, payload: AgentItemsPayload) -> Result<Vec<String>, BackendError> {
-    blocking(move || save_memories(&app, &payload.library_id, payload.items)).await
+    blocking(move || {
+        let saved = save_memories(&app, &payload.library_id, payload.items)?;
+        if !saved.is_empty() {
+            crate::agent_knowledge::schedule_memory_organization(&app, &payload.library_id);
+        }
+        Ok(saved)
+    })
+    .await
 }
 
 fn append_rule_locked(app: &AppHandle, library_id: &str, rule: &str) -> Result<bool, BackendError> {

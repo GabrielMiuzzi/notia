@@ -7,6 +7,7 @@ import type { NotiaLibrary } from '../../../../types/notia'
 import {
   filterLibraryFileOptions,
   loadLibraryFileOptions,
+  loadLibraryFolderOptions,
   type ChatFileContextMode,
   type ChatLibraryFileOption,
 } from '../../../../services/chat/chatAttachmentRuntime'
@@ -15,7 +16,32 @@ const CHAT_FILES_INDEX_MODE_DESCRIPTION =
   'La IA conoce los nombres y rutas de los archivos, pero no su contenido completo.'
 const CHAT_FILES_DIRECT_MODE_DESCRIPTION = 'Se envía el contenido completo de cada archivo al modelo.'
 
+const MODAL_COPY = {
+  files: {
+    title: 'Archivos de la librería',
+    description: 'Buscá por nombre, elegí uno o varios archivos y definí cómo enviarlos al modelo.',
+    placeholder: 'Buscar archivos por nombre...',
+    selected: (count: number) => `${count} archivo(s) seleccionado(s)`,
+    loading: 'Cargando archivos de la librería...',
+    noMatch: 'No hay archivos que coincidan con esa búsqueda.',
+    empty: 'No hay archivos disponibles en la librería.',
+    error: 'No se pudieron cargar los archivos de la librería.',
+  },
+  folders: {
+    title: 'Carpetas de la librería',
+    description: 'Elegí una o varias carpetas: el chat usa todos sus archivos, subcarpetas incluidas.',
+    placeholder: 'Buscar carpetas por nombre...',
+    selected: (count: number) => `${count} carpeta(s) seleccionada(s)`,
+    loading: 'Cargando carpetas de la librería...',
+    noMatch: 'No hay carpetas que coincidan con esa búsqueda.',
+    empty: 'La librería no tiene carpetas con archivos.',
+    error: 'No se pudieron cargar las carpetas de la librería.',
+  },
+} as const
+
 interface ChatLibraryFilesModalProps {
+  /** Pick files (default) or folders of the library. */
+  kind?: keyof typeof MODAL_COPY
   open: boolean
   library: NotiaLibrary | null
   selectedPaths: string[]
@@ -31,6 +57,7 @@ interface ChatLibraryFilesModalProps {
 const CHAT_LIBRARY_FILE_OPTION_HEIGHT = 60
 
 export function ChatLibraryFilesModal({
+  kind = 'files',
   open,
   library,
   selectedPaths,
@@ -45,12 +72,11 @@ export function ChatLibraryFilesModal({
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [needsDraftReset, setNeedsDraftReset] = useState(false)
-  const [needsOptionsReset, setNeedsOptionsReset] = useState(false)
+  const copy = MODAL_COPY[kind]
 
   useEffect(() => {
     if (open) {
       setNeedsDraftReset(true)
-      setNeedsOptionsReset(true)
     }
   }, [open])
 
@@ -64,11 +90,12 @@ export function ChatLibraryFilesModal({
     setQuery('')
   }, [contextMode, needsDraftReset, selectedPaths])
 
+  // Loads the files each time the modal opens. The effect depends only on
+  // `open` and `library`, so its own state updates never cancel the request.
   useEffect(() => {
-    if (!needsOptionsReset) {
+    if (!open) {
       return
     }
-    setNeedsOptionsReset(false)
     if (!library) {
       setOptions([])
       setIsLoading(false)
@@ -79,7 +106,8 @@ export function ChatLibraryFilesModal({
     setIsLoading(true)
     setErrorMessage(null)
 
-    void loadLibraryFileOptions(library)
+    const loadOptions = kind === 'folders' ? loadLibraryFolderOptions : loadLibraryFileOptions
+    void loadOptions(library)
       .then((nextOptions) => {
         if (!cancelled) {
           setOptions(nextOptions)
@@ -90,7 +118,7 @@ export function ChatLibraryFilesModal({
           setErrorMessage(
             error instanceof Error && error.message.trim()
               ? error.message
-              : 'No se pudieron cargar los archivos de la librería.',
+              : MODAL_COPY[kind].error,
           )
         }
       })
@@ -103,7 +131,7 @@ export function ChatLibraryFilesModal({
     return () => {
       cancelled = true
     }
-  }, [library, needsOptionsReset])
+  }, [kind, library, open])
 
   const visibleOptions = useMemo(
     () => filterLibraryFileOptions(options, query),
@@ -131,8 +159,8 @@ export function ChatLibraryFilesModal({
     <NotiaModalShell open={open} onClose={onClose} size="lg" panelClassName="notia-chat-files-modal">
       <div className="notia-chat-files-modal-header">
         <div>
-          <h2>Archivos de la librería</h2>
-          <p>Buscá por nombre, elegí uno o varios archivos y definí cómo enviarlos al modelo.</p>
+          <h2>{copy.title}</h2>
+          <p>{copy.description}</p>
         </div>
         <NotiaButton size="icon" variant="ghost" className="notia-settings-close" title="Cerrar" onClick={onClose}>
           <X size={16} />
@@ -146,7 +174,7 @@ export function ChatLibraryFilesModal({
             <input
               type="text"
               value={query}
-              placeholder="Buscar archivos por nombre..."
+              placeholder={copy.placeholder}
               onChange={(event) => {
                 setQuery(event.target.value)
               }}
@@ -180,7 +208,7 @@ export function ChatLibraryFilesModal({
         </div>
 
         <div className="notia-chat-files-modal-copy">
-          <span>{draftSelectedPaths.length} archivo(s) seleccionado(s)</span>
+          <span>{copy.selected(draftSelectedPaths.length)}</span>
           <span title={draftContextMode === 'index' ? CHAT_FILES_INDEX_MODE_DESCRIPTION : CHAT_FILES_DIRECT_MODE_DESCRIPTION}>
             {draftContextMode === 'index'
               ? 'Referencia: la IA conoce nombres y rutas, no el contenido completo'
@@ -190,7 +218,7 @@ export function ChatLibraryFilesModal({
 
         <div ref={containerRef} className="notia-chat-files-modal-list" role="list">
           {isLoading ? (
-            <div className="notia-chat-files-modal-empty">Cargando archivos de la librería...</div>
+            <div className="notia-chat-files-modal-empty">{copy.loading}</div>
           ) : errorMessage ? (
             <div className="notia-chat-files-modal-empty">{errorMessage}</div>
           ) : visibleOptions.length > 0 ? (
@@ -231,7 +259,10 @@ export function ChatLibraryFilesModal({
                       />
                       <div>
                         <strong>{option.name}</strong>
-                        <span>{option.relativePath}</span>
+                        <span>
+                          {option.relativePath}
+                          {option.fileCount !== undefined ? ` · ${option.fileCount} archivo${option.fileCount === 1 ? '' : 's'}` : ''}
+                        </span>
                       </div>
                     </label>
                   </div>
@@ -240,7 +271,7 @@ export function ChatLibraryFilesModal({
             </div>
           ) : (
             <div className="notia-chat-files-modal-empty">
-              {query.trim() ? 'No hay archivos que coincidan con esa búsqueda.' : 'No hay archivos disponibles en la librería.'}
+              {query.trim() ? copy.noMatch : copy.empty}
             </div>
           )}
         </div>

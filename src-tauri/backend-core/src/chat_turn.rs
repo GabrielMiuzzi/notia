@@ -37,7 +37,7 @@ pub enum TurnMode {
 }
 
 /// Context files the chat composer has selected.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextSelection {
     #[serde(default)]
@@ -46,10 +46,41 @@ pub struct ContextSelection {
     pub files: Vec<String>,
     #[serde(default)]
     pub mode: ChatContextMode,
+    /// Folders whose files, subfolders included, the turn uses as context.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// Whether the agent may search the whole library.
+    #[serde(default = "library_rag_default")]
+    pub library_rag: bool,
     /// The context of this turn is temporary (a room or view) and the chat
     /// keeps the files it had.
     #[serde(default)]
     pub keep_chat_context: bool,
+}
+
+fn library_rag_default() -> bool {
+    true
+}
+
+impl Default for ContextSelection {
+    fn default() -> Self {
+        Self {
+            scope_key: None,
+            files: Vec::new(),
+            mode: ChatContextMode::default(),
+            folders: Vec::new(),
+            library_rag: true,
+            keep_chat_context: false,
+        }
+    }
+}
+
+/// The chat keeps the files, folders, mode and library search of the composer.
+fn keep_selection(document: &mut StoredChatDocument, selection: &ContextSelection) {
+    document.selected_context_mode = selection.mode;
+    document.selected_context_files = selection.files.clone();
+    document.selected_context_folders = selection.folders.clone();
+    document.library_rag_enabled = selection.library_rag;
 }
 
 /// Messages of the chat the agent sees: the configured window, or none when
@@ -112,18 +143,13 @@ pub fn persisted_title(current: &str, has_previous_messages: bool, prompt: &str)
     title_from_prompt(prompt)
 }
 
-/// Settings a new chat takes from the composer. A chat that starts from an
-/// index of files does not learn long-term memories from it.
+/// Settings a new chat takes from the composer.
 pub fn prepare_new_chat(document: &mut StoredChatDocument, selection: &ContextSelection) {
     if selection.scope_key.is_some() {
         document.context_scope_key = selection.scope_key.clone();
     }
-    if selection.mode == ChatContextMode::Index && !selection.files.is_empty() {
-        document.long_term_memory_enabled = false;
-    }
     if !selection.keep_chat_context {
-        document.selected_context_mode = selection.mode;
-        document.selected_context_files = selection.files.clone();
+        keep_selection(document, selection);
     }
 }
 
@@ -133,8 +159,7 @@ pub fn apply_turn_context(document: &mut StoredChatDocument, selection: &Context
         document.context_scope_key = selection.scope_key.clone();
     }
     if !selection.keep_chat_context {
-        document.selected_context_files = selection.files.clone();
-        document.selected_context_mode = selection.mode;
+        keep_selection(document, selection);
     }
 }
 
@@ -230,6 +255,18 @@ pub fn scope_of(label: &str) -> BackendScope {
         BackendScope::Document
     } else {
         BackendScope::Library
+    }
+}
+
+/// Memory policy of a chat turn: a chat created without agent memory runs
+/// without it, so the engine neither injects `memory.md` nor offers its
+/// memory tools. Other routes keep their policy.
+pub fn chat_persistence_policy(route: PersistencePolicy, document: Option<&StoredChatDocument>) -> PersistencePolicy {
+    let without_memory = document.is_some_and(|document| !document.agent_memory_enabled);
+    if route == PersistencePolicy::Persistent && without_memory {
+        PersistencePolicy::EphemeralNoMemory
+    } else {
+        route
     }
 }
 
@@ -447,7 +484,7 @@ mod tests {
 
     #[test]
     fn the_memory_window_keeps_the_last_messages() {
-        let mut document = StoredChatDocument::new("Chat".into(), false, true, 2);
+        let mut document = StoredChatDocument::new("Chat".into(), true, true, 2);
         document.messages = vec![message(ChatRole::User, "1"), message(ChatRole::Assistant, "2"), message(ChatRole::User, "3")];
         assert_eq!(memory_window(&document).iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), ["2", "3"]);
         document.context_memory_enabled = false;
@@ -466,17 +503,21 @@ mod tests {
     }
 
     #[test]
-    fn index_chats_do_not_learn_and_temporary_context_is_not_kept() {
+    fn new_chats_take_the_composer_context_but_not_a_temporary_one() {
         let mut document = StoredChatDocument::new("Chat".into(), true, true, 10);
         let selection = ContextSelection {
             scope_key: Some("board".into()),
             files: vec!["a.md".into()],
             mode: ChatContextMode::Index,
+            folders: vec!["notas".into()],
+            library_rag: false,
             keep_chat_context: false,
         };
         prepare_new_chat(&mut document, &selection);
-        assert!(!document.long_term_memory_enabled);
+        assert_eq!(document.selected_context_mode, ChatContextMode::Index);
         assert_eq!(document.selected_context_files, ["a.md"]);
+        assert_eq!(document.selected_context_folders, ["notas"]);
+        assert!(!document.library_rag_enabled);
         let temporary = ContextSelection { files: vec!["b.md".into()], keep_chat_context: true, ..Default::default() };
         apply_turn_context(&mut document, &temporary);
         assert_eq!(document.selected_context_files, ["a.md"]);
@@ -499,7 +540,7 @@ mod tests {
 
     #[test]
     fn chats_are_matched_by_scope_files_or_board() {
-        let mut document = StoredChatDocument::new("Chat".into(), false, true, 10);
+        let mut document = StoredChatDocument::new("Chat".into(), true, true, 10);
         document.selected_context_mode = ChatContextMode::Index;
         document.selected_context_files = vec!["task-mannager/equipo/b.md".into()];
         let context = ViewContext {
@@ -522,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_view_context_replaces_the_scope_and_its_files() {
-        let mut document = StoredChatDocument::new("Chat".into(), false, true, 10);
+        let mut document = StoredChatDocument::new("Chat".into(), true, true, 10);
         document.selected_context_files = vec!["x.md".into()];
         let scope_only = ViewContext { scope_key: Some("graph".into()), ..Default::default() };
         assert!(apply_view_context(&mut document, &scope_only));
@@ -531,6 +572,16 @@ mod tests {
         let with_files = ViewContext { scope_key: None, mode: Some(ChatContextMode::Index), files: vec!["y.md".into()] };
         assert!(apply_view_context(&mut document, &with_files));
         assert_eq!((document.selected_context_mode, document.selected_context_files.clone()), (ChatContextMode::Index, vec!["y.md".to_string()]));
+    }
+
+    #[test]
+    fn a_chat_without_agent_memory_runs_without_memory() {
+        let mut document = StoredChatDocument::new("Chat".into(), true, true, 10);
+        assert_eq!(chat_persistence_policy(PersistencePolicy::Persistent, Some(&document)), PersistencePolicy::Persistent);
+        document.agent_memory_enabled = false;
+        assert_eq!(chat_persistence_policy(PersistencePolicy::Persistent, Some(&document)), PersistencePolicy::EphemeralNoMemory);
+        assert_eq!(chat_persistence_policy(PersistencePolicy::Persistent, None), PersistencePolicy::Persistent);
+        assert_eq!(chat_persistence_policy(PersistencePolicy::PublishedNoMemory, Some(&document)), PersistencePolicy::PublishedNoMemory);
     }
 
     #[test]

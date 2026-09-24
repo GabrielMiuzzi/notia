@@ -353,6 +353,27 @@ pub(crate) fn visible_path(app: &AppHandle, library_id: &str, logical_path: &str
     }
 }
 
+/// Text of a library file by its logical path, for the chat context.
+pub(crate) fn read_library_text(app: &AppHandle, library_id: &str, logical_path: &str) -> Result<String, BackendError> {
+    let library = catalog_entry(app, library_id)?;
+    let result = read_document(
+        app,
+        LibraryDocumentPayload {
+            library_id: library.id.clone(),
+            path: notia_backend_core::library_tree::library_visible_path(&library.path, logical_path),
+            content: None,
+            expected_revision: None,
+            create_if_missing: false,
+            markdown_defaults: false,
+        },
+    );
+    if result.ok {
+        Ok(result.content)
+    } else {
+        Err(BackendError::new(BackendErrorCode::Storage, result.error.unwrap_or_else(|| "No se pudo leer el archivo.".to_string()), true))
+    }
+}
+
 /// Logical path of a library entry from the identity the interface holds
 /// (the path the explorer shows or an already logical path).
 pub(crate) fn resolve_logical_path(app: &AppHandle, library_id: &str, identity: &str) -> Result<String, BackendError> {
@@ -668,6 +689,37 @@ pub(crate) struct LibraryFileDto {
     name: String,
     /// Path inside the library.
     relative_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LibraryFolderDto {
+    /// Identity the explorer shows.
+    path: String,
+    name: String,
+    /// Path inside the library.
+    relative_path: String,
+    /// Files inside the folder, subfolders included.
+    file_count: usize,
+}
+
+/// Every folder of the library that holds files, from the inventory.
+pub(crate) async fn library_list_folders(app: AppHandle, payload: LibraryPayload) -> Result<Vec<LibraryFolderDto>, BackendError> {
+    crate::host::async_runtime::spawn_blocking(move || {
+        let library = catalog_entry(&app, &payload.library_id)?;
+        let (paths, _) = crate::library_inventory::inventory_files(&app, &library.id)?;
+        Ok(notia_backend_core::chat_context::library_folders(&paths)
+            .into_iter()
+            .map(|folder| LibraryFolderDto {
+                path: notia_backend_core::library_tree::library_visible_path(&library.path, &folder.path),
+                name: folder.path.rsplit('/').next().unwrap_or(&folder.path).to_string(),
+                relative_path: folder.path,
+                file_count: folder.file_count,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|_| blocking_error())?
 }
 
 /// Every file of the library, from the inventory kept by the backend.

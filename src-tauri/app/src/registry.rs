@@ -239,6 +239,7 @@ fn route(command: &str) -> Option<Route> {
         "library_mutate_entry" => library_mutate_entry,
         "library_pick_directory" => library_pick_directory,
         "library_list_files" => library_list_files,
+        "library_list_folders" => library_list_folders,
         "task_manager_board_view" => task_manager_board_view,
         "task_manager_board_execute" => task_manager_board_execute,
         "task_manager_pomodoro" => task_manager_pomodoro,
@@ -432,6 +433,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "library_mutate_entry",
     "library_pick_directory",
     "library_list_files",
+    "library_list_folders",
     "task_manager_board_view",
     "task_manager_board_execute",
     "task_manager_pomodoro",
@@ -1434,6 +1436,12 @@ fn library_list_files(app: &AppHandle, _window_label: &str, command: &str, args:
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::library_session::library_list_files(arg0, arg1).await) })))
+}
+
+fn library_list_folders(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::library_session::library_list_folders(arg0, arg1).await) })))
 }
 
 fn task_manager_board_view(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

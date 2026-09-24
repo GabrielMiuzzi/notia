@@ -24,7 +24,7 @@ export interface ChatWorkspaceViewProps {
   }>
   title?: string
   description?: string
-  suggestions?: string[]
+  suggestions?: ChatStarter[]
   showHistoryPanel?: boolean
   composerContextLabel?: string
   preferredContextPaths?: string[]
@@ -47,6 +47,13 @@ export interface ChatWorkspaceViewProps {
   multichatRoomId?: string | null
   activeMarkdownSource?: string | null
   onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
+}
+
+/** A conversation starter shown while the chat is empty. */
+export interface ChatStarter {
+  title: string
+  description: string
+  prompt: string
 }
 
 export interface SelectedImageAttachment {
@@ -74,7 +81,6 @@ export interface ChatContextMenuState {
 }
 
 export interface CreateChatPayload {
-  longTermMemoryEnabled: boolean
   contextMemoryEnabled: boolean
   contextMemoryMessageCount: number
 }
@@ -124,13 +130,16 @@ export interface ChatModalState {
   isChatToolsModalOpen: boolean
   isLibraryFilesModalOpen: boolean
   dialogMessage: string | null
-  isClearingLongTermMemory: boolean
+  isClearingAgentMemory: boolean
 }
 
 export interface ChatHistoryState {
   isHistoryPanelOpen: boolean
   setIsHistoryPanelOpen: React.Dispatch<React.SetStateAction<boolean>>
   resolvedPreviousChats: Array<{ id: string; title: string; filePath: string }>
+  filteredPreviousChats: Array<{ id: string; title: string; filePath: string }>
+  chatHistoryQuery: string
+  setChatHistoryQuery: React.Dispatch<React.SetStateAction<string>>
   availablePreviousChats: Array<{ id: string; title: string; filePath: string }>
   virtualChatHistoryItems: Array<{ index: number; start: number; size: number }>
   chatHistoryTotalSize: number
@@ -164,7 +173,12 @@ export interface UseChatSubmitMessageDependencies {
   selectedLibraryFileOptions: ChatLibraryFileOption[]
   selectedImageAttachments: SelectedImageAttachment[]
   selectedFileContextMode: ChatFileContextMode
-  showHistoryPanel: boolean
+  /** Folders whose files the turn uses as context (main library chat). */
+  selectedLibraryFolderPaths?: string[]
+  /** Whether the agent may search the whole library (main library chat). */
+  libraryRagEnabled?: boolean
+  /** Whether a chat created by this send uses the agent memory (`memory.md`). */
+  newChatAgentMemoryEnabled?: boolean
   ephemeralChat?: boolean
   preferredContextScopeKey: string | null
   persistTransientContext: boolean
@@ -243,8 +257,8 @@ export interface UseChatStateResult {
   setIsChatToolsModalOpen: React.Dispatch<React.SetStateAction<boolean>>
   isLibraryFilesModalOpen: boolean
   setIsLibraryFilesModalOpen: React.Dispatch<React.SetStateAction<boolean>>
-  isClearingLongTermMemory: boolean
-  setIsClearingLongTermMemory: React.Dispatch<React.SetStateAction<boolean>>
+  isClearingAgentMemory: boolean
+  setIsClearingAgentMemory: React.Dispatch<React.SetStateAction<boolean>>
   chatContextMenuState: {
     chatId: string
     filePath: string
@@ -300,7 +314,7 @@ export interface UseChatStateResult {
   resolvedPreviousChats: Array<{ id: string; title: string; filePath: string }>
   availablePreviousChats: Array<{ id: string; title: string; filePath: string }>
   compactRecentChats: Array<{ id: string; title: string; filePath: string }>
-  visibleSuggestions: string[]
+  visibleSuggestions: ChatStarter[]
   preferredContextOption: ChatLibraryFileOption | null
   resolvedPreferredContextPaths: string[]
   resolvedTransientContextPaths: string[]

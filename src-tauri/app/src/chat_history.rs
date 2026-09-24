@@ -32,13 +32,19 @@ pub(crate) struct ChatHistoryState {
     prepared: Mutex<HashSet<String>>,
 }
 
+fn agent_memory_default() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateChatPayload {
     library_id: String,
     /// Local time of the device, `YYYY-MM-DD-HH-MM-SS`.
     local_stamp: String,
-    long_term_memory_enabled: bool,
+    /// Whether the chat uses the agent memory; chats that do not say, do.
+    #[serde(default = "agent_memory_default")]
+    agent_memory_enabled: bool,
     context_memory_enabled: bool,
     context_memory_message_count: u32,
     /// Context files of the composer when the chat starts with a message.
@@ -137,14 +143,17 @@ pub(crate) fn ensure_structure(app: &AppHandle, library_id: &str) -> Result<(), 
 /// Context files are stored relative to the library; files outside it keep
 /// the path the interface gave.
 fn stored_document(app: &AppHandle, library_id: &str, document: &StoredChatDocument) -> StoredChatDocument {
+    let stored_paths = |paths: &[String]| {
+        paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .map(|path| crate::library_session::resolve_logical_path(app, library_id, path).unwrap_or_else(|_| path.to_string()))
+            .collect()
+    };
     let mut stored = document.clone();
-    stored.selected_context_files = document
-        .selected_context_files
-        .iter()
-        .map(|path| path.trim())
-        .filter(|path| !path.is_empty())
-        .map(|path| crate::library_session::resolve_logical_path(app, library_id, path).unwrap_or_else(|_| path.to_string()))
-        .collect();
+    stored.selected_context_files = stored_paths(&document.selected_context_files);
+    stored.selected_context_folders = stored_paths(&document.selected_context_folders);
     stored
 }
 
@@ -154,19 +163,22 @@ fn is_library_relative(path: &str) -> bool {
 
 /// The chat as the interface shows it: context files as explorer paths.
 pub(crate) fn visible_document(app: &AppHandle, library_id: &str, mut document: StoredChatDocument) -> StoredChatDocument {
-    document.selected_context_files = document
-        .selected_context_files
-        .iter()
-        .map(|path| path.trim())
-        .filter(|path| !path.is_empty())
-        .map(|path| {
-            if is_library_relative(path) {
-                crate::library_session::visible_path(app, library_id, path)
-            } else {
-                path.to_string()
-            }
-        })
-        .collect();
+    let visible_paths = |paths: &[String]| {
+        paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                if is_library_relative(path) {
+                    crate::library_session::visible_path(app, library_id, path)
+                } else {
+                    path.to_string()
+                }
+            })
+            .collect()
+    };
+    document.selected_context_files = visible_paths(&document.selected_context_files);
+    document.selected_context_folders = visible_paths(&document.selected_context_folders);
     document
 }
 
@@ -247,7 +259,7 @@ pub(crate) fn create(app: &AppHandle, payload: &CreateChatPayload) -> Result<Cre
             }
             let document = StoredChatDocument::new(
                 title,
-                payload.long_term_memory_enabled,
+                payload.agent_memory_enabled,
                 payload.context_memory_enabled,
                 payload.context_memory_message_count,
             );

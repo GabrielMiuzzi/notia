@@ -1,7 +1,11 @@
-//! Background knowledge tasks after a chat turn: naming a new chat and
-//! learning long-term memories (then reorganizing rules and memories). The
-//! chat turn schedules them; prompts and parsing live in
-//! `backend_core::agent_knowledge`.
+//! Background knowledge tasks: naming a new chat after its first turn and
+//! organizing `memory.md` each time it changes. Prompts and parsing live in
+//! `backend_core::agent_knowledge`. The agent itself saves memories with its
+//! `add_agent_memory` tool; the organization is a separate model call
+//! without tools and without the memory context.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::host::AppHandle;
 
@@ -23,38 +27,54 @@ pub(crate) fn title_chat(app: &AppHandle, library_id: &str, logical_path: &str, 
     Ok(Some(title))
 }
 
-/// Learns durable facts about the user from a turn, stores the new ones and
-/// reorganizes rules and memories. Returns how many memories were added.
-pub(crate) fn learn_from_turn(
-    app: &AppHandle,
-    library_id: &str,
-    prompt: &str,
-    assistant_reply: &str,
-    previous: &[knowledge::TurnMessage<'_>],
-) -> Result<usize, BackendError> {
-    if prompt.trim().is_empty() || assistant_reply.trim().is_empty() {
-        return Ok(0);
-    }
-    let existing = crate::agent_workspace::memories(app, library_id)?;
-    let (system, user) = knowledge::memory_messages(&existing, previous, prompt, assistant_reply);
-    let learned = knowledge::parse_memory_list(&crate::backend_runtime::complete_text(app, library_id, &system, &user)?);
-    if learned.is_empty() {
-        return Ok(0);
-    }
-    let before = existing.len();
-    let merged = crate::agent_workspace::save_memories(app, library_id, existing.into_iter().chain(learned).collect())?;
-    let added = merged.len().saturating_sub(before);
-    // Reorganizing is best effort: a model that does not return the
-    // expected JSON leaves the saved memories untouched.
-    let rules = crate::agent_workspace::rules(app, library_id)?;
-    let (system, user) = knowledge::organize_messages(&rules, &merged);
-    if let Ok(answer) = crate::backend_runtime::complete_text(app, library_id, &system, &user) {
-        if let Some((organized_rules, organized_memories)) = knowledge::parse_organized(&answer) {
-            if !organized_memories.is_empty() {
-                crate::agent_workspace::save_rules(app, library_id, organized_rules)?;
-                crate::agent_workspace::save_memories(app, library_id, organized_memories)?;
-            }
+/// Libraries whose memories are being organized, and whether memory.md
+/// changed again meanwhile (then it runs once more).
+fn organizing() -> &'static Mutex<HashMap<String, bool>> {
+    static ORGANIZING: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    ORGANIZING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Organizes the memories of the library in the background, without
+/// delaying the turn that saved them. One run per library at a time; a
+/// change during a run schedules one more.
+pub(crate) fn schedule_memory_organization(app: &AppHandle, library_id: &str) {
+    {
+        let Ok(mut running) = organizing().lock() else { return };
+        if let Some(again) = running.get_mut(library_id) {
+            *again = true;
+            return;
         }
+        running.insert(library_id.to_string(), false);
     }
-    Ok(added)
+    let app = app.clone();
+    let library_id = library_id.to_string();
+    std::thread::spawn(move || loop {
+        match organize_memories(&app, &library_id) {
+            Ok(true) => log::info!("[notia:memory] memorias organizadas"),
+            Ok(false) => {}
+            Err(error) => log::warn!("[notia:memory] no se pudieron organizar las memorias: {}", error.message),
+        }
+        let Ok(mut running) = organizing().lock() else { return };
+        if running.get(&library_id).copied().unwrap_or(false) {
+            running.insert(library_id.clone(), false);
+        } else {
+            running.remove(&library_id);
+            return;
+        }
+    });
+}
+
+/// Asks the model to organize `memory.md` and saves the result when the file
+/// did not change meanwhile. Returns whether it wrote.
+fn organize_memories(app: &AppHandle, library_id: &str) -> Result<bool, BackendError> {
+    let memories = crate::agent_workspace::memories(app, library_id)?;
+    if memories.len() < 2 {
+        return Ok(false);
+    }
+    let (system, user) = knowledge::organize_memories_messages(&memories);
+    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user)?;
+    let Some(organized) = knowledge::parse_organized_memories(&answer, &memories) else {
+        return Ok(false);
+    };
+    crate::agent_workspace::replace_memories_if_unchanged(app, library_id, &memories, organized)
 }

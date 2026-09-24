@@ -1,159 +1,178 @@
 import { memo } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Plus, Settings2, Sparkles } from 'lucide-react'
-import { NotiaButton } from '../../../common/NotiaButton'
-import type { ChatHistoryState } from './ChatWorkspaceViewTypes'
+import { BookOpen, MoreHorizontal, PanelLeftClose, Plus, Search } from 'lucide-react'
+import type { ChatContextMenuState, ChatHistoryState } from './ChatWorkspaceViewTypes'
+import { CHAT_HISTORY_DOCKED_QUERY } from './useChatState'
+
+const CHAT_CONTEXT_MENU_WIDTH = 184
 
 interface ChatHistoryPanelProps extends ChatHistoryState {
   library: import('../../../../types/notia').NotiaLibrary | null
   selectedChatFilePath: string | null
   setSelectedChatFilePath: (filePath: string | null) => void
-  setIsCreateChatModalOpen: (value: boolean) => void
-  setCreateChatErrorMessage: (value: string | null) => void
-  setIsChatToolsModalOpen: (value: boolean) => void
-  setChatContextMenuState: (value: {
-    chatId: string
-    filePath: string
-    title: string
-    top: number
-    left: number
-  } | null) => void
+  onCreateChat: () => void
+  setChatContextMenuState: (value: ChatContextMenuState | null) => void
+}
+
+function isHistoryDocked(): boolean {
+  return window.matchMedia(CHAT_HISTORY_DOCKED_QUERY).matches
 }
 
 function ChatHistoryPanelComponent({
   library,
   selectedChatFilePath,
   setSelectedChatFilePath,
-  setIsCreateChatModalOpen,
-  setCreateChatErrorMessage,
-  setIsChatToolsModalOpen,
+  onCreateChat,
   setChatContextMenuState,
   isHistoryPanelOpen,
   setIsHistoryPanelOpen,
   resolvedPreviousChats,
+  filteredPreviousChats,
+  chatHistoryQuery,
+  setChatHistoryQuery,
   virtualChatHistoryItems,
   chatHistoryTotalSize,
   chatHistoryListRef,
 }: ChatHistoryPanelProps) {
+  if (!isHistoryPanelOpen) {
+    return null
+  }
+
+  const openChatMenu = (chat: { id: string; filePath: string; title: string }, top: number, left: number) => {
+    setChatContextMenuState({
+      chatId: chat.id,
+      filePath: chat.filePath,
+      title: chat.title,
+      top,
+      left: Math.min(Math.max(12, left), window.innerWidth - CHAT_CONTEXT_MENU_WIDTH - 12),
+    })
+  }
+
   return (
-    <aside
-      className={`notia-chat-history-panel ${
-        isHistoryPanelOpen ? 'notia-chat-history-panel--open' : 'notia-chat-history-panel--closed'
-      }`}
-      data-notia-prevent-menu-close
-    >
-      <div className="notia-chat-history-header" data-notia-prevent-menu-close>
-        <NotiaButton
-          variant="secondary"
-          className="notia-chat-history-toggle"
-          aria-label={isHistoryPanelOpen ? 'Ocultar panel de chats' : 'Mostrar panel de chats'}
-          title={isHistoryPanelOpen ? 'Ocultar panel de chats' : 'Mostrar panel de chats'}
-          onClick={() => {
-            setIsHistoryPanelOpen((current) => !current)
-          }}
+    <>
+      <button
+        type="button"
+        className="notia-chat-history-backdrop"
+        aria-label="Cerrar historial de chats"
+        onClick={() => setIsHistoryPanelOpen(false)}
+      />
+      <aside className="notia-chat-history-panel" aria-label="Historial de chats" data-notia-prevent-menu-close>
+        <div className="notia-chat-history-header">
+          <span className="notia-chat-history-title">Chats</span>
+          <button
+            type="button"
+            className="notia-chat-icon-button"
+            aria-label="Ocultar historial de chats"
+            title="Ocultar historial de chats"
+            onClick={() => setIsHistoryPanelOpen(false)}
+          >
+            <PanelLeftClose size={16} />
+          </button>
+        </div>
+
+        <button
+          type="button"
+          className="notia-chat-new-conversation"
+          onClick={onCreateChat}
+          disabled={!library}
         >
-          {isHistoryPanelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-        </NotiaButton>
-        {isHistoryPanelOpen ? (
-          <div className="notia-chat-history-actions">
-            <NotiaButton
-              variant="primary"
-              className="notia-chat-new-conversation"
-              onClick={() => {
-                setCreateChatErrorMessage(null)
-                setIsCreateChatModalOpen(true)
-              }}
-              disabled={!library}
-            >
-              <Plus size={16} />
-              Nuevo chat
-            </NotiaButton>
-            <NotiaButton
-              size="icon"
-              variant="secondary"
-              className="notia-chat-tools-button"
-              title="Herramientas del chat"
-              aria-label="Abrir herramientas del chat"
-              onClick={() => {
-                setIsChatToolsModalOpen(true)
-              }}
-              disabled={!library}
-            >
-              <Settings2 size={16} />
-            </NotiaButton>
-          </div>
-        ) : null}
-      </div>
+          <Plus size={16} />
+          <span>Nuevo chat</span>
+        </button>
 
-      {isHistoryPanelOpen ? (
-        <>
-          <div className="notia-chat-history-copy">
-            <strong>Chats previos</strong>
-            <span>
-              {resolvedPreviousChats.length > 0
-                ? `${resolvedPreviousChats.length} chat${resolvedPreviousChats.length === 1 ? '' : 's'} creado${resolvedPreviousChats.length === 1 ? '' : 's'}`
-                : 'Todavia no hay chats creados.'}
-            </span>
-          </div>
-          <div ref={chatHistoryListRef} className="notia-chat-history-list" aria-label="Chats previos">
-            {resolvedPreviousChats.length > 0 ? (
-              <div style={{ height: `${chatHistoryTotalSize}px`, position: 'relative' }}>
-                {virtualChatHistoryItems.map((virtualItem) => {
-                  const chat = resolvedPreviousChats[virtualItem.index]
-                  if (!chat) {
-                    return null
-                  }
+        <label className="notia-chat-history-search">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            value={chatHistoryQuery}
+            placeholder="Buscar chats"
+            aria-label="Buscar chats"
+            onChange={(event) => setChatHistoryQuery(event.target.value)}
+          />
+        </label>
 
-                  return (
-                    <div
-                      key={chat.id}
-                      style={{
-                        position: 'absolute',
-                        top: `${virtualItem.start}px`,
-                        left: 0,
-                        right: 0,
-                        height: `${virtualItem.size}px`,
+        <span className="notia-chat-section-label">
+          {resolvedPreviousChats.length > 0
+            ? `${resolvedPreviousChats.length} chat${resolvedPreviousChats.length === 1 ? '' : 's'}`
+            : 'Sin chats'}
+        </span>
+
+        <div ref={chatHistoryListRef} className="notia-chat-history-list" aria-label="Chats previos">
+          {filteredPreviousChats.length > 0 ? (
+            <div style={{ height: `${chatHistoryTotalSize}px`, position: 'relative' }}>
+              {virtualChatHistoryItems.map((virtualItem) => {
+                const chat = filteredPreviousChats[virtualItem.index]
+                if (!chat) {
+                  return null
+                }
+                const isActive = selectedChatFilePath === chat.filePath
+
+                return (
+                  <div
+                    key={chat.id}
+                    className={`notia-chat-history-row${isActive ? ' notia-chat-history-row--active' : ''}`}
+                    style={{
+                      position: 'absolute',
+                      top: `${virtualItem.start}px`,
+                      left: 0,
+                      right: 0,
+                      height: `${virtualItem.size}px`,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="notia-chat-history-item"
+                      aria-current={isActive ? 'true' : undefined}
+                      title={chat.filePath}
+                      onClick={() => {
+                        setSelectedChatFilePath(chat.filePath)
+                        if (!isHistoryDocked()) setIsHistoryPanelOpen(false)
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault()
+                        openChatMenu(chat, event.clientY, event.clientX)
                       }}
                     >
-                      <button
-                        type="button"
-                        className={`notia-chat-history-item ${
-                          selectedChatFilePath === chat.filePath ? 'notia-chat-history-item--active' : ''
-                        }`}
-                        title={chat.filePath}
-                        onClick={() => {
-                          setSelectedChatFilePath(chat.filePath)
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          const panelWidth = 184
-                          const nextLeft = Math.min(
-                            Math.max(12, event.clientX),
-                            window.innerWidth - panelWidth - 12,
-                          )
+                      <span>{chat.title}</span>
+                      <small>{chat.filePath}</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="notia-chat-history-item-more"
+                      aria-label={`Opciones de ${chat.title}`}
+                      title="Opciones del chat"
+                      onClick={(event) => {
+                        const bounds = event.currentTarget.getBoundingClientRect()
+                        openChatMenu(chat, bounds.bottom + 4, bounds.right - CHAT_CONTEXT_MENU_WIDTH)
+                      }}
+                    >
+                      <MoreHorizontal size={16} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="notia-chat-history-empty">
+              {resolvedPreviousChats.length > 0
+                ? 'Ningún chat coincide con la búsqueda.'
+                : 'No hay archivos de chat en chat/chats.'}
+            </div>
+          )}
+        </div>
 
-                          setChatContextMenuState({
-                            chatId: chat.id,
-                            filePath: chat.filePath,
-                            title: chat.title,
-                            top: event.clientY,
-                            left: nextLeft,
-                          })
-                        }}
-                      >
-                        <span>{chat.title}</span>
-                        <small>{chat.filePath}</small>
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="notia-chat-history-empty">No hay archivos de chat en `chat/chats`.</div>
-            )}
+        {library ? (
+          <div className="notia-chat-history-library">
+            <span className="notia-chat-history-library-icon" aria-hidden="true">
+              <BookOpen size={15} />
+            </span>
+            <span className="notia-chat-history-library-copy">
+              <strong>{library.name}</strong>
+              <small>Chats en chat/chats</small>
+            </span>
           </div>
-        </>
-      ) : null}
-    </aside>
+        ) : null}
+      </aside>
+    </>
   )
 }
 
@@ -192,49 +211,6 @@ function ChatHistoryPanelHeaderCompactComponent({
             >
               {chat.title}
             </button>
-          ))}
-        </div>
-      ) : null}
-    </header>
-  )
-}
-
-export function ChatHeaderComponent({
-  title,
-  activeChatTitle,
-  description,
-  suggestions,
-  setDraft,
-}: {
-  title: string
-  activeChatTitle: string | undefined
-  description: string
-  suggestions: string[]
-  setDraft: (value: string) => void
-}) {
-  return (
-    <header className="notia-chat-header">
-      <div className="notia-chat-header-copy">
-        <span className="notia-chat-kicker">
-          <Sparkles size={14} />
-          Workspace AI
-        </span>
-        <h2>{activeChatTitle ?? title}</h2>
-        <p>{description}</p>
-      </div>
-      {suggestions.length > 0 ? (
-        <div className="notia-chat-suggestions" aria-label="Sugerencias de inicio">
-          {suggestions.map((suggestion) => (
-            <NotiaButton
-              key={suggestion}
-              variant="secondary"
-              className="notia-chat-suggestion"
-              onClick={() => {
-                setDraft(suggestion)
-              }}
-            >
-              {suggestion}
-            </NotiaButton>
           ))}
         </div>
       ) : null}

@@ -17,6 +17,8 @@ use crate::host::{AppHandle, Emitter, Manager};
 
 use crate::backend::ai_settings::AiSettingsInput;
 use crate::backend::chat_history::{ChatRole, StoredChatAttachment, StoredChatDocument, StoredChatMessage};
+use crate::backend::chat_context::{self, ContextFile};
+use crate::backend::chat_history::ChatContextMode;
 use crate::backend::chat_turn::{self, ContextSelection, TurnMode, WorkspaceInput};
 use crate::backend::{
     AgentRequest, AgentResponse, BackendActor, BackendError, BackendErrorCode, BackendEvent, BackendRequest,
@@ -443,45 +445,62 @@ fn workspace_of(mode: TurnMode, workspace: Option<WorkspaceInput>) -> Result<Wor
     }
 }
 
-/// Names a new chat and learns long-term memories after the turn, without
-/// delaying the answer.
-fn schedule_background_tasks(
-    app: &AppHandle,
-    library_id: &str,
-    title: Option<(String, String)>,
-    learn: Option<(String, String, Vec<StoredChatMessage>)>,
-) {
-    if title.is_none() && learn.is_none() {
-        return;
+/// What a library chat turn adds for the library: the chosen files as a
+/// context block and, without library search, the tools it keeps.
+struct LibraryTurnContext {
+    block: Option<String>,
+    /// Empty: the full catalog.
+    tools: Vec<crate::backend::protocol::ToolDefinition>,
+}
+
+/// The chosen files and folders of the main library chat. Other chats keep
+/// their own context (views, rooms, boards) and the full catalog.
+fn library_context(app: &AppHandle, library_id: &str, mode: TurnMode, scope: &str, selection: &ContextSelection) -> LibraryTurnContext {
+    if mode != TurnMode::Chat || scope != "library" || selection.keep_chat_context {
+        return LibraryTurnContext { block: None, tools: Vec::new() };
     }
+    let logical = |paths: &[String]| {
+        paths
+            .iter()
+            .filter_map(|path| crate::library_session::resolve_logical_path(app, library_id, path).ok())
+            .collect::<Vec<_>>()
+    };
+    let (files, folders) = (logical(&selection.files), logical(&selection.folders));
+    let inventory = if folders.is_empty() {
+        Vec::new()
+    } else {
+        crate::library_inventory::inventory_files(app, library_id).map(|(paths, _)| paths).unwrap_or_default()
+    };
+    let files = chat_context::expand_context_files(&files, &folders, &inventory)
+        .into_iter()
+        .map(|path| {
+            let content = (selection.mode == ChatContextMode::Direct)
+                .then(|| crate::library_session::read_library_text(app, library_id, &path).ok())
+                .flatten();
+            ContextFile { path, content }
+        })
+        .collect::<Vec<_>>();
+    LibraryTurnContext {
+        block: chat_context::context_block(selection.mode, selection.library_rag, &files),
+        tools: if selection.library_rag {
+            Vec::new()
+        } else {
+            chat_context::tools_without_library_rag(crate::backend_runtime::supported_tool_names().iter().copied())
+        },
+    }
+}
+
+/// Names a new chat after its first turn, without delaying the answer.
+fn schedule_chat_title(app: &AppHandle, library_id: &str, logical_path: String, prompt: String) {
     let app = app.clone();
     let library_id = library_id.to_string();
-    std::thread::spawn(move || {
-        if let Some((logical_path, prompt)) = title {
-            match crate::agent_knowledge::title_chat(&app, &library_id, &logical_path, &prompt) {
-                Ok(Some(title)) => {
-                    let path = crate::library_session::visible_path(&app, &library_id, &logical_path);
-                    let _ = app.emit(TITLE_EVENT, TitleEvent { library_id: library_id.clone(), path, title });
-                }
-                Ok(None) => {}
-                Err(error) => log::warn!("[notia:chat] no se pudo titular el chat: {}", error.message),
-            }
+    std::thread::spawn(move || match crate::agent_knowledge::title_chat(&app, &library_id, &logical_path, &prompt) {
+        Ok(Some(title)) => {
+            let path = crate::library_session::visible_path(&app, &library_id, &logical_path);
+            let _ = app.emit(TITLE_EVENT, TitleEvent { library_id: library_id.clone(), path, title });
         }
-        if let Some((prompt, reply, previous)) = learn {
-            let previous = previous
-                .iter()
-                .map(|message| crate::backend::agent_knowledge::TurnMessage {
-                    role: match message.role {
-                        ChatRole::User => "user",
-                        ChatRole::Assistant => "assistant",
-                    },
-                    content: &message.content,
-                })
-                .collect::<Vec<_>>();
-            if let Err(error) = crate::agent_knowledge::learn_from_turn(&app, &library_id, &prompt, &reply, &previous) {
-                log::warn!("[notia:chat] no se pudieron guardar memorias: {}", error.message);
-            }
-        }
+        Ok(None) => {}
+        Err(error) => log::warn!("[notia:chat] no se pudo titular el chat: {}", error.message),
     });
 }
 
@@ -512,7 +531,8 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
     };
 
     let workspace = workspace_of(payload.mode, payload.workspace)?;
-    let (channel, scope, persistence_policy) = chat_turn::turn_route(payload.mode, &payload.scope, Some(&workspace.view));
+    let (channel, scope, route_policy) = chat_turn::turn_route(payload.mode, &payload.scope, Some(&workspace.view));
+    let persistence_policy = chat_turn::chat_persistence_policy(route_policy, chat.as_ref());
     let library_user_id = match payload.mode {
         TurnMode::Published => payload
             .library_user_id
@@ -549,12 +569,16 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
                 .as_deref()
                 .and_then(|room_id| crate::multichat::room_chat_context(app, &library_id, room_id));
             let context = room_context.as_deref().or(payload.context.as_deref());
-            let prompt = chat_turn::turn_prompt(payload.mode, &message, context);
+            let library_context = library_context(app, &library_id, payload.mode, &payload.scope, &payload.selection);
+            let prompt = chat_context::prompt_with_context(
+                chat_turn::turn_prompt(payload.mode, &message, context),
+                library_context.block,
+            );
             let request = BackendRequest::Run(AgentRequest {
                 context: identity.context.clone(),
                 messages: chat_turn::turn_messages(&history, &prompt, &payload.attachments),
                 snapshot: Some(chat_turn::workspace_snapshot(&workspace, &library_id)),
-                tools: Vec::new(),
+                tools: library_context.tools,
                 attachments: Vec::new(),
                 idempotency_key: identity.idempotency_key.clone(),
                 prompt_name: payload.prompt_name.clone(),
@@ -588,11 +612,12 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
                     crate::chat_history::append_turn(app, &library_id, logical_path, &document)?;
                 }
             }
-            let title = logical_path.filter(|_| previous_messages.is_empty()).map(|path| (path, message.clone()));
-            let learn = document
-                .long_term_memory_enabled
-                .then(|| (message.clone(), answer.clone(), previous_messages));
-            schedule_background_tasks(app, &library_id, title, learn);
+            // Memory and rules belong to the global engine: the agent reads
+            // `rules.md` and `memory.md` and writes them only with its
+            // `add_agent_rule` / `add_agent_memory` tools.
+            if let Some(path) = logical_path.filter(|_| previous_messages.is_empty()) {
+                schedule_chat_title(app, &library_id, path, message.clone());
+            }
             Some(document)
         }
         None => None,

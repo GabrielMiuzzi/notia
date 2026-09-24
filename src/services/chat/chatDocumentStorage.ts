@@ -33,12 +33,17 @@ export interface ChatImageAttachmentPreview {
 
 export interface StoredChatDocument {
   title: string
-  longTermMemoryEnabled: boolean
+  /** Whether the chat uses the agent memory (`memory.md`); chosen when it is created. */
+  agentMemoryEnabled: boolean
   contextMemoryEnabled: boolean
   contextMemoryMessageCount: number
   contextScopeKey: string | null
   selectedContextMode: 'direct' | 'index'
   selectedContextFiles: string[]
+  /** Folders whose files, subfolders included, the chat uses as context. */
+  selectedContextFolders: string[]
+  /** Whether the agent may search the whole library. */
+  libraryRagEnabled: boolean
   messages: StoredChatMessage[]
 }
 

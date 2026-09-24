@@ -377,7 +377,7 @@ Cambio solo de interfaz (Windows, Android y navegador); no toca comandos ni cont
 - **Explorador** (`NotiaSidebar`): encabezado «Archivos» con `TOP_TOOLBAR_ACTIONS` (nueva nota, diagrama, carpeta, colapsar, expandir), `ExplorerSearch` siempre visible (escribe `searchQuery`; `Esc` limpia) y `WorkspaceFooter` con el selector de librería. `isSearchMenuOpen` pasó a ser una solicitud de foco: `headerActionClick('search')` abre el panel y enfoca la búsqueda, que luego baja la bandera. Se retiraron el popup de búsqueda, `EXPLORER_HEADER_ACTIONS`, la acción de contexto `closeSearchMenu`, `selectActiveHeaderAction` y el componente sin uso `TopToolbar`.
 - **Árbol** (`FileTree`): filas de 28 px (36 px con puntero grueso, igual que la lista virtual), sangría de 16 px por nivel con una guía de 1 px por ancestro (`treeRowStyle`), íconos en muted, fila activa en teal suave y carpetas ocultas (`.x`) en itálica.
 - **Crear desde cualquier lado**: `explorerToolClick` abre el Explorador antes de crear, porque la fila de nombre pendiente vive en el árbol.
-- **Atajos**: `useGlobalEventListeners` suma `Ctrl+N` (nueva nota en la raíz) y `Ctrl+O` (buscar archivo). La pantalla sin nota abierta usa las mismas acciones; antes sus botones no hacían nada.
+- **Atajos**: `useGlobalEventListeners` suma `Ctrl+N` (nueva nota en la raíz) y `Ctrl+O` (buscar archivo). La pantalla sin nota abierta usa las mismas acciones; antes sus botones no hacían nada. Su botón **Nuevo chat** (sin atajo) llama `railActionClick('chat')`, la misma acción del rail: activa la pestaña especial del chat, que se monta de nuevo y abre en el estado de chat nuevo.
 - **Asistente** (`NotiaRightPanel`): encabezado propio con «Asistente» y cerrar; el panel es una columna flex. Los estilos de mensajes y composer se ajustan solo bajo `.notia-right-panel`, sin tocar la vista de Chat a pantalla completa.
 - **Responsive**: ≤ 980 px el Explorador mide 240 px y el Asistente flota; ≤ 720 px se ocultan las pestañas (quedan los botones de paneles y tema) y el Explorador flota sobre el contenido junto al rail.
 - **Tokens nuevos**: `--color-row-hover` y `--color-on-accent` en ambos temas; `--titlebar-height` pasa a 40 px. Se quitaron tokens de color por ícono que ya no se usaban.
@@ -1375,7 +1375,7 @@ Esta iteración implementa las Fases 0 a 11 del plan de migración: el runtime d
 - **Workspace `.agent`:** `agent_workspace.rs` y `backend-core/src/agent_workspace.rs` crean carpetas, reglas y memoria, migran la memoria heredada una sola vez con backup, sincronizan `default.md` y listan prompts desde el inventario. Las reglas se escriben dentro del bloque de reglas de IA y la memoria mantiene un máximo de 100 ítems. Comandos: `backend_agent_prompts`, `backend_agent_prompt`, `backend_select_agent_prompt`, `backend_agent_memories`, `backend_save_agent_memories`, `backend_agent_rules`, `backend_save_agent_rules`, `backend_append_agent_rule`.
 - **Historial de chats:** `chat_history.rs` y `backend-core/src/chat_history.rs` parsean y serializan el documento del chat, agregan mensajes (con reescritura completa si el append falla por una edición externa) y generan previews de imágenes. Comandos: `backend_ensure_chat_structure`, `backend_create_chat`, `backend_load_chat`, `backend_save_chat`, `backend_append_chat`, `backend_chat_image_previews`, `backend_classify_chat_file`. (`backend_ensure_chat_structure` y `backend_append_chat` se retiraron en «Chat IA en Rust».)
 - **Adjuntos:** `backend-core/src/chat_attachments.rs` clasifica y valida los adjuntos y compone el mensaje para el modelo; `BackendMessage.attachments` forma parte del contrato. El WebView sigue rasterizando PDFs con pdf.js porque Rust no tiene renderizador PDF.
-- **Título y aprendizaje:** `backend_title_chat` y `backend_learn_from_turn` (`agent_knowledge.rs`) generan el título del chat y las memorias de un turno. (Desde «Chat IA en Rust» los programa el turno de `ai_chat.rs` y ya no son comandos.)
+- **Título y aprendizaje:** `backend_title_chat` y `backend_learn_from_turn` (`agent_knowledge.rs`) generan el título del chat y las memorias de un turno. (Desde «Chat IA en Rust» los programa el turno de `ai_chat.rs` y ya no son comandos. Desde el 2026-09-24 el turno solo titula el chat: la extracción de memorias en segundo plano se retiró y la memoria queda en manos del motor global.)
 - **Historial y aclaraciones pendientes:** `agent_history.rs` guarda el historial y el diff de las operaciones del agente en `app_data/agent-history/<clave>.json`; `agent_pending.rs` guarda la aclaración pendiente en `app_data/agent-pending/<clave>.json`. Comandos: `backend_agent_history`, `backend_agent_history_diff`, `backend_save_pending_clarification`, `backend_pending_clarification`, `backend_clear_pending_clarification`, `backend_answer_pending_clarification`.
 - **Voz:** `backend-core/src/speech_text.rs` prepara el texto que lee el TTS (`qwen3_tts_speech_plan`); `backend-core/src/remote_audio.rs` valida fragmentos de audio para un futuro cliente remoto.
 
@@ -3157,7 +3157,7 @@ Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde 
 ### 2.5 AI Chat
 
 #### Descripción
-Sistema de chat con Ollama local o Cloud según la configuración. Incluye health check con caché, streaming de respuestas en desktop y Android, listado de modelos disponibles, resolución automática del modelo activo, generación de títulos, memoria a largo plazo, contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
+Sistema de chat con Ollama local o Cloud según la configuración. Incluye health check con caché, streaming de respuestas en desktop y Android, listado de modelos disponibles, resolución automática del modelo activo, generación de títulos, reglas y memoria del motor global (`rules.md`/`memory.md`), contexto de archivos de la librería, cancelación de respuestas y persistencia incremental (append) de conversaciones.
 
 Todos los chats de la aplicación —vista principal, panel lateral, Meeting, Telegram y la URL pública— entran obligatoriamente por `notiaChatRuntime.ts`. Esa fachada ejecuta `runNativeToolAgent` con el agente construido por `chatScopedAgentRuntime.ts`, compartiendo prompt, configuración, límites, validación y serialización de mutaciones. Multichat es una superficie separada: `multichatRuntime.ts` usa directamente `streamAiChatReply` para una llamada plana por agente y no entra en el ciclo de tools, aclaraciones, confirmaciones o memoria global. Meeting y publicación usan políticas sin memoria; Telegram deriva su política desde el `libraryUserId` autorizado, con memoria persistente solo para `user-owner`. Las escrituras requieren confirmación individual y las solicitudes compuestas usan un plan aprobado antes de ejecutar, excepto cuando Finanzas está habilitada: en ese caso se filtran las herramientas de planes, el turno admite como máximo una mutación financiera confirmada y no se encadenan dos confirmaciones. La capacidad informada por `/api/show` solo ayuda al selector; `/api/chat` es la autoridad final del proveedor.
 
@@ -3385,6 +3385,7 @@ flowchart LR
     C --> F[chatDocumentStorage]
     F --> G[.md append o rewrite]
     A --> H[ChatHistoryPanel]
+    A --> K[ChatWorkspacePanels]
     A --> I[ChatThread]
     A --> J[ChatComposer]
 ```
@@ -3405,7 +3406,7 @@ flowchart LR
    - Si el título no cambió y el cuerpo del `.md` termina con un marker válido (`user` o `assistant`), se escriben solo los mensajes nuevos al final.
    - Si el título cambió o el formato no es seguro, fallback a `saveChatDocument` (re-escritura completa).
 6. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
-7. **Memoria activa**: la extracción y reorganización usan `.agent/memory/memory.md` bajo `persistencePolicy: 'persistent'`; los chats persistentes del Owner y Telegram vinculado al Owner pueden cargarla y escribirla, mientras Meeting, Multichat, publicación y Telegram vinculado a otro usuario no la cargan ni escriben. `LongTermMemory.md` solo se conserva como compatibilidad legacy.
+7. **Memoria activa**: el motor global carga `.agent/memory/rules.md` y `.agent/memory/memory.md` y solo los escribe con `add_agent_rule`/`add_agent_memory` bajo `persistencePolicy: 'persistent'`; los chats persistentes del Owner y Telegram vinculado al Owner pueden cargarla y escribirla, mientras Meeting, Multichat, publicación y Telegram vinculado a otro usuario no la cargan ni escriben. `LongTermMemory.md` solo se conserva como compatibilidad legacy.
 
 #### Pasos del proceso (Android)
 
@@ -6161,7 +6162,7 @@ El agente recibe `responseFormat: 'telegram-html'` al construirse. Esa personali
 El bloque `NOTIA_IA_RULES` almacena instrucciones permanentes aprendidas durante el chat del Owner. La herramienta interna `add_agent_rule` detecta pedidos del tipo “cuando X, hacé Y” y agrega directamente una regla deduplicada sin solicitar confirmación ni modificar `NOTIA_DEFAULT_RULES`; la autorización `memory` rechaza esta tool para cualquier otro actor. Las mutaciones de documentos y tareas mantienen sus confirmaciones.
 `memory.md` almacena hechos duraderos del Owner, sin confirmación. Solo se inyecta al crear un agente cuyo `libraryUserId` es `user-owner` y cuya política es persistente; Telegram vinculado a ese Owner sí puede leerlo y escribirlo, mientras la URL publicada, Graph View, Meeting, Multichat y los usuarios no Owner no lo leen ni lo escriben. Multichat no crea un agente de memoria: envía `longTermMemories: []` al adaptador plano. En Telegram, `useTelegramAgentBridge` construye el agente con `persistent` para `user-owner` y con `ephemeral-no-memory` para los demás, igual que la política del envelope.
 La herramienta `add_agent_memory` separa esos hechos de las instrucciones imperativas de `add_agent_rule` y solo está disponible para el Owner. La inicialización migra automáticamente desde `NOTIA_IA_RULES` las entradas factuales reconocibles —como identidad, empleo o preferencias— hacia `memory.md` sin atribuirlas a otros actores.
-Toda escritura interna autorizada en `NOTIA_IA_RULES` o `memory.md` programa una revisión conjunta en background con el Ollama configurado. El modelo devuelve un contrato JSON separado en `rules` y `memories`, permitiendo reclasificar elementos en ambas direcciones, deduplicarlos y reestructurarlos sin bloquear la conversación ni alterar `NOTIA_DEFAULT_RULES`.
+`memory.md` se organiza en background cada vez que cambia (ver «Organización de memory.md»); `rules.md` solo cambia por `add_agent_rule` o edición manual.
 La misma inicialización garantiza además `.agent/skills/`, reservada para las habilidades del agente.
 
 ### Contrato de reglas y memoria del agente
@@ -6184,33 +6185,19 @@ La estructura persistente por biblioteca es:
 | `add_agent_rule` | `{ rule: string }` | Para el Owner, agrega una instrucción imperativa deduplicada dentro de `NOTIA_IA_RULES`. Rechaza hechos personales y otros actores. |
 | `add_agent_memory` | `{ memory: string }` | Para el Owner, agrega sin confirmación un hecho duradero a `memory.md`. |
 
-Ejemplo de clasificación enviada a la reorganización de Ollama:
-
-```json
-{
-  "rules": ["Cuando el usuario pida un estado, responder en una tabla."],
-  "memories": ["El usuario se llama Gabriel.", "Trabaja en Banco Galicia."]
-}
-```
-
-La respuesta esperada conserva exactamente el mismo contrato JSON. `organizeAiAgentKnowledge` rechaza respuestas que no sean un objeto con arrays de strings. La tarea se programa sin bloquear la respuesta; un fallo conserva los archivos ya escritos y solo genera un warning sin contenido privado. La reorganización usa `ollamaUrl`, `selectedModel` y `apiKey` configurados: puede ejecutarse en Ollama local o en Ollama Cloud.
-
 Las reglas `[telegram-html]` se filtran al cargar `rules.md` y solo se inyectan para `responseFormat: 'telegram-html'`. Las instrucciones sin prefijo se aplican a los chats autorizados del Owner. `NOTIA_DEFAULT_RULES` se repone o actualiza desde el runtime; `NOTIA_IA_RULES` se conserva y puede editarse manualmente por el Owner.
 
-La migración defensiva `migrateMisclassifiedRules` reconoce hechos personales que hayan quedado en `NOTIA_IA_RULES`, los retira del bloque y los incorpora a `memory.md`. La revisión conjunta posterior puede reclasificar en ambas direcciones con más contexto semántico.
+La migración defensiva `migrateMisclassifiedRules` reconoce hechos personales que hayan quedado en `NOTIA_IA_RULES`, los retira del bloque y los incorpora a `memory.md`. La organización en background solo ordena `memory.md`; no mueve datos entre reglas y memorias.
 
 ```mermaid
 flowchart TD
     Turn[Turno conversacional] --> Classify{Tipo de información}
     Classify -->|Instrucción futura explícita| Rule[add_agent_rule]
-    Classify -->|Hecho durable del usuario| Memory[add_agent_memory / extracción]
+    Classify -->|Hecho durable del usuario| Memory[add_agent_memory]
     Rule --> RulesFile[NOTIA_IA_RULES en rules.md]
     Memory --> MemoryFile[memory.md]
-    RulesFile --> Background[Reorganización Ollama en background]
-    MemoryFile --> Background
-    Background --> Contract[JSON rules + memories]
-    Contract --> RulesFile
-    Contract --> MemoryFile
+    MemoryFile --> Organizer[Organización en background: sin tools ni memoria como contexto]
+    Organizer -->|si memory.md no cambió| MemoryFile
 ```
 
 ```mermaid
@@ -6221,10 +6208,8 @@ flowchart LR
     Agent --> Policy{Política de persistencia}
     Policy -->|persistent + Owner| Memory[memory.md]
     Policy -->|otro actor o ephemeral-no-memory| NoMemory[Sin memoria global]
-    Agent --> Knowledge[agentPromptRuntime]
+    Agent --> Knowledge[add_agent_rule / add_agent_memory]
     Knowledge --> Files[.agent/memory]
-    Knowledge --> Organizer[organizeAiAgentKnowledge]
-    Organizer --> Ollama[Ollama configurado]
     Multichat[MultichatView] --> Flat[streamAiChatReply]
     Flat --> FlatOllama[Ollama configurado]
 ```
@@ -6240,10 +6225,10 @@ sequenceDiagram
     C->>A: Ejecutar turno
     A->>F: add_agent_memory
     F->>F: Escribir memory.md sin confirmación
-    F-->>O: Reorganizar rules + memories (background)
-    O-->>F: JSON clasificado
-    F->>F: Reescribir NOTIA_IA_RULES y memory.md
-    A-->>C: Respuesta sin esperar reorganización
+    A-->>C: Respuesta
+    F-->>O: Organizar memorias (en paralelo, sin tools)
+    O-->>F: JSON array de memorias
+    F->>F: Reescribir memory.md solo si no cambió
 ```
 
 ### Formato y tool calling de Telegram
@@ -6569,3 +6554,99 @@ Los desplegables de Configuraciones usan `NotiaSelectMenu`, que compone `useSubm
 Cuando el guard de Telegram no encuentra una asociacion valida, el flujo informa que el chat no tiene un usuario vinculado y solicita `/start`; la resolucion y busqueda de usuarios envian el contexto de biblioteca anidado que esperan los comandos Tauri.
 
 El enlace inicial de Telegram trata `library_users.password_hash` como un campo nullable: para usuarios nuevos, la transaccion genera el hash PBKDF2 y guarda la asociacion Telegram atomica antes de confirmar. La lectura de un `NULL` no se interpreta como un error de SQLite.
+
+## Vista Chat IA: diseño de tres zonas
+
+La vista Chat IA del rail (`ChatWorkspaceView` con `showHistoryPanel`) sigue el lienzo de diseño «Notia · Chat IA rediseño» (artboards *Conversación* y *Nuevo chat · estado vacío*). El chat lateral, Meeting y la página publicada conservan su layout; solo comparten los cambios de `ChatThread` descritos abajo.
+
+**Estructura.** `main.notia-chat-view--workspace` contiene tres columnas:
+
+- `ChatHistoryPanel`: encabezado con ocultar, **Nuevo chat** (abre `CreateChatModal`), búsqueda, lista virtualizada (`CHAT_HISTORY_ITEM_HEIGHT = 60`) y tarjeta de la librería activa. Cerrado, no se renderiza; la barra superior muestra el botón para abrirlo. Cada fila tiene un botón **⋯** que abre el mismo menú que el clic derecho, así eliminar un chat no depende del clic derecho (Android). El estado inicial abierto/cerrado sale de `CHAT_HISTORY_DOCKED_QUERY` (`min-width: 981px`); por debajo el panel flota con backdrop y se cierra al elegir un chat.
+- Columna central (`ChatWorkspacePanels.tsx`): `ChatTopBar` (título del chat o «Nuevo chat», píldora del modelo resuelto por `resolveActiveModel` que abre **Configuraciones → IA**, toggle del panel de contexto) y `.notia-chat-stage`. El stage renderiza en la misma posición del árbol `ChatWelcomeHero` o `ChatThread`, luego el dock del compositor y, en estado vacío, `ChatStarterCards`; como el compositor no cambia de posición, React no lo vuelve a montar al enviar el primer mensaje (no se pierde foco ni estado del dictado).
+- `ChatContextPanel`: alcance (librería completa o archivos elegidos con su modo Referencia/Directo, quitar uno por uno, abrir `ChatLibraryFilesModal`), acciones rápidas (completan el borrador) y acceso al modal de memoria persistente, que antes estaba en el engranaje del historial. Abre por defecto solo con `min-width: 1280px`; por debajo flota con backdrop.
+
+**Apertura en chat nuevo.** `useChatState` recibe `showHistoryPanel`; en la vista Chat IA el efecto de autoselección no corre, así que la vista abre con `selectedChatFilePath = null` (estado vacío) y la selección solo cambia por acción del usuario (elegir en el historial, crear, eliminar o el primer envío, que crea el chat automáticamente). El chat lateral conserva la autoselección por contexto preferido o por el chat más reciente.
+
+**Estado vacío.** `isWelcomeState` es verdadero cuando la IA está disponible y no hay mensajes, carga, envío, aclaración, confirmación ni plan pendientes. Las sugerencias pasan a ser `ChatStarter { title, description, prompt }` (prop `suggestions`); al elegir una se escribe `prompt` en el compositor, sin enviarlo.
+
+**Compositor.** `ChatComposer` recibe `variant: 'panel' | 'workspace'`. `workspace` reemplaza el pie por una fila: adjuntar (mismo menú compartido), interruptor **Toda la librería** (`libraryRagEnabled`/`onLibraryRagChange`, ver «Búsqueda en la librería y contexto de carpetas»), atajo de teclado (oculto en punteros táctiles), dictado y enviar; durante el envío el botón pasa a **Detener respuesta** y llama `onCancel`. `panel` conserva el pie anterior.
+
+**Hilo.** `ChatThread` nombra al asistente «Notia» con ícono de destellos en todas las superficies que lo usan y agrega a cada respuesta guardada un botón **Copiar respuesta** (`navigator.clipboard`, feedback accesible de 1,6 s, estado de error si el portapapeles no está disponible). En la vista Chat IA el hilo se centra en 720 px mediante padding; el usuario se muestra como burbuja derecha sin avatar y el asistente en grilla: avatar y nombre en la primera fila, respuesta a todo el ancho.
+
+**Búsqueda del historial.** `useChatState` expone `chatHistoryQuery` y `filteredPreviousChats`: filtra por título, sin distinguir mayúsculas, la lista ya cargada para la virtualización y el scroll al chat activo. Es un filtro de presentación sobre datos ya entregados por el backend; no consulta la librería ni cambia contratos Rust.
+
+**Estilos.** Todo usa los tokens de la paleta (`--color-main-bg`, `--color-sidebar-bg`, `--color-card-bg`, `--color-border-soft`, `--color-accent-text`, etc.) en ambos temas; los colores del lienzo se mapearon a esos tokens y no se agregaron fuentes. Se eliminó el CSS del historial anterior (tira colapsada de 44 px, tarjetas con borde, kicker y botones de sugerencia del encabezado). En `pointer: coarse` los controles suben a 40–44 px.
+
+**Sin cambios de contrato.** No se modificaron comandos Rust, persistencia ni el formato de los chats. Terminología: la UI dice «librería», como el resto de la app, donde el lienzo decía «bóveda». Del lienzo no se implementó lo que no tiene datos reales: agrupar el historial por fecha y mostrar la vista previa del último mensaje (la lista solo recibe id, título y ruta), fuentes citadas, regenerar, guardar como nota, renombrar desde la barra, menciones con `@` y el atajo Ctrl+N de nuevo chat.
+
+**Validación.** `tsc -p tsconfig.app.json`, `eslint` de `views/chat`, `vitest run` (57 archivos, 217 tests) y `vite build` pasan. Pendiente: revisión visual en Windows (escritorio y ventana angosta) y en un teléfono o tableta Android, incluidos el historial y el panel de contexto flotantes, el teclado virtual con el compositor centrado del estado vacío y el botón **⋯** del historial.
+
+## Chat IA: memoria del motor global, sin `longTermMemory`
+
+El chat de la vista Chat IA y los chats laterales usan solo la memoria del motor global. `ai_chat.rs` arma el turno con `turn_route` (`PersistencePolicy::Persistent`, actor `user-owner`), así que `load_prompt_parts_with_request` inyecta `rules.md` y, para el Owner, `memory.md`. Las escrituras pasan exclusivamente por las tools `add_agent_rule` y `add_agent_memory` (`ToolPolicy::Memory`: Owner, política persistente, scope `library`, sin confirmación).
+
+Se retiró el camino paralelo del chat:
+
+- `ai_chat.rs` ya no programa `learn_from_turn` después de cada respuesta; el hilo en background solo titula un chat nuevo (`schedule_chat_title`).
+- Se eliminaron `agent_knowledge::learn_from_turn` (app) y `memory_messages`, `parse_memory_list`, `organize_messages` y `parse_organized` (core), junto con `agent_workspace::memories`, `rules` y `save_rules`, que quedaron sin uso. Ese camino reescribía `memory.md` y reorganizaba `rules.md` sin pasar por el motor.
+- `StoredChatDocument` pierde `long_term_memory_enabled`: el parser ignora la clave `longTermMemory` de los archivos existentes y el serializador deja de escribirla. `CreateChatPayload`, `CreateChatFileInput`, `CreateChatModalSubmitPayload` y `StoredChatDocument` (TypeScript) pierden `longTermMemoryEnabled`, y `CreateChatModal` pierde la casilla «Memoria persistente». `buildAutoCreateChatPayload` ya no recibe parámetros y `UseChatSubmitMessageDependencies` pierde `showHistoryPanel`.
+- `chat_turn::prepare_new_chat` ya no desactiva la memoria para los chats que arrancan con un índice de archivos.
+- Compatibilidad: los chats antiguos se abren igual; la línea `longTermMemory:` desaparece al guardarlos. La migración de `chat/LongTermMemory.md` a `memory.md` del workspace del agente no cambió.
+- El diálogo **Memoria del agente** (enlace **Administrar memoria** del panel de contexto) sigue vaciando `memory.md` (`backend_save_agent_memories` con una lista vacía) y explica que las reglas no cambian.
+
+Validación: `cargo test --offline -p notia-backend-core` (229), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings en desktop frente a 44 antes), `cargo check` Android, `tsc -p tsconfig.app.json`, `eslint` y `vitest run` (217). Pendiente: comprobar en la app que el agente guarda reglas y memorias con sus tools en Windows y Android.
+
+## Chat sin memoria del agente
+
+Cada chat guarda en su encabezado `agentMemory: true|false` (`StoredChatDocument.agent_memory_enabled`, `agentMemoryEnabled` en TypeScript). Si falta la clave, como en los chats anteriores, el valor es `true` (`flag` en el parser y `#[serde(default)]` en el documento y en `CreateChatPayload`).
+
+- **Elección:** el panel de contexto de la vista Chat IA muestra un interruptor (`role="switch"`). Sin chat seleccionado, controla `newChatAgentMemoryEnabled`, que usan los dos caminos de creación: `createChatDraftFile` desde **Nuevo chat** y el primer envío (`useChatSubmitMessage` → `buildAutoCreateChatPayload(agentMemoryEnabled)`). Con un chat seleccionado, el interruptor muestra `activeChatDocument.agentMemoryEnabled` bloqueado: la elección no cambia en un chat existente. La barra superior muestra **Sin memoria** cuando el valor efectivo es `false`. El chat lateral no expone el interruptor y crea sus chats con memoria.
+- **Motor:** `chat_turn::chat_persistence_policy` convierte la política `Persistent` de `turn_route` en `EphemeralNoMemory` cuando el documento del turno tiene `agent_memory_enabled = false`; Meeting y la publicación conservan la suya. Con esa política `load_prompt_parts_with_request` sigue cargando `rules.md` pero no `memory.md`, `authorize_agent_path` rechaza las rutas de memoria y `append_agent_file` rechaza escrituras.
+- **Catálogo:** `authorize_tool_call` exige, además del Owner, `persistence_policy.allows_memory()` para `ToolPolicy::Memory`, así que `add_agent_rule` y `add_agent_memory` no se ofrecen al modelo en turnos sin memoria (antes se ofrecían y fallaban, por ejemplo en Meeting). Un chat sin memoria tampoco agrega reglas nuevas.
+
+Validación: `cargo test --offline -p notia-backend-core` (231, con `a_chat_without_agent_memory_runs_without_memory` y `memory_tools_need_the_owner_and_a_memory_policy`), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings), `tsc`, `eslint` y `vitest run` (217). Pendiente: probar en Windows y Android que un chat creado sin memoria no guarda memorias y que la barra muestra **Sin memoria**.
+
+## Selector de archivos de la librería del chat
+
+`ChatLibraryFilesModal` quedaba para siempre en «Cargando archivos de la librería...». El efecto de carga dependía de una bandera `needsOptionsReset` que él mismo apagaba justo después de pedir `library_list_files`. Ese cambio volvía a ejecutar el efecto y el cleanup del anterior marcaba la petición como cancelada, así que la respuesta se descartaba y `isLoading` nunca volvía a `false`. Ahora el efecto depende solo de `open` y `library`: carga cada vez que el modal se abre y solo cancela si se cierra o cambia la librería. El contrato con Rust (`library_list_files` → `{ path, name, relativePath }`) no cambió.
+
+Regresión: `ChatLibraryFilesModal.test.tsx` (happy-dom) comprueba que los archivos aparecen, que se piden una sola vez y que la búsqueda filtra; falla con la versión anterior del modal. `vitest run`: 58 archivos, 218 tests.
+
+## Búsqueda en la librería y contexto de carpetas
+
+**Diagnóstico previo.** Desde «Chat IA en Rust», los archivos que el compositor elegía (`ContextSelection.files` y `mode`) solo se guardaban en el chat: `ai_chat.rs` no los leía ni los pasaba al agente, así que **Directo** y **Referencia** no tenían efecto. El snapshot (`SnapshotCapabilities.can_read_library`) es descriptivo y no restringe herramientas.
+
+**Contrato.**
+
+- `ContextSelection` suma `folders: string[]` y `libraryRag: boolean` (por defecto `true`; `Default` manual). `keep_selection` copia archivos, carpetas, modo y búsqueda al chat cuando el contexto no es temporal.
+- `StoredChatDocument` suma `selected_context_folders` (`selectedContextFolders` en el encabezado) y `library_rag_enabled` (`libraryRag`, `true` si falta). Las carpetas se guardan relativas a la librería y se muestran como rutas del explorador, igual que los archivos.
+- Comando nuevo `library_list_folders { libraryId }` → `[{ path, name, relativePath, fileCount }]`: carpetas del inventario con archivos, contando subcarpetas (`chat_context::library_folders`). Está en `COMMAND_NAMES`, así que también responde al navegador conectado a un servidor Notia.
+
+**Turno** (`ai_chat::library_context`, solo `mode = chat`, `scope = library` y contexto no temporal; el chat lateral, Meeting y la publicación no cambian):
+
+1. Resuelve archivos y carpetas a rutas lógicas; descarta las que están fuera de la librería.
+2. `expand_context_files` suma los archivos del inventario bajo cada carpeta (prefijo con `/`, sin tomar carpetas hermanas con el mismo comienzo), sin repetir y hasta `MAX_CONTEXT_FILES = 500`.
+3. En modo directo lee cada archivo con `library_session::read_library_text` (misma lectura que el editor, incluido SAF en Android).
+4. `context_block` arma el texto: contenido completo hasta `MAX_DIRECT_CONTEXT_CHARS = 30.000` y la lista de omitidos; o, en referencia, hasta `MAX_INDEX_FILES = 50` rutas / `MAX_INDEX_CHARS = 6.000`. Sin búsqueda, agrega la instrucción de no buscar otros archivos (o de que no hay acceso a la librería). `prompt_with_context` lo agrega al mensaje del turno.
+5. Sin búsqueda, `tools_without_library_rag` envía en `AgentRequest.tools` las herramientas soportadas del catálogo canónico salvo las de `ToolPolicy::LibraryRead` (búsquedas, lecturas, metadatos, referencias, comparación). El runtime proyecta solo esas, así que la restricción la aplica Rust. Las herramientas de escritura, Task Manager, memoria y web se conservan.
+
+La lectura directa ocurre en el turno del Owner (el chat de la app siempre usa `user-owner`, que tiene todos los contextos); no se ofrece a otros actores.
+
+**Interfaz.** `useChatState` guarda `selectedLibraryFolderPaths` y `libraryRagEnabled` y los rehidrata del chat abierto. `ChatComposer` (variante `workspace`) muestra el interruptor `role="switch"` y las carpetas como chips; el menú **+** suma **Buscar carpetas de la librería**. `ChatLibraryFilesModal` recibe `kind: 'files' | 'folders'` (textos, cargador y cantidad de archivos por carpeta); el modo Directo/Referencia es uno solo para archivos y carpetas. `ChatContextPanel` muestra si la búsqueda está activa, lista carpetas y archivos (se quitan uno por uno) y abre ambos selectores.
+
+**Validación.** `cargo test --offline -p notia-backend-core` (235; `chat_context` agrega carpetas, expansión, bloque directo y sin búsqueda), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings), `cargo check` Android (63 warnings, sin nuevos), `tsc`, `eslint`, `vitest run` (219; el selector de carpetas y el envío de `folders`/`libraryRag`) y `vite build`. Pendiente: probar con un modelo real en Windows y Android que sin búsqueda el agente no consulta otros archivos, que una carpeta grande respeta los límites y que el selector de carpetas funciona con SAF.
+
+## Organización de memory.md
+
+**Guardado.** El agente guarda memorias con `add_agent_memory` (`ToolPolicy::Memory`: Owner, política persistente, sin confirmación). Ahora la herramienta está en los scopes `library`, `document` y `task-manager` (antes solo `library`), así que también guardan los chats laterales de notas y Task Manager. `finance` queda afuera por diseño y `graph` es de solo lectura. Las reglas por defecto (`defaults/agent_rules.md`, bloque administrado de `rules.md`) indican guardar en el mismo turno los datos personales y la información duradera, sin pedir confirmación, y excluyen de la regla general de confirmación a `add_agent_rule`/`add_agent_memory`. Antes decían qué tool usar pero no cuándo, y la regla «toda escritura requiere confirmación» contradecía a estas tools.
+
+**Organización.** Cuando `append_agent_file` agrega una memoria (`changed = true`), o cuando `backend_save_agent_memories` guarda una lista no vacía, se llama `agent_knowledge::schedule_memory_organization`:
+
+1. Corre una organización por librería a la vez. Si `memory.md` vuelve a cambiar mientras corre, queda marcada y se repite una vez al terminar.
+2. `organize_memories` lee las memorias (con menos de dos no hace nada) y llama a `backend_runtime::complete_text` con `organize_memories_messages`. Es una llamada aparte del turno, sin tools, con política `EphemeralNoMemory` y solo mensajes system/user: la memoria viaja como la lista a ordenar, no como contexto del agente.
+3. `parse_organized_memories` acepta un JSON array de strings (o `{"memories": [...]}`), normaliza espacios y descarta la respuesta si no es una lista, si queda vacía cuando había memorias o si supera `MAX_MEMORIES`/`MAX_RULE_CHARS`.
+4. `replace_memories_if_unchanged` escribe bajo el lock del workspace solo si `memory.md` todavía tiene la lista leída en el paso 2. Así una memoria guardada durante la llamada nunca se pierde: esa escritura programa otra organización.
+
+El turno no espera la organización y los errores solo se registran como warning, sin contenido. `rules.md` no se reorganiza.
+
+Validación: `cargo test --offline -p notia-backend-core` (236; `organized_memories_must_be_a_usable_list` y memoria en el scope de nota), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings), `cargo check` Android (63 warnings, sin nuevos), `tsc`, `eslint` y `vitest run`. Pendiente: comprobar con un modelo real que el agente guarda los datos personales sin que se lo pidan y que la organización deja `memory.md` ordenado sin perder datos.
