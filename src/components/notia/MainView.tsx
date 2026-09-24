@@ -1,15 +1,15 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Ellipsis } from 'lucide-react'
+import { Ellipsis, FileText, PencilLine, Search } from 'lucide-react'
 import { FileViewHost } from './views/FileViewHost' // memoized export
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
-import { NotiaButton } from '../common/NotiaButton'
 import { MAX_MARKDOWN_ZOOM, MIN_MARKDOWN_ZOOM } from './views/markdown/useMarkdownZoom'
 import { MarkdownExportModal } from './MarkdownExportModal'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 import type { NotiaLibrary } from '../../types/notia'
+import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 
 const DEFAULT_MARKDOWN_ZOOM = 1
 
@@ -80,17 +80,8 @@ function MainViewComponent({
     }
   }, [isDocumentMenuOpen])
 
-  const handleNewNote = useCallback(() => {
-    // Placeholder shortcut handler; currently rendered as static UI hint.
-  }, [])
-
-  const handleGoToFile = useCallback(() => {
-    // Placeholder shortcut handler; currently rendered as static UI hint.
-  }, [])
-
-  const handleClose = useCallback(() => {
-    // Placeholder shortcut handler; currently rendered as static UI hint.
-  }, [])
+  const handleExplorerToolClick = useNotiaAction('explorerToolClick')
+  const handleHeaderActionClick = useNotiaAction('headerActionClick')
 
   const handleExport = useCallback(async (format: MarkdownExportFormat) => {
     if (!activeDocument || !isTextFileDocument(activeDocument) || activeDocument.viewKind !== 'markdown') return
@@ -116,9 +107,39 @@ function MainViewComponent({
     return (
       <main className="notia-main" data-notia-prevent-menu-close>
         <div className="notia-main-empty">
-          <NotiaButton onClick={handleNewNote}>Create new note (Ctrl + N)</NotiaButton>
-          <NotiaButton onClick={handleGoToFile}>Go to file (Ctrl + O)</NotiaButton>
-          <NotiaButton onClick={handleClose}>Close</NotiaButton>
+          <div className="notia-main-empty-mark" aria-hidden="true">
+            <FileText size={26} strokeWidth={1.5} />
+          </div>
+          <div className="notia-main-empty-copy">
+            <h2>No hay ninguna nota abierta</h2>
+            <p>Elegí un archivo del explorador o empezá uno nuevo.</p>
+          </div>
+          <div className="notia-main-empty-actions">
+            <button
+              type="button"
+              className="notia-main-empty-action"
+              disabled={!activeLibrary}
+              onClick={() => handleExplorerToolClick('new-note')}
+            >
+              <span className="notia-main-empty-action-label">
+                <PencilLine size={15} strokeWidth={1.75} aria-hidden="true" />
+                Nueva nota
+              </span>
+              <kbd>Ctrl N</kbd>
+            </button>
+            <button
+              type="button"
+              className="notia-main-empty-action"
+              disabled={!activeLibrary}
+              onClick={() => handleHeaderActionClick('search')}
+            >
+              <span className="notia-main-empty-action-label">
+                <Search size={15} strokeWidth={1.75} aria-hidden="true" />
+                Ir a archivo
+              </span>
+              <kbd>Ctrl O</kbd>
+            </button>
+          </div>
         </div>
       </main>
     )

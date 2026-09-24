@@ -1,11 +1,13 @@
-import { memo, useCallback, useDeferredValue, useMemo } from 'react'
-import { Bot } from 'lucide-react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
+import { Search } from 'lucide-react'
 import { shallowEqual } from 'react-redux'
-import { useAppSelector } from '../../store/hooks'
-import { selectIsSidebarOpen, selectActiveRailActionId } from '../../features/ui/uiSelectors'
+import { useAppDispatch, useAppSelector } from '../../store/hooks'
+import { selectIsSidebarOpen, selectActiveRailActionId, selectIsSearchMenuOpen } from '../../features/ui/uiSelectors'
+import { closeSearchMenu } from '../../features/ui/uiSlice'
 import { selectLibraries, selectSelectedLibraryId, selectActiveLibraryName, selectActiveLibrary } from '../../features/library/librarySelectors'
-import { selectIsSearchActive, selectPendingCreation, selectRenamingPath, selectSearchMatchedPaths, selectTreeNodes, selectLoadingFolderIds, selectFolderLoadError } from '../../features/documents/documentsSelectors'
-import { LEFT_RAIL_ACTIONS } from '../../constants/notiaMenu'
+import { selectIsSearchActive, selectIsSearchLoading, selectPendingCreation, selectRenamingPath, selectSearchMatchedCount, selectSearchMatchedPaths, selectSearchQuery, selectTreeNodes, selectLoadingFolderIds, selectFolderLoadError } from '../../features/documents/documentsSelectors'
+import { setSearchQuery } from '../../features/documents/documentsSlice'
+import { LEFT_RAIL_GROUPS, TOP_TOOLBAR_ACTIONS } from '../../constants/notiaMenu'
 import { backendSupports } from '../../services/transport'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { FileTree } from './FileTree'
@@ -15,9 +17,56 @@ import { applySearchMatchesToTree } from '../../engines/tree/applySearchMatchesT
 
 /** Meeting records with the microphone of the computer running Notia, so a
  * browser connected to a server does not offer it. */
-const railActions = backendSupports('start_speech_session')
-  ? LEFT_RAIL_ACTIONS
-  : LEFT_RAIL_ACTIONS.filter((action) => action.id !== 'meeting')
+const railGroups = backendSupports('start_speech_session')
+  ? LEFT_RAIL_GROUPS
+  : LEFT_RAIL_GROUPS.map((group) => group.filter((action) => action.id !== 'meeting'))
+
+function ExplorerSearch() {
+  const dispatch = useAppDispatch()
+  const query = useAppSelector(selectSearchQuery)
+  const matchedCount = useAppSelector(selectSearchMatchedCount)
+  const isLoading = useAppSelector(selectIsSearchLoading)
+  const isFocusRequested = useAppSelector(selectIsSearchMenuOpen)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // "Ir a archivo" and similar entry points ask the explorer to focus search.
+  useEffect(() => {
+    if (!isFocusRequested) {
+      return
+    }
+    inputRef.current?.focus()
+    inputRef.current?.select()
+    dispatch(closeSearchMenu())
+  }, [dispatch, isFocusRequested])
+
+  const hasQuery = query.trim().length > 0
+  return (
+    <div className="notia-explorer-search-block">
+      <label className="notia-explorer-search">
+        <Search size={15} strokeWidth={1.75} aria-hidden="true" />
+        <input
+          ref={inputRef}
+          type="search"
+          value={query}
+          placeholder="Buscar archivos"
+          aria-label="Buscar en la librería por título o contenido"
+          onChange={(event) => dispatch(setSearchQuery(event.target.value))}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && hasQuery) {
+              event.preventDefault()
+              dispatch(setSearchQuery(''))
+            }
+          }}
+        />
+      </label>
+      {hasQuery ? (
+        <div className="notia-explorer-search-meta" role="status" aria-live="polite">
+          {isLoading ? 'Buscando…' : `${matchedCount} coincidencia${matchedCount === 1 ? '' : 's'}`}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 function NotiaSidebarComponent() {
   const isSidebarOpen = useAppSelector(selectIsSidebarOpen)
@@ -46,6 +95,8 @@ function NotiaSidebarComponent() {
   const handleEmptyContextMenu = useNotiaAction('emptyContextMenu')
   const handleMoveNode = useNotiaAction('moveNode')
   const handleRailActionClick = useNotiaAction('railActionClick')
+  const handleToggleSidebar = useNotiaAction('toggleSidebar')
+  const handleExplorerToolClick = useNotiaAction('explorerToolClick')
   const handleSelectLibrary = useNotiaAction('selectLibrary')
   const handleOpenLibraryManager = useNotiaAction('openLibraryManager')
   const handleOpenSettings = useNotiaAction('openSettings')
@@ -74,47 +125,61 @@ function NotiaSidebarComponent() {
 
   return (
     <aside className={`notia-sidebar ${isSidebarOpen ? 'notia-sidebar--open' : 'notia-sidebar--closed'}`} data-notia-prevent-menu-close>
-      <div className="notia-primary-rail" data-notia-prevent-menu-close>
-        <IconRail
-          actions={railActions}
-          activeActionId={activeRailActionId}
-          onActionClick={handleRailActionClick}
-        />
-      </div>
+      <IconRail
+        groups={railGroups}
+        activeActionId={activeRailActionId}
+        isExplorerOpen={isSidebarOpen}
+        onActionClick={handleRailActionClick}
+        onToggleExplorer={handleToggleSidebar}
+        onOpenSettings={handleOpenSettings}
+      />
       {isSidebarOpen ? (
-        <div className="notia-panel" data-notia-prevent-menu-close>
-          <div className="notia-files-pane" data-notia-prevent-menu-close>
-            <FileTree
-              nodes={displayedTreeNodes}
-              rootPath={rootPath}
-              isSearchActive={isSearchActive}
-              searchMatchedFilePaths={deferredSearchMatchedPathSet}
-              onToggleFolder={handleToggleFolder}
-              onOpenFile={handleOpenFileFromView}
-              pendingCreation={pendingCreation}
-              onSubmitPendingCreation={submitPendingCreation}
-              onCancelPendingCreation={handleCancelPendingCreation}
-              renamingPath={renamingPath}
-              onSubmitRename={submitRename}
-              onCancelRename={handleCancelRename}
-              onNodeContextMenu={handleNodeContextMenu}
-              onEmptyContextMenu={handleEmptyContextMenu}
-              onMoveNode={handleMoveNode}
-              loadingFolderIds={loadingFolderIdSet}
-              folderLoadError={folderLoadError}
-            />
-            <div data-notia-prevent-menu-close>
-              <WorkspaceFooter
-                name={libraryName}
-                icon={Bot}
-                libraries={libraries}
-                activeLibraryId={activeLibraryId}
-                onSelectLibrary={handleSelectLibrary}
-                onOpenLibraryManager={handleOpenLibraryManager}
-                onOpenSettings={handleOpenSettings}
-              />
+        <div className="notia-panel" aria-label="Archivos" role="region" data-notia-prevent-menu-close>
+          <div className="notia-panel-header">
+            <span className="notia-panel-title">Archivos</span>
+            <div className="notia-panel-actions">
+              {TOP_TOOLBAR_ACTIONS.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  className="notia-panel-action"
+                  aria-label={label}
+                  title={label}
+                  disabled={!activeLibrary}
+                  onClick={() => handleExplorerToolClick(id)}
+                >
+                  <Icon size={16} strokeWidth={1.75} />
+                </button>
+              ))}
             </div>
           </div>
+          <ExplorerSearch />
+          <FileTree
+            nodes={displayedTreeNodes}
+            rootPath={rootPath}
+            isSearchActive={isSearchActive}
+            searchMatchedFilePaths={deferredSearchMatchedPathSet}
+            onToggleFolder={handleToggleFolder}
+            onOpenFile={handleOpenFileFromView}
+            pendingCreation={pendingCreation}
+            onSubmitPendingCreation={submitPendingCreation}
+            onCancelPendingCreation={handleCancelPendingCreation}
+            renamingPath={renamingPath}
+            onSubmitRename={submitRename}
+            onCancelRename={handleCancelRename}
+            onNodeContextMenu={handleNodeContextMenu}
+            onEmptyContextMenu={handleEmptyContextMenu}
+            onMoveNode={handleMoveNode}
+            loadingFolderIds={loadingFolderIdSet}
+            folderLoadError={folderLoadError}
+          />
+          <WorkspaceFooter
+            name={libraryName}
+            libraries={libraries}
+            activeLibraryId={activeLibraryId}
+            onSelectLibrary={handleSelectLibrary}
+            onOpenLibraryManager={handleOpenLibraryManager}
+          />
         </div>
       ) : null}
     </aside>

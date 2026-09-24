@@ -1,7 +1,7 @@
 # Funcionalidades
 
 - Gestión de bibliotecas locales de documentos.
-- Explorador de archivos y carpetas con búsqueda integrada.
+- Explorador de archivos y carpetas con búsqueda integrada, guías de nivel y atajos `Ctrl + N` (nueva nota) y `Ctrl + O` (buscar archivo).
 - Editor enriquecido de archivos Markdown, con aviso de conflicto al guardar una nota que el agente modificó.
 - Bloques Markdown, gráficos, imágenes y otros bloques compatibles dentro de celdas de tablas, con selector, selección, eliminación y arrastre entre posiciones o celdas.
 - Propiedades y frontmatter editables en notas Markdown.

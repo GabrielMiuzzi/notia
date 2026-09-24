@@ -1,12 +1,11 @@
 import type { RootState } from '../../store/index'
-import { CHAT_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, GRAPH_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH } from '../documents/documentsSlice'
+import { CHAT_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, GRAPH_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH } from '../documents/documentsSlice'
 
 export const selectActiveView = (state: RootState) => state.ui.activeView
 export const selectIsSidebarOpen = (state: RootState) => state.ui.isSidebarOpen
 export const selectIsRightChatPanelOpen = (state: RootState) => state.ui.isRightChatPanelOpen
 export const selectIsRightPanelChatMounted = (state: RootState) => state.ui.isRightPanelChatMounted
 export const selectIsSearchMenuOpen = (state: RootState) => state.ui.isSearchMenuOpen
-export const selectActiveHeaderAction = (state: RootState) => state.ui.activeHeaderAction
 export const selectIsSettingsOpen = (state: RootState) => state.ui.isSettingsOpen
 export const selectSettingsActiveSection = (state: RootState) => state.ui.settingsActiveSection
 export const selectIsLibraryManagerOpen = (state: RootState) => state.ui.isLibraryManagerOpen
@@ -21,6 +20,7 @@ export const selectActiveRailActionId = (state: RootState): string | null => {
   if (path === MEETING_WORKSPACE_TAB_PATH) return 'meeting'
   if (path === FINANCE_WORKSPACE_TAB_PATH) return 'finance'
   if (path === CALENDAR_WORKSPACE_TAB_PATH) return 'calendar'
+  if (path === MULTICHAT_WORKSPACE_TAB_PATH) return 'multichat'
   if (path === ROUTINE_WORKSPACE_TAB_PATH) return 'routine'
   return null
 }

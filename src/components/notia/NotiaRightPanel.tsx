@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
+import { Sparkles, X } from 'lucide-react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsRightChatPanelOpen, selectIsRightPanelChatMounted } from '../../features/ui/uiSelectors'
@@ -63,6 +64,7 @@ function NotiaRightPanelComponent({
   onActiveMarkdownDocumentChanged,
 }: NotiaRightPanelProps) {
   const handleChatWorkspaceTreeChanged = useNotiaAction('chatWorkspaceTreeChanged')
+  const handleToggleRightPanel = useNotiaAction('toggleRightChatPanel')
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const isRightPanelChatMounted = useAppSelector(selectIsRightPanelChatMounted)
   const activeLibrary = useAppSelector(selectActiveLibrary)
@@ -148,6 +150,23 @@ function NotiaRightPanelComponent({
           onPointerUp={handleResizePointerEnd}
           onPointerCancel={handleResizePointerEnd}
         />
+      ) : null}
+      {isRightChatPanelOpen ? (
+        <header className="notia-right-panel-header">
+          <span className="notia-right-panel-title">
+            <Sparkles size={15} strokeWidth={1.75} aria-hidden="true" />
+            {isMeetingContext ? 'Asistente de la reunión' : 'Asistente'}
+          </span>
+          <button
+            type="button"
+            className="notia-panel-action"
+            aria-label="Cerrar asistente"
+            title="Cerrar asistente"
+            onClick={handleToggleRightPanel}
+          >
+            <X size={15} strokeWidth={1.75} />
+          </button>
+        </header>
       ) : null}
       {isRightChatPanelOpen ? (
         isRightPanelChatMounted ? (

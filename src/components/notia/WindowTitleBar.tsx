@@ -1,64 +1,42 @@
 import { memo, useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent } from 'react'
-import { ChevronLeft, ChevronRight, Moon, PanelRightClose, PanelRightOpen, Sun } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Moon, PanelLeft, PanelRight, Sun, X } from 'lucide-react'
 import { startWindowDragging, startWindowDraggingWithRestore } from '../../services/window/windowRuntime'
 import type { NotiaIconAction } from '../../types/notia'
 import { NotiaButton } from '../common/NotiaButton'
-import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
-import { NotiaSubmenuPanel } from './NotiaSubmenuPanel'
-import { useAppSelector, useAppDispatch } from '../../store/hooks'
-import { setSearchQuery } from '../../features/documents/documentsSlice'
-import { selectIsSidebarOpen, selectIsRightChatPanelOpen, selectIsSearchMenuOpen, selectActiveHeaderAction } from '../../features/ui/uiSelectors'
+import { useAppSelector } from '../../store/hooks'
+import { selectIsSidebarOpen, selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
 import { selectTheme } from '../../features/preferences/preferencesSelectors'
-import { selectActiveTabPath, selectSearchQuery, selectIsSearchLoading, selectSearchMatchedCount, selectTitleBarTabs } from '../../features/documents/documentsSelectors'
+import { selectActiveTabPath, selectTitleBarTabs } from '../../features/documents/documentsSelectors'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 
 interface WindowTitleBarProps {
-  tabIcon: ComponentType<{ size?: number }>
-  explorerActions: NotiaIconAction[]
-  explorerTools: NotiaIconAction[]
+  tabIcon: ComponentType<{ size?: number; strokeWidth?: number }>
   rightActions: NotiaIconAction[]
   showRightPanelToggle?: boolean
 }
 
 function WindowTitleBarComponent({
   tabIcon: TabIcon,
-  explorerActions,
-  explorerTools,
   rightActions,
   showRightPanelToggle = true,
 }: WindowTitleBarProps) {
-  const dispatch = useAppDispatch()
-
-  // Self-subscribed Redux selectors (previously passed as props from NotiaMenu)
   const tabs = useAppSelector(selectTitleBarTabs)
   const activeTabPath = useAppSelector(selectActiveTabPath)
   const isSidebarOpen = useAppSelector(selectIsSidebarOpen)
-  const activeExplorerActionId = useAppSelector(selectActiveHeaderAction)
-  const isSearchMenuOpen = useAppSelector(selectIsSearchMenuOpen)
-  const searchQuery = useAppSelector(selectSearchQuery)
-  const searchResultCount = useAppSelector(selectSearchMatchedCount)
-  const isSearchLoading = useAppSelector(selectIsSearchLoading)
   const theme = useAppSelector(selectTheme)
   const isRightPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
 
-  // Stable dispatchers from context
   const onActivateTab = useNotiaAction('activateTab')
   const onCloseTab = useNotiaAction('closeTab')
   const onToggleSidebar = useNotiaAction('toggleSidebar')
-  const onExplorerActionClick = useNotiaAction('headerActionClick')
-  const onExplorerToolClick = useNotiaAction('explorerToolClick')
-  const onSearchMenuClose = useNotiaAction('closeSearchMenu')
   const onToggleTheme = useNotiaAction('toggleTheme')
   const onToggleRightPanel = useNotiaAction('toggleRightChatPanel')
   const onWindowAction = useNotiaAction('windowAction')
-
-  const onSearchQueryChange = useCallback((value: string) => { dispatch(setSearchQuery(value)) }, [dispatch])
 
   const DRAG_START_DELAY_MS = 170
   const DRAG_MOVE_THRESHOLD_PX = 8
   const tabsScrollRef = useRef<HTMLDivElement>(null)
   const tabElementRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const pendingDragStartTimeoutRef = useRef<number | null>(null)
   const titlebarPressStartPointRef = useRef<{ x: number; y: number } | null>(null)
   const isTitlebarPressActiveRef = useRef(false)
@@ -66,18 +44,12 @@ function WindowTitleBarComponent({
   const [isTabsOverflowing, setIsTabsOverflowing] = useState(false)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
-  const { triggerRef: searchButtonRef, panelRef: searchMenuRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
-    open: isSearchMenuOpen,
-    onClose: onSearchMenuClose,
-  })
-
-  const ToggleIcon = explorerActions[0]?.icon
   const ThemeIcon = theme === 'dark' ? Sun : Moon
-  const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
-  const RightPanelIcon = isRightPanelOpen ? PanelRightClose : PanelRightOpen
-  const rightPanelLabel = isRightPanelOpen ? 'Ocultar panel derecho de chat' : 'Mostrar panel derecho de chat'
+  const themeLabel = theme === 'dark' ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'
+  const sidebarLabel = isSidebarOpen ? 'Ocultar explorador' : 'Mostrar explorador'
+  const rightPanelLabel = isRightPanelOpen ? 'Ocultar asistente' : 'Mostrar asistente'
   const blockingSelector =
-    'button, input, textarea, select, a, [role="button"], .notia-tab, .notia-tab-trigger, .notia-toolbar, .notia-explorer-actions, .notia-titlebar-controls, .notia-titlebar-tabs-scroll-button, .notia-search-panel'
+    'button, input, textarea, select, a, [role="button"], .notia-tab, .notia-tab-trigger, .notia-titlebar-controls, .notia-titlebar-tabs-scroll-button'
 
   const isInteractiveTitlebarTarget = (target: EventTarget | null): boolean => {
     if (!(target instanceof HTMLElement)) {
@@ -151,21 +123,6 @@ function WindowTitleBarComponent({
 
     window.setTimeout(updateTabsScrollState, 180)
   }, [activeTabPath, tabs.length, updateTabsScrollState])
-
-  useEffect(() => {
-    if (!isSearchMenuOpen) {
-      return
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      searchInputRef.current?.focus()
-      searchInputRef.current?.select()
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [isSearchMenuOpen])
 
   useEffect(() => {
     return () => {
@@ -278,80 +235,6 @@ function WindowTitleBarComponent({
       onDoubleClick={handleTitlebarDoubleClick}
       data-notia-prevent-menu-close
     >
-      <div
-        className={`notia-titlebar-sidebar ${
-          isSidebarOpen ? 'notia-titlebar-sidebar--open' : 'notia-titlebar-sidebar--closed'
-        }`}
-      >
-        <div className="notia-titlebar-rail-slot">
-          <NotiaButton
-            size="icon"
-            variant={isSidebarOpen ? 'primary' : 'secondary'}
-            className={`notia-icon-button ${isSidebarOpen ? 'notia-icon-button--active' : ''}`}
-            title="Toggle sidebar"
-            onClick={onToggleSidebar}
-          >
-            {ToggleIcon ? <ToggleIcon size={16} /> : null}
-          </NotiaButton>
-        </div>
-        {isSidebarOpen ? (
-          <div className="notia-titlebar-explorer" data-notia-prevent-menu-close>
-            <div className="notia-explorer-actions" data-notia-prevent-menu-close>
-              {explorerActions.slice(1).map(({ id, label, icon: Icon }) => (
-                <div key={id} className="notia-explorer-action-slot" data-notia-prevent-menu-close>
-                  <NotiaButton
-                    ref={id === 'search' ? searchButtonRef : undefined}
-                    size="icon"
-                    variant={activeExplorerActionId === id ? 'primary' : 'secondary'}
-                    className={`notia-toolbar-button notia-toolbar-button--${id} ${
-                      activeExplorerActionId === id ? 'notia-icon-button--active' : ''
-                    }`}
-                    title={label}
-                    onClick={() => onExplorerActionClick(id)}
-                  >
-                    <Icon size={15} />
-                  </NotiaButton>
-                  {id === 'search' && isSearchMenuOpen ? (
-                    <NotiaSubmenuPanel ref={searchMenuRef} className="notia-search-panel">
-                      <div className="notia-search-panel-title">Buscar en libreria</div>
-                      <input
-                        ref={searchInputRef}
-                        type="text"
-                        value={searchQuery}
-                        className="notia-search-panel-input"
-                        placeholder="Buscar por titulo o contenido..."
-                        onChange={(event) => onSearchQueryChange(event.target.value)}
-                      />
-                      <div className="notia-search-panel-meta">
-                        {isSearchLoading
-                          ? 'Buscando...'
-                          : searchQuery.trim()
-                            ? `${searchResultCount} coincidencia${searchResultCount === 1 ? '' : 's'}`
-                            : 'Escribi para buscar en la libreria.'}
-                      </div>
-                    </NotiaSubmenuPanel>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-            <div className="notia-toolbar">
-              {explorerTools.map(({ id, label, icon: Icon }) => (
-                <NotiaButton
-                  key={id}
-                  size="icon"
-                  variant="secondary"
-                  className={`notia-toolbar-button notia-toolbar-button--${id}`}
-                  title={label}
-                  onClick={() => onExplorerToolClick(id)}
-                >
-                  <Icon size={15} />
-                </NotiaButton>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-
       <div className="notia-titlebar-main" data-notia-prevent-menu-close>
         <div className="notia-titlebar-tabs-shell" data-notia-prevent-menu-close>
           {isTabsOverflowing ? (
@@ -369,8 +252,8 @@ function WindowTitleBarComponent({
           <div className="notia-titlebar-tabs" ref={tabsScrollRef} data-notia-prevent-menu-close>
             {tabs.length === 0 ? (
               <div className="notia-tab notia-tab--active notia-tab--placeholder" data-notia-prevent-menu-close>
-                <TabIcon size={14} />
-                <span className="notia-tab-title">New tab</span>
+                <TabIcon size={14} strokeWidth={1.75} />
+                <span className="notia-tab-title">Nueva pestaña</span>
               </div>
             ) : (
               tabs.map((tab) => {
@@ -382,6 +265,7 @@ function WindowTitleBarComponent({
                       tabElementRefs.current[tab.path] = element
                     }}
                     className={`notia-tab ${isActive ? 'notia-tab--active' : ''}`}
+                    aria-current={isActive ? 'page' : undefined}
                     data-notia-prevent-menu-close
                   >
                     <NotiaButton
@@ -390,17 +274,18 @@ function WindowTitleBarComponent({
                       title={tab.title}
                       onClick={() => onActivateTab(tab.path)}
                     >
-                      <TabIcon size={14} />
+                      <TabIcon size={14} strokeWidth={1.75} />
                       <span className="notia-tab-title">{tab.title}</span>
                     </NotiaButton>
                     <NotiaButton
                       size="icon"
                       variant="ghost"
-                      className="notia-titlebar-button notia-tab-close"
-                      title="Close tab"
+                      className="notia-tab-close"
+                      title="Cerrar pestaña"
+                      aria-label={`Cerrar ${tab.title}`}
                       onClick={() => onCloseTab(tab.path)}
                     >
-                      ×
+                      <X size={12} strokeWidth={2} />
                     </NotiaButton>
                   </div>
                 )
@@ -427,9 +312,23 @@ function WindowTitleBarComponent({
             variant="ghost"
             className="notia-titlebar-button notia-titlebar-theme-button"
             title={themeLabel}
+            aria-label={themeLabel}
             onClick={onToggleTheme}
           >
-            <ThemeIcon size={15} />
+            <ThemeIcon size={16} strokeWidth={1.75} />
+          </NotiaButton>
+          <NotiaButton
+            size="icon"
+            variant="ghost"
+            className={`notia-titlebar-button notia-titlebar-sidebar-button ${
+              isSidebarOpen ? 'notia-titlebar-button--active' : ''
+            }`}
+            title={sidebarLabel}
+            aria-label={sidebarLabel}
+            aria-pressed={isSidebarOpen}
+            onClick={onToggleSidebar}
+          >
+            <PanelLeft size={16} strokeWidth={1.75} />
           </NotiaButton>
           {showRightPanelToggle ? (
             <NotiaButton
@@ -439,9 +338,11 @@ function WindowTitleBarComponent({
                 isRightPanelOpen ? 'notia-titlebar-button--active' : ''
               }`}
               title={rightPanelLabel}
+              aria-label={rightPanelLabel}
+              aria-pressed={isRightPanelOpen}
               onClick={onToggleRightPanel}
             >
-              <RightPanelIcon size={15} />
+              <PanelRight size={16} strokeWidth={1.75} />
             </NotiaButton>
           ) : null}
           {rightActions.length > 0 ? <div className="notia-titlebar-separator" /> : null}
@@ -449,16 +350,17 @@ function WindowTitleBarComponent({
             <NotiaButton
               key={id}
               size="icon"
-              variant={id === 'close' ? 'danger' : 'ghost'}
+              variant="ghost"
               className={`notia-titlebar-button ${id === 'close' ? 'notia-titlebar-close' : ''}`}
               title={label}
+              aria-label={label}
               onClick={() => {
                 if (id === 'minimize' || id === 'maximize' || id === 'close') {
                   onWindowAction(id)
                 }
               }}
             >
-              <Icon size={15} />
+              <Icon size={id === 'maximize' ? 13 : 15} strokeWidth={1.75} />
             </NotiaButton>
           ))}
         </div>

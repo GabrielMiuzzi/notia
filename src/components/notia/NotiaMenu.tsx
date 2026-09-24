@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { shallowEqual } from 'react-redux'
-import {
-  EXPLORER_HEADER_ACTIONS,
-  TAB_ICON,
-  TITLEBAR_RIGHT_ACTIONS,
-  TOP_TOOLBAR_ACTIONS,
-} from '../../constants/notiaMenu'
+import { TAB_ICON, TITLEBAR_RIGHT_ACTIONS } from '../../constants/notiaMenu'
 import { controlWindow, exitApplication, hasHostWindow, subscribeExitRequest } from '../../services/window/windowRuntime'
 import { NotiaActionsProvider } from '../../context/notiaActions/NotiaActionsContext'
 import { getRuntimeDevice } from '../../utils/platform/getRuntimeDevice'
@@ -33,7 +28,7 @@ import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
 import { useTelegramLibraryChanges } from './hooks/useTelegramLibraryChanges'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
-import { toggleSidebar, toggleRightChatPanel, closeSearchMenu, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
+import { toggleSidebar, toggleRightChatPanel, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
 import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSlice'
 import { selectTheme, selectAiSettings, selectInkMathPreferences, selectExplorerRefreshIntervalMs, selectTelegramSettings, selectTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSelectors'
@@ -274,16 +269,20 @@ function NotiaMenuComponent() {
 
   useRightPanelMount({ isAndroidRuntime, isRightChatPanelOpen })
 
+  const handleNewNoteShortcut = useCallback(() => { handleExplorerToolClick('new-note') }, [handleExplorerToolClick])
+  const handleGoToFileShortcut = useCallback(() => { handleHeaderActionClick('search') }, [handleHeaderActionClick])
+
   useGlobalEventListeners({
     handleCloseActiveTab: tabManager.handleCloseActiveTab,
     handleCycleToNextTab: tabManager.handleCycleToNextTab,
+    handleNewNote: handleNewNoteShortcut,
+    handleGoToFile: handleGoToFileShortcut,
   })
 
   // --- Simple dispatch-only callbacks ---
 
   const handleSidebarToggle = useCallback(() => { dispatch(toggleSidebar()) }, [dispatch])
   const handleRightChatPanelToggle = useCallback(() => { dispatch(toggleRightChatPanel()) }, [dispatch])
-  const handleCloseSearchMenu = useCallback(() => { dispatch(closeSearchMenu()) }, [dispatch])
   const handleThemeToggle = useCallback(() => { dispatch(toggleTheme()) }, [dispatch])
 
   useEffect(() => {
@@ -457,7 +456,6 @@ function NotiaMenuComponent() {
     railActionClick: handleRailActionClick,
     headerActionClick: handleHeaderActionClick,
     explorerToolClick: handleExplorerToolClick,
-    closeSearchMenu: handleCloseSearchMenu,
     submitPendingCreation: handleSubmitPendingCreation,
     cancelPendingCreation: handleCancelPendingCreation,
     renameSubmit: handleRenameSubmit,
@@ -491,7 +489,6 @@ function NotiaMenuComponent() {
     handleRailActionClick,
     handleHeaderActionClick,
     handleExplorerToolClick,
-    handleCloseSearchMenu,
     handleSubmitPendingCreation,
     handleCancelPendingCreation,
     handleRenameSubmit,
@@ -517,38 +514,38 @@ function NotiaMenuComponent() {
           isAndroidRuntime ? 'notia-app-shell--android' : ''
         }`.trim()}
       >
-        <WindowTitleBar
-          tabIcon={TAB_ICON}
-          explorerActions={EXPLORER_HEADER_ACTIONS}
-          explorerTools={TOP_TOOLBAR_ACTIONS}
-          rightActions={titlebarRightActions}
-          showRightPanelToggle={activeWorkspaceView !== 'chat'}
-        />
         <div className="notia-workspace" data-notia-prevent-menu-close>
           <PerformanceProfiler id="explorer">
             <NotiaSidebar />
           </PerformanceProfiler>
-          <PerformanceProfiler id="workspace">
-            <NotiaWorkspace
-              mountedHeavyWorkspaceView={mountedHeavyWorkspaceView}
-              isAndroidRuntime={isAndroidRuntime}
-              coldPassEntries={coldPassEntries}
-              coldPassSession={coldPassSession}
-              activeTaskManagerVault={activeTaskManagerVault}
-              libraryContexts={libraryContexts}
-              graphModel={graphModel}
-              searchGraph={searchGraph}
-              isGraphLoading={isGraphLoading}
-              graphChatSelectedPaths={graphChatSelectedPaths}
-              setGraphChatSelectedPaths={setGraphChatSelectedPaths}
-              previousChatFiles={previousChatFiles}
-              setTaskManagerActivePanelId={setTaskManagerActivePanelId}
-              setTaskManagerChatContext={setTaskManagerChatContext}
-              isImportingVault={isImportingVault}
-              onMarkdownSelectionChange={setMarkdownSelection}
-              markdownExternalUpdate={markdownExternalUpdate}
+          <div className="notia-main-column" data-notia-prevent-menu-close>
+            <WindowTitleBar
+              tabIcon={TAB_ICON}
+              rightActions={titlebarRightActions}
+              showRightPanelToggle={activeWorkspaceView !== 'chat'}
             />
-          </PerformanceProfiler>
+            <PerformanceProfiler id="workspace">
+              <NotiaWorkspace
+                mountedHeavyWorkspaceView={mountedHeavyWorkspaceView}
+                isAndroidRuntime={isAndroidRuntime}
+                coldPassEntries={coldPassEntries}
+                coldPassSession={coldPassSession}
+                activeTaskManagerVault={activeTaskManagerVault}
+                libraryContexts={libraryContexts}
+                graphModel={graphModel}
+                searchGraph={searchGraph}
+                isGraphLoading={isGraphLoading}
+                graphChatSelectedPaths={graphChatSelectedPaths}
+                setGraphChatSelectedPaths={setGraphChatSelectedPaths}
+                previousChatFiles={previousChatFiles}
+                setTaskManagerActivePanelId={setTaskManagerActivePanelId}
+                setTaskManagerChatContext={setTaskManagerChatContext}
+                isImportingVault={isImportingVault}
+                onMarkdownSelectionChange={setMarkdownSelection}
+                markdownExternalUpdate={markdownExternalUpdate}
+              />
+            </PerformanceProfiler>
+          </div>
           <PerformanceProfiler id="right-panel">
             <NotiaRightPanel
               isMeetingContext={activeWorkspaceView === 'meeting'}

@@ -368,6 +368,21 @@ Estado al cierre de los pendientes de la separación:
 - **Dictado remoto:** no está disponible en Linux (no hay reconocedor).
 - **Excepciones visuales de TypeScript:** las que quedan (editor Milkdown, lienzo InkMath, Mermaid, pdf.js, lista virtual y expansión del árbol) están listadas en «cierre de la fase 1».
 
+## Estado sincronizado de esta iteración: rediseño del shell
+
+Cambio solo de interfaz (Windows, Android y navegador); no toca comandos ni contratos del backend. Sigue el lienzo de diseño «Notia · Rediseño del sidebar», que es indicativo: el rail conserva todos los módulos reales.
+
+- **Disposición**: `NotiaMenu` arma `.notia-workspace` como fila `[NotiaSidebar][.notia-main-column][NotiaRightPanel]`. El rail y el Explorador ocupan todo el alto; `WindowTitleBar` (pestañas y controles) vive dentro de `.notia-main-column`, encima del contenido. El arrastre de ventana sale de los espacios libres de esa barra.
+- **Rail** (`IconRail`): botón **Explorador** (alterna `isSidebarOpen`, `aria-pressed`), los módulos de `LEFT_RAIL_GROUPS` (tres grupos con separador; `meeting` se filtra cuando el backend no soporta `start_speech_session`), y al pie **Ayuda** y **Configuración**. El módulo activo sale de `selectActiveRailActionId`, que ahora también reconoce Multichat. Tooltip CSS por `data-tip` solo con puntero fino y alto ≥ 641 px; en ventanas más bajas el rail se desplaza.
+- **Explorador** (`NotiaSidebar`): encabezado «Archivos» con `TOP_TOOLBAR_ACTIONS` (nueva nota, diagrama, carpeta, colapsar, expandir), `ExplorerSearch` siempre visible (escribe `searchQuery`; `Esc` limpia) y `WorkspaceFooter` con el selector de librería. `isSearchMenuOpen` pasó a ser una solicitud de foco: `headerActionClick('search')` abre el panel y enfoca la búsqueda, que luego baja la bandera. Se retiraron el popup de búsqueda, `EXPLORER_HEADER_ACTIONS`, la acción de contexto `closeSearchMenu`, `selectActiveHeaderAction` y el componente sin uso `TopToolbar`.
+- **Árbol** (`FileTree`): filas de 28 px (36 px con puntero grueso, igual que la lista virtual), sangría de 16 px por nivel con una guía de 1 px por ancestro (`treeRowStyle`), íconos en muted, fila activa en teal suave y carpetas ocultas (`.x`) en itálica.
+- **Crear desde cualquier lado**: `explorerToolClick` abre el Explorador antes de crear, porque la fila de nombre pendiente vive en el árbol.
+- **Atajos**: `useGlobalEventListeners` suma `Ctrl+N` (nueva nota en la raíz) y `Ctrl+O` (buscar archivo). La pantalla sin nota abierta usa las mismas acciones; antes sus botones no hacían nada.
+- **Asistente** (`NotiaRightPanel`): encabezado propio con «Asistente» y cerrar; el panel es una columna flex. Los estilos de mensajes y composer se ajustan solo bajo `.notia-right-panel`, sin tocar la vista de Chat a pantalla completa.
+- **Responsive**: ≤ 980 px el Explorador mide 240 px y el Asistente flota; ≤ 720 px se ocultan las pestañas (quedan los botones de paneles y tema) y el Explorador flota sobre el contenido junto al rail.
+- **Tokens nuevos**: `--color-row-hover` y `--color-on-accent` en ambos temas; `--titlebar-height` pasa a 40 px. Se quitaron tokens de color por ícono que ya no se usaban.
+- **Validación**: `tsc -p tsconfig.app.json`, ESLint, 217 tests de Vitest y `vite build` pasan. **Pendiente**: revisión visual en Windows, Android (teléfono y tableta) y navegador, en ambos temas.
+
 ## Estado sincronizado de esta iteración: separación backend/frontend — cierre de pendientes
 
 Esta iteración cierra lo que había quedado pendiente al terminar la fase 6.
@@ -3420,7 +3435,7 @@ flowchart LR
 
 #### Descripción y límites
 
-Multichat es una superficie de aplicación para Windows y Android. Se accede desde la acción `multichat` de `LEFT_RAIL_ACTIONS`, inmediatamente después de `calendar`, y se monta como `MultichatView`. No agrega un motor de inferencia ni comandos Tauri nuevos: `multichatRuntime.ts` invoca directamente el adaptador existente `streamAiChatReply` de Ollama una vez por agente, con callbacks separados para thinking y respuesta.
+Multichat es una superficie de aplicación para Windows y Android. Se accede desde la acción `multichat` del tercer grupo de `LEFT_RAIL_GROUPS`, inmediatamente después de `calendar`, y se monta como `MultichatView`. No agrega un motor de inferencia ni comandos Tauri nuevos: `multichatRuntime.ts` invoca directamente el adaptador existente `streamAiChatReply` de Ollama una vez por agente, con callbacks separados para thinking y respuesta.
 
 La sala es efímera en cuanto a historial: `MultichatView` conserva el estado únicamente mientras la pestaña está montada, no crea archivos en `chat/chats/`, no usa `localStorage` y no se rehidrata al abrir Multichat nuevamente. Tampoco carga ni persiste memoria global: el runtime envía `longTermMemories: []`, `files: []` e `image: null` en cada llamada plana al adaptador.
 

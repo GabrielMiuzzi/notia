@@ -191,7 +191,7 @@ Desde el panel izquierdo (Explorador) podés:
 - Navegar carpetas y archivos en forma de árbol expandible. El nombre se muestra separado del formato, que se conserva al renombrar.
 - Crear carpetas, notas Markdown o diagramas Mermaid.
 - Copiar, mover, renombrar y eliminar archivos mediante el **menú contextual** (clic derecho).
-- Buscar archivos por nombre con la barra de búsqueda integrada.
+- Buscar archivos por título o contenido con **Buscar archivos**, siempre visible arriba del árbol (`Ctrl + O` lo enfoca; `Esc` lo limpia).
 - En escritorio, el árbol se actualiza automáticamente cuando detecta cambios externos en el filesystem.
 - En Android, podés elegir una carpeta mediante el selector del sistema (SAF) y refrescar manualmente o con intervalo configurable.
   - En Android, al tocar **Agregar nueva libreria**, el modal ignora los `pointerdown` táctiles del fondo y permanece abierto mientras se elige la carpeta, incluso si el WebView reporta el toque sobre el backdrop mientras el dedo sigue sobre el control. La URI `content://` entregada por SAF se conserva como ruta de la librería y al preparar `.notia/notiaConfig.json`, evitando convertirla en una URI inválida. La configuración inicial se crea directamente desde el permiso de la carpeta seleccionada en un solo comando nativo, sin depender de que el listado SAF ya muestre `.notia`; si un intento anterior dejó esa carpeta o el archivo de configuración, Notia los reutiliza sin borrar ni sobrescribir su contenido. Una entrada del mismo nombre pero de tipo incompatible se rechaza. El selector tiene un límite de espera de 60 segundos; si no responde, muestra un error recuperable y podés volver a intentarlo sin agregar una librería incompleta. Si el sistema no puede resolver o guardar la ruta SAF, muestra el error con el mayor detalle disponible y podés reintentar. Una selección válida cierra el modal solo después de configurar y agregar la librería correctamente. La X visible sigue cerrando el modal con touch; el backdrop también lo cierra cuando se usa mouse.
@@ -348,7 +348,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Crea un archivo de texto con formato Markdown dentro de una carpeta del Explorador. |
 | **Cuándo usarlo** | Cuando querés documentar información estructurada con formato enriquecido, wikilinks, frontmatter y propiedades. |
-| **Pasos para consumir** | 1. Seleccionar una carpeta en el Explorador. 2. Clic derecho → **"Nueva nota"** (o usar el botón **"New Note"** en la barra superior). 3. Ingresar el nombre del archivo. 4. Presionar Enter o clic fuera. 5. El archivo se crea y se abre automáticamente en una pestaña. |
+| **Pasos para consumir** | 1. Seleccionar una carpeta en el Explorador. 2. Clic derecho → **"Nueva nota"** (o usar el botón **Nueva nota** del encabezado del Explorador, o `Ctrl + N`). 3. Ingresar el nombre del archivo. 4. Presionar Enter o clic fuera. 5. El archivo se crea y se abre automáticamente en una pestaña. |
 | **Entradas esperadas** | Nombre del archivo (string, sin caracteres especiales `/`, `\`, `.`, `..`). El sistema agrega automáticamente la extensión `.md`. |
 | **Salidas / Resultado** | Archivo `Nombre.md` creado en el filesystem. Pestaña abierta con el editor Markdown listo para edición. |
 | **Errores comunes** | **"Nombre inválido"**: contiene caracteres prohibidos o está vacío. Solución: usar solo letras, números, espacios, guiones y guiones bajos. |
@@ -537,22 +537,22 @@ En Linux, el servidor se compila desde `src-tauri` con `cargo build --release --
 
 1. **Abrir la aplicación**: al iniciar por primera vez, Notia no tiene librerías configuradas.
 2. **Agregar una librería**:
-   - En el panel izquierdo, en el footer, hacé clic en **"Administrar librerías"**.
+   - En el panel izquierdo, abajo, tocá el selector de librería y elegí **"Administrar librerías"**.
    - Seleccioná **"Agregar librería"** y elegí una carpeta de tu filesystem (escritorio) o concedé permisos de carpeta (Android).
    - La carpeta seleccionada se indexará y aparecerá en el Explorador.
 3. **Crear contenido**:
-   - Desde la **barra superior** (Toolbar): **"New Note"** (nota Markdown) o **"New Folder"** (carpeta).
+   - Desde el encabezado del Explorador: **Nueva nota**, **Nuevo diagrama** o **Nueva carpeta** (también `Ctrl + N` para una nota nueva).
    - O desde el **menú contextual** (clic derecho) en cualquier carpeta del Explorador.
 4. **Abrir archivos**: hacé clic en cualquier archivo del árbol de archivos. Se abrirá en una pestaña.
 5. **Navegar entre vistas**: el **Icon Rail** (barra vertical izquierda) permite cambiar entre:
-   - **Explorer**: árbol de archivos.
-   - **Graph view**: mapa de relaciones entre notas.
-   - **Task manager**: gestión de tareas.
-    - **ColdPass**: credenciales cifradas.
-    - **AI Chat**: chat con IA local.
-    - **Calendario**: feriados nacionales y bancarios de Argentina.
-    - **Multichat**: sala efímera con varios agentes.
-6. **Cerrar pestañas**: clic en la "X" de la pestaña, o atajo `Ctrl + W`.
+   - **Explorador**: muestra u oculta el panel de archivos.
+   - **Vista de grafo**, **Chat** y **Task Manager**.
+   - **ColdPass**, **Transcribir meeting** y **Finanzas**.
+   - **Calendario**, **Multichat** y **Rutina**.
+   - Abajo, **Ayuda** y **Configuración**. En escritorio, cada ícono muestra su nombre al pasar el mouse; el módulo abierto queda marcado en teal.
+6. **Buscar un archivo**: escribí en **Buscar archivos**, arriba del árbol, o usá `Ctrl + O`.
+7. **Cerrar pestañas**: clic en la "X" de la pestaña, o atajo `Ctrl + W`.
+8. **Paneles**: los botones a la derecha de las pestañas muestran u ocultan el Explorador y el Asistente, y cambian el tema. En un teléfono, el Explorador se abre sobre el contenido.
 
 ### Uso de Wikilinks
 

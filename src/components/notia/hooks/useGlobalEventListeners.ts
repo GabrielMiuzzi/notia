@@ -5,11 +5,17 @@ import { setContextMenu } from '../../../features/documents/documentsSlice'
 interface UseGlobalEventListenersParams {
   handleCloseActiveTab: () => void
   handleCycleToNextTab: () => void
+  /** Ctrl+N: new note in the library root. */
+  handleNewNote: () => void
+  /** Ctrl+O: focus the explorer search. */
+  handleGoToFile: () => void
 }
 
 export function useGlobalEventListeners({
   handleCloseActiveTab,
   handleCycleToNextTab,
+  handleNewNote,
+  handleGoToFile,
 }: UseGlobalEventListenersParams) {
   const dispatch = useAppDispatch()
 
@@ -38,12 +44,24 @@ export function useGlobalEventListeners({
         handleCycleToNextTab()
         return
       }
-      if (event.key.toLowerCase() === 'w') {
+      const key = event.key.toLowerCase()
+      if (key === 'w') {
         event.preventDefault()
         handleCloseActiveTab()
+        return
+      }
+      if (event.shiftKey) { return }
+      if (key === 'n') {
+        event.preventDefault()
+        handleNewNote()
+        return
+      }
+      if (key === 'o') {
+        event.preventDefault()
+        handleGoToFile()
       }
     }
     window.addEventListener('keydown', handleTabShortcuts)
     return () => { window.removeEventListener('keydown', handleTabShortcuts) }
-  }, [handleCloseActiveTab, handleCycleToNextTab])
+  }, [handleCloseActiveTab, handleCycleToNextTab, handleGoToFile, handleNewNote])
 }

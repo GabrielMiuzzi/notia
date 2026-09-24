@@ -19,7 +19,6 @@ export interface NotiaActions {
   railActionClick: (actionId: string) => void
   headerActionClick: (id: string) => void
   explorerToolClick: (toolId: string) => void
-  closeSearchMenu: () => void
   submitPendingCreation: (name: string) => Promise<void>
   cancelPendingCreation: () => void
   renameSubmit: (path: string, name: string) => Promise<void>

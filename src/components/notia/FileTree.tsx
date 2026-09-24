@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GitGraph, MoreVertical } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
+import { ChevronRight, FileText, Folder, FolderOpen, GitGraph, MoreVertical } from 'lucide-react'
 import type { NotiaFileNode } from '../../types/notia'
 import { useVirtualList } from '../../hooks/useVirtualList'
 import { useCoarsePointer } from '../../hooks/useCoarsePointer'
@@ -101,7 +101,29 @@ type VisibleTreeRow =
     pendingCreation: PendingCreation
   }
 
-const TREE_ROW_HEIGHT = 27
+const TREE_ROW_HEIGHT = 28
+/** Touch rows are taller so each one is a comfortable finger target. */
+const TREE_ROW_HEIGHT_COARSE = 36
+const TREE_INDENT_PX = 16
+const TREE_ROW_START_PX = 8
+const TREE_ICON_SIZE = 15
+const TREE_ICON_STROKE = 1.75
+
+/** Indent of a row plus one 1px guide per ancestor level. */
+function treeRowStyle(level: number): CSSProperties {
+  const paddingLeft = `${TREE_ROW_START_PX + level * TREE_INDENT_PX}px`
+  if (level === 0) {
+    return { paddingLeft }
+  }
+  const levels = Array.from({ length: level }, (_, index) => index)
+  return {
+    paddingLeft,
+    backgroundImage: levels.map(() => 'linear-gradient(var(--color-border-soft), var(--color-border-soft))').join(', '),
+    backgroundPosition: levels.map((index) => `${TREE_ROW_START_PX + index * TREE_INDENT_PX + 6}px 0`).join(', '),
+    backgroundSize: levels.map(() => '1px 100%').join(', '),
+    backgroundRepeat: 'no-repeat',
+  }
+}
 
 const CREATION_EXTENSION_BY_KIND: Readonly<Record<Exclude<PendingCreation['kind'], 'folder'>, string>> = {
   note: '.md',
@@ -215,8 +237,10 @@ const TreeRow = memo(function TreeRow({
   return (
     <div
       data-tree-row="true"
-      className={`notia-tree-row ${node.selected ? 'notia-tree-row--selected' : ''} ${isInteractive ? 'notia-tree-row--toggleable' : ''} ${isSearchMatch ? 'notia-tree-row--search-match' : ''} ${isDragging ? 'notia-tree-row--dragging' : ''} ${isDropTarget ? 'notia-tree-row--drop-target' : ''}`}
-      style={{ paddingLeft: `${18 + level * 16}px` }}
+      className={`notia-tree-row ${node.selected ? 'notia-tree-row--selected' : ''} ${isInteractive ? 'notia-tree-row--toggleable' : ''} ${isSearchMatch ? 'notia-tree-row--search-match' : ''} ${isDragging ? 'notia-tree-row--dragging' : ''} ${isDropTarget ? 'notia-tree-row--drop-target' : ''} ${node.name.startsWith('.') ? 'notia-tree-row--hidden' : ''}`}
+      style={treeRowStyle(level)}
+      aria-expanded={canToggle ? isExpanded : undefined}
+      aria-current={node.selected ? 'page' : undefined}
       onClick={handleRowClick}
       draggable={Boolean(nodePath && !isRenaming)}
       role={isInteractive ? 'button' : undefined}
@@ -285,21 +309,28 @@ const TreeRow = memo(function TreeRow({
             </span>
           ) : isLoadingFolder ? (
             <span className="notia-tree-chevron notia-tree-chevron--loading" title="Cargando..." />
-          ) : hasChildren && isExpanded ? (
-            <ChevronDown size={13} className="notia-tree-chevron" />
           ) : (
-            <ChevronRight size={13} className="notia-tree-chevron" />
+            <ChevronRight
+              size={14}
+              strokeWidth={2}
+              className={`notia-tree-chevron${hasChildren && isExpanded ? ' notia-tree-chevron--open' : ''}${hasChildren ? '' : ' notia-tree-chevron--empty'}`}
+            />
           )}
           {isExpanded ? (
-            <FolderOpen size={12} className="notia-tree-folder notia-tree-folder--open" />
+            <FolderOpen size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-folder notia-tree-folder--open" />
           ) : (
-            <Folder size={12} className="notia-tree-folder" />
+            <Folder size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-folder" />
           )}
         </>
-      ) : node.name.endsWith('.mmd') ? (
-        <GitGraph size={12} className="notia-tree-file" />
       ) : (
-        <FileText size={12} className="notia-tree-file" />
+        <>
+          <span className="notia-tree-chevron-spacer" aria-hidden="true" />
+          {node.name.endsWith('.mmd') ? (
+            <GitGraph size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-file" />
+          ) : (
+            <FileText size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-file" />
+          )}
+        </>
       )}
       {isRenaming ? (
         <>
@@ -389,13 +420,14 @@ function PendingCreationRow({ pendingCreation, onSubmit, onCancel, level = 0 }: 
   }
 
   return (
-    <div data-tree-row="true" className="notia-tree-row" style={{ paddingLeft: `${18 + level * 16}px` }}>
+    <div data-tree-row="true" className="notia-tree-row notia-tree-row--pending" style={treeRowStyle(level)}>
+      <span className="notia-tree-chevron-spacer" aria-hidden="true" />
       {pendingCreation.kind === 'folder' ? (
-        <Folder size={12} className="notia-tree-file" />
+        <Folder size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-file" />
       ) : pendingCreation.kind === 'mermaid' ? (
-        <GitGraph size={12} className="notia-tree-file" />
+        <GitGraph size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-file" />
       ) : (
-        <FileText size={12} className="notia-tree-file" />
+        <FileText size={TREE_ICON_SIZE} strokeWidth={TREE_ICON_STROKE} className="notia-tree-file" />
       )}
       <input
         ref={inputRef}
@@ -500,7 +532,7 @@ function FileTreeComponent({
   )
   const { containerRef, scrollToIndex, totalSize, virtualItems } = useVirtualList({
     itemCount: visibleRows.length,
-    itemSize: TREE_ROW_HEIGHT,
+    itemSize: isCoarsePointer ? TREE_ROW_HEIGHT_COARSE : TREE_ROW_HEIGHT,
     overscan: 10,
   })
 

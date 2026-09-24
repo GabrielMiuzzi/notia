@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useAppDispatch } from '../../../store/hooks'
 import { store } from '../../../store/index'
-import { toggleSidebar, setActiveHeaderAction, setSearchMenuOpen } from '../../../features/ui/uiSlice'
+import { setSearchMenuOpen, setSidebarOpen } from '../../../features/ui/uiSlice'
 import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, CALENDAR_WORKSPACE_TAB_PATH, MULTICHAT_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
 
 interface UseToolbarActionsParams {
@@ -17,13 +17,12 @@ export function useToolbarActions({
 }: UseToolbarActionsParams) {
   const dispatch = useAppDispatch()
 
+  /** `search` shows the explorer and focuses its search field. */
   const handleHeaderActionClick = useCallback((id: string) => {
-    if (id === 'layout') { dispatch(toggleSidebar()); return }
     if (id === 'search') {
-      dispatch(setSearchMenuOpen(!store.getState().ui.isSearchMenuOpen))
-      return
+      dispatch(setSidebarOpen(true))
+      dispatch(setSearchMenuOpen(true))
     }
-    dispatch(setActiveHeaderAction(id))
   }, [dispatch])
 
   const handleRailActionClick = useCallback((actionId: string) => {
@@ -78,6 +77,8 @@ export function useToolbarActions({
     if (!activeLibrary) { return }
     dispatch(setContextMenu(null))
     dispatch(setRenamingPath(null))
+    // The pending row lives in the explorer, so it has to be visible.
+    dispatch(setSidebarOpen(true))
     if (toolId === 'new-note') {
       dispatch(setPendingCreation({
         id: `pending-note-${Date.now()}`,

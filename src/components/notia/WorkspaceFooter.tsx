@@ -1,28 +1,23 @@
-import { memo, useState, type ComponentType, type MouseEvent } from 'react'
-import { BookOpen, CircleHelp, Settings } from 'lucide-react'
+import { memo, useState, type MouseEvent } from 'react'
+import { BookOpen, Check, ChevronsUpDown, Library } from 'lucide-react'
 import type { NotiaLibrary } from '../../types/notia'
-import { NotiaButton } from '../common/NotiaButton'
 import { useSubmenuEngine } from '../../hooks/useSubmenuEngine'
 import { beginPhantomClickSuppression } from '../../utils/interactions/phantomClickSuppression'
 
 interface WorkspaceFooterProps {
   name: string
-  icon: ComponentType<{ size?: number }>
   libraries: NotiaLibrary[]
   activeLibraryId: string | null
   onSelectLibrary: (libraryId: string) => void
   onOpenLibraryManager: () => void
-  onOpenSettings: () => void
 }
 
 function WorkspaceFooterComponent({
   name,
-  icon: Icon,
   libraries,
   activeLibraryId,
   onSelectLibrary,
   onOpenLibraryManager,
-  onOpenSettings,
 }: WorkspaceFooterProps) {
   const [isLibraryMenuOpen, setIsLibraryMenuOpen] = useState(false)
   const { triggerRef, panelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
@@ -40,66 +35,60 @@ function WorkspaceFooterComponent({
   }
 
   return (
-    <div className="notia-footer">
-      <div className="notia-footer-library">
-        <NotiaButton
-          ref={triggerRef}
-          className="notia-footer-library-trigger"
-          variant="ghost"
-          title="Librerias"
-          onClick={() => setIsLibraryMenuOpen((current) => !current)}
-        >
-          <Icon size={14} />
-          <span>{name}</span>
-        </NotiaButton>
-        {isLibraryMenuOpen ? (
-          <div className="notia-library-menu" ref={panelRef}>
-            <div className="notia-library-menu-list">
-              {libraries.length > 0 ? (
-                libraries.map((library) => (
-                  <NotiaButton
+    <div className="notia-footer" data-notia-prevent-menu-close>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="notia-footer-library-trigger"
+        aria-label={`Librería activa: ${name || 'ninguna'}. Cambiar de librería`}
+        aria-haspopup="menu"
+        aria-expanded={isLibraryMenuOpen}
+        onClick={() => setIsLibraryMenuOpen((current) => !current)}
+      >
+        <span className="notia-footer-library-mark" aria-hidden="true">
+          <Library size={13} strokeWidth={2} />
+        </span>
+        <span className="notia-footer-library-name">{name || 'Sin librería'}</span>
+        <ChevronsUpDown size={14} strokeWidth={1.75} className="notia-footer-library-chevron" aria-hidden="true" />
+      </button>
+      {isLibraryMenuOpen ? (
+        <div className="notia-library-menu" ref={panelRef} role="menu" aria-label="Librerías">
+          <div className="notia-library-menu-list">
+            {libraries.length > 0 ? (
+              libraries.map((library) => {
+                const isActive = library.id === activeLibraryId
+                return (
+                  <button
                     key={library.id}
-                    className={`notia-library-item ${
-                      library.id === activeLibraryId ? 'notia-library-item--active' : ''
-                    }`}
-                    variant={library.id === activeLibraryId ? 'primary' : 'secondary'}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    className={`notia-library-item${isActive ? ' notia-library-item--active' : ''}`}
                     onClick={() => {
                       onSelectLibrary(library.id)
                       setIsLibraryMenuOpen(false)
                     }}
                   >
-                    {library.name}
-                  </NotiaButton>
-                ))
-              ) : (
-                <div className="notia-library-empty">Sin librerias disponibles</div>
-              )}
-            </div>
-            <NotiaButton
-              className="notia-library-manage"
-              variant="secondary"
-              onClick={handleOpenLibraryManagerFromMenu}
-            >
-              <BookOpen size={14} />
-              <span>Administrar librerias</span>
-            </NotiaButton>
+                    <span className="notia-library-item-name">{library.name}</span>
+                    {isActive ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
+                  </button>
+                )
+              })
+            ) : (
+              <div className="notia-library-empty">Sin librerías disponibles</div>
+            )}
           </div>
-        ) : null}
-      </div>
-      <div className="notia-footer-actions">
-        <NotiaButton type="button" className="notia-footer-button" size="icon" variant="ghost" title="Help">
-          <CircleHelp size={14} />
-        </NotiaButton>
-        <NotiaButton
-          className="notia-footer-button"
-          size="icon"
-          variant="ghost"
-          title="Settings"
-          onClick={onOpenSettings}
-        >
-          <Settings size={14} />
-        </NotiaButton>
-      </div>
+          <button
+            type="button"
+            role="menuitem"
+            className="notia-library-manage"
+            onClick={handleOpenLibraryManagerFromMenu}
+          >
+            <BookOpen size={14} strokeWidth={1.75} />
+            <span>Administrar librerías</span>
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

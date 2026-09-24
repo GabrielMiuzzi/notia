@@ -1,16 +1,14 @@
 import {
-  BookOpen,
-  Folder,
-  FolderOpen,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  FileText,
   FolderPlus,
   GitBranch,
   Lock,
   MessageSquare,
   ListChecks,
-  PanelsTopLeft,
   PencilLine,
   Network,
-  Search,
   X,
   Minus,
   Square,
@@ -22,29 +20,32 @@ import {
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
 
-export const EXPLORER_HEADER_ACTIONS: NotiaIconAction[] = [
-  { id: 'layout', label: 'Toggle Sidebars', icon: PanelsTopLeft },
-  { id: 'search', label: 'Search', icon: Search },
+/** Rail modules, in groups separated by a divider. */
+export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
+  [
+    { id: 'graph-view', label: 'Vista de grafo', icon: GitBranch },
+    { id: 'chat', label: 'Chat', icon: MessageSquare },
+    { id: 'task-manager', label: 'Task Manager', icon: ListChecks },
+  ],
+  [
+    { id: 'coldpass', label: 'ColdPass', icon: Lock },
+    { id: 'meeting', label: 'Transcribir meeting', icon: Mic },
+    { id: 'finance', label: 'Finanzas', icon: WalletCards },
+  ],
+  [
+    { id: 'calendar', label: 'Calendario', icon: CalendarDays },
+    { id: 'multichat', label: 'Multichat', icon: UsersRound },
+    { id: 'routine', label: 'Rutina', icon: CalendarCheck },
+  ],
 ]
 
-export const LEFT_RAIL_ACTIONS: NotiaIconAction[] = [
-  { id: 'graph-view', label: 'Graph view', icon: GitBranch },
-  { id: 'chat', label: 'Chat', icon: MessageSquare },
-  { id: 'task-manager', label: 'Task manager', icon: ListChecks },
-  { id: 'coldpass', label: 'ColdPass', icon: Lock },
-  { id: 'meeting', label: 'Transcribir meeting', icon: Mic },
-  { id: 'finance', label: 'Finanzas', icon: WalletCards },
-  { id: 'calendar', label: 'Calendario', icon: CalendarDays },
-  { id: 'multichat', label: 'Multichat', icon: UsersRound },
-  { id: 'routine', label: 'Rutina', icon: CalendarCheck },
-]
-
+/** Actions in the explorer header. */
 export const TOP_TOOLBAR_ACTIONS: NotiaIconAction[] = [
-  { id: 'new-note', label: 'New Note', icon: PencilLine },
-  { id: 'new-mermaid', label: 'New Diagram', icon: Network },
-  { id: 'new-folder', label: 'New Folder', icon: FolderPlus },
-  { id: 'collapse-folders', label: 'Collapse Folders', icon: Folder },
-  { id: 'expand-folders', label: 'Expand Folders', icon: FolderOpen },
+  { id: 'new-note', label: 'Nueva nota', icon: PencilLine },
+  { id: 'new-mermaid', label: 'Nuevo diagrama', icon: Network },
+  { id: 'new-folder', label: 'Nueva carpeta', icon: FolderPlus },
+  { id: 'collapse-folders', label: 'Colapsar carpetas', icon: ChevronsDownUp },
+  { id: 'expand-folders', label: 'Expandir carpetas', icon: ChevronsUpDown },
 ]
 
 export const TITLEBAR_LEFT_ACTIONS: NotiaIconAction[] = []
@@ -52,9 +53,9 @@ export const TITLEBAR_LEFT_ACTIONS: NotiaIconAction[] = []
 export const TITLEBAR_NAV_ACTIONS: NotiaIconAction[] = []
 
 export const TITLEBAR_RIGHT_ACTIONS: NotiaIconAction[] = [
-  { id: 'maximize', label: 'Maximize', icon: Square },
-  { id: 'minimize', label: 'Minimize', icon: Minus },
-  { id: 'close', label: 'Close', icon: X },
+  { id: 'minimize', label: 'Minimizar', icon: Minus },
+  { id: 'maximize', label: 'Maximizar', icon: Square },
+  { id: 'close', label: 'Cerrar ventana', icon: X },
 ]
 
-export const TAB_ICON = BookOpen
+export const TAB_ICON = FileText
