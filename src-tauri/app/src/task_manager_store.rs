@@ -408,7 +408,10 @@ impl MarkdownTaskManagerStore {
         }))
     }
 
-    fn commit_markdown(&self, request: &TaskManagerStoreCommit) -> Result<(), BackendError> {
+    fn commit_markdown(
+        &self,
+        request: &TaskManagerStoreCommit,
+    ) -> Result<Vec<TaskDocumentRouteDto>, BackendError> {
         validate_commit_identity(&self.library_id, request)?;
         TaskManagerSnapshotDto {
             version: notia_backend_core::TASK_MANAGER_SNAPSHOT_VERSION,
@@ -447,10 +450,10 @@ impl MarkdownTaskManagerStore {
         });
         let workspace = loaded.workspace.clone();
         ensure_workspace_directories(&workspace)?;
-        let changes = build_file_changes(&loaded, request)?;
+        let (changes, committed) = build_file_changes(&loaded, request)?;
         apply_file_changes(&changes)?;
         verify_file_changes(&changes)?;
-        Ok(())
+        Ok(committed_routes(&committed))
     }
 }
 
@@ -472,7 +475,10 @@ impl TaskManagerSnapshotStore for MarkdownTaskManagerStore {
         })
     }
 
-    fn commit(&self, request: &TaskManagerStoreCommit) -> Result<(), BackendError> {
+    fn commit(
+        &self,
+        request: &TaskManagerStoreCommit,
+    ) -> Result<Vec<TaskDocumentRouteDto>, BackendError> {
         self.with_storage(|| self.commit_markdown(request))
     }
 
@@ -1296,10 +1302,35 @@ fn split_comments(
     Ok((base_lines.join("\n").trim().to_string(), comments))
 }
 
+/// Where the commit wrote each ticket, and each comment, which lives in the
+/// file of its ticket.
+fn committed_routes(snapshot: &TaskManagerLibrarySnapshotDto) -> Vec<TaskDocumentRouteDto> {
+    let ticket_paths = snapshot
+        .tickets
+        .iter()
+        .map(|ticket| (ticket.summary.ticket_id.as_str(), ticket.summary.logical_path.as_str()))
+        .collect::<HashMap<_, _>>();
+    let tickets = snapshot.tickets.iter().map(|ticket| TaskDocumentRouteDto {
+        entity_type: "ticket".to_string(),
+        entity_id: ticket.summary.ticket_id.clone(),
+        logical_path: ticket.summary.logical_path.clone(),
+    });
+    let comments = snapshot.comments.iter().filter_map(|comment| {
+        ticket_paths.get(comment.ticket_id.as_str()).map(|path| TaskDocumentRouteDto {
+            entity_type: "comment".to_string(),
+            entity_id: comment.comment_id.clone(),
+            logical_path: (*path).to_string(),
+        })
+    });
+    tickets.chain(comments).collect()
+}
+
+/// The file changes of a commit and the snapshot with the path of every
+/// ticket as written.
 fn build_file_changes(
     loaded: &LoadedWorkspace,
     request: &TaskManagerStoreCommit,
-) -> Result<Vec<FileChange>, BackendError> {
+) -> Result<(Vec<FileChange>, TaskManagerLibrarySnapshotDto), BackendError> {
     let before = &loaded.snapshot;
     let after = &request.snapshot;
     validate_snapshot_relationships(after)?;
@@ -1446,7 +1477,7 @@ fn build_file_changes(
             Some(metadata.into_bytes()),
         )?;
     }
-    Ok(deduplicate_changes(changes))
+    Ok((deduplicate_changes(changes), effective_snapshot))
 }
 
 /// `.notia-task-manager.json` (version 1): boards with color, context and
@@ -2942,6 +2973,83 @@ mod tests {
         .expect("routes");
         assert_eq!(routes.len(), 1);
         assert!(route_map(&[route("bad", "task-mannager//a.md")]).is_err());
+    }
+
+    #[test]
+    fn a_ticket_created_in_memory_gets_the_path_it_was_written_to() {
+        let root = std::env::temp_dir().join(format!("notia-task-routes-{}", uuid::Uuid::new_v4()));
+        let loaded = LoadedWorkspace {
+            workspace: default_workspace(root.clone()),
+            snapshot: empty_snapshot("library"),
+            documents: HashMap::new(),
+            user_names: Default::default(),
+        };
+        let ticket = TaskTicketDto {
+            summary: TaskTicketSummaryDto {
+                library_id: "library".into(),
+                ticket_id: "ticket-new".into(),
+                board_id: "default".into(),
+                group_id: None,
+                title: "Nueva".into(),
+                state: TaskState::Pending,
+                priority: TaskPriority::Medium,
+                parent_ticket_id: None,
+                detail_preview: String::new(),
+                revision: 1,
+                // Created by a mutation: no file yet.
+                logical_path: String::new(),
+            },
+            content: "Detalle".into(),
+            tags: vec![],
+            dependencies: vec![],
+            checklist: vec![],
+            start_date: String::new(),
+            end_date: String::new(),
+            dynamic_end_date: true,
+            dedicated_hours: 0.0,
+            estimated_hours: 0.0,
+            deviation_hours: 0.0,
+            order: 0.0,
+            context: None,
+            related_documents: vec![],
+            related_tasks: vec![],
+        };
+        let comment = TaskCommentDto {
+            library_id: "library".into(),
+            comment_id: "comment-new".into(),
+            ticket_id: "ticket-new".into(),
+            author_user_id: OWNER_USER_ID.into(),
+            body: "Comentario".into(),
+            created_at_unix_ms: 0,
+            revision: 1,
+            logical_path: String::new(),
+        };
+        let mut snapshot = empty_snapshot("library");
+        snapshot.tickets = vec![ticket];
+        snapshot.comments = vec![comment];
+        snapshot.generation = 1;
+        let request = TaskManagerStoreCommit {
+            library_id: "library".into(),
+            snapshot,
+            routes: vec![],
+            revisions: vec![],
+            operation: notia_backend_core::TaskManagerAppliedOperationDto {
+                library_id: "library".into(),
+                library_user_id: OWNER_USER_ID.into(),
+                operation_id: "operation".into(),
+                idempotency_key: "idempotency".into(),
+                affected_ids: vec![],
+            },
+        };
+        let (_, committed) = build_file_changes(&loaded, &request).expect("changes");
+        let routes = committed_routes(&committed);
+        let ticket_path = &routes.iter().find(|route| route.entity_id == "ticket-new").expect("ticket").logical_path;
+        assert!(ticket_path.ends_with("/Nueva.md"), "{ticket_path}");
+        assert_eq!(
+            &routes.iter().find(|route| route.entity_id == "comment-new").expect("comment").logical_path,
+            ticket_path
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

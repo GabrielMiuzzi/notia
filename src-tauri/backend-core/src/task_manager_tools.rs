@@ -940,7 +940,12 @@ pub trait TaskManagerSnapshotStore: Send + Sync {
     fn load(&self, library_id: &str)
         -> Result<Option<TaskManagerLibrarySnapshotDto>, BackendError>;
 
-    fn commit(&self, request: &TaskManagerStoreCommit) -> Result<(), BackendError>;
+    /// Persists the commit and returns where each ticket and comment was
+    /// written. A ticket created in memory has no path until then; the
+    /// manager keeps the returned ones so it can be opened and changed
+    /// without reloading the library.
+    fn commit(&self, request: &TaskManagerStoreCommit)
+        -> Result<Vec<TaskDocumentRouteDto>, BackendError>;
 
     /// Cheap token that changes whenever the persisted workspace changes
     /// (edits from other windows, sync tools or external editors). `None`
@@ -1235,9 +1240,12 @@ impl TaskManagerMutationPort for PersistentTaskManager {
                 affected_ids: receipt.affected_ids.clone(),
             },
         };
-        if let Err(error) = self.store.commit(&commit) {
-            self.manager.replace_snapshot(before)?;
-            return Err(error);
+        match self.store.commit(&commit) {
+            Ok(routes) => self.manager.set_document_routes(&self.library_id, &routes)?,
+            Err(error) => {
+                self.manager.replace_snapshot(before)?;
+                return Err(error);
+            }
         }
         // The commit is this manager's own change: remember its token so the
         // next access does not reload what is already in memory.
@@ -1341,6 +1349,35 @@ impl InMemoryTaskManager {
             next.users.extend(current.users.iter().cloned());
         }
         state.libraries.insert(snapshot.library_id.clone(), next);
+        Ok(())
+    }
+
+    /// Takes the paths where the store wrote each ticket and comment.
+    pub fn set_document_routes(
+        &self,
+        library_id: &str,
+        routes: &[TaskDocumentRouteDto],
+    ) -> Result<(), BackendError> {
+        let mut state = write_state(&self.state)?;
+        let library = state
+            .libraries
+            .get_mut(library_id)
+            .ok_or_else(|| invalid("La biblioteca no está abierta en Task Manager."))?;
+        for route in routes.iter().filter(|route| !route.logical_path.is_empty()) {
+            match route.entity_type.as_str() {
+                "ticket" => {
+                    if let Some(ticket) = library.tickets.get_mut(&route.entity_id) {
+                        ticket.summary.logical_path.clone_from(&route.logical_path);
+                    }
+                }
+                "comment" => {
+                    if let Some(comment) = library.comments.get_mut(&route.entity_id) {
+                        comment.logical_path.clone_from(&route.logical_path);
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -3699,7 +3736,10 @@ mod tests {
                 .filter(|snapshot| snapshot.library_id == library_id))
         }
 
-        fn commit(&self, request: &TaskManagerStoreCommit) -> Result<(), BackendError> {
+        fn commit(
+            &self,
+            request: &TaskManagerStoreCommit,
+        ) -> Result<Vec<TaskDocumentRouteDto>, BackendError> {
             if *self.fail_save.lock().unwrap() {
                 return Err(BackendError::new(
                     BackendErrorCode::Storage,
@@ -3707,8 +3747,27 @@ mod tests {
                     true,
                 ));
             }
-            *self.snapshot.lock().unwrap() = Some(request.snapshot.clone());
-            Ok(())
+            // Each ticket is written to a file named after its id.
+            let mut written = request.snapshot.clone();
+            for ticket in &mut written.tickets {
+                ticket.summary.logical_path = format!("tasks/{}.md", ticket.summary.ticket_id);
+            }
+            let routes = written
+                .tickets
+                .iter()
+                .map(|ticket| TaskDocumentRouteDto {
+                    entity_type: "ticket".into(),
+                    entity_id: ticket.summary.ticket_id.clone(),
+                    logical_path: ticket.summary.logical_path.clone(),
+                })
+                .collect();
+            *self.snapshot.lock().unwrap() = Some(written);
+            Ok(routes)
+        }
+
+        /// Only this manager writes: it never needs to reload.
+        fn change_token(&self, _library_id: &str) -> Result<Option<String>, BackendError> {
+            Ok(Some("test".into()))
         }
     }
 
@@ -4462,6 +4521,7 @@ mod tests {
             fail_save: Mutex::new(false),
         });
         let manager = PersistentTaskManager::open("library-a", store.clone()).unwrap();
+        let read_context = context.clone();
         let request = TaskMutationRequestDto {
             context: context.clone(),
             operation_id: "op-persistent".into(),
@@ -4484,6 +4544,9 @@ mod tests {
         let persisted = store.snapshot.lock().unwrap().clone().unwrap();
         assert_eq!(persisted.library_id, "library-a");
         assert_eq!(persisted.tickets[0].summary.state, TaskState::Completed);
+        // The manager keeps the path the store wrote, without reloading.
+        let snapshot = manager.read_snapshot(&read_context).unwrap();
+        assert_eq!(snapshot.tickets[0].summary.logical_path, "tasks/ticket-1.md");
     }
 
     #[test]
