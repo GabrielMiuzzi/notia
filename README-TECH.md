@@ -985,6 +985,8 @@ Cuarto y último paso de la fase 1 del plan de separación. Con esta iteración,
 
 ### Finanzas
 
+> **Vigencia:** desde el esquema 26 rige «Finanzas: seguimiento informal cargado por el asistente» (al final del documento). Donde esta sección hable de formularios, auditorías, propuestas, relaciones, inversiones, patrimonio o del pago de la tarjeta como transferencia, describe el estado anterior.
+
 - **Cambios desde la pantalla.** `finance_apply_ui_change { context, change }`, en `finance_ui.rs`:
   - guarda la alta, edición, confirmación o descarte de movimientos, los ahorros rápidos, compras, sueldos, resúmenes, servicios, ocurrencias y facturas;
   - aplica la regla de estado: un movimiento pendiente que se edita queda corregido;
@@ -1381,6 +1383,8 @@ Esta iteración implementa las Fases 0 a 11 del plan de migración: el runtime d
 - **Voz:** `backend-core/src/speech_text.rs` prepara el texto que lee el TTS (`qwen3_tts_speech_plan`); `backend-core/src/remote_audio.rs` valida fragmentos de audio para un futuro cliente remoto.
 
 ### Finanzas
+
+> **Vigencia:** desde el esquema 26 rige «Finanzas: seguimiento informal cargado por el asistente» (al final del documento). Donde esta sección hable de formularios, auditorías, propuestas, relaciones, inversiones, patrimonio o del pago de la tarjeta como transferencia, describe el estado anterior.
 
 - `create_finance_transaction` resuelve cuentas y categorías por nombre (`finance_agent_inputs.rs`), no duplica un movimiento con la misma referencia de origen, marca la ocurrencia del servicio pagado y, si el guardado falla con un error de almacenamiento, verifica si el movimiento quedó registrado antes de informar.
 - `backend-core/src/finance_answer.rs` compara la respuesta final del agente con los hechos del turno y corrige respuestas que afirman escrituras que no ocurrieron.
@@ -2067,6 +2071,8 @@ Las mutaciones siguen el mismo flujo en todos los adaptadores: resolución de da
 
 ### Finanzas locales y salarios
 
+> **Vigencia:** desde el esquema 26 rige «Finanzas: seguimiento informal cargado por el asistente» (al final del documento). Donde esta sección hable de formularios, auditorías, propuestas, relaciones, inversiones, patrimonio o del pago de la tarjeta como transferencia, describe el estado anterior.
+
 Las consultas locales de Finanzas se enrutan a tools tipadas y nunca a `search_web`. `list_finance_salaries` sin `from`/`to` devuelve como máximo los tres recibos más recientes, ordenados por `paymentDate` descendente y luego `period` descendente. Para rangos, años y comparaciones se usan `from` y/o `to` inclusivos en `YYYY-MM`; el resultado se conserva como conjunto filtrado y no se presenta como inventario completo si la fuente está limitada o truncada. Campos faltantes se muestran como faltantes, las monedas ARS y USD no se mezclan y los importes no se inventan.
 
 El análisis de salarios contra inflación es compuesto: primero lee salarios locales y luego consulta `get_finance_inflation_indices` en ArgentinaDatos. La comparación exige doce índices mensuales alineados y el índice interanual del período vigente; si faltan datos, monedas compatibles o períodos, muestra que la comparación no está disponible en vez de estimarla. La UI conserva la evolución completa disponible, equivalentes ARS/USD calculados con cotización oficial histórica, tooltips accesibles, variación del período anterior e indicadores frente a IPC acumulado e inflación interanual. Los límites de las lecturas y cualquier truncamiento siguen siendo parte del resultado.
@@ -2267,6 +2273,8 @@ Las regresiones de ese bloque cubrieron el reconocimiento de Finanzas local fren
 
 ### Control integral de Finanzas mediante tools de IA
 
+> **Vigencia:** desde el esquema 26 rige «Finanzas: seguimiento informal cargado por el asistente» (al final del documento). Donde esta sección hable de formularios, auditorías, propuestas, relaciones, inversiones, patrimonio o del pago de la tarjeta como transferencia, describe el estado anterior.
+
 El scope `finance` y el agente universal de Telegram cuando `enableFinanceTools` está habilitado exponen un catálogo tipado común en `chatScopedAgentRuntime.ts`. La autorización se aplica antes de entregar el catálogo y nuevamente al ejecutar cada llamada; la URL pública continúa fuera de Finanzas.
 
 #### Lecturas completas, paginadas y por ID
@@ -2377,6 +2385,8 @@ El scope financiero también conserva las consultas externas: `get_finance_dolla
 El agente debe elegir estas tools para preguntas de mercado, IPC, historial de cotizaciones, precios observados o patrimonio; no debe inventar valores ni presentar datos externos como si fueran persistidos en la biblioteca. Los endpoints externos son solo lectura y requieren conectividad.
 
 ### Servicios mensuales y auditoría asistida de Finanzas
+
+> **Vigencia:** desde el esquema 26 rige «Finanzas: seguimiento informal cargado por el asistente» (al final del documento). Donde esta sección hable de formularios, auditorías, propuestas, relaciones, inversiones, patrimonio o del pago de la tarjeta como transferencia, describe el estado anterior.
 
 La implementación vigente está en `src-tauri/app/src/database.rs`, `finance.rs`, `finance_records.rs` y `services/finance_extraction.rs`, con DTOs TypeScript en `src/modules/finance/types/financeTypes.ts`, acceso Tauri en `financeService.ts`, matching en `engines/serviceEngine.ts`, la vista en `FinanceServicesView.tsx` y las tools en `chatScopedAgentRuntime.ts`. SQLite por biblioteca es la fuente de verdad; la UI no guarda entidades financieras en Redux ni en `localStorage`.
 
@@ -2666,6 +2676,8 @@ No se ejecutaron Vitest, la suite Rust, el empaquetado release ni un ciclo compl
 9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos tipados del backend; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa. La pestaña especial `__workspace_calendar__` monta `CalendarView`, que consulta en paralelo `https://api.argentinadatos.com/v1/feriados/{año}` y `https://api.argentinadatos.com/v1/feriados-bancarios/{año}`, valida sus respuestas y diferencia ambos tipos en la grilla mensual.
 
 ### Contratos financieros del backend
+
+> **Vigencia:** desde el esquema 26 rige «Finanzas: seguimiento informal cargado por el asistente» (al final del documento). Donde esta sección hable de formularios, auditorías, propuestas, relaciones, inversiones, patrimonio o del pago de la tarjeta como transferencia, describe el estado anterior.
 
 Estado vigente: `FinanceContext` incluye `actorLibraryUserId` y `source`. `validate_context` abre la biblioteca y verifica el usuario en `library_users`; un usuario que no sea Owner debe tener exactamente el contexto `#Confidencial` para cualquier lectura o escritura financiera. El agente transmite el actor estable en cada comando financiero, incluido patrimonio, historiales, cotizaciones y extraccion. La migracion SQLite de actor estable aplica a los registros financieros que ya tenian actor; el ID numerico de Telegram permanece separado como identidad externa historica.
 
@@ -5578,10 +5590,9 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `device_preferences` | `backend_device_preferences`, `backend_save_device_preferences` | `devicePreferencesStorage` |
 | `filesystem::commands` | `backend_export_markdown_document` | `markdownExportEngine` |
 | `filesystem::watch` | `stop_library_tree_watch` | `libraryTreeWatchRuntime` |
-| `finance` | `finance_get_dashboard`, `finance_get_transaction`, `finance_list_all_transactions`, `finance_list_all_savings_movements`, `finance_dev_list_tables`, `finance_dev_query_table`, `finance_dev_query_sql`, `finance_dev_seed_demo_data`, `finance_save_account`, `finance_save_category`, `finance_save_transaction`, `finance_list_services`, `finance_set_service_active`, `finance_list_service_occurrences`, `finance_list_all_service_occurrences`, `finance_list_service_occurrence_versions`, `finance_list_all_service_occurrence_versions`, `finance_list_service_invoices`, `finance_save_audit_run`, `finance_run_audit`, `finance_list_audit_runs`, `finance_save_audit_proposal`, `finance_list_audit_proposals`, `finance_decide_audit_proposal`, `finance_repair_relation`, `finance_list_relation_repairs`, `finance_delete_transaction`, `finance_delete_account`, `finance_delete_category`, `finance_clear_all_data`, `finance_save_savings_reserve`, `finance_save_savings_movement`, `finance_save_savings_exchange`, `finance_link_savings_account` | `financeService` |
-| `finance_records` | `finance_save_purchase`, `finance_list_purchases`, `finance_list_price_history`, `finance_save_salary`, `finance_list_salaries`, `finance_save_credit_card_statement`, `finance_list_credit_card_statements`, `finance_save_installment_plan`, `finance_list_installment_plans`, `finance_list_installments`, `finance_save_investment`, `finance_list_investments`, `finance_get_net_worth`, `finance_list_net_worth_history` | `financeService` |
-| `finance_ui` | `finance_apply_ui_change` | `financeService` |
-| `finance_views` | `finance_period_summary`, `finance_dashboard_insights`, `finance_salary_analysis`, `finance_relation_audit`, `finance_validate_purchase`, `finance_preview_card_services`, `finance_salary_draft` | `financeService` |
+| `finance` | `finance_get_dashboard`, `finance_dev_list_tables`, `finance_dev_query_table`, `finance_dev_query_sql`, `finance_dev_seed_demo_data`, `finance_list_service_occurrence_versions`, `finance_clear_all_data` | `financeService` |
+| `finance_records` | `finance_list_purchases`, `finance_list_price_history`, `finance_list_products`, `finance_list_salaries`, `finance_list_credit_card_statements`, `finance_list_installment_plans` | `financeService` |
+| `finance_views` | `finance_dashboard_insights`, `finance_service_month_status`, `finance_salary_analysis` | `financeService` |
 | `library_catalog` | `backend_library_catalog`, `backend_save_library_catalog` | `libraryStorage` |
 | `library_config` | `backend_read_library_config`, `backend_write_library_config`, `backend_ensure_library_config` | `libraryConfig` |
 | `library_graph` | `backend_library_graph`, `library_link_targets`, `library_link_suggestions`, `backend_library_graph_search`, `backend_library_search` | `libraryLinkRuntime`, `librarySearchGraphIndex`, `useLibraryGraphData` |
@@ -5594,7 +5605,6 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `routine` | `routine_get_dashboard`, `routine_apply_mutation` | `routineService` |
 | `services::calendar_holidays` | `calendar_argentina_holidays` | `argentinaHolidaysService` |
 | `services::finance_external` | `finance_dollar_quotes`, `finance_inflation_indices`, `finance_historical_dollar_quotes` | `argentinaDollarHistoryService`, `argentinaInflationService`, `dollarQuotesService` |
-| `services::finance_extraction` | `extract_finance_document`, `list_finance_artifacts` | `financeService` |
 | `task_manager_commands` | `task_manager_board_view`, `task_manager_board_execute`, `task_manager_pomodoro`, `task_manager_delete_pomodoro`, `task_manager_read_ticket_source`, `task_manager_write_ticket_source` | `taskManagerPublicationClient`, `taskManagerService` |
 | `task_manager_publication` | `publish_task_manager_ai_stream_event`, `get_task_manager_publication_url`, `get_task_manager_publication_status`, `open_task_manager_publication`, `stop_task_manager_publication`, `begin_task_manager_publication_batch`, `end_task_manager_publication_batch` | `taskManagerPublicationClient`, `taskManagerPublicationRuntime`, `useTaskManagerPublicationAiHostBridge` |
 | `task_manager_publication_source` | `backend_publish_task_manager` | `taskManagerPublicationRuntime` |
@@ -7062,3 +7072,178 @@ Implementa las opciones que el lienzo «Notia · Editor rediseño» sumó al tab
 - **Pendiente**:
   - abrir el `.docx` en Word: en esta máquina no hay Word ni LibreOffice; se validó la estructura y el orden de los elementos contra el esquema;
   - probar la exportación en la app de Windows y en Android.
+
+## Finanzas: seguimiento informal cargado por el asistente
+
+Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteriores de Finanzas describen sobre formularios, auditorías, propuestas, relaciones, reparación de vínculos, inversiones, patrimonio y el pago de la tarjeta como transferencia.
+
+### Decisiones
+
+- **Seguimiento informal.** Las cuentas indican de dónde salió el dinero y no llevan saldo. Lo que se sigue es: gastos del mes, lo pagado de tarjetas, lo ahorrado, los servicios y los productos con su precio y comercio.
+- **La carga la hace siempre el asistente**, en el chat de la app o en Telegram. La pantalla de Finanzas es de solo lectura; «Vaciar Finanzas» (Configuración) y la pestaña Dev son las únicas acciones que quedan en la interfaz.
+- **Un gasto existe una sola vez.** Un mismo movimiento puede estar referido a la vez por un ticket, una línea de resumen, una cuota y una ocurrencia de servicio.
+- **Tarjeta:** cargar un resumen significa que ya se pagó.
+  - Cada consumo, cargo, interés e impuesto es un gasto con `effective_date` = vencimiento del resumen: cuenta en el mes en que se paga.
+  - La fecha de compra queda en `purchase_date`.
+  - El total del resumen es «Pagado de tarjetas» del mes de vencimiento y nunca es otro gasto.
+- **Gasto con tarjeta sin resumen:** estado `card_unpaid` («En tarjeta, a pagar»). No cuenta en los totales hasta que un resumen lo paga.
+- **Cuentas `credit_card` bimoneda:** aceptan ARS y USD. El resto de las cuentas tiene una sola moneda.
+- **Cambio de moneda con el ahorro:** tipo `exchange`, que no es ingreso ni gasto.
+  - Compra (`buy`): de la cuenta de pago a la cuenta interna de la reserva (`savings:{id}`).
+  - Venta (`sell`): de la cuenta interna a la cuenta de pago; exige saldo suficiente en la reserva.
+  - El movimiento de ahorro vinculado (`linked_transaction_id`) guarda el importe en la moneda de la reserva.
+- **Vínculo automático:** si hay un único candidato claro, se aplica, se registra y se informa en el resultado con su id para deshacerlo. Los casos ambiguos quedan como «Para revisar» y se responden por chat o Telegram.
+- **Se eliminaron** la auditoría (corridas, propuestas y decisiones), la reparación de relaciones, la auditoría de relaciones, las inversiones, las valuaciones y el patrimonio.
+
+### Esquema 26 y migración de datos existentes
+
+`database.rs` (`migrate_to`, `CURRENT_SCHEMA_VERSION = 26`):
+
+- **Copia previa.** Antes de migrar una base con movimientos, `copy_before_finance_rework` ejecuta `VACUUM INTO '<base>.pre-v26.sqlite'` junto al archivo. Si la copia ya existe no la repite; las bases en memoria no se copian. En Android la copia queda junto a la copia local que prepara el adaptador SAF.
+- **Columnas y tablas nuevas:**
+  - `finance_transactions.purchase_date`;
+  - `finance_review_items (id, kind, subject_key, status pending|resolved|dismissed, question, options_json, subject_json, resolution, created_at, resolved_at, UNIQUE(kind, subject_key))`;
+  - `finance_merchant_aliases (normalized_alias PK, merchant_id)` y `finance_product_aliases (normalized_alias PK, product_id)`;
+  - `finance_link_log (id, kind, subject_id, target_id, summary, created_at, undone_at)`.
+- **Tablas eliminadas:** `finance_audit_decisions`, `finance_audit_proposals`, `finance_audit_runs`, `finance_relation_repairs`, `finance_valuations` y `finance_investments`.
+- **Conversión** (`finance_migration.rs`, en la misma transacción y solo si hay movimientos):
+  1. Carga alias con los nombres de comercios y productos existentes.
+  2. Pasa a `exchange` los gastos con `source='savings_exchange'`, con destino en la cuenta interna de su reserva. Renombra la categoría `category-credit-card` a «Cargos de tarjeta» si conservaba su nombre original.
+  3. Fecha por vencimiento los gastos vinculados a líneas de resumen y guarda la fecha de compra.
+  4. Recategoriza las compras de tarjeta que estaban en la categoría de la tarjeta, usando la categoría habitual del comercio o ninguna.
+  5. Los gastos de tarjeta que ningún resumen incluye:
+     - si son posteriores al último cierre cargado de esa tarjeta (o, en una tarjeta sin resúmenes, desde el primer día del mes anterior), pasan a `card_unpaid`;
+     - si son anteriores y hay una línea que los pagó, se unen a ella;
+     - si son anteriores y nada coincide, quedan como estaban.
+  6. Cuotas con gasto propio (`source='installment'`):
+     - las futuras se borran lógicamente y la cuota vuelve a `pending`;
+     - las pasadas se unen a su línea «cuota n/N» si la hay;
+     - si no hay línea, se crea un caso para revisar.
+  7. Crea los casos para revisar de los consumos que nombran más de un servicio.
+- **No se tocan** reservas, saldos iniciales ni movimientos de ahorro.
+
+### Motor de vínculos (`finance_matching.rs`)
+
+- **Normalización** (`normalize_text`): minúsculas, sin acentos ni puntuación, y cantidades unificadas (`1 Lt`, `1lts` y `1 litro` → `1l`; también `g`, `kg`, `ml`, `u`).
+- **Descriptor de tarjeta** (`normalize_card_descriptor`): usa el último tramo después de `*` (quita el procesador de pagos, por ejemplo `MERPAGO*`) y descarta números de sucursal, forma societaria (`sa`, `srl`, `cicsa`…) y tokens de una letra.
+- **Comercio compatible** (`merchants_compatible`): mismo descriptor o una palabra significativa en común (igual, o prefijo de al menos 4 letras).
+- **Comercios y productos** (`resolve_merchant`, `resolve_product`):
+  - se buscan por alias, luego por nombre normalizado, y si no existen se crean;
+  - si el nuevo se parece a uno existente (similitud de palabras ≥ 0,8, con cantidades iguales), se crea un caso `similar-merchant` o `similar-product`.
+- **Gasto a pagar ↔ línea del resumen:** misma tarjeta y moneda, compra dentro de ±2 días, mismo importe (o el total de la compra, con tolerancia de `N` centavos, para una línea en cuotas) y comercio compatible.
+  - **Resumen después del ticket:** una línea común reutiliza el gasto `card_unpaid` (`card-line-reused`: pasa a `confirmed` con la fecha de vencimiento). Una línea en cuotas crea su propio gasto y absorbe el del ticket (`card-line-merged`).
+  - **Ticket después del resumen:** el gasto del ticket se une al de la línea (`card-line-merged`): el ticket pasa a apuntar al gasto de la línea, que toma su comercio, categoría y descripción, y el gasto propio del ticket se borra lógicamente.
+  - **Varios candidatos:** se crea un caso `card-line-candidates` (desde la línea) o `unpaid-line-candidates` (desde el gasto).
+- **Cuotas:** una línea «cuota n/N» se vincula con la cuota `n` de un plan de la misma tarjeta, moneda y cantidad de cuotas, con importe parecido y comercio compatible (`installment-card-line`).
+  - Si no hay plan, se crea uno (`card-plan:{hash}`) con el calendario completo: cuotas anteriores confirmadas, la actual con su gasto y las futuras pendientes.
+  - `add_months` ajusta el día al fin de mes.
+- **Categoría de una línea sin ticket:** la del ítem si el asistente la envía (`categoryId`); si no, la última usada con el comercio. Cargos, intereses e impuestos van a «Cargos de tarjeta».
+- **Deshacer** (`unlink_line`):
+  - `card-line-reused`: la línea recupera un gasto propio y el ticket vuelve a `card_unpaid` con su fecha de compra;
+  - `card-line-merged`: el gasto del ticket se restaura como `card_unpaid`;
+  - `installment-card-line`: la cuota vuelve a `pending`.
+- **Casos para revisar** (`resolve_review_item`), opciones que se aplican:
+  - `merge:<gasto>` y `line:<línea>`: unir un gasto con una línea;
+  - `merge`: unificar un comercio o producto (el nombre viejo queda como alias);
+  - `delete`: borrar una cuota que no aparece;
+  - `service:<id>`: asignar un consumo a un servicio;
+  - `none` y `keep`: dejarlo como está (`dismissed`).
+
+### Guardados
+
+- **`finance_save_transaction_linked`** (la versión sin vínculos, `finance_save_transaction`, la envuelve):
+  - un gasto nuevo en una tarjeta queda `card_unpaid` y busca su línea;
+  - al actualizar conserva el `source` original;
+  - rechaza `exchange`;
+  - un movimiento que pertenece a un documento (`transaction_owner`: resumen, ticket, sueldo, ahorro o plan de cuotas) solo admite cambios de categoría, descripción y servicio. `finance_delete_transaction` también lo rechaza.
+- **`store_purchase` / `finance_save_purchase`:** sin inmutabilidad (las correcciones las confirma la persona por el asistente); comercio y productos por el motor. En tarjeta el gasto queda `card_unpaid` y busca su línea; un ticket ya unido a una línea solo actualiza comercio, categoría, servicio y descripción del gasto de la línea. El historial de precios solo muestra tickets `confirmed` o `corrected`.
+- **`store_credit_card_statement` / `finance_save_credit_card_statement`:**
+  - acepta ambas monedas en la tarjeta y valida la categoría por ítem;
+  - una línea guardada antes conserva su gasto (comparación en centavos) y se refecha por vencimiento;
+  - quitar una línea (`retire_stale_card_statement_transaction`):
+    - borra lógicamente el gasto propio de la línea y devuelve a `card_unpaid` los tickets unidos a ella;
+    - si la línea había reutilizado un gasto, ese gasto vuelve a `card_unpaid`;
+    - libera las cuotas y marca deshechos los vínculos.
+  - La conciliación con servicios sigue en `finance_reconciliation.rs`, sin huellas ni resolución manual; los grupos `multiple-service-match` generan casos `service-card-line`.
+- **`finance_save_installment_plan`:** upsert idempotente, sin gastos; valida cuenta y moneda y conserva el estado de las cuotas ya pagadas.
+- **`finance_save_savings_movement`:** la transferencia a la cuenta interna existe solo mientras el movimiento está `confirmed` o `corrected` y mueve dinero (aporte o retiro); si no, se borra lógicamente.
+- **`finance_save_savings_reserve`:** la cuenta interna sigue el nombre, la moneda y el estado activo de su reserva.
+- **Borrados en cascada** (`finance_edits::delete_record`): ticket, sueldo, resumen, plan de cuotas, movimiento y reserva de ahorro, servicio, mes de servicio y factura.
+  - Borrar un ticket pagado por un resumen deja el gasto en la línea.
+  - Borrar un resumen desvincula sus pagos de servicios y devuelve sus tickets a `card_unpaid`.
+  - La evidencia se marca borrada y libera su huella para poder volver a cargarla.
+
+### Lecturas y tablero
+
+- **`finance_get_dashboard`:**
+  - `debtByCurrency` es lo pagado de tarjetas: el total de los resúmenes que vencen en el mes;
+  - `salaryByCurrency` es el sueldo cobrado en el mes, por `payment_date`;
+  - la serie deuda/sueldo pasó a «Tarjetas / sueldo».
+- **`finance_dashboard_insights`:**
+  - agrega `cardPaidByCurrency`, `cardUnpaidByCurrency` y `cardUnpaidCount`;
+  - agrega `savedThisMonth` (aportes, costo de las compras de moneda y retiros por moneda) y `reviewItems` pendientes (hasta 20);
+  - las categorías se agrupan por categoría y moneda;
+  - todas las cifras cuentan `confirmed` y `corrected`;
+  - el resumen del período lee los movimientos por rango en SQL (`list_transactions_between`).
+- **`finance_service_month_status`:** estado de cada servicio activo en un mes (`paid`, `pending`, `not-applicable`).
+- **`finance_list_products`:** productos con el último precio por comercio (hasta 10 comercios) y búsqueda por palabras normalizadas.
+- **`finance_list_installment_plans`:** devuelve también `pendingCount`, `nextDueDate` y `remainingAmount`.
+
+### Comandos y tools
+
+- **Registro (`registry.rs`):** solo los comandos de lectura que usa la pantalla, más `finance_clear_all_data` y los de Dev.
+  - Nuevos: `finance_service_month_status` y `finance_list_products`.
+  - Se retiraron:
+    - todos los guardados, borrados y el alta desde pantalla (`finance_apply_ui_change`, con `finance_ui.rs` eliminado);
+    - auditoría, relaciones, reparación, inversiones y patrimonio;
+    - resumen por período, validación de ticket, vista previa de tarjeta y borrador de sueldo;
+    - `finance_list_installments`, `extract_finance_document` y `list_finance_artifacts`.
+
+  El agente llama a las funciones Rust directamente.
+- **Tools nuevas del agente** (`backend-core`: catálogo, esquemas y guía; `backend_runtime.rs`: despacho y vistas previas con confirmación):
+  - lectura: `list_finance_review_items`, `list_finance_products`, `list_finance_merchants`;
+  - escritura con confirmación: `resolve_finance_review_item`, `link_finance_records`, `unlink_finance_records`, `rename_finance_product`, `rename_finance_merchant`, `merge_finance_products`, `merge_finance_merchants`.
+- **Tools cambiadas:**
+  - `delete_finance_record` acepta `purchase`, `salary`, `card-statement`, `installment-plan`, `savings-movement`, `savings-reserve`, `service`, `service-occurrence` y `service-invoice`;
+  - `create_finance_savings_exchange` y `save_finance_savings_exchange` aceptan `direction` (`buy` o `sell`);
+  - los ítems de `create_finance_credit_card_statement` aceptan `categoryId`;
+  - los resultados de ticket, resumen y movimiento traen `links` y `reviewItems`.
+- **Tools eliminadas:** `audit_finance_month`, `list_finance_audits`, `preview_finance_audit_proposal`, `apply_finance_audit_proposal`, `get_finance_net_worth`, `list_finance_net_worth_history`, `list_finance_investments` y `save_finance_investment`. El snapshot financiero reemplaza auditorías, inversiones y patrimonio por `reviewItems`.
+- **Guía del agente** (`prompt_guidance.rs`):
+  - el resumen cargado es un resumen pagado;
+  - antes de guardar un ticket consulta productos y comercios;
+  - después de cada alta cuenta los vínculos en una línea con la opción de deshacer y hace las preguntas de `reviewItems`;
+  - resuelve con `resolve_finance_review_item`;
+  - cambio de moneda con `buy` o `sell`.
+
+### Interfaz (`src/modules/finance`)
+
+- **Tablero:**
+  - métricas: gastos del mes, pagado de tarjetas, en tarjeta a pagar, ahorrado este mes (con su costo), tarjetas/sueldo y ahorro/sueldo;
+  - «Para revisar» (solo lectura, con el aviso de responder por chat o Telegram);
+  - resumen del período (por defecto el mes), con categorías separadas por moneda;
+  - movimientos con tipo, estado y fecha de compra en castellano;
+  - ahorro con saldo, con los tipos en castellano.
+- **Registros:** productos (búsqueda y, al tocar uno, su historial de precios), tickets, últimos sueldos, resúmenes pagados, cuotas pendientes y gráficos.
+- **Servicios:** estado del mes por servicio e historial de versiones.
+- **Se eliminaron** todos los formularios, las acciones por fila, «Relaciones y evidencia», «Auditoría del mes», patrimonio y `CreditCardStatementForm.tsx`.
+- **Estilos:** `.finance-list-button` para la lista táctil de productos, con los tokens del tema.
+
+### Validaciones ejecutadas
+
+- `cargo test --offline -p notia-app`: 324 aprobados y 1 ignorado. Incluye:
+  - 11 flujos nuevos de ticket, resumen, cuotas, deshacer, borrado, productos parecidos y categorías de tarjeta;
+  - 6 pruebas del motor de vínculos;
+  - 2 de migración v26: datos v25 poblados y copia previa en disco;
+  - la prueba de dueño de movimientos.
+- `cargo test --offline` en `backend-core`: 288 aprobados.
+- `cargo check --offline --workspace` y `cargo check --offline -p notia-app --target aarch64-linux-android`: sin errores y sin advertencias nuevas (39 en escritorio para `notia-app`, 62 en Android).
+- `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint src` y `npx vitest run` (268 aprobados): sin errores.
+- Vista previa en Chrome headless con datos simulados, en ancho de escritorio y de teléfono.
+
+### Pendientes
+
+- Probar con datos reales la migración v26 sobre la biblioteca del usuario (queda la copia `.pre-v26.sqlite`).
+- Validar la carga por Telegram: ticket con tarjeta y luego resumen, y resumen y luego ticket.
+- Probar en un Android físico.
+- Compilar en Linux (WSL).
