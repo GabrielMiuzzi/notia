@@ -7,6 +7,8 @@ use std::time::Duration;
 
 const PCM_CHUNK_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize / 5;
 const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+// Queued audio beyond which the recognizer skips previews to catch up.
+const BACKLOG_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const DEFAULT_MAX_DURATION_SECONDS: u32 = 15 * 60;
@@ -172,6 +174,9 @@ pub trait StreamingRecognizer {
     fn finish(&mut self) -> Result<RecognitionUpdate, String>;
     fn reset_after_endpoint(&mut self) -> Result<(), String>;
     fn reset_session(&mut self) -> Result<(), String>;
+    /// The capture is ahead of recognition: skip what only previews the
+    /// ongoing utterance until it catches up.
+    fn set_backlogged(&mut self, _backlogged: bool) {}
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -338,15 +343,25 @@ fn run_worker<R, F, C, D>(
     }
     event_callback(SpeechWorkerEvent::Ready);
     let mut paused = false;
+    let mut previews = PreviewFilter::default();
+    let mut queue = QueueWatch::default();
     loop {
-        match command_rx.recv_timeout(CONTROL_POLL_INTERVAL) {
+        // With audio waiting, the next chunk is processed right away.
+        let wait = if !paused && queue.backlog >= PCM_CHUNK_SAMPLES {
+            Duration::ZERO
+        } else {
+            CONTROL_POLL_INTERVAL
+        };
+        match command_rx.recv_timeout(wait) {
             Ok(WorkerCommand::Pause) => paused = true,
             Ok(WorkerCommand::Resume) => paused = false,
             Ok(WorkerCommand::Cancel) | Err(RecvTimeoutError::Disconnected) => return,
             Ok(WorkerCommand::Stop) => {
+                recognizer.get_mut().set_backlogged(true);
                 if let Err(error) = drain_all(
                     &buffer,
                     recognizer.get_mut(),
+                    &mut previews,
                     &event_callback,
                     &mut audio_archive,
                 ) {
@@ -372,12 +387,15 @@ fn run_worker<R, F, C, D>(
         if paused {
             continue;
         }
-        match take_ready_chunk(&buffer) {
+        match take_ready_chunk(&buffer, &mut queue) {
             Ok(samples) if samples.is_empty() => {}
             Ok(samples) => {
-                if let Err(error) = archive_samples(&mut audio_archive, &samples)
-                    .and_then(|()| process_samples(recognizer.get_mut(), &samples, &event_callback))
-                {
+                recognizer
+                    .get_mut()
+                    .set_backlogged(queue.backlog > BACKLOG_SAMPLES);
+                if let Err(error) = archive_samples(&mut audio_archive, &samples).and_then(|()| {
+                    previews.process(recognizer.get_mut(), &samples, &event_callback)
+                }) {
                     event_callback(SpeechWorkerEvent::Error(error));
                     return;
                 }
@@ -435,6 +453,7 @@ impl<R: StreamingRecognizer, D: FnOnce(R)> Drop for RecycledRecognizer<R, D> {
 fn drain_all<R, C>(
     buffer: &SharedPcmBuffer,
     recognizer: &mut R,
+    previews: &mut PreviewFilter,
     callback: &C,
     audio_archive: &mut AudioArchive,
 ) -> Result<(), String>
@@ -448,7 +467,7 @@ where
             return Ok(());
         }
         archive_samples(audio_archive, &samples)?;
-        process_samples(recognizer, &samples, callback)?;
+        previews.process(recognizer, &samples, callback)?;
     }
 }
 
@@ -456,18 +475,43 @@ fn archive_samples(target: &mut AudioArchive, samples: &[f32]) -> Result<(), Str
     target.append(samples)
 }
 
-fn process_samples<R, C>(recognizer: &mut R, samples: &[f32], callback: &C) -> Result<(), String>
-where
-    R: StreamingRecognizer,
-    C: Fn(SpeechWorkerEvent),
-{
-    let update = recognizer.accept_waveform(samples)?;
-    let endpoint = update.endpoint_detected;
-    callback(SpeechWorkerEvent::Partial(update));
-    if endpoint {
-        recognizer.reset_after_endpoint()?;
+/// Reports each preview once: a chunk that leaves it unchanged (silence, or
+/// speech between two decodes) emits nothing.
+#[derive(Default)]
+struct PreviewFilter {
+    last_preview: Option<String>,
+}
+
+impl PreviewFilter {
+    fn process<R, C>(&mut self, recognizer: &mut R, samples: &[f32], callback: &C) -> Result<(), String>
+    where
+        R: StreamingRecognizer,
+        C: Fn(SpeechWorkerEvent),
+    {
+        let update = recognizer.accept_waveform(samples)?;
+        let endpoint = update.endpoint_detected;
+        if endpoint {
+            // The confirmed text clears the preview.
+            self.last_preview = Some(String::new());
+        } else if self.last_preview.as_deref() == Some(update.text.as_str()) {
+            return Ok(());
+        } else {
+            self.last_preview = Some(update.text.clone());
+        }
+        callback(SpeechWorkerEvent::Partial(update));
+        if endpoint {
+            recognizer.reset_after_endpoint()?;
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+/// What is left in the capture queue and the audio it discarded because
+/// recognition fell too far behind.
+#[derive(Default)]
+struct QueueWatch {
+    backlog: usize,
+    dropped_samples: u64,
 }
 
 fn take_samples(buffer: &SharedPcmBuffer, max_samples: usize) -> Result<Vec<f32>, String> {
@@ -477,24 +521,33 @@ fn take_samples(buffer: &SharedPcmBuffer, max_samples: usize) -> Result<Vec<f32>
         .map(|mut buffer| buffer.drain(max_samples))
 }
 
-fn take_ready_chunk(buffer: &SharedPcmBuffer) -> Result<Vec<f32>, String> {
-    buffer
+fn take_ready_chunk(buffer: &SharedPcmBuffer, queue: &mut QueueWatch) -> Result<Vec<f32>, String> {
+    let mut buffer = buffer
         .lock()
-        .map_err(|_| "No se pudo bloquear la cola PCM del worker.".to_string())
-        .map(|mut buffer| {
-            if buffer.stats().buffered_samples < PCM_CHUNK_SAMPLES {
-                Vec::new()
-            } else {
-                buffer.drain(PCM_CHUNK_SAMPLES)
-            }
-        })
+        .map_err(|_| "No se pudo bloquear la cola PCM del worker.".to_string())?;
+    let stats = buffer.stats();
+    if stats.dropped_samples > queue.dropped_samples {
+        log::warn!(
+            "[notia:speech] recognition fell behind; the capture queue discarded {} ms of audio",
+            (stats.dropped_samples - queue.dropped_samples).saturating_mul(1_000)
+                / u64::from(SPEECH_SAMPLE_RATE),
+        );
+        queue.dropped_samples = stats.dropped_samples;
+    }
+    let chunk = if stats.buffered_samples < PCM_CHUNK_SAMPLES {
+        Vec::new()
+    } else {
+        buffer.drain(PCM_CHUNK_SAMPLES)
+    };
+    queue.backlog = stats.buffered_samples - chunk.len();
+    Ok(chunk)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         AudioArchive, RecognitionUpdate, SpeechWorker, SpeechWorkerEvent, StreamingRecognizer,
-        DEFAULT_MAX_DURATION_SECONDS, SPEECH_SAMPLE_RATE,
+        DEFAULT_MAX_DURATION_SECONDS, PCM_CHUNK_SAMPLES, SPEECH_SAMPLE_RATE,
     };
     use crate::services::speech_audio::BoundedPcmBuffer;
     use std::sync::{Arc, Mutex};
@@ -590,6 +643,62 @@ mod tests {
             event,
             SpeechWorkerEvent::Finished { update, audio } if update.text == "final:3" && audio.sample_count() == 3
         )));
+    }
+
+    /// Repeats the same preview for every chunk, like a recognizer between
+    /// two decodes.
+    struct RepeatingRecognizer;
+
+    impl StreamingRecognizer for RepeatingRecognizer {
+        fn accept_waveform(&mut self, _samples: &[f32]) -> Result<RecognitionUpdate, String> {
+            Ok(RecognitionUpdate {
+                text: "hola".to_string(),
+                endpoint_detected: false,
+                span: None,
+            })
+        }
+
+        fn finish(&mut self) -> Result<RecognitionUpdate, String> {
+            Ok(RecognitionUpdate {
+                text: String::new(),
+                endpoint_detected: false,
+                span: None,
+            })
+        }
+
+        fn reset_after_endpoint(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn reset_session(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_unchanged_preview_is_reported_once() {
+        let mut pcm = BoundedPcmBuffer::with_capacity(PCM_CHUNK_SAMPLES * 4).expect("valid test buffer");
+        pcm.push(vec![0.1; PCM_CHUNK_SAMPLES * 3]);
+        let pcm = Arc::new(Mutex::new(pcm));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let callback_events = Arc::clone(&events);
+        let worker = SpeechWorker::start(
+            pcm,
+            || Ok(RepeatingRecognizer),
+            move |event| {
+                callback_events.lock().expect("event lock").push(event);
+            },
+        )
+        .expect("start worker");
+        worker.stop().expect("stop worker");
+        worker.join().expect("join worker");
+        let previews = events
+            .lock()
+            .expect("read events")
+            .iter()
+            .filter(|event| matches!(event, SpeechWorkerEvent::Partial(_)))
+            .count();
+        assert_eq!(previews, 1);
     }
 
     #[test]

@@ -126,6 +126,7 @@ fn route(command: &str) -> Option<Route> {
         "stop_speech_session" => stop_speech_session,
         "cancel_speech_session" => cancel_speech_session,
         "skip_speech_diarization" => skip_speech_diarization,
+        "speech_session_state" => speech_session_state,
         "start_audio_monitor" => start_audio_monitor,
         "stop_audio_monitor" => stop_audio_monitor,
         "meeting_snapshot" => meeting_snapshot,
@@ -306,6 +307,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "stop_speech_session",
     "cancel_speech_session",
     "skip_speech_diarization",
+    "speech_session_state",
     "start_audio_monitor",
     "stop_audio_monitor",
     "meeting_snapshot",
@@ -384,6 +386,7 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "stop_speech_session",
     "cancel_speech_session",
     "skip_speech_diarization",
+    "speech_session_state",
     "start_audio_monitor",
     "stop_audio_monitor",
     "meeting_snapshot",
@@ -908,6 +911,10 @@ fn stop_speech_session(app: &AppHandle, _window_label: &str, command: &str, args
     let arg1 = app.clone();
     let arg2 = app.state();
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::commands::speech::stop_speech_session(arg0, arg1, arg2).await) })))
+}
+
+fn speech_session_state(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::commands::speech::speech_session_state(arg(command, args, "payload")?, app.state()))))
 }
 
 fn skip_speech_diarization(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

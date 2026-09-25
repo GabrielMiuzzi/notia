@@ -37,6 +37,11 @@ const NO_FILTER: MeetingFilter = { query: '', speakerId: null }
 
 type MeetingStage = 'ready' | 'recording' | 'processing' | 'completed'
 
+// The meeting keeps its transcript in the backend; the voice hook's draft,
+// which would copy the whole text on every preview, is not used.
+const NO_DRAFT = ''
+const ignoreDraft = () => undefined
+
 const errorText = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
 
 function MeetingViewComponent() {
@@ -47,7 +52,6 @@ function MeetingViewComponent() {
   const openFile = useNotiaAction('openFile')
   const announceTreeChange = useNotiaAction('chatWorkspaceTreeChanged')
 
-  const [draft, setDraft] = useState('')
   const [sources, setSources] = useState<Record<MeetingSource, boolean>>({ microphone: true, system: true })
   const [expectedSpeakers, setExpectedSpeakers] = useState<number | null>(null)
   const [folder, setFolder] = useState(DEFAULT_MEETING_FOLDER)
@@ -68,8 +72,8 @@ function MeetingViewComponent() {
     [aiPreferences, liveAnswers],
   )
   const voice = useVoiceTranscription({
-    draft,
-    setDraft,
+    draft: NO_DRAFT,
+    setDraft: ignoreDraft,
     maxDurationSeconds: MEETING_MAX_DURATION_SECONDS,
     captureMicrophone: sources.microphone,
     captureSystemAudio: sources.system,
@@ -84,10 +88,22 @@ function MeetingViewComponent() {
   const { snapshot, error: snapshotError } = useMeetingSnapshot(filter)
 
   const status = voice.state.status
-  const stage: MeetingStage = status === 'recording' || status === 'paused' ? 'recording'
+  // A meeting that kept recording while the view was closed shows as
+  // recording while the hook attaches to its session again.
+  const liveElsewhere = snapshot?.status === 'live' && status === 'idle'
+  const stage: MeetingStage = status === 'recording' || status === 'paused' || liveElsewhere ? 'recording'
     : status === 'finalizing' || snapshot?.status === 'processing' ? 'processing'
       : snapshot?.status === 'completed' ? 'completed'
         : 'ready'
+
+  const attachVoice = voice.attach
+  const attachedIdRef = useRef<string | null>(null)
+  const runningId = snapshot && (snapshot.status === 'live' || snapshot.status === 'processing') ? snapshot.id : null
+  useEffect(() => {
+    if (!runningId || status !== 'idle' || attachedIdRef.current === runningId) return
+    attachedIdRef.current = runningId
+    void attachVoice(runningId)
+  }, [attachVoice, runningId, status])
   const levels = useSpeechLevels(stage === 'recording' ? snapshot?.id ?? null : monitorId, LEVEL_HISTORY)
 
   useEffect(() => {

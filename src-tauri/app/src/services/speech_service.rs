@@ -51,6 +51,9 @@ pub struct SpeechRuntimeState {
     monitor: Mutex<Option<AudioMonitor>>,
     /// Session whose speaker separation the person asked to skip.
     skip_diarization: Mutex<Option<String>>,
+    /// Session that stopped recording and is separating its speakers.
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    finalizing_session: Mutex<Option<String>>,
 }
 
 /// Longest an audio check stays open without being stopped.
@@ -205,7 +208,6 @@ struct ActivePlatformSpeechSession {
     audio_capture: crate::services::speech_audio::PlatformAudioCapture,
     meter: crate::services::speech_audio::SharedCaptureMeter,
     worker: crate::services::speech_worker::SpeechWorker,
-    started_at: Instant,
     confirmed_text: Arc<StdMutex<String>>,
 }
 
@@ -222,6 +224,8 @@ impl Default for SpeechRuntimeState {
             #[cfg(any(target_os = "windows", target_os = "android"))]
             monitor: Mutex::new(None),
             skip_diarization: Mutex::new(None),
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            finalizing_session: Mutex::new(None),
         }
     }
 }
@@ -369,7 +373,6 @@ pub fn start_platform_session(
         audio_capture,
         meter,
         worker,
-        started_at,
         confirmed_text,
     });
     Ok(())
@@ -612,8 +615,50 @@ pub fn stop_platform_session(state: &SpeechRuntimeState) -> Result<(), String> {
     session.audio_capture.pause()?;
     // Nothing to measure while the speakers are separated.
     drop(session._levels);
-    session.worker.stop()?;
-    session.worker.join()
+    set_finalizing_session(state, Some(session.session_id.clone()));
+    let finished = session.worker.stop().and_then(|()| session.worker.join());
+    set_finalizing_session(state, None);
+    finished
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn set_finalizing_session(state: &SpeechRuntimeState, session_id: Option<String>) {
+    if let Ok(mut finalizing) = state.finalizing_session.lock() {
+        *finalizing = session_id;
+    }
+}
+
+/// State of `session_id` while it records or separates its speakers, so an
+/// interface that opens again can follow it. The clock is the recording
+/// position without pauses.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub fn session_state(state: &SpeechRuntimeState, session_id: &str) -> Result<SpeechSessionStateDto, String> {
+    const ENDED: &str = "La grabación ya terminó.";
+    let phase = *state
+        .phase
+        .lock()
+        .map_err(|_| "No se pudo bloquear el estado de voz.".to_string())?;
+    if phase == SpeechPhase::Finalizing {
+        let finalizing = state
+            .finalizing_session
+            .lock()
+            .map_err(|_| "No se pudo bloquear el estado de voz.".to_string())?;
+        return match finalizing.as_deref() {
+            Some(id) if id == session_id => Ok(SpeechSessionStateDto::Finalizing { progress: None, stage: None }),
+            _ => Err(ENDED.to_string()),
+        };
+    }
+    let elapsed_ms = session_position_ms(state, session_id).map_err(|_| ENDED.to_string())?;
+    match phase {
+        SpeechPhase::Recording => Ok(SpeechSessionStateDto::Recording { elapsed_ms, has_speech: true }),
+        SpeechPhase::Paused => Ok(SpeechSessionStateDto::Paused { elapsed_ms }),
+        _ => Err(ENDED.to_string()),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
+pub fn session_state(_state: &SpeechRuntimeState, _session_id: &str) -> Result<SpeechSessionStateDto, String> {
+    Err(not_integrated_error())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "android")))]
@@ -634,11 +679,7 @@ pub fn validate_active_session(
         .as_ref()
         .filter(|session| session.session_id == session_id)
         .ok_or_else(|| "La sesion de voz no coincide con la sesion activa.".to_string())?;
-    Ok(session
-        .started_at
-        .elapsed()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64)
+    Ok(session.meter.position_ms())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "android")))]

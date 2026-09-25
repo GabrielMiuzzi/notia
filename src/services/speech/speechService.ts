@@ -301,6 +301,10 @@ export const resumeSpeechSession = (sessionId: string) => invokeSessionCommand('
 export const consumeSpeechTurn = (sessionId: string) => callBackend<string>('consume_speech_turn', { payload: { sessionId } })
 export const stopSpeechSession = (sessionId: string) => invokeSessionCommand('stop_speech_session', sessionId)
 export const cancelSpeechSession = (sessionId: string) => invokeSessionCommand('cancel_speech_session', sessionId)
+/** State of a session that is still recording or separating its speakers. */
+export async function getSpeechSessionState(sessionId: string): Promise<SpeechSessionState> {
+  return parseSpeechSessionState(await callBackend<unknown>('speech_session_state', { payload: { sessionId } }))
+}
 /** Finishes a session that is separating speakers with its text alone. */
 export const skipSpeechDiarization = (sessionId: string) => invokeSessionCommand('skip_speech_diarization', sessionId)
 

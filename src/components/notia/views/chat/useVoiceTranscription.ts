@@ -5,6 +5,7 @@ import {
   cancelSpeechSession,
   consumeSpeechTurn,
   getSpeechCapabilities,
+  getSpeechSessionState,
   listenSpeechPartial,
   listenSpeechSegments,
   listenSpeechState,
@@ -91,10 +92,18 @@ function useLocalVoiceTranscription({
   const visiblePartialTextRef = useRef('')
   const onCompletedRef = useRef(onCompleted)
   const environmentErrorRef = useRef<string | null>(null)
+  // A Meeting session belongs to the backend: it keeps recording when the
+  // view closes and the view follows it again with `attach`.
+  const keepsSessionRef = useRef(meeting !== null)
+  const stateEventsRef = useRef(0)
 
   useEffect(() => {
     onCompletedRef.current = onCompleted
   }, [onCompleted])
+
+  useEffect(() => {
+    keepsSessionRef.current = meeting !== null
+  }, [meeting])
 
   useEffect(() => {
     setIsModelReady(false)
@@ -175,6 +184,7 @@ function useLocalVoiceTranscription({
       const listeners = await Promise.all([
         listenSpeechState((event) => {
           if (event.sessionId !== sessionIdRef.current) return
+          stateEventsRef.current += 1
           setState(event.state)
           if (event.state.status === 'completed') {
             const transcript = event.state.transcript.formattedText
@@ -242,7 +252,7 @@ function useLocalVoiceTranscription({
       const sessionId = sessionIdRef.current
       sessionIdRef.current = null
       consumingTurnRef.current = null
-      if (sessionId) void cancelSpeechSession(sessionId).catch(() => undefined)
+      if (sessionId && !keepsSessionRef.current) void cancelSpeechSession(sessionId).catch(() => undefined)
     }
   }, [continuousSession, pauseDetectionMs, setDraft])
 
@@ -382,6 +392,23 @@ function useLocalVoiceTranscription({
     }
   }, [audioInput, capabilities, captureMicrophone, captureSystemAudio, continuousSession, draft, expectedSpeakers, maxDurationSeconds, meeting, speechRecognition])
 
+  /** Follows a session that kept recording or separating speakers while its view was closed. */
+  const attach = useCallback(async (sessionId: string) => {
+    if (sessionIdRef.current) return
+    sessionIdRef.current = sessionId
+    confirmedTextRef.current = ''
+    visiblePartialTextRef.current = ''
+    const eventsBefore = stateEventsRef.current
+    try {
+      const current = await getSpeechSessionState(sessionId)
+      // An event that arrived meanwhile is newer than this answer.
+      if (sessionIdRef.current === sessionId && stateEventsRef.current === eventsBefore) setState(current)
+    } catch {
+      // The session ended meanwhile; the meeting shows its result.
+      if (sessionIdRef.current === sessionId) sessionIdRef.current = null
+    }
+  }, [])
+
   const invokeForCurrentSession = useCallback(async (operation: (sessionId: string) => Promise<void>) => {
     const sessionId = sessionIdRef.current
     if (!sessionId) return
@@ -431,6 +458,7 @@ function useLocalVoiceTranscription({
     resume,
     stop: () => invokeForCurrentSession(stopSpeechSession),
     cancel,
+    attach,
     dismissError: () => setState(INITIAL_STATE),
   }
 }

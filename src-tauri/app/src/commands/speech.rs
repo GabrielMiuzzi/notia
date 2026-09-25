@@ -235,6 +235,15 @@ pub fn stop_audio_monitor(
 }
 
 /// Finishes a session that is separating speakers with its text alone.
+/// State of a session that is still recording or separating its speakers.
+pub fn speech_session_state(
+    payload: SpeechSessionPayload,
+    state: State<'_, SpeechRuntimeState>,
+) -> Result<crate::dto::speech::SpeechSessionStateDto, String> {
+    validate_session_command(&payload)?;
+    speech_service::session_state(&state, &payload.session_id)
+}
+
 pub fn skip_speech_diarization(
     payload: SpeechSessionPayload,
     state: State<'_, SpeechRuntimeState>,

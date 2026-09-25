@@ -7,11 +7,12 @@
 //! the preview follows the speaker. The transducer is non-autoregressive, so
 //! both passes stay far below real time on CPU.
 
-use crate::services::spanish_transcript::normalize_spanish_transcript;
+use crate::services::spanish_transcript::{looks_english, normalize_spanish_transcript, word_count};
 use crate::services::speech_audio::SPEECH_SAMPLE_RATE;
 use crate::services::speech_worker::{RecognitionUpdate, SampleSpan, StreamingRecognizer};
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -34,11 +35,19 @@ const SPEECH_START_LOOKBACK_SAMPLES: usize = VAD_PRE_SPEECH_SAMPLES
 const MIN_PARTIAL_INTERVAL: Duration = Duration::from_millis(400);
 // Parakeet detects the language of each decoded chunk and has no way to fix
 // it. On chunks shorter than a second it sometimes picks English ("¿Qué es?"
-// becomes "Kiss"). Each chunk is decoded after the last seconds of speech
+// becomes "Kiss"). Short chunks are decoded after the last seconds of speech
 // already confirmed, so the model keeps the language being spoken; the tokens
-// that start inside that context are discarded by their timestamp.
+// that start inside that context are discarded by their timestamp. Longer
+// chunks carry enough speech to pick the language themselves, and with the
+// context the model dropped English sentences actually spoken inside them.
 const LANGUAGE_CONTEXT_SAMPLES: usize = SAMPLE_RATE * 3;
+const LANGUAGE_CONTEXT_MAX_CHUNK_SAMPLES: usize = SAMPLE_RATE * 4;
 const CONTEXT_CUTOFF_TOLERANCE_SECONDS: f32 = 0.04;
+// A long Spanish chunk with an English word sometimes comes out entirely in
+// English. It is decoded again in pieces short enough to carry the context,
+// each cut at the quietest 20 ms after its first two seconds.
+const RETRY_PIECE_MIN_SAMPLES: usize = SAMPLE_RATE * 2;
+const QUIET_FRAME_SAMPLES: usize = SAMPLE_RATE / 50;
 const MIN_PARTIAL_SAMPLES: usize = SAMPLE_RATE / 2;
 pub const MAX_ASR_THREADS: i32 = 4;
 
@@ -313,8 +322,11 @@ pub struct OfflineVadRecognizer {
     history_start_sample: i64,
     total_samples: i64,
     live_partials: bool,
+    /// The worker is behind the capture: previews wait until it catches up.
+    backlogged: bool,
     live: LiveUtterance,
-    /// Latest confirmed speech, prefixed to every decode as language context.
+    /// Latest speech confirmed in the configured language, prefixed to short
+    /// chunks as language context.
     language_context: VecDeque<f32>,
 }
 
@@ -409,6 +421,7 @@ impl OfflineVadRecognizer {
                 history_start_sample: 0,
                 total_samples: 0,
                 live_partials: false,
+                backlogged: false,
                 live: LiveUtterance::default(),
                 language_context: VecDeque::with_capacity(LANGUAGE_CONTEXT_SAMPLES),
             })
@@ -426,23 +439,52 @@ impl OfflineVadRecognizer {
         self.live_partials = true;
     }
 
-    /// Transcribes a chunk after the language context and keeps only the
-    /// text spoken inside the chunk.
+    /// Transcribes a chunk: short ones after the language context, long ones
+    /// on their own and, when they come out in English while the configured
+    /// language is Spanish, again in pieces. The pieces are kept only if they
+    /// are no longer English; otherwise English was really spoken.
     fn transcribe(&self, samples: &[f32]) -> Result<String, String> {
+        if samples.len() <= LANGUAGE_CONTEXT_MAX_CHUNK_SAMPLES {
+            return Ok(self.normalize(self.decode_after_context(samples)?));
+        }
+        let text = self.decode(samples)?.text;
+        if self.in_configured_language(&text) {
+            return Ok(self.normalize(text));
+        }
+        let pieces = quiet_pieces(samples, RETRY_PIECE_MIN_SAMPLES, LANGUAGE_CONTEXT_MAX_CHUNK_SAMPLES)
+            .into_iter()
+            .map(|piece| self.decode_after_context(&samples[piece]))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(" ");
+        let use_pieces =
+            self.in_configured_language(&pieces) && word_count(&pieces) * 2 >= word_count(&text);
+        log::info!(
+            "[notia:speech:language] chunk decoded in English, retried in pieces kept_pieces={use_pieces} audio_ms={}",
+            samples.len() * 1_000 / SAMPLE_RATE,
+        );
+        Ok(self.normalize(if use_pieces { pieces } else { text }))
+    }
+
+    fn in_configured_language(&self, text: &str) -> bool {
+        self.config.language != "es" || !looks_english(text)
+    }
+
+    /// Decodes a chunk after the language context and keeps only the text
+    /// spoken inside the chunk.
+    fn decode_after_context(&self, samples: &[f32]) -> Result<String, String> {
         if self.language_context.is_empty() {
-            return Ok(self.normalize(self.decode(samples)?.text));
+            return Ok(self.decode(samples)?.text);
         }
         let mut audio = Vec::with_capacity(self.language_context.len() + samples.len());
         audio.extend(self.language_context.iter().copied());
         audio.extend_from_slice(samples);
         let cutoff = self.language_context.len() as f32 / SAMPLE_RATE as f32
             - CONTEXT_CUTOFF_TOLERANCE_SECONDS;
-        let text = match self.decode(&audio)?.tokens {
-            Some(tokens) => text_after(&tokens, cutoff),
+        match self.decode(&audio)?.tokens {
+            Some(tokens) => Ok(text_after(&tokens, cutoff)),
             // Without timestamps the context text cannot be removed.
-            None => self.decode(samples)?.text,
-        };
-        Ok(self.normalize(text))
+            None => Ok(self.decode(samples)?.text),
+        }
     }
 
     fn remember_language_context(&mut self, samples: &[f32]) {
@@ -518,7 +560,10 @@ impl OfflineVadRecognizer {
                     (self.api.vad_pop)(self.vad);
                     let text = decoded?;
                     if !text.is_empty() {
-                        self.remember_language_context(&padded_samples);
+                        // English speech would steer the next chunks to English.
+                        if self.in_configured_language(&text) {
+                            self.remember_language_context(&padded_samples);
+                        }
                         texts.push(text);
                         let start = segment_start as u64;
                         let end = start.saturating_add(raw.n as u64);
@@ -552,6 +597,7 @@ impl OfflineVadRecognizer {
             decoded_at.elapsed() >= partial_interval(self.live.last_decode_cost)
         });
         if !self.live_partials
+            || self.backlogged
             || !due
             || self.total_samples.saturating_sub(start) < MIN_PARTIAL_SAMPLES as i64
         {
@@ -625,6 +671,10 @@ impl StreamingRecognizer for OfflineVadRecognizer {
         Ok(())
     }
 
+    fn set_backlogged(&mut self, backlogged: bool) {
+        self.backlogged = backlogged;
+    }
+
     /// Keeps `language_context`: it only steers the language of the next
     /// chunks (diarization turns, the next session) and its text is dropped.
     fn reset_session(&mut self) -> Result<(), String> {
@@ -633,6 +683,7 @@ impl StreamingRecognizer for OfflineVadRecognizer {
         self.history_start_sample = 0;
         self.total_samples = 0;
         self.live_partials = false;
+        self.backlogged = false;
         self.live = LiveUtterance::default();
         Ok(())
     }
@@ -715,6 +766,32 @@ fn partial_interval(last_decode_cost: Duration) -> Duration {
     MIN_PARTIAL_INTERVAL.max(last_decode_cost.saturating_mul(2))
 }
 
+/// Ranges that cover `samples` in pieces of at most `max` samples. Every piece
+/// but the last lasts at least `min` and ends in the middle of the quietest
+/// 20 ms frame after that, which is usually a pause between words.
+fn quiet_pieces(samples: &[f32], min: usize, max: usize) -> Vec<Range<usize>> {
+    let energy = |frame: usize| -> f32 {
+        samples[frame..frame + QUIET_FRAME_SAMPLES]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum()
+    };
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    while samples.len() - start > max {
+        let last_frame = start + max - QUIET_FRAME_SAMPLES;
+        let quietest = (start + min..=last_frame)
+            .step_by(QUIET_FRAME_SAMPLES)
+            .min_by(|left, right| energy(*left).total_cmp(&energy(*right)))
+            .unwrap_or(last_frame);
+        let end = quietest + QUIET_FRAME_SAMPLES / 2;
+        pieces.push(start..end);
+        start = end;
+    }
+    pieces.push(start..samples.len());
+    pieces
+}
+
 fn collect_history_range(
     history: &VecDeque<f32>,
     history_start: i64,
@@ -769,9 +846,43 @@ unsafe fn symbol<T: Copy>(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_history_range, partial_interval, text_after, MIN_PARTIAL_INTERVAL};
+    use super::{
+        collect_history_range, partial_interval, quiet_pieces, text_after, MIN_PARTIAL_INTERVAL,
+        SAMPLE_RATE,
+    };
     use std::collections::VecDeque;
     use std::time::Duration;
+
+    #[test]
+    fn retry_pieces_cover_the_chunk_and_end_in_its_pauses() {
+        // Ten seconds of speech with 100 ms pauses at 2.5 s and 6.2 s.
+        let pause = |at: f32| {
+            let start = (at * SAMPLE_RATE as f32) as usize;
+            start..start + SAMPLE_RATE / 10
+        };
+        let samples = (0..SAMPLE_RATE * 10)
+            .map(|index| {
+                if pause(2.5).contains(&index) || pause(6.2).contains(&index) {
+                    0.0
+                } else {
+                    0.5
+                }
+            })
+            .collect::<Vec<_>>();
+        let pieces = quiet_pieces(&samples, SAMPLE_RATE * 2, SAMPLE_RATE * 4);
+        assert_eq!(pieces.len(), 3);
+        assert_eq!(pieces[0].start, 0);
+        assert_eq!(pieces[2].end, samples.len());
+        assert!(pieces.windows(2).all(|pair| pair[0].end == pair[1].start));
+        assert!(pieces.iter().all(|piece| piece.len() <= SAMPLE_RATE * 4));
+        assert!(pause(2.5).contains(&pieces[0].end));
+        assert!(pause(6.2).contains(&pieces[1].end));
+        // A chunk no longer than a piece stays whole.
+        assert_eq!(
+            quiet_pieces(&samples[..SAMPLE_RATE * 4], SAMPLE_RATE * 2, SAMPLE_RATE * 4),
+            vec![0..SAMPLE_RATE * 4]
+        );
+    }
 
     #[test]
     fn collects_available_audio_before_the_vad_segment_start() {

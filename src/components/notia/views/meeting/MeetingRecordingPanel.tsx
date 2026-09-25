@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { ArrowDown, ChevronDown, MessageSquare, Mic, MonitorSpeaker, Sparkles, X } from 'lucide-react'
 import { MeetingLevelBars } from './MeetingLevelBars'
 import { formatClock } from './meetingDisplay'
@@ -20,6 +20,33 @@ interface MeetingRecordingPanelProps {
   onSaveNotes: (notes: string) => void
   onRemoveMark: (markId: string) => void
 }
+
+const NO_ANSWERS: MeetingAnswer[] = []
+
+/**
+ * Confirmed lines of a recording. They change only when a line arrives or an
+ * answer updates, so the levels and the preview do not render them again:
+ * a long meeting has thousands.
+ */
+const LiveLines = memo(function LiveLines({ lines, answers }: { lines: MeetingLine[]; answers: MeetingAnswer[] }) {
+  return lines.map((line) => {
+    const answer = line.question ? answers.find((candidate) => candidate.askedAtMs === line.startMs) : undefined
+    return (
+      <div key={line.id} id={`meeting-line-${line.id}`} className="notia-meeting-live-line">
+        <time>{formatClock(line.startMs)}</time>
+        <div>
+          <p>{line.text}</p>
+          {answer ? (
+            <span className="notia-meeting-question-chip">
+              <Sparkles size={11} aria-hidden="true" />
+              Pregunta detectada · {answer.status === 'generating' ? 'respondiendo' : answer.status === 'ready' ? 'respondida' : 'sin respuesta'}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    )
+  })
+})
 
 export function MeetingRecordingPanel({
   snapshot,
@@ -54,10 +81,6 @@ export function MeetingRecordingPanel({
     setFollow(false)
     document.getElementById(`meeting-line-${line.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }
-
-  const answerOf = (line: MeetingLine): MeetingAnswer | undefined => (
-    snapshot?.answers.find((answer) => answer.askedAtMs === line.startMs)
-  )
 
   return (
     <div className="notia-meeting-live">
@@ -98,23 +121,7 @@ export function MeetingRecordingPanel({
             {lines.length === 0 && !partialText ? (
               <p className="notia-meeting-empty-text">La transcripción aparece acá mientras hablan…</p>
             ) : null}
-            {lines.map((line) => {
-              const answer = line.question && snapshot?.liveAnswers ? answerOf(line) : undefined
-              return (
-                <div key={line.id} id={`meeting-line-${line.id}`} className="notia-meeting-live-line">
-                  <time>{formatClock(line.startMs)}</time>
-                  <div>
-                    <p>{line.text}</p>
-                    {answer ? (
-                      <span className="notia-meeting-question-chip">
-                        <Sparkles size={11} aria-hidden="true" />
-                        Pregunta detectada · {answer.status === 'generating' ? 'respondiendo' : answer.status === 'ready' ? 'respondida' : 'sin respuesta'}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-              )
-            })}
+            <LiveLines lines={lines} answers={snapshot?.liveAnswers ? snapshot.answers : NO_ANSWERS} />
             {partialText ? (
               <div className="notia-meeting-live-line notia-meeting-live-line--partial">
                 {/* The utterance being heard starts after the last confirmed one. */}
