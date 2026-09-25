@@ -10,6 +10,7 @@ describe("FinanceRecordsPanel", () => {
         library: { id: "library", name: "Personal", path: "C:/personal" },
         accounts: [],
         debtRatioSeries: { periods: [], series: [] },
+        servicesRatioSeries: { periods: [], series: [] },
         historyFrom: "2025-10",
         historyTo: "2026-09",
       }),

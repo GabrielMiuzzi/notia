@@ -147,9 +147,14 @@ export interface FinanceDashboardInsights {
   expensesByCategory: Array<{ name: string; currency: string; amount: string }>
   savingsMovements: FinanceSavingsMovement[]
   savingsBreakdown: Record<string, string>
-  debtRatio: { ratios: Array<{ currency: string; percentage: number }>; period: string }
-  /** Cards paid over salary per month and currency, for the evolution chart. */
+  /** Cards paid over the salary that paid them (the previous period's). */
+  debtRatio: FinanceSalaryRatio
   debtRatioSeries: FinanceDebtRatioSeries
+  /** Services paid over the salary that paid them. */
+  servicesRatio: FinanceSalaryRatio
+  servicesRatioSeries: FinanceDebtRatioSeries
+  /** Services paid in the month. */
+  servicesPaidByCurrency: Record<string, string>
   savingsToIncome: number | null
   /** Card statements due in the month: what was paid for the cards. */
   cardPaidByCurrency: Record<string, string>
@@ -159,6 +164,12 @@ export interface FinanceDashboardInsights {
   savedThisMonth: FinanceSavedThisMonth
   /** Doubts the assistant asks about in the chat or Telegram. */
   reviewItems: FinanceReviewItem[]
+}
+
+/** A ratio of the month shown, or of the latest month with data (`period`). */
+export interface FinanceSalaryRatio {
+  ratios: Array<{ currency: string; percentage: number }>
+  period: string
 }
 
 export interface FinanceDebtRatioSeries {

@@ -23,13 +23,14 @@ import { financeErrorMessage } from "../engines/financeError";
 import { formatFinanceLoadedDate } from "../engines/financeLoadedDate";
 import { subscribeToFinanceDataChanges } from "../services/financeDataEvents";
 import { CreditCardEvolutionChart } from "./CreditCardEvolutionChart";
-import { DebtRatioEvolutionChart } from "./DebtRatioEvolutionChart";
+import { SalaryRatioChart } from "./SalaryRatioChart";
 import { SalaryEvolutionChart } from "./SalaryEvolutionChart";
 
 interface Props {
   library: NotiaLibrary;
   accounts: FinanceAccount[];
   debtRatioSeries: FinanceDebtRatioSeries;
+  servicesRatioSeries: FinanceDebtRatioSeries;
   historyFrom: string;
   historyTo: string;
 }
@@ -40,7 +41,7 @@ function formatMoney(amount: string, currency: FinanceCurrency): string {
   return new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
 }
 
-export function FinanceRecordsPanel({ library, accounts, debtRatioSeries, historyFrom, historyTo }: Props) {
+export function FinanceRecordsPanel({ library, accounts, debtRatioSeries, servicesRatioSeries, historyFrom, historyTo }: Props) {
   const [purchases, setPurchases] = useState<FinancePurchaseSummary[]>([]);
   const [salaries, setSalaries] = useState<FinanceSalaryEvolution[]>([]);
   const [cardStatements, setCardStatements] = useState<FinanceCreditCardStatement[]>([]);
@@ -156,7 +157,8 @@ export function FinanceRecordsPanel({ library, accounts, debtRatioSeries, histor
       </div>
       <SalaryEvolutionChart library={library} refreshKey={salaries} />
       <CreditCardEvolutionChart accounts={accounts} statements={cardStatements} />
-      <DebtRatioEvolutionChart data={debtRatioSeries} />
+      <SalaryRatioChart id="card-ratio" title="Tarjetas respecto del sueldo" description="Lo pagado de tarjetas cada mes sobre el sueldo del mes anterior, que es con el que se paga." emptyText="Cargá sueldos y resúmenes de tarjeta para ver su evolución." data={debtRatioSeries} />
+      <SalaryRatioChart id="services-ratio" title="Servicios respecto del sueldo" description="Lo pagado de servicios cada mes sobre el sueldo del mes anterior, que es con el que se paga." emptyText="Registrá pagos de servicios y sueldos para ver su evolución." data={servicesRatioSeries} />
     </section>
   );
 }

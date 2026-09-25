@@ -215,6 +215,7 @@ export interface FinanceInstallmentPlanSummary extends FinanceInstallmentPlan {
 export interface FinanceDebtRatioHistoryPoint {
   period: string;
   debtByCurrency: Record<string, string>;
+  servicesByCurrency: Record<string, string>;
   salaryByCurrency: Record<string, string>;
 }
 
@@ -231,6 +232,9 @@ export interface FinanceDashboard {
   netByCurrency: Record<string, string>;
   /** Card statements due in the month: what was paid for the cards. */
   debtByCurrency: Record<string, string>;
+  /** Services paid in the month. */
+  servicesByCurrency: Record<string, string>;
+  /** Net salary of the previous period, the one that pays the month. */
   salaryByCurrency: Record<string, string>;
   debtRatioHistory: FinanceDebtRatioHistoryPoint[];
   savings: FinanceSavingsReserve[];

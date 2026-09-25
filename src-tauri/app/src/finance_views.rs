@@ -454,8 +454,13 @@ pub struct DashboardInsights {
     savings_movements: Vec<FinanceSavingsMovement>,
     savings_breakdown: BTreeMap<String, String>,
     debt_ratio: DebtRatioSummary,
-    /// Cards paid over salary per month and currency, for the evolution chart.
+    /// Cards paid over the salary that paid them, per month and currency.
     debt_ratio_series: DebtRatioSeries,
+    services_ratio: DebtRatioSummary,
+    /// Services paid over the salary that paid them, per month and currency.
+    services_ratio_series: DebtRatioSeries,
+    /// Services paid in the month.
+    services_paid_by_currency: BTreeMap<String, String>,
     savings_to_income: Option<f64>,
     /// Card statements due in the month: what was paid for the cards.
     card_paid_by_currency: BTreeMap<String, String>,
@@ -481,25 +486,24 @@ pub struct CurrencySeries {
     values: Vec<Option<f64>>,
 }
 
-fn debt_ratio_series(history: &[crate::finance::FinanceDebtRatioHistoryPoint]) -> DebtRatioSeries {
+type HistoryPoint = crate::finance::FinanceDebtRatioHistoryPoint;
+
+/// A monthly amount over the salary that paid it, per currency. A month
+/// without that amount or without salary has no value.
+fn ratio_series(history: &[HistoryPoint], amount: impl Fn(&HistoryPoint) -> &BTreeMap<String, String>) -> DebtRatioSeries {
     let mut points = history.iter().collect::<Vec<_>>();
     points.sort_by(|left, right| left.period.cmp(&right.period));
-    let currencies = points.iter().flat_map(|point| point.salary_by_currency.keys().cloned()).collect::<std::collections::BTreeSet<_>>();
+    let currencies = points.iter().flat_map(|point| amount(point).keys().cloned()).collect::<std::collections::BTreeSet<_>>();
     let series = currencies
         .into_iter()
         .map(|currency| {
             let values = points
                 .iter()
                 .map(|point| {
-                    notia_backend_core::finance_insights::debt_ratios(&point.debt_by_currency, &point.salary_by_currency)
+                    notia_backend_core::finance_insights::debt_ratios(amount(point), &point.salary_by_currency)
                         .into_iter()
                         .find(|ratio| ratio.currency == currency)
                         .map(|ratio| ratio.percentage)
-                        .or_else(|| {
-                            // A month with salary but no card paid is 0 %.
-                            let salary = notia_backend_core::finance_insights::cents(point.salary_by_currency.get(&currency)?)?;
-                            (salary > 0 && !point.debt_by_currency.contains_key(&currency)).then_some(0.0)
-                        })
                 })
                 .collect::<Vec<_>>();
             CurrencySeries { currency, values }
@@ -507,6 +511,28 @@ fn debt_ratio_series(history: &[crate::finance::FinanceDebtRatioHistoryPoint]) -
         .filter(|series| series.values.iter().any(Option::is_some))
         .collect();
     DebtRatioSeries { periods: points.iter().map(|point| point.period.clone()).collect(), series }
+}
+
+/// The ratio of the month shown, or of the latest month with data.
+fn ratio_summary(
+    month: &str,
+    current: &BTreeMap<String, String>,
+    salary: &BTreeMap<String, String>,
+    history: &[HistoryPoint],
+    amount: impl Fn(&HistoryPoint) -> &BTreeMap<String, String>,
+) -> DebtRatioSummary {
+    use notia_backend_core::finance_insights::debt_ratios;
+    let ratios = debt_ratios(current, salary);
+    if !ratios.is_empty() {
+        return DebtRatioSummary { ratios, period: month.to_string() };
+    }
+    let mut points = history.iter().filter(|point| point.period.as_str() <= month).collect::<Vec<_>>();
+    points.sort_by(|left, right| right.period.cmp(&left.period));
+    points
+        .into_iter()
+        .map(|point| DebtRatioSummary { ratios: debt_ratios(amount(point), &point.salary_by_currency), period: point.period.clone() })
+        .find(|summary| !summary.ratios.is_empty())
+        .unwrap_or(DebtRatioSummary { ratios: Vec::new(), period: month.to_string() })
 }
 
 fn matches_filters(transaction: &FinanceTransaction, filters: &TransactionFilters) -> bool {
@@ -633,19 +659,10 @@ pub fn finance_dashboard_insights(app: crate::host::AppHandle, payload: Dashboar
         }
     }
 
-    // Cards paid over salary: this month, or the latest month with data.
-    let current = insights::debt_ratios(&dashboard.debt_by_currency, &dashboard.salary_by_currency);
-    let debt_ratio = if current.is_empty() {
-        let mut history = dashboard.debt_ratio_history.iter().collect::<Vec<_>>();
-        history.sort_by(|left, right| right.period.cmp(&left.period));
-        history
-            .into_iter()
-            .map(|point| DebtRatioSummary { ratios: insights::debt_ratios(&point.debt_by_currency, &point.salary_by_currency), period: point.period.clone() })
-            .find(|summary| !summary.ratios.is_empty())
-            .unwrap_or(DebtRatioSummary { ratios: Vec::new(), period: payload.month.clone() })
-    } else {
-        DebtRatioSummary { ratios: current, period: payload.month.clone() }
-    };
+    // Cards and services paid over the salary that paid them: this month,
+    // or the latest month with data.
+    let debt_ratio = ratio_summary(&payload.month, &dashboard.debt_by_currency, &dashboard.salary_by_currency, &dashboard.debt_ratio_history, |point| &point.debt_by_currency);
+    let services_ratio = ratio_summary(&payload.month, &dashboard.services_by_currency, &dashboard.salary_by_currency, &dashboard.debt_ratio_history, |point| &point.services_by_currency);
 
     // Savings over the latest net salary.
     let salaries = crate::finance_records::finance_list_salaries(
@@ -716,7 +733,10 @@ pub fn finance_dashboard_insights(app: crate::host::AppHandle, payload: Dashboar
         savings_movements,
         savings_breakdown: breakdown.into_iter().map(|(kind, amount)| (kind, insights::format_cents(amount))).collect(),
         debt_ratio,
-        debt_ratio_series: debt_ratio_series(&dashboard.debt_ratio_history),
+        debt_ratio_series: ratio_series(&dashboard.debt_ratio_history, |point| &point.debt_by_currency),
+        services_ratio,
+        services_ratio_series: ratio_series(&dashboard.debt_ratio_history, |point| &point.services_by_currency),
+        services_paid_by_currency: dashboard.services_by_currency.clone(),
         savings_to_income,
         card_paid_by_currency: dashboard.debt_by_currency.clone(),
         card_unpaid_by_currency: formatted(&card_unpaid_by_currency),

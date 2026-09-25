@@ -7177,10 +7177,12 @@ Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteri
 
 - **`finance_get_dashboard`:**
   - `debtByCurrency` es lo pagado de tarjetas: el total de los resúmenes que vencen en el mes;
-  - `salaryByCurrency` es el sueldo cobrado en el mes, por `payment_date`;
-  - la serie deuda/sueldo pasó a «Tarjetas / sueldo».
+  - `servicesByCurrency` es lo pagado de servicios en el mes: ocurrencias con importe pagado, contadas en el mes de su gasto (una línea de tarjeta cuenta en el vencimiento de su resumen), o si no en su fecha de pago o su período;
+  - `salaryByCurrency` es el sueldo neto del **período anterior**: el sueldo se cobra a fin de mes (o a principio del siguiente) y con él se paga lo del mes. Comparar con el sueldo cobrado en el mismo mes calendario dejaba los ratios vacíos, porque los resúmenes vencen al mes siguiente del cobro;
+  - `debtRatioHistory` tiene un punto por cada mes del último año con un resumen que vence o un servicio pagado; un mes sin esos datos no tiene punto (no cuenta como 0 %).
 - **`finance_dashboard_insights`:**
   - agrega `cardPaidByCurrency`, `cardUnpaidByCurrency` y `cardUnpaidCount`;
+  - agrega `servicesRatio`, `servicesRatioSeries` y `servicesPaidByCurrency`, con el mismo cálculo que tarjetas/sueldo (`ratio_summary` y `ratio_series` en `finance_views.rs`);
   - agrega `savedThisMonth` (aportes, costo de las compras de moneda y retiros por moneda) y `reviewItems` pendientes (hasta 20);
   - las categorías se agrupan por categoría y moneda;
   - todas las cifras cuentan `confirmed` y `corrected`;
@@ -7225,6 +7227,10 @@ Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteri
   - movimientos con tipo, estado y fecha de compra en castellano;
   - ahorro con saldo, con los tipos en castellano.
 - **Registros:** productos (búsqueda y, al tocar uno, su historial de precios), tickets, últimos sueldos, resúmenes pagados, cuotas pendientes y gráficos.
+- **Gráficos:**
+  - «Pagado por tarjeta»: una serie por tarjeta y moneda, por mes de vencimiento;
+  - «Tarjetas respecto del sueldo» y «Servicios respecto del sueldo» (`SalaryRatioChart`, un solo componente con título y textos por props);
+  - todos marcan cada mes con un punto, así que un único mes con datos también se ve.
 - **Servicios:** estado del mes por servicio e historial de versiones.
 - **Se eliminaron** todos los formularios, las acciones por fila, «Relaciones y evidencia», «Auditoría del mes», patrimonio y `CreditCardStatementForm.tsx`.
 - **Estilos:** `.finance-list-button` para la lista táctil de productos, con los tokens del tema.

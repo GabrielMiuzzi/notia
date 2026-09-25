@@ -3387,6 +3387,7 @@
 .finance-card-chart__line--1 { stroke: var(--color-focus-ring); }
 .finance-card-chart__line--2 { stroke: var(--color-icon-new-note); }
 .finance-card-chart__line--3 { stroke: var(--color-tree-folder); }
+.finance-chart-point { fill: var(--color-card-bg); stroke-width: 3; }
 .finance-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; }.finance-pagination button { min-height: 44px; }
 @media (max-width: 760px) { .finance-header, .finance-section-heading { flex-direction: column; align-items: stretch; }.finance-actions { width: 100%; }.finance-actions button { flex: 1; min-height: 48px; }.finance-metrics, .finance-grid, .finance-quotes__grid, .finance-salary-charts, .finance-salary-inflation__cards { grid-template-columns: 1fr; }.finance-salary-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.finance-module { padding: 20px 14px; }.finance-modal-backdrop { align-items: end; padding: 0; }.finance-form { width: 100%; max-height: 92dvh; border-radius: 4px 4px 0 0; padding-bottom: max(24px, env(safe-area-inset-bottom)); } }
 

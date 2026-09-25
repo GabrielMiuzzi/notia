@@ -196,7 +196,11 @@ pub struct FinanceDashboard {
     pub income_by_currency: BTreeMap<String, String>,
     pub expense_by_currency: BTreeMap<String, String>,
     pub net_by_currency: BTreeMap<String, String>,
+    /// Card statements due in the month: what was paid for the cards.
     pub debt_by_currency: BTreeMap<String, String>,
+    /// Services paid in the month.
+    pub services_by_currency: BTreeMap<String, String>,
+    /// Net salary of the previous period, the one that pays the month.
     pub salary_by_currency: BTreeMap<String, String>,
     pub debt_ratio_history: Vec<FinanceDebtRatioHistoryPoint>,
     pub savings: Vec<FinanceSavingsReserve>,
@@ -296,6 +300,7 @@ pub struct FinanceServiceInvoice {
 pub struct FinanceDebtRatioHistoryPoint {
     pub period: String,
     pub debt_by_currency: BTreeMap<String, String>,
+    pub services_by_currency: BTreeMap<String, String>,
     pub salary_by_currency: BTreeMap<String, String>,
 }
 
@@ -1599,8 +1604,6 @@ pub fn finance_get_dashboard(
             .unwrap_or_default();
         net_by_currency.insert(currency.clone(), format_cents(income - expense));
     }
-    let debt_by_currency = finance_debt_by_currency(&connection, &month)?;
-    let salary_by_currency = finance_salary_by_currency(&connection, &month)?;
     Ok(FinanceDashboard {
         accounts,
         categories,
@@ -1630,14 +1633,9 @@ pub fn finance_get_dashboard(
             .map(|(currency, value)| (currency, format_cents(value)))
             .collect(),
         net_by_currency,
-        debt_by_currency: debt_by_currency
-            .into_iter()
-            .map(|(currency, value)| (currency, format_cents(value)))
-            .collect(),
-        salary_by_currency: salary_by_currency
-            .into_iter()
-            .map(|(currency, value)| (currency, format_cents(value)))
-            .collect(),
+        debt_by_currency: formatted_totals(finance_debt_by_currency(&connection, &month)?),
+        services_by_currency: formatted_totals(finance_services_paid_by_currency(&connection, &month)?),
+        salary_by_currency: formatted_totals(finance_salary_by_currency(&connection, &month)?),
         debt_ratio_history: finance_debt_ratio_history(&connection, &month)?,
         savings: finance_list_savings_inner(&connection)?,
         savings_movements: finance_list_savings_movements_inner(&connection, &month)?,
@@ -1706,16 +1704,21 @@ pub fn finance_list_categories(
     finance_list_categories_inner(&connection).map_err(Into::into)
 }
 
-/// Net salary received in a month, by the day it was paid.
+//// Net salary that pays a month's expenses: the one of the previous
+/// period. A salary is collected at the end of its month (or the start of
+/// the next) and what is paid during month M comes out of it.
 fn finance_salary_by_currency(
     connection: &Connection,
-    period: &str,
+    month: &str,
 ) -> Result<BTreeMap<String, i128>, String> {
+    let Some(previous) = crate::finance_reconciliation::previous_period(month) else {
+        return Ok(BTreeMap::new());
+    };
     let mut statement = connection
-        .prepare("SELECT currency,net_amount FROM finance_salary_receipts WHERE substr(payment_date,1,7)=?1")
+        .prepare("SELECT currency,net_amount FROM finance_salary_receipts WHERE period=?1")
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map([period], |row| {
+        .query_map([previous], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| error.to_string())?;
@@ -1749,13 +1752,61 @@ fn finance_debt_by_currency(
     Ok(totals)
 }
 
+/// Month a service payment was made: its expense's month (a card line
+/// counts in its statement's due month), else the payment date, else the
+/// service month.
+const SERVICE_PAYMENT_MONTH: &str =
+    "substr(COALESCE(t.effective_date,o.effective_date,o.period || '-01'),1,7)";
+
+/// What was paid for services in a month, by the month of each payment.
+fn finance_services_paid_by_currency(
+    connection: &Connection,
+    month: &str,
+) -> Result<BTreeMap<String, i128>, String> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT s.currency,o.paid_amount FROM finance_service_occurrences o
+             JOIN finance_services s ON s.id=o.service_id
+             LEFT JOIN finance_transactions t ON t.id=o.transaction_id AND t.deleted_at IS NULL
+             WHERE o.paid_amount IS NOT NULL AND {SERVICE_PAYMENT_MONTH}=?1"
+        ))
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([month], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|error| error.to_string())?;
+    let mut totals = BTreeMap::new();
+    for row in rows {
+        let (currency, amount) = row.map_err(|error| error.to_string())?;
+        add_currency_total(&mut totals, &currency, &amount);
+    }
+    Ok(totals)
+}
+
+fn formatted_totals(totals: BTreeMap<String, i128>) -> BTreeMap<String, String> {
+    totals
+        .into_iter()
+        .map(|(currency, value)| (currency, format_cents(value)))
+        .collect()
+}
+
+/// Cards and services paid per month against the salary that paid them,
+/// for the months of the last year with a statement due or a service paid.
+/// Months without either have no point: nothing was loaded for them.
 fn finance_debt_ratio_history(
     connection: &Connection,
     end_period: &str,
 ) -> Result<Vec<FinanceDebtRatioHistoryPoint>, String> {
     let start_period = finance_history_start_period(end_period)?;
     let mut statement = connection
-        .prepare("SELECT substr(payment_date,1,7) FROM finance_salary_receipts WHERE substr(payment_date,1,7) BETWEEN ?1 AND ?2 UNION SELECT substr(due_date,1,7) FROM finance_credit_card_statements WHERE substr(due_date,1,7) BETWEEN ?1 AND ?2 ORDER BY 1")
+        .prepare(&format!(
+            "SELECT substr(due_date,1,7) FROM finance_credit_card_statements
+             WHERE substr(due_date,1,7) BETWEEN ?1 AND ?2
+             UNION
+             SELECT {SERVICE_PAYMENT_MONTH} FROM finance_service_occurrences o
+             LEFT JOIN finance_transactions t ON t.id=o.transaction_id AND t.deleted_at IS NULL
+             WHERE o.paid_amount IS NOT NULL AND {SERVICE_PAYMENT_MONTH} BETWEEN ?1 AND ?2
+             ORDER BY 1"
+        ))
         .map_err(|error| error.to_string())?;
     let periods = statement
         .query_map(params![start_period, end_period], |row| {
@@ -1768,18 +1819,11 @@ fn finance_debt_ratio_history(
     periods
         .into_iter()
         .map(|period| {
-            let debt_by_currency = finance_debt_by_currency(connection, &period)?
-                .into_iter()
-                .map(|(currency, value)| (currency, format_cents(value)))
-                .collect();
-            let salary_by_currency = finance_salary_by_currency(connection, &period)?
-                .into_iter()
-                .map(|(currency, value)| (currency, format_cents(value)))
-                .collect();
             Ok(FinanceDebtRatioHistoryPoint {
+                debt_by_currency: formatted_totals(finance_debt_by_currency(connection, &period)?),
+                services_by_currency: formatted_totals(finance_services_paid_by_currency(connection, &period)?),
+                salary_by_currency: formatted_totals(finance_salary_by_currency(connection, &period)?),
                 period,
-                debt_by_currency,
-                salary_by_currency,
             })
         })
         .collect()
@@ -2931,6 +2975,38 @@ mod tests {
             super::finance_history_start_period("2026-01"),
             Ok("2025-02".into())
         );
+    }
+
+    #[test]
+    fn cards_and_services_are_compared_with_the_salary_that_paid_them() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        crate::database::migrate(&connection).expect("finance migrations");
+        connection
+            .execute_batch(
+                "INSERT INTO finance_accounts(id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES
+                    ('bank','Banco','bank','ARS','0',1,'now','now'),
+                    ('card','Visa','credit_card','ARS','0',1,'now','now');
+                 INSERT INTO finance_salary_receipts(id,period,payment_date,employer,gross_amount,deductions_total,net_amount,currency,account_id,validation_status,created_at,updated_at)
+                    VALUES('august','2026-08','2026-08-31','Empresa','1200.00','200.00','1000.00','ARS','bank','confirmed','now','now');
+                 INSERT INTO finance_source_artifacts(id,source_type,reference,created_at) VALUES('artifact','credit_card_statement','resumen.pdf','now');
+                 INSERT INTO finance_credit_card_statements(id,account_id,issuer,period,closing_date,due_date,currency,total_due,source_artifact_id,validation_status,created_at,updated_at)
+                    VALUES('statement','card','Banco','2026-08','2026-08-27','2026-09-04','ARS','250.00','artifact','confirmed','now','now');
+                 INSERT INTO finance_services(id,name,normalized_name,category_id,currency,expected_amount,modality,active,created_at,updated_at)
+                    VALUES('internet','Internet','internet','default-expense-services','ARS','100.00','fixed',1,'now','now');
+                 INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,paid_amount,effective_date,status,source,created_at,updated_at)
+                    VALUES('occurrence','internet','2026-09','100.00','100.00','2026-09-10','accepted','app','now','now');",
+            )
+            .expect("fixture");
+
+        let history = super::finance_debt_ratio_history(&connection, "2026-09").expect("history");
+
+        // August has salary but nothing paid with it: no point.
+        assert_eq!(history.len(), 1);
+        let september = &history[0];
+        assert_eq!(september.period, "2026-09");
+        assert_eq!(september.debt_by_currency.get("ARS").map(String::as_str), Some("250.00"));
+        assert_eq!(september.services_by_currency.get("ARS").map(String::as_str), Some("100.00"));
+        assert_eq!(september.salary_by_currency.get("ARS").map(String::as_str), Some("1000.00"));
     }
 
     #[test]

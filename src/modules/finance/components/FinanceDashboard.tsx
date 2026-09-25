@@ -82,7 +82,7 @@ function formatRates(values: Record<string, string | null>) {
   return entries.length === 0 ? "—" : entries.map(([currency, value]) => `${currency} ${value}%`).join(" · ");
 }
 
-/** Cards paid over salary per currency, as the backend computed it. */
+/** An amount over the salary that paid it, per currency, as the backend computed it. */
 function formatRatios(ratios: FinanceDashboardInsights["debtRatio"]["ratios"]) {
   if (ratios.length === 0) return "—";
   const percent = (value: number) => `${value.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%`;
@@ -244,8 +244,17 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               <strong>{formatRatios(insights?.debtRatio.ratios ?? [])}</strong>
               <small className="finance-muted">
                 {(insights?.debtRatio.period ?? month) === month
-                  ? "Lo pagado de tarjetas sobre el sueldo cobrado en el mes."
+                  ? "Lo pagado de tarjetas sobre el sueldo del mes anterior, con el que se paga."
                   : `Último mes con datos: ${insights?.debtRatio.period}.`}
+              </small>
+            </article>
+            <article>
+              <span>Servicios / sueldo</span>
+              <strong>{formatRatios(insights?.servicesRatio.ratios ?? [])}</strong>
+              <small className="finance-muted">
+                {(insights?.servicesRatio.period ?? month) === month
+                  ? `Servicios pagados (${formatTotals(insights?.servicesPaidByCurrency)}) sobre el sueldo del mes anterior.`
+                  : `Último mes con datos: ${insights?.servicesRatio.period}.`}
               </small>
             </article>
             <article>
@@ -344,7 +353,7 @@ export function FinanceDashboard({ library }: FinanceDashboardProps) {
               </>
             )}
           </section>
-          <FinanceRecordsPanel library={library} accounts={data.accounts} debtRatioSeries={insights?.debtRatioSeries ?? { periods: [], series: [] }} historyFrom={historyStartPeriod(month)} historyTo={month} />
+          <FinanceRecordsPanel library={library} accounts={data.accounts} debtRatioSeries={insights?.debtRatioSeries ?? { periods: [], series: [] }} servicesRatioSeries={insights?.servicesRatioSeries ?? { periods: [], series: [] }} historyFrom={historyStartPeriod(month)} historyTo={month} />
         </div>
       )}
     </section>
