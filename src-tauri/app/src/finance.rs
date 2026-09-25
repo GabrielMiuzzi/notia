@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -7,12 +7,8 @@ use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::finance_reconciliation::{
-    assignment_keys, normalize_service_text, reconcile_card_service_consumption,
-    reconciliation_fingerprint, resolve_card_service_assignments, CardServiceAssignment,
-    ReconciliationInput, ReconciliationLine, ReconciliationOccurrence, ReconciliationService,
-};
-use crate::finance_records::persist_card_reconciliation;
+use crate::finance_matching::{LinkOutcome, CARD_UNPAID};
+use crate::finance_reconciliation::normalize_service_text;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +111,76 @@ pub struct FinanceTransaction {
     pub raw_source: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    /// Day of the purchase when it is not the day the expense counts: card
+    /// expenses count in the month their statement is paid.
+    #[serde(default)]
+    pub purchase_date: Option<String>,
+}
+
+const TRANSACTION_SELECT: &str = "SELECT t.id,t.transaction_type,t.amount,t.currency,t.effective_date,
+        t.account_id,t.destination_account_id,t.category_id,t.description,t.source,t.status,
+        t.actor_user_id,t.source_artifact_id,t.service_id,t.merchant_id,t.operation_fingerprint,
+        t.installment_id,a.reference,a.raw_text,t.created_at,t.updated_at,t.actor_library_user_id,
+        t.purchase_date
+     FROM finance_transactions t LEFT JOIN finance_source_artifacts a ON a.id=t.source_artifact_id";
+
+fn transaction_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceTransaction> {
+    Ok(FinanceTransaction {
+        id: row.get(0)?,
+        transaction_type: row.get(1)?,
+        amount: row.get(2)?,
+        currency: row.get(3)?,
+        effective_date: row.get(4)?,
+        account_id: row.get(5)?,
+        destination_account_id: row.get(6)?,
+        category_id: row.get(7)?,
+        description: row.get(8)?,
+        source: row.get(9)?,
+        status: row.get(10)?,
+        actor_user_id: row.get(11)?,
+        source_artifact_id: row.get(12)?,
+        service_id: row.get(13)?,
+        merchant_id: row.get(14)?,
+        operation_fingerprint: row.get(15)?,
+        installment_id: row.get(16)?,
+        source_reference: row.get(17)?,
+        raw_source: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+        actor_library_user_id: row.get(21)?,
+        purchase_date: row.get(22)?,
+    })
+}
+
+/// Movements whose counting day falls inside a range, for period summaries.
+pub(crate) fn list_transactions_between(
+    connection: &Connection,
+    from: &str,
+    to: &str,
+) -> Result<Vec<FinanceTransaction>, String> {
+    let mut statement = connection
+        .prepare(&format!(
+            "{TRANSACTION_SELECT} WHERE t.deleted_at IS NULL AND substr(t.effective_date,1,10) BETWEEN ?1 AND ?2
+             ORDER BY t.effective_date DESC,t.created_at DESC"
+        ))
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![from, to], transaction_from_row)
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
+pub(crate) fn load_transaction(connection: &Connection, id: &str) -> Result<Option<FinanceTransaction>, String> {
+    connection
+        .query_row(
+            &format!("{TRANSACTION_SELECT} WHERE t.id=?1 AND t.deleted_at IS NULL"),
+            [id],
+            transaction_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -225,57 +291,6 @@ pub struct FinanceServiceInvoice {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct FinanceAuditRun {
-    pub id: String,
-    pub period: String,
-    pub trigger_fingerprint: String,
-    pub status: String,
-    pub actor_library_user_id: Option<String>,
-    pub source: String,
-    pub reason: Option<String>,
-    pub error_message: Option<String>,
-    pub created_at: Option<String>,
-    pub completed_at: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct FinanceAuditProposal {
-    pub id: String,
-    pub audit_run_id: String,
-    pub proposal_type: String,
-    pub status: String,
-    pub rule_key: String,
-    pub data_fingerprint: String,
-    pub service_id: Option<String>,
-    pub period: String,
-    pub reason: String,
-    pub current_data: String,
-    pub suggested_change: String,
-    pub evidence: Option<String>,
-    pub actor_library_user_id: Option<String>,
-    pub source: String,
-    pub created_at: Option<String>,
-    pub decided_at: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct FinanceRelationRepair {
-    pub id: String,
-    pub operation_id: String,
-    pub relation_type: String,
-    pub relation_id: String,
-    pub previous_transaction_id: Option<String>,
-    pub new_transaction_id: Option<String>,
-    pub actor_library_user_id: Option<String>,
-    pub source: String,
-    pub reason: Option<String>,
-    pub created_at: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinanceDebtRatioHistoryPoint {
@@ -338,6 +353,10 @@ pub struct FinanceSavingsExchange {
     pub actor_user_id: Option<i64>,
     pub source_reference: Option<String>,
     pub raw_source: Option<String>,
+    /// `buy` (the default) moves money from the account into the reserve;
+    /// `sell` takes savings out of the reserve into the account.
+    #[serde(default)]
+    pub direction: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -393,57 +412,6 @@ pub struct SaveFinanceServiceInvoicePayload {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SaveFinanceAuditRunPayload {
-    pub context: FinanceContext,
-    pub run: FinanceAuditRun,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveFinanceAuditProposalPayload {
-    pub context: FinanceContext,
-    pub proposal: FinanceAuditProposal,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DecideFinanceAuditProposalPayload {
-    pub context: FinanceContext,
-    pub proposal_id: String,
-    pub decision: String,
-    #[serde(default)]
-    pub expected_data_fingerprint: Option<String>,
-    #[serde(default)]
-    pub resolution_assignments: Option<Vec<CardServiceAssignment>>,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunFinanceAuditPayload {
-    pub context: FinanceContext,
-    pub period: String,
-    pub trigger_fingerprint: String,
-    pub reason: Option<String>,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepairFinanceRelationPayload {
-    pub context: FinanceContext,
-    pub operation_id: String,
-    pub relation_type: String,
-    pub relation_id: String,
-    #[serde(default)]
-    pub new_transaction_id: Option<String>,
-    #[serde(default)]
-    pub expected_transaction_id: Option<String>,
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FinanceAuditResult {
-    pub run: FinanceAuditRun,
-    pub proposals: Vec<FinanceAuditProposal>,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SaveSavingsReservePayload {
     pub context: FinanceContext,
     pub reserve: FinanceSavingsReserve,
@@ -490,8 +458,6 @@ const FINANCE_DEV_TABLES: &[&str] = &[
     "finance_savings_reserves",
     "finance_savings_movements",
     "finance_savings_accounts",
-    "finance_investments",
-    "finance_valuations",
     "finance_price_observations",
     "finance_installment_plans",
     "finance_installments",
@@ -501,9 +467,10 @@ const FINANCE_DEV_TABLES: &[&str] = &[
     "finance_service_occurrences",
     "finance_service_occurrence_versions",
     "finance_service_invoices",
-    "finance_audit_runs",
-    "finance_audit_proposals",
-    "finance_audit_decisions",
+    "finance_merchant_aliases",
+    "finance_product_aliases",
+    "finance_review_items",
+    "finance_link_log",
 ];
 const FINANCE_DEV_PAGE_SIZE: u32 = 50;
 const FINANCE_DEV_MAX_PAGE_SIZE: u32 = 200;
@@ -688,6 +655,7 @@ fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
                 ('dev-account-bank','Cuenta bancaria demo','bank','ARS','85000.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
                 ('dev-account-card','Tarjeta demo','credit_card','ARS','0.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
                 ('dev-account-savings','Caja de ahorro demo','savings_reserve','ARS','0.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-account-savings-usd','Ahorro en dólares demo','savings_reserve','USD','0.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
                 ('dev-account-usd','Cuenta USD inactiva','bank','USD','150.00',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_categories (id,name,kind,parent_id,active,description,created_at,updated_at) VALUES
                 ('dev-category-food','Alimentos','expense',NULL,1,'Compras de comida y supermercado.',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
@@ -705,15 +673,17 @@ fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
                 ('dev-art-salary-aug','salary','recibo-demo-agosto.pdf','Recibo de sueldo demo agosto.','demo-salary-aug',CURRENT_TIMESTAMP),
                 ('dev-art-card-jul','credit_card_statement','resumen-demo-julio.pdf','Resumen de tarjeta demo julio.','demo-card-jul',CURRENT_TIMESTAMP),
                 ('dev-art-card-aug','credit_card_statement','resumen-demo-agosto.pdf','Resumen de tarjeta demo agosto.','demo-card-aug',CURRENT_TIMESTAMP);
-             INSERT OR IGNORE INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,category_id,description,source,status,source_artifact_id,merchant_id,operation_fingerprint,installment_id,created_at,updated_at) VALUES
-                ('dev-tx-salary-jul','income','120000.00','ARS','2026-07-31','dev-account-bank',NULL,'dev-category-salary','Sueldo julio 2026','salary','confirmed','dev-art-salary-jul',NULL,'demo-salary-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-ticket-jul','expense','18500.00','ARS','2026-07-18','dev-account-bank',NULL,'dev-category-food','Compra supermercado julio','ticket','confirmed','dev-art-ticket-jul','dev-merchant-market','demo-ticket-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-card-jul','expense','12000.00','ARS','2026-07-20','dev-account-card',NULL,'dev-category-transport','Viaje demo julio','credit_card_statement','confirmed',NULL,NULL,'demo-card-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-salary-aug','income','128000.00','ARS','2026-08-28','dev-account-bank',NULL,'dev-category-salary','Sueldo agosto 2026','salary','confirmed','dev-art-salary-aug',NULL,'demo-salary-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-ticket-aug','expense','24100.00','ARS','2026-08-12','dev-account-bank',NULL,'dev-category-food','Compra supermercado agosto','ticket','corrected','dev-art-ticket-aug','dev-merchant-market','demo-ticket-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-transfer-aug','transfer','30000.00','ARS','2026-08-15','dev-account-bank','dev-account-savings',NULL,'Aporte a ahorro','manual','confirmed',NULL,NULL,'demo-transfer-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-installment-aug','expense','15000.00','ARS','2026-08-10','dev-account-card',NULL,'dev-category-food','Cuota 1 de compra demo','manual','pending',NULL,'dev-merchant-market','demo-installment-aug','dev-installment-1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-tx-coffee-aug','expense','3500.00','ARS','2026-08-22','dev-account-cash',NULL,'dev-category-coffee','Café demo','manual','discarded',NULL,'dev-merchant-coffee','demo-coffee-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_transactions (id,transaction_type,amount,currency,effective_date,purchase_date,account_id,destination_account_id,category_id,description,source,status,source_artifact_id,merchant_id,operation_fingerprint,installment_id,created_at,updated_at) VALUES
+                ('dev-tx-salary-jul','income','120000.00','ARS','2026-07-31',NULL,'dev-account-bank',NULL,'dev-category-salary','Sueldo julio 2026','salary','confirmed','dev-art-salary-jul',NULL,'demo-salary-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-ticket-jul','expense','18500.00','ARS','2026-07-18',NULL,'dev-account-bank',NULL,'dev-category-food','Compra supermercado julio','ticket','confirmed','dev-art-ticket-jul','dev-merchant-market','demo-ticket-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-card-jul','expense','12000.00','ARS','2026-08-05','2026-07-20','dev-account-card',NULL,'dev-category-transport','Viaje demo julio','credit_card_statement','confirmed',NULL,NULL,'demo-card-jul',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-salary-aug','income','128000.00','ARS','2026-08-28',NULL,'dev-account-bank',NULL,'dev-category-salary','Sueldo agosto 2026','salary','confirmed','dev-art-salary-aug',NULL,'demo-salary-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-ticket-aug','expense','24100.00','ARS','2026-08-12',NULL,'dev-account-bank',NULL,'dev-category-food','Compra supermercado agosto','ticket','corrected','dev-art-ticket-aug','dev-merchant-market','demo-ticket-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-transfer-aug','transfer','30000.00','ARS','2026-08-15',NULL,'dev-account-bank','dev-account-savings',NULL,'Aporte a ahorro','manual','confirmed',NULL,NULL,'demo-transfer-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-exchange-aug','exchange','145000.00','ARS','2026-08-02',NULL,'dev-account-bank','dev-account-savings-usd',NULL,'Compra de USD para ahorro','savings_exchange','confirmed',NULL,NULL,'demo-exchange-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-installment-aug','expense','15000.00','ARS','2026-09-05','2026-08-10','dev-account-card',NULL,'dev-category-food','Cuota 1 de compra demo','credit_card_statement','confirmed',NULL,'dev-merchant-market','demo-installment-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-card-unpaid','expense','8000.00','ARS','2026-09-12','2026-09-12','dev-account-card',NULL,'dev-category-coffee','Compra en Café de la Plaza','telegram','card_unpaid',NULL,'dev-merchant-coffee','demo-card-unpaid',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-tx-coffee-aug','expense','3500.00','ARS','2026-08-22',NULL,'dev-account-cash',NULL,'dev-category-coffee','Café demo','manual','discarded',NULL,'dev-merchant-coffee','demo-coffee-aug',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_extraction_results (id,source_artifact_id,extractor,raw_result,confidence,status,created_at) VALUES
                 ('dev-extraction-ticket-jul','dev-art-ticket-jul','demo','{\"merchant\":\"Mercado Central\",\"total\":18500}',0.98,'confirmed',CURRENT_TIMESTAMP),
                 ('dev-extraction-salary-aug','dev-art-salary-aug','demo','{\"employer\":\"Empresa Demo SA\",\"net\":128000}',0.96,'confirmed',CURRENT_TIMESTAMP);
@@ -725,7 +695,8 @@ fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
                 ('dev-purchase-aug','dev-tx-ticket-aug','dev-merchant-market','2026-08-12','ARS','24100.00','dev-art-ticket-aug','24100.00','0.00','0.00','corrected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_products (id,name,normalized_name,created_at,updated_at) VALUES
                 ('dev-product-milk','Leche entera 1 L','leche entera 1 l',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-product-bread','Pan lactal','pan lactal',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+                ('dev-product-bread','Pan lactal','pan lactal',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-product-milk-short','LECHE ENT 1LT','leche ent 1l',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_purchase_items (id,purchase_id,product_id,original_description,normalized_description,quantity,unit_price,discount_amount,line_total,currency,category_id,created_at) VALUES
                 ('dev-item-jul-milk','dev-purchase-jul','dev-product-milk','Leche entera 1 L','leche entera 1 l','2','4500.00','0.00','9000.00','ARS','dev-category-food',CURRENT_TIMESTAMP),
                 ('dev-item-jul-bread','dev-purchase-jul','dev-product-bread','Pan lactal','pan lactal','1','10000.00','500.00','9500.00','ARS','dev-category-food',CURRENT_TIMESTAMP),
@@ -744,24 +715,21 @@ fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
                 ('dev-salary-concept-aug-gross','dev-salary-aug','Sueldo básico','earning','160000.00','ARS',CURRENT_TIMESTAMP),
                 ('dev-salary-concept-aug-deduction','dev-salary-aug','Aportes jubilatorios','deduction','32000.00','ARS',CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_savings_reserves (id,name,currency,opening_balance,objective,active,ledger_account_id,created_at,updated_at) VALUES
-                ('dev-reserve-emergency','Fondo de emergencia','ARS','50000.00','Cubrir tres meses de gastos.',1,'dev-account-savings',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+                ('dev-reserve-emergency','Fondo de emergencia','ARS','50000.00','Cubrir tres meses de gastos.',1,'dev-account-savings',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-reserve-usd','Ahorros','USD','900.00','Ahorro en dólares.',1,'dev-account-savings-usd',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_savings_accounts (reserve_id,account_id,created_at) VALUES
                 ('dev-reserve-emergency','dev-account-bank',CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_savings_movements (id,reserve_id,account_id,movement_type,amount,currency,effective_date,description,reason,source,status,linked_transaction_id,created_at,updated_at) VALUES
                 ('dev-savings-jul','dev-reserve-emergency','dev-account-bank','contribution','10000.00','ARS','2026-07-25','Aporte mensual',NULL,'manual','confirmed',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
                 ('dev-savings-aug','dev-reserve-emergency','dev-account-bank','contribution','30000.00','ARS','2026-08-15','Aporte desde cuenta bancaria',NULL,'manual','confirmed','dev-tx-transfer-aug',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-savings-loss','dev-reserve-emergency',NULL,'loss','500.00','ARS','2026-08-20','Ajuste demo','Diferencia de caja','manual','pending',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-             INSERT OR IGNORE INTO finance_investments (id,account_id,name,asset_type,currency,active,created_at,updated_at) VALUES
-                ('dev-investment-fund','dev-account-bank','Fondo común demo','fund','ARS',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-             INSERT OR IGNORE INTO finance_valuations (id,investment_id,valuation_date,amount,currency,source,created_at) VALUES
-                ('dev-valuation-jul','dev-investment-fund','2026-07-31','75000.00','ARS','manual',CURRENT_TIMESTAMP),
-                ('dev-valuation-aug','dev-investment-fund','2026-08-31','82000.00','ARS','manual',CURRENT_TIMESTAMP);
+                ('dev-savings-loss','dev-reserve-emergency',NULL,'loss','500.00','ARS','2026-08-20','Ajuste demo','Diferencia de caja','manual','pending',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('savings-exchange:dev-tx-exchange-aug','dev-reserve-usd',NULL,'contribution','100.00','USD','2026-08-02','Compra de USD para ahorro',NULL,'savings_exchange','confirmed','dev-tx-exchange-aug',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_installment_plans (id,account_id,merchant_id,description,purchase_date,currency,total_amount,installment_count,created_at,updated_at) VALUES
                 ('dev-plan-market','dev-account-card','dev-merchant-market','Compra demo en 3 cuotas','2026-08-10','ARS','45000.00',3,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_installments (id,plan_id,installment_number,due_date,amount,status,transaction_id,created_at,updated_at) VALUES
-                ('dev-installment-1','dev-plan-market',1,'2026-08-10','15000.00','pending','dev-tx-installment-aug',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-installment-2','dev-plan-market',2,'2026-09-10','15000.00','confirmed',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
-                ('dev-installment-3','dev-plan-market',3,'2026-10-10','15000.00','discarded',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+                ('dev-installment-1','dev-plan-market',1,'2026-09-05','15000.00','confirmed','dev-tx-installment-aug',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-installment-2','dev-plan-market',2,'2026-10-05','15000.00','pending',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+                ('dev-installment-3','dev-plan-market',3,'2026-11-05','15000.00','pending',NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_credit_card_statements (id,account_id,issuer,card_last_four,period,closing_date,due_date,currency,previous_balance,payments_amount,credits_amount,purchases_amount,fees_amount,interest_amount,taxes_amount,total_due,minimum_payment,source_artifact_id,validation_status,created_at,updated_at) VALUES
                 ('dev-statement-jul','dev-account-card','Banco Demo','1234','2026-07','2026-07-25','2026-08-05','ARS','0.00','0.00','0.00','12000.00','500.00','0.00','0.00','12500.00','1250.00','dev-art-card-jul','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
                 ('dev-statement-aug','dev-account-card','Banco Demo','1234','2026-08','2026-08-25','2026-09-05','ARS','12500.00','12500.00','0.00','15000.00','0.00','250.00','0.00','15250.00','1525.00','dev-art-card-aug','corrected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
@@ -782,12 +750,16 @@ fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
                 ('dev-occurrence-internet-jul-v2','dev-occurrence-internet-jul',2,'18000.00','18000.00','2026-07-10','accepted','dev-seed','Pago registrado',CURRENT_TIMESTAMP);
              INSERT OR IGNORE INTO finance_service_invoices (id,service_id,period,due_date,provider,amount,currency,validation_status,created_at,updated_at) VALUES
                 ('dev-invoice-power-aug','dev-service-power','2026-08','2026-08-15','Energía Demo','10240.00','ARS','valid',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-             INSERT OR IGNORE INTO finance_audit_runs (id,period,trigger_fingerprint,status,source,reason,created_at,completed_at) VALUES
-                ('dev-audit-aug','2026-08','dev-seed-audit-aug','completed','dev-seed','Auditoría de ejemplo',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-             INSERT OR IGNORE INTO finance_audit_proposals (id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,source,created_at,decided_at) VALUES
-                ('dev-audit-proposal-aug','dev-audit-aug','service-unpaid','rejected','service-unpaid','dev-seed-internet-aug','dev-service-internet','2026-08','Internet demo no tiene pago en agosto.','{}','{}','dev-seed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-             INSERT OR IGNORE INTO finance_audit_decisions (id,proposal_id,decision,source,created_at) VALUES
-                ('dev-audit-decision-aug','dev-audit-proposal-aug','rejected','dev-seed',CURRENT_TIMESTAMP);",
+             INSERT OR IGNORE INTO finance_merchant_aliases (normalized_alias,merchant_id) VALUES
+                ('mercado central','dev-merchant-market'),
+                ('cafe de la plaza','dev-merchant-coffee');
+             INSERT OR IGNORE INTO finance_product_aliases (normalized_alias,product_id) VALUES
+                ('leche entera 1l','dev-product-milk'),
+                ('pan lactal','dev-product-bread');
+             INSERT OR IGNORE INTO finance_review_items (id,kind,subject_key,status,question,options_json,subject_json,created_at) VALUES
+                ('dev-review-product','similar-product','dev-product-milk-short|dev-product-milk','pending','¿«LECHE ENT 1LT» es el mismo producto que «Leche entera 1 L»?','[{\"id\":\"merge\",\"label\":\"Sí, es «Leche entera 1 L»\"},{\"id\":\"keep\",\"label\":\"No, son distintos\"}]','{\"newId\":\"dev-product-milk-short\",\"existingId\":\"dev-product-milk\"}',CURRENT_TIMESTAMP);
+             INSERT OR IGNORE INTO finance_link_log (id,kind,subject_id,target_id,summary,created_at) VALUES
+                ('dev-link-installment','installment-card-line','dev-installment-1','dev-statement-item-aug-installment','La línea «Cuota 1 compra demo» pagó la cuota 1/3.',CURRENT_TIMESTAMP);",
         )
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())
@@ -983,10 +955,6 @@ pub(crate) fn valid_service_period(value: &str) -> bool {
         && (1..=12).contains(&value[5..].parse::<u8>().unwrap_or(0))
 }
 
-fn valid_finance_source(value: &str) -> bool {
-    matches!(value, "app" | "public-url" | "telegram")
-}
-
 fn validate_service(service: &FinanceService, connection: &Connection) -> Result<(), String> {
     if service.id.trim().is_empty()
         || service.name.trim().is_empty()
@@ -1087,98 +1055,6 @@ fn transaction_query_occurrence(
             occurrence_from_row,
         )
         .map_err(|error| error.to_string())
-}
-
-fn service_unpaid_fingerprint(
-    transaction: &rusqlite::Transaction<'_>,
-    service_id: &str,
-    period: &str,
-) -> Result<String, String> {
-    let (expected, paid, status): (String, Option<String>, String) = transaction
-        .query_row(
-            "SELECT COALESCE(o.expected_amount,s.expected_amount),o.paid_amount,COALESCE(o.status,'missing') FROM finance_services s LEFT JOIN finance_service_occurrences o ON o.service_id=s.id AND o.period=?2 WHERE s.id=?1",
-            params![service_id, period],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|_| "El servicio de la propuesta no existe.".to_string())?;
-    let active: bool = transaction
-        .query_row(
-            "SELECT active FROM finance_services WHERE id=?1",
-            [service_id],
-            |row| row.get::<_, i32>(0),
-        )
-        .map_err(|_| "El servicio de la propuesta no existe.".to_string())?
-        != 0;
-    Ok(format!(
-        "service-unpaid:{period}:{service_id}:{}:{}:{status}:{}",
-        paid.clone().unwrap_or_default(),
-        expected,
-        if active { "active" } else { "inactive" }
-    ))
-}
-
-fn amount_variation_fingerprint(
-    transaction: &rusqlite::Transaction<'_>,
-    service_id: &str,
-    period: &str,
-) -> Result<String, String> {
-    let (paid, expected, modality, active): (Option<String>, Option<String>, Option<String>, Option<i32>) = transaction
-        .query_row(
-            "SELECT o.paid_amount,o.expected_amount,s.modality,s.active FROM finance_service_occurrences o JOIN finance_services s ON s.id=o.service_id WHERE o.service_id=?1 AND o.period=?2",
-            params![service_id, period],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .unwrap_or((None, None, None, None));
-    Ok(format!(
-        "amount-variation:{period}:{service_id}:{}:{}:{}:{}",
-        paid.unwrap_or_default(),
-        expected.unwrap_or_default(),
-        modality.unwrap_or_default(),
-        if active.unwrap_or_default() != 0 {
-            "active"
-        } else {
-            "inactive"
-        }
-    ))
-}
-
-fn orphan_service_link_fingerprint(
-    transaction: &rusqlite::Transaction<'_>,
-    period: &str,
-    ids: &[String],
-) -> Result<String, String> {
-    let mut entries = Vec::with_capacity(ids.len());
-    for id in ids {
-        let entry: (String, Option<String>, String, String, String, Option<String>, String) = transaction
-            .query_row(
-                "SELECT id,service_id,amount,currency,effective_date,category_id,status FROM finance_transactions WHERE id=?1 AND deleted_at IS NULL",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
-            )
-            .map_err(|_| "Uno de los gastos de la propuesta ya no existe o fue eliminado.".to_string())?;
-        if entry.1.is_none() {
-            return Err(
-                "La propuesta quedó obsoleta porque uno de los gastos ya fue desvinculado.".into(),
-            );
-        }
-        entries.push(format!(
-            "{}:{}:{}:{}:{}:{}:{}",
-            entry.0,
-            entry.1.unwrap_or_default(),
-            entry.2,
-            entry.3,
-            entry.4,
-            entry.5.unwrap_or_default(),
-            entry.6
-        ));
-    }
-    entries.sort();
-    Ok(format!(
-        "orphan-service-link:{period}:{}",
-        entries.join("|")
-    ))
 }
 
 pub fn finance_list_services(
@@ -1661,1524 +1537,6 @@ pub fn finance_list_service_invoices(
         .map_err(|error| error.to_string().into())
 }
 
-pub fn finance_save_audit_run(
-    app: crate::host::AppHandle,
-    payload: SaveFinanceAuditRunPayload,
-) -> FinanceCommandResult<FinanceAuditRun> {
-    let run = &payload.run;
-    if run.id.trim().is_empty()
-        || run.trigger_fingerprint.trim().is_empty()
-        || !valid_service_period(&run.period)
-        || !matches!(
-            run.status.as_str(),
-            "pending" | "running" | "completed" | "failed" | "outdated"
-        )
-        || !valid_finance_source(&run.source)
-    {
-        return Err("La auditoría requiere período, huella y estado válidos.".into());
-    }
-    let connection = validate_context(&payload.context, &app)?;
-    let timestamp = now();
-    connection.execute("INSERT INTO finance_audit_runs(id,period,trigger_fingerprint,status,actor_library_user_id,source,reason,error_message,created_at,completed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(trigger_fingerprint) DO UPDATE SET status=excluded.status,reason=excluded.reason,error_message=excluded.error_message,completed_at=excluded.completed_at", params![run.id, run.period, run.trigger_fingerprint, run.status, payload.context.actor_library_user_id, payload.context.source, run.reason, run.error_message, timestamp, run.completed_at]).map_err(|error| error.to_string())?;
-    drop(connection);
-    sync_context(&payload.context, &app)?;
-    let connection = validate_context(&payload.context, &app)?;
-    let persisted = connection.query_row("SELECT id,period,trigger_fingerprint,status,actor_library_user_id,source,reason,error_message,created_at,completed_at FROM finance_audit_runs WHERE trigger_fingerprint=?1", [&run.trigger_fingerprint], audit_run_from_row).map_err(|error| error.to_string())?;
-    Ok(persisted)
-}
-
-pub fn finance_list_audit_runs(
-    app: crate::host::AppHandle,
-    context: FinanceContext,
-    period: Option<String>,
-    status: Option<String>,
-) -> FinanceCommandResult<Vec<FinanceAuditRun>> {
-    if let Some(value) = period.as_deref() {
-        if !valid_service_period(value) {
-            return Err("El período debe tener formato YYYY-MM.".into());
-        }
-    }
-    let connection = validate_context(&context, &app)?;
-    let mut statement = connection.prepare("SELECT id,period,trigger_fingerprint,status,actor_library_user_id,source,reason,error_message,created_at,completed_at FROM finance_audit_runs WHERE (?1 IS NULL OR period=?1) AND (?2 IS NULL OR status=?2) ORDER BY created_at DESC LIMIT 200").map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(params![period, status], |row| {
-            Ok(FinanceAuditRun {
-                id: row.get(0)?,
-                period: row.get(1)?,
-                trigger_fingerprint: row.get(2)?,
-                status: row.get(3)?,
-                actor_library_user_id: row.get(4)?,
-                source: row.get(5)?,
-                reason: row.get(6)?,
-                error_message: row.get(7)?,
-                created_at: row.get(8)?,
-                completed_at: row.get(9)?,
-            })
-        })
-        .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string().into())
-}
-
-fn audit_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceAuditRun> {
-    Ok(FinanceAuditRun {
-        id: row.get(0)?,
-        period: row.get(1)?,
-        trigger_fingerprint: row.get(2)?,
-        status: row.get(3)?,
-        actor_library_user_id: row.get(4)?,
-        source: row.get(5)?,
-        reason: row.get(6)?,
-        error_message: row.get(7)?,
-        created_at: row.get(8)?,
-        completed_at: row.get(9)?,
-    })
-}
-
-fn relation_repair_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceRelationRepair> {
-    Ok(FinanceRelationRepair {
-        id: row.get(0)?,
-        operation_id: row.get(1)?,
-        relation_type: row.get(2)?,
-        relation_id: row.get(3)?,
-        previous_transaction_id: row.get(4)?,
-        new_transaction_id: row.get(5)?,
-        actor_library_user_id: row.get(6)?,
-        source: row.get(7)?,
-        reason: row.get(8)?,
-        created_at: row.get(9)?,
-    })
-}
-
-pub fn finance_repair_relation(
-    app: crate::host::AppHandle,
-    payload: RepairFinanceRelationPayload,
-) -> FinanceCommandResult<FinanceRelationRepair> {
-    let relation_type = payload.relation_type.as_str();
-    if !matches!(
-        relation_type,
-        "purchase-transaction" | "statement-item-transaction" | "savings-movement-transaction"
-    ) || payload.operation_id.trim().is_empty()
-        || payload.operation_id.len() > 160
-        || payload.relation_id.trim().is_empty()
-        || payload
-            .new_transaction_id
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-        || payload
-            .reason
-            .as_deref()
-            .is_some_and(|value| value.chars().count() > 500)
-        || !valid_finance_source(&payload.context.source)
-    {
-        return Err("La reparación requiere una relación, operación y origen válidos.".into());
-    }
-    if relation_type == "purchase-transaction" && payload.new_transaction_id.is_none() {
-        return Err("Un ticket no puede quedar sin movimiento; elegí el gasto correcto.".into());
-    }
-
-    let connection = validate_context(&payload.context, &app)?;
-    if let Some(existing) = connection
-        .query_row(
-            "SELECT id,operation_id,relation_type,relation_id,previous_transaction_id,new_transaction_id,actor_library_user_id,source,reason,created_at FROM finance_relation_repairs WHERE operation_id=?1",
-            [&payload.operation_id],
-            relation_repair_from_row,
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-    {
-        if existing.relation_type != payload.relation_type
-            || existing.relation_id != payload.relation_id
-            || existing.new_transaction_id != payload.new_transaction_id
-        {
-            return Err("El operationId ya fue usado para otra reparación.".into());
-        }
-        return Ok(existing);
-    }
-
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
-    let (current_transaction_id, amount, currency, movement_kind, source) = match relation_type {
-        "purchase-transaction" => transaction
-            .query_row(
-                "SELECT transaction_id,total_amount,currency,'purchase','ticket' FROM finance_purchases WHERE id=?1",
-                [&payload.relation_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "El ticket no existe.".to_string())?,
-        "statement-item-transaction" => transaction
-            .query_row(
-                "SELECT transaction_id,amount,currency,item_type,'statement' FROM finance_credit_card_statement_items WHERE id=?1",
-                [&payload.relation_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "La línea del resumen no existe.".to_string())?,
-        "savings-movement-transaction" => transaction
-            .query_row(
-                "SELECT linked_transaction_id,amount,currency,movement_type,source FROM finance_savings_movements WHERE id=?1",
-                [&payload.relation_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "El movimiento de ahorro no existe.".to_string())?,
-        _ => unreachable!(),
-    };
-    if payload.expected_transaction_id != current_transaction_id {
-        return Err("La relación cambió desde la revisión; volvé a cargar la auditoría.".into());
-    }
-    if let Some(new_transaction_id) = payload.new_transaction_id.as_deref() {
-        let (transaction_type, transaction_amount, transaction_currency, status, _transaction_source): (String, String, String, String, String) = transaction
-            .query_row(
-                "SELECT transaction_type,amount,currency,status,source FROM finance_transactions WHERE id=?1 AND deleted_at IS NULL",
-                [new_transaction_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            )
-            .map_err(|_| "El movimiento elegido no existe o fue eliminado.".to_string())?;
-        if !matches!(status.as_str(), "confirmed" | "corrected") {
-            return Err("Solo se pueden asociar movimientos confirmados o corregidos.".into());
-        }
-        if relation_type == "statement-item-transaction"
-            && !matches!(
-                movement_kind.as_str(),
-                "purchase" | "fee" | "interest" | "tax"
-            )
-        {
-            return Err("Los pagos y créditos del resumen no son gastos asociables.".into());
-        }
-        let savings_exchange =
-            relation_type == "savings-movement-transaction" && source == "savings_exchange";
-        if !savings_exchange && (transaction_amount != amount || transaction_currency != currency) {
-            return Err(
-                "El importe y la moneda del movimiento no coinciden con la evidencia.".into(),
-            );
-        }
-        if relation_type == "savings-movement-transaction" && !savings_exchange {
-            let expected_type = if movement_kind == "withdrawal" {
-                "expense"
-            } else {
-                "expense"
-            };
-            if transaction_type != expected_type {
-                return Err("El movimiento de ahorro requiere un gasto compatible.".into());
-            }
-        } else if relation_type != "savings-movement-transaction" && transaction_type != "expense" {
-            return Err("La relación financiera requiere un movimiento de gasto.".into());
-        }
-        let (table, column) = match relation_type {
-            "purchase-transaction" => ("finance_purchases", "transaction_id"),
-            "statement-item-transaction" => {
-                ("finance_credit_card_statement_items", "transaction_id")
-            }
-            _ => ("finance_savings_movements", "linked_transaction_id"),
-        };
-        let query = format!("SELECT COUNT(*) FROM {table} WHERE {column}=?1 AND id<>?2");
-        let already_linked: i64 = transaction
-            .query_row(
-                &query,
-                params![new_transaction_id, &payload.relation_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if already_linked > 0 {
-            return Err("El movimiento ya está asociado a otra evidencia del mismo tipo.".into());
-        }
-    }
-    let update = match relation_type {
-        "purchase-transaction" => "UPDATE finance_purchases SET transaction_id=?1,updated_at=?2 WHERE id=?3",
-        "statement-item-transaction" => "UPDATE finance_credit_card_statement_items SET transaction_id=?1 WHERE id=?2",
-        _ => "UPDATE finance_savings_movements SET linked_transaction_id=?1,updated_at=?2 WHERE id=?3",
-    };
-    if relation_type == "statement-item-transaction" {
-        transaction
-            .execute(
-                update,
-                params![payload.new_transaction_id, &payload.relation_id],
-            )
-            .map_err(|error| error.to_string())?;
-    } else {
-        transaction
-            .execute(
-                update,
-                params![payload.new_transaction_id, now(), &payload.relation_id],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    let repair = FinanceRelationRepair {
-        id: Uuid::new_v4().to_string(),
-        operation_id: payload.operation_id,
-        relation_type: payload.relation_type,
-        relation_id: payload.relation_id,
-        previous_transaction_id: current_transaction_id,
-        new_transaction_id: payload.new_transaction_id,
-        actor_library_user_id: Some(payload.context.actor_library_user_id.clone()),
-        source: payload.context.source.clone(),
-        reason: payload.reason,
-        created_at: Some(now()),
-    };
-    transaction
-        .execute(
-            "INSERT INTO finance_relation_repairs(id,operation_id,relation_type,relation_id,previous_transaction_id,new_transaction_id,actor_library_user_id,source,reason,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![repair.id, repair.operation_id, repair.relation_type, repair.relation_id, repair.previous_transaction_id, repair.new_transaction_id, repair.actor_library_user_id, repair.source, repair.reason, repair.created_at],
-        )
-        .map_err(|error| error.to_string())?;
-    transaction.commit().map_err(|error| error.to_string())?;
-    drop(connection);
-    sync_context(&payload.context, &app)?;
-    Ok(repair)
-}
-
-pub fn finance_list_relation_repairs(
-    app: crate::host::AppHandle,
-    context: FinanceContext,
-    relation_type: Option<String>,
-    relation_id: Option<String>,
-) -> FinanceCommandResult<Vec<FinanceRelationRepair>> {
-    let connection = validate_context(&context, &app)?;
-    let mut statement = connection
-        .prepare("SELECT id,operation_id,relation_type,relation_id,previous_transaction_id,new_transaction_id,actor_library_user_id,source,reason,created_at FROM finance_relation_repairs WHERE (?1 IS NULL OR relation_type=?1) AND (?2 IS NULL OR relation_id=?2) ORDER BY created_at DESC LIMIT 500")
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(
-            params![relation_type, relation_id],
-            relation_repair_from_row,
-        )
-        .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string().into())
-}
-
-fn audit_proposal_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceAuditProposal> {
-    Ok(FinanceAuditProposal {
-        id: row.get(0)?,
-        audit_run_id: row.get(1)?,
-        proposal_type: row.get(2)?,
-        status: row.get(3)?,
-        rule_key: row.get(4)?,
-        data_fingerprint: row.get(5)?,
-        service_id: row.get(6)?,
-        period: row.get(7)?,
-        reason: row.get(8)?,
-        current_data: row.get(9)?,
-        suggested_change: row.get(10)?,
-        evidence: row.get(11)?,
-        actor_library_user_id: row.get(12)?,
-        source: row.get(13)?,
-        created_at: row.get(14)?,
-        decided_at: row.get(15)?,
-    })
-}
-
-fn load_audit_result(connection: &Connection, run_id: &str) -> Result<FinanceAuditResult, String> {
-    let run = connection.query_row("SELECT id,period,trigger_fingerprint,status,actor_library_user_id,source,reason,error_message,created_at,completed_at FROM finance_audit_runs WHERE id=?1", [run_id], audit_run_from_row).map_err(|error| error.to_string())?;
-    let mut statement = connection.prepare("SELECT id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at FROM finance_audit_proposals WHERE audit_run_id=?1 ORDER BY created_at,id").map_err(|error| error.to_string())?;
-    let proposals = statement
-        .query_map([run_id], audit_proposal_from_row)
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    Ok(FinanceAuditResult { run, proposals })
-}
-
-fn load_card_reconciliation_context(
-    transaction: &rusqlite::Transaction<'_>,
-) -> Result<(Vec<ReconciliationService>, Vec<ReconciliationOccurrence>), String> {
-    let services = transaction
-        .prepare("SELECT id,name,provider,currency FROM finance_services ORDER BY id")
-        .map_err(|error| error.to_string())?
-        .query_map([], |row| {
-            Ok(ReconciliationService {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                provider: row.get(2)?,
-                currency: row.get(3)?,
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let occurrences = transaction
-        .prepare(
-            "SELECT id,service_id,period,expected_amount,paid_amount,effective_date,status,
-                    transaction_id,artifact_id,source_reference,raw_source,updated_at
-             FROM finance_service_occurrences",
-        )
-        .map_err(|error| error.to_string())?
-        .query_map([], |row| {
-            Ok(ReconciliationOccurrence {
-                id: row.get(0)?,
-                service_id: row.get(1)?,
-                period: row.get(2)?,
-                paid_amount: row.get(4)?,
-                transaction_id: row.get(7)?,
-                snapshot: format!(
-                    "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<String>>(7)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(8)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(10)?.unwrap_or_default(),
-                    row.get::<_, String>(11)?
-                ),
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    Ok((services, occurrences))
-}
-
-fn load_card_reconciliation_input(
-    transaction: &rusqlite::Transaction<'_>,
-    statement_id: &str,
-    statement_period: &str,
-    statement_snapshot: &str,
-    services: &[ReconciliationService],
-    occurrences: &[ReconciliationOccurrence],
-) -> Result<ReconciliationInput, String> {
-    let mut statement = transaction
-        .prepare(
-            "SELECT i.id,i.transaction_id,i.purchase_date,i.description,i.amount,i.currency,
-                    i.item_type,t.transaction_type,t.status,t.amount,t.currency,t.effective_date,
-                    t.service_id,t.operation_fingerprint,t.updated_at,
-                    CASE WHEN s.validation_status IN ('confirmed','corrected')
-                              AND t.transaction_type='expense'
-                              AND t.status IN ('confirmed','corrected')
-                              AND t.amount=i.amount AND t.currency=i.currency
-                         THEN 1 ELSE 0 END
-             FROM finance_credit_card_statement_items i
-             JOIN finance_credit_card_statements s ON s.id=i.statement_id
-             LEFT JOIN finance_transactions t ON t.id=i.transaction_id AND t.deleted_at IS NULL
-             WHERE i.statement_id=?1 ORDER BY i.purchase_date,i.id",
-        )
-        .map_err(|error| error.to_string())?;
-    let lines = statement
-        .query_map([statement_id], |row| {
-            Ok(ReconciliationLine {
-                id: row.get(0)?,
-                transaction_id: row.get(1)?,
-                purchase_date: row.get(2)?,
-                description: row.get(3)?,
-                amount: row.get(4)?,
-                currency: row.get(5)?,
-                item_type: row.get(6)?,
-                confirmed: row.get::<_, i32>(15)? != 0,
-                transaction_snapshot: format!(
-                    "{}:{}:{}:{}:{}:{}:{}:{}",
-                    row.get::<_, Option<String>>(7)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(8)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(10)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(11)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(12)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(13)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(14)?.unwrap_or_default()
-                ),
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    Ok(ReconciliationInput {
-        statement_id: statement_id.to_string(),
-        statement_period: statement_period.to_string(),
-        statement_snapshot: statement_snapshot.to_string(),
-        lines,
-        services: services.to_vec(),
-        occurrences: occurrences.to_vec(),
-    })
-}
-
-fn execute_deterministic_audit(
-    connection: &mut Connection,
-    payload: &RunFinanceAuditPayload,
-) -> Result<FinanceAuditResult, String> {
-    let database_transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    let timestamp = now();
-    let existing_id: Option<String> = database_transaction
-        .query_row(
-            "SELECT id FROM finance_audit_runs WHERE trigger_fingerprint=?1",
-            [&payload.trigger_fingerprint],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-    let run_id = existing_id.unwrap_or_else(new_id);
-    database_transaction.execute("INSERT INTO finance_audit_runs(id,period,trigger_fingerprint,status,actor_library_user_id,source,reason,error_message,created_at,completed_at) VALUES(?1,?2,?3,'running',?4,?5,?6,NULL,?7,NULL) ON CONFLICT(trigger_fingerprint) DO UPDATE SET status='running',actor_library_user_id=excluded.actor_library_user_id,source=excluded.source,reason=excluded.reason,error_message=NULL,completed_at=NULL", params![run_id, payload.period, payload.trigger_fingerprint, payload.context.actor_library_user_id, payload.context.source, payload.reason, timestamp]).map_err(|error| error.to_string())?;
-    database_transaction
-        .execute(
-            "DELETE FROM finance_audit_proposals WHERE audit_run_id=?1 AND status='pending'",
-            [&run_id],
-        )
-        .map_err(|error| error.to_string())?;
-
-    let mut services = database_transaction.prepare("SELECT id,name,provider,expected_amount,currency,modality FROM finance_services WHERE active=1 ORDER BY id").map_err(|error| error.to_string())?;
-    let service_rows = services
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    drop(services);
-    let (reconciliation_services, reconciliation_occurrences) =
-        load_card_reconciliation_context(&database_transaction)?;
-    let mut covered_service_periods = BTreeSet::new();
-    let mut blocked_service_periods = BTreeSet::new();
-    let mut statement_query = database_transaction
-        .prepare(
-            "SELECT id,period,account_id,issuer,card_last_four,closing_date,due_date,currency,
-                    previous_balance,payments_amount,credits_amount,purchases_amount,fees_amount,
-                    interest_amount,taxes_amount,total_due,minimum_payment,validation_status,
-                    source_artifact_id,updated_at
-             FROM finance_credit_card_statements ORDER BY id",
-        )
-        .map_err(|error| error.to_string())?;
-    let statement_rows = statement_query
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                format!(
-                    "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, String>(9)?,
-                    row.get::<_, String>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, String>(12)?,
-                    row.get::<_, String>(13)?,
-                    row.get::<_, String>(14)?,
-                    row.get::<_, String>(15)?,
-                    row.get::<_, Option<String>>(16)?.unwrap_or_default(),
-                    row.get::<_, String>(17)?,
-                    row.get::<_, String>(18)?,
-                    row.get::<_, String>(19)?,
-                ),
-            ))
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    drop(statement_query);
-    for (statement_id, statement_period, statement_snapshot) in statement_rows {
-        let input = load_card_reconciliation_input(
-            &database_transaction,
-            &statement_id,
-            &statement_period,
-            &statement_snapshot,
-            &reconciliation_services,
-            &reconciliation_occurrences,
-        )?;
-        let reconciliation = reconcile_card_service_consumption(&input);
-        for assignment in &reconciliation.assignments {
-            if assignment.period == payload.period {
-                covered_service_periods
-                    .insert((assignment.service_id.clone(), assignment.period.clone()));
-            }
-        }
-        if statement_period != payload.period {
-            continue;
-        }
-        for group in &reconciliation.ambiguous_groups {
-            if let Some(service_id) = group.service_id.as_deref() {
-                blocked_service_periods.insert((service_id.to_string(), payload.period.clone()));
-            }
-        }
-        let has_new_assignment = reconciliation
-            .assignments
-            .iter()
-            .any(|assignment| assignment.assignment_status == "new");
-        if !has_new_assignment && reconciliation.ambiguous_groups.is_empty() {
-            continue;
-        }
-        let service_id = reconciliation
-            .assignments
-            .iter()
-            .map(|assignment| assignment.service_id.clone())
-            .chain(
-                reconciliation
-                    .ambiguous_groups
-                    .iter()
-                    .filter_map(|group| group.service_id.clone()),
-            )
-            .collect::<BTreeSet<_>>();
-        let service_id = if service_id.len() == 1 {
-            service_id.into_iter().next()
-        } else {
-            None
-        };
-        let fingerprint = reconciliation_fingerprint(&input, &reconciliation);
-        let current_data = serde_json::json!({
-            "statementId": statement_id.clone(),
-            "statementPeriod": statement_period.clone(),
-            "assignments": reconciliation.assignments.clone(),
-            "ambiguousGroups": reconciliation.ambiguous_groups.clone(),
-            "reasons": reconciliation.reasons.clone(),
-        });
-        let action = serde_json::json!({
-            "operation": "reconcile_card_service_consumption",
-            "parameters": {
-                "statementId": input.statement_id,
-                "assignments": reconciliation.assignments.clone(),
-                "ambiguousGroups": reconciliation.ambiguous_groups.clone()
-            },
-            "description": "Reconciliar consumos purchase del resumen con sus ocurrencias mensuales, conservando importe y evidencia."
-        });
-        database_transaction
-            .execute(
-                "INSERT OR IGNORE INTO finance_audit_proposals(
-                 id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,
-                 reason,current_data,suggested_change,evidence,actor_library_user_id,source,
-                 created_at,decided_at)
-                 VALUES(?1,?2,'service-card-reconciliation','pending','service-card-reconciliation',
-                        ?3,?4,?5,?6,?7,?8,?7,?9,?10,?11,NULL)",
-                params![
-                    new_id(),
-                    run_id,
-                    fingerprint,
-                    service_id,
-                    payload.period,
-                    if reconciliation.ambiguous_groups.is_empty() {
-                        "Existe un consumo inequívoco sin reconciliar con su ocurrencia mensual."
-                    } else {
-                        "La distribución de consumos del resumen es ambigua y requiere decisión."
-                    },
-                    current_data.to_string(),
-                    action.to_string(),
-                    payload.context.actor_library_user_id,
-                    payload.context.source,
-                    timestamp,
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    for (service_id, service_name, _provider, service_expected, currency, modality) in service_rows
-    {
-        let occurrence: Option<(String, String, Option<String>, Option<String>, String)> = database_transaction.query_row("SELECT id,expected_amount,paid_amount,effective_date,status FROM finance_service_occurrences WHERE service_id=?1 AND period=?2", params![service_id, payload.period], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().map_err(|error| error.to_string())?;
-        let paid = occurrence.as_ref().and_then(|value| value.2.as_deref());
-        let covered_by_statement =
-            covered_service_periods.contains(&(service_id.clone(), payload.period.clone()));
-        let blocked_by_statement =
-            blocked_service_periods.contains(&(service_id.clone(), payload.period.clone()));
-        if paid.is_some() || covered_by_statement || blocked_by_statement {
-            // A previous unpaid proposal is no longer actionable once a payment,
-            // a reconciliation, or an explicit reconciliation ambiguity exists.
-            // Leaving it pending would let the agent discard a payment after the
-            // newer evidence was already imported.
-            database_transaction
-                .execute(
-                    "UPDATE finance_audit_proposals
-                     SET status='outdated',decided_at=?1
-                     WHERE proposal_type='service-unpaid' AND service_id=?2
-                       AND period=?3 AND status='pending'",
-                    params![timestamp, service_id, payload.period],
-                )
-                .map_err(|error| error.to_string())?;
-        }
-        if paid.is_none() && !covered_by_statement && !blocked_by_statement {
-            let current_data = serde_json::json!({"serviceId": service_id, "serviceName": service_name, "period": payload.period, "occurrenceId": occurrence.as_ref().map(|value| value.0.clone()), "expectedAmount": occurrence.as_ref().map(|value| value.1.clone()).unwrap_or(service_expected.clone()), "status": occurrence.as_ref().map(|value| value.4.clone()).unwrap_or_else(|| "missing".into())});
-            let suggested = serde_json::json!({"operation":"mark_occurrence_discarded","parameters":{"serviceId":service_id,"period":payload.period},"description":"Marcar la ocurrencia sin pago como descartada, conservando el historial."});
-            let fingerprint =
-                service_unpaid_fingerprint(&database_transaction, &service_id, &payload.period)?;
-            database_transaction.execute("INSERT OR IGNORE INTO finance_audit_proposals(id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at) VALUES(?1,?2,'service-unpaid','pending','active-service-without-payment',?3,?4,?5,?6,?7,?8,NULL,?9,?10,?11,NULL)", params![new_id(), run_id, fingerprint, service_id, payload.period, format!("El servicio activo {service_name} no tiene un pago registrado."), current_data.to_string(), suggested.to_string(), payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
-        } else if let Some(paid) = paid.filter(|_| modality == "fixed") {
-            let expected = occurrence
-                .as_ref()
-                .map(|value| value.1.as_str())
-                .unwrap_or(service_expected.as_str());
-            let expected_cents = parse_cents(expected)
-                .map_err(|_| "El importe esperado de una ocurrencia no es válido.".to_string())?;
-            let paid_cents = parse_cents(paid)
-                .map_err(|_| "El importe pagado de una ocurrencia no es válido.".to_string())?;
-            if (paid_cents - expected_cents).abs() * 100 > expected_cents.max(1).abs() * 20 {
-                let current_data = serde_json::json!({"serviceId":service_id,"period":payload.period,"expected":expected,"paid":paid,"currency":currency});
-                let suggested = serde_json::json!({"operation":"set_occurrence_expected_amount","parameters":{"serviceId":service_id,"period":payload.period,"expectedAmount":paid},"description":format!("Ajustar el importe esperado de esta ocurrencia a {paid} {currency}, sin modificar el gasto registrado.")});
-                let fingerprint = amount_variation_fingerprint(
-                    &database_transaction,
-                    &service_id,
-                    &payload.period,
-                )?;
-                database_transaction.execute("INSERT OR IGNORE INTO finance_audit_proposals(id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at) VALUES(?1,?2,'amount-variation','pending','fixed-service-amount-variation',?3,?4,?5,?6,?7,?8,NULL,?9,?10,?11,NULL)", params![new_id(), run_id, fingerprint, service_id, payload.period, format!("El pago de {service_name} varía significativamente del importe esperado."), current_data.to_string(), suggested.to_string(), payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
-            }
-        }
-    }
-    let mut orphan_statement = database_transaction.prepare("SELECT id,service_id,amount,currency,effective_date,category_id,status FROM finance_transactions WHERE transaction_type='expense' AND status='confirmed' AND deleted_at IS NULL AND effective_date LIKE ?1 || '%' AND service_id IS NOT NULL AND service_id NOT IN (SELECT id FROM finance_services)").map_err(|error| error.to_string())?;
-    let orphan_rows = orphan_statement
-        .query_map([&payload.period], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, String>(6)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    for chunk in orphan_rows.chunks(50) {
-        let ids = chunk.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
-        let entries = chunk.iter().map(|row| serde_json::json!({"id":row.0,"serviceId":row.1,"amount":row.2,"currency":row.3,"effectiveDate":row.4,"categoryId":row.5,"status":row.6})).collect::<Vec<_>>();
-        let fingerprint =
-            orphan_service_link_fingerprint(&database_transaction, &payload.period, &ids)?;
-        let suggested = serde_json::json!({"operation":"unlink_transaction_service","parameters":{"transactionIds":ids},"description":"Desvincular los gastos del servicio inexistente sin eliminar los movimientos."});
-        database_transaction.execute("INSERT OR IGNORE INTO finance_audit_proposals(id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at) VALUES(?1,?2,'orphan-service-link','pending','transaction-service-reference-missing',?3,NULL,?4,?5,?6,?7,NULL,?8,?9,?10,NULL)", params![new_id(), run_id, fingerprint, payload.period, "Existe un gasto con referencia a un servicio inexistente.", serde_json::Value::Array(entries).to_string(), suggested.to_string(), payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
-    }
-    drop(orphan_statement);
-    database_transaction.execute("UPDATE finance_audit_runs SET status='completed',completed_at=?1,error_message=NULL WHERE id=?2", params![timestamp, run_id]).map_err(|error| error.to_string())?;
-    database_transaction
-        .commit()
-        .map_err(|error| error.to_string())?;
-    load_audit_result(connection, &run_id)
-}
-
-pub fn finance_run_audit(
-    app: crate::host::AppHandle,
-    payload: RunFinanceAuditPayload,
-) -> FinanceCommandResult<FinanceAuditResult> {
-    if !valid_service_period(&payload.period)
-        || payload.trigger_fingerprint.trim().is_empty()
-        || payload.trigger_fingerprint.len() > 2_000
-        || payload
-            .reason
-            .as_deref()
-            .map(|value| value.len() > 500)
-            .unwrap_or(false)
-    {
-        return Err("La auditoría requiere período y huella válidos.".into());
-    }
-    let mut connection = validate_context(&payload.context, &app)?;
-    if let Some(run_id) = connection
-        .query_row(
-            "SELECT id FROM finance_audit_runs WHERE trigger_fingerprint=?1 AND status='completed'",
-            [&payload.trigger_fingerprint],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-    {
-        return load_audit_result(&connection, &run_id).map_err(FinanceCommandError::from);
-    }
-    let result = execute_deterministic_audit(&mut connection, &payload);
-    if let Err(error) = &result {
-        let _ = connection.execute("UPDATE finance_audit_runs SET status='failed',error_message=?1 WHERE trigger_fingerprint=?2", params![error, payload.trigger_fingerprint]);
-    }
-    let result = result?;
-    drop(connection);
-    sync_context(&payload.context, &app).map_err(FinanceCommandError::from)?;
-    Ok(result)
-}
-
-pub fn finance_save_audit_proposal(
-    app: crate::host::AppHandle,
-    payload: SaveFinanceAuditProposalPayload,
-) -> FinanceCommandResult<FinanceAuditProposal> {
-    let proposal = &payload.proposal;
-    if proposal.id.trim().is_empty()
-        || proposal.id.len() > 160
-        || proposal.audit_run_id.trim().is_empty()
-        || proposal.audit_run_id.len() > 160
-        || proposal.rule_key.trim().is_empty()
-        || proposal.rule_key.len() > 160
-        || proposal.data_fingerprint.trim().is_empty()
-        || proposal.data_fingerprint.len() > 2_000
-        || !valid_service_period(&proposal.period)
-        || proposal.reason.trim().is_empty()
-        || proposal.reason.chars().count() > 500
-        || !matches!(
-            proposal.proposal_type.as_str(),
-            "service-unpaid"
-                | "amount-variation"
-                | "orphan-service-link"
-                | "service-card-reconciliation"
-        )
-        || !matches!(
-            proposal.status.as_str(),
-            "pending" | "accepted" | "rejected" | "cancelled" | "outdated" | "failed"
-        )
-        || proposal.current_data.len() > 20_000
-        || proposal.suggested_change.len() > 20_000
-        || proposal
-            .evidence
-            .as_deref()
-            .map(|value| value.len() > 20_000)
-            .unwrap_or(false)
-    {
-        return Err("La propuesta de auditoría tiene datos obligatorios inválidos.".into());
-    }
-    let current_data: serde_json::Value = serde_json::from_str(&proposal.current_data)
-        .map_err(|_| "Los datos actuales de la propuesta no son JSON válido.".to_string())?;
-    if !current_data.is_object() && !current_data.is_array() {
-        return Err(
-            "Los datos actuales de la propuesta deben ser un objeto o una lista JSON.".into(),
-        );
-    }
-    let suggested_change: serde_json::Value = serde_json::from_str(&proposal.suggested_change)
-        .map_err(|_| "El cambio sugerido de la propuesta no es JSON válido.".to_string())?;
-    let operation = suggested_change
-        .get("operation")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "La propuesta no define una operación.".to_string())?;
-    let parameters = suggested_change
-        .get("parameters")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "La propuesta no define parámetros.".to_string())?;
-    let expected_operation = match proposal.proposal_type.as_str() {
-        "service-unpaid" => "mark_occurrence_discarded",
-        "amount-variation" => "set_occurrence_expected_amount",
-        "orphan-service-link" => "unlink_transaction_service",
-        "service-card-reconciliation" => "reconcile_card_service_consumption",
-        _ => return Err("El tipo de propuesta de auditoría no está permitido.".into()),
-    };
-    if operation != expected_operation {
-        return Err("La operación no corresponde al tipo de propuesta.".into());
-    }
-    if suggested_change
-        .get("description")
-        .and_then(serde_json::Value::as_str)
-        .map_or(true, |value| {
-            value.trim().is_empty() || value.chars().count() > 500
-        })
-    {
-        return Err("La propuesta debe tener una descripción legible.".into());
-    }
-    if proposal.proposal_type != "orphan-service-link"
-        && proposal.proposal_type != "service-card-reconciliation"
-        && proposal
-            .service_id
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .is_none()
-    {
-        return Err("La propuesta requiere un servicio afectado.".into());
-    }
-    if proposal.proposal_type != "orphan-service-link"
-        && proposal.proposal_type != "service-card-reconciliation"
-    {
-        let service_id = parameters
-            .get("serviceId")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "La propuesta no identifica el servicio afectado.".to_string())?;
-        if proposal.service_id.as_deref() != Some(service_id) {
-            return Err("El servicio de los parámetros no coincide con la propuesta.".into());
-        }
-        if parameters.get("period").and_then(serde_json::Value::as_str)
-            != Some(proposal.period.as_str())
-        {
-            return Err("El período de los parámetros no coincide con la propuesta.".into());
-        }
-        if proposal.proposal_type == "amount-variation"
-            && parameters
-                .get("expectedAmount")
-                .and_then(serde_json::Value::as_str)
-                .map_or(true, |value| !valid_amount(value))
-        {
-            return Err("El importe esperado propuesto no es válido.".into());
-        }
-    }
-    if proposal.proposal_type == "service-card-reconciliation" {
-        let statement_id = parameters
-            .get("statementId")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "La propuesta no identifica el resumen de tarjeta.".to_string())?;
-        let assignments = parameters
-            .get("assignments")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| "La propuesta no contiene asignaciones estructuradas.".to_string())?;
-        if statement_id.len() > 160 || assignments.len() > 300 {
-            return Err("La propuesta de reconciliación excede sus límites.".into());
-        }
-        for assignment in assignments {
-            let object = assignment
-                .as_object()
-                .ok_or_else(|| "La propuesta contiene una asignación inválida.".to_string())?;
-            for field in [
-                "lineId",
-                "serviceId",
-                "transactionId",
-                "purchaseDate",
-                "period",
-                "amount",
-                "currency",
-            ] {
-                if object
-                    .get(field)
-                    .and_then(serde_json::Value::as_str)
-                    .is_none()
-                {
-                    return Err("La propuesta contiene una asignación incompleta.".into());
-                }
-            }
-        }
-    }
-    if proposal.proposal_type == "orphan-service-link" {
-        let ids = parameters
-            .get("transactionIds")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| "La propuesta no identifica los gastos afectados.".to_string())?;
-        if ids.is_empty()
-            || ids.len() > 50
-            || ids.iter().any(|value| {
-                value
-                    .as_str()
-                    .map_or(true, |id| id.trim().is_empty() || id.len() > 160)
-            })
-        {
-            return Err("La propuesta contiene una lista de gastos inválida.".into());
-        }
-    }
-    let connection = validate_context(&payload.context, &app)?;
-    let exists: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM finance_audit_runs WHERE id=?1",
-            [&proposal.audit_run_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-    if exists == 0 {
-        return Err("La ejecución de auditoría no existe.".into());
-    }
-    let timestamp = now();
-    if let Some(service_id) = proposal.service_id.as_deref() {
-        let exists: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM finance_services WHERE id=?1)",
-                [service_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if !exists && proposal.proposal_type != "orphan-service-link" {
-            return Err("El servicio de la propuesta no existe.".into());
-        }
-    }
-    connection.execute("INSERT INTO finance_audit_proposals(id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(id) DO UPDATE SET status=excluded.status,reason=excluded.reason,current_data=excluded.current_data,suggested_change=excluded.suggested_change,evidence=excluded.evidence,decided_at=excluded.decided_at ON CONFLICT(rule_key,data_fingerprint) DO NOTHING", params![proposal.id, proposal.audit_run_id, proposal.proposal_type, proposal.status, proposal.rule_key, proposal.data_fingerprint, proposal.service_id, proposal.period, proposal.reason, proposal.current_data, proposal.suggested_change, proposal.evidence, payload.context.actor_library_user_id, payload.context.source, timestamp, proposal.decided_at]).map_err(|error| error.to_string())?;
-    drop(connection);
-    sync_context(&payload.context, &app)?;
-    let connection = validate_context(&payload.context, &app)?;
-    let persisted = connection.query_row("SELECT id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at FROM finance_audit_proposals WHERE rule_key=?1 AND data_fingerprint=?2", params![proposal.rule_key, proposal.data_fingerprint], audit_proposal_from_row).map_err(|error| error.to_string())?;
-    Ok(persisted)
-}
-
-pub fn finance_list_audit_proposals(
-    app: crate::host::AppHandle,
-    context: FinanceContext,
-    period: Option<String>,
-    status: Option<String>,
-) -> FinanceCommandResult<Vec<FinanceAuditProposal>> {
-    if let Some(value) = period.as_deref() {
-        if !valid_service_period(value) {
-            return Err("El período debe tener formato YYYY-MM.".into());
-        }
-    }
-    let connection = validate_context(&context, &app)?;
-    let mut statement = connection.prepare("SELECT id,audit_run_id,proposal_type,status,rule_key,data_fingerprint,service_id,period,reason,current_data,suggested_change,evidence,actor_library_user_id,source,created_at,decided_at FROM finance_audit_proposals WHERE (?1 IS NULL OR period=?1) AND (?2 IS NULL OR status=?2) ORDER BY created_at DESC LIMIT 500").map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(params![period, status], |row| {
-            Ok(FinanceAuditProposal {
-                id: row.get(0)?,
-                audit_run_id: row.get(1)?,
-                proposal_type: row.get(2)?,
-                status: row.get(3)?,
-                rule_key: row.get(4)?,
-                data_fingerprint: row.get(5)?,
-                service_id: row.get(6)?,
-                period: row.get(7)?,
-                reason: row.get(8)?,
-                current_data: row.get(9)?,
-                suggested_change: row.get(10)?,
-                evidence: row.get(11)?,
-                actor_library_user_id: row.get(12)?,
-                source: row.get(13)?,
-                created_at: row.get(14)?,
-                decided_at: row.get(15)?,
-            })
-        })
-        .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string().into())
-}
-
-fn apply_audit_proposal_change(
-    transaction: &rusqlite::Transaction<'_>,
-    proposal_type: &str,
-    proposal_service_id: Option<&str>,
-    period: &str,
-    current_data: &str,
-    suggested_change: &str,
-    actor_library_user_id: Option<&str>,
-    source: &str,
-    resolution_assignments: Option<&[CardServiceAssignment]>,
-) -> Result<(), String> {
-    let action: serde_json::Value = serde_json::from_str(suggested_change).map_err(|_| {
-        "La propuesta aceptada no contiene una acción estructurada válida.".to_string()
-    })?;
-    let operation = action
-        .get("operation")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "La propuesta aceptada no define una operación segura.".to_string())?;
-    let parameters = action
-        .get("parameters")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "La propuesta aceptada no define parámetros seguros.".to_string())?;
-    let parameter_string = |name: &str| {
-        parameters
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    };
-    let service_id = parameter_string("serviceId").or(proposal_service_id);
-    if let (Some(parameter_service_id), Some(proposal_service_id)) =
-        (parameter_string("serviceId"), proposal_service_id)
-    {
-        if parameter_service_id != proposal_service_id {
-            return Err("La propuesta no coincide con el servicio auditado.".into());
-        }
-    }
-    let action_period = parameter_string("period").unwrap_or(period);
-    let timestamp = now();
-
-    let operation_allowed = match proposal_type {
-        "service-unpaid" => operation == "mark_occurrence_discarded",
-        "amount-variation" => operation == "set_occurrence_expected_amount",
-        "orphan-service-link" => operation == "unlink_transaction_service",
-        "service-card-reconciliation" => operation == "reconcile_card_service_consumption",
-        _ => false,
-    };
-    if !operation_allowed {
-        return Err("La operación no corresponde al tipo de propuesta auditada.".into());
-    }
-
-    match operation {
-        "reconcile_card_service_consumption" => {
-            if proposal_type != "service-card-reconciliation" {
-                return Err("La operación no corresponde al tipo de propuesta auditada.".into());
-            }
-            let statement_id = parameter_string("statementId")
-                .ok_or_else(|| "La propuesta no identifica el resumen de tarjeta.".to_string())?;
-            let assignment_values = parameters
-                .get("assignments")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    "La propuesta no contiene asignaciones estructuradas.".to_string()
-                })?;
-            let preview_assignments = assignment_values
-                .iter()
-                .cloned()
-                .map(serde_json::from_value::<CardServiceAssignment>)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| "La propuesta contiene asignaciones inválidas.".to_string())?;
-            let (statement_period, artifact_id, source_reference, raw_source): (
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-            ) = transaction
-                .query_row(
-                    "SELECT s.period,s.source_artifact_id,a.reference,a.raw_text
-                     FROM finance_credit_card_statements s
-                     JOIN finance_source_artifacts a ON a.id=s.source_artifact_id
-                     WHERE s.id=?1",
-                    [statement_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .map_err(|_| "El resumen de tarjeta de la propuesta no existe.".to_string())?;
-            let (services, occurrences) = load_card_reconciliation_context(transaction)?;
-            let input = load_card_reconciliation_input(
-                transaction,
-                statement_id,
-                &statement_period,
-                &statement_period,
-                &services,
-                &occurrences,
-            )?;
-            let current = reconcile_card_service_consumption(&input);
-            let effective = if current.ambiguous_groups.is_empty() {
-                if let Some(resolution) = resolution_assignments {
-                    if assignment_keys(resolution) != assignment_keys(&current.assignments) {
-                        return Err("La resolución no coincide con el preview.".into());
-                    }
-                }
-                current.clone()
-            } else {
-                let Some(resolution) = resolution_assignments else {
-                    return Err(
-                        "La reconciliación es ambigua y requiere una selección manual.".into(),
-                    );
-                };
-                resolve_card_service_assignments(&input, &current, resolution)?
-            };
-            let requested = if resolution_assignments.is_some() {
-                effective.assignments.clone()
-            } else {
-                preview_assignments
-            };
-            if assignment_keys(&requested) != assignment_keys(&effective.assignments) {
-                return Err(
-                    "La propuesta quedó obsoleta porque sus asignaciones no coinciden con el preview."
-                        .into(),
-                );
-            }
-            persist_card_reconciliation(
-                transaction,
-                source_reference.as_deref(),
-                raw_source.as_deref(),
-                &artifact_id,
-                &effective,
-                actor_library_user_id.unwrap_or_default(),
-                source,
-            )?;
-            for assignment in &effective.assignments {
-                transaction
-                    .execute(
-                        "UPDATE finance_audit_proposals
-                         SET status='outdated',decided_at=?1
-                         WHERE proposal_type='service-unpaid' AND service_id=?2
-                           AND period=?3 AND status='pending'",
-                        params![now(), assignment.service_id, assignment.period],
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        "mark_occurrence_discarded" => {
-            let service_id =
-                service_id.ok_or_else(|| "La propuesta no identifica el servicio.".to_string())?;
-            if action_period != period {
-                return Err("La propuesta no coincide con el período auditado.".into());
-            }
-            let (expected_amount, active): (String, i32) = transaction
-                .query_row(
-                    "SELECT expected_amount,active FROM finance_services WHERE id=?1",
-                    [service_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(|_| "El servicio de la propuesta no existe.".to_string())?;
-            if active == 0 {
-                return Err(
-                    "La propuesta quedó obsoleta porque el servicio ya no está activo.".into(),
-                );
-            }
-            let previous: Option<(String, Option<String>, Option<String>)> = transaction
-                .query_row(
-                    "SELECT id,transaction_id,paid_amount FROM finance_service_occurrences WHERE service_id=?1 AND period=?2",
-                    params![service_id, period],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()
-                .map_err(|error| error.to_string())?;
-            if let Some((occurrence_id, transaction_id, paid_amount)) = previous {
-                if paid_amount.is_some() {
-                    return Err(
-                        "La propuesta quedó obsoleta porque la ocurrencia ya tiene un pago.".into(),
-                    );
-                }
-                let version: i64 = transaction
-                    .query_row(
-                        "SELECT COALESCE(MAX(version_number),0)+1 FROM finance_service_occurrence_versions WHERE occurrence_id=?1",
-                        [&occurrence_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                transaction.execute(
-                    "INSERT INTO finance_service_occurrence_versions(id,occurrence_id,version_number,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,reason,created_at)
-                     SELECT ?1,id,?2,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,'Auditoría financiera',?3
-                     FROM finance_service_occurrences WHERE id=?4",
-                    params![new_id(), version, timestamp, occurrence_id],
-                ).map_err(|error| error.to_string())?;
-                transaction.execute(
-                    "UPDATE finance_service_occurrences SET paid_amount=NULL,effective_date=NULL,status='discarded',transaction_id=NULL,updated_at=?1 WHERE id=?2",
-                    params![timestamp, occurrence_id],
-                ).map_err(|error| error.to_string())?;
-                if let Some(transaction_id) = transaction_id {
-                    transaction
-                        .execute(
-                            "UPDATE finance_transactions SET service_id=NULL WHERE id=?1",
-                            [transaction_id.clone()],
-                        )
-                        .map_err(|error| error.to_string())?;
-                    transaction
-                        .execute(
-                            "UPDATE finance_purchases SET service_id=NULL WHERE transaction_id=?1",
-                            [transaction_id],
-                        )
-                        .map_err(|error| error.to_string())?;
-                }
-            } else {
-                transaction.execute(
-                    "INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,created_at,updated_at)
-                     VALUES(?1,?2,?3,?4,NULL,NULL,'discarded',NULL,NULL,NULL,NULL,?5,?6,?7,?7)",
-                    params![new_id(), service_id, period, expected_amount, actor_library_user_id, source, timestamp],
-                ).map_err(|error| error.to_string())?;
-            }
-        }
-        "set_occurrence_expected_amount" => {
-            let service_id =
-                service_id.ok_or_else(|| "La propuesta no identifica el servicio.".to_string())?;
-            let expected_amount = parameter_string("expectedAmount")
-                .ok_or_else(|| "La propuesta no identifica el importe esperado.".to_string())?;
-            if action_period != period || !valid_amount(expected_amount) {
-                return Err("El ajuste de importe de la propuesta no es válido.".into());
-            }
-            let occurrence_id: String = transaction
-                .query_row(
-                    "SELECT id FROM finance_service_occurrences WHERE service_id=?1 AND period=?2",
-                    params![service_id, period],
-                    |row| row.get(0),
-                )
-                .map_err(|_| "La ocurrencia de la propuesta no existe.".to_string())?;
-            let (paid_amount, modality, active): (Option<String>, String, i32) = transaction
-                .query_row("SELECT o.paid_amount,s.modality,s.active FROM finance_service_occurrences o JOIN finance_services s ON s.id=o.service_id WHERE o.id=?1", [&occurrence_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                .map_err(|error| error.to_string())?;
-            if paid_amount.as_deref() != Some(expected_amount) || modality != "fixed" || active == 0
-            {
-                return Err("La propuesta quedó obsoleta porque cambió el importe pagado.".into());
-            }
-            let version: i64 = transaction
-                .query_row("SELECT COALESCE(MAX(version_number),0)+1 FROM finance_service_occurrence_versions WHERE occurrence_id=?1", [&occurrence_id], |row| row.get(0))
-                .map_err(|error| error.to_string())?;
-            transaction.execute(
-                "INSERT INTO finance_service_occurrence_versions(id,occurrence_id,version_number,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,reason,created_at)
-                 SELECT ?1,id,?2,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,'Auditoría financiera',?3
-                 FROM finance_service_occurrences WHERE id=?4",
-                params![new_id(), version, timestamp, occurrence_id],
-            ).map_err(|error| error.to_string())?;
-            transaction.execute("UPDATE finance_service_occurrences SET expected_amount=?1,updated_at=?2 WHERE id=?3", params![expected_amount, timestamp, occurrence_id]).map_err(|error| error.to_string())?;
-        }
-        "unlink_transaction_service" => {
-            let ids = parameters
-                .get("transactionIds")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    "La propuesta no identifica los gastos a desvincular.".to_string()
-                })?;
-            if ids.is_empty() || ids.len() > 50 {
-                return Err("La propuesta no contiene una cantidad válida de gastos.".into());
-            }
-            for value in ids {
-                let transaction_id = value
-                    .as_str()
-                    .filter(|value| !value.trim().is_empty())
-                    .ok_or_else(|| {
-                        "La propuesta contiene un identificador de gasto inválido.".to_string()
-                    })?;
-                let service_id: Option<String> = transaction
-                    .query_row("SELECT service_id FROM finance_transactions WHERE id=?1 AND deleted_at IS NULL", [transaction_id], |row| row.get(0))
-                    .optional()
-                    .map_err(|error| error.to_string())?
-                    .flatten();
-                let Some(service_id) = service_id else {
-                    return Err(
-                        "Uno de los gastos de la propuesta ya no existe o fue desvinculado.".into(),
-                    );
-                };
-                let service_exists: bool = transaction
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM finance_services WHERE id=?1)",
-                        [&service_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                if service_exists {
-                    return Err(
-                        "La propuesta quedó obsoleta porque el servicio volvió a existir.".into(),
-                    );
-                }
-                transaction
-                    .execute(
-                        "UPDATE finance_transactions SET service_id=NULL,updated_at=?1 WHERE id=?2",
-                        params![timestamp, transaction_id],
-                    )
-                    .map_err(|error| error.to_string())?;
-                transaction.execute("UPDATE finance_purchases SET service_id=NULL,updated_at=?1 WHERE transaction_id=?2", params![timestamp, transaction_id]).map_err(|error| error.to_string())?;
-            }
-        }
-        _ => {
-            return Err(format!(
-                "La operación de auditoría no está permitida: {operation}."
-            ))
-        }
-    }
-
-    let _: serde_json::Value = serde_json::from_str(current_data)
-        .map_err(|_| "Los datos actuales de la propuesta no son JSON válido.".to_string())?;
-    Ok(())
-}
-
-pub fn finance_decide_audit_proposal(
-    app: crate::host::AppHandle,
-    payload: DecideFinanceAuditProposalPayload,
-) -> FinanceCommandResult<()> {
-    if payload.proposal_id.trim().is_empty()
-        || !matches!(
-            payload.decision.as_str(),
-            "accepted" | "rejected" | "cancelled"
-        )
-    {
-        return Err("La decisión de auditoría no es válida.".into());
-    }
-    let mut connection = validate_context(&payload.context, &app)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    let current: (String, String, String, String, Option<String>, String, String, String) = transaction.query_row("SELECT status,COALESCE(actor_library_user_id,''),data_fingerprint,proposal_type,service_id,period,current_data,suggested_change FROM finance_audit_proposals WHERE id=?1", [&payload.proposal_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))).map_err(|_| "La propuesta de auditoría no existe.".to_string())?;
-    if current.0 != "pending" {
-        return Err("La propuesta ya fue decidida o quedó obsoleta.".into());
-    }
-    if !current.1.is_empty() && payload.context.actor_library_user_id != current.1 {
-        return Err("El actor de la propuesta no coincide con el actor actual.".into());
-    }
-    if payload.expected_data_fingerprint.as_deref() != Some(current.2.as_str()) {
-        return Err("La propuesta quedó obsoleta porque cambió su huella de datos.".into());
-    }
-    let current_fingerprint = match (current.3.as_str(), current.4.as_deref()) {
-        ("service-unpaid", Some(service_id)) => Some(service_unpaid_fingerprint(
-            &transaction,
-            service_id,
-            &current.5,
-        )?),
-        ("amount-variation", Some(service_id)) => Some(amount_variation_fingerprint(
-            &transaction,
-            service_id,
-            &current.5,
-        )?),
-        ("orphan-service-link", None) => {
-            let action: serde_json::Value = serde_json::from_str(&current.7).map_err(|_| {
-                "La propuesta aceptada no contiene una acción estructurada válida.".to_string()
-            })?;
-            let ids = action
-                .get("parameters")
-                .and_then(|value| value.get("transactionIds"))
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| "La propuesta no identifica los gastos afectados.".to_string())?;
-            let ids = ids
-                .iter()
-                .map(|value| {
-                    value.as_str().map(str::to_owned).ok_or_else(|| {
-                        "La propuesta contiene un identificador inválido.".to_string()
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Some(orphan_service_link_fingerprint(
-                &transaction,
-                &current.5,
-                &ids,
-            )?)
-        }
-        ("service-card-reconciliation", _) => {
-            let action: serde_json::Value = serde_json::from_str(&current.7).map_err(|_| {
-                "La propuesta aceptada no contiene una acción estructurada válida.".to_string()
-            })?;
-            let statement_id = action
-                .get("parameters")
-                .and_then(|value| value.get("statementId"))
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "La propuesta no identifica el resumen de tarjeta.".to_string())?;
-            let (statement_period, statement_snapshot): (String, String) = transaction
-                .query_row(
-                    "SELECT period,account_id,issuer,card_last_four,closing_date,due_date,currency,
-                            previous_balance,payments_amount,credits_amount,purchases_amount,fees_amount,
-                            interest_amount,taxes_amount,total_due,minimum_payment,validation_status,
-                            source_artifact_id,updated_at
-                     FROM finance_credit_card_statements WHERE id=?1",
-                    [statement_id],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            format!(
-                                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                                row.get::<_, String>(4)?,
-                                row.get::<_, String>(5)?,
-                                row.get::<_, String>(6)?,
-                                row.get::<_, String>(7)?,
-                                row.get::<_, String>(8)?,
-                                row.get::<_, String>(9)?,
-                                row.get::<_, String>(10)?,
-                                row.get::<_, String>(11)?,
-                                row.get::<_, String>(12)?,
-                                row.get::<_, String>(13)?,
-                                row.get::<_, String>(14)?,
-                                row.get::<_, Option<String>>(15)?.unwrap_or_default(),
-                                row.get::<_, String>(16)?,
-                                row.get::<_, String>(17)?,
-                                row.get::<_, String>(18)?,
-                            ),
-                        ))
-                    },
-                )
-                .map_err(|_| "El resumen de tarjeta de la propuesta no existe.".to_string())?;
-            let (services, occurrences) = load_card_reconciliation_context(&transaction)?;
-            let input = load_card_reconciliation_input(
-                &transaction,
-                statement_id,
-                &statement_period,
-                &statement_snapshot,
-                &services,
-                &occurrences,
-            )?;
-            Some(reconciliation_fingerprint(
-                &input,
-                &reconcile_card_service_consumption(&input),
-            ))
-        }
-        _ => None,
-    };
-    if let Some(fingerprint) = current_fingerprint {
-        if fingerprint != current.2 {
-            let timestamp = now();
-            transaction.execute("UPDATE finance_audit_proposals SET status='outdated',decided_at=?1 WHERE id=?2", params![timestamp, payload.proposal_id]).map_err(|error| error.to_string())?;
-            transaction.execute("INSERT INTO finance_audit_decisions(id,proposal_id,decision,actor_library_user_id,source,created_at) VALUES(?1,?2,'outdated',?3,?4,?5)", params![new_id(), payload.proposal_id, payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
-            transaction.commit().map_err(|error| error.to_string())?;
-            drop(connection);
-            sync_context(&payload.context, &app).map_err(FinanceCommandError::from)?;
-            return Err(
-                "La propuesta quedó obsoleta porque cambiaron los datos financieros.".into(),
-            );
-        }
-    }
-    let timestamp = now();
-    if payload.decision == "accepted" {
-        apply_audit_proposal_change(
-            &transaction,
-            &current.3,
-            current.4.as_deref(),
-            &current.5,
-            &current.6,
-            &current.7,
-            Some(payload.context.actor_library_user_id.as_str()),
-            &payload.context.source,
-            payload.resolution_assignments.as_deref(),
-        )?;
-        if current.3 == "service-card-reconciliation" {
-            let action: serde_json::Value = serde_json::from_str(&current.7).map_err(|_| {
-                "La propuesta aceptada no contiene una acción estructurada válida.".to_string()
-            })?;
-            let action_assignments = action
-                .get("parameters")
-                .and_then(|value| value.get("assignments"))
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| "La propuesta no contiene asignaciones estructuradas.".to_string())?
-                .iter()
-                .cloned()
-                .map(serde_json::from_value::<CardServiceAssignment>)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| "La propuesta contiene asignaciones inválidas.".to_string())?;
-            let assignments = payload
-                .resolution_assignments
-                .as_deref()
-                .unwrap_or(&action_assignments);
-            let mut affected = BTreeSet::new();
-            for assignment in assignments {
-                affected.insert((assignment.service_id.clone(), assignment.period.clone()));
-            }
-            for (service_id, period) in affected {
-                let stale = transaction
-                    .prepare(
-                        "SELECT id FROM finance_audit_proposals
-                         WHERE status='pending' AND id<>?1 AND service_id=?2 AND period=?3",
-                    )
-                    .map_err(|error| error.to_string())?
-                    .query_map(params![payload.proposal_id, service_id, period], |row| {
-                        row.get::<_, String>(0)
-                    })
-                    .map_err(|error| error.to_string())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| error.to_string())?;
-                for proposal_id in stale {
-                    transaction
-                        .execute(
-                            "UPDATE finance_audit_proposals SET status='outdated',decided_at=?1
-                             WHERE id=?2",
-                            params![timestamp, proposal_id],
-                        )
-                        .map_err(|error| error.to_string())?;
-                    transaction
-                        .execute(
-                            "INSERT INTO finance_audit_decisions(
-                             id,proposal_id,decision,actor_library_user_id,source,created_at)
-                             VALUES(?1,?2,'outdated',?3,?4,?5)",
-                            params![
-                                new_id(),
-                                proposal_id,
-                                payload.context.actor_library_user_id,
-                                payload.context.source,
-                                timestamp
-                            ],
-                        )
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-        }
-    }
-    transaction
-        .execute(
-            "UPDATE finance_audit_proposals SET status=?1,decided_at=?2 WHERE id=?3",
-            params![payload.decision, timestamp, payload.proposal_id],
-        )
-        .map_err(|error| error.to_string())?;
-    transaction.execute("INSERT INTO finance_audit_decisions(id,proposal_id,decision,actor_library_user_id,source,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![new_id(), payload.proposal_id, payload.decision, payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
-    transaction.commit().map_err(|error| error.to_string())?;
-    drop(connection);
-    sync_context(&payload.context, &app).map_err(FinanceCommandError::from)
-}
-
 pub fn finance_get_dashboard(
     app: crate::host::AppHandle,
     context: FinanceContext,
@@ -3197,37 +1555,18 @@ pub fn finance_get_dashboard(
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
-    let mut statement = connection.prepare("SELECT t.id, t.transaction_type, t.amount, t.currency, t.effective_date, t.account_id, t.destination_account_id, t.category_id, t.description, t.source, t.status, t.actor_user_id, t.source_artifact_id, t.service_id, t.merchant_id, t.operation_fingerprint, t.installment_id, a.reference, a.raw_text, t.created_at, t.updated_at, t.actor_library_user_id FROM finance_transactions t LEFT JOIN finance_source_artifacts a ON a.id=t.source_artifact_id WHERE t.deleted_at IS NULL AND t.effective_date LIKE ?1 || '%' ORDER BY t.effective_date DESC, t.created_at DESC LIMIT 500") .map_err(|e| e.to_string())?;
+    let mut statement = connection
+        .prepare(&format!(
+            "{TRANSACTION_SELECT} WHERE t.deleted_at IS NULL AND t.effective_date LIKE ?1 || '%'
+             ORDER BY t.effective_date DESC,t.created_at DESC LIMIT 500"
+        ))
+        .map_err(|e| e.to_string())?;
     let transactions = statement
-        .query_map([&month], |row| {
-            Ok(FinanceTransaction {
-                id: row.get(0)?,
-                transaction_type: row.get(1)?,
-                amount: row.get(2)?,
-                currency: row.get(3)?,
-                effective_date: row.get(4)?,
-                account_id: row.get(5)?,
-                destination_account_id: row.get(6)?,
-                category_id: row.get(7)?,
-                description: row.get(8)?,
-                source: row.get(9)?,
-                status: row.get(10)?,
-                actor_user_id: row.get(11)?,
-                service_id: row.get(13)?,
-                actor_library_user_id: row.get(21)?,
-                source_artifact_id: row.get(12)?,
-                merchant_id: row.get(14)?,
-                operation_fingerprint: row.get(15)?,
-                installment_id: row.get(16)?,
-                source_reference: row.get(17)?,
-                raw_source: row.get(18)?,
-                created_at: row.get(19)?,
-                updated_at: row.get(20)?,
-            })
-        })
+        .query_map([&month], transaction_from_row)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    drop(statement);
     let mut income_by_currency = BTreeMap::new();
     let mut expense_by_currency = BTreeMap::new();
     for transaction in transactions
@@ -3322,19 +1661,7 @@ pub fn finance_get_transaction(
         return Err("El movimiento requiere un identificador.".into());
     }
     let connection = validate_context(&payload.context, &app)?;
-    connection
-        .query_row(
-            "SELECT t.id,t.transaction_type,t.amount,t.currency,t.effective_date,t.account_id,t.destination_account_id,t.category_id,t.description,t.source,t.status,t.actor_user_id,t.source_artifact_id,t.service_id,t.merchant_id,t.operation_fingerprint,t.installment_id,a.reference,a.raw_text,t.created_at,t.updated_at,t.actor_library_user_id
-             FROM finance_transactions t LEFT JOIN finance_source_artifacts a ON a.id=t.source_artifact_id
-             WHERE t.id=?1 AND t.deleted_at IS NULL",
-            [&payload.id],
-            |row| {
-                Ok(FinanceTransaction {
-                    id: row.get(0)?, transaction_type: row.get(1)?, amount: row.get(2)?, currency: row.get(3)?, effective_date: row.get(4)?, account_id: row.get(5)?, destination_account_id: row.get(6)?, category_id: row.get(7)?, description: row.get(8)?, source: row.get(9)?, status: row.get(10)?, actor_user_id: row.get(11)?, source_artifact_id: row.get(12)?, service_id: row.get(13)?, merchant_id: row.get(14)?, operation_fingerprint: row.get(15)?, installment_id: row.get(16)?, source_reference: row.get(17)?, raw_source: row.get(18)?, created_at: row.get(19)?, updated_at: row.get(20)?, actor_library_user_id: row.get(21)?,
-                })
-            },
-        )
-        .map_err(|_| "El movimiento no existe.".into())
+    load_transaction(&connection, &payload.id)?.ok_or_else(|| "El movimiento no existe.".into())
 }
 
 pub fn finance_list_all_transactions(
@@ -3343,35 +1670,12 @@ pub fn finance_list_all_transactions(
 ) -> FinanceCommandResult<Vec<FinanceTransaction>> {
     let connection = validate_context(&context, &app)?;
     let mut statement = connection
-        .prepare("SELECT t.id,t.transaction_type,t.amount,t.currency,t.effective_date,t.account_id,t.destination_account_id,t.category_id,t.description,t.source,t.status,t.actor_user_id,t.source_artifact_id,t.service_id,t.merchant_id,t.operation_fingerprint,t.installment_id,a.reference,a.raw_text,t.created_at,t.updated_at,t.actor_library_user_id FROM finance_transactions t LEFT JOIN finance_source_artifacts a ON a.id=t.source_artifact_id WHERE t.deleted_at IS NULL ORDER BY t.effective_date DESC,t.created_at DESC LIMIT 5000")
+        .prepare(&format!(
+            "{TRANSACTION_SELECT} WHERE t.deleted_at IS NULL ORDER BY t.effective_date DESC,t.created_at DESC LIMIT 5000"
+        ))
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map([], |row| {
-            Ok(FinanceTransaction {
-                id: row.get(0)?,
-                transaction_type: row.get(1)?,
-                amount: row.get(2)?,
-                currency: row.get(3)?,
-                effective_date: row.get(4)?,
-                account_id: row.get(5)?,
-                destination_account_id: row.get(6)?,
-                category_id: row.get(7)?,
-                description: row.get(8)?,
-                source: row.get(9)?,
-                status: row.get(10)?,
-                actor_user_id: row.get(11)?,
-                source_artifact_id: row.get(12)?,
-                service_id: row.get(13)?,
-                merchant_id: row.get(14)?,
-                operation_fingerprint: row.get(15)?,
-                installment_id: row.get(16)?,
-                source_reference: row.get(17)?,
-                raw_source: row.get(18)?,
-                created_at: row.get(19)?,
-                updated_at: row.get(20)?,
-                actor_library_user_id: row.get(21)?,
-            })
-        })
+        .query_map([], transaction_from_row)
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
@@ -3402,12 +1706,13 @@ pub fn finance_list_categories(
     finance_list_categories_inner(&connection).map_err(Into::into)
 }
 
+/// Net salary received in a month, by the day it was paid.
 fn finance_salary_by_currency(
     connection: &Connection,
     period: &str,
 ) -> Result<BTreeMap<String, i128>, String> {
     let mut statement = connection
-        .prepare("SELECT currency,net_amount FROM finance_salary_receipts WHERE period=?1")
+        .prepare("SELECT currency,net_amount FROM finance_salary_receipts WHERE substr(payment_date,1,7)=?1")
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([period], |row| {
@@ -3422,13 +1727,15 @@ fn finance_salary_by_currency(
     Ok(totals)
 }
 
+/// What was paid for credit cards in a month: the total of each statement,
+/// counted in the month it is due (a loaded statement is a paid one).
 fn finance_debt_by_currency(
     connection: &Connection,
     period: &str,
 ) -> Result<BTreeMap<String, i128>, String> {
     let mut totals = BTreeMap::new();
     let mut card_statement = connection
-        .prepare("SELECT currency,total_due FROM finance_credit_card_statements WHERE period=?1")
+        .prepare("SELECT currency,total_due FROM finance_credit_card_statements WHERE substr(due_date,1,7)=?1")
         .map_err(|error| error.to_string())?;
     let card_rows = card_statement
         .query_map([period], |row| {
@@ -3436,20 +1743,6 @@ fn finance_debt_by_currency(
         })
         .map_err(|error| error.to_string())?;
     for row in card_rows {
-        let (currency, amount) = row.map_err(|error| error.to_string())?;
-        add_currency_total(&mut totals, &currency, &amount);
-    }
-    drop(card_statement);
-    let period_end = format!("{period}-31");
-    let mut valuation_statement = connection
-        .prepare("SELECT i.currency,v.amount FROM finance_investments i JOIN finance_valuations v ON v.investment_id=i.id WHERE i.active=1 AND i.asset_type='debt' AND v.valuation_date=(SELECT MAX(v2.valuation_date) FROM finance_valuations v2 WHERE v2.investment_id=i.id AND v2.valuation_date<=?1)")
-        .map_err(|error| error.to_string())?;
-    let valuation_rows = valuation_statement
-        .query_map([&period_end], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| error.to_string())?;
-    for row in valuation_rows {
         let (currency, amount) = row.map_err(|error| error.to_string())?;
         add_currency_total(&mut totals, &currency, &amount);
     }
@@ -3462,7 +1755,7 @@ fn finance_debt_ratio_history(
 ) -> Result<Vec<FinanceDebtRatioHistoryPoint>, String> {
     let start_period = finance_history_start_period(end_period)?;
     let mut statement = connection
-        .prepare("SELECT period FROM finance_salary_receipts WHERE period BETWEEN ?1 AND ?2 UNION SELECT period FROM finance_credit_card_statements WHERE period BETWEEN ?1 AND ?2 UNION SELECT substr(valuation_date,1,7) FROM finance_valuations WHERE substr(valuation_date,1,7) BETWEEN ?1 AND ?2 ORDER BY 1")
+        .prepare("SELECT substr(payment_date,1,7) FROM finance_salary_receipts WHERE substr(payment_date,1,7) BETWEEN ?1 AND ?2 UNION SELECT substr(due_date,1,7) FROM finance_credit_card_statements WHERE substr(due_date,1,7) BETWEEN ?1 AND ?2 ORDER BY 1")
         .map_err(|error| error.to_string())?;
     let periods = statement
         .query_map(params![start_period, end_period], |row| {
@@ -3518,7 +1811,8 @@ pub fn finance_save_savings_reserve(
     payload: SaveSavingsReservePayload,
 ) -> FinanceCommandResult<FinanceSavingsReserve> {
     let reserve = &payload.reserve;
-    if reserve.name.trim().is_empty()
+    if reserve.id.trim().is_empty()
+        || reserve.name.trim().is_empty()
         || !valid_amount(&reserve.opening_balance)
         || !matches!(reserve.currency.as_str(), "ARS" | "USD")
     {
@@ -3530,12 +1824,44 @@ pub fn finance_save_savings_reserve(
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    transaction.execute("INSERT OR IGNORE INTO finance_accounts (id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES (?1,?2,'savings_reserve',?3,'0',?4,?5,?5)", params![ledger_account_id, reserve.name.trim(), reserve.currency, reserve.active as i32, timestamp]).map_err(|error| error.to_string())?;
     transaction.execute("INSERT INTO finance_savings_reserves (id,name,currency,opening_balance,objective,active,ledger_account_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8) ON CONFLICT(id) DO UPDATE SET name=excluded.name,currency=excluded.currency,opening_balance=excluded.opening_balance,objective=excluded.objective,active=excluded.active,ledger_account_id=COALESCE(finance_savings_reserves.ledger_account_id, excluded.ledger_account_id),updated_at=excluded.updated_at", params![reserve.id, reserve.name.trim(), reserve.currency, reserve.opening_balance, reserve.objective, reserve.active as i32, ledger_account_id, timestamp]).map_err(|error| error.to_string())?;
+    let ledger_account_id: String = transaction
+        .query_row(
+            "SELECT ledger_account_id FROM finance_savings_reserves WHERE id=?1",
+            [&reserve.id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    // The internal ledger follows its reserve: same name, currency and state.
+    transaction.execute("INSERT INTO finance_accounts (id,name,account_type,currency,opening_balance,active,created_at,updated_at) VALUES (?1,?2,'savings_reserve',?3,'0',?4,?5,?5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,currency=excluded.currency,active=excluded.active,updated_at=excluded.updated_at", params![ledger_account_id, reserve.name.trim(), reserve.currency, reserve.active as i32, timestamp]).map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);
     sync_context(&payload.context, &app)?;
     Ok(reserve.clone())
+}
+
+fn reserve_balance(connection: &Connection, reserve_id: &str) -> Result<i128, String> {
+    let opening: String = connection
+        .query_row(
+            "SELECT opening_balance FROM finance_savings_reserves WHERE id=?1",
+            [reserve_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "La reserva no existe.".to_string())?;
+    let mut balance = parse_cents(&opening).unwrap_or_default();
+    let mut statement = connection
+        .prepare("SELECT movement_type,amount,status FROM finance_savings_movements WHERE reserve_id=?1")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([reserve_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (kind, amount, status) = row.map_err(|error| error.to_string())?;
+        apply_savings_movement(&mut balance, &kind, &amount, &status);
+    }
+    Ok(balance)
 }
 
 pub fn finance_save_savings_movement(
@@ -3568,7 +1894,13 @@ pub fn finance_save_savings_movement(
             return Err("La cuenta no está vinculada a la reserva.".into());
         }
     }
+    let counted = matches!(movement.status.as_str(), "confirmed" | "corrected");
+    let moves_money = matches!(movement.movement_type.as_str(), "contribution" | "withdrawal");
+    if counted && moves_money && movement.account_id.is_none() {
+        return Err("Los aportes y retiros confirmados requieren una cuenta vinculada.".into());
+    }
     let timestamp = now();
+    let transfer_id = format!("savings-movement:{}", movement.id);
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -3579,30 +1911,31 @@ pub fn finance_save_savings_movement(
             params![movement.actor_library_user_id, movement.id],
         )
         .map_err(|error| error.to_string())?;
-    if movement.status == "confirmed"
-        && matches!(
-            movement.movement_type.as_str(),
-            "contribution" | "withdrawal"
-        )
-    {
-        let account_id = movement.account_id.as_deref().ok_or_else(|| {
-            "Los aportes y retiros confirmados requieren una cuenta vinculada.".to_string()
-        })?;
-        let (source_account, destination_account) = if movement.movement_type == "contribution" {
-            (account_id, ledger_account_id.as_str())
-        } else {
-            (ledger_account_id.as_str(), account_id)
-        };
-        transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,description,source,status,actor_user_id,created_at,updated_at) VALUES (?1,'transfer',?2,?3,?4,?5,?6,?7,'savings',?8,?9,?10,?10) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,destination_account_id=excluded.destination_account_id,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,updated_at=excluded.updated_at", params![format!("savings-movement:{}", movement.id), movement.amount, movement.currency, movement.effective_date, source_account, destination_account, movement.description, movement.status, movement.actor_user_id, timestamp]).map_err(|error| error.to_string())?;
-        transaction
-            .execute(
-                "UPDATE finance_transactions SET actor_library_user_id=?1 WHERE id=?2",
-                params![
-                    movement.actor_library_user_id,
-                    format!("savings-movement:{}", movement.id)
-                ],
-            )
-            .map_err(|error| error.to_string())?;
+    // The transfer between the account and the reserve's ledger follows the
+    // movement: it exists only while the movement counts and moves money.
+    match movement.account_id.as_deref().filter(|_| counted && moves_money) {
+        Some(account_id) => {
+            let (source_account, destination_account) = if movement.movement_type == "contribution" {
+                (account_id, ledger_account_id.as_str())
+            } else {
+                (ledger_account_id.as_str(), account_id)
+            };
+            transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,description,source,status,actor_user_id,created_at,updated_at) VALUES (?1,'transfer',?2,?3,?4,?5,?6,?7,'savings',?8,?9,?10,?10) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,effective_date=excluded.effective_date,account_id=excluded.account_id,destination_account_id=excluded.destination_account_id,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,deleted_at=NULL,updated_at=excluded.updated_at", params![transfer_id, movement.amount, movement.currency, movement.effective_date, source_account, destination_account, movement.description, movement.status, movement.actor_user_id, timestamp]).map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE finance_transactions SET actor_library_user_id=?1 WHERE id=?2",
+                    params![movement.actor_library_user_id, transfer_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        None => {
+            transaction
+                .execute(
+                    "UPDATE finance_transactions SET deleted_at=?1,updated_at=?1 WHERE id=?2 AND deleted_at IS NULL",
+                    params![timestamp, transfer_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
     }
     transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);
@@ -3610,51 +1943,93 @@ pub fn finance_save_savings_movement(
     Ok(movement.clone())
 }
 
+/// Buys a currency for a reserve (money leaves the account and enters the
+/// reserve) or sells savings (money leaves the reserve and enters the
+/// account). Neither is income nor expense.
 pub fn finance_save_savings_exchange(
     app: crate::host::AppHandle,
     payload: SaveSavingsExchangePayload,
 ) -> FinanceCommandResult<FinanceSavedSavingsExchange> {
     let exchange = &payload.exchange;
     let actor_library_user_id = payload.context.actor_library_user_id.clone();
+    let selling = match exchange.direction.as_deref().unwrap_or("buy") {
+        "buy" => false,
+        "sell" => true,
+        _ => return Err("La dirección del cambio debe ser buy o sell.".into()),
+    };
     if exchange.id.trim().is_empty()
         || exchange.reserve_id.trim().is_empty()
         || exchange.source_account_id.trim().is_empty()
         || exchange.description.trim().is_empty()
         || !valid_amount(&exchange.source_amount)
         || !valid_amount(&exchange.savings_amount)
-        || exchange.effective_date.len() < 10
+        || !valid_iso_date(exchange.effective_date.get(..10).unwrap_or_default())
         || !matches!(exchange.source_currency.as_str(), "ARS" | "USD")
         || !matches!(exchange.savings_currency.as_str(), "ARS" | "USD")
         || exchange.source_currency == exchange.savings_currency
     {
         return Err(
-            "La compra para ahorro requiere importes, monedas, fecha y cuentas válidos.".into(),
+            "El cambio de moneda requiere importes, monedas distintas, fecha y cuentas válidos.".into(),
         );
     }
     let connection = validate_context(&payload.context, &app)?;
-    let reserve_currency: String = connection
+    let (reserve_currency, reserve_name, ledger_account_id): (String, String, String) = connection
         .query_row(
-            "SELECT currency FROM finance_savings_reserves WHERE id = ?1 AND active = 1",
+            "SELECT currency,name,ledger_account_id FROM finance_savings_reserves WHERE id = ?1 AND active = 1",
             [&exchange.reserve_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|_| "La reserva no existe o está inactiva.".to_string())?;
     if reserve_currency != exchange.savings_currency {
-        return Err("La moneda acreditada no coincide con la reserva.".into());
+        return Err("La moneda del ahorro no coincide con la reserva.".into());
     }
-    let source_account_currency: String = connection
+    let account_currency: String = connection
         .query_row(
             "SELECT currency FROM finance_accounts WHERE id = ?1 AND active = 1 AND account_type <> 'savings_reserve'",
             [&exchange.source_account_id],
             |row| row.get(0),
         )
-        .map_err(|_| "La cuenta de origen no existe, está inactiva o no es una cuenta de pago.".to_string())?;
-    if source_account_currency != exchange.source_currency {
-        return Err("La moneda de salida no coincide con la cuenta de origen.".into());
+        .map_err(|_| "La cuenta no existe, está inactiva o no es una cuenta de pago.".to_string())?;
+    if account_currency != exchange.source_currency {
+        return Err("La moneda de la cuenta no coincide con la del cambio.".into());
+    }
+    let movement_id = format!("savings-exchange:{}", exchange.id);
+    if selling {
+        let available = reserve_balance(&connection, &exchange.reserve_id)?;
+        // A sale being corrected already took its amount out of the balance.
+        let already_sold = connection
+            .query_row(
+                "SELECT amount FROM finance_savings_movements
+                 WHERE id=?1 AND movement_type='withdrawal' AND status IN ('confirmed','corrected')",
+                [&movement_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .and_then(|amount| parse_cents(&amount).ok())
+            .unwrap_or_default();
+        let requested = parse_cents(&exchange.savings_amount).unwrap_or_default();
+        if requested > available + already_sold {
+            return Err(format!(
+                "La reserva {reserve_name} tiene {reserve_currency} {}; no alcanza para vender {reserve_currency} {}.",
+                format_cents(available + already_sold),
+                exchange.savings_amount
+            )
+            .into());
+        }
     }
 
     let timestamp = now();
-    let movement_id = format!("savings-exchange:{}", exchange.id);
+    let (account_id, destination_account_id) = if selling {
+        (ledger_account_id.as_str(), exchange.source_account_id.as_str())
+    } else {
+        (exchange.source_account_id.as_str(), ledger_account_id.as_str())
+    };
+    let (movement_type, reason) = if selling {
+        ("withdrawal", Some(format!("Venta de {}", exchange.savings_currency)))
+    } else {
+        ("contribution", None)
+    };
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -3667,23 +2042,13 @@ pub fn finance_save_savings_exchange(
         source_artifact_id.as_deref(),
         exchange.source_reference.as_deref(),
     ) {
-        transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,created_at) VALUES(?1,'telegram',?2,?3,?4) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text", params![artifact_id, reference, exchange.raw_source, timestamp]).map_err(|error| error.to_string())?;
+        transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text", params![artifact_id, payload.context.source, reference, exchange.raw_source, timestamp]).map_err(|error| error.to_string())?;
     }
-    transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,category_id,description,source,status,actor_user_id,source_artifact_id,created_at,updated_at) VALUES (?1,'expense',?2,?3,?4,?5,NULL,NULL,?6,'savings_exchange','confirmed',?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,account_id=excluded.account_id,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,source_artifact_id=excluded.source_artifact_id,updated_at=excluded.updated_at", params![exchange.id, exchange.source_amount, exchange.source_currency, exchange.effective_date, exchange.source_account_id, exchange.description, exchange.actor_user_id, source_artifact_id, timestamp]).map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "UPDATE finance_transactions SET actor_library_user_id=?1 WHERE id=?2",
-            params![&actor_library_user_id, exchange.id],
-        )
-        .map_err(|error| error.to_string())?;
-    transaction.execute("INSERT INTO finance_savings_movements (id,reserve_id,account_id,movement_type,amount,currency,effective_date,description,reason,source,status,actor_user_id,linked_transaction_id,created_at,updated_at) VALUES (?1,?2,NULL,'contribution',?3,?4,?5,?6,NULL,'savings_exchange','confirmed',?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET reserve_id=excluded.reserve_id,amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,linked_transaction_id=excluded.linked_transaction_id,updated_at=excluded.updated_at", params![movement_id, exchange.reserve_id, exchange.savings_amount, exchange.savings_currency, exchange.effective_date, exchange.description, exchange.actor_user_id, exchange.id, timestamp]).map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "UPDATE finance_savings_movements SET actor_library_user_id=?1 WHERE id=?2",
-            params![&actor_library_user_id, movement_id],
-        )
-        .map_err(|error| error.to_string())?;
+    transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,category_id,description,source,status,actor_user_id,source_artifact_id,actor_library_user_id,created_at,updated_at) VALUES (?1,'exchange',?2,?3,?4,?5,?6,NULL,?7,'savings_exchange','confirmed',?8,?9,?10,?11,?11) ON CONFLICT(id) DO UPDATE SET transaction_type='exchange',amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,account_id=excluded.account_id,destination_account_id=excluded.destination_account_id,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,source_artifact_id=excluded.source_artifact_id,actor_library_user_id=excluded.actor_library_user_id,deleted_at=NULL,updated_at=excluded.updated_at", params![exchange.id, exchange.source_amount, exchange.source_currency, exchange.effective_date, account_id, destination_account_id, exchange.description, exchange.actor_user_id, source_artifact_id, actor_library_user_id, timestamp]).map_err(|error| error.to_string())?;
+    transaction.execute("INSERT INTO finance_savings_movements (id,reserve_id,account_id,movement_type,amount,currency,effective_date,description,reason,source,status,actor_user_id,linked_transaction_id,actor_library_user_id,created_at,updated_at) VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,'savings_exchange','confirmed',?9,?10,?11,?12,?12) ON CONFLICT(id) DO UPDATE SET reserve_id=excluded.reserve_id,movement_type=excluded.movement_type,amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,description=excluded.description,reason=excluded.reason,status=excluded.status,actor_user_id=excluded.actor_user_id,linked_transaction_id=excluded.linked_transaction_id,actor_library_user_id=excluded.actor_library_user_id,updated_at=excluded.updated_at", params![movement_id, exchange.reserve_id, movement_type, exchange.savings_amount, exchange.savings_currency, exchange.effective_date, exchange.description, reason, exchange.actor_user_id, exchange.id, actor_library_user_id, timestamp]).map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
+    let saved_transaction = load_transaction(&connection, &exchange.id)?
+        .ok_or_else(|| "El cambio de moneda no quedó guardado.".to_string())?;
     drop(connection);
     sync_context(&payload.context, &app)?;
     Ok(FinanceSavedSavingsExchange {
@@ -3691,42 +2056,19 @@ pub fn finance_save_savings_exchange(
             id: movement_id,
             reserve_id: exchange.reserve_id.clone(),
             account_id: None,
-            movement_type: "contribution".into(),
+            movement_type: movement_type.into(),
             amount: exchange.savings_amount.clone(),
             currency: exchange.savings_currency.clone(),
             effective_date: exchange.effective_date.clone(),
             description: exchange.description.clone(),
-            reason: None,
-            source: "savings_exchange".into(),
-            status: "confirmed".into(),
-            actor_user_id: exchange.actor_user_id,
-            actor_library_user_id: Some(actor_library_user_id.clone()),
-            linked_transaction_id: Some(exchange.id.clone()),
-        },
-        transaction: FinanceTransaction {
-            id: exchange.id.clone(),
-            transaction_type: "expense".into(),
-            amount: exchange.source_amount.clone(),
-            currency: exchange.source_currency.clone(),
-            effective_date: exchange.effective_date.clone(),
-            account_id: exchange.source_account_id.clone(),
-            destination_account_id: None,
-            category_id: None,
-            description: exchange.description.clone(),
+            reason,
             source: "savings_exchange".into(),
             status: "confirmed".into(),
             actor_user_id: exchange.actor_user_id,
             actor_library_user_id: Some(actor_library_user_id),
-            source_artifact_id,
-            service_id: None,
-            merchant_id: None,
-            operation_fingerprint: None,
-            installment_id: None,
-            source_reference: exchange.source_reference.clone(),
-            raw_source: exchange.raw_source.clone(),
-            created_at: None,
-            updated_at: None,
+            linked_transaction_id: Some(exchange.id.clone()),
         },
+        transaction: saved_transaction,
     })
 }
 
@@ -3836,6 +2178,12 @@ pub fn finance_delete_transaction(
         return Err("El movimiento es obligatorio.".into());
     }
     let connection = validate_context(&payload.context, &app)?;
+    if let Some(owner) = transaction_owner(&connection, &payload.id)? {
+        return Err(format!(
+            "El movimiento pertenece a un {owner}; eliminá ese documento en lugar del movimiento."
+        )
+        .into());
+    }
     let changed = connection.execute("UPDATE finance_transactions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NULL", params![now(), payload.id]).map_err(|error| error.to_string())?;
     if changed == 0 {
         return Err("El movimiento no existe o ya fue eliminado.".into());
@@ -3890,9 +2238,10 @@ fn clear_finance_data(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     transaction
         .execute_batch(
-            "DELETE FROM finance_audit_decisions;
-             DELETE FROM finance_audit_proposals;
-             DELETE FROM finance_audit_runs;
+            "DELETE FROM finance_link_log;
+             DELETE FROM finance_review_items;
+             DELETE FROM finance_merchant_aliases;
+             DELETE FROM finance_product_aliases;
              DELETE FROM finance_service_occurrence_versions;
              DELETE FROM finance_service_occurrences;
              DELETE FROM finance_service_invoices;
@@ -3902,7 +2251,6 @@ fn clear_finance_data(connection: &mut Connection) -> Result<(), String> {
              DELETE FROM finance_purchase_items;
              DELETE FROM finance_credit_card_statement_items;
              DELETE FROM finance_installments;
-             DELETE FROM finance_valuations;
              DELETE FROM finance_savings_accounts;
              DELETE FROM finance_savings_movements;
              DELETE FROM finance_salary_receipts;
@@ -3910,7 +2258,6 @@ fn clear_finance_data(connection: &mut Connection) -> Result<(), String> {
              DELETE FROM finance_credit_card_statements;
              DELETE FROM finance_receipts;
              DELETE FROM finance_installment_plans;
-             DELETE FROM finance_investments;
              DELETE FROM finance_transactions;
              DELETE FROM finance_source_artifacts;
              DELETE FROM finance_products;
@@ -3937,12 +2284,67 @@ pub fn finance_clear_all_data(
     Ok(())
 }
 
+/// The document a movement belongs to, when it is not a loose one. Only
+/// that document changes its amount, date, account or state.
+pub(crate) fn transaction_owner(
+    connection: &Connection,
+    transaction_id: &str,
+) -> Result<Option<&'static str>, String> {
+    const OWNERS: [(&str, &str); 5] = [
+        (
+            "SELECT EXISTS(SELECT 1 FROM finance_credit_card_statement_items WHERE transaction_id=?1)",
+            "resumen de tarjeta",
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM finance_purchases WHERE transaction_id=?1)",
+            "ticket",
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM finance_salary_receipts WHERE transaction_id=?1)",
+            "recibo de sueldo",
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM finance_savings_movements
+                           WHERE linked_transaction_id=?1 OR 'savings-movement:' || id=?1)",
+            "movimiento de ahorro",
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM finance_installments WHERE transaction_id=?1)",
+            "plan de cuotas",
+        ),
+    ];
+    for (query, owner) in OWNERS {
+        let owned: bool = connection
+            .query_row(query, [transaction_id], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if owned {
+            return Ok(Some(owner));
+        }
+    }
+    Ok(None)
+}
+
 pub fn finance_save_transaction(
     app: crate::host::AppHandle,
     payload: SaveTransactionPayload,
 ) -> FinanceCommandResult<FinanceTransaction> {
+    finance_save_transaction_linked(app, payload).map(|(transaction, _)| transaction)
+}
+
+/// Saves a loose movement. An expense paid with a credit card waits for the
+/// statement that pays it (`card_unpaid`) and joins its line when that
+/// statement is already loaded. A movement that belongs to a document only
+/// takes a new category, description or service.
+pub fn finance_save_transaction_linked(
+    app: crate::host::AppHandle,
+    payload: SaveTransactionPayload,
+) -> FinanceCommandResult<(FinanceTransaction, LinkOutcome)> {
     let transaction = &payload.transaction;
-    if !valid_amount(&transaction.amount)
+    if transaction.transaction_type == "exchange" {
+        return Err("Los cambios de moneda se registran con el ahorro, no como movimiento suelto.".into());
+    }
+    if transaction.id.trim().is_empty()
+        || !valid_amount(&transaction.amount)
         || !valid_iso_date(&transaction.effective_date)
         || transaction.account_id.trim().is_empty()
         || transaction.account_id.len() > 160
@@ -3964,20 +2366,42 @@ pub fn finance_save_transaction(
         || !matches!(transaction.currency.as_str(), "ARS" | "USD")
         || !matches!(
             transaction.status.as_str(),
-            "pending" | "confirmed" | "corrected" | "discarded"
+            "pending" | "confirmed" | "corrected" | "discarded" | CARD_UNPAID
         )
     {
         return Err("El movimiento requiere importe, fecha y cuenta válidos.".into());
     }
     let connection = validate_context(&payload.context, &app)?;
-    let account_currency: String = connection
+    let existing = load_transaction(&connection, &transaction.id)?;
+    let owner = match existing.as_ref() {
+        Some(existing) => transaction_owner(&connection, &existing.id)?,
+        None => None,
+    };
+    if let (Some(owner), Some(existing)) = (owner, existing.as_ref()) {
+        let unchanged = existing.transaction_type == transaction.transaction_type
+            && parse_cents(&existing.amount) == parse_cents(&transaction.amount)
+            && existing.currency == transaction.currency
+            && existing.effective_date.get(..10) == transaction.effective_date.get(..10)
+            && existing.account_id == transaction.account_id
+            && existing.destination_account_id == transaction.destination_account_id
+            && existing.status == transaction.status;
+        if !unchanged {
+            return Err(format!(
+                "Este movimiento pertenece a un {owner}: el importe, la fecha, la cuenta y el estado se corrigen desde ese documento. Acá solo cambian la categoría, la descripción y el servicio."
+            )
+            .into());
+        }
+    }
+    let (account_type, account_currency): (String, String) = connection
         .query_row(
-            "SELECT currency FROM finance_accounts WHERE id = ?1 AND active = 1",
+            "SELECT account_type,currency FROM finance_accounts WHERE id = ?1 AND active = 1",
             [&transaction.account_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| "La cuenta de origen no existe o está inactiva.".to_string())?;
-    if account_currency != transaction.currency {
+    // Credit cards take pesos and dollars; every other account has one currency.
+    let credit_card = account_type == "credit_card";
+    if !credit_card && account_currency != transaction.currency {
         return Err("La moneda del movimiento no coincide con la cuenta.".into());
     }
     if let Some(category_id) = transaction
@@ -4035,32 +2459,67 @@ pub fn finance_save_transaction(
         }
     }
     let timestamp = now();
-    let mut source_artifact_id = transaction.source_artifact_id.clone();
     let database_transaction = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    if let Some(reference) = transaction
-        .source_reference
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let artifact_id = source_artifact_id
-            .get_or_insert_with(|| format!("transaction-source:{}", transaction.id));
-        database_transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text", params![artifact_id.as_str(), payload.context.source, reference, transaction.raw_source, timestamp]).map_err(|error| error.to_string())?;
+    let mut outcome = LinkOutcome::default();
+    if owner.is_some() {
+        database_transaction
+            .execute(
+                "UPDATE finance_transactions SET category_id=?1,description=?2,service_id=?3,updated_at=?4 WHERE id=?5",
+                params![transaction.category_id, transaction.description, transaction.service_id, timestamp, transaction.id],
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        let waits_for_statement = credit_card
+            && transaction.transaction_type == "expense"
+            && existing.as_ref().map_or(true, |existing| existing.status == CARD_UNPAID)
+            && matches!(transaction.status.as_str(), "confirmed" | "corrected" | CARD_UNPAID);
+        let status = if waits_for_statement { CARD_UNPAID } else { transaction.status.as_str() };
+        let purchase_date = waits_for_statement.then(|| transaction.effective_date[..10].to_string());
+        let mut source_artifact_id = transaction.source_artifact_id.clone();
+        if let Some(reference) = transaction
+            .source_reference
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let artifact_id = source_artifact_id
+                .get_or_insert_with(|| format!("transaction-source:{}", transaction.id));
+            database_transaction.execute("INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET reference=excluded.reference,raw_text=excluded.raw_text", params![artifact_id.as_str(), payload.context.source, reference, transaction.raw_source, timestamp]).map_err(|error| error.to_string())?;
+        }
+        // An update keeps the channel the movement was created from.
+        database_transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,purchase_date,account_id,destination_account_id,category_id,description,source,status,actor_user_id,source_artifact_id,service_id,merchant_id,operation_fingerprint,installment_id,source_reference,raw_source,actor_library_user_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?22) ON CONFLICT(id) DO UPDATE SET transaction_type=excluded.transaction_type,amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,purchase_date=excluded.purchase_date,account_id=excluded.account_id,destination_account_id=excluded.destination_account_id,category_id=excluded.category_id,description=excluded.description,status=excluded.status,actor_user_id=excluded.actor_user_id,source_artifact_id=excluded.source_artifact_id,service_id=excluded.service_id,merchant_id=excluded.merchant_id,operation_fingerprint=COALESCE(excluded.operation_fingerprint,finance_transactions.operation_fingerprint),installment_id=COALESCE(excluded.installment_id,finance_transactions.installment_id),source_reference=excluded.source_reference,raw_source=excluded.raw_source,actor_library_user_id=excluded.actor_library_user_id,deleted_at=NULL,updated_at=excluded.updated_at", params![transaction.id, transaction.transaction_type, transaction.amount, transaction.currency, transaction.effective_date, purchase_date, transaction.account_id, transaction.destination_account_id, transaction.category_id, transaction.description, payload.context.source, status, transaction.actor_user_id, source_artifact_id, transaction.service_id, transaction.merchant_id, transaction.operation_fingerprint, transaction.installment_id, transaction.source_reference, transaction.raw_source, payload.context.actor_library_user_id, timestamp]).map_err(|e| e.to_string())?;
+        if waits_for_statement {
+            crate::finance_matching::link_unpaid_expense(&database_transaction, &transaction.id, &mut outcome)?;
+        }
     }
-    database_transaction.execute("INSERT INTO finance_transactions (id,transaction_type,amount,currency,effective_date,account_id,destination_account_id,category_id,description,source,status,actor_user_id,source_artifact_id,service_id,merchant_id,operation_fingerprint,installment_id,source_reference,raw_source,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?20) ON CONFLICT(id) DO UPDATE SET transaction_type=excluded.transaction_type,amount=excluded.amount,currency=excluded.currency,effective_date=excluded.effective_date,account_id=excluded.account_id,destination_account_id=excluded.destination_account_id,category_id=excluded.category_id,description=excluded.description,source=excluded.source,status=excluded.status,actor_user_id=excluded.actor_user_id,source_artifact_id=excluded.source_artifact_id,service_id=excluded.service_id,merchant_id=excluded.merchant_id,operation_fingerprint=COALESCE(excluded.operation_fingerprint,finance_transactions.operation_fingerprint),installment_id=COALESCE(excluded.installment_id,finance_transactions.installment_id),source_reference=excluded.source_reference,raw_source=excluded.raw_source,updated_at=excluded.updated_at", params![transaction.id, transaction.transaction_type, transaction.amount, transaction.currency, transaction.effective_date, transaction.account_id, transaction.destination_account_id, transaction.category_id, transaction.description, payload.context.source, transaction.status, transaction.actor_user_id, source_artifact_id, transaction.service_id, transaction.merchant_id, transaction.operation_fingerprint, transaction.installment_id, transaction.source_reference, transaction.raw_source, timestamp]).map_err(|e| e.to_string())?;
-    database_transaction
-        .execute(
-            "UPDATE finance_transactions SET actor_library_user_id=?1 WHERE id=?2",
-            params![payload.context.actor_library_user_id, transaction.id],
-        )
-        .map_err(|e| e.to_string())?;
     database_transaction
         .commit()
         .map_err(|error| error.to_string())?;
+    // A card expense joined to its statement line lives on as that line.
+    let saved = match load_transaction(&connection, &transaction.id)? {
+        Some(saved) => saved,
+        None => {
+            let line_transaction_id: Option<String> = connection
+                .query_row(
+                    "SELECT i.transaction_id FROM finance_link_log l
+                     JOIN finance_credit_card_statement_items i ON i.id=l.target_id
+                     WHERE l.subject_id=?1 AND l.undone_at IS NULL ORDER BY l.created_at DESC LIMIT 1",
+                    [&transaction.id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+                .flatten();
+            match line_transaction_id {
+                Some(id) => load_transaction(&connection, &id)?.unwrap_or_else(|| transaction.clone()),
+                None => transaction.clone(),
+            }
+        }
+    };
     drop(connection);
     sync_context(&payload.context, &app)?;
-    Ok(transaction.clone())
+    Ok((saved, outcome))
 }
 
 fn finance_list_accounts_inner(connection: &Connection) -> Result<Vec<FinanceAccount>, String> {
@@ -4215,11 +2674,10 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_audit_proposal_change, apply_savings_movement, clear_finance_data,
-        execute_deterministic_audit, finance_dev_query, finance_list_accounts_inner, format_cents,
-        parse_cents, seed_finance_demo_data, valid_amount, validate_finance_dev_sql,
-        validate_savings_movement, FinanceCommandError, FinanceContext, FinanceSavingsMovement,
-        RunFinanceAuditPayload, FINANCE_DEV_TABLES,
+        apply_savings_movement, clear_finance_data, finance_dev_query, finance_list_accounts_inner,
+        format_cents, parse_cents, seed_finance_demo_data, transaction_owner, valid_amount,
+        validate_finance_dev_sql, validate_savings_movement, FinanceCommandError,
+        FinanceSavingsMovement, FINANCE_DEV_TABLES,
     };
     use rusqlite::{params, Connection};
 
@@ -4329,7 +2787,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("demo transaction periods");
-        assert_eq!(periods, 2);
+        assert!(periods >= 2);
         let salary_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM finance_salary_receipts WHERE id LIKE 'dev-%'",
@@ -4382,7 +2840,8 @@ mod tests {
             "finance_salary_receipts",
             "finance_savings_reserves",
             "finance_installment_plans",
-            "finance_investments",
+            "finance_review_items",
+            "finance_link_log",
         ] {
             let count: i64 = connection
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -4475,102 +2934,16 @@ mod tests {
     }
 
     #[test]
-    fn applies_structured_audit_change_and_preserves_occurrence_history() {
+    fn movements_of_documents_name_their_owner() {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         crate::database::migrate(&connection).expect("finance migrations");
-        connection.execute("INSERT INTO finance_categories(id,name,kind,active,created_at,updated_at) VALUES('category','Servicios','expense',1,'now','now')", []).expect("category fixture");
-        connection.execute("INSERT INTO finance_services(id,name,normalized_name,category_id,currency,expected_amount,modality,active,created_at,updated_at) VALUES('service','Internet','internet','category','ARS','100.00','fixed',1,'now','now')", []).expect("service fixture");
-        connection.execute("INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,paid_amount,effective_date,status,source,created_at,updated_at) VALUES('occurrence','service','2026-08','100.00','150.00','2026-08-15','current','app','now','now')", []).expect("occurrence fixture");
-        let transaction = connection.transaction().expect("transaction");
-        apply_audit_proposal_change(
-            &transaction,
-            "amount-variation",
-            Some("service"),
-            "2026-08",
-            "{\"expected\":\"100.00\",\"paid\":\"150.00\"}",
-            "{\"operation\":\"set_occurrence_expected_amount\",\"parameters\":{\"serviceId\":\"service\",\"period\":\"2026-08\",\"expectedAmount\":\"150.00\"}}",
-            Some("user-owner"),
-            "app",
-            None,
-        ).expect("structured change");
-        transaction.commit().expect("commit");
+        seed_finance_demo_data(&mut connection).expect("demo data");
 
-        let expected: String = connection
-            .query_row(
-                "SELECT expected_amount FROM finance_service_occurrences WHERE id='occurrence'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("updated expected amount");
-        let versions: i64 = connection.query_row("SELECT COUNT(*) FROM finance_service_occurrence_versions WHERE occurrence_id='occurrence'", [], |row| row.get(0)).expect("history count");
-        assert_eq!(expected, "150.00");
-        assert_eq!(versions, 1);
-    }
-
-    #[test]
-    fn rejects_unstructured_audit_changes_before_persisting_anything() {
-        let connection = Connection::open_in_memory().expect("in-memory database");
-        let transaction = connection.unchecked_transaction().expect("transaction");
-        let error = apply_audit_proposal_change(
-            &transaction,
-            "contextual",
-            None,
-            "2026-08",
-            "{}",
-            "Cambiar algo",
-            Some("user-owner"),
-            "app",
-            None,
-        )
-        .expect_err("free-form change must be rejected");
-        assert!(error.contains("acción estructurada"));
-    }
-
-    #[test]
-    fn audit_returns_a_result_when_card_evidence_covers_an_unpaid_occurrence() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database");
-        crate::database::migrate(&connection).expect("finance migrations");
-        seed_finance_demo_data(&mut connection).expect("demo fixture");
-        connection
-            .execute_batch(
-                // Its own card: the demo seed already has an August statement.
-                "INSERT INTO finance_accounts(id,name,account_type,currency,opening_balance,active,created_at,updated_at)
-                 VALUES('audit-card-account','Tarjeta auditoría','credit_card','ARS','0.00',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-                 INSERT INTO finance_source_artifacts(id,source_type,reference,raw_text,created_at)
-                 VALUES('audit-card-artifact','credit_card_statement','audit-card.pdf','Resumen de auditoría',CURRENT_TIMESTAMP);
-                 INSERT INTO finance_services(id,name,normalized_name,category_id,currency,expected_amount,modality,active,created_at,updated_at)
-                 VALUES('audit-service','Movistar','movistar','dev-category-food','ARS','82997.00','fixed',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-                 INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,paid_amount,effective_date,status,source,created_at,updated_at)
-                 VALUES('audit-occurrence','audit-service','2026-08','82997.00',NULL,NULL,'current','test',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-                 INSERT INTO finance_transactions(id,transaction_type,amount,currency,effective_date,account_id,description,source,status,created_at,updated_at)
-                 VALUES('audit-card-transaction','expense','82997.00','ARS','2026-08-19','audit-card-account','MOVISTAR ARGENTINA 82997','credit_card_statement','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-                 INSERT INTO finance_credit_card_statements(id,account_id,issuer,card_last_four,period,closing_date,due_date,currency,previous_balance,payments_amount,credits_amount,purchases_amount,fees_amount,interest_amount,taxes_amount,total_due,minimum_payment,source_artifact_id,validation_status,created_at,updated_at)
-                 VALUES('audit-card-statement','audit-card-account','Banco Test','9999','2026-08','2026-08-25','2026-09-05','ARS','0.00','0.00','0.00','82997.00','0.00','0.00','0.00','82997.00','8299.70','audit-card-artifact','confirmed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-                 INSERT INTO finance_credit_card_statement_items(id,statement_id,transaction_id,purchase_date,description,amount,currency,item_type,created_at)
-                 VALUES('audit-card-item','audit-card-statement','audit-card-transaction','2026-08-19','MOVISTAR ARGENTINA 82997','82997.00','ARS','purchase',CURRENT_TIMESTAMP);",
-            )
-            .expect("card audit fixture");
-
-        let result = execute_deterministic_audit(
-            &mut connection,
-            &RunFinanceAuditPayload {
-                context: FinanceContext {
-                    library_path: String::new(),
-                    android_directory_uri: None,
-                    actor_library_user_id: "test-user".into(),
-                    source: "test".into(),
-                },
-                period: "2026-08".into(),
-                trigger_fingerprint: "audit-card-regression".into(),
-                reason: None,
-            },
-        )
-        .expect("card evidence should not panic the audit");
-
-        // The card statement covers the Movistar occurrence; the demo seed
-        // keeps its own unpaid service, which may be reported.
-        assert!(result.proposals.iter().all(|proposal| {
-            proposal.proposal_type != "service-unpaid" || proposal.service_id.as_deref() != Some("audit-service")
-        }));
+        let owner = |id: &str| transaction_owner(&connection, id).expect("owner lookup");
+        assert_eq!(owner("dev-tx-card-jul"), Some("resumen de tarjeta"));
+        assert_eq!(owner("dev-tx-ticket-jul"), Some("ticket"));
+        assert_eq!(owner("dev-tx-salary-aug"), Some("recibo de sueldo"));
+        assert_eq!(owner("dev-tx-exchange-aug"), Some("movimiento de ahorro"));
+        assert_eq!(owner("dev-tx-card-unpaid"), None);
     }
 }

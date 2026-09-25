@@ -77,82 +77,6 @@
       ]
     }
   },
-  "apply_finance_audit_proposal": {
-    "description": "Mutación de una propuesta individual: requiere proposalId, decisión, proposalType compatible y la dataFingerprint exacta del preview vigente. Requiere confirmación reforzada individual cuando corresponde; rechaza propuestas obsoletas, no acepta operaciones libres y verifica el estado persistido antes de informar el resultado. Fuente de verdad: Finanzas local. Campos obligatorios: proposalId, expectedDataFingerprint, decision. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
-    "parameters": {
-      "type": "object",
-      "required": [
-        "proposalId",
-        "expectedDataFingerprint",
-        "decision"
-      ],
-      "properties": {
-        "proposalId": {
-          "type": "string"
-        },
-        "expectedDataFingerprint": {
-          "type": "string",
-          "description": "Huella devuelta por preview_finance_audit_proposal; no acepta una operación libre."
-        },
-        "decision": {
-          "type": "string",
-          "enum": [
-            "accepted",
-            "rejected",
-            "cancelled"
-          ]
-        },
-        "resolutionAssignments": {
-          "type": "array",
-          "maxItems": 50,
-          "description": "Solo para resolver grupos ambiguos. Cada selección debe coincidir con una línea y candidato del preview.",
-          "items": {
-            "type": "object",
-            "required": [
-              "statementId",
-              "lineId",
-              "serviceId",
-              "transactionId",
-              "purchaseDate",
-              "period",
-              "amount",
-              "currency"
-            ],
-            "properties": {
-              "statementId": {
-                "type": "string"
-              },
-              "lineId": {
-                "type": "string"
-              },
-              "serviceId": {
-                "type": "string"
-              },
-              "transactionId": {
-                "type": "string"
-              },
-              "purchaseDate": {
-                "type": "string"
-              },
-              "period": {
-                "type": "string"
-              },
-              "amount": {
-                "type": "string"
-              },
-              "currency": {
-                "type": "string",
-                "enum": [
-                  "ARS",
-                  "USD"
-                ]
-              }
-            }
-          }
-        }
-      }
-    }
-  },
   "apply_markdown_edit": {
     "description": "Aplica un preview devuelto por preview_markdown_edit después de verificar la revisión. Requiere confirmación visible.",
     "parameters": {
@@ -188,23 +112,6 @@
       "required": [
         "ticketId"
       ]
-    }
-  },
-  "audit_finance_month": {
-    "description": "Lectura con análisis local: audita el período usando SQLite y hallazgos contextuales basados solo en lecturas autorizadas. Devuelve propuestas, pero no aplica ajustes ni muta entidades; cada propuesta requiere después preview, huella vigente y confirmación independiente. Fuente de verdad: la biblioteca autorizada. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
-    "parameters": {
-      "type": "object",
-      "required": [
-        "period"
-      ],
-      "properties": {
-        "period": {
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        }
-      }
     }
   },
   "bulk_update_tasks": {
@@ -467,7 +374,7 @@
     }
   },
   "create_finance_credit_card_statement": {
-    "description": "Mutación de alta: guarda un resumen de tarjeta, líneas y consumos/cargos en la cuenta de tarjeta, con una llamada separada por moneda. Devuelve el período persistido y el resultado de conciliación; los grupos ambiguos no se aplican. El total a pagar no es otro gasto y el pago posterior es una transferencia. Requiere confirmacion reforzada visible y verifica el resultado; para actualizar un ID estable usa save_finance_credit_card_statement. Fuente de verdad: Finanzas local. Campos obligatorios: accountId, issuer, period, closingDate, dueDate, currency, previousBalance, paymentsAmount, creditsAmount, purchasesAmount, feesAmount, interestAmount, taxesAmount, totalDue, items. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Mutación de alta: guarda un resumen de tarjeta, líneas y consumos/cargos en la cuenta de tarjeta, con una llamada separada por moneda. Devuelve el período persistido y el resultado de conciliación; los grupos ambiguos no se aplican. Cargar el resumen significa que ya se pagó: cada consumo, cargo, interés e impuesto cuenta en el mes del vencimiento y el total a pagar nunca es otro gasto; no registres el pago como transferencia ni como gasto. Los tickets y gastos con tarjeta que esperaban este resumen se unen a su línea, y las líneas en cuotas actualizan su plan. El resultado trae links (vínculos automáticos) y reviewItems (preguntas para la persona). Requiere confirmacion reforzada visible y verifica el resultado; para actualizar un ID estable usa save_finance_credit_card_statement. Fuente de verdad: Finanzas local. Campos obligatorios: accountId, issuer, period, closingDate, dueDate, currency, previousBalance, paymentsAmount, creditsAmount, purchasesAmount, feesAmount, interestAmount, taxesAmount, totalDue, items. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -587,6 +494,10 @@
               },
               "installmentCount": {
                 "type": "integer"
+              },
+              "categoryId": {
+                "type": "string",
+                "description": "Categoría de gasto de un consumo sin ticket, si la sabés; si falta se usa la habitual del comercio."
               }
             }
           }
@@ -601,7 +512,7 @@
     }
   },
   "create_finance_purchase": {
-    "description": "Mutación de alta desde un ticket legible: crea compra, líneas, observaciones historicas de precio y gasto asociado. Requiere cuenta, importes y líneas extraídos sin inventar; muestra confirmacion reforzada visible antes de persistir y verifica el resultado. Si la misma fuente ya existe devuelve duplicate; no reintentes a ciegas. Para editar un registro con ID usa save_finance_purchase. Fuente de verdad: Finanzas local. Campos obligatorios: accountId, merchantName, observedAt, currency, subtotalAmount, discountAmount, taxAmount, totalAmount, items. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Mutación de alta desde un ticket legible: crea compra, líneas, observaciones historicas de precio y gasto asociado. Requiere cuenta, importes y líneas extraídos sin inventar; muestra confirmacion reforzada visible antes de persistir y verifica el resultado. Si la misma fuente ya existe devuelve duplicate; no reintentes a ciegas. Para editar un registro con ID usa save_finance_purchase. Si la cuenta es una tarjeta de crédito, el gasto queda «en tarjeta, a pagar» hasta que llegue el resumen que lo paga; si ese resumen ya está cargado, el ticket se une a su línea en lugar de crear otro gasto. Antes de guardar, usá list_finance_products y list_finance_merchants para reutilizar nombres existentes. El resultado trae links (vínculos automáticos, deshacibles con unlink_finance_records) y reviewItems (preguntas para la persona). Fuente de verdad: Finanzas local. Campos obligatorios: accountId, merchantName, observedAt, currency, subtotalAmount, discountAmount, taxAmount, totalAmount, items. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -800,7 +711,7 @@
     }
   },
   "create_finance_savings_exchange": {
-    "description": "Mutación atómica de una compra de moneda para ahorro: guarda la salida y acredita la reserva en sus monedas respectivas. Requiere ambos importes, monedas, una reserva y cuenta locales resueltas con get_finance_dashboard; no pidas IDs al usuario. Requiere confirmación reforzada individual cuando corresponde y verificación del resultado; nunca convierte ni suma ARS con USD ni inventa IDs. Fuente de verdad: Finanzas local. Campos obligatorios: reserve, sourceAccount, sourceAmount, sourceCurrency, savingsAmount, savingsCurrency. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Mutación atómica de un cambio de moneda con el ahorro. direction buy (por defecto): «compré dólares para ahorrar», sale de la cuenta de pago y entra a la reserva. direction sell: «vendí dólares del ahorro», sale de la reserva (que debe tener saldo) y entra a la cuenta de pago. Nunca es gasto ni ingreso del mes. Resolvé reserva y cuenta por nombre con get_finance_dashboard; no pidas IDs al usuario; nunca conviertas ni sumes ARS con USD. sourceAccount es siempre la cuenta de pago, sourceAmount lo que salió o entró en ella y savingsAmount lo que entró o salió de la reserva. Campos obligatorios: reserve, sourceAccount, sourceAmount, sourceCurrency, savingsAmount, savingsCurrency. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -859,6 +770,14 @@
         "rawSource": {
           "type": "string",
           "description": "Texto original del usuario si existe."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "buy",
+            "sell"
+          ],
+          "description": "buy compra moneda para la reserva; sell vende ahorro de la reserva. Por defecto buy."
         }
       }
     }
@@ -1070,7 +989,7 @@
     }
   },
   "create_finance_transaction": {
-    "description": "Mutación: crea un ingreso, gasto, transferencia o ajuste nuevo con IDs y campos confirmados por lecturas locales. Requiere importe, moneda, fecha, cuenta y descripción inequívocos; solicita confirmacion reforzada visible antes de persistir y verifica ok:true. No la uses para actualizar un ID existente: usa save_finance_transaction; nunca conviertas ni mezcles monedas. Fuente de verdad: Finanzas local. Campos obligatorios: transactionType, amount, currency, effectiveDate, accountId, description. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Mutación: crea un ingreso, gasto, transferencia o ajuste nuevo con IDs y campos confirmados por lecturas locales. Requiere importe, moneda, fecha, cuenta y descripción inequívocos; solicita confirmacion reforzada visible antes de persistir y verifica ok:true. No la uses para actualizar un ID existente: usa save_finance_transaction; nunca conviertas ni mezcles monedas. Un gasto con tarjeta de crédito queda «en tarjeta, a pagar» hasta que llegue su resumen, o se une a la línea si el resumen ya está cargado. Un movimiento que pertenece a un documento (ticket, resumen, sueldo, ahorro) solo admite cambios de categoría, descripción y servicio. Fuente de verdad: Finanzas local. Campos obligatorios: transactionType, amount, currency, effectiveDate, accountId, description. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -1234,7 +1153,7 @@
     }
   },
   "delete_finance_record": {
-    "description": "Elimina un registro financiero identificado y devuelve el resultado. Es una operación irreversible: exige confirmación reforzada individual y nunca acepta un lote ambiguo. Fuente de verdad: Finanzas local. Campos obligatorios: entity, id. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Elimina un registro financiero con todo lo que depende de él y devuelve un resumen de lo que se borró. transaction solo borra movimientos sueltos; para un movimiento que pertenece a un documento borrá el documento (purchase, salary, card-statement, savings-movement…). Borrar un resumen devuelve a «en tarjeta, a pagar» los tickets que había pagado; borrar un ticket pagado por un resumen deja el gasto en la línea. Es irreversible: exige confirmación individual y nunca acepta un lote ambiguo. Campos obligatorios: entity, id. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -1247,7 +1166,16 @@
           "enum": [
             "transaction",
             "account",
-            "category"
+            "category",
+            "purchase",
+            "salary",
+            "card-statement",
+            "installment-plan",
+            "savings-movement",
+            "savings-reserve",
+            "service",
+            "service-occurrence",
+            "service-invoice"
           ]
         },
         "id": {
@@ -1415,7 +1343,7 @@
     }
   },
   "get_finance_full_snapshot": {
-    "description": "Lectura local normalizada de Finanzas: reúne cuentas, categorías, movimientos, servicios, compras, sueldos, tarjetas, cuotas, inversiones, ahorro, auditorías y patrimonio. No muta. Úsala para inventarios o presupuestos, pero respeta los límites y campos realmente devueltos y declara datos incompletos en vez de afirmar cobertura total. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
+    "description": "Lectura local normalizada de Finanzas: reúne cuentas, categorías, movimientos, servicios, compras, sueldos, tarjetas, cuotas, ahorro y casos para revisar. No muta. Úsala para inventarios o presupuestos, pero respeta los límites y campos realmente devueltos y declara datos incompletos en vez de afirmar cobertura total. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -1447,21 +1375,6 @@
     "parameters": {
       "type": "object",
       "properties": {}
-    }
-  },
-  "get_finance_net_worth": {
-    "description": "Consulta el patrimonio neto por moneda y tipo de activo/deuda a una fecha. Usala para preguntas sobre patrimonio actual o histórico puntual. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
-    "parameters": {
-      "type": "object",
-      "required": [
-        "asOf"
-      ],
-      "properties": {
-        "asOf": {
-          "type": "string",
-          "description": "Fecha de corte YYYY-MM-DD."
-        }
-      }
     }
   },
   "get_finance_record": {
@@ -1568,29 +1481,6 @@
       "properties": {}
     }
   },
-  "list_finance_audits": {
-    "description": "Lectura de auditoría local: consulta ejecuciones y propuestas por período, estado y proposalType, incluyendo evidencias. No modifica datos ni equivale a preview o aplicación; una propuesta pendiente debe leerse antes de decidir. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "period": {
-          "type": "string"
-        },
-        "status": {
-          "type": "string"
-        },
-        "proposalType": {
-          "type": "string",
-          "enum": [
-            "service-unpaid",
-            "amount-variation",
-            "orphan-service-link",
-            "service-card-reconciliation"
-          ]
-        }
-      }
-    }
-  },
   "list_finance_categories": {
     "description": "Lista las categorias activas con sus IDs opacos y tipo. Usala para explorar categorias existentes; no crea categorias. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
     "parameters": {
@@ -1633,17 +1523,6 @@
       ]
     }
   },
-  "list_finance_investments": {
-    "description": "Lista las inversiones registradas.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "active": {
-          "type": "boolean"
-        }
-      }
-    }
-  },
   "list_finance_movements": {
     "description": "Lista los movimientos de un mes, incluidos pendientes, confirmados, corregidos y descartados. Usala para localizar el ID antes de corregir, confirmar o descartar. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
     "parameters": {
@@ -1657,13 +1536,6 @@
           "description": "Mes YYYY-MM."
         }
       }
-    }
-  },
-  "list_finance_net_worth_history": {
-    "description": "Lectura local de solo lectura: consulta la evolución disponible del patrimonio por fecha y moneda. No muta; mantiene ARS y USD separados y no permite afirmar que falten o sobren activos no devueltos. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
-    "parameters": {
-      "type": "object",
-      "properties": {}
     }
   },
   "list_finance_price_history": {
@@ -1724,11 +1596,6 @@
             "price_history",
             "installment_plans",
             "installments",
-            "investments",
-            "audit_runs",
-            "audit_proposals",
-            "audits",
-            "net_worth_history",
             "savings_reserves",
             "savings_movements",
             "savings_exchanges",
@@ -1822,29 +1689,6 @@
       "required": [
         "ticketId"
       ]
-    }
-  },
-  "preview_finance_audit_proposal": {
-    "description": "Preview de solo lectura sobre una propuesta pendiente existente: devuelve proposalType, period, datos actuales, cambio sugerido y dataFingerprint desde la fuente local. No modifica, no confirma y no decide; la aplicación posterior debe reutilizar exactamente esa huella y volver a verificar que siga vigente. Fuente de verdad: la biblioteca autorizada. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
-    "parameters": {
-      "type": "object",
-      "required": [
-        "proposalId"
-      ],
-      "properties": {
-        "proposalId": {
-          "type": "string"
-        },
-        "proposalType": {
-          "type": "string",
-          "enum": [
-            "service-unpaid",
-            "amount-variation",
-            "orphan-service-link",
-            "service-card-reconciliation"
-          ]
-        }
-      }
     }
   },
   "preview_markdown_edit": {
@@ -2232,7 +2076,7 @@
     }
   },
   "save_finance_credit_card_statement": {
-    "description": "Crea o actualiza un resumen de tarjeta completo, incluyendo sus líneas. Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Crea o actualiza un resumen de tarjeta completo, incluyendo sus líneas. Un resumen cargado es un resumen pagado (ver create_finance_credit_card_statement); quitar una línea devuelve su ticket a «en tarjeta, a pagar». Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -2319,7 +2163,7 @@
     }
   },
   "save_finance_installment_plan": {
-    "description": "Crea o actualiza un plan de cuotas y sus cuotas. Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Crea o actualiza un plan de cuotas como calendario: no crea gastos. Cada cuota se vuelve gasto cuando llega la línea del resumen que la paga, y los resúmenes crean solos el plan de una compra en cuotas que no lo tenía. Usala cuando la persona avisa una compra en cuotas antes del resumen o para corregir un plan. El ID estable permite reintentar de forma idempotente. Campos obligatorios: record. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -2375,68 +2219,8 @@
       }
     }
   },
-  "save_finance_investment": {
-    "description": "Crea o actualiza un activo, deuda, efectivo o security con su valuación. Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
-    "parameters": {
-      "type": "object",
-      "required": [
-        "record"
-      ],
-      "properties": {
-        "record": {
-          "type": "object",
-          "required": [
-            "id",
-            "name",
-            "assetType",
-            "currency",
-            "active",
-            "valuationDate",
-            "valuationAmount"
-          ],
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "accountId": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "assetType": {
-              "type": "string",
-              "enum": [
-                "asset",
-                "debt",
-                "cash",
-                "security"
-              ]
-            },
-            "currency": {
-              "type": "string",
-              "enum": [
-                "ARS",
-                "USD"
-              ]
-            },
-            "active": {
-              "type": "boolean"
-            },
-            "valuationDate": {
-              "type": "string"
-            },
-            "valuationAmount": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": true
-        }
-      }
-    }
-  },
   "save_finance_purchase": {
-    "description": "Crea o actualiza un ticket completo con sus líneas y observaciones de precios. Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Crea o actualiza un ticket completo con sus líneas y observaciones de precios. Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Si la cuenta es una tarjeta de crédito, el gasto queda «en tarjeta, a pagar» hasta que llegue el resumen que lo paga; si ese resumen ya está cargado, el ticket se une a su línea en lugar de crear otro gasto. Antes de guardar, usá list_finance_products y list_finance_merchants para reutilizar nombres existentes. El resultado trae links (vínculos automáticos, deshacibles con unlink_finance_records) y reviewItems (preguntas para la persona). Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -2571,7 +2355,7 @@
     }
   },
   "save_finance_savings_exchange": {
-    "description": "Crea o actualiza un intercambio de moneda para ahorro de forma atómica. Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Crea o actualiza un cambio de moneda con el ahorro de forma atómica (record.direction buy o sell, como create_finance_savings_exchange). Requiere confirmación reforzada individual. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -2920,7 +2704,7 @@
     }
   },
   "save_finance_transaction": {
-    "description": "Crea o actualiza un movimiento financiero con todos sus campos explícitos. Requiere confirmación reforzada individual; para cambios de estado usa update_finance_transaction_status. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "description": "Crea o actualiza un movimiento financiero con todos sus campos explícitos. Requiere confirmación reforzada individual; para cambios de estado usa update_finance_transaction_status. Es una mutación, no una lectura ni un preview: la fuente de verdad es Finanzas local. Requiere confirmación visible individual (reforzada cuando corresponde al canal; Telegram muestra una sola confirmación). El ID estable permite reintentar de forma idempotente y el resultado persistido debe verificarse antes de afirmar éxito. No la uses para datos parciales ni para simular create_*; usa create_* cuando partas de una extracción o hecho nuevo sin ID persistido. Un gasto con tarjeta de crédito queda «en tarjeta, a pagar» hasta que llegue su resumen, o se une a la línea si el resumen ya está cargado. Un movimiento que pertenece a un documento (ticket, resumen, sueldo, ahorro) solo admite cambios de categoría, descripción y servicio. Fuente de verdad: Finanzas local. Campos obligatorios: record. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
     "parameters": {
       "type": "object",
       "required": [
@@ -3870,6 +3654,194 @@
         "month": {
           "type": "string",
           "description": "Mes YYYY-MM; por defecto el mes actual."
+        }
+      }
+    }
+  },
+  "list_finance_review_items": {
+    "description": "Lista los casos para revisar de Finanzas: posibles duplicados, líneas del resumen con más de un ticket posible, productos o comercios parecidos, cuotas que no aparecen y consumos que podrían ser de más de un servicio. Cada caso trae una pregunta y sus opciones; hacele la pregunta a la persona y resolvelo con resolve_finance_review_item. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "resolved",
+            "dismissed"
+          ],
+          "description": "Por defecto pending."
+        }
+      }
+    }
+  },
+  "resolve_finance_review_item": {
+    "description": "Aplica la opción que eligió la persona para un caso para revisar (unir un ticket con su línea, unificar productos o comercios, borrar una cuota que no existe, asignar un consumo a un servicio, o dejarlo como está). Usá solo un optionId del caso. Campos obligatorios: reviewItemId, optionId. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "reviewItemId",
+        "optionId"
+      ],
+      "properties": {
+        "reviewItemId": {
+          "type": "string"
+        },
+        "optionId": {
+          "type": "string",
+          "description": "id de una de las opciones del caso."
+        }
+      }
+    }
+  },
+  "list_finance_products": {
+    "description": "Lista los productos comprados con el último precio en cada comercio. Consultala antes de guardar un ticket para escribir los productos con un nombre que ya existe, y para responder precios o dónde conviene comprar. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "type": "string",
+          "description": "Palabras del nombre del producto."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      }
+    }
+  },
+  "list_finance_merchants": {
+    "description": "Lista los comercios con su cantidad de compras, la última fecha y la categoría habitual. Consultala antes de guardar un ticket para usar el nombre de comercio que ya existe. Fuente de verdad: Finanzas local. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      }
+    }
+  },
+  "link_finance_records": {
+    "description": "Une a mano un ticket (purchase-card-line), un gasto con tarjeta a pagar (expense-card-line) o una cuota (installment-card-line) con la línea del resumen que lo pagó, cuando la persona lo indica. Valida tarjeta, moneda e importe. Campos obligatorios: kind, subjectId, lineId. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "kind",
+        "subjectId",
+        "lineId"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "purchase-card-line",
+            "expense-card-line",
+            "installment-card-line"
+          ]
+        },
+        "subjectId": {
+          "type": "string",
+          "description": "ID del ticket, del gasto o de la cuota."
+        },
+        "lineId": {
+          "type": "string",
+          "description": "ID de la línea del resumen."
+        }
+      }
+    }
+  },
+  "unlink_finance_records": {
+    "description": "Deshace un vínculo automático o manual entre un gasto y una línea del resumen: la línea conserva su propio gasto y el ticket vuelve a «en tarjeta, a pagar». Pasá el id de links que devolvió el guardado, o la línea. Campos: linkId o lineId. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "linkId": {
+          "type": "string"
+        },
+        "lineId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "rename_finance_product": {
+    "description": "Renombra un producto y guarda el nombre nuevo como alias. Campos obligatorios: id, name. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "rename_finance_merchant": {
+    "description": "Renombra un comercio y guarda el nombre nuevo como alias. Campos obligatorios: id, name. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "merge_finance_products": {
+    "description": "Unifica dos productos que son el mismo: mueve precios y líneas de id a intoId y recuerda el nombre viejo como alias. Campos obligatorios: id, intoId. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "id",
+        "intoId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Producto que desaparece."
+        },
+        "intoId": {
+          "type": "string",
+          "description": "Producto que queda."
+        }
+      }
+    }
+  },
+  "merge_finance_merchants": {
+    "description": "Unifica dos comercios que son el mismo: mueve compras, precios y gastos de id a intoId y recuerda el nombre viejo como alias. Campos obligatorios: id, intoId. Fuente de verdad: Finanzas local. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Reintenta solo con operationId cuando exista y afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "id",
+        "intoId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Comercio que desaparece."
+        },
+        "intoId": {
+          "type": "string",
+          "description": "Comercio que queda."
         }
       }
     }

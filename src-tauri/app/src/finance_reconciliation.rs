@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone)]
@@ -22,24 +21,20 @@ pub(crate) struct ReconciliationLine {
     pub currency: String,
     pub item_type: String,
     pub confirmed: bool,
-    pub transaction_snapshot: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReconciliationOccurrence {
-    pub id: String,
     pub service_id: String,
     pub period: String,
     pub paid_amount: Option<String>,
     pub transaction_id: Option<String>,
-    pub snapshot: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReconciliationInput {
     pub statement_id: String,
     pub statement_period: String,
-    pub statement_snapshot: String,
     pub lines: Vec<ReconciliationLine>,
     pub services: Vec<ReconciliationService>,
     pub occurrences: Vec<ReconciliationOccurrence>,
@@ -515,215 +510,6 @@ pub(crate) fn reconcile_card_service_consumption(
     }
 }
 
-/// Validates an explicit user selection for an ambiguous group without allowing
-/// the caller to change any fact from the persisted preview.
-pub(crate) fn resolve_card_service_assignments(
-    input: &ReconciliationInput,
-    automatic: &CardServiceReconciliation,
-    requested: &[CardServiceAssignment],
-) -> Result<CardServiceReconciliation, String> {
-    if requested.is_empty() {
-        return Err("La resolución manual requiere al menos una asignación.".into());
-    }
-    let services = input
-        .services
-        .iter()
-        .map(|service| (service.id.as_str(), service))
-        .collect::<BTreeMap<_, _>>();
-    let mut seen_lines = BTreeSet::new();
-    let mut seen_destinations = BTreeSet::new();
-    let mut seen_transactions = BTreeSet::new();
-    let mut manual = Vec::with_capacity(requested.len());
-
-    for requested_assignment in requested {
-        if requested_assignment.statement_id != input.statement_id
-            || !seen_lines.insert(requested_assignment.line_id.clone())
-        {
-            return Err("La resolución manual contiene líneas repetidas o de otro resumen.".into());
-        }
-        let line = input
-            .lines
-            .iter()
-            .find(|line| line.id == requested_assignment.line_id)
-            .ok_or_else(|| "La línea de la resolución manual no existe.".to_string())?;
-        if line.item_type != "purchase"
-            || !line.confirmed
-            || line.transaction_id.as_deref() != Some(requested_assignment.transaction_id.as_str())
-            || line.purchase_date != requested_assignment.purchase_date
-            || line.amount != requested_assignment.amount
-            || line.currency != requested_assignment.currency
-        {
-            return Err("La resolución manual cambió los datos de una línea del preview.".into());
-        }
-        let group = automatic
-            .ambiguous_groups
-            .iter()
-            .find(|group| group.line_ids.iter().any(|line_id| line_id == &line.id))
-            .ok_or_else(|| {
-                "La resolución manual incluye una línea que no era ambigua.".to_string()
-            })?;
-        if !group
-            .candidate_service_ids
-            .iter()
-            .any(|id| id == &requested_assignment.service_id)
-            || group
-                .service_id
-                .as_deref()
-                .is_some_and(|id| id != requested_assignment.service_id)
-        {
-            return Err("El servicio elegido no es candidato en el preview.".into());
-        }
-        let service = services
-            .get(requested_assignment.service_id.as_str())
-            .ok_or_else(|| "El servicio elegido no existe.".to_string())?;
-        if service.currency != requested_assignment.currency {
-            return Err("La moneda del servicio elegido no coincide con la línea.".into());
-        }
-        let previous = previous_period(&input.statement_period);
-        let period_allowed = requested_assignment.period == input.statement_period
-            || (group.line_ids.len() > 1
-                && previous.as_deref() == Some(requested_assignment.period.as_str()));
-        if !period_allowed {
-            return Err(
-                "El período elegido no corresponde al resumen ni a su período anterior.".into(),
-            );
-        }
-        if !seen_destinations.insert((
-            requested_assignment.service_id.clone(),
-            requested_assignment.period.clone(),
-        )) {
-            return Err("La resolución manual asigna dos líneas a la misma ocurrencia.".into());
-        }
-        if !seen_transactions.insert(requested_assignment.transaction_id.clone()) {
-            return Err(
-                "La resolución manual reutiliza una transacción en más de una ocurrencia.".into(),
-            );
-        }
-        let target = occurrence(
-            &input.occurrences,
-            &requested_assignment.service_id,
-            &requested_assignment.period,
-        );
-        if existing_assignment_status(target, line).is_err()
-            || transaction_linked_elsewhere(
-                &input.occurrences,
-                &requested_assignment.transaction_id,
-                &requested_assignment.service_id,
-                &requested_assignment.period,
-            )
-        {
-            return Err(
-                "La ocurrencia o transacción elegida ya está vinculada de forma incompatible."
-                    .into(),
-            );
-        }
-        manual.push(assignment(
-            input,
-            line,
-            service,
-            &requested_assignment.transaction_id,
-            requested_assignment.period.clone(),
-            "new",
-        ));
-    }
-
-    let mut assignments = automatic.assignments.clone();
-    assignments.extend(manual);
-    Ok(CardServiceReconciliation {
-        status: "ready".into(),
-        assignments,
-        ambiguous_groups: Vec::new(),
-        reasons: automatic.reasons.clone(),
-    })
-}
-
-pub(crate) fn reconciliation_fingerprint(
-    input: &ReconciliationInput,
-    result: &CardServiceReconciliation,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(input.statement_id.as_bytes());
-    hasher.update(input.statement_period.as_bytes());
-    hasher.update(input.statement_snapshot.as_bytes());
-    for line in &input.lines {
-        hasher.update(
-            format!(
-                "line:{}:{}:{}:{}:{}:{}:{}:{}:{}|",
-                line.id,
-                line.transaction_id.as_deref().unwrap_or_default(),
-                line.purchase_date,
-                normalize_service_text(&line.description),
-                line.amount,
-                line.currency,
-                line.item_type,
-                line.confirmed,
-                line.transaction_snapshot
-            )
-            .as_bytes(),
-        );
-    }
-    for service in &input.services {
-        hasher.update(
-            format!(
-                "service:{}:{}:{}:{}|",
-                service.id,
-                normalize_service_text(&service.name),
-                normalize_service_text(service.provider.as_deref().unwrap_or_default()),
-                service.currency
-            )
-            .as_bytes(),
-        );
-    }
-    for occurrence in &input.occurrences {
-        hasher.update(
-            format!(
-                "occurrence:{}:{}:{}:{}:{}:{}|",
-                occurrence.id,
-                occurrence.service_id,
-                occurrence.period,
-                occurrence.paid_amount.as_deref().unwrap_or_default(),
-                occurrence.transaction_id.as_deref().unwrap_or_default(),
-                occurrence.snapshot
-            )
-            .as_bytes(),
-        );
-    }
-    hasher.update(
-        serde_json::to_string(result)
-            .unwrap_or_else(|_| "reconciliation-serialization-error".into()),
-    );
-    format!("service-card-reconciliation:{:x}", hasher.finalize())
-}
-
-pub(crate) fn assignment_keys(
-    assignments: &[CardServiceAssignment],
-) -> BTreeSet<(
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-)> {
-    assignments
-        .iter()
-        .map(|assignment| {
-            (
-                assignment.statement_id.clone(),
-                assignment.line_id.clone(),
-                assignment.service_id.clone(),
-                assignment.period.clone(),
-                assignment.transaction_id.clone(),
-                assignment.purchase_date.clone(),
-                assignment.amount.clone(),
-                assignment.currency.clone(),
-            )
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,7 +544,6 @@ mod tests {
             currency: "ARS".into(),
             item_type: kind.into(),
             confirmed: true,
-            transaction_snapshot: String::new(),
         }
     }
 
@@ -769,7 +554,6 @@ mod tests {
         ReconciliationInput {
             statement_id: "statement".into(),
             statement_period: "2026-09".into(),
-            statement_snapshot: String::new(),
             lines,
             services: vec![service("internet", "Internet", Some("Fibra"), "ARS")],
             occurrences,
@@ -902,12 +686,10 @@ mod tests {
     #[test]
     fn does_not_distribute_when_previous_is_paid_or_there_are_more_than_two() {
         let previous_paid = ReconciliationOccurrence {
-            id: "occurrence".into(),
             service_id: "internet".into(),
             period: "2026-08".into(),
             paid_amount: Some("50.00".into()),
             transaction_id: Some("old-tx".into()),
-            snapshot: String::new(),
         };
         let result = reconcile_card_service_consumption(&input(
             vec![
@@ -941,47 +723,5 @@ mod tests {
             result.ambiguous_groups[0].reason.code,
             "more-than-two-consumptions"
         );
-    }
-
-    #[test]
-    fn accepts_a_manual_selection_for_an_ambiguous_group_without_changing_line_data() {
-        let previous_paid = ReconciliationOccurrence {
-            id: "occurrence".into(),
-            service_id: "internet".into(),
-            period: "2026-08".into(),
-            paid_amount: Some("50.00".into()),
-            transaction_id: Some("old-tx".into()),
-            snapshot: String::new(),
-        };
-        let input = input(
-            vec![
-                line("one", Some("tx-one"), "2026-08-10", "Internet", "purchase"),
-                line("two", Some("tx-two"), "2026-09-10", "Internet", "purchase"),
-            ],
-            vec![previous_paid],
-        );
-        let preview = reconcile_card_service_consumption(&input);
-        let resolved = resolve_card_service_assignments(
-            &input,
-            &preview,
-            &[CardServiceAssignment {
-                statement_id: "statement".into(),
-                line_id: "two".into(),
-                service_id: "internet".into(),
-                transaction_id: "tx-two".into(),
-                purchase_date: "2026-09-10".into(),
-                period: "2026-09".into(),
-                amount: "100.00".into(),
-                currency: "ARS".into(),
-                assignment_status: "new".into(),
-                evidence: serde_json::json!({}),
-            }],
-        )
-        .expect("manual resolution");
-        assert_eq!(resolved.status, "ready");
-        assert_eq!(resolved.assignments.len(), 1);
-        assert_eq!(resolved.assignments[0].line_id, "two");
-        assert_eq!(resolved.assignments[0].period, "2026-09");
-        assert!(resolved.ambiguous_groups.is_empty());
     }
 }

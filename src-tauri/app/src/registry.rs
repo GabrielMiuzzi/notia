@@ -104,66 +104,24 @@ fn route(command: &str) -> Option<Route> {
         "routine_apply_mutation" => routine_apply_mutation,
         "agenda_get_view" => agenda_get_view,
         "agenda_apply_mutation" => agenda_apply_mutation,
-        "finance_get_transaction" => finance_get_transaction,
-        "finance_list_all_transactions" => finance_list_all_transactions,
-        "finance_list_all_savings_movements" => finance_list_all_savings_movements,
         "finance_dev_list_tables" => finance_dev_list_tables,
         "finance_dev_query_table" => finance_dev_query_table,
         "finance_dev_query_sql" => finance_dev_query_sql,
         "finance_dev_seed_demo_data" => finance_dev_seed_demo_data,
-        "finance_save_account" => finance_save_account,
-        "finance_save_category" => finance_save_category,
-        "finance_save_transaction" => finance_save_transaction,
-        "finance_apply_ui_change" => finance_apply_ui_change,
-        "finance_list_services" => finance_list_services,
-        "finance_set_service_active" => finance_set_service_active,
-        "finance_list_service_occurrences" => finance_list_service_occurrences,
-        "finance_list_all_service_occurrences" => finance_list_all_service_occurrences,
         "finance_list_service_occurrence_versions" => finance_list_service_occurrence_versions,
-        "finance_list_all_service_occurrence_versions" => finance_list_all_service_occurrence_versions,
-        "finance_list_service_invoices" => finance_list_service_invoices,
-        "finance_save_audit_run" => finance_save_audit_run,
-        "finance_run_audit" => finance_run_audit,
-        "finance_list_audit_runs" => finance_list_audit_runs,
-        "finance_save_audit_proposal" => finance_save_audit_proposal,
-        "finance_list_audit_proposals" => finance_list_audit_proposals,
-        "finance_decide_audit_proposal" => finance_decide_audit_proposal,
-        "finance_repair_relation" => finance_repair_relation,
-        "finance_list_relation_repairs" => finance_list_relation_repairs,
-        "finance_delete_transaction" => finance_delete_transaction,
-        "finance_delete_account" => finance_delete_account,
-        "finance_delete_category" => finance_delete_category,
         "finance_clear_all_data" => finance_clear_all_data,
-        "finance_save_savings_reserve" => finance_save_savings_reserve,
-        "finance_save_savings_movement" => finance_save_savings_movement,
-        "finance_save_savings_exchange" => finance_save_savings_exchange,
-        "finance_link_savings_account" => finance_link_savings_account,
-        "finance_save_purchase" => finance_save_purchase,
         "finance_list_purchases" => finance_list_purchases,
-        "finance_period_summary" => finance_period_summary,
         "finance_dashboard_insights" => finance_dashboard_insights,
+        "finance_service_month_status" => finance_service_month_status,
+        "finance_list_products" => finance_list_products,
         "finance_salary_analysis" => finance_salary_analysis,
         "finance_dollar_quotes" => finance_dollar_quotes,
         "finance_inflation_indices" => finance_inflation_indices,
         "finance_historical_dollar_quotes" => finance_historical_dollar_quotes,
-        "finance_relation_audit" => finance_relation_audit,
-        "finance_validate_purchase" => finance_validate_purchase,
-        "finance_preview_card_services" => finance_preview_card_services,
-        "finance_salary_draft" => finance_salary_draft,
         "finance_list_price_history" => finance_list_price_history,
-        "finance_save_salary" => finance_save_salary,
         "finance_list_salaries" => finance_list_salaries,
-        "finance_save_credit_card_statement" => finance_save_credit_card_statement,
         "finance_list_credit_card_statements" => finance_list_credit_card_statements,
-        "finance_save_installment_plan" => finance_save_installment_plan,
         "finance_list_installment_plans" => finance_list_installment_plans,
-        "finance_list_installments" => finance_list_installments,
-        "finance_save_investment" => finance_save_investment,
-        "finance_list_investments" => finance_list_investments,
-        "finance_get_net_worth" => finance_get_net_worth,
-        "finance_list_net_worth_history" => finance_list_net_worth_history,
-        "extract_finance_document" => extract_finance_document,
-        "list_finance_artifacts" => list_finance_artifacts,
         "get_speech_capabilities" => get_speech_capabilities,
         "prepare_speech_model" => prepare_speech_model,
         "get_speech_model_status" => get_speech_model_status,
@@ -336,66 +294,24 @@ pub const COMMAND_NAMES: &[&str] = &[
     "routine_apply_mutation",
     "agenda_get_view",
     "agenda_apply_mutation",
-    "finance_get_transaction",
-    "finance_list_all_transactions",
-    "finance_list_all_savings_movements",
     "finance_dev_list_tables",
     "finance_dev_query_table",
     "finance_dev_query_sql",
     "finance_dev_seed_demo_data",
-    "finance_save_account",
-    "finance_save_category",
-    "finance_save_transaction",
-    "finance_apply_ui_change",
-    "finance_list_services",
-    "finance_set_service_active",
-    "finance_list_service_occurrences",
-    "finance_list_all_service_occurrences",
     "finance_list_service_occurrence_versions",
-    "finance_list_all_service_occurrence_versions",
-    "finance_list_service_invoices",
-    "finance_save_audit_run",
-    "finance_run_audit",
-    "finance_list_audit_runs",
-    "finance_save_audit_proposal",
-    "finance_list_audit_proposals",
-    "finance_decide_audit_proposal",
-    "finance_repair_relation",
-    "finance_list_relation_repairs",
-    "finance_delete_transaction",
-    "finance_delete_account",
-    "finance_delete_category",
     "finance_clear_all_data",
-    "finance_save_savings_reserve",
-    "finance_save_savings_movement",
-    "finance_save_savings_exchange",
-    "finance_link_savings_account",
-    "finance_save_purchase",
     "finance_list_purchases",
-    "finance_period_summary",
     "finance_dashboard_insights",
+    "finance_service_month_status",
+    "finance_list_products",
     "finance_salary_analysis",
     "finance_dollar_quotes",
     "finance_inflation_indices",
     "finance_historical_dollar_quotes",
-    "finance_relation_audit",
-    "finance_validate_purchase",
-    "finance_preview_card_services",
-    "finance_salary_draft",
     "finance_list_price_history",
-    "finance_save_salary",
     "finance_list_salaries",
-    "finance_save_credit_card_statement",
     "finance_list_credit_card_statements",
-    "finance_save_installment_plan",
     "finance_list_installment_plans",
-    "finance_list_installments",
-    "finance_save_investment",
-    "finance_list_investments",
-    "finance_get_net_worth",
-    "finance_list_net_worth_history",
-    "extract_finance_document",
-    "list_finance_artifacts",
     "get_speech_capabilities",
     "prepare_speech_model",
     "get_speech_model_status",
@@ -921,18 +837,6 @@ fn agenda_apply_mutation(app: &AppHandle, _window_label: &str, command: &str, ar
     Ok(Dispatch::Ready(reply_result(crate::agenda::agenda_apply_mutation(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_get_transaction(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_get_transaction(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_all_transactions(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_all_transactions(app.clone(), arg(command, args, "context")?))))
-}
-
-fn finance_list_all_savings_movements(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_all_savings_movements(app.clone(), arg(command, args, "context")?))))
-}
-
 fn finance_dev_list_tables(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_value(crate::finance::finance_dev_list_tables())))
 }
@@ -949,124 +853,24 @@ fn finance_dev_seed_demo_data(app: &AppHandle, _window_label: &str, command: &st
     Ok(Dispatch::Ready(reply_result(crate::finance::finance_dev_seed_demo_data(app.clone(), arg(command, args, "context")?))))
 }
 
-fn finance_save_account(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_account(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_category(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_category(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_transaction(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_transaction(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_apply_ui_change(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_ui::finance_apply_ui_change(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_services(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_services(app.clone(), arg(command, args, "context")?))))
-}
-
-fn finance_set_service_active(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_set_service_active(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_service_occurrences(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_service_occurrences(app.clone(), arg(command, args, "context")?, arg(command, args, "period")?))))
-}
-
-fn finance_list_all_service_occurrences(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_all_service_occurrences(app.clone(), arg(command, args, "context")?))))
-}
-
 fn finance_list_service_occurrence_versions(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_service_occurrence_versions(app.clone(), arg(command, args, "context")?, arg(command, args, "occurrenceId")?))))
-}
-
-fn finance_list_all_service_occurrence_versions(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_all_service_occurrence_versions(app.clone(), arg(command, args, "context")?))))
-}
-
-fn finance_list_service_invoices(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_service_invoices(app.clone(), arg(command, args, "context")?, arg(command, args, "period")?))))
-}
-
-fn finance_save_audit_run(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_audit_run(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_run_audit(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_run_audit(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_audit_runs(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_audit_runs(app.clone(), arg(command, args, "context")?, arg(command, args, "period")?, arg(command, args, "status")?))))
-}
-
-fn finance_save_audit_proposal(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_audit_proposal(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_audit_proposals(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_audit_proposals(app.clone(), arg(command, args, "context")?, arg(command, args, "period")?, arg(command, args, "status")?))))
-}
-
-fn finance_decide_audit_proposal(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_decide_audit_proposal(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_repair_relation(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_repair_relation(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_relation_repairs(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_relation_repairs(app.clone(), arg(command, args, "context")?, arg(command, args, "relationType")?, arg(command, args, "relationId")?))))
-}
-
-fn finance_delete_transaction(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_delete_transaction(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_delete_account(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_delete_account(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_delete_category(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_delete_category(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn finance_clear_all_data(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance::finance_clear_all_data(app.clone(), arg(command, args, "context")?))))
 }
 
-fn finance_save_savings_reserve(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_savings_reserve(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_savings_movement(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_savings_movement(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_savings_exchange(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_save_savings_exchange(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_link_savings_account(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_link_savings_account(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_purchase(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_save_purchase(app.clone(), arg(command, args, "payload")?))))
-}
-
 fn finance_list_purchases(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_purchases(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_period_summary(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_period_summary(app.clone(), arg(command, args, "payload")?))))
+fn finance_service_month_status(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_service_month_status(app.clone(), arg(command, args, "context")?, arg(command, args, "period")?))))
+}
+
+fn finance_list_products(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_products(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn finance_dashboard_insights(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1095,78 +899,20 @@ fn finance_historical_dollar_quotes(_app: &AppHandle, _window_label: &str, comma
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::services::finance_external::finance_historical_dollar_quotes(arg0, arg1).await) })))
 }
 
-fn finance_relation_audit(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_relation_audit(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_validate_purchase(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_validate_purchase(arg(command, args, "purchase")?))))
-}
-
-fn finance_preview_card_services(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_preview_card_services(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_salary_draft(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::finance_views::finance_salary_draft(arg(command, args, "rawResult")?))))
-}
-
 fn finance_list_price_history(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_price_history(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_salary(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_save_salary(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn finance_list_salaries(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_salaries(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_save_credit_card_statement(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_save_credit_card_statement(app.clone(), arg(command, args, "payload")?))))
-}
-
 fn finance_list_credit_card_statements(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_credit_card_statements(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_save_installment_plan(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_save_installment_plan(app.clone(), arg(command, args, "payload")?))))
-}
-
 fn finance_list_installment_plans(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_installment_plans(app.clone(), arg(command, args, "context")?))))
-}
-
-fn finance_list_installments(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_installments(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_save_investment(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_save_investment(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_investments(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_investments(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_get_net_worth(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_get_net_worth(app.clone(), arg(command, args, "context")?, arg(command, args, "asOf")?))))
-}
-
-fn finance_list_net_worth_history(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_net_worth_history(app.clone(), arg(command, args, "context")?))))
-}
-
-fn extract_finance_document(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    let arg0 = app.clone();
-    let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::services::finance_extraction::extract_finance_document(arg0, arg1).await) })))
-}
-
-fn list_finance_artifacts(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::services::finance_extraction::list_finance_artifacts(app.clone(), arg(command, args, "context")?))))
 }
 
 fn get_speech_capabilities(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

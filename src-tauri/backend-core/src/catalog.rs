@@ -88,13 +88,12 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
             "list_finance_salaries",
             "list_finance_purchases",
             "list_finance_price_history",
-            "get_finance_net_worth",
-            "list_finance_net_worth_history",
             "list_finance_services",
             "list_finance_service_occurrences",
             "list_finance_service_invoices",
-            "list_finance_audits",
-            "preview_finance_audit_proposal",
+            "list_finance_review_items",
+            "list_finance_products",
+            "list_finance_merchants",
             "get_finance_full_snapshot",
             "get_finance_record",
             "list_finance_records",
@@ -125,7 +124,6 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
             "save_finance_salary",
             "save_finance_credit_card_statement",
             "save_finance_installment_plan",
-            "save_finance_investment",
             "save_finance_service",
             "save_finance_service_occurrence",
             "save_finance_service_invoice",
@@ -135,15 +133,19 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
             "reverse_finance_transaction",
             "clear_finance_data",
             "extract_finance_document",
-            "audit_finance_month",
-            "apply_finance_audit_proposal",
+            "link_finance_records",
+            "unlink_finance_records",
+            "resolve_finance_review_item",
+            "rename_finance_product",
+            "rename_finance_merchant",
+            "merge_finance_products",
+            "merge_finance_merchants",
         ],
         BackendScope::Finance,
         false,
     ));
     catalog.extend(alias_tools(
         [
-            "list_finance_investments",
             "list_finance_installment_plans",
             "list_finance_installments",
             "list_finance_artifacts",
@@ -424,9 +426,11 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
             || name.starts_with("delete_finance_")
             || name.starts_with("reverse_finance_")
             || name.starts_with("clear_finance_")
-            || name.starts_with("apply_finance_")
-            || name.starts_with("audit_finance_")
-            || name == "link_finance_savings_account"
+            || name.starts_with("link_finance_")
+            || name.starts_with("unlink_finance_")
+            || name.starts_with("resolve_finance_")
+            || name.starts_with("rename_finance_")
+            || name.starts_with("merge_finance_")
             || name == "extract_finance_document" =>
         {
             ToolPolicy::FinanceWrite

@@ -134,7 +134,7 @@ fn graph(guidance: &mut Guidance) {
 
 fn finance(guidance: &mut Guidance, today: &str) {
     guidance.push("Estás en Finanzas. Para datos financieros usá exclusivamente las herramientas financieras; no modifiques saldos directamente.");
-    guidance.push("Las cuentas son etiquetas de origen/destino y no representan saldos conciliados. Distinguí gastos registrados, documentados, conciliados y pendientes.");
+    guidance.push("Finanzas es un seguimiento informal: las cuentas indican de dónde salió el dinero y no llevan saldo. Distinguí gastos del mes, lo pagado de tarjetas, lo que está en tarjeta a pagar y lo ahorrado.");
     finance_tools(guidance, today);
 }
 
@@ -149,10 +149,12 @@ fn finance_tools(guidance: &mut Guidance, today: &str) {
         guidance.push("ARS y USD son libros separados: nunca conviertas ni sumes monedas. Informá cada moneda por separado.");
     }
     guidance.push_if(&["create_finance_category"], "Buscá categorías existentes antes de crear una. Si no hay ninguna adecuada, proponé una nueva relacionada con el hecho con create_finance_category.");
-    guidance.push_if(&["create_finance_purchase", "create_finance_service_invoice", "create_finance_salary", "create_finance_credit_card_statement"], "Si recibís una imagen o PDF, clasificala: ticket de compra (create_finance_purchase), factura o boleta de servicio (create_finance_service_invoice), recibo de sueldo (create_finance_salary) o resumen de tarjeta (create_finance_credit_card_statement, con una cuenta de tipo credit_card). El total del resumen no es otro gasto y el pago posterior es una transferencia separada.");
-    guidance.push_if(&["list_finance_audits", "preview_finance_audit_proposal", "apply_finance_audit_proposal"], "Para propuestas de auditoría usá list_finance_audits, luego preview_finance_audit_proposal y, si el usuario pidió aplicar, apply_finance_audit_proposal con el proposalId y el expectedDataFingerprint exactos del preview. Los grupos ambiguos requieren decisión y nunca se aplican automáticamente.");
-    guidance.push_if(&["audit_finance_month"], "Después de cada alta financiera confirmada ejecutá una única auditoría con audit_finance_month sobre el mes de la fecha efectiva. La auditoría solo propone cambios.");
-    guidance.push_if(&["create_finance_savings_exchange"], "Cuando el usuario compre una moneda para una reserva de ahorro, usá create_finance_savings_exchange resolviendo reserva y cuenta por nombre; nunca pidas IDs internos.");
+    guidance.push_if(&["create_finance_purchase", "create_finance_service_invoice", "create_finance_salary", "create_finance_credit_card_statement"], "Si recibís una imagen o PDF, clasificala: ticket de compra (create_finance_purchase), factura o boleta de servicio (create_finance_service_invoice), recibo de sueldo (create_finance_salary) o resumen de tarjeta (create_finance_credit_card_statement, con una cuenta de tipo credit_card). Un resumen cargado es un resumen ya pagado: su total es lo pagado de la tarjeta, nunca otro gasto, y no se registra el pago aparte.");
+    guidance.push_if(&["list_finance_products"], "Antes de guardar un ticket consultá list_finance_products y list_finance_merchants y escribí productos y comercio con los nombres que ya existen cuando sean los mismos.");
+    guidance.push_if(&["create_finance_purchase", "create_finance_credit_card_statement", "create_finance_transaction"], "Después de cada alta leé links y reviewItems del resultado. Contá los vínculos automáticos en una sola línea (por ejemplo: «lo vinculé al consumo de la Visa del 12/9») y aclarale que puede pedir deshacerlo. Cada reviewItem es una pregunta para la persona: hacela con sus opciones y, cuando responda, aplicala con resolve_finance_review_item.");
+    guidance.push_if(&["list_finance_review_items"], "Si la persona pregunta qué falta revisar en Finanzas, usá list_finance_review_items y hacé las preguntas pendientes de a una.");
+    guidance.push_if(&["unlink_finance_records"], "Si la persona dice que un vínculo automático está mal, deshacelo con unlink_finance_records usando el id del vínculo o la línea del resumen. Para borrar cualquier registro usá delete_finance_record con la entidad del documento, no el movimiento.");
+    guidance.push_if(&["create_finance_savings_exchange"], "Cuando la persona compre moneda para ahorrar usá create_finance_savings_exchange con direction buy; cuando venda ahorro para usar la plata, con direction sell. Resolvé reserva y cuenta por nombre; nunca pidas IDs internos. Ninguna de las dos es gasto ni ingreso del mes.");
     guidance.push("Las preguntas sobre datos financieros locales se responden con las herramientas financieras y nunca requieren search_web.");
 }
 

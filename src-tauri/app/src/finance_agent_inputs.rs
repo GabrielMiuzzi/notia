@@ -659,6 +659,7 @@ pub(crate) fn build_credit_card_statement(
                 installment_number: installment("installmentNumber"),
                 installment_count: installment("installmentCount"),
                 transaction_id: None,
+                category_id: optional_text(item, "categoryId"),
             })
         })
         .collect::<Vec<_>>();
@@ -724,6 +725,7 @@ pub(crate) fn build_credit_card_statement(
             installment_number: None,
             installment_count: None,
             transaction_id: None,
+            category_id: None,
         });
     }
     let account = resolve_account(accounts, &account_value)
@@ -933,6 +935,7 @@ pub(crate) fn build_transaction(
             raw_source: raw_text(args, "rawSource"),
             created_at: None,
             updated_at: None,
+            purchase_date: None,
         },
         service,
     })

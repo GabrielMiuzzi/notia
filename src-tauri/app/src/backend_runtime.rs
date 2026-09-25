@@ -1022,10 +1022,9 @@ impl TauriBackendToolExecutor {
             "list_finance_services",
             "list_finance_service_occurrences",
             "list_finance_service_invoices",
-            "list_finance_audits",
-            "get_finance_net_worth",
-            "list_finance_net_worth_history",
-            "list_finance_investments",
+            "list_finance_review_items",
+            "list_finance_products",
+            "list_finance_merchants",
             "list_finance_installment_plans",
             "list_finance_installments",
             "list_finance_purchases",
@@ -1057,16 +1056,19 @@ impl TauriBackendToolExecutor {
             "save_finance_salary",
             "save_finance_credit_card_statement",
             "save_finance_installment_plan",
-            "save_finance_investment",
             "link_finance_savings_account",
+            "link_finance_records",
+            "unlink_finance_records",
+            "resolve_finance_review_item",
+            "rename_finance_product",
+            "rename_finance_merchant",
+            "merge_finance_products",
+            "merge_finance_merchants",
             "set_finance_service_active",
             "delete_finance_record",
             "reverse_finance_transaction",
             "update_finance_transaction_status",
             "clear_finance_data",
-            "audit_finance_month",
-            "preview_finance_audit_proposal",
-            "apply_finance_audit_proposal",
             "get_routine_dashboard",
             "get_routine_day",
             "list_routine_history",
@@ -1948,7 +1950,7 @@ impl TauriBackendToolExecutor {
         if let Some(existing) = self.existing_finance_transaction(&finance_context, &draft)? {
             return Ok(json!({ "ok": true, "changed": false, "duplicate": true, "transaction": existing }));
         }
-        let saved = match crate::finance::finance_save_transaction(
+        let (saved, outcome) = match crate::finance::finance_save_transaction_linked(
             self.app.clone(),
             crate::finance::SaveTransactionPayload {
                 context: finance_context.clone(),
@@ -1963,14 +1965,15 @@ impl TauriBackendToolExecutor {
             // is really there.
             Err(error) if error.code == BackendErrorCode::Storage => {
                 match self.existing_finance_transaction(&finance_context, &draft) {
-                    Ok(Some(saved)) => saved,
+                    Ok(Some(saved)) => (saved, Default::default()),
                     _ => return Err(error),
                 }
             }
             Err(error) => return Err(error),
         };
+        let crate::finance_matching::LinkOutcome { links, review_items } = outcome;
         let Some(service) = draft.service else {
-            return Ok(json!({ "ok": true, "changed": true, "transaction": saved }));
+            return Ok(json!({ "ok": true, "changed": true, "transaction": saved, "links": links, "reviewItems": review_items }));
         };
         // The payment marks the service's month as paid; a failure is
         // reported so the user can fix the occurrence, never hidden.
@@ -2000,7 +2003,7 @@ impl TauriBackendToolExecutor {
             },
         );
         Ok(match occurrence {
-            Ok(occurrence) => json!({ "ok": true, "changed": true, "transaction": saved, "occurrence": occurrence }),
+            Ok(occurrence) => json!({ "ok": true, "changed": true, "transaction": saved, "occurrence": occurrence, "links": links, "reviewItems": review_items }),
             Err(error) => json!({
                 "ok": false,
                 "changed": true,
@@ -2347,7 +2350,13 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "update_finance_transaction_status"
                     | "clear_finance_data"
                     | "extract_finance_document"
-                    | "apply_finance_audit_proposal"
+                    | "link_finance_records"
+                    | "unlink_finance_records"
+                    | "resolve_finance_review_item"
+                    | "rename_finance_product"
+                    | "rename_finance_merchant"
+                    | "merge_finance_products"
+                    | "merge_finance_merchants"
             )
         {
             return Ok(Some(MutationPreview {
@@ -2734,8 +2743,6 @@ impl ToolExecutor for TauriBackendToolExecutor {
             "get_finance_full_snapshot" => {
                 let month = Self::finance_period(&call.arguments, "month", true)?
                     .ok_or_else(|| BackendError::invalid_input("El snapshot financiero necesita un mes."))?;
-                let as_of = Self::optional_text(&call.arguments, "asOf")
-                    .unwrap_or_else(|| format!("{month}-01"));
                 let finance_context = self.finance_context(context)?;
                 let dashboard = crate::finance::finance_get_dashboard(
                     self.app.clone(),
@@ -2818,33 +2825,10 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         plan_id: None,
                     },
                 ).map_err(Self::finance_error)?;
-                let investments = crate::finance_records::finance_list_investments(
-                    self.app.clone(),
-                    crate::finance_records::ListInvestmentsPayload {
-                        context: self.finance_context(context)?,
-                        active: None,
-                    },
-                ).map_err(Self::finance_error)?;
-                let runs = crate::finance::finance_list_audit_runs(
+                let review_items = crate::finance_edits::finance_list_review_items(
                     self.app.clone(),
                     self.finance_context(context)?,
-                    Some(month.clone()),
                     None,
-                ).map_err(Self::finance_error)?;
-                let proposals = crate::finance::finance_list_audit_proposals(
-                    self.app.clone(),
-                    self.finance_context(context)?,
-                    Some(month.clone()),
-                    None,
-                ).map_err(Self::finance_error)?;
-                let net_worth = crate::finance_records::finance_get_net_worth(
-                    self.app.clone(),
-                    self.finance_context(context)?,
-                    as_of,
-                ).map_err(Self::finance_error)?;
-                let net_worth_history = crate::finance_records::finance_list_net_worth_history(
-                    self.app.clone(),
-                    self.finance_context(context)?,
                 ).map_err(Self::finance_error)?;
                 let artifacts = crate::services::finance_extraction::list_finance_artifacts(
                     self.app.clone(),
@@ -2866,10 +2850,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     "priceHistory": price_history,
                     "installmentPlans": installment_plans,
                     "installments": installments,
-                    "investments": investments,
-                    "audits": { "runs": runs, "proposals": proposals },
-                    "netWorth": net_worth,
-                    "netWorthHistory": net_worth_history,
+                    "reviewItems": review_items,
                     "artifacts": artifacts,
                 })
             }
@@ -3049,142 +3030,32 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 .map_err(Self::finance_error)?,
             )
             .map_err(|_| invalid_result())?,
-            "list_finance_audits" => {
-                let period = Self::finance_period(&call.arguments, "period", false)?;
-                let status = Some(Self::text(&call.arguments, "status")).filter(|value| !value.is_empty());
-                let proposal_type = Self::optional_text(&call.arguments, "proposalType");
-                let finance_context = self.finance_context(context)?;
-                let runs = crate::finance::finance_list_audit_runs(
-                    self.app.clone(),
-                    finance_context,
-                    period.clone(),
-                    status.clone(),
-                )
-                .map_err(Self::finance_error)?;
-                let proposals = crate::finance::finance_list_audit_proposals(
+            "list_finance_review_items" => {
+                let status = Self::optional_text(&call.arguments, "status");
+                let items = crate::finance_edits::finance_list_review_items(
                     self.app.clone(),
                     self.finance_context(context)?,
-                    period,
                     status,
                 )
                 .map_err(Self::finance_error)?;
-                let proposals = proposals.into_iter().filter(|proposal| {
-                    proposal_type.as_deref().is_none_or(|kind| proposal.proposal_type == kind)
-                }).collect::<Vec<_>>();
-                json!({ "runs": runs, "proposals": proposals })
+                json!({ "ok": true, "reviewItems": items })
             }
-            "audit_finance_month" => {
-                let period = Self::finance_period(&call.arguments, "period", true)?
-                    .ok_or_else(|| BackendError::invalid_input("La auditoría necesita un período."))?;
-                let reason = Self::optional_text(&call.arguments, "reason");
-                let trigger_fingerprint = format!(
-                    "backend-audit:{}:{}",
-                    period,
-                    reason.as_deref().unwrap_or("manual")
-                );
-                let result = crate::finance::finance_run_audit(
-                    self.app.clone(),
-                    crate::finance::RunFinanceAuditPayload {
-                        context: self.finance_context(context)?,
-                        period,
-                        trigger_fingerprint,
-                        reason,
-                    },
-                ).map_err(Self::finance_error)?;
-                serde_json::to_value(result).map_err(|_| invalid_result())?
+            "list_finance_products" | "list_finance_merchants" => {
+                let payload = crate::finance_records::ListCatalogPayload {
+                    context: self.finance_context(context)?,
+                    search: Self::optional_text(&call.arguments, "search"),
+                    limit: Some(Self::page_limit(&call.arguments, "limit", 50) as u32),
+                };
+                if call.name == "list_finance_products" {
+                    let products = crate::finance_records::finance_list_products(self.app.clone(), payload)
+                        .map_err(Self::finance_error)?;
+                    json!({ "ok": true, "products": products })
+                } else {
+                    let merchants = crate::finance_records::finance_list_merchants(self.app.clone(), payload)
+                        .map_err(Self::finance_error)?;
+                    json!({ "ok": true, "merchants": merchants })
+                }
             }
-            "preview_finance_audit_proposal" => {
-                let proposal_id = Self::text(&call.arguments, "proposalId");
-                if proposal_id.is_empty() {
-                    return Err(BackendError::invalid_input("El preview necesita proposalId."));
-                }
-                let proposals = crate::finance::finance_list_audit_proposals(
-                    self.app.clone(),
-                    self.finance_context(context)?,
-                    None,
-                    None,
-                ).map_err(Self::finance_error)?;
-                let proposal = proposals.into_iter().find(|proposal| proposal.id == proposal_id)
-                    .ok_or_else(|| BackendError::new(BackendErrorCode::NotFound, "La propuesta de auditoría no existe.", true))?;
-                if let Some(expected_type) = Self::optional_text(&call.arguments, "proposalType") {
-                    if proposal.proposal_type != expected_type {
-                        return Err(BackendError::invalid_input("El tipo de propuesta no coincide."));
-                    }
-                }
-                if proposal.status != "pending" {
-                    return Err(BackendError::new(
-                        BackendErrorCode::Conflict,
-                        "La propuesta de auditoría ya no está pendiente.",
-                        true,
-                    ));
-                }
-                let current_data = serde_json::from_str::<Value>(&proposal.current_data)
-                    .unwrap_or_else(|_| Value::String(proposal.current_data.clone()));
-                let suggested_change = serde_json::from_str::<Value>(&proposal.suggested_change)
-                    .unwrap_or_else(|_| Value::String(proposal.suggested_change.clone()));
-                let proposal_type = proposal.proposal_type.clone();
-                let period = proposal.period.clone();
-                let service_id = proposal.service_id.clone();
-                let reason = proposal.reason.clone();
-                let evidence = proposal.evidence.clone();
-                let data_fingerprint = proposal.data_fingerprint.clone();
-                json!({
-                    "ok": true,
-                    "changed": false,
-                    "proposalType": proposal_type.clone(),
-                    "period": period.clone(),
-                    "proposal": proposal,
-                    "preview": {
-                        "proposalType": proposal_type.clone(),
-                        "period": period.clone(),
-                        "serviceId": service_id,
-                        "reason": reason,
-                        "evidence": evidence,
-                        "dataFingerprint": data_fingerprint.clone(),
-                        "currentData": current_data,
-                        "suggestedChange": suggested_change,
-                    },
-                    "expectedDataFingerprint": data_fingerprint,
-                })
-            }
-            "apply_finance_audit_proposal" => {
-                let proposal_id = Self::text(&call.arguments, "proposalId");
-                let expected_data_fingerprint = Self::optional_text(&call.arguments, "expectedDataFingerprint");
-                let decision = Self::text(&call.arguments, "decision");
-                if proposal_id.is_empty() || expected_data_fingerprint.is_none() || decision.is_empty() {
-                    return Err(BackendError::invalid_input("La decisión necesita propuesta, huella y decisión."));
-                }
-                let payload = serde_json::json!({
-                    "context": self.finance_context(context)?,
-                    "proposalId": proposal_id,
-                    "decision": decision,
-                    "expectedDataFingerprint": expected_data_fingerprint,
-                    "resolutionAssignments": call.arguments.get("resolutionAssignments").cloned(),
-                });
-                let payload = serde_json::from_value::<crate::finance::DecideFinanceAuditProposalPayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("La decisión de auditoría no es válida."))?;
-                crate::finance::finance_decide_audit_proposal(self.app.clone(), payload)
-                    .map_err(Self::finance_error)?;
-                json!({ "ok": true, "changed": true })
-            }
-            "get_finance_net_worth" => {
-                let as_of = Self::text(&call.arguments, "asOf");
-                if as_of.is_empty() {
-                    return Err(BackendError::invalid_input("El patrimonio necesita una fecha."));
-                }
-                serde_json::to_value(crate::finance_records::finance_get_net_worth(
-                    self.app.clone(),
-                    self.finance_context(context)?,
-                    as_of,
-                ).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
-            }
-            "list_finance_net_worth_history" => serde_json::to_value(
-                crate::finance_records::finance_list_net_worth_history(
-                    self.app.clone(),
-                    self.finance_context(context)?,
-                )
-                .map_err(Self::finance_error)?,
-            ).map_err(|_| invalid_result())?,
             "list_finance_installment_plans" => serde_json::to_value(
                 crate::finance_records::finance_list_installment_plans(
                     self.app.clone(),
@@ -3205,15 +3076,6 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     crate::finance_records::ListInstallmentsPayload {
                         context: self.finance_context(context)?,
                         plan_id,
-                    },
-                ).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
-            }
-            "list_finance_investments" => {
-                serde_json::to_value(crate::finance_records::finance_list_investments(
-                    self.app.clone(),
-                    crate::finance_records::ListInvestmentsPayload {
-                        context: self.finance_context(context)?,
-                        active: call.arguments.get("active").and_then(Value::as_bool),
                     },
                 ).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
@@ -3287,7 +3149,9 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 let payload = serde_json::json!({ "context": self.finance_context(context)?, "transaction": record });
                 let payload = serde_json::from_value::<crate::finance::SaveTransactionPayload>(payload)
                     .map_err(|_| BackendError::invalid_input("El movimiento financiero no es válido."))?;
-                serde_json::to_value(crate::finance::finance_save_transaction(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
+                let (transaction, outcome) = crate::finance::finance_save_transaction_linked(self.app.clone(), payload)
+                    .map_err(Self::finance_error)?;
+                json!({ "ok": true, "changed": true, "transaction": transaction, "links": outcome.links, "reviewItems": outcome.review_items })
             }
             "create_finance_transaction" => self.create_finance_transaction(context, call)?,
             "create_finance_service" => {
@@ -3419,14 +3283,23 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 });
                 let payload = serde_json::from_value::<crate::finance::DeleteFinanceEntityPayload>(payload)
                     .map_err(|_| BackendError::invalid_input("El registro financiero no es válido."))?;
-                match entity.as_str() {
-                    "transaction" => crate::finance::finance_delete_transaction(self.app.clone(), payload),
-                    "account" => crate::finance::finance_delete_account(self.app.clone(), payload),
-                    "category" => crate::finance::finance_delete_category(self.app.clone(), payload),
+                let summary = match entity.as_str() {
+                    "transaction" => crate::finance::finance_delete_transaction(self.app.clone(), payload).map(|_| None),
+                    "account" => crate::finance::finance_delete_account(self.app.clone(), payload).map(|_| None),
+                    "category" => crate::finance::finance_delete_category(self.app.clone(), payload).map(|_| None),
+                    other if crate::finance_edits::DELETABLE_RECORDS.contains(&other) => {
+                        crate::finance_edits::finance_delete_record(
+                            self.app.clone(),
+                            payload.context,
+                            entity.clone(),
+                            payload.id,
+                        )
+                        .map(|deleted| Some(deleted.summary))
+                    }
                     _ => return Err(BackendError::invalid_input("La entidad financiera no se puede eliminar.")),
                 }
                 .map_err(Self::finance_error)?;
-                json!({ "ok": true, "changed": true, "entity": entity })
+                json!({ "ok": true, "changed": true, "entity": entity, "summary": summary })
             }
             "clear_finance_data" => {
                 crate::finance::finance_clear_all_data(
@@ -3541,6 +3414,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         "actorUserId": Value::Null,
                         "sourceReference": Self::optional_text(&call.arguments, "sourceReference"),
                         "rawSource": Self::optional_text(&call.arguments, "rawSource"),
+                        "direction": Self::optional_text(&call.arguments, "direction"),
                     },
                 });
                 let payload = serde_json::from_value::<crate::finance::SaveSavingsExchangePayload>(payload)
@@ -3650,13 +3524,53 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 serde_json::to_value(crate::finance_records::finance_save_installment_plan(self.app.clone(), payload)
                     .map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
-            "save_finance_investment" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "investment": record });
-                let payload = serde_json::from_value::<crate::finance_records::SaveInvestmentPayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("La inversión no es válida."))?;
-                serde_json::to_value(crate::finance_records::finance_save_investment(self.app.clone(), payload)
-                    .map_err(Self::finance_error)?).map_err(|_| invalid_result())?
+            "link_finance_records" => {
+                let link = crate::finance_edits::finance_link_records(
+                    self.app.clone(),
+                    self.finance_context(context)?,
+                    Self::text(&call.arguments, "kind"),
+                    Self::text(&call.arguments, "subjectId"),
+                    Self::text(&call.arguments, "lineId"),
+                )
+                .map_err(Self::finance_error)?;
+                json!({ "ok": true, "changed": true, "link": link })
+            }
+            "unlink_finance_records" => {
+                crate::finance_edits::finance_unlink_records(
+                    self.app.clone(),
+                    self.finance_context(context)?,
+                    Self::optional_text(&call.arguments, "linkId"),
+                    Self::optional_text(&call.arguments, "lineId"),
+                )
+                .map_err(Self::finance_error)?;
+                json!({ "ok": true, "changed": true })
+            }
+            "resolve_finance_review_item" => {
+                let item = crate::finance_edits::finance_resolve_review_item(
+                    self.app.clone(),
+                    self.finance_context(context)?,
+                    Self::text(&call.arguments, "reviewItemId"),
+                    Self::text(&call.arguments, "optionId"),
+                )
+                .map_err(Self::finance_error)?;
+                json!({ "ok": true, "changed": true, "reviewItem": item })
+            }
+            "rename_finance_product" | "rename_finance_merchant" | "merge_finance_products" | "merge_finance_merchants" => {
+                let (action, value_field) = match call.name.as_str() {
+                    "rename_finance_product" => ("rename-product", "name"),
+                    "rename_finance_merchant" => ("rename-merchant", "name"),
+                    "merge_finance_products" => ("merge-products", "intoId"),
+                    _ => ("merge-merchants", "intoId"),
+                };
+                crate::finance_edits::finance_edit_catalog(
+                    self.app.clone(),
+                    self.finance_context(context)?,
+                    action.to_string(),
+                    Self::text(&call.arguments, "id"),
+                    Self::text(&call.arguments, value_field),
+                )
+                .map_err(Self::finance_error)?;
+                json!({ "ok": true, "changed": true })
             }
             "read_active_markdown_document" => {
                 // The active document comes from the request snapshot; an
@@ -3849,9 +3763,13 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "save_finance_credit_card_statement"
                     | "create_finance_credit_card_statement"
                     | "save_finance_installment_plan"
-                    | "save_finance_investment"
-                    | "audit_finance_month"
-                    | "apply_finance_audit_proposal"
+                    | "link_finance_records"
+                    | "unlink_finance_records"
+                    | "resolve_finance_review_item"
+                    | "rename_finance_product"
+                    | "rename_finance_merchant"
+                    | "merge_finance_products"
+                    | "merge_finance_merchants"
                     | "create_task_ticket"
                     | "replace_task_content"
                     | "add_task_comment"
