@@ -2653,6 +2653,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     "docx" => crate::backend::ExportFormat::Docx,
                     _ => return Err(BackendError::invalid_input("El formato de exportación no es válido.")),
                 };
+                crate::device_preferences::ensure_export_allowed(&self.app, format)?;
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 let picker = self.app.state::<AndroidDirectoryPickerState>();
                 let receipt = crate::filesystem::adapter::export_library_document(
@@ -2661,6 +2662,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     &context.library_id,
                     &Self::text(&call.arguments, "path"),
                     format,
+                    &crate::device_preferences::page_geometry(&self.app),
                 )?;
                 json!({
                     "destinationLogicalPath": receipt.destination_logical_path,

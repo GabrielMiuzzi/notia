@@ -1,5 +1,5 @@
 import { callBackend } from '../../../services/transport'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
@@ -71,8 +71,10 @@ import {
   BLOCK_GRIP_ICON,
   blockHandleReference,
   hideBlockHandleOnPointerLeave,
+  isPageBreakRow,
   observeBlockHandleVisibility,
   setActiveBlock,
+  trackPointerRow,
 } from './markdown/blockHandle'
 import { createFormatToolbarPlugin, type FormatToolbarState } from './markdown/formatToolbarPlugin'
 import {
@@ -84,6 +86,8 @@ import {
   toggleFormatMark,
 } from './markdown/formatCommands'
 import { MarkdownFormatToolbar, type MarkdownFormatToolbarActions } from './markdown/MarkdownFormatToolbar'
+import { createPaginationPlugin, requestPagination, type PaginationGeometry } from './markdown/paginationPlugin'
+import type { MarkdownPageLayout } from '../../../services/preferences/editorPreferences'
 import './markdown/markdownEditor.css'
 
 const WIKI_LINK_MENU_WIDTH = 320
@@ -110,6 +114,8 @@ interface MarkdownViewProps {
   contexts?: readonly LibraryContext[]
   /** Creates a note next to this one from a link property; resolves to an error message or `null`. */
   onCreateLinkedNote?: (title: string) => Promise<string | null>
+  /** Page mode: the note is drawn on sheets of this size. */
+  pageLayout?: MarkdownPageLayout | null
 }
 
 /** Drop line of a dragged block, as thin as the design's. */
@@ -119,6 +125,32 @@ const DROP_INDICATOR_WIDTH = 2
  * of the text (10px past the column), and the grip keeps 8px from it.
  */
 const BLOCK_HANDLE_OFFSET = 20
+/** CSS pixels per millimetre (96 dpi), so a sheet measures as the paper. */
+const PX_PER_MM = 96 / 25.4
+/** Space between two sheets, as in the canvas. */
+const PAGE_GAP_PX = 32
+/** Room the page number keeps above the bottom margin. */
+const PAGE_NUMBER_BAND_PX = 18
+/** Background around the sheets; narrower on phones. */
+const DESK_PADDING_PX = 40
+const NARROW_DESK_PADDING_PX = 16
+const NARROW_EDITOR_PX = 600
+
+interface PagePixels {
+  width: number
+  height: number
+  margin: number
+  pageNumbers: boolean
+}
+
+function toPagePixels(layout: MarkdownPageLayout): PagePixels {
+  return {
+    width: Math.round(layout.widthMm * PX_PER_MM),
+    height: Math.round(layout.heightMm * PX_PER_MM),
+    margin: Math.round(layout.marginMm * PX_PER_MM),
+    pageNumbers: layout.pageNumbers,
+  }
+}
 
 function clampWikiLinkMenuLeft(left: number): number {
   const maxLeft = Math.max(WIKI_LINK_MENU_MARGIN, window.innerWidth - WIKI_LINK_MENU_WIDTH - WIKI_LINK_MENU_MARGIN)
@@ -367,6 +399,7 @@ function MarkdownViewInner({
   onZoomChange,
   contexts = [],
   onCreateLinkedNote,
+  pageLayout = null,
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
@@ -376,6 +409,17 @@ function MarkdownViewInner({
   const [formatToolbarState, setFormatToolbarState] = useState<FormatToolbarState | null>(null)
 
   const toolbarRef = useRef<HTMLDivElement | null>(null)
+  const pagesRef = useRef<HTMLDivElement | null>(null)
+  const [pageCount, setPageCount] = useState(1)
+  const pagePixels = useMemo(() => (pageLayout ? toPagePixels(pageLayout) : null), [pageLayout])
+  const [hostWidth, setHostWidth] = useState(0)
+  const deskPadding = hostWidth > 0 && hostWidth < NARROW_EDITOR_PX ? NARROW_DESK_PADDING_PX : DESK_PADDING_PX
+  // A sheet wider than the editor (a phone, a narrow window) is scaled down to fit.
+  const pageFit = pagePixels && hostWidth > 0
+    ? Math.min(1, Math.max(0.1, (hostWidth / zoom - 2 * deskPadding) / pagePixels.width))
+    : 1
+  const paginationGeometryRef = useRef<PaginationGeometry | null>(null)
+  const pointerRowRef = useRef<number | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const zoomContentRef = useRef<HTMLDivElement | null>(null)
@@ -400,6 +444,30 @@ function MarkdownViewInner({
   const mermaidPreviewBlockIndexRef = useRef(0)
 
   useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange)
+
+  useEffect(() => {
+    const host = viewportRef.current
+    if (!host || typeof ResizeObserver !== 'function') return
+    const observer = new ResizeObserver(([entry]) => setHostWidth(entry?.contentRect.width ?? 0))
+    observer.observe(host)
+    return () => observer.disconnect()
+  }, [])
+
+  // A new page setup, zoom or fit lays the page breaks again.
+  useEffect(() => {
+    paginationGeometryRef.current = pagePixels
+      ? {
+        pageHeight: pagePixels.height,
+        pageGap: PAGE_GAP_PX,
+        margin: pagePixels.margin,
+        numberBand: pagePixels.pageNumbers ? PAGE_NUMBER_BAND_PX : 0,
+        zoom: zoom * pageFit,
+      }
+      : null
+    const crepe = crepeRef.current
+    if (!crepe || !isEditorReady) return
+    requestPagination(crepe.editor.action((ctx) => ctx.get(editorViewCtx)))
+  }, [isEditorReady, pageFit, pagePixels, zoom])
 
   useEffect(() => {
     if (source === latestComposedSourceRef.current) {
@@ -715,6 +783,11 @@ function MarkdownViewInner({
       ctx.update(blockConfig.key, (prev) => ({
         ...prev,
         filterNodes: (pos, node) => {
+          // No block between two sheets, as between top-level blocks.
+          const pointerRow = pointerRowRef.current
+          if (pointerRow !== null && isPageBreakRow(ctx.get(editorViewCtx), pointerRow)) {
+            return false
+          }
           let hasExcludedAncestor = false
           let isInsideTable = false
           for (let depth = pos.depth; depth > 0; depth -= 1) {
@@ -737,6 +810,13 @@ function MarkdownViewInner({
 
     crepe.editor.use(richTextPlugins)
     crepe.editor.use($prose(() => activeBlockPlugin))
+    crepe.editor.use($prose(() => createPaginationPlugin({
+      getGeometry: () => paginationGeometryRef.current,
+      getContainer: () => pagesRef.current,
+      onPageCountChange: (count) => {
+        if (isMounted) setPageCount(count)
+      },
+    })))
     crepe.editor.use($prose(() => createFormatToolbarPlugin({
       onChange: (state) => {
         if (isMounted) setFormatToolbarState(state)
@@ -879,6 +959,9 @@ function MarkdownViewInner({
         })
         : () => {}
       const stopHidingHandle = root && host ? hideBlockHandleOnPointerLeave(host, root) : () => {}
+      const stopTrackingPointerRow = trackPointerRow(editorView, (clientY) => {
+        pointerRowRef.current = clientY
+      })
       selectionCleanupRef.current = () => {
         editorView.dom.removeEventListener('keyup', notifySelectionChange)
         editorView.dom.removeEventListener('mouseup', notifySelectionChange)
@@ -887,6 +970,7 @@ function MarkdownViewInner({
         stopObservingHandle()
         detachDragGhost()
         stopHidingHandle()
+        stopTrackingPointerRow()
       }
       notifySelectionChange()
       onSelectionChangeRef.current(buildMarkdownSelectionContext(
@@ -1107,25 +1191,56 @@ function MarkdownViewInner({
     setWikiLinkMenuState(null)
   }
 
+  const sheetCount = pagePixels ? pageCount : 0
+  const pagesStyle = pagePixels
+    ? {
+      '--notia-page-width': `${pagePixels.width}px`,
+      '--notia-page-height': `${pagePixels.height}px`,
+      '--notia-page-margin': `${pagePixels.margin}px`,
+      '--notia-page-number-bottom': `${Math.max(10, Math.round(pagePixels.margin / 2 - 8))}px`,
+      minHeight: sheetCount * pagePixels.height + (sheetCount - 1) * PAGE_GAP_PX,
+      zoom: pageFit < 1 ? pageFit : undefined,
+    } as CSSProperties
+    : undefined
+
   return (
-    <div ref={viewportRef} className="notia-markdown-host" aria-label="Markdown editor">
+    <div
+      ref={viewportRef}
+      className={`notia-markdown-host${pagePixels ? ' is-paged' : ''}`}
+      style={pagePixels ? { '--notia-desk-padding': `${deskPadding}px` } as CSSProperties : undefined}
+      aria-label="Markdown editor"
+    >
       <div ref={zoomContentRef} className="notia-markdown-zoom-content">
-        <ChatAttachmentImages source={source} />
-        <div className="notia-markdown-properties-wrap">
-          <MarkdownPropertiesPanel
-            entries={parsedDocument.frontmatter}
-            wikiLinkLookup={wikiLinkLookup}
-            libraryId={libraryId}
-            onAddProperty={handleAddProperty}
-            onEditProperty={handleEditProperty}
-            onDeleteProperty={handleDeleteProperty}
-            onOpenLinkedFile={onOpenLinkedFile}
-            onCreateLinkedNote={onCreateLinkedNote}
-            contexts={contexts}
-            lockedContextTag={lockedContextTag}
-          />
+        {/* The structure is the same in both modes, so switching never remounts the editor. */}
+        <div ref={pagesRef} className="notia-markdown-pages" style={pagesStyle}>
+          {pagePixels ? (
+            <div className="notia-markdown-page-sheets" aria-hidden="true">
+              {Array.from({ length: sheetCount }, (_, index) => (
+                <div key={index} className="notia-markdown-page-sheet" style={{ top: index * (pagePixels.height + PAGE_GAP_PX) }}>
+                  {pagePixels.pageNumbers ? <span className="notia-markdown-page-number">{index + 1} / {sheetCount}</span> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="notia-markdown-page-flow">
+            <ChatAttachmentImages source={source} />
+            <div className="notia-markdown-properties-wrap">
+              <MarkdownPropertiesPanel
+                entries={parsedDocument.frontmatter}
+                wikiLinkLookup={wikiLinkLookup}
+                libraryId={libraryId}
+                onAddProperty={handleAddProperty}
+                onEditProperty={handleEditProperty}
+                onDeleteProperty={handleDeleteProperty}
+                onOpenLinkedFile={onOpenLinkedFile}
+                onCreateLinkedNote={onCreateLinkedNote}
+                contexts={contexts}
+                lockedContextTag={lockedContextTag}
+              />
+            </div>
+            <div ref={rootRef} className="notia-markdown-editor-root" />
+          </div>
         </div>
-        <div ref={rootRef} className="notia-markdown-editor-root" />
       </div>
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />
       <MarkdownFormatToolbar

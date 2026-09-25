@@ -9,6 +9,7 @@ import { DEFAULT_QWEN3_TTS_PREFERENCES, type Qwen3TtsPreferences } from '../../s
 import { DEFAULT_SPEECH_RECOGNITION_PREFERENCES, type SpeechRecognitionPreferences } from '../../services/preferences/speechRecognitionSettingsStorage'
 import { DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES, type TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { DevicePreferences } from '../../services/preferences/devicePreferencesStorage'
+import type { EditorPagePreferences, PenPreferences } from '../../services/preferences/editorPreferences'
 
 const initialState: PreferencesState = {
   theme: loadThemePreference(),
@@ -19,6 +20,10 @@ const initialState: PreferencesState = {
   qwen3TtsSettings: DEFAULT_QWEN3_TTS_PREFERENCES,
   speechRecognitionSettings: DEFAULT_SPEECH_RECOGNITION_PREFERENCES,
   taskManagerPublicationPreferences: DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES,
+  editorPage: null,
+  editorPageSetup: null,
+  pen: null,
+  editorPreferencesError: null,
   devicePreferencesLoaded: false,
 }
 
@@ -64,7 +69,27 @@ const preferencesSlice = createSlice({
       state.taskManagerPublicationPreferences = action.payload.taskManagerPublication
       state.speechRecognitionSettings = action.payload.speechRecognition
       state.qwen3TtsSettings = action.payload.qwen3Tts
+      state.editorPage = action.payload.editorPage
+      state.editorPageSetup = action.payload.editorPageSetup
+      state.pen = action.payload.pen
       state.devicePreferencesLoaded = true
+    },
+    /** The editor sections as the backend saved them. */
+    hydrateEditorPreferences(state, action: PayloadAction<DevicePreferences>) {
+      state.editorPage = action.payload.editorPage
+      state.editorPageSetup = action.payload.editorPageSetup
+      state.pen = action.payload.pen
+      state.editorPreferencesError = null
+    },
+    /** Shows a change right away, before the backend confirms it. */
+    setEditorPagePreferences(state, action: PayloadAction<EditorPagePreferences>) {
+      state.editorPage = action.payload
+    },
+    setPenPreferences(state, action: PayloadAction<PenPreferences>) {
+      state.pen = action.payload
+    },
+    setEditorPreferencesError(state, action: PayloadAction<string | null>) {
+      state.editorPreferencesError = action.payload
     },
   },
 })
@@ -80,6 +105,10 @@ export const {
   setSpeechRecognitionSettings,
   setTaskManagerPublicationPreferences,
   hydrateDevicePreferences,
+  hydrateEditorPreferences,
+  setEditorPagePreferences,
+  setPenPreferences,
+  setEditorPreferencesError,
 } = preferencesSlice.actions
 
 export default preferencesSlice.reducer

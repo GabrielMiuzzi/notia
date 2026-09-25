@@ -38,6 +38,7 @@ pub mod markdown_editing;
 pub mod meeting;
 pub mod multichat;
 pub mod page_links;
+pub mod page_setup;
 pub mod paths;
 pub mod ports;
 pub mod prompt;
@@ -101,6 +102,7 @@ pub use export::{
     ExportRecoveryState, RecoverableExportResult, MAX_EXPORT_INPUT_BYTES, MAX_EXPORT_OUTPUT_BYTES,
 };
 pub use export_render::render_markdown_export;
+pub use page_setup::PageGeometry;
 pub use formatting::{channel_response, escape_telegram_html, markdown_to_telegram_html};
 pub use interaction::{
     begin_operation, ensure_preview_revisions, transition_operation_state,

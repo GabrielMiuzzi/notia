@@ -1,0 +1,436 @@
+/*
+ * Editor settings («Configuración»): page mode and pen, after the
+ * «Notia · Editor rediseño» canvas. Colors are palette tokens.
+ */
+
+.notia-modal-engine-panel.notia-editor-settings {
+  width: 760px;
+  height: 780px;
+  container: editor-settings / inline-size;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--color-modal-bg);
+  color: var(--color-heading-text);
+  font-size: 14px;
+  /* The shared settings switch reads these. */
+  --settings-line: var(--color-border-soft);
+  --settings-muted: var(--color-muted-text);
+  --settings-knob: var(--color-heading-text);
+  --settings-accent: var(--color-accent-text);
+  --settings-on-accent: var(--color-on-accent);
+  --editor-settings-control: 30px;
+}
+
+.notia-theme-light .notia-modal-engine-panel.notia-editor-settings {
+  --settings-knob: var(--color-card-bg);
+}
+
+@media (pointer: coarse) {
+  .notia-modal-engine-panel.notia-editor-settings {
+    --editor-settings-control: 44px;
+  }
+}
+
+:where(.notia-editor-settings) .notia-button {
+  font-family: inherit;
+  font-weight: 400;
+}
+
+.notia-editor-settings-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 16px 0 22px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.notia-editor-settings-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-close {
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-muted-text);
+}
+
+.notia-editor-settings-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.notia-editor-settings-nav {
+  flex-shrink: 0;
+  width: 190px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--color-border-soft);
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-tab {
+  justify-content: flex-start;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-muted-text);
+  font-size: 13.5px;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-tab[aria-current='page'] {
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+}
+
+.notia-editor-settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 22px 26px 28px;
+}
+
+.notia-editor-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.notia-editor-settings-lead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.notia-editor-settings-lead h3,
+.notia-editor-settings-title h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notia-editor-settings-lead p {
+  max-width: 380px;
+  margin: 4px 0 0;
+  color: var(--color-muted-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notia-editor-settings-options {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  transition: opacity 150ms ease;
+}
+
+.notia-editor-settings-options[data-dimmed] {
+  opacity: 0.45;
+}
+
+.notia-editor-settings-group-label {
+  margin: 0 0 10px;
+  color: var(--color-muted-text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.notia-editor-settings-formats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-format {
+  justify-content: flex-start;
+  gap: 12px;
+  height: 64px;
+  padding: 0 12px;
+  border: 1.5px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-app-bg);
+  color: var(--color-heading-text);
+  text-align: left;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-format[aria-checked='true'] {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-bg);
+}
+
+.notia-editor-settings-paper {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notia-editor-settings-paper span {
+  box-sizing: border-box;
+  border: 1.5px solid var(--color-muted-text);
+  border-radius: 2px;
+}
+
+.notia-editor-settings-format[aria-checked='true'] .notia-editor-settings-paper span {
+  border-color: var(--color-accent-text);
+}
+
+.notia-editor-settings-format-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notia-editor-settings-format-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.notia-editor-settings-format-text span {
+  color: var(--color-muted-text);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-editor-settings-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 20px;
+}
+
+.notia-editor-settings-pair--even {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.notia-editor-settings-segmented {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--color-app-bg);
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-segment {
+  flex: 1;
+  height: var(--editor-settings-control);
+  min-height: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--color-muted-text);
+  font-size: 13px;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-segment[aria-checked='true'] {
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+}
+
+.notia-editor-settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13.5px;
+}
+
+.notia-editor-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.notia-editor-settings-soon {
+  padding: 2px 8px;
+  border-radius: 9px;
+  background: var(--color-hover-surface);
+  color: var(--color-muted-text);
+  font-size: 11px;
+}
+
+.notia-editor-settings-preview {
+  height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-app-bg);
+}
+
+.notia-editor-settings-preview svg {
+  width: min(380px, 90%);
+  height: 70px;
+  stroke: var(--notia-pen-color);
+}
+
+.notia-editor-settings [data-color='ink'] { --notia-pen-color: var(--color-heading-text); }
+.notia-editor-settings [data-color='teal'] { --notia-pen-color: var(--color-accent-text); }
+.notia-editor-settings [data-color='blue'] { --notia-pen-color: var(--color-periwinkle); }
+.notia-editor-settings [data-color='red'] { --notia-pen-color: var(--color-coral); }
+.notia-editor-settings [data-color='orange'] { --notia-pen-color: var(--color-amber); }
+.notia-editor-settings [data-color='yellow'] { --notia-pen-color: var(--color-gold); }
+
+.notia-editor-settings-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-color {
+  width: var(--editor-settings-control);
+  height: var(--editor-settings-control);
+  min-height: 0;
+  padding: 3px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.notia-editor-settings .notia-button.notia-editor-settings-color[aria-checked='true'] {
+  border-color: var(--color-accent-text);
+}
+
+.notia-editor-settings-color span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--notia-pen-color);
+}
+
+.notia-editor-settings-range {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.notia-editor-settings-range > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.notia-editor-settings-range output {
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-editor-settings-range input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--color-accent-text);
+}
+
+.notia-editor-settings-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+}
+
+.notia-editor-settings-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.notia-editor-settings-list-row + .notia-editor-settings-list-row {
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.notia-editor-settings-list-row p {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.notia-editor-settings-list-row span {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-editor-settings-error {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-coral) 14%, transparent);
+  color: var(--color-coral);
+  font-size: 13px;
+}
+
+.notia-editor-settings-loading {
+  margin: 0;
+  color: var(--color-muted-text);
+  font-size: 13px;
+}
+
+/* Narrow windows and phones: the sections become a strip above the content. */
+@container editor-settings (max-width: 600px) {
+  .notia-editor-settings-layout {
+    flex-direction: column;
+  }
+
+  .notia-editor-settings-nav {
+    width: auto;
+    flex-direction: row;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-soft);
+  }
+
+  .notia-editor-settings .notia-button.notia-editor-settings-tab {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .notia-editor-settings-content {
+    padding: 18px 16px 24px;
+  }
+
+  .notia-editor-settings-formats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .notia-editor-settings-pair,
+  .notia-editor-settings-pair--even {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (pointer: coarse) {
+  .notia-editor-settings .notia-button.notia-editor-settings-tab,
+  .notia-editor-settings .notia-button.notia-editor-settings-close {
+    min-height: 44px;
+  }
+
+  .notia-editor-settings .notia-button.notia-editor-settings-close {
+    width: 44px;
+    height: 44px;
+  }
+}

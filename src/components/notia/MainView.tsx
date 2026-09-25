@@ -1,11 +1,16 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Ellipsis, FileText, MessageSquare, PencilLine, Search } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { File, FileText, MessageSquare, PencilLine, Search } from 'lucide-react'
 import { FileViewHost } from './views/FileViewHost' // memoized export
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
 import type { MarkdownWikiLinkTarget } from '../../types/views/markdownWikiLink'
 import { MAX_MARKDOWN_ZOOM, MIN_MARKDOWN_ZOOM } from './views/markdown/useMarkdownZoom'
-import { MarkdownExportModal } from './MarkdownExportModal'
+import { MarkdownDocumentMenu } from './MarkdownDocumentMenu'
+import { EditorSettingsModal, type EditorSettingsTab } from './editor-settings/EditorSettingsModal'
+import { useEditorPreferences } from './hooks/useEditorPreferences'
+import { useAppDispatch } from '../../store/hooks'
+import { setDialogState } from '../../features/documents/documentsSlice'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
+import type { MarkdownPageLayout } from '../../services/preferences/editorPreferences'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 import type { NotiaLibrary } from '../../types/notia'
@@ -53,35 +58,43 @@ function MainViewComponent({
   contexts = [],
   activeLibrary = null,
 }: MainViewProps) {
+  const dispatch = useAppDispatch()
   const [markdownZoom, setMarkdownZoom] = useState(DEFAULT_MARKDOWN_ZOOM)
-  const [isDocumentMenuOpen, setIsDocumentMenuOpen] = useState(false)
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [exportingFormat, setExportingFormat] = useState<MarkdownExportFormat | null>(null)
-  const [exportError, setExportError] = useState<string | null>(null)
-  const documentMenuRef = useRef<HTMLDivElement>(null)
+  /** Open tab of the editor settings, or `null` when they are closed. */
+  const [settingsTab, setSettingsTab] = useState<EditorSettingsTab | null>(null)
+  const { editorPage, editorPageSetup, updatePage } = useEditorPreferences()
+  const isMarkdownOpen = activeDocument?.viewKind === 'markdown'
 
   useEffect(() => {
     setMarkdownZoom(DEFAULT_MARKDOWN_ZOOM)
-    setIsDocumentMenuOpen(false)
-    setIsExportModalOpen(false)
-    setExportError(null)
   }, [activeDocument?.path])
 
+  // Ctrl+, opens the editor settings, as the «⋯» menu shows.
   useEffect(() => {
-    if (!isDocumentMenuOpen) return
-    const closeMenu = (event: PointerEvent) => {
-      if (!documentMenuRef.current?.contains(event.target as Node)) setIsDocumentMenuOpen(false)
+    if (!isMarkdownOpen) return
+    const openSettings = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ',') {
+        event.preventDefault()
+        setSettingsTab('page')
+      }
     }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsDocumentMenuOpen(false)
-    }
-    document.addEventListener('pointerdown', closeMenu)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeMenu)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [isDocumentMenuOpen])
+    window.addEventListener('keydown', openSettings)
+    return () => window.removeEventListener('keydown', openSettings)
+  }, [isMarkdownOpen])
+
+  const pageLayout = useMemo<MarkdownPageLayout | null>(() => (
+    editorPage?.pageMode && editorPageSetup
+      ? {
+        widthMm: editorPageSetup.widthMm,
+        heightMm: editorPageSetup.heightMm,
+        marginMm: editorPageSetup.marginMm,
+        pageNumbers: editorPageSetup.pageNumbers,
+      }
+      : null
+  ), [editorPage?.pageMode, editorPageSetup])
+  const formatLabel = editorPageSetup?.formats.find((format) => format.id === editorPage?.format)?.label ?? ''
+  const orientationLabel = editorPage?.orientation === 'landscape' ? 'Horizontal' : 'Vertical'
 
   const handleExplorerToolClick = useNotiaAction('explorerToolClick')
   const handleHeaderActionClick = useNotiaAction('headerActionClick')
@@ -90,22 +103,24 @@ function MainViewComponent({
   const handleExport = useCallback(async (format: MarkdownExportFormat) => {
     if (!activeDocument || !isTextFileDocument(activeDocument) || activeDocument.viewKind !== 'markdown') return
     setExportingFormat(format)
-    setExportError(null)
     try {
       const { exportMarkdownDocument } = await import('../../modules/markdown-export/markdownExportEngine')
       // Exports are rendered and written next to the source document by the
       // Rust backend on Windows and Android (SAF); the WebView never writes.
-      const exported = await exportMarkdownDocument(format, {
+      await exportMarkdownDocument(format, {
         libraryId: activeLibrary?.id ?? null,
         sourceDocumentPath: activeDocument.path,
       })
-      if (exported) setIsExportModalOpen(false)
     } catch (error) {
-      setExportError(error instanceof Error ? error.message : 'No se pudo exportar el documento.')
+      dispatch(setDialogState({
+        type: 'info',
+        title: 'No se pudo exportar',
+        message: error instanceof Error ? error.message : 'No se pudo exportar el documento.',
+      }))
     } finally {
       setExportingFormat(null)
     }
-  }, [activeDocument, activeLibrary])
+  }, [activeDocument, activeLibrary, dispatch])
 
   if (!activeDocument) {
     return (
@@ -178,6 +193,12 @@ function MainViewComponent({
               {getSaveStatusLabel(saveStatus)}
             </span>
           ) : null}
+          {isMarkdownDocument && editorPage?.pageMode && formatLabel ? (
+            <button type="button" className="notia-page-chip" onClick={() => setSettingsTab('page')} title="Configurar la página">
+              <File size={12} aria-hidden="true" />
+              {formatLabel} · {orientationLabel}
+            </button>
+          ) : null}
           {isMarkdownDocument ? (
             <div className="notia-markdown-zoom-control" aria-label="Zoom del documento Markdown">
               <label htmlFor="notia-markdown-zoom" title="Zoom del documento">
@@ -200,33 +221,16 @@ function MainViewComponent({
               >
                 Restablecer
               </button>
-              <div className="notia-markdown-document-menu" ref={documentMenuRef}>
-                <button
-                  type="button"
-                  className="notia-markdown-document-menu-trigger"
-                  aria-label="Más acciones del documento"
-                  aria-haspopup="menu"
-                  aria-expanded={isDocumentMenuOpen}
-                  onClick={() => setIsDocumentMenuOpen((isOpen) => !isOpen)}
-                >
-                  <Ellipsis size={18} />
-                </button>
-                {isDocumentMenuOpen ? (
-                  <div className="notia-markdown-document-submenu" role="menu">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setIsDocumentMenuOpen(false)
-                        setExportError(null)
-                        setIsExportModalOpen(true)
-                      }}
-                    >
-                      Exportar
-                    </button>
-                  </div>
-                ) : null}
-              </div>
+              <MarkdownDocumentMenu
+                pageMode={editorPage ? editorPage.pageMode : null}
+                pageSizeLabel={editorPage?.pageMode && formatLabel ? formatLabel : 'Continuo'}
+                canExportPdf={editorPageSetup?.canExportPdf ?? false}
+                exportingFormat={exportingFormat}
+                onTogglePageMode={() => updatePage({ pageMode: !editorPage?.pageMode })}
+                onOpenPageSettings={() => setSettingsTab('page')}
+                onOpenPenSettings={() => setSettingsTab('pen')}
+                onExport={(format) => void handleExport(format)}
+              />
             </div>
           ) : null}
         </div>
@@ -245,14 +249,14 @@ function MainViewComponent({
           onMarkdownZoomChange={setMarkdownZoom}
           libraryId={activeLibrary?.id}
           contexts={contexts}
+          pageLayout={pageLayout}
         />
       </section>
-      <MarkdownExportModal
-        open={isExportModalOpen}
-        exportingFormat={exportingFormat}
-        error={exportError}
-        onExport={(format) => void handleExport(format)}
-        onClose={() => setIsExportModalOpen(false)}
+      <EditorSettingsModal
+        open={settingsTab !== null}
+        tab={settingsTab ?? 'page'}
+        onTabChange={setSettingsTab}
+        onClose={() => setSettingsTab(null)}
       />
     </main>
   )

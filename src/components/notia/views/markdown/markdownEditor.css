@@ -1140,3 +1140,82 @@
     width: 100%;
   }
 }
+
+/* ---------- Page mode ---------- */
+
+/*
+ * Sheets of paper size on the app background, 32px apart, with the text in
+ * their margins. The sheets are drawn behind the editor; the pagination
+ * plugin moves the blocks that start a page with blank space.
+ */
+.notia-markdown-host.is-paged {
+  --notia-page-sheet: var(--color-sidebar-bg);
+  background: var(--color-app-bg);
+}
+
+.notia-theme-light .notia-markdown-host.is-paged {
+  --notia-page-sheet: var(--color-card-bg);
+}
+
+.notia-markdown-host.is-paged .notia-markdown-zoom-content {
+  box-sizing: border-box;
+  min-width: fit-content;
+  padding: var(--notia-desk-padding, 40px) var(--notia-desk-padding, 40px) 64px;
+}
+
+.notia-markdown-host.is-paged .notia-markdown-pages {
+  position: relative;
+  box-sizing: border-box;
+  width: var(--notia-page-width);
+  margin: 0 auto;
+}
+
+.notia-markdown-page-sheets {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.notia-markdown-page-sheet {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: var(--notia-page-height);
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 4px;
+  background: var(--notia-page-sheet);
+  box-shadow: 0 12px 32px var(--color-menu-shadow);
+}
+
+.notia-markdown-page-number {
+  position: absolute;
+  right: 0;
+  bottom: var(--notia-page-number-bottom);
+  left: 0;
+  color: var(--notia-editor-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.notia-markdown-host.is-paged .notia-markdown-page-flow {
+  position: relative;
+  padding: var(--notia-page-margin) var(--notia-page-margin) 0;
+}
+
+.notia-markdown-host.is-paged .notia-markdown-properties-wrap {
+  max-width: none;
+  padding: 0;
+}
+
+.notia-markdown-host.is-paged .notia-markdown-editor-root .milkdown .ProseMirror {
+  max-width: none;
+  min-height: 0;
+  padding: 0 0 0 var(--notia-editor-text-inset);
+}
+
+.notia-page-spacer {
+  pointer-events: none;
+  user-select: none;
+}

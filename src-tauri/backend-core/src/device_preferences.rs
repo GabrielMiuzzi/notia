@@ -9,6 +9,10 @@ pub const MAX_PUBLICATION_CLIENTS: u64 = 64;
 const TTS_VOICES: [&str; 9] = ["vivian", "serena", "uncle_fu", "dylan", "eric", "ryan", "aiden", "ono_anna", "sohee"];
 const DEFAULT_GREETING: &str = "Hola, ¿en qué puedo ayudarte?";
 const MAX_BOARDS: usize = 200;
+/// The first option of each list is the default.
+const PEN_TOOLS: [&str; 3] = ["fountain", "pencil", "marker"];
+const PEN_COLORS: [&str; 6] = ["ink", "teal", "blue", "red", "orange", "yellow"];
+const PEN_SIDE_BUTTON: [&str; 3] = ["eraser", "select", "none"];
 
 fn text(value: &Value, key: &str) -> String {
     value.get(key).and_then(Value::as_str).unwrap_or_default().trim().to_string()
@@ -70,6 +74,26 @@ pub fn normalize_tts(value: &Value) -> Value {
     })
 }
 
+fn one_of<'a>(value: &Value, key: &str, allowed: &[&'a str]) -> &'a str {
+    let chosen = text(value, key).to_ascii_lowercase();
+    allowed.iter().copied().find(|option| *option == chosen).unwrap_or(allowed[0])
+}
+
+/// Pen settings for handwriting in notes (the pen itself is not available
+/// yet): default tool, ink color by name, stroke and hardware options.
+pub fn normalize_pen(value: &Value) -> Value {
+    json!({
+        "tool": one_of(value, "tool", &PEN_TOOLS),
+        "color": one_of(value, "color", &PEN_COLORS),
+        "thickness": number(value, "thickness").map_or(3, |thickness| thickness.round().clamp(1.0, 14.0) as u64),
+        "smoothing": number(value, "smoothing").map_or(40, |smoothing| smoothing.round().clamp(0.0, 100.0) as u64),
+        "pressure": value.get("pressure").and_then(Value::as_bool) != Some(false),
+        "palmRejection": value.get("palmRejection").and_then(Value::as_bool) != Some(false),
+        "penOnly": value.get("penOnly").and_then(Value::as_bool) == Some(true),
+        "sideButton": one_of(value, "sideButton", &PEN_SIDE_BUTTON),
+    })
+}
+
 /// Every section normalized; missing sections take their defaults. Older
 /// versions stored speech recognition under `qwen3Asr`; it is read until the
 /// next save writes `speechRecognition`.
@@ -81,6 +105,8 @@ pub fn normalize_device_preferences(value: &Value) -> Value {
         "taskManagerPublication": normalize_publication(&section("taskManagerPublication")),
         "speechRecognition": normalize_asr(speech_recognition),
         "qwen3Tts": normalize_tts(&section("qwen3Tts")),
+        "editorPage": crate::page_setup::normalize_editor_page(&section("editorPage")),
+        "pen": normalize_pen(&section("pen")),
     })
 }
 
@@ -100,6 +126,23 @@ mod tests {
         assert_eq!(normalized["qwen3Tts"]["pauseDetectionMs"], 600);
         assert_eq!(normalized["qwen3Tts"]["enabled"], false);
         assert_eq!(normalized["speechRecognition"], json!({ "enabled": true, "language": "es" }));
+    }
+
+    #[test]
+    fn editor_page_and_pen_take_valid_values() {
+        let normalized = normalize_device_preferences(&json!({
+            "editorPage": { "pageMode": true, "format": "legal", "orientation": "landscape" },
+            "pen": { "tool": "Marker", "color": "violeta", "thickness": 40, "smoothing": -3, "pressure": false, "penOnly": true, "sideButton": "none" },
+        }));
+        assert_eq!(
+            normalized["editorPage"],
+            json!({ "pageMode": true, "format": "legal", "orientation": "landscape", "margins": "normal", "pageNumbers": true })
+        );
+        assert_eq!(
+            normalized["pen"],
+            json!({ "tool": "marker", "color": "ink", "thickness": 14, "smoothing": 0, "pressure": false, "palmRejection": true, "penOnly": true, "sideButton": "none" })
+        );
+        assert_eq!(normalize_device_preferences(&Value::Null)["pen"]["tool"], "fountain");
     }
 
     #[test]

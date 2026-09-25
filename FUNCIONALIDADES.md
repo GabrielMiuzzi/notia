@@ -15,7 +15,9 @@
 - Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con leyenda completa y coloración de nodos en Graph View.
 - Motor común de IA para chat principal, chats desplegables, Meeting, Telegram y publicación, con actor estable por biblioteca y autorización exacta por contexto.
 - Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
-- Exportación de notas a PDF y DOCX.
+- Exportación de notas a PDF (solo con el modo página activo) y DOCX con formato y sin las propiedades: fórmulas compuestas como texto en el PDF y como ecuaciones editables en Word, con el tamaño de página, los márgenes y la numeración configurados.
+- Modo página en notas Markdown: hojas de tamaño fijo (A3, A4, A5, B5, Carta u Oficio), orientación, márgenes y numeración, con títulos que pasan a la hoja siguiente junto con lo que introducen.
+- Configuración del lápiz (herramienta, color, grosor, suavizado, presión, rechazo de palma y botón lateral), guardada para la escritura a mano que llegará más adelante.
 - InkMath para reconocer fórmulas manuscritas.
 - Vista Chat IA con historial buscable, eliminación de chats también desde táctil, estado vacío con sugerencias, modelo activo visible, copia de respuestas y panel de contexto con alcance, acciones rápidas e interruptor para crear chats sin memoria del agente.
 - Chat IA con interruptor de búsqueda en toda la librería (RAG) y contexto fijo de archivos o carpetas completas de la librería.

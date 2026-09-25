@@ -1197,6 +1197,7 @@ pub(crate) fn export_library_document(
     library_id: &str,
     source_logical_path: &str,
     format: crate::backend::ExportFormat,
+    page: &crate::backend::PageGeometry,
 ) -> Result<LibraryExportReceipt, BackendError> {
     use crate::backend::LibraryDocumentReadPort;
 
@@ -1205,7 +1206,7 @@ pub(crate) fn export_library_document(
         registry, library_id, picker,
     )?;
     let source = reader.read_document(&source_locator)?;
-    let bytes = crate::backend::render_markdown_export(&source.content, format)?;
+    let bytes = crate::backend::render_markdown_export(&source.content, format, page)?;
     let writer = TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?;
     for attempt in 1..=crate::backend::MAX_EXPORT_NAME_ATTEMPTS {
         let destination = crate::backend::export_destination_path(

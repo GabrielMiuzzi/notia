@@ -5662,7 +5662,7 @@ Las preferencias del dispositivo (publicación de Task Manager y voz) y la selec
 - **Code splitting con `React.lazy` (4.1)**: `MarkdownView`, `MermaidView`, `ChatWorkspaceView`, `GraphView` y `TaskManagerApp` se cargan bajo demanda. `FileViewHost` y `NotiaWorkspace` envuelven estas vistas en `Suspense` con fallback mínimo (spinner Notia), reduciendo el tiempo de parseo/ejecución del bundle inicial en Android y desktop.
 - **Preload inteligente para escritorio (4.2)**: `useLazyPreloadOnIdle.ts` (usado en `App.tsx`) precarga los chunks de los editores más comunes durante los momentos de inactividad (`requestIdleCallback` / `setTimeout` fallback), respetando el retraso configurado antes de solicitar tiempo ocioso y reintentando si el callback no tiene presupuesto. En Android la precarga se omite por defecto para conservar memoria y datos móviles.
 - **Dynamic imports existentes verificados (4.3/4.4/4.5)**: `mermaidEngine.ts` ya importa `mermaid` de forma dinámica; `@milkdown/crepe` y sus plugins viven exclusivamente dentro del chunk `MarkdownView`; `@monaco-editor/react` y `monaco-editor` solo se cargan dentro del chunk `MermaidView`.
-- **Exportación Markdown bajo demanda**: `markdownExportEngine.ts` carga dinámicamente `marked`, `docx`, `html2canvas`, `jspdf` y KaTeX únicamente al exportar. PDF pagina el documento renderizado; Google Docs genera un `.docx` y conserva visualmente las fórmulas renderizadas.
+- **Exportación Markdown**: la hace Rust (ver «Exportación de notas: documento con formato y fórmulas»); el frontend no carga librerías de exportación.
 - **Bundle splitting y precarga selectiva (5.1/5.6)**: `vite.config.ts` reserva chunks manuales para UI compartida (`vendor-mui`, `vendor-lucide`, `vendor-monaco` y `vendor-iconify-packs`). Milkdown, Mermaid, KaTeX y Cytoscape permanecen en los chunks de sus vistas para que no entren al bundle inicial; `modulePreload.resolveDependencies` evita que Vite los anuncie desde `index.html`. Los motores pesados se cargan bajo demanda al abrir la vista correspondiente.
 - **Protección de documentos Markdown grandes**: `FileViewHost` evita montar Milkdown cuando la fuente supera 1.000.000 de caracteres. Muestra una vista previa acotada y ofrece edición de texto bajo demanda; la precarga pendiente de `MarkdownView` se cancela durante esa ruta para mantener libre el hilo principal.
 - **Dynamic imports de dependencias grandes (5.5)**: los icon packs de Mermaid (`@iconify-json/*`) se cargan de forma dinámica desde `MermaidIconsMenu`.
@@ -6923,3 +6923,142 @@ El editor de notas (`MarkdownView`, Milkdown Crepe) sigue el lienzo «Notia · E
   - prueba en la app de Windows: arrastre real con la imagen de arrastre y la línea de destino, y el editor de enlaces;
   - prueba en Android: selección por toque largo con la barra debajo, handle de 44 px, teclado virtual y arrastre;
   - crear una nota desde una propiedad en una biblioteca SAF.
+
+## Editor Markdown: modo página, configuración y lápiz
+
+Implementa las opciones que el lienzo «Notia · Editor rediseño» sumó al tablero principal:
+
+- el menú «⋯» del archivo;
+- el chip de página en la cabecera;
+- el diálogo «Configuración», con las pestañas Página y Lápiz;
+- el modo página, que divide la nota en hojas.
+
+**Dónde vive cada cosa**
+
+- **Rust**:
+  - `backend_core::page_setup` define los formatos (A3, A4, A5, B5, Carta y Oficio, en milímetros), los márgenes (estrechos 12,7 mm, normales 25,4 mm y amplios 38,1 mm), la orientación y la numeración, y normaliza la sección `editorPage`;
+  - `backend_core::device_preferences` normaliza la sección `pen`. Herramienta: pluma, lápiz o marcador. Color, por nombre. Grosor de 1 a 14 px. Suavizado de 0 a 100 %. Además: presión, rechazo de palma, solo lápiz y la acción del botón lateral;
+  - las dos secciones se guardan con las demás preferencias del dispositivo (`backend_save_device_preferences`, en `device-preferences.json`);
+  - las respuestas incluyen `editorPageSetup`, derivado en Rust y nunca guardado: los formatos con sus medidas en la orientación elegida, los márgenes, la página resultante en milímetros y `canExportPdf`;
+  - `page_setup::ensure_export_allowed` rechaza un PDF con el modo página apagado (`Unsupported`, «Activá el modo página para exportar a PDF.»). Word pasa siempre. `canExportPdf` sale de la misma función, así que el menú y el backend no pueden discrepar. La aplican el comando del editor (`backend_export_markdown_document`) y la herramienta `export_document` del agente, cuya descripción lo avisa. La exportación de Meeting no la aplica: su vista no tiene modo página.
+- **React**: `useEditorPreferences` muestra el cambio al instante, lo guarda en Rust y adopta la versión normalizada. Si el guardado falla, restaura el valor anterior y el diálogo lo dice. Antes de la primera respuesta no hay valores por defecto en TypeScript: el menú y el diálogo esperan.
+
+**Modo página** (`views/markdown/paginationPlugin.ts`)
+
+- **Hojas**:
+  - son del tamaño real del papel (96 px por milímetro de 25,4: A4 mide 794 × 1123 px), con 32 px entre hojas, borde, sombra y el número «n / N» centrado abajo;
+  - la hoja usa el color de panel en tema oscuro y blanco en el claro, sobre el fondo de la app;
+  - si la hoja es más ancha que el editor (teléfono o ventana angosta), se reduce para entrar y el fondo alrededor baja de 40 a 16 px.
+- **Paginación**:
+  - el editor sigue siendo un único `contenteditable`, con las hojas dibujadas detrás;
+  - el plugin mide los bloques de primer nivel, y los ítems de las listas por separado, como si no hubiera saltos;
+  - cuando un bloque no entra en lo que queda de su hoja, pone antes una decoración de ProseMirror (un espaciador) que lo lleva al inicio del texto de la hoja siguiente. El Markdown no cambia;
+  - los títulos no quedan solos al pie de una hoja: pasan con el bloque que introducen, también varios seguidos;
+  - un bloque más alto que una hoja (una tabla, un bloque de código largo) no se parte: queda donde empieza, y lo que sigue arranca en la hoja siguiente;
+  - la paginación se recalcula al editar, cuando cambia el tamaño del editor o del contenido (`ResizeObserver`) y cuando cambian la configuración, el zoom o el ajuste al ancho;
+  - la estructura del DOM es la misma en los dos modos, así que cambiar de modo no vuelve a montar el editor;
+  - el handle de bloques no elige nada sobre el espacio que abre un salto: el margen inferior, la separación y el margen superior de la hoja siguiente. Milkdown busca el bloque por fila, y dentro de una lista partida esa fila cae en la lista entera, que se resaltaba cruzando la separación entre hojas. `trackPointerRow` anota la fila del puntero antes que Milkdown e `isPageBreakRow` (`blockHandle.ts`) hace que el filtro de bloques la descarte. Así se comporta como entre bloques de primer nivel, donde Milkdown ya ocultaba el handle.
+- **Qué no cambia**: el editor de tareas del Task Manager y la vista de documentos grandes siguen continuos. En modo continuo, el editor mide lo mismo que antes; se volvió a comparar contra el lienzo, píxel a píxel.
+
+**Menú, chip y diálogo**
+
+- El menú «⋯» de la cabecera tiene:
+  - el interruptor de modo página;
+  - «Tamaño de página», que muestra el formato o «Continuo»;
+  - «Configuración…» (también con `Ctrl+,`);
+  - «Lápiz», marcado «Próximamente»;
+  - «Exportar como PDF». Sin modo página queda deshabilitado, con «Requiere modo página» debajo del texto; esa leyenda no se atenúa.
+- Se conservó «Exportar como Word», que el lienzo no muestra, para no perder la exportación que ya existía. El modal de exportación anterior se eliminó, junto con su CSS y el del submenú. Un error de exportación se muestra en el diálogo de la app.
+- Con el modo página activo, la cabecera muestra un chip con el formato y la orientación («A4 · Vertical») que abre la configuración.
+- El diálogo «Configuración» (760 × 780 px, como el lienzo) tiene dos pestañas:
+  - **Página**: modo página, tamaño con el dibujo proporcional de la hoja, orientación, márgenes y número de página. Las opciones quedan atenuadas con el modo apagado;
+  - **Lápiz**: vista previa del trazo, herramienta, color, grosor, suavizado, las tres opciones de hardware y el botón lateral. Se guardan para el lápiz, que todavía no existe.
+
+  En ventanas angostas las pestañas pasan arriba. Los colores del lápiz se guardan por nombre y usan los tokens de la paleta: «Blanco» pasó a «Tinta», que sigue el color del texto en cada tema, y «Rosa» a «Rojo» (coral).
+
+**Exportación a PDF**
+
+- `render_markdown_export` recibe la geometría de la página. El PDF usa el tamaño, la orientación, los márgenes y la numeración de la configuración. Antes era siempre A4 con 20 mm de margen y 45 líneas por hoja.
+- Desde el editor y el agente, el PDF solo se exporta con el modo página activo (ver `ensure_export_allowed` arriba). Meeting exporta con la misma configuración aunque el modo esté apagado.
+- El contenido se compone con formato; ver «Exportación de notas: documento con formato y fórmulas».
+- Con numeración, cada hoja lleva «n / N» centrado abajo.
+- La exportación de Meeting y la del agente usan la misma configuración.
+
+**Validación**
+
+- **Pasaron**:
+  - `backend-core` (255, siete tests nuevos: normalización, orientación y vista de la configuración de página, PDF solo en modo página, preferencias del lápiz, tamaño y numeración del PDF, y corte de líneas);
+  - `notia-app` con `bluetooth` (314);
+  - `tsc`, ESLint, `vitest run` (278; tests nuevos en `paginationPlugin.test.ts`, `EditorSettingsModal.test.tsx` y `blockHandle.test.ts`) y `vite build`.
+- **Revisado con Chrome** manejado por DevTools:
+  - A4 en dos hojas, en tema oscuro y claro;
+  - listas cortadas entre ítems y títulos que pasan con su contenido;
+  - repaginación mientras se escribe;
+  - el puntero sobre la separación entre hojas, en medio de una lista: no se resalta nada, y los ítems de las dos hojas siguen tomando el handle;
+  - ajuste al ancho a 420 px;
+  - el diálogo en escritorio y en teléfono, y el menú, con el PDF deshabilitado en modo continuo (temas oscuro y claro).
+- `cargo check` de `notia-app` para Android (`aarch64-linux-android`) aprobado, con los 62 avisos de siempre.
+- **Pendiente**: la prueba en la app de Windows y en Android (orientación, teclado virtual, cambio de modo con una nota larga y PDF exportado).
+
+## Exportación de notas: documento con formato y fórmulas
+
+`render_markdown_export` (módulo `export_render` de `backend-core`) convierte la nota en un documento con formato. Antes escribía el Markdown línea por línea: el PDF mostraba `#`, `**`, las propiedades y el LaTeX tal cual, y el Word ponía cada línea en un párrafo.
+
+**Flujo**
+
+1. `prompt::strip_frontmatter` quita las propiedades (el frontmatter YAML). Si no queda texto, la exportación falla con «El documento de exportación no puede estar vacío.».
+2. `markdown.rs` lee la nota con `pulldown-cmark` y arma el modelo de `document.rs`:
+   - bloques: títulos, párrafos, listas (con tareas), citas, código, fórmulas, tablas y separadores;
+   - texto con estilo: negrita, cursiva, tachado, código, enlaces y el HTML que escribe el editor (`<u>`, `<span data-color>`, `<mark data-color>` y `<div align>`);
+   - `$…$` es una fórmula en línea; `$$…$$` y los bloques ` ```math ` son fórmulas aparte.
+3. `math/parse.rs` lee cada fórmula LaTeX a un árbol (`MathNode`). Nunca falla: un comando desconocido queda escrito como texto.
+4. Según el formato:
+   - **PDF** (`pdf/`): `layout.rs` corta el texto en líneas y las líneas en hojas, `math_layout.rs` compone las fórmulas y `writer.rs` escribe el archivo con `pdf-writer`;
+   - **Word** (`docx.rs`): escribe el paquete Office Open XML con `zip`; las fórmulas pasan por `math/omml.rs`.
+
+**PDF**
+
+- **Página**: tamaño, orientación, márgenes y numeración de la configuración de página. El número «n / N» va en el margen inferior; el texto deja libre una franja de 13,5 pt, como el modo página del editor.
+- **Texto**: Liberation Sans (las métricas de Arial) a 11 pt con interlineado 1,4. Títulos de 22, 17, 14, 12 y 11 pt en negrita, que nunca quedan solos al pie de una hoja. Colores y resaltados con la paleta del tema claro.
+- **Enlaces**: los web se ven en teal, subrayados, y se pueden abrir. Los enlaces a otras notas quedan como texto: el archivo viaja sin la biblioteca.
+- **Bloques**:
+  - listas con viñetas por nivel, números y casillas de tarea (las marcadas, en teal);
+  - citas con barra, también anidadas;
+  - código en Courier de 9,5 pt sobre fondo, cortado por caracteres cuando no entra;
+  - tablas a todo el ancho, con columnas repartidas según el contenido, bordes finos y el encabezado en negrita sobre el color de panel.
+- **Cortes de página**: la hoja puede cortar entre dos líneas cualesquiera, porque cada línea lleva su fondo, barra o viñeta. Los fondos que siguen de una línea a otra se superponen 0,4 pt para que los visores no dibujen una raya entre ellas.
+- **Fórmulas**: una versión reducida del algoritmo de TeX (apéndice G del TeXbook) con los parámetros y las fuentes de KaTeX, las mismas que usa el editor.
+  - Cubre clases de átomo y sus espacios, fracciones y binomiales, subíndices y superíndices, límites en `\sum` o `\lim`, integrales con los límites al costado, raíces con índice, delimitadores que crecen con el contenido (`\left…\right`, `\big`), matrices, `cases`, `aligned`, `array`, acentos, `\overset` y `\underset`, `\text` y las familias `\mathbb`, `\mathcal`, `\mathbf` y demás.
+  - Quedan como glifos y líneas: el texto de la fórmula se puede buscar y copiar, y no hay imágenes.
+  - Se componen 1,2 veces más grandes que el texto, para igualar la altura de las minúsculas. `\text` usa la fuente del texto, como en Word.
+  - Una fórmula más ancha que la hoja se reduce hasta entrar.
+- **Fuentes**: se incrustan recortadas a los glifos usados. El mapa ToUnicode se escribe en la forma del ejemplo de la especificación, porque `lopdf` no lee el de `pdf-writer`. Courier es una fuente estándar sin incrustar (WinAnsi). Un carácter que ninguna fuente tiene (un emoji) se dibuja y se copia como `?`.
+- **Imágenes**: quedan como «[Imagen: texto alternativo o nombre]», porque el renderer recibe solo el Markdown.
+
+**Word**
+
+- Estilos reales: `Heading1` a `Heading6` (aparecen en el panel de navegación), `NotiaCode` (Consolas sobre fondo), código en línea, `Hyperlink` y la fórmula centrada.
+- Listas con la numeración de Word: viñetas •, ◦ y ▪ por nivel, y números que respetan el inicio de cada lista. Las tareas llevan ☐ o ☒. Las citas, un borde izquierdo. Las tablas repiten el encabezado en cada hoja.
+- Fórmulas como ecuaciones de Word (OMML), editables: fracciones, raíces, operadores n-arios con el operando adentro, funciones (`lim` con su límite debajo), delimitadores, matrices, `cases` y `aligned` con sus puntos de alineación, acentos y barras.
+- Página: tamaño, orientación y márgenes de la configuración; con numeración, un pie «n / N» con los campos PAGE y NUMPAGES. Texto en Arial de 11 pt.
+
+**Fuentes y dependencias**
+
+- `backend-core/fonts/` tiene Liberation Sans (tomada de `pdfjs-dist` 5.7.284, SIL OFL 1.1) y 15 fuentes de KaTeX 0.16.37 (MIT); cada carpeta lleva su licencia. Se incluyen en el binario con `include_bytes!` y suman cerca de 1 MB.
+- Se quitó `docx-rs`. Se sumaron `pulldown-cmark`, `pdf-writer`, `subsetter`, `ttf-parser`, `miniz_oxide` y `zip`, todas en Rust puro (Windows y Android). Para las pruebas, `lopdf` y `quick-xml`.
+
+**Límites**
+
+- Anidamiento: más de 24 niveles de citas o listas se aplanan; en las fórmulas, más de 48 niveles de grupos o comandos quedan como texto, y un segundo superíndice (`x^a^b`) va sobre una base vacía. Así un documento hostil no agota la pila.
+- El tamaño de entrada y de salida sigue acotado por `validate_export_input_size` y `MAX_EXPORT_OUTPUT_BYTES`.
+
+**Validación**
+
+- **Pasaron**:
+  - `backend-core` (288; 33 tests nuevos: lectura del Markdown, parser de LaTeX, OMML, paquete Word bien formado, fuentes, composición de fórmulas, líneas y hojas, y el PDF leído con `lopdf`: texto sin marcas de Markdown, fórmulas con las fuentes de KaTeX y sin imágenes, tamaño de hoja, numeración, enlaces y fórmulas hostiles);
+  - `notia-app` con `bluetooth` (314);
+  - `cargo check` de `notia-app` para Android (62 avisos de siempre).
+- **Revisado** con pdf.js en Chrome, en A4 y A5: formatos y colores, listas, tareas, citas anidadas, tabla con celdas de varias líneas, código partido entre hojas, URL larga, fórmula más ancha que la hoja y títulos encadenados al pie.
+- **Pendiente**:
+  - abrir el `.docx` en Word: en esta máquina no hay Word ni LibreOffice; se validó la estructura y el orden de los elementos contra el esquema;
+  - probar la exportación en la app de Windows y en Android.

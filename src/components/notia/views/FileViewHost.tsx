@@ -7,6 +7,7 @@ import { ImageView } from './ImageView'
 import { LargeMarkdownView } from './LargeMarkdownView'
 import { TextView } from './TextView'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
+import type { MarkdownPageLayout } from '../../../services/preferences/editorPreferences'
 
 const MarkdownView = lazy(async () => {
   const module = await import('./MarkdownView')
@@ -36,6 +37,8 @@ interface FileViewHostProps {
   onOpenLinkedFile: (filePath: string) => void
   /** Creates a note next to the open one from a link property; resolves to an error message or `null`. */
   onCreateLinkedNote?: (title: string) => Promise<string | null>
+  /** Page mode of Markdown notes; `null` draws them continuous. */
+  pageLayout?: MarkdownPageLayout | null
   onSelectionChange: (selection: MarkdownSelectionContext | null) => void
   externalSourceUpdate: MarkdownDocumentUpdate | null
   theme: string
@@ -51,6 +54,7 @@ function FileViewHostComponent({
   wikiLinkTargets,
   onOpenLinkedFile,
   onCreateLinkedNote,
+  pageLayout = null,
   onSelectionChange,
   externalSourceUpdate,
   theme,
@@ -99,6 +103,7 @@ function FileViewHostComponent({
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}
           onCreateLinkedNote={onCreateLinkedNote}
+          pageLayout={pageLayout}
           onSelectionChange={onSelectionChange}
           externalSourceUpdate={externalSourceUpdate}
           theme={theme}

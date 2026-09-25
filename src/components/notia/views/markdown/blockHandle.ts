@@ -107,6 +107,26 @@ export function hideBlockHandleOnPointerLeave(host: HTMLElement, root: HTMLEleme
   return () => host.removeEventListener('pointerleave', handlePointerLeave)
 }
 
+/**
+ * Whether the pointer row `clientY` is space a page break opens: a sheet's
+ * bottom margin, the gap and the next sheet's top margin. Milkdown looks the
+ * hovered block up by row; inside a list that row hits the list itself,
+ * which then lit up across the gap.
+ */
+export function isPageBreakRow(view: EditorView, clientY: number): boolean {
+  return Array.from(view.dom.querySelectorAll('.notia-page-spacer')).some((spacer) => {
+    const rect = spacer.getBoundingClientRect()
+    return clientY >= rect.top && clientY < rect.bottom
+  })
+}
+
+/** Reports the pointer row before Milkdown's own `pointermove` listener reads it. */
+export function trackPointerRow(view: EditorView, onMove: (clientY: number) => void): () => void {
+  const handlePointerMove = (event: PointerEvent) => onMove(event.clientY)
+  view.dom.addEventListener('pointermove', handlePointerMove, true)
+  return () => view.dom.removeEventListener('pointermove', handlePointerMove, true)
+}
+
 /** Clears the painted block when Milkdown hides the handle (typing, pointer out of the text). */
 export function observeBlockHandleVisibility(root: HTMLElement, onHidden: () => void): () => void {
   const observer = new MutationObserver((records) => {

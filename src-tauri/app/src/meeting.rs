@@ -691,6 +691,7 @@ pub(crate) async fn meeting_export(app: AppHandle, payload: MeetingExportPayload
             &payload.library_id,
             &note,
             format,
+            &crate::device_preferences::page_geometry(&app),
         )?;
         crate::library_session::reindex_in_background(&app, &payload.library_id);
         Ok(MeetingExportDto {

@@ -1482,7 +1482,7 @@ pub fn library_mutation_tool_contracts() -> Vec<ToolDefinition> {
         ),
         (
             "export_document",
-            "Prepara o escribe una exportación PDF, DOCX o binaria acotada y recuperable.",
+            "Prepara o escribe una exportación PDF, DOCX o binaria acotada y recuperable. El PDF requiere el modo página del editor activo.",
             false,
         ),
     ]

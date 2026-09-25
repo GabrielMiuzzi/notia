@@ -1,4 +1,5 @@
 import { callBackend } from '../transport'
+import type { EditorPagePreferences, EditorPageSetup, PenPreferences } from './editorPreferences'
 import { clearLegacySpeechRecognitionPreferences, loadSpeechRecognitionPreferences, type SpeechRecognitionPreferences } from './speechRecognitionSettingsStorage'
 import { clearLegacyQwen3TtsPreferences, loadQwen3TtsPreferences, type Qwen3TtsPreferences } from './qwen3TtsSettingsStorage'
 import {
@@ -12,10 +13,16 @@ export interface DevicePreferences {
   taskManagerPublication: TaskManagerPublicationPreferences
   speechRecognition: SpeechRecognitionPreferences
   qwen3Tts: Qwen3TtsPreferences
+  editorPage: EditorPagePreferences
+  pen: PenPreferences
+  /** Derived by the backend from `editorPage`; sending it back has no effect. */
+  editorPageSetup: EditorPageSetup
 }
 
+type SavedSections = Omit<DevicePreferences, 'editorPageSetup'>
+
 /** Saves the sections sent; the others keep their stored value. */
-export function saveDevicePreferences(preferences: Partial<DevicePreferences>): Promise<DevicePreferences> {
+export function saveDevicePreferences(preferences: Partial<SavedSections>): Promise<DevicePreferences> {
   return callBackend<DevicePreferences>('backend_save_device_preferences', { preferences })
 }
 
