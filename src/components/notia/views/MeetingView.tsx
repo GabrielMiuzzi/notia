@@ -106,9 +106,11 @@ function MeetingViewComponent() {
   }, [attachVoice, runningId, status])
   const levels = useSpeechLevels(stage === 'recording' ? snapshot?.id ?? null : monitorId, LEVEL_HISTORY)
 
+  const contextMeetingId = snapshot?.id ?? null
+  const hasTranscript = Boolean(snapshot && (snapshot.lines.length > 0 || snapshot.totalTurns > 0 || snapshot.notes.trim()))
   useEffect(() => {
-    setMeetingTranscriptContext(snapshot?.contextText ?? '')
-  }, [snapshot?.contextText])
+    setMeetingTranscriptContext(contextMeetingId, hasTranscript)
+  }, [contextMeetingId, hasTranscript])
   useEffect(() => clearMeetingTranscriptContext, [])
 
   useEffect(() => {

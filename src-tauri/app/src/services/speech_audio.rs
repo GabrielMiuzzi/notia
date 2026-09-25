@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub const SPEECH_SAMPLE_RATE: u32 = 16_000;
+pub const SPEECH_SAMPLE_RATE: u32 = notia_backend_core::audio_resample::RECOGNIZER_SAMPLE_RATE;
 // The recognizer decodes on the worker thread and can temporarily fall behind
 // real-time capture on mid-range hardware. A two-second queue silently
 // discarded speech while a decode was in progress, which surfaced as clipped
@@ -66,37 +66,6 @@ pub fn create_shared_pcm_buffer() -> SharedPcmBuffer {
         BoundedPcmBuffer::with_capacity(MAX_BUFFERED_SAMPLES)
             .expect("the fixed speech PCM capacity is valid"),
     ))
-}
-
-pub fn downmix_and_resample(
-    interleaved_samples: &[f32],
-    channels: u16,
-    input_sample_rate: u32,
-) -> Vec<f32> {
-    if channels == 0 || input_sample_rate == 0 || interleaved_samples.is_empty() {
-        return Vec::new();
-    }
-    let channels = channels as usize;
-    let mono: Vec<f32> = interleaved_samples
-        .chunks_exact(channels)
-        .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
-        .collect();
-    if mono.is_empty() || input_sample_rate == SPEECH_SAMPLE_RATE {
-        return mono;
-    }
-
-    let output_len = ((mono.len() as u64 * SPEECH_SAMPLE_RATE as u64) / input_sample_rate as u64)
-        .max(1) as usize;
-    let ratio = input_sample_rate as f64 / SPEECH_SAMPLE_RATE as f64;
-    (0..output_len)
-        .map(|output_index| {
-            let source_position = output_index as f64 * ratio;
-            let left_index = (source_position.floor() as usize).min(mono.len() - 1);
-            let right_index = (left_index + 1).min(mono.len() - 1);
-            let fraction = (source_position - left_index as f64) as f32;
-            mono[left_index] + (mono[right_index] - mono[left_index]) * fraction
-        })
-        .collect()
 }
 
 /// Sources a capture opens. The computer audio exists only on Windows.
@@ -181,7 +150,8 @@ fn perceived_level(rms: f32) -> f32 {
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
 mod native {
-    use super::{downmix_and_resample, CaptureSources, SharedCaptureMeter, SharedPcmBuffer, SpeechAudioInputStatusDto};
+    use super::{CaptureSources, SharedCaptureMeter, SharedPcmBuffer, SpeechAudioInputStatusDto};
+    use notia_backend_core::audio_resample::StreamResampler;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
     use std::collections::VecDeque;
@@ -371,6 +341,7 @@ mod native {
             ($sample_type:ty, $convert:expr) => {{
                 let paused = Arc::clone(paused);
                 let mixer = Arc::clone(buffer);
+                let mut resampler = StreamResampler::new(channels, sample_rate);
                 device.build_input_stream(
                     config,
                     move |data: &[$sample_type], _| {
@@ -378,7 +349,7 @@ mod native {
                             return;
                         }
                         let normalized: Vec<f32> = data.iter().copied().map($convert).collect();
-                        let samples = downmix_and_resample(&normalized, channels, sample_rate);
+                        let samples = resampler.process(&normalized);
                         if let Ok(mut target) = mixer.lock() {
                             target.push_microphone(samples);
                         }
@@ -541,6 +512,7 @@ mod native {
                     .Start()
                     .map_err(|error| format!("No se pudo iniciar WASAPI loopback: {error}"))?;
                 let _ = ready.send(Ok(()));
+                let mut resampler = StreamResampler::new(format.nChannels, format.nSamplesPerSec);
                 while !stop.load(Ordering::Acquire) {
                     let mut packet_size = capture
                         .GetNextPacketSize()
@@ -587,11 +559,7 @@ mod native {
                                     "PCM WASAPI de {bits_per_sample} bits no soportado."
                                 ));
                             };
-                            let samples = downmix_and_resample(
-                                &normalized,
-                                format.nChannels,
-                                format.nSamplesPerSec,
-                            );
+                            let samples = resampler.process(&normalized);
                             if let Ok(mut target) = mixer.lock() {
                                 target.push_system(samples);
                             }
@@ -663,7 +631,7 @@ pub fn probe_audio_input() -> SpeechAudioInputStatusDto {
 
 #[cfg(test)]
 mod tests {
-    use super::{downmix_and_resample, perceived_level, BoundedPcmBuffer, CaptureMeter, CaptureSources};
+    use super::{perceived_level, BoundedPcmBuffer, CaptureMeter, CaptureSources};
 
     #[test]
     fn the_meter_keeps_the_loudest_chunk_until_read_and_counts_delivered_audio() {
@@ -696,12 +664,6 @@ mod tests {
         buffer.push([0.0, 0.5, 1.0, -0.5]);
         assert_eq!(buffer.stats().dropped_samples, 1);
         assert_eq!(buffer.drain(10), vec![0.5, 1.0, -0.5]);
-    }
-
-    #[test]
-    fn downmixes_stereo_and_resamples() {
-        let output = downmix_and_resample(&[1.0, -1.0, 0.5, 0.5], 2, 32_000);
-        assert_eq!(output, vec![0.0]);
     }
 
     #[test]

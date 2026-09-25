@@ -566,7 +566,7 @@ Configuración decide Backups, Publicar y Telegram según `backendPlatform()` (e
 
 - **Backend:**
   - `backend-core::remote_audio` suma `RemoteAudioAssembler`: fragmentos PCM de 16 bits en orden, un solo formato y duración máxima. Rechaza otras sesiones, Ogg/Opus y cambios de formato.
-  - Suma también `resample_linear` a 16 kHz.
+  - Convierte a 16 kHz con `audio_resample::StreamResampler`, el mismo filtro anti-aliasing de la captura nativa (antes, `resample_linear` interpolaba sin filtrar).
   - `commands/remote_speech.rs` expone:
     - `speech_remote_audio { chunk }`: el fragmento 0 abre la grabación y el último devuelve `{ done, text }`.
     - `speech_remote_audio_cancel { sessionId }`.
@@ -6085,9 +6085,9 @@ Cada perfil de modelos se resuelve de forma independiente desde la primera carpe
 
 La preferencia de dispositivo `speechRecognition` es `{ enabled, language }`. `backend_core::device_preferences::normalize_device_preferences` lee la sección antigua `qwen3Asr` cuando `speechRecognition` no existe y descarta sus campos `model` y `device`; como el guardado normaliza el archivo completo, el siguiente `backend_save_device_preferences` escribe sólo `speechRecognition`. La migración desde el `localStorage` de versiones anteriores conserva la clave `notia:qwen3-asr:v1` únicamente para leerla y borrarla. `prepare_speech_model` recibe `{ language }` (`deny_unknown_fields`, por lo que rechaza los antiguos `model`/`device`) y `start_speech_session` recibe `{ language, diarizationEnabled, maxDurationSeconds, captureSystemAudio? }` (ignora campos extra). `speech_model_repository::resolve_asr_model(app, language)` devuelve la `OfflineNemoTransducerConfig` verificada del perfil Parakeet (sólo CPU, hasta 4 threads). Las instalaciones privadas previas en `app_data_dir/speech-models/qwen3-asr-*` ya no se leen porque el manifiesto no las declara; pueden borrarse a mano.
 
-El caché precargado, el worker, las notas de voz de Telegram y la segunda pasada por turnos de la diarización usan directamente `sherpa_offline::OfflineVadRecognizer`, que implementa `StreamingRecognizer`; `speech_service::load_recognizer` resuelve el runtime de sherpa-onnx y lo carga. `matches` compara la configuración resuelta completa para reutilizar el modelo residente o reemplazarlo.
+El caché precargado, el worker, las notas de voz de Telegram y las líneas que la separación de hablantes vuelve a transcribir usan directamente `sherpa_offline::OfflineVadRecognizer`, que implementa `StreamingRecognizer`; `speech_service::load_recognizer` resuelve el runtime de sherpa-onnx y lo carga. `matches` compara la configuración resuelta completa para reutilizar el modelo residente o reemplazarlo.
 
-`sherpa_offline::OfflineVadRecognizer` implementa Parakeet. Sus structs `repr(C)` replican campo por campo `c-api.h` de sherpa-onnx 1.13.4. Silero VAD (`threshold 0.5`, silencio mínimo 500 ms, habla mínima 100 ms para no perder respuestas como «Sí.», máximo 20 s por segmento) delimita cada intervención; al cerrarse, el segmento se decodifica una sola vez con 250 ms de audio previo tomado de un historial de 30 s y se confirma como endpoint. En una sesión en vivo, `enable_live_partials` activa la vista previa: mientras `SherpaOnnxVoiceActivityDetectorDetected` indica voz, el tramo en curso se decodifica cada `max(400 ms, 2 × costo del último parcial)`, lo que limita los parciales a la mitad del CPU del worker. El inicio del tramo se estima retrocediendo el pre-roll, dos ventanas VAD, el habla mínima y un lote de 200 ms. `reset_session` desactiva los parciales, por lo que Telegram y la diarización decodifican cada segmento una única vez. Cada parcial registra `[notia:speech:inference] engine=parakeet` con audio procesado y duración.
+`sherpa_offline::OfflineVadRecognizer` implementa Parakeet. Sus structs `repr(C)` replican campo por campo `c-api.h` de sherpa-onnx 1.13.4. Silero VAD (`threshold 0.5`, silencio mínimo 500 ms, habla mínima 100 ms para no perder respuestas como «Sí.», máximo 20 s por segmento) delimita cada intervención; al cerrarse, el segmento se decodifica una sola vez con hasta 250 ms de audio previo tomado de un historial de 30 s y se confirma como endpoint. Ese audio previo nunca vuelve sobre el segmento anterior (`decoded_until_sample`), así que dos segmentos no comparten audio y ninguna palabra se decodifica dos veces. En una sesión en vivo, `enable_live_partials` activa la vista previa: mientras `SherpaOnnxVoiceActivityDetectorDetected` indica voz, el tramo en curso se decodifica cada `max(400 ms, 2 × costo del último parcial)`, lo que limita los parciales a la mitad del CPU del worker. El inicio del tramo se estima retrocediendo el pre-roll, dos ventanas VAD, el habla mínima y un lote de 200 ms. `reset_session` desactiva los parciales, por lo que Telegram y la diarización decodifican cada segmento una única vez. Cada parcial registra `[notia:speech:inference] engine=parakeet` con audio procesado y duración.
 
 Parakeet detecta el idioma de cada fragmento y no permite fijarlo. En fragmentos de menos de un segundo a veces elegía inglés («¿Qué es?» salía «Kiss»). Por eso, cada decodificación de hasta 4 s (`LANGUAGE_CONTEXT_MAX_CHUNK_SAMPLES`, segmentos y parciales) antepone como contexto acústico los últimos 3 s de voz ya confirmada (`language_context`) y descarta después, por timestamp, los tokens que empiezan dentro del contexto. `SherpaOnnxOfflineRecognizerResult` se lee hasta `tokens_arr` (`timestamps`, `count`, `tokens`, `tokens_arr`, con la misma disposición que en 1.13.4). `text_after` corta en el primer token no puntuación posterior al corte menos 40 ms y, si ese token continúa una palabra, retrocede hasta el `▁` que la inicia, porque el contexto termina en silencio. La puntuación que cierra la frase del contexto no se conserva. Si el resultado no trae timestamps, el fragmento se vuelve a decodificar sin contexto. El contexto sobrevive a `reset_session` (turnos de diarización, sesiones siguientes, notas de Telegram) porque solo orienta el idioma y su texto se descarta; queda únicamente en memoria. Con audio sintético en español, las frases cortas «¿Hola?», «¿Qué es?», «Sí.» y «Kiosco» pasaron de faltar o salir en inglés a transcribirse en español; el costo sube de RTF 0,06 a unos 0,13 en modo batch.
 
@@ -6101,7 +6101,7 @@ Validación de la eliminación de Qwen3-ASR (2026-09-24): `cargo test -p notia-a
 
 Validación de la integración de Parakeet: `cargo check` para Windows y `aarch64-linux-android` sin errores; tests de `backend-core` (`device_preferences`); Vitest de preferencias, voz y chat; `tsc -p tsconfig.app.json`. Los tests de `sherpa_offline` y `spanish_transcript` y una prueba nativa con la DLL de sherpa-onnx 1.13.4 empaquetada se ejecutaron en un crate temporal, porque el binario de tests del crate Tauri no arranca en Windows. Sobre 17 s de audio sintético en español, la carga tardó 1,7 s, los parciales costaron entre 55 y 250 ms, cada frase se confirmó unos 600 ms después de terminar y el modo batch corrió a RTF 0,062, con un texto idéntico en vivo y en batch. Quedan pendientes la prueba con micrófono real en la app, voces reales y ruido, Meeting con diarización, Telegram, y Android en un dispositivo, donde los modelos se resuelven desde recursos sin validación previa.
 
-`speech_audio` convierte entradas `f32`, `i16` o `u16`, hace downmix mono, remuestrea a 16 kHz y escribe en una cola acotada de 15 segundos, que absorbe decodificaciones transitoriamente más lentas que tiempo real sin cortar audio. El callback no ejecuta inferencia. `speech_worker` consume lotes de 200 ms fuera del hilo UI, admite pausa/cancelación y archiva el PCM convertido en un WAV temporal con un límite configurable de duración; el archivo se elimina al cancelar, ante error o después de la finalización.
+`speech_audio` convierte entradas `f32`, `i16` o `u16` y cada fuente (micrófono y audio de la computadora) pasa por su propio `StreamResampler`, que hace downmix mono y remuestrea a 16 kHz (ver «Remuestreo»). El resultado se escribe en una cola acotada de 15 segundos, que absorbe decodificaciones transitoriamente más lentas que tiempo real sin cortar audio. El callback no ejecuta inferencia. `speech_worker` consume lotes de 200 ms fuera del hilo UI, admite pausa/cancelación y archiva el PCM convertido en un WAV temporal con un límite configurable de duración; el archivo se elimina al cancelar, ante error o después de la finalización. Al llegar al límite, el worker termina la sesión como un `stop` (ver «Fin de la sesión sin `stop`»).
 
 Para que una reunión larga no pierda audio cuando el reconocimiento se atrasa (CPU ocupada por la llamada, el WebView o el equipo en batería):
 
@@ -6110,11 +6110,11 @@ Para que una reunión larga no pierda audio cuando el reconocimiento se atrasa (
 - Si la cola igualmente se llena, descarta el audio más viejo y el worker registra `[notia:speech] recognition fell behind; the capture queue discarded N ms of audio`.
 - `PreviewFilter` emite cada parcial una sola vez: los lotes que no cambian el texto en curso (silencio o voz entre dos decodificaciones) no generan `speech://partial`. Antes, cada lote de 200 ms emitía el evento con todo el texto confirmado.
 
-Meeting solicita una sesión de hasta 12 horas mediante `maxDurationSeconds`. Durante la captura, el worker mantiene el ASR parcial y escribe el audio en un archivo WAV temporal, evitando acumular horas de PCM en memoria. Al detener, el mismo worker finaliza el ASR y procesa el archivo en ventanas internas de 15 minutos para ejecutar la diarización y la segunda pasada ASR antes de emitir `completed`; el frontend no interviene ni rota sesiones durante la reunión. Cada ventana calcula embeddings para sus hablantes locales y `speech_service` mantiene un registro global de centroides, aplica matching coseno con asignación uno-a-uno y actualiza el centroide cuando encuentra evidencia suficiente. Los turnos demasiado breves conservan un ID nuevo para evitar fusiones falsas.
+Meeting solicita una sesión de hasta 12 horas mediante `maxDurationSeconds`. Durante la captura, el worker mantiene el ASR parcial y escribe el audio en un archivo WAV temporal, evitando acumular horas de PCM en memoria. Al detener, el mismo worker finaliza el ASR y procesa el archivo en ventanas de unos 15 minutos que terminan en una pausa entre líneas: separa los hablantes y le asigna a cada línea en vivo su hablante antes de emitir `completed` (ver «Separación de hablantes con las líneas en vivo»); el frontend no interviene ni rota sesiones durante la reunión. Cada ventana calcula embeddings para sus hablantes locales y `speech_service` mantiene un registro global de centroides, aplica matching coseno con asignación uno-a-uno y actualiza el centroide cuando encuentra evidencia suficiente. Los turnos demasiado breves conservan un ID nuevo para evitar fusiones falsas.
 
 `MeetingView` reutiliza `useVoiceTranscription` y el contrato de sesiones de voz; la reunión en sí vive en Rust (ver «Meeting»). `speech_audio::PlatformAudioCapture::start(target, sources, meter)` abre las fuentes que resuelve `CaptureSources::resolve`: el micrófono con CPAL y, solo en Windows, el endpoint de render predeterminado con `AUDCLNT_STREAMFLAGS_LOOPBACK`. Con ambas, se convierten a mono de 16 kHz y se mezclan con ganancia limitada antes de entrar en la única cola acotada del reconocedor; con una sola, sus muestras pasan directo. Si el loopback falla con el micrófono activo, la captura sigue solo con el micrófono; si el audio de la computadora es la única fuente, el error se informa. Sin cola (`target = None`) la captura solo mide: es la prueba de audio. `CaptureMeter` guarda el pico RMS de cada fuente desde la última lectura y las muestras entregadas, que son la posición de la grabación sin pausas; `speech_levels::LevelReporter` lo lee cada 100 ms y emite `speech://levels`. El thread COM pertenece a la captura, se detiene y se une al destruir la sesión; pausa y cancelación afectan ambas fuentes.
 
-La diarización se ejecuta únicamente al finalizar la sesión, con ventanas acotadas cuando el audio supera 15 minutos y matching global de embeddings para conservar la identidad de los hablantes entre ventanas. `sherpa_diarization` usa segmentación pyannote, embeddings y clustering conservador (`threshold = 0.9`); cuando la sesión pide `expectedSpeakers` (2–10), fija `num_clusters` en cada ventana. Descarta activaciones menores a 500 ms y une pausas menores a 300 ms. Los handles son RAII. Mientras procesa emite `finalizing` con `progress` y `stage` y, entre ventanas y turnos, comprueba si la persona pidió omitir la separación (`skip_speech_diarization`). Si la diarización falla o se omite, se conserva el ASR sin etiquetas.
+La diarización se ejecuta únicamente al finalizar la sesión, con ventanas acotadas cuando el audio supera 15 minutos y matching global de embeddings para conservar la identidad de los hablantes entre ventanas. `sherpa_diarization` usa segmentación pyannote, embeddings y clustering conservador (`threshold = 0.9`); cuando la sesión pide `expectedSpeakers` (2–10), fija `num_clusters` en cada ventana. Descarta activaciones menores a 500 ms y une pausas menores a 300 ms. Antes de asignar las líneas, `speaker_turns` deja los turnos sin audio compartido: la diarización marca el habla superpuesta para los dos hablantes y transcribirla dos veces repetía las palabras de quien seguía hablando (por ejemplo, un «sí» dicho encima de otra persona salía como turno propio con las palabras de la otra). La superposición queda en el turno que empezó primero, un resto de menos de 250 ms se descarta y los segmentos de un hablante separados por menos de 500 ms se unen. Los handles son RAII. Mientras procesa emite `finalizing` con `progress` y `stage` y, entre ventanas y líneas, comprueba si la persona pidió omitir la separación (`skip_speech_diarization`). Si la diarización falla o se omite, se conserva el ASR sin etiquetas.
 
 El idioma configurado se valida y normaliza en Rust. Parakeet detecta el idioma y sólo usa el configurado para elegir la normalización del texto.
 
@@ -6126,7 +6126,7 @@ En Windows, `LoadedSherpaLibrary` precarga por ruta absoluta la `onnxruntime.dll
 
 El plugin `notia-speech-preload` (`speech_service::init_preload`) se registra con un `setup` de plugin, porque el `setup` del builder ya lo usa `windows_tray`, y en Windows y Android ejecuta `preload_at_startup` al levantar Notia. Lee la preferencia normalizada `speechRecognition` y, si el reconocimiento está activo, un thread `notia-speech-preload` valida los hashes y construye el `OfflineVadRecognizer` con el idioma guardado sin bloquear la ventana; el resultado queda residente en `SpeechRuntimeState` y registra `[notia:speech] startup preload ready elapsed_ms=…` o el error. `prepare_recognizer` toma el mutex `preparation` antes de resolver y cargar, así que un `prepare_speech_model` que llega durante la precarga espera y encuentra el modelo ya cargado, sin cargarlo dos veces. `useVoiceTranscription` no pide la preparación hasta que `devicePreferencesLoaded` es verdadero: antes de hidratarse, Redux tiene el idioma por defecto y provocaría cargar un reconocedor equivocado para después reemplazarlo. El build `dev` compila `sha2` con `opt-level = 3`: sin optimizar, verificar el encoder de Parakeet (652 MB) tardaba 8,4 s frente a 0,4 s optimizado. Para ver los logs de precarga en desarrollo, usar `RUST_LOG=notia_lib::services=info`. `SpeechWorker::start_with_recycler` toma ownership exclusivo durante una grabación y devuelve el reconocedor al caché después de limpiar el tramo activo. Los hashes se memorizan por ruta, tamaño y fecha de modificación.
 
-Eventos públicos: `speech://state`, `speech://partial` (solo cuando cambia el texto en curso o se confirma una frase), `speech://segments` y, para Meeting y la prueba de audio, `speech://levels`. Todos incluyen `sessionId`; el hook ignora sesiones obsoletas y libera listeners al desmontar. `RecognitionUpdate.span` lleva las muestras de la sesión que abarcan los segmentos VAD confirmados, de donde sale el minuto de cada línea de Meeting.
+Eventos públicos: `speech://state`, `speech://partial` (solo cuando cambia el texto en curso o se confirma una frase; en una sesión de Meeting `confirmedText` va vacío, porque las líneas llegan por la reunión y ese texto crece durante horas; un `partialText` vacío significa que no hay nada en curso y el hook borra la vista previa), `speech://segments` y, para Meeting y la prueba de audio, `speech://levels`. Todos incluyen `sessionId`; el hook ignora sesiones obsoletas y libera listeners al desmontar. `RecognitionUpdate.span` lleva las muestras de la sesión que abarcan los segmentos VAD confirmados, de donde sale el minuto de cada línea de Meeting.
 
 Inicio: `{"language":"es","diarizationEnabled":true,"maxDurationSeconds":900}`; Meeting agrega `captureMicrophone`, `captureSystemAudio`, `expectedSpeakers` y `meeting`. Respuesta: `{"sessionId":"7a5dd258-2675-47cc-a32d-01ef4f414946"}`. Los controles reciben el mismo `sessionId`.
 
@@ -6183,7 +6183,7 @@ La vista Meeting sigue el lienzo de diseño «Notia · Meeting» (artboards *Lis
 | App | `meeting::MeetingState` | Una reunión por vez, la respuesta en vivo en curso con su `RequestControl` y la última pregunta en cola; bandera de «Pasar por IA» en curso. |
 | App | `speech_service` / `commands::speech` | Crea la reunión (`meeting::begin`) al iniciar una sesión con `meeting`, informa cada línea confirmada (`on_line`), el procesamiento (`on_processing`), el resultado (`on_completed`), el fallo (`on_interrupted`) y la cancelación (`discard_session`). |
 | React | `MeetingView` | Elige el estado a mostrar (hook de voz + `snapshot.status`), las fuentes, la prueba de audio, las opciones y las acciones del encabezado. Al montarse con una reunión `live` o `processing`, retoma su sesión con `attach`. |
-| React | `views/meeting/*` | Paneles de cada estado, `useMeetingSnapshot` (relee ante `meeting://changed` y actualiza en el lugar el texto de `meeting://answer`) y `useSpeechLevels` (historial visual de `speech://levels`). |
+| React | `views/meeting/*` | Paneles de cada estado, `useMeetingSnapshot` (relee ante `meeting://changed`, agrega sin releer la línea de `meeting://line` y actualiza en el lugar el texto de `meeting://answer`) y `useSpeechLevels` (historial visual de `speech://levels`). |
 
 ```mermaid
 flowchart LR
@@ -6198,7 +6198,9 @@ flowchart LR
     OnLine -->|pregunta| Live[respuesta en vivo: stream_complete]
     Worker -->|Finished| Diar[diarización con progreso]
     Diar --> Done[meeting::on_completed]
-    Begin & OnLine & Live & Done --> Changed[meeting://changed]
+    OnLine --> Line[meeting://line]
+    Line --> View
+    Begin & Live & Done --> Changed[meeting://changed]
     Changed --> Snapshot[meeting_snapshot]
     Snapshot --> View
 ```
@@ -6209,7 +6211,7 @@ flowchart LR
 2. **Grabando.** `start_speech_session` recibe `captureMicrophone`, `captureSystemAudio`, `expectedSpeakers` y `meeting: { liveAnswers, settings }`. La sesión emite niveles cada 100 ms. Cada endpoint de Parakeet trae ahora `RecognitionUpdate.span` (muestras de la sesión que abarcan los segmentos VAD confirmados) y `on_line` guarda la línea con su minuto real sin pausas. «Marcar momento» (`meeting_add_mark`) usa la posición de `CaptureMeter` (muestras entregadas) y rotula el momento con las primeras palabras de la última línea. Las notas rápidas se guardan con `meeting_set_notes` 600 ms después de dejar de escribir y al desmontar.
 3. **Respuestas en vivo.** Arrancan apagadas porque envían la transcripción reciente (hasta ~6000 caracteres) al proveedor de IA configurado. Con el interruptor (`meeting_set_live_answers`), cada línea con pregunta crea una respuesta y un thread la genera con `ai_tasks::stream_complete`; el texto se emite como `meeting://answer` como mucho cada 80 ms. Hay una sola respuesta en curso: una pregunta que llega mientras tanto queda en cola y reemplaza a la que ya esperaba. «Más corta» y «Reintentar» usan `meeting_regenerate_answer`, «Fijar a la nota» usa `meeting_pin_answer`, «Copiar» usa el portapapeles del WebView. Una pregunta repetida no se vuelve a responder y se conservan hasta 50 respuestas, empezando a descartar por las más viejas no fijadas.
 4. **Separando hablantes.** `stop_speech_session` emite `finalizing` con `stage: "transcribing"`. La diarización emite `progress` (0–1) y `stage` (`detecting-speakers`, `assigning-turns`) por ventana de 15 minutos y por turno transcripto, como mucho una vez por punto porcentual. «Cancelar separación» llama a `skip_speech_diarization`; la diarización lo comprueba entre ventanas y turnos y la sesión termina con el texto sin etiquetas. Sin hablantes, `MeetingRecord::complete` usa las líneas en vivo como segmentos para conservar el minuto de cada frase.
-5. **Finalizada.** Los hablantes se nombran «Hablante N» por orden de aparición; `meeting_rename_speaker` (1–60 caracteres en una línea) y `meeting_merge_speakers` (el origen pasa al destino, que conserva su nombre) actualizan turnos, estadísticas, contexto y nota. La búsqueda (250 ms después de escribir) y el filtro por hablante viajan en `meeting_snapshot { filter }`. «Pasar por IA» (`meeting_generate_insights`) corrige primero, si se pidió, en lotes de ~6000 caracteres con ids `S1…` y descarta correcciones con menos de la mitad o más de 1,6 veces el largo original; después pide resumen, puntos clave y tareas en un solo JSON. Las tareas se envían con `meeting_send_tasks` a un tablero de `meeting_task_boards`: se crean pendientes en el primer grupo del tablero, como el Owner, y quedan marcadas como enviadas. «Preguntale a la reunión» usa el turno `meeting` del motor de chat con `contextText`, y el prompt de ese turno pide citar el minuto. Sus sugerencias son `suggestedQuestions`: las tres primeras preguntas distintas de hasta 60 caracteres que detecta `detect_questions`, cada una con `atMs`, el inicio del segmento (o de la línea en vivo, si no hay segmentos) que la formula; la vista las lista como tarjetas con ese minuto y, al tocarlas, las pregunta. El chat lateral de Meeting recibe el mismo contexto.
+5. **Finalizada.** Los hablantes se nombran «Hablante N» por orden de aparición; `meeting_rename_speaker` (1–60 caracteres en una línea) y `meeting_merge_speakers` (el origen pasa al destino, que conserva su nombre) actualizan turnos, estadísticas, contexto y nota. La búsqueda (250 ms después de escribir) y el filtro por hablante viajan en `meeting_snapshot { filter }`. «Pasar por IA» (`meeting_generate_insights`) corrige primero, si se pidió, en lotes de ~6000 caracteres con ids `S1…` y descarta correcciones con menos de la mitad o más de 1,6 veces el largo original; después pide resumen, puntos clave y tareas en un solo JSON. Las tareas se envían con `meeting_send_tasks` a un tablero de `meeting_task_boards`: se crean pendientes en el primer grupo del tablero, como el Owner, y quedan marcadas como enviadas. «Preguntale a la reunión» usa el turno `meeting` del motor de chat con `contextText`, y el prompt de ese turno pide citar el minuto. Sus sugerencias son `suggestedQuestions`: las tres primeras preguntas distintas de hasta 60 caracteres que detecta `detect_questions`, cada una con `atMs`, el inicio del segmento (o de la línea en vivo, si no hay segmentos) que la formula; la vista las lista como tarjetas con ese minuto y, al tocarlas, las pregunta. El chat lateral de Meeting pide ese mismo contexto con `meeting_context` al enviar cada pregunta, así que incluye las líneas de una grabación en curso sin que el texto viaje con cada línea.
 6. **Guardar y exportar.** `meeting_save_note { meetingId, libraryId, folder }` compone la nota con `ensure_markdown_defaults` (frontmatter habitual con `createdAt` del inicio de la reunión) y la crea con `Documents::write`, que crea las carpetas faltantes en escritorio y la ruta completa por SAF en Android. Si el nombre existe, prueba `… (2).md` hasta 50 veces. Guardar de nuevo en la misma carpeta sobrescribe la nota solo si su revisión no cambió; si la persona la editó, responde un conflicto y no la pisa. `meeting_export { …, format: "pdf" | "docx" }` guarda la nota y la exporta junto a ella con `export_library_document`. Ambos devuelven la ruta visible del explorador, reindexan la biblioteca y la interfaz avisa al árbol. «Nueva grabación» (`meeting_discard`) solo descarta una reunión terminada.
 
 ### Contratos
@@ -6223,6 +6225,7 @@ Todos los comandos reciben `{ payload }` y son de `LOCAL_ONLY_COMMANDS`, porque 
 | `skip_speech_diarization` | `{ sessionId }` | — (error si la sesión no está separando hablantes) |
 | `speech_session_state` | `{ sessionId }` | `recording { elapsedMs, hasSpeech }`, `paused { elapsedMs }` o `finalizing` (sin progreso); error «La grabación ya terminó.» si la sesión no está activa |
 | `meeting_snapshot` | `{ meetingId?, filter: { query, speakerId } }` | `MeetingSnapshotDto` o `null` |
+| `meeting_context` | `{ meetingId }` | texto de contexto (`[mm:ss] Nombre: texto` y las notas) |
 | `meeting_discard` | `{ meetingId }` | — |
 | `meeting_add_mark` | `{ meetingId }` | `{ id, atMs, label }` |
 | `meeting_remove_mark` | `{ meetingId, markId }` | — |
@@ -6250,7 +6253,7 @@ Snapshot (abreviado):
 {"id":"7a5dd258-…","status":"completed","title":"Reunión 2026-09-24 10.32","dateLabel":"24/09/2026 10:32","durationMs":1112000,"sources":{"microphone":true,"system":true},"lines":[{"id":"line-1","startMs":0,"endMs":4100,"text":"Bien, buenas.","question":false}],"speakers":[{"id":"speaker-1","name":"Hablante 1","initials":"H1","talkMs":678000,"sharePercent":61,"colorIndex":0}],"turns":[{"id":"turn-1","speakerId":"speaker-1","startMs":0,"endMs":24000,"text":"Bien, buenas…"}],"totalTurns":42,"notes":"","marks":[],"answers":[],"liveAnswers":false,"insights":{"keyPoints":[],"tasks":[],"corrected":false},"suggestedQuestions":[{"question":"¿Por qué renunciaste a tu trabajo?","atMs":160000}],"contextText":"[00:00] Hablante 1: Bien, buenas…"}
 ```
 
-Eventos: `meeting://changed { meetingId }` después de cada cambio, `meeting://answer { meetingId, answerId, text }` con el texto acumulado de una respuesta en curso y `speech://levels { sessionId, microphone, system }` (0–1 en escala de -60 a 0 dB; `null` para una fuente cerrada) de la sesión o de la prueba de audio. El estado `finalizing` de `speech://state` suma `progress` y `stage`.
+Eventos: `meeting://line { meetingId, line, durationMs }` con cada línea confirmada, `meeting://changed { meetingId }` después de cualquier otro cambio (una línea que abre una respuesta en vivo emite los dos), `meeting://answer { meetingId, answerId, text }` con el texto acumulado de una respuesta en curso y `speech://levels { sessionId, microphone, system }` (0–1 en escala de -60 a 0 dB; `null` para una fuente cerrada) de la sesión o de la prueba de audio. El estado `finalizing` de `speech://state` suma `progress` y `stage`.
 
 ### Validaciones y errores
 
@@ -6303,6 +6306,107 @@ Ese trabajo del WebView competía por CPU con el reconocedor y crecía con la du
 - `cargo check --target aarch64-linux-android` sin errores (62 warnings, sin cambios); `cargo check` del crate raíz sin errores; Linux (WSL): `check` sin errores y tests de `notia-app` 286 y `backend-core` 285. `backend-core` no cambió.
 - Vitest 267 (4 nuevos: una sesión de Meeting sobrevive al desmontaje y se retoma, el dictado se sigue cancelando, un evento que llega mientras se retoma gana, y una sesión terminada se suelta); `tsc` de `tsconfig.app.json` y `tsconfig.node.json`; ESLint de los archivos tocados. Se verificó que el test de desmontaje falla con el comportamiento anterior.
 - Pendiente de prueba manual: una reunión real de más de una hora en Windows con micrófono y audio de la computadora, cambiando de módulo durante la grabación, en pausa y mientras separa hablantes; que no aparezca `capture queue discarded` en el log; frases reales con palabras en inglés; y lo mismo en un dispositivo Android.
+
+### Revisión del sistema de transcripción (2026-09-25)
+
+Se revisó el recorrido completo: captura, remuestreo, cola, worker, Parakeet con Silero VAD, unión del texto confirmado, eventos, diarización, segunda pasada y registro de la reunión.
+
+#### Remuestreo
+
+Antes, cada buffer de la placa de audio se remuestreaba por separado con interpolación lineal y sin filtro:
+
+- De 48 kHz a 16 kHz el paso es exactamente 3, así que se tomaba una muestra de cada tres. Todo lo que había entre 8 y 24 kHz (sibilantes, ruido, música del audio de la computadora) se plegaba dentro de la banda de voz que usa Parakeet.
+- Con 44,1 kHz, cada buffer perdía la fracción de muestra final y la fase volvía a cero, lo que agregaba discontinuidades y deriva entre el micrófono y el audio de la computadora.
+
+`StreamResampler` (en `backend-core::audio_resample`, compartido con el dictado remoto) guarda su estado entre buffers y arranca con el nivel de la primera muestra, sin subir desde el silencio. Un FIR pasabajos (sinc con ventana de Hamming, corte en 7,3 kHz, 21 taps por unidad de razón: 127 a 48 kHz) filtra a la frecuencia de entrada y después interpola linealmente la señal ya limitada en banda. A 16 kHz solo hace downmix; por debajo de 16 kHz (por ejemplo, un micrófono Bluetooth de 8 kHz) interpola sin filtro. Cada fuente tiene su instancia: el callback de CPAL la posee y el thread de WASAPI loopback tiene la suya. El costo es de unos 6 millones de multiplicaciones por segundo a 48 kHz.
+
+#### Frases repetidas
+
+`append_text` quitaba del texto nuevo las palabras que repetían el final del texto confirmado, con coincidencia exacta o aproximada. Esa lógica venía de los endpoints forzados con audio solapado del motor anterior. Con Silero VAD los segmentos no comparten audio, así que borraba habla real: un «Sí.» respondido después de otro «Sí.», un «Hola.» contestado a un «Hola.» o una frase repetida por otra persona desaparecían de la línea en vivo, de las notas de Telegram y de la transcripción sin hablantes. Ahora el texto confirmado se agrega entero (con la misma reparación de puntos falsos antes de minúscula) y el audio previo de cada segmento se recorta al final del anterior. La reconciliación por palabras sigue solo en la vista previa (`unconfirmed_suffix`), que puede empezar un poco antes del segmento detectado.
+
+#### Fin de la sesión sin `stop`
+
+Cuando el worker terminaba por su cuenta, la sesión seguía ocupando `active_session`:
+
+- **Error del worker.** El micrófono (y el loopback y los niveles) seguía abierto y cualquier sesión nueva respondía «Ya existe una sesion de voz activa» hasta reiniciar Notia. En Android no se cerraba el trabajo en primer plano.
+- **Límite de duración.** Llegar a las 12 horas de Meeting o a los 15 minutos del dictado era un error: la reunión se cerraba sin separar hablantes y además quedaba el bloqueo anterior.
+
+Ahora:
+
+- Al llegar al límite, el worker procesa el último tramo que entra, cierra el reconocedor y emite `Finished` con todo lo grabado, como un `stop`. El audio que excede el límite no se graba.
+- `release_ended_session` libera la sesión cuando el worker termina solo (`Finished` sin `stop` o `Error`). Cierra los niveles y la captura, suelta el worker con `SpeechWorker::detach` (corre en el thread del worker, que no puede unirse a sí mismo) y en Android termina el trabajo en primer plano. Con `stop` o `cancel` la sesión ya no está y no hace nada.
+- Si la sesión terminó por el límite, el servicio pasa la fase a `Finalizing`, registra `finalizing_session` para que la vista pueda retomarla y emite `finalizing` con `stage: "transcribing"`. Después sigue el mismo camino que un `stop`: diarización, `meeting::on_completed` y `completed`.
+- `stop_speech_session` ya no descarta el resultado de `stop_platform_session`: lo devuelve y siempre cierra el trabajo en primer plano de Android. Si la captura no se puede pausar, el worker igual termina (antes la fase quedaba en `Finalizing` para siempre) y, si el worker entró en pánico, la fase vuelve a `Idle`.
+
+#### Propuesta que no se implementó
+
+La segunda pasada más corta, el evento por línea, los cortes de ventana en pausas y el filtro del dictado remoto se implementaron después (ver «Separación de hablantes con las líneas en vivo»).
+
+- **Hablantes poco activos.** `stabilize_speakers` reasigna a sus vecinos a los hablantes con menos del 4 % de una ventana de 15 minutos (36 s), también cuando la persona fijó la cantidad. Quien interviene poco en una ventana puede quedar atribuido a otro. Requiere probar con reuniones reales antes de cambiar el umbral.
+
+#### Validación
+
+- `cargo test -p notia-app --features bluetooth`: 341 aprobados y 1 ignorado. Nuevos: remuestreo sin plegado (un tono de 12 kHz a 48 kHz sale por debajo de 0,01 RMS y uno de 1 kHz conserva su nivel), buffers irregulares a 44,1 kHz idénticos al procesamiento de una vez y sin deriva, fin de sesión por el límite con todo lo grabado, turnos sin superposición y frases repetidas conservadas.
+- `cargo check` del crate raíz, `cargo check --target aarch64-linux-android` (61 warnings, uno menos) y escritorio (38 sin `bluetooth`, uno menos: el `Result` ignorado de `stop_speech_session`).
+- Linux (WSL, `--no-default-features`): `check` sin errores y con los mismos 146 warnings que antes del cambio; tests de `notia-app` 289 y `backend-core` 285.
+- Vitest 268, `tsc -p tsconfig.app.json` y ESLint de los archivos tocados.
+- Pendiente de prueba manual: una reunión real con micrófono y audio de la computadora (calidad con el filtro nuevo, respuestas cortas repetidas, habla superpuesta en la separación), una sesión que llega al límite (por ejemplo, un dictado de más de 15 minutos) y vuelve a empezar sin reiniciar Notia, y lo mismo en un dispositivo Android con micrófono de 44,1 o 48 kHz.
+
+### Separación de hablantes con las líneas en vivo (2026-09-25)
+
+Antes, al detener, cada turno de la diarización se volvía a transcribir entero con Parakeet: en una reunión de una hora eran varios minutos de CPU además de la diarización, para obtener casi el mismo texto que ya estaba en vivo. Ahora la separación reutiliza las líneas en vivo.
+
+```mermaid
+flowchart LR
+    Lines[Líneas en vivo con SampleSpan] --> Cuts[diarization_window_ends]
+    Cuts --> Window[Ventana de ~15 min]
+    Window --> Diar[sherpa_diarization + embeddings]
+    Diar --> Turns[speaker_turns]
+    Turns --> Pieces[line_pieces por línea]
+    Pieces -->|un hablante| Keep[Texto en vivo]
+    Pieces -->|cambio de hablante| Again[transcribe_piece por pedazo]
+    Keep & Again --> Chunk[append_diarized_chunk + registro global]
+```
+
+#### Líneas confirmadas
+
+`ConfirmedSpeech` reemplaza al texto confirmado de la sesión: guarda el texto completo (para el dictado y `consume_speech_turn`) y cada línea con su `SampleSpan`, la posición en muestras de la grabación sin pausas, que coincide con la del WAV temporal porque el worker archiva y reconoce las mismas muestras en el mismo orden. Una línea sin muestras (no ocurre con Parakeet) se ubica donde terminó la anterior. Al terminar, las líneas pasan a `diarize_recorded_audio`.
+
+#### Cortes de ventana
+
+`diarization_window_ends` elige dónde termina cada ventana: cerca de cada marca de 15 minutos, en la pausa entre dos líneas (al menos 200 ms sin línea confirmada) más cercana antes de la marca, hasta dos minutos antes. Sin pausa en ese tramo corta en la marca. Una última ventana de menos de un minuto se suma a la anterior. `RecordedAudio::for_each_window` lee el WAV ventana por ventana con esos cortes, con una sola ventana en memoria. Cada línea pertenece a la ventana que contiene su punto medio, así que tampoco se reparte entre dos ventanas cuando hubo que cortar sin pausa.
+
+#### Hablante de cada línea
+
+`attribute_lines` recorre las líneas de la ventana y `line_pieces` decide con los turnos sin superposición:
+
+- Solo cuenta un hablante escuchado al menos 500 ms dentro de la línea.
+- Con un único hablante así, la línea queda entera con el hablante más escuchado y conserva el texto en vivo.
+- Con varios, la línea se parte a mitad del hueco entre sus turnos y cada pedazo se vuelve a transcribir (`transcribe_piece`: `reset_session`, relleno de silencio hasta 0,8 s, VAD y Parakeet como antes).
+- Una línea que ningún turno toca toma el hablante del turno más cercano; en una ventana sin turnos queda sin hablante.
+
+El reconocedor se toma del caché la primera vez que una línea lo necesita y vuelve al caché al terminar la ventana (`BorrowedRecognizer`). Si no está disponible, o un pedazo falla o sale vacío en todos los casos, la línea conserva su texto en vivo con el hablante que más se escuchó: ninguna línea se pierde. El progreso de `assigning-turns` avanza por línea.
+
+El texto de los segmentos es el de las líneas en vivo, incluida la reparación de puntos y signos de pregunta. La mayoría de las líneas no se vuelve a transcribir, así que el procesamiento al detener queda en la diarización.
+
+#### Una línea por evento
+
+Antes, cada línea confirmada emitía `meeting://changed` y la vista releía el snapshot completo: todas las líneas, el contexto (otra copia de la transcripción) y las preguntas sugeridas, cada vez más grande. Ahora `meeting::on_line` emite `meeting://line { meetingId, line, durationMs }` y `useMeetingSnapshot` agrega la línea al snapshot que ya tiene. `meeting://changed` solo acompaña a la línea cuando esa línea abre una respuesta en vivo. Si un snapshot pedido antes llega después de una línea, `keepNewerLines` conserva las líneas más nuevas: durante una reunión las líneas solo se agregan.
+
+El chat lateral ya no recibe la transcripción con cada línea. `meetingTranscriptContext` guarda la reunión y si tiene algo para consultar (líneas, turnos o notas); al enviar una pregunta, el chat pide el texto con `meeting_context`, que Rust arma igual que `contextText`. El indicador del chat dice «Transcripción de Meeting disponible», sin la cantidad de caracteres.
+
+#### Dictado remoto
+
+`remote_audio` usa `audio_resample::StreamResampler`, el mismo filtro de la captura nativa. Se eliminó `resample_linear`.
+
+#### Validación
+
+- `cargo test -p notia-app --features bluetooth`: 341 aprobados y 1 ignorado. Nuevos: piezas de una línea (dentro de un turno, un hablante breve que no parte la línea, un cambio real, fuera de todo turno), cortes de ventana en la pausa más cercana, en la marca sin pausa y sin corte bajo 16 minutos, y líneas confirmadas con sus muestras. Los tres tests del filtro pasaron a `backend-core`.
+- `cargo test -p notia-backend-core`: 289 (5 del filtro, incluido el nivel constante desde la primera muestra y la subida de 8 kHz; se quitó el de `resample_linear`).
+- `cargo check` del crate raíz, `cargo check --target aarch64-linux-android` (61 warnings, sin cambios) y escritorio (38, sin cambios).
+- Linux (WSL, `--no-default-features`): `check` sin errores (146 warnings, sin cambios); tests de `notia-app` 286 (los del filtro pasaron a `backend-core` y los nuevos de la separación solo compilan en Windows y Android) y `backend-core` 289.
+- Vitest 270 (nuevo: `keepNewerLines`; el del contexto del chat cambió a reunión y disponibilidad), `tsc` de `tsconfig.app.json` y `tsconfig.node.json`, ESLint de los archivos tocados.
+- Pendiente de prueba manual: tiempo de «Separando hablantes» en una reunión real de más de una hora frente al anterior; hablantes correctos en líneas con cambio de hablante; una reunión de más de 15 minutos para ver el corte de ventana; el chat lateral preguntando durante la grabación; el dictado desde el navegador; y lo mismo en Android.
 
 ### Ancho y responsive
 

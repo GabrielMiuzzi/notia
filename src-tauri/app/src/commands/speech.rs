@@ -146,7 +146,7 @@ pub async fn start_speech_session(
             sources,
             max_duration_seconds: payload.max_duration_seconds,
             expected_speakers: payload.expected_speakers,
-            report_levels: payload.meeting.is_some(),
+            meeting: payload.meeting.is_some(),
         };
         let worker_app = app.clone();
         let worker_session_id = session_id.clone();
@@ -377,20 +377,21 @@ pub async fn stop_speech_session(
         },
     );
     let worker_app = app.clone();
-    crate::host::async_runtime::spawn_blocking(move || {
+    let stopped = crate::host::async_runtime::spawn_blocking(move || {
         let worker_state = worker_app.state::<SpeechRuntimeState>();
         speech_service::stop_platform_session(&worker_state)
     })
     .await
     .map_err(|error| {
         format!("El worker de finalizacion de voz finalizo inesperadamente: {error}")
-    })?;
+    })
+    .and_then(|stopped| stopped);
     #[cfg(target_os = "android")]
     {
         let continuity_state = app.state::<mobile_continuity::ContinuityState>();
         let _ = mobile_continuity::end_android_work(continuity_state.inner());
     }
-    Ok(())
+    stopped
 }
 
 pub fn consume_speech_turn(

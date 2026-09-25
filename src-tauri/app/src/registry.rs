@@ -130,6 +130,7 @@ fn route(command: &str) -> Option<Route> {
         "start_audio_monitor" => start_audio_monitor,
         "stop_audio_monitor" => stop_audio_monitor,
         "meeting_snapshot" => meeting_snapshot,
+        "meeting_context" => meeting_context,
         "meeting_discard" => meeting_discard,
         "meeting_add_mark" => meeting_add_mark,
         "meeting_remove_mark" => meeting_remove_mark,
@@ -311,6 +312,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "start_audio_monitor",
     "stop_audio_monitor",
     "meeting_snapshot",
+    "meeting_context",
     "meeting_discard",
     "meeting_add_mark",
     "meeting_remove_mark",
@@ -390,6 +392,7 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "start_audio_monitor",
     "stop_audio_monitor",
     "meeting_snapshot",
+    "meeting_context",
     "meeting_discard",
     "meeting_add_mark",
     "meeting_remove_mark",
@@ -931,6 +934,10 @@ fn stop_audio_monitor(app: &AppHandle, _window_label: &str, command: &str, args:
 
 fn meeting_snapshot(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_snapshot(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_context(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_context(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn meeting_discard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

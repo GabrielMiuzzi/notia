@@ -4,6 +4,7 @@ import type {
   MeetingExportFormat,
   MeetingFilter,
   MeetingInsightsRequest,
+  MeetingLine,
   MeetingMark,
   MeetingSnapshot,
 } from './meetingTypes'
@@ -16,6 +17,7 @@ import type {
 
 const CHANGED_EVENT = 'meeting://changed'
 const ANSWER_EVENT = 'meeting://answer'
+const LINE_EVENT = 'meeting://line'
 
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -43,6 +45,10 @@ export function getMeetingSnapshot(filter: MeetingFilter): Promise<MeetingSnapsh
     filter: { query: filter.query, speakerId: filter.speakerId },
   }, 'No se pudo leer la reunión.')
 }
+
+/** The transcript and notes as the chat reads them, built by the backend when asked. */
+export const getMeetingContext = (meetingId: string) =>
+  call<string>('meeting_context', { meetingId }, 'No se pudo leer la transcripción de la reunión.')
 
 export const discardMeeting = (meetingId: string) =>
   call<void>('meeting_discard', { meetingId }, 'No se pudo empezar una nueva grabación.')
@@ -103,6 +109,29 @@ export const sendMeetingTasks = (meetingId: string, libraryId: string, board: st
 export const listenMeetingChanged = (callback: (meetingId: string) => void): Promise<Unsubscribe> =>
   subscribeBackend<{ meetingId?: unknown }>(CHANGED_EVENT, (payload) => {
     if (typeof payload?.meetingId === 'string') callback(payload.meetingId)
+  })
+
+function readMeetingLine(value: unknown): MeetingLine | null {
+  if (!value || typeof value !== 'object') return null
+  const line = value as Record<string, unknown>
+  return typeof line.id === 'string'
+    && typeof line.startMs === 'number'
+    && typeof line.endMs === 'number'
+    && typeof line.text === 'string'
+    && typeof line.question === 'boolean'
+    ? { id: line.id, startMs: line.startMs, endMs: line.endMs, text: line.text, question: line.question }
+    : null
+}
+
+/** A line the recording just confirmed; the rest of the meeting did not change. */
+export const listenMeetingLine = (
+  callback: (event: { meetingId: string; line: MeetingLine; durationMs: number }) => void,
+): Promise<Unsubscribe> =>
+  subscribeBackend<{ meetingId?: unknown; line?: unknown; durationMs?: unknown }>(LINE_EVENT, (payload) => {
+    const line = readMeetingLine(payload?.line)
+    if (line && typeof payload?.meetingId === 'string' && typeof payload.durationMs === 'number') {
+      callback({ meetingId: payload.meetingId, line, durationMs: payload.durationMs })
+    }
   })
 
 /** Text of a live answer while it is being generated. */

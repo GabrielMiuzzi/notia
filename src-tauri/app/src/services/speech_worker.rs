@@ -31,28 +31,32 @@ impl RecordedAudio {
             .unwrap_or(0)
     }
 
-    pub fn for_each_chunk<F>(&self, chunk_size: usize, mut callback: F) -> Result<(), String>
+    /// Reads the recording window by window, holding one window in memory.
+    /// `ends` are the samples where the windows end, ascending; the callback
+    /// gets the first sample of each window and its audio. Audio after the
+    /// last end forms one more window.
+    pub fn for_each_window<F>(&self, ends: &[usize], mut callback: F) -> Result<(), String>
     where
-        F: FnMut(&[f32]) -> Result<(), String>,
+        F: FnMut(usize, &[f32]) -> Result<(), String>,
     {
-        if chunk_size == 0 {
-            return Err("El tamaño del tramo de audio no es válido.".to_string());
-        }
         let reader = hound::WavReader::open(&self.path)
             .map_err(|error| format!("No se pudo leer el audio temporal: {error}"))?;
-        let mut samples = Vec::with_capacity(chunk_size);
-        for sample in reader.into_samples::<i16>() {
+        let mut ends = ends.iter().copied().peekable();
+        let mut start = 0;
+        let mut samples = Vec::new();
+        for (index, sample) in reader.into_samples::<i16>().enumerate() {
             let sample = sample.map_err(|error| {
                 format!("No se pudo leer una muestra del audio temporal: {error}")
             })?;
             samples.push(f32::from(sample) / f32::from(i16::MAX));
-            if samples.len() == chunk_size {
-                callback(&samples)?;
+            while ends.next_if(|end| *end <= index + 1).is_some_and(|end| end > start) {
+                callback(start, &samples)?;
+                start = index + 1;
                 samples.clear();
             }
         }
         if !samples.is_empty() {
-            callback(&samples)?;
+            callback(start, &samples)?;
         }
         Ok(())
     }
@@ -93,6 +97,11 @@ impl AudioArchive {
                 .saturating_mul(max_duration_seconds as usize),
             keep_file: false,
         })
+    }
+
+    /// Samples that still fit under the duration limit.
+    fn room(&self) -> usize {
+        self.max_samples.saturating_sub(self.sample_count)
     }
 
     fn append(&mut self, samples: &[f32]) -> Result<(), String> {
@@ -284,6 +293,12 @@ impl SpeechWorker {
         self.join_inner()
     }
 
+    /// Lets a worker that already reported its end finish on its own. Its
+    /// session is released from the worker thread, which cannot join itself.
+    pub fn detach(mut self) {
+        self.join_handle.take();
+    }
+
     fn send(&self, command: WorkerCommand) -> Result<(), String> {
         self.command_tx
             .send(command)
@@ -357,29 +372,7 @@ fn run_worker<R, F, C, D>(
             Ok(WorkerCommand::Resume) => paused = false,
             Ok(WorkerCommand::Cancel) | Err(RecvTimeoutError::Disconnected) => return,
             Ok(WorkerCommand::Stop) => {
-                recognizer.get_mut().set_backlogged(true);
-                if let Err(error) = drain_all(
-                    &buffer,
-                    recognizer.get_mut(),
-                    &mut previews,
-                    &event_callback,
-                    &mut audio_archive,
-                ) {
-                    event_callback(SpeechWorkerEvent::Error(error));
-                    return;
-                }
-                match recognizer.get_mut().finish() {
-                    Ok(update) => match recognizer.recycle_now() {
-                        Ok(()) => match audio_archive.finish() {
-                            Ok(audio) => {
-                                event_callback(SpeechWorkerEvent::Finished { update, audio })
-                            }
-                            Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
-                        },
-                        Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
-                    },
-                    Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
-                }
+                finish_session(&buffer, recognizer, &mut previews, &event_callback, audio_archive);
                 return;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -389,7 +382,11 @@ fn run_worker<R, F, C, D>(
         }
         match take_ready_chunk(&buffer, &mut queue) {
             Ok(samples) if samples.is_empty() => {}
-            Ok(samples) => {
+            Ok(mut samples) => {
+                // At the duration limit the session ends as if it was stopped,
+                // keeping everything recorded until then.
+                let limit_reached = samples.len() >= audio_archive.room();
+                samples.truncate(audio_archive.room());
                 recognizer
                     .get_mut()
                     .set_backlogged(queue.backlog > BACKLOG_SAMPLES);
@@ -399,12 +396,71 @@ fn run_worker<R, F, C, D>(
                     event_callback(SpeechWorkerEvent::Error(error));
                     return;
                 }
+                if limit_reached {
+                    log::info!("[notia:speech] the session reached its duration limit and finishes");
+                    recognizer.get_mut().set_backlogged(true);
+                    match recognizer.get_mut().finish() {
+                        Ok(update) => emit_finished(recognizer, update, audio_archive, &event_callback),
+                        Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
+                    }
+                    return;
+                }
             }
             Err(error) => {
                 event_callback(SpeechWorkerEvent::Error(error));
                 return;
             }
         }
+    }
+}
+
+/// Recognizes what is left in the queue and reports the finished session.
+fn finish_session<R, C, D>(
+    buffer: &SharedPcmBuffer,
+    mut recognizer: RecycledRecognizer<R, D>,
+    previews: &mut PreviewFilter,
+    event_callback: &C,
+    mut audio_archive: AudioArchive,
+) where
+    R: StreamingRecognizer,
+    C: Fn(SpeechWorkerEvent),
+    D: FnOnce(R),
+{
+    recognizer.get_mut().set_backlogged(true);
+    if let Err(error) = drain_all(
+        buffer,
+        recognizer.get_mut(),
+        previews,
+        event_callback,
+        &mut audio_archive,
+    ) {
+        event_callback(SpeechWorkerEvent::Error(error));
+        return;
+    }
+    match recognizer.get_mut().finish() {
+        Ok(update) => emit_finished(recognizer, update, audio_archive, event_callback),
+        Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
+    }
+}
+
+/// Returns the recognizer to its cache before reporting the result, so the
+/// speaker separation that follows can use it.
+fn emit_finished<R, C, D>(
+    mut recognizer: RecycledRecognizer<R, D>,
+    update: RecognitionUpdate,
+    audio_archive: AudioArchive,
+    event_callback: &C,
+) where
+    R: StreamingRecognizer,
+    C: Fn(SpeechWorkerEvent),
+    D: FnOnce(R),
+{
+    let result = recognizer
+        .recycle_now()
+        .and_then(|()| audio_archive.finish());
+    match result {
+        Ok(audio) => event_callback(SpeechWorkerEvent::Finished { update, audio }),
+        Err(error) => event_callback(SpeechWorkerEvent::Error(error)),
     }
 }
 
@@ -462,7 +518,8 @@ where
     C: Fn(SpeechWorkerEvent),
 {
     loop {
-        let samples = take_samples(buffer, PCM_CHUNK_SAMPLES)?;
+        // Audio past the duration limit is not recorded.
+        let samples = take_samples(buffer, PCM_CHUNK_SAMPLES.min(audio_archive.room()))?;
         if samples.is_empty() {
             return Ok(());
         }
@@ -565,18 +622,18 @@ mod tests {
             .expect("append test audio");
         let path = archive.path.clone();
         let audio = archive.finish().expect("finish test archive");
+        let mut windows = Vec::new();
         let mut chunks = Vec::new();
-        let mut chunk_count = 0;
 
         audio
-            .for_each_chunk(2, |samples| {
-                chunk_count += 1;
+            .for_each_window(&[2], |start, samples| {
+                windows.push((start, samples.len()));
                 chunks.extend_from_slice(samples);
                 Ok(())
             })
             .expect("read test archive");
 
-        assert_eq!(chunk_count, 2);
+        assert_eq!(windows, vec![(0, 2), (2, 1)]);
         assert_eq!(chunks.len(), 3);
         assert!(chunks[1] > 0.99);
         assert!(chunks[2] < -0.99);
@@ -699,6 +756,34 @@ mod tests {
             .filter(|event| matches!(event, SpeechWorkerEvent::Partial(_)))
             .count();
         assert_eq!(previews, 1);
+    }
+
+    #[test]
+    fn the_duration_limit_finishes_the_session_with_what_was_recorded() {
+        let mut pcm = BoundedPcmBuffer::with_capacity(PCM_CHUNK_SAMPLES * 8).expect("valid test buffer");
+        pcm.push(vec![0.1; PCM_CHUNK_SAMPLES * 7]);
+        let pcm = Arc::new(Mutex::new(pcm));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let callback_events = Arc::clone(&events);
+        let worker = SpeechWorker::start_with_recycler(
+            pcm,
+            1,
+            || Ok(FakeRecognizer::default()),
+            move |event| {
+                callback_events.lock().expect("event lock").push(event);
+            },
+            drop,
+        )
+        .expect("start worker");
+        // No stop: the worker ends by itself at one second.
+        worker.join().expect("join worker");
+        let events = events.lock().expect("read events");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SpeechWorkerEvent::Finished { update, audio }
+                if audio.sample_count() == SPEECH_SAMPLE_RATE as usize && update.text == format!("final:{}", SPEECH_SAMPLE_RATE)
+        )));
+        assert!(!events.iter().any(|event| matches!(event, SpeechWorkerEvent::Error(_))));
     }
 
     #[test]

@@ -4,8 +4,10 @@
 //! A speech session started with Meeting options creates the record; the
 //! speech service reports its confirmed lines, the processing and the
 //! diarized transcript. The interface reads a snapshot and changes it with
-//! the commands below; every change emits `meeting://changed` and the live
-//! answers stream their text with `meeting://answer`. The record lives in
+//! the commands below; every change emits `meeting://changed`, except a new
+//! line, which travels alone in `meeting://line` so a long meeting is not
+//! read again line after line, and the live answers stream their text with
+//! `meeting://answer`. The record lives in
 //! memory until the person discards it, starts another recording or saves
 //! it as a library note.
 
@@ -29,6 +31,7 @@ use crate::services::speech_audio::CaptureSources;
 
 const CHANGED_EVENT: &str = "meeting://changed";
 const ANSWER_EVENT: &str = "meeting://answer";
+const LINE_EVENT: &str = "meeting://line";
 /// Least time between two streamed updates of a live answer.
 const ANSWER_EVENT_INTERVAL: Duration = Duration::from_millis(80);
 const MAX_FOLDER_CHARS: usize = 200;
@@ -146,6 +149,10 @@ pub(crate) fn on_line(app: &AppHandle, session_id: &str, span: Option<(u64, u64)
         let Some(record) = inner.record.as_mut().filter(|record| record.id == session_id) else { return };
         let (start_ms, end_ms) = span.unwrap_or((record.duration_ms, record.duration_ms));
         let Some(line) = record.push_line(start_ms, end_ms, text) else { return };
+        let _ = app.emit(
+            LINE_EVENT,
+            json!({ "meetingId": session_id, "line": line, "durationMs": record.duration_ms }),
+        );
         let question = (line.question && record.live_answers)
             .then(|| meeting::detect_questions(&line.text).pop())
             .flatten();
@@ -154,8 +161,9 @@ pub(crate) fn on_line(app: &AppHandle, session_id: &str, span: Option<(u64, u64)
             None => None,
         }
     };
-    announce(app, session_id);
+    // Only a new live answer changes something else than the lines.
     if let Some(job) = job {
+        announce(app, session_id);
         spawn_answer(app.clone(), job);
     }
 }
@@ -319,6 +327,12 @@ pub(crate) fn meeting_snapshot(app: AppHandle, payload: MeetingSnapshotPayload) 
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeetingIdPayload {
     meeting_id: String,
+}
+
+/// The transcript as the chat reads it (`[mm:ss] Nombre: texto` and the
+/// notes), built when a question is sent instead of with every new line.
+pub(crate) fn meeting_context(app: AppHandle, payload: MeetingIdPayload) -> Result<String, BackendError> {
+    with_record(&app, &payload.meeting_id, |record| Ok(record.context_text()))
 }
 
 /// Forgets a finished meeting ("Nueva grabación").

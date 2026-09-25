@@ -8,6 +8,7 @@ import {
   getMeetingTranscriptContext,
   subscribeMeetingTranscriptContext,
 } from '../../../../services/meeting/meetingTranscriptContext'
+import { getMeetingContext } from '../../../../services/meeting/meetingService'
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
@@ -20,11 +21,12 @@ interface MeetingEphemeralChatProps {
 }
 
 export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged }: MeetingEphemeralChatProps) {
-  const transcript = useSyncExternalStore(
+  const meeting = useSyncExternalStore(
     subscribeMeetingTranscriptContext,
     getMeetingTranscriptContext,
     getMeetingTranscriptContext,
   )
+  const hasTranscript = meeting.available && meeting.meetingId !== null
   const [messages, setMessages] = useState<StoredChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [streamingMessage, setStreamingMessage] = useState('')
@@ -49,12 +51,28 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
   const submitQuestion = async () => {
     const question = draft.trim()
     if (!question || isSubmitting) return
-    if (!transcript.trim()) {
-      setError('Todavía no hay una transcripción de Meeting para consultar.')
+    const noTranscript = 'Todavía no hay una transcripción de Meeting para consultar.'
+    if (!hasTranscript || !meeting.meetingId) {
+      setError(noTranscript)
       return
     }
     if (!library) {
       setError('Abrí una biblioteca para usar el chat de Meeting.')
+      return
+    }
+    // The transcript as it is now, including the lines of a recording in progress.
+    setIsSubmitting(true)
+    let transcript: string
+    try {
+      transcript = await getMeetingContext(meeting.meetingId)
+    } catch (contextError) {
+      setError(contextError instanceof Error ? contextError.message : noTranscript)
+      setIsSubmitting(false)
+      return
+    }
+    if (!transcript.trim()) {
+      setError(noTranscript)
+      setIsSubmitting(false)
       return
     }
 
@@ -123,8 +141,8 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
               {messages.length === 0 && !isSubmitting ? (
                 <div className="notia-chat-empty">
                   <Bot size={18} />
-                  <strong>{transcript.trim() ? 'Preguntá sobre la reunión' : 'Esperando una transcripción'}</strong>
-                  <p>{transcript.trim()
+                  <strong>{hasTranscript ? 'Preguntá sobre la reunión' : 'Esperando una transcripción'}</strong>
+                  <p>{hasTranscript
                     ? 'Podés pedir un resumen, acuerdos, tareas o detalles mencionados durante el Meeting.'
                     : 'Iniciá una grabación o escribí una transcripción para habilitar este chat.'}</p>
                 </div>
@@ -168,16 +186,14 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
             <form className="notia-chat-composer" onSubmit={handleSubmit}>
               <div className="notia-chat-context-indicator">
                 <Bot size={16} />
-                <span>{transcript.trim()
-                  ? `Transcripción de Meeting disponible · ${transcript.trim().length.toLocaleString()} caracteres`
-                  : 'Sin transcripción disponible'}</span>
+                <span>{hasTranscript ? 'Transcripción de Meeting disponible' : 'Sin transcripción disponible'}</span>
               </div>
               <div className="notia-chat-composer-field">
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={handleKeyDown}
-                  disabled={isSubmitting || !transcript.trim()}
+                  disabled={isSubmitting || !hasTranscript}
                   placeholder="Preguntá algo sobre la transcripción…"
                   aria-label="Pregunta sobre la transcripción de Meeting"
                 />
@@ -190,7 +206,7 @@ export function MeetingEphemeralChat({ aiPreferences, library, onLibraryChanged 
                       <X size={18} />
                     </NotiaButton>
                   ) : null}
-                  <NotiaButton type="submit" variant="primary" size="icon" disabled={isSubmitting || !draft.trim() || !transcript.trim()} aria-label="Enviar pregunta">
+                  <NotiaButton type="submit" variant="primary" size="icon" disabled={isSubmitting || !draft.trim() || !hasTranscript} aria-label="Enviar pregunta">
                     <Send size={18} />
                   </NotiaButton>
                 </div>

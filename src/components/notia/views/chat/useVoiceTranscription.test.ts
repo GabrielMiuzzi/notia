@@ -10,9 +10,14 @@ describe('hasNewRecognizedSpeech', () => {
 })
 
 describe('stabilizePartialTranscript', () => {
-  it('keeps visible text when an interim hypothesis is empty or regresses', () => {
-    expect(stabilizePartialTranscript('hola mundo', '')).toBe('hola mundo')
+  it('keeps visible text when an interim hypothesis regresses', () => {
     expect(stabilizePartialTranscript('hola mundo', 'hola')).toBe('hola mundo')
+  })
+
+  it('clears the preview when nothing is being spoken', () => {
+    // A Meeting confirms its lines without changing `confirmedText`.
+    expect(stabilizePartialTranscript('hola mundo', '')).toBe('')
+    expect(stabilizePartialTranscript('hola mundo', '   ')).toBe('')
   })
 
   it('allows a partial hypothesis to grow without flickering backwards', () => {

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::audio_resample::StreamResampler;
 use crate::error::BackendError;
 
 pub const MAX_CHUNK_BYTES: usize = 256 * 1024;
@@ -83,29 +84,6 @@ pub fn pcm_s16le_to_mono(bytes: &[u8], channels: u16) -> Vec<f32> {
         .collect()
 }
 
-/// Sample rate the speech recognizer works at.
-pub const RECOGNIZER_SAMPLE_RATE: u32 = 16_000;
-
-/// Linear interpolation between sample rates. Enough for speech recognition,
-/// whose models only look below 8 kHz.
-pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || samples.is_empty() {
-        return samples.to_vec();
-    }
-    let output_len = (samples.len() as u64 * u64::from(to_rate) / u64::from(from_rate)).max(1) as usize;
-    let step = f64::from(from_rate) / f64::from(to_rate);
-    (0..output_len)
-        .map(|index| {
-            let position = index as f64 * step;
-            let left = position.floor() as usize;
-            let right = (left + 1).min(samples.len() - 1);
-            let weight = (position - left as f64) as f32;
-            let left = left.min(samples.len() - 1);
-            samples[left] * (1.0 - weight) + samples[right] * weight
-        })
-        .collect()
-}
-
 /// Joins the chunks of one remote recording, in order and with one format,
 /// into mono samples for the recognizer. Only PCM is accepted: browsers
 /// capture it directly and it needs no decoder.
@@ -150,7 +128,9 @@ impl RemoteAudioAssembler {
     /// The whole recording at the recognizer sample rate.
     pub fn into_recognizer_samples(self) -> Vec<f32> {
         match self.format {
-            Some((rate, _)) => resample_linear(&self.samples, rate, RECOGNIZER_SAMPLE_RATE),
+            // The same filtered conversion as the native capture: a browser
+            // records at 44.1 or 48 kHz.
+            Some((rate, _)) => StreamResampler::new(1, rate).process(&self.samples),
             None => Vec::new(),
         }
     }
@@ -193,13 +173,6 @@ mod tests {
         assert!(assembler.push(&changed).is_err());
         let too_long = chunk(1, &vec![0; 16_000 * 4]);
         assert!(assembler.push(&too_long).is_err());
-    }
-
-    #[test]
-    fn linear_resampling_keeps_duration() {
-        assert_eq!(resample_linear(&[0.0; 480], 48_000, 16_000).len(), 160);
-        assert_eq!(resample_linear(&[0.0; 80], 8_000, 16_000).len(), 160);
-        assert_eq!(resample_linear(&[0.25, 0.75], 16_000, 16_000), vec![0.25, 0.75]);
     }
 
     fn chunk(sequence: u64, bytes: &[u8]) -> RemoteAudioChunk {

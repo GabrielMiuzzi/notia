@@ -15,7 +15,16 @@ use crate::services::sherpa_offline::{OfflineNemoTransducerConfig, OfflineVadRec
 
 pub const MAX_SPEECH_SESSION_SECONDS: u32 = 12 * 60 * 60;
 #[cfg(any(target_os = "windows", target_os = "android"))]
-const DIARIZATION_CHUNK_SAMPLES: usize = 16_000 * 15 * 60;
+const DIARIZATION_WINDOW_SAMPLES: usize = 16_000 * 15 * 60;
+/// How far before the 15 minutes a window may end to cut in a pause.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const WINDOW_PAUSE_SEARCH_SAMPLES: usize = 16_000 * 120;
+/// A last window shorter than this joins the previous one.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const WINDOW_MIN_TAIL_SAMPLES: usize = 16_000 * 60;
+/// Silence between two lines that counts as a pause to cut at.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const WINDOW_MIN_PAUSE_SAMPLES: u64 = 16_000 / 5;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 const GLOBAL_SPEAKER_MATCH_THRESHOLD: f32 = 0.72;
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -208,7 +217,40 @@ struct ActivePlatformSpeechSession {
     audio_capture: crate::services::speech_audio::PlatformAudioCapture,
     meter: crate::services::speech_audio::SharedCaptureMeter,
     worker: crate::services::speech_worker::SpeechWorker,
-    confirmed_text: Arc<StdMutex<String>>,
+    confirmed: Arc<StdMutex<ConfirmedSpeech>>,
+}
+
+/// What the session confirmed while recording: the whole text and each line
+/// with the samples it spans, which the speaker separation reuses.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+#[derive(Default)]
+struct ConfirmedSpeech {
+    text: String,
+    lines: Vec<ConfirmedLine>,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+#[derive(Debug, Clone, PartialEq)]
+struct ConfirmedLine {
+    span: crate::services::speech_worker::SampleSpan,
+    text: String,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl ConfirmedSpeech {
+    /// Adds a confirmed utterance and returns the text added. An utterance
+    /// without its samples is placed where the previous one ended.
+    fn confirm(&mut self, text: &str, span: Option<crate::services::speech_worker::SampleSpan>) -> String {
+        let appended = append_text(&mut self.text, text);
+        if !appended.is_empty() {
+            let span = span.unwrap_or_else(|| {
+                let end = self.lines.last().map_or(0, |line| line.span.end);
+                crate::services::speech_worker::SampleSpan { start: end, end }
+            });
+            self.lines.push(ConfirmedLine { span, text: appended.clone() });
+        }
+        appended
+    }
 }
 
 impl Default for SpeechRuntimeState {
@@ -276,8 +318,10 @@ pub struct SessionCapture {
     pub sources: crate::services::speech_audio::CaptureSources,
     pub max_duration_seconds: u32,
     pub expected_speakers: Option<u32>,
-    /// Emit `speech://levels` while recording (Meeting).
-    pub report_levels: bool,
+    /// The session records a Meeting: it emits `speech://levels`, and its
+    /// lines reach the interface through the meeting, so `speech://partial`
+    /// leaves out the confirmed text, which grows for hours.
+    pub meeting: bool,
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -300,7 +344,7 @@ pub fn start_platform_session(
     if let Ok(mut skip) = state.skip_diarization.lock() {
         *skip = None;
     }
-    let SessionCapture { sources, max_duration_seconds, expected_speakers, report_levels } = capture;
+    let SessionCapture { sources, max_duration_seconds, expected_speakers, meeting } = capture;
     let diarization_runtime_path = diarization_model
         .as_ref()
         .map(|_| crate::services::sherpa_runtime::resolve_platform_runtime_path(app))
@@ -315,7 +359,7 @@ pub fn start_platform_session(
         sources,
         Some(Arc::clone(&meter)),
     )?;
-    let levels = report_levels
+    let levels = meeting
         .then(|| {
             crate::services::speech_levels::LevelReporter::start(
                 app.clone(),
@@ -327,10 +371,10 @@ pub fn start_platform_session(
         })
         .transpose()?;
     let started_at = Instant::now();
-    let confirmed_text = Arc::new(StdMutex::new(String::new()));
+    let confirmed = Arc::new(StdMutex::new(ConfirmedSpeech::default()));
     let callback_app = app.clone();
     let callback_session_id = session_id.clone();
-    let callback_confirmed = Arc::clone(&confirmed_text);
+    let callback_confirmed = Arc::clone(&confirmed);
     let worker = crate::services::speech_worker::SpeechWorker::start_with_recycler(
         buffer,
         max_duration_seconds,
@@ -353,6 +397,7 @@ pub fn start_platform_session(
                 &callback_session_id,
                 started_at,
                 &callback_confirmed,
+                meeting,
                 DiarizationSetup {
                     runtime_path: diarization_runtime_path.as_deref(),
                     model: diarization_model.as_ref(),
@@ -373,7 +418,7 @@ pub fn start_platform_session(
         audio_capture,
         meter,
         worker,
-        confirmed_text,
+        confirmed,
     });
     Ok(())
 }
@@ -514,10 +559,11 @@ pub fn consume_platform_turn(
     session.audio_capture.pause()?;
     session.worker.pause()?;
     let mut confirmed = session
-        .confirmed_text
+        .confirmed
         .lock()
         .map_err(|_| "No se pudo obtener el turno reconocido.".to_string())?;
-    let text = std::mem::take(&mut *confirmed).trim().to_string();
+    let text = std::mem::take(&mut confirmed.text).trim().to_string();
+    confirmed.lines.clear();
     drop(confirmed);
     if text.is_empty() {
         session.worker.resume()?;
@@ -612,13 +658,51 @@ pub fn stop_platform_session(state: &SpeechRuntimeState) -> Result<(), String> {
         .map_err(|_| "No se pudo bloquear la sesion de voz.".to_string())?
         .take()
         .ok_or_else(|| "No hay una sesion de voz activa.".to_string())?;
-    session.audio_capture.pause()?;
+    // The worker must finish even if the capture cannot pause: the phase is
+    // already finalizing and only the worker's end returns it to idle.
+    if let Err(error) = session.audio_capture.pause() {
+        log::warn!("[notia:speech] the capture did not pause before finishing: {error}");
+    }
     // Nothing to measure while the speakers are separated.
     drop(session._levels);
     set_finalizing_session(state, Some(session.session_id.clone()));
     let finished = session.worker.stop().and_then(|()| session.worker.join());
     set_finalizing_session(state, None);
+    if finished.is_err() {
+        // A worker that panicked never reported its end.
+        if let Ok(mut phase) = state.phase.lock() {
+            *phase = SpeechPhase::Idle;
+        }
+    }
     finished
+}
+
+/// Releases `session_id` when its worker ended by itself (duration limit or
+/// error) instead of through `stop` or `cancel`, which already took it. Until
+/// then the microphone stayed open and no other session could start. Runs on
+/// the worker thread, so the worker is detached instead of joined. Returns
+/// whether the session was still held.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn release_ended_session(app: &AppHandle, session_id: &str) -> bool {
+    let state = app.state::<SpeechRuntimeState>();
+    let session = state.active_session.lock().ok().and_then(|mut slot| {
+        if slot.as_ref().is_some_and(|session| session.session_id == session_id) {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    let Some(ActivePlatformSpeechSession { _levels, audio_capture, worker, .. }) = session else {
+        return false;
+    };
+    drop(_levels);
+    drop(audio_capture);
+    worker.detach();
+    #[cfg(target_os = "android")]
+    crate::mobile_continuity::end_android_work(
+        app.state::<crate::mobile_continuity::ContinuityState>().inner(),
+    );
+    true
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -707,7 +791,8 @@ fn handle_worker_event(
     app: &AppHandle,
     session_id: &str,
     started_at: Instant,
-    confirmed_text: &Arc<StdMutex<String>>,
+    confirmed: &Arc<StdMutex<ConfirmedSpeech>>,
+    meeting: bool,
     diarization: DiarizationSetup<'_>,
     event: crate::services::speech_worker::SpeechWorkerEvent,
 ) {
@@ -725,7 +810,7 @@ fn handle_worker_event(
             );
         }
         SpeechWorkerEvent::Partial(update) => {
-            let Ok(mut confirmed) = confirmed_text.lock() else {
+            let Ok(mut confirmed) = confirmed.lock() else {
                 emit_error(
                     app,
                     session_id,
@@ -735,31 +820,41 @@ fn handle_worker_event(
                 return;
             };
             let partial = if update.endpoint_detected {
-                let appended = append_text(&mut confirmed, &update.text);
+                let appended = confirmed.confirm(&update.text, update.span);
                 let span = update.span.map(|span| (span.start_ms(), span.end_ms()));
                 crate::meeting::on_line(app, session_id, span, &appended);
                 String::new()
             } else {
-                unconfirmed_suffix(&confirmed, &update.text)
+                unconfirmed_suffix(&confirmed.text, &update.text)
             };
             let _ = app.emit(
                 "speech://partial",
                 SpeechPartialEventDto {
                     session_id: session_id.to_string(),
-                    confirmed_text: confirmed.clone(),
+                    confirmed_text: if meeting { String::new() } else { confirmed.text.clone() },
                     partial_text: partial,
                 },
             );
         }
         SpeechWorkerEvent::Finished { update, audio } => {
+            // Reaching the duration limit finishes the session like `stop`.
+            if release_ended_session(app, session_id) {
+                set_runtime_phase(app, SpeechPhase::Finalizing);
+                set_finalizing_session(&app.state::<SpeechRuntimeState>(), Some(session_id.to_string()));
+                emit_state(
+                    app,
+                    session_id,
+                    SpeechSessionStateDto::Finalizing { progress: None, stage: Some("transcribing") },
+                );
+            }
             let span = update.span.map(|span| (span.start_ms(), span.end_ms()));
-            let text = match confirmed_text.lock() {
+            let (text, lines) = match confirmed.lock() {
                 Ok(mut confirmed) => {
-                    let appended = append_text(&mut confirmed, &update.text);
+                    let appended = confirmed.confirm(&update.text, update.span);
                     crate::meeting::on_line(app, session_id, span, &appended);
-                    confirmed.clone()
+                    (confirmed.text.clone(), std::mem::take(&mut confirmed.lines))
                 }
-                Err(_) => update.text,
+                Err(_) => (update.text, Vec::new()),
             };
             crate::meeting::on_processing(app, session_id, audio.duration_ms());
             let transcript = match diarization.model {
@@ -774,6 +869,7 @@ fn handle_worker_event(
                             model,
                             diarization.expected_speakers,
                             &audio,
+                            &lines,
                         )
                     }) {
                     Ok(transcript) => transcript,
@@ -803,9 +899,11 @@ fn handle_worker_event(
                 session_id,
                 SpeechSessionStateDto::Completed { transcript },
             );
+            set_finalizing_session(&app.state::<SpeechRuntimeState>(), None);
             set_runtime_phase(app, SpeechPhase::Idle);
         }
         SpeechWorkerEvent::Error(message) => {
+            release_ended_session(app, session_id);
             crate::meeting::on_interrupted(app, session_id);
             emit_error(app, session_id, "internal", &message);
             set_runtime_phase(app, SpeechPhase::Idle);
@@ -825,9 +923,11 @@ fn emit_finalizing(app: &AppHandle, session_id: &str, stage: &'static str, progr
     );
 }
 
-/// Separates the speakers of the recording window by window. Reports the
-/// stage and progress of each window and stops when the person skips it.
+/// Separates the speakers of the recording window by window and gives each
+/// live line its speaker. Reports the stage and progress of each window and
+/// stops when the person skips it.
 #[cfg(any(target_os = "windows", target_os = "android"))]
+#[allow(clippy::too_many_arguments)]
 fn diarize_recorded_audio(
     app: &AppHandle,
     session_id: &str,
@@ -835,8 +935,11 @@ fn diarize_recorded_audio(
     model: &crate::services::speech_model_repository::ResolvedDiarizationModel,
     expected_speakers: Option<u32>,
     audio: &crate::services::speech_worker::RecordedAudio,
+    lines: &[ConfirmedLine],
 ) -> Result<DiarizedTranscriptDto, String> {
-    let chunk_count = audio.sample_count().div_ceil(DIARIZATION_CHUNK_SAMPLES).max(1) as f32;
+    let spans = lines.iter().map(|line| line.span).collect::<Vec<_>>();
+    let window_ends = diarization_window_ends(&spans, audio.sample_count());
+    let window_count = window_ends.len().max(1) as f32;
     let embedding_extractor =
         match crate::services::sherpa_diarization::SpeakerEmbeddingExtractor::new(
             runtime_path,
@@ -856,14 +959,13 @@ fn diarize_recorded_audio(
         segments: Vec::new(),
         speaker_count: 0,
     };
-    let mut chunk_index = 0_usize;
-    let mut chunk_start_ms = 0_u64;
-    audio.for_each_chunk(DIARIZATION_CHUNK_SAMPLES, |samples| {
-        let window = chunk_index as f32;
+    let mut window_index = 0_usize;
+    audio.for_each_window(&window_ends, |window_start, samples| {
+        let window = window_index as f32;
         if diarization_skipped(app, session_id) {
             return Err(DIARIZATION_SKIPPED.to_string());
         }
-        emit_finalizing(app, session_id, "detecting-speakers", window / chunk_count);
+        emit_finalizing(app, session_id, "detecting-speakers", window / window_count);
         let diarization = crate::services::sherpa_diarization::process(
             runtime_path,
             model,
@@ -873,7 +975,7 @@ fn diarize_recorded_audio(
         if diarization_skipped(app, session_id) {
             return Err(DIARIZATION_SKIPPED.to_string());
         }
-        emit_finalizing(app, session_id, "assigning-turns", (window + 0.5) / chunk_count);
+        emit_finalizing(app, session_id, "assigning-turns", (window + 0.5) / window_count);
         let embeddings = match embedding_extractor.as_ref() {
             Some(extractor) => match extractor.extract(samples, &diarization) {
                 Ok(embeddings) => embeddings,
@@ -887,12 +989,22 @@ fn diarize_recorded_audio(
             None => Vec::new(),
         };
         let speaker_mapping = speaker_registry.remap_chunk(&diarization, &embeddings);
+        // Each line belongs to the window that holds its middle.
+        let window_end = (window_start + samples.len()) as u64;
+        let last_window = window_start + samples.len() >= audio.sample_count();
+        let window_lines = lines
+            .iter()
+            .filter(|line| {
+                let middle = (line.span.start + line.span.end) / 2;
+                middle >= window_start as u64 && (middle < window_end || last_window)
+            })
+            .collect::<Vec<_>>();
         let mut last_reported = -1.0_f32;
-        let chunk = transcribe_diarized_turns(app, samples, &diarization, &mut |done, total| {
+        let chunk = attribute_lines(app, samples, window_start, &diarization, &window_lines, &mut |done, total| {
             if diarization_skipped(app, session_id) {
                 return Err(DIARIZATION_SKIPPED.to_string());
             }
-            let progress = (window + 0.5 + 0.5 * done as f32 / total.max(1) as f32) / chunk_count;
+            let progress = (window + 0.5 + 0.5 * done as f32 / total.max(1) as f32) / window_count;
             if progress - last_reported >= 0.01 {
                 last_reported = progress;
                 emit_finalizing(app, session_id, "assigning-turns", progress);
@@ -902,24 +1014,59 @@ fn diarize_recorded_audio(
         append_diarized_chunk(
             &mut transcript,
             chunk,
-            chunk_start_ms,
-            chunk_index,
+            crate::services::speech_worker::samples_to_ms(window_start as u64),
+            window_index,
             &speaker_mapping,
             speaker_registry.len() as u32,
         );
-        chunk_index = chunk_index.saturating_add(1);
-        chunk_start_ms = chunk_start_ms.saturating_add(
-            (samples.len() as u64)
-                .saturating_mul(1_000)
-                .checked_div(16_000)
-                .unwrap_or(0),
-        );
+        window_index = window_index.saturating_add(1);
         Ok(())
     })?;
     if transcript.segments.is_empty() {
         return Err("La diarización no produjo segmentos de voz.".to_string());
     }
     Ok(transcript)
+}
+
+/// Where each diarization window ends: about every 15 minutes, in the pause
+/// between two confirmed lines closest before that mark (up to two minutes
+/// earlier), so no word is split between two windows. Without a pause there
+/// it cuts at the mark. A last window under a minute joins the previous one.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn diarization_window_ends(
+    spans: &[crate::services::speech_worker::SampleSpan],
+    total_samples: usize,
+) -> Vec<usize> {
+    let mut sorted = spans.to_vec();
+    sorted.sort_by_key(|span| span.start);
+    let mut pauses = Vec::new();
+    let mut spoken_until = 0_u64;
+    for span in &sorted {
+        if span.start >= spoken_until.saturating_add(WINDOW_MIN_PAUSE_SAMPLES) {
+            pauses.push(spoken_until..span.start);
+        }
+        spoken_until = spoken_until.max(span.end);
+    }
+    pauses.push(spoken_until..u64::MAX);
+    let mut ends = Vec::new();
+    let mut start = 0_usize;
+    while total_samples.saturating_sub(start) > DIARIZATION_WINDOW_SAMPLES + WINDOW_MIN_TAIL_SAMPLES {
+        let target = (start + DIARIZATION_WINDOW_SAMPLES) as u64;
+        let earliest = target - WINDOW_PAUSE_SEARCH_SAMPLES as u64;
+        let cut = pauses
+            .iter()
+            .filter_map(|pause| {
+                let low = pause.start.max(earliest);
+                let high = pause.end.min(target);
+                (low <= high).then(|| (pause.start / 2 + pause.end / 2).clamp(low, high))
+            })
+            .max()
+            .unwrap_or(target);
+        ends.push(cut as usize);
+        start = cut as usize;
+    }
+    ends.push(total_samples);
+    ends
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -1117,24 +1264,19 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-/// Appends the words of `text` that `target` does not already end with and
-/// returns them.
+/// Appends a confirmed utterance and returns it. Utterances never share audio,
+/// so words that repeat the end of `target` ("Sí." answered after "Sí.") were
+/// spoken again and are kept.
 fn append_text(target: &mut String, text: &str) -> String {
-    let text = text.trim();
-    if text.is_empty() {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    let Some(first_word) = words.first() else {
         return String::new();
-    }
-    let target_words = target.split_whitespace().collect::<Vec<_>>();
-    let incoming_words = text.split_whitespace().collect::<Vec<_>>();
-    let overlap = matching_boundary_words(&target_words, &incoming_words);
-    if overlap == incoming_words.len() {
-        return String::new();
-    }
-    normalize_transcript_chunk_boundary(target, incoming_words[overlap]);
+    };
+    normalize_transcript_chunk_boundary(target, first_word);
     if !target.is_empty() {
         target.push(' ');
     }
-    let appended = incoming_words[overlap..].join(" ");
+    let appended = words.join(" ");
     target.push_str(&appended);
     appended
 }
@@ -1174,10 +1316,10 @@ fn matching_boundary_words(left_words: &[&str], right_words: &[&str]) -> usize {
         return exact_overlap;
     }
 
-    // Forced endpoints retain audio from the previous window. The model can
-    // render that same boundary slightly differently (for example,
-    // `Espartinas` / `las partinas`). Reconcile a sufficiently long fuzzy
-    // boundary so that one changed word does not duplicate the whole overlap.
+    // A preview starts a little before the utterance VAD detected, so it can
+    // repeat the end of the confirmed text, rendered slightly differently
+    // (for example, `Espartinas` / `las partinas`). Reconcile a sufficiently
+    // long fuzzy boundary so that one changed word does not show the overlap.
     const MAX_BOUNDARY_WORDS: usize = 12;
     const MIN_FUZZY_BOUNDARY_WORDS: usize = 4;
     const MAX_BOUNDARY_EDITS: usize = 2;
@@ -1252,120 +1394,296 @@ fn transcript_without_diarization(text: &str, elapsed_ms: u64) -> DiarizedTransc
     }
 }
 
-/// Transcribes each speaker turn of a window again. `on_turn` hears the
-/// progress before each turn and stops the pass with an error.
+/// Gives each live line of a window its speaker. A line inside one speaker's
+/// turn keeps the text recognized while recording; only a line spoken across
+/// a speaker change is transcribed again, piece by piece. Before, every turn
+/// of the recording was transcribed again. `on_line` hears the progress
+/// before each line and stops the pass with an error.
 #[cfg(any(target_os = "windows", target_os = "android"))]
-fn transcribe_diarized_turns(
+fn attribute_lines(
     app: &AppHandle,
     samples: &[f32],
+    window_start: usize,
     diarization: &crate::services::sherpa_diarization::DiarizationResult,
-    on_turn: &mut dyn FnMut(usize, usize) -> Result<(), String>,
+    lines: &[&ConfirmedLine],
+    on_line: &mut dyn FnMut(usize, usize) -> Result<(), String>,
 ) -> Result<DiarizedTranscriptDto, String> {
-    use crate::services::speech_worker::StreamingRecognizer;
+    use crate::services::speech_worker::samples_to_ms;
 
-    const SAMPLE_RATE: f32 = 16_000.0;
-    const ASR_CHUNK_SAMPLES: usize = 3_200;
-    const MIN_TURN_SAMPLES: usize = 12_800;
-
-    let turns = merge_adjacent_speaker_segments(&diarization.segments);
-    if turns.is_empty() {
-        return Err("La diarización no detectó turnos de voz.".to_string());
-    }
-    let cache = recognizer_cache(&app.state::<SpeechRuntimeState>());
-    let mut recognizer = cache
-        .lock()
-        .map_err(|_| "No se pudo acceder al modelo precargado.".to_string())?
-        .take()
-        .ok_or_else(|| {
-            "El reconocedor no estaba disponible para alinear los turnos.".to_string()
-        })?;
-
-    let result = (|| {
-        let mut transcript_segments = Vec::with_capacity(turns.len());
-        let mut complete_text = String::new();
-        let turn_count = turns.len();
-        for (turn_index, turn) in turns.into_iter().enumerate() {
-            on_turn(turn_index, turn_count)?;
-            let start = (turn.start_seconds.max(0.0) * SAMPLE_RATE).round() as usize;
-            let end = (turn.end_seconds.max(turn.start_seconds) * SAMPLE_RATE).round() as usize;
-            let start = start.min(samples.len());
-            let end = end.min(samples.len());
-            if end <= start {
-                continue;
-            }
-            let mut padded_samples = Vec::new();
-            let turn_samples = if end - start < MIN_TURN_SAMPLES {
-                padded_samples.extend_from_slice(&samples[start..end]);
-                padded_samples.resize(MIN_TURN_SAMPLES, 0.0);
-                padded_samples.as_slice()
-            } else {
-                &samples[start..end]
-            };
-            recognizer.reset_session()?;
-            let mut turn_text = String::new();
-            for chunk in turn_samples.chunks(ASR_CHUNK_SAMPLES) {
-                let update = recognizer.accept_waveform(chunk)?;
-                if update.endpoint_detected {
-                    append_text(&mut turn_text, &update.text);
-                    recognizer.reset_after_endpoint()?;
+    let turns = speaker_turns(&diarization.segments);
+    let mut recognizer = BorrowedRecognizer::new(app);
+    let mut segments = Vec::<SpeechTranscriptSegmentDto>::with_capacity(lines.len());
+    let mut push = |start: u64, end: u64, speaker: Option<i32>, text: String| {
+        segments.push(SpeechTranscriptSegmentDto {
+            id: format!("segment-{}", segments.len() + 1),
+            start_ms: samples_to_ms(start),
+            end_ms: samples_to_ms(end),
+            speaker_id: speaker.map(|speaker| format!("speaker-{}", speaker + 1)),
+            text,
+            is_final: true,
+        });
+    };
+    for (index, line) in lines.iter().enumerate() {
+        on_line(index, lines.len())?;
+        // Samples of the line inside this window.
+        let start = (line.span.start.saturating_sub(window_start as u64) as usize).min(samples.len());
+        let end = (line.span.end.saturating_sub(window_start as u64) as usize).clamp(start, samples.len());
+        let pieces = line_pieces(&turns, samples_to_seconds(start), samples_to_seconds(end));
+        let retranscribed = if pieces.len() > 1 { recognizer.transcribe(samples, &pieces) } else { None };
+        match retranscribed {
+            Some(parts) => {
+                for (piece, text) in parts {
+                    let (piece_start, piece_end) = piece.sample_range();
+                    push(piece_start as u64, piece_end as u64, piece.speaker, text);
                 }
             }
-            let final_update = recognizer.finish()?;
-            append_text(&mut turn_text, &final_update.text);
-            let turn_text = turn_text.trim().to_string();
-            if turn_text.is_empty() {
-                continue;
+            None => {
+                let speaker = pieces
+                    .iter()
+                    .max_by(|left, right| left.duration().total_cmp(&right.duration()))
+                    .and_then(|piece| piece.speaker);
+                push(start as u64, end as u64, speaker, line.text.clone());
             }
-            if !complete_text.is_empty() {
-                complete_text.push(' ');
-            }
-            complete_text.push_str(&turn_text);
-            transcript_segments.push(SpeechTranscriptSegmentDto {
-                id: format!("segment-{}", transcript_segments.len() + 1),
-                start_ms: seconds_to_ms(turn.start_seconds),
-                end_ms: seconds_to_ms(turn.end_seconds),
-                speaker_id: Some(format!("speaker-{}", turn.speaker + 1)),
-                text: turn_text,
-                is_final: true,
-            });
-        }
-        if transcript_segments.is_empty() {
-            return Err("La segunda pasada ASR no produjo texto para los turnos.".to_string());
-        }
-        Ok(DiarizedTranscriptDto {
-            text: complete_text,
-            segments: transcript_segments,
-            speaker_count: diarization.speaker_count,
-        })
-    })();
-
-    let reset_result = recognizer.reset_session();
-    if reset_result.is_ok() {
-        if let Ok(mut slot) = cache.lock() {
-            *slot = Some(recognizer);
         }
     }
-    reset_result?;
-    result
+    let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
+    Ok(DiarizedTranscriptDto {
+        text,
+        segments,
+        speaker_count: diarization.speaker_count,
+    })
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
-fn merge_adjacent_speaker_segments(
-    source: &[crate::services::sherpa_diarization::DiarizationSegment],
-) -> Vec<crate::services::sherpa_diarization::DiarizationSegment> {
-    let mut merged: Vec<crate::services::sherpa_diarization::DiarizationSegment> = Vec::new();
-    for segment in source {
-        if let Some(previous) = merged.last_mut() {
-            if previous.speaker == segment.speaker
-                && segment.start_seconds <= previous.end_seconds + 0.5
-            {
-                previous.end_seconds = previous.end_seconds.max(segment.end_seconds);
-                continue;
+fn samples_to_seconds(samples: usize) -> f32 {
+    samples as f32 / crate::services::speech_audio::SPEECH_SAMPLE_RATE as f32
+}
+
+/// Part of a line spoken by one speaker (`None` when the window found none).
+#[cfg(any(target_os = "windows", target_os = "android"))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LinePiece {
+    start_seconds: f32,
+    end_seconds: f32,
+    speaker: Option<i32>,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl LinePiece {
+    fn duration(&self) -> f32 {
+        self.end_seconds - self.start_seconds
+    }
+
+    fn sample_range(&self) -> (usize, usize) {
+        let rate = crate::services::speech_audio::SPEECH_SAMPLE_RATE as f32;
+        (
+            (self.start_seconds * rate).round() as usize,
+            (self.end_seconds * rate).round() as usize,
+        )
+    }
+}
+
+/// The speakers of the line `start..end` (seconds of the window). Only a
+/// speaker heard for at least half a second counts: a line with one such
+/// speaker stays whole with the speaker heard the most, and a line with
+/// several splits halfway through the gap between their turns. A line no turn
+/// touches takes the speaker of the nearest turn.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn line_pieces(
+    turns: &[crate::services::sherpa_diarization::DiarizationSegment],
+    start: f32,
+    end: f32,
+) -> Vec<LinePiece> {
+    const MIN_SPEAKER_SECONDS: f32 = 0.5;
+    struct Run {
+        speaker: i32,
+        start: f32,
+        end: f32,
+        heard: f32,
+    }
+    let whole = |speaker| vec![LinePiece { start_seconds: start, end_seconds: end, speaker }];
+    let mut runs = Vec::<Run>::new();
+    for turn in turns.iter().filter(|turn| turn.end_seconds > start && turn.start_seconds < end) {
+        let heard = turn.end_seconds.min(end) - turn.start_seconds.max(start);
+        match runs.last_mut() {
+            Some(run) if run.speaker == turn.speaker => {
+                run.end = turn.end_seconds;
+                run.heard += heard;
+            }
+            _ => runs.push(Run { speaker: turn.speaker, start: turn.start_seconds, end: turn.end_seconds, heard }),
+        }
+    }
+    if runs.is_empty() {
+        let nearest = turns
+            .iter()
+            .min_by(|left, right| {
+                let distance = |turn: &crate::services::sherpa_diarization::DiarizationSegment| {
+                    (turn.start_seconds - end).max(start - turn.end_seconds)
+                };
+                distance(left).total_cmp(&distance(right))
+            })
+            .map(|turn| turn.speaker);
+        return whole(nearest);
+    }
+    let mut kept = Vec::<Run>::new();
+    for run in runs.iter().filter(|run| run.heard >= MIN_SPEAKER_SECONDS) {
+        match kept.last_mut() {
+            Some(last) if last.speaker == run.speaker => {
+                last.end = run.end;
+                last.heard += run.heard;
+            }
+            _ => kept.push(Run { speaker: run.speaker, start: run.start, end: run.end, heard: run.heard }),
+        }
+    }
+    if kept.len() <= 1 {
+        let mut heard = std::collections::BTreeMap::<i32, f32>::new();
+        for run in &runs {
+            *heard.entry(run.speaker).or_default() += run.heard;
+        }
+        let speaker = heard
+            .into_iter()
+            .max_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(speaker, _)| speaker);
+        return whole(speaker);
+    }
+    let boundaries = kept
+        .windows(2)
+        .map(|pair| ((pair[0].end + pair[1].start) / 2.0).clamp(start, end))
+        .collect::<Vec<_>>();
+    kept.iter()
+        .enumerate()
+        .map(|(index, run)| LinePiece {
+            start_seconds: if index == 0 { start } else { boundaries[index - 1] },
+            end_seconds: boundaries.get(index).copied().unwrap_or(end),
+            speaker: Some(run.speaker),
+        })
+        .collect()
+}
+
+/// The resident recognizer, taken from its cache the first time a line must
+/// be transcribed again and returned to it when dropped. Without it the line
+/// keeps its live text.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct BorrowedRecognizer {
+    cache: PreloadedRecognizer,
+    recognizer: Option<OfflineVadRecognizer>,
+    unavailable: bool,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl BorrowedRecognizer {
+    fn new(app: &AppHandle) -> Self {
+        Self {
+            cache: recognizer_cache(&app.state::<SpeechRuntimeState>()),
+            recognizer: None,
+            unavailable: false,
+        }
+    }
+
+    /// Text of each piece that has any; `None` when nothing could be
+    /// transcribed and the line should keep its live text.
+    fn transcribe(&mut self, samples: &[f32], pieces: &[LinePiece]) -> Option<Vec<(LinePiece, String)>> {
+        if self.recognizer.is_none() && !self.unavailable {
+            self.recognizer = self.cache.lock().ok().and_then(|mut slot| slot.take());
+            if self.recognizer.is_none() {
+                self.unavailable = true;
+                log::warn!("[notia:speech] recognizer unavailable; lines across a speaker change keep their live text");
             }
         }
-        merged.push(segment.clone());
+        let recognizer = self.recognizer.as_mut()?;
+        let mut parts = Vec::with_capacity(pieces.len());
+        for piece in pieces {
+            let (start, end) = piece.sample_range();
+            let audio = &samples[start.min(samples.len())..end.min(samples.len())];
+            match transcribe_piece(recognizer, audio) {
+                Ok(text) if !text.is_empty() => parts.push((*piece, text)),
+                Ok(_) => {}
+                Err(message) => {
+                    log::warn!("[notia:speech] a line across a speaker change keeps its live text: {message}");
+                    return None;
+                }
+            }
+        }
+        (!parts.is_empty()).then_some(parts)
     }
-    merged
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl Drop for BorrowedRecognizer {
+    fn drop(&mut self) {
+        use crate::services::speech_worker::StreamingRecognizer;
+
+        if let Some(mut recognizer) = self.recognizer.take() {
+            if recognizer.reset_session().is_ok() {
+                if let Ok(mut slot) = self.cache.lock() {
+                    *slot = Some(recognizer);
+                }
+            }
+        }
+    }
+}
+
+/// Recognizes one piece of audio on its own.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn transcribe_piece(recognizer: &mut OfflineVadRecognizer, samples: &[f32]) -> Result<String, String> {
+    use crate::services::speech_worker::StreamingRecognizer;
+
+    const ASR_CHUNK_SAMPLES: usize = 3_200;
+    // Silero VAD needs some audio to close a segment; short pieces are padded with silence.
+    const MIN_PIECE_SAMPLES: usize = 12_800;
+    let mut padded = samples.to_vec();
+    if padded.len() < MIN_PIECE_SAMPLES {
+        padded.resize(MIN_PIECE_SAMPLES, 0.0);
+    }
+    recognizer.reset_session()?;
+    let mut text = String::new();
+    for chunk in padded.chunks(ASR_CHUNK_SAMPLES) {
+        let update = recognizer.accept_waveform(chunk)?;
+        if update.endpoint_detected {
+            append_text(&mut text, &update.text);
+            recognizer.reset_after_endpoint()?;
+        }
+    }
+    let final_update = recognizer.finish()?;
+    append_text(&mut text, &final_update.text);
+    Ok(text.trim().to_string())
+}
+
+/// Speaker turns that never share audio. Diarization gives overlapping speech
+/// to both speakers, and transcribing it twice repeated the words of whoever
+/// kept talking inside the other turn (a "sí" said over someone). The overlap
+/// stays with the turn that started first; a leftover too short to hold a
+/// word is dropped, and segments of one speaker less than 0.5 s apart join.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn speaker_turns(
+    source: &[crate::services::sherpa_diarization::DiarizationSegment],
+) -> Vec<crate::services::sherpa_diarization::DiarizationSegment> {
+    const MAX_JOIN_GAP_SECONDS: f32 = 0.5;
+    const MIN_TURN_SECONDS: f32 = 0.25;
+    let mut turns: Vec<crate::services::sherpa_diarization::DiarizationSegment> = Vec::new();
+    let mut covered_until = 0.0_f32;
+    for segment in source {
+        let start = segment.start_seconds.max(covered_until);
+        let end = segment.end_seconds;
+        covered_until = covered_until.max(end);
+        if end - start < MIN_TURN_SECONDS {
+            continue;
+        }
+        match turns.last_mut() {
+            Some(previous)
+                if previous.speaker == segment.speaker
+                    && start <= previous.end_seconds + MAX_JOIN_GAP_SECONDS =>
+            {
+                previous.end_seconds = end;
+            }
+            _ => turns.push(crate::services::sherpa_diarization::DiarizationSegment {
+                start_seconds: start,
+                end_seconds: end,
+                speaker: segment.speaker,
+            }),
+        }
+    }
+    turns
 }
 
 #[cfg(test)]
@@ -1385,11 +1703,6 @@ fn nearest_sentence_boundary(words: &[&str], minimum: usize, ideal: usize) -> us
         })
         .min_by_key(|&boundary| boundary.abs_diff(ideal))
         .unwrap_or_else(|| ideal.clamp(minimum.saturating_add(1), words.len()))
-}
-
-#[cfg(any(target_os = "windows", target_os = "android"))]
-fn seconds_to_ms(value: f32) -> u64 {
-    (value.max(0.0) * 1_000.0).round().min(u64::MAX as f32) as u64
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -1513,7 +1826,12 @@ pub fn not_integrated_error() -> String {
 #[cfg(test)]
 mod tests {
     #[cfg(any(target_os = "windows", target_os = "android"))]
-    use super::GlobalSpeakerRegistry;
+    use super::{
+        diarization_window_ends, line_pieces, speaker_turns, ConfirmedSpeech, GlobalSpeakerRegistry,
+        LinePiece, DIARIZATION_WINDOW_SAMPLES,
+    };
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    use crate::services::speech_worker::SampleSpan;
     use super::{
         append_text, commit_external_update, current_capabilities, nearest_sentence_boundary,
         unconfirmed_suffix, validate_start_input, SpeechPhase, MAX_SPEECH_SESSION_SECONDS,
@@ -1610,6 +1928,82 @@ mod tests {
         assert_ne!(second_mapping["speaker-5"], second_mapping["speaker-9"]);
     }
 
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    #[test]
+    fn a_line_inside_one_turn_keeps_its_speaker_and_a_line_across_a_change_splits() {
+        let turn = |start_seconds, end_seconds, speaker| DiarizationSegment { start_seconds, end_seconds, speaker };
+        let piece = |start_seconds, end_seconds, speaker| LinePiece { start_seconds, end_seconds, speaker };
+        let turns = [turn(0.0, 10.0, 0), turn(10.4, 11.0, 1), turn(11.2, 20.0, 0), turn(21.0, 30.0, 1)];
+        // Inside one turn: reused whole.
+        assert_eq!(line_pieces(&turns, 1.0, 9.0), vec![piece(1.0, 9.0, Some(0))]);
+        // Speaker 1 heard for 0.4 s inside the line does not split it.
+        assert_eq!(line_pieces(&turns, 9.0, 10.8), vec![piece(9.0, 10.8, Some(0))]);
+        // Across a real change: split halfway through the gap between turns.
+        assert_eq!(
+            line_pieces(&turns, 15.0, 25.0),
+            vec![piece(15.0, 20.5, Some(0)), piece(20.5, 25.0, Some(1))]
+        );
+        // Outside every turn: the nearest speaker.
+        assert_eq!(line_pieces(&turns, 30.5, 31.0), vec![piece(30.5, 31.0, Some(1))]);
+        assert_eq!(line_pieces(&[], 1.0, 2.0), vec![piece(1.0, 2.0, None)]);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    #[test]
+    fn diarization_windows_end_in_the_pause_closest_before_15_minutes() {
+        const MINUTE: u64 = 16_000 * 60;
+        let window = DIARIZATION_WINDOW_SAMPLES as u64;
+        // Speech everywhere except pauses at 14:00 and 14:50.
+        let spans = [
+            SampleSpan { start: 0, end: 14 * MINUTE },
+            SampleSpan { start: 14 * MINUTE + 16_000, end: 14 * MINUTE + 50 * 16_000 },
+            SampleSpan { start: 14 * MINUTE + 52 * 16_000, end: 40 * MINUTE },
+        ];
+        let ends = diarization_window_ends(&spans, (40 * MINUTE) as usize);
+        assert_eq!(ends[0] as u64, 14 * MINUTE + 51 * 16_000);
+        // No pause near the next mark: cut at it.
+        assert_eq!(ends[1] as u64, ends[0] as u64 + window);
+        assert_eq!(*ends.last().unwrap(), (40 * MINUTE) as usize);
+        assert!(ends.windows(2).all(|pair| pair[0] < pair[1]));
+        // Under 16 minutes stays one window.
+        assert_eq!(diarization_window_ends(&[], (16 * MINUTE) as usize), vec![(16 * MINUTE) as usize]);
+        // Silence at the mark: cut at the mark.
+        assert_eq!(diarization_window_ends(&[], (20 * MINUTE) as usize)[0] as u64, window);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    #[test]
+    fn confirmed_lines_keep_their_samples() {
+        let mut confirmed = ConfirmedSpeech::default();
+        assert_eq!(confirmed.confirm("Hola.", Some(SampleSpan { start: 10, end: 20 })), "Hola.");
+        assert_eq!(confirmed.confirm("   ", Some(SampleSpan { start: 30, end: 40 })), "");
+        assert_eq!(confirmed.confirm("Sí.", None), "Sí.");
+        assert_eq!(confirmed.text, "Hola. Sí.");
+        assert_eq!(confirmed.lines.len(), 2);
+        assert_eq!(confirmed.lines[1].span, SampleSpan { start: 20, end: 20 });
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    #[test]
+    fn speaker_turns_transcribe_overlapping_speech_once() {
+        let segment = |start_seconds, end_seconds, speaker| DiarizationSegment {
+            start_seconds,
+            end_seconds,
+            speaker,
+        };
+        let turns = speaker_turns(&[
+            segment(0.0, 10.0, 0),
+            // A "sí" over speaker 0 and the rest of speaker 0.
+            segment(9.5, 9.9, 1),
+            segment(10.2, 20.0, 0),
+            // Speaker 1 starts before speaker 0 finishes.
+            segment(19.0, 30.0, 1),
+            segment(29.9, 30.1, 0),
+        ]);
+        assert_eq!(turns, vec![segment(0.0, 20.0, 0), segment(20.0, 30.0, 1)]);
+        assert!(turns.windows(2).all(|pair| pair[0].end_seconds <= pair[1].start_seconds));
+    }
+
     #[test]
     fn capabilities_do_not_claim_unvalidated_models() {
         let capabilities = current_capabilities(
@@ -1630,10 +2024,12 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_utterances_reconcile_overlapping_boundary_words() {
-        let mut transcript = "La transcripcion de la reunion".to_string();
-        append_text(&mut transcript, "de la reunion continúa ahora");
-        assert_eq!(transcript, "La transcripcion de la reunion continúa ahora");
+    fn confirmed_utterances_keep_words_spoken_again() {
+        let mut transcript = "¿Estamos de acuerdo? Sí.".to_string();
+        assert_eq!(append_text(&mut transcript, "Sí."), "Sí.");
+        assert_eq!(append_text(&mut transcript, "  Sí,   claro. "), "Sí, claro.");
+        assert_eq!(transcript, "¿Estamos de acuerdo? Sí. Sí. Sí, claro.");
+        assert_eq!(append_text(&mut transcript, "   "), "");
     }
 
     #[test]
@@ -1663,16 +2059,13 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_utterances_reconcile_fuzzy_audio_overlap() {
-        let mut transcript =
-            "Hola, buenas tardes. Hoy estamos en Espartinas para hacer unas preguntas".to_string();
-        append_text(
-            &mut transcript,
-            "las partinas para hacer unas preguntas sobre el ahorro",
-        );
+    fn partial_text_hides_a_fuzzy_repetition_of_the_confirmed_end() {
         assert_eq!(
-            transcript,
-            "Hola, buenas tardes. Hoy estamos en Espartinas para hacer unas preguntas sobre el ahorro"
+            unconfirmed_suffix(
+                "Hola, buenas tardes. Hoy estamos en Espartinas para hacer unas preguntas",
+                "las partinas para hacer unas preguntas sobre el ahorro",
+            ),
+            "sobre el ahorro"
         );
     }
 

@@ -321,6 +321,9 @@ pub struct OfflineVadRecognizer {
     audio_history: VecDeque<f32>,
     history_start_sample: i64,
     total_samples: i64,
+    /// End of the last utterance decoded: the audio before the next one never
+    /// reaches back into it, so no word is decoded twice.
+    decoded_until_sample: i64,
     live_partials: bool,
     /// The worker is behind the capture: previews wait until it catches up.
     backlogged: bool,
@@ -420,6 +423,7 @@ impl OfflineVadRecognizer {
                 audio_history: VecDeque::with_capacity(VAD_HISTORY_SAMPLES),
                 history_start_sample: 0,
                 total_samples: 0,
+                decoded_until_sample: 0,
                 live_partials: false,
                 backlogged: false,
                 live: LiveUtterance::default(),
@@ -547,10 +551,13 @@ impl OfflineVadRecognizer {
                 let raw = &*segment;
                 if raw.n > 0 && !raw.samples.is_null() {
                     let segment_start = i64::from(raw.start).max(0);
+                    let segment_end = segment_start.saturating_add(i64::from(raw.n));
                     let mut padded_samples = collect_history_range(
                         &self.audio_history,
                         self.history_start_sample,
-                        segment_start.saturating_sub(VAD_PRE_SPEECH_SAMPLES as i64),
+                        segment_start
+                            .saturating_sub(VAD_PRE_SPEECH_SAMPLES as i64)
+                            .max(self.decoded_until_sample),
                         segment_start,
                     );
                     padded_samples
@@ -558,6 +565,7 @@ impl OfflineVadRecognizer {
                     let decoded = self.transcribe(&padded_samples);
                     (self.api.destroy_segment)(segment);
                     (self.api.vad_pop)(self.vad);
+                    self.decoded_until_sample = self.decoded_until_sample.max(segment_end);
                     let text = decoded?;
                     if !text.is_empty() {
                         // English speech would steer the next chunks to English.
@@ -566,7 +574,7 @@ impl OfflineVadRecognizer {
                         }
                         texts.push(text);
                         let start = segment_start as u64;
-                        let end = start.saturating_add(raw.n as u64);
+                        let end = segment_end as u64;
                         span = Some(match span {
                             Some(previous) => SampleSpan { start: previous.start, end },
                             None => SampleSpan { start, end },
@@ -682,6 +690,7 @@ impl StreamingRecognizer for OfflineVadRecognizer {
         self.audio_history.clear();
         self.history_start_sample = 0;
         self.total_samples = 0;
+        self.decoded_until_sample = 0;
         self.live_partials = false;
         self.backlogged = false;
         self.live = LiveUtterance::default();

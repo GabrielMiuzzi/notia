@@ -50,10 +50,11 @@ export function hasNewRecognizedSpeech(previous: string, next: string): boolean 
   return Boolean(next.trim()) && next.trim() !== previous
 }
 
+/** An empty preview means nothing is being spoken: the utterance was confirmed or discarded. */
 export function stabilizePartialTranscript(previous: string, next: string): string {
   const normalizedPrevious = previous.trim()
   const normalizedNext = next.trim()
-  if (!normalizedNext) return normalizedPrevious
+  if (!normalizedNext) return ''
   if (!normalizedPrevious || normalizedNext.startsWith(normalizedPrevious)) return normalizedNext
   const previousWords = normalizedPrevious.split(/\s+/).length
   const nextWords = normalizedNext.split(/\s+/).length
