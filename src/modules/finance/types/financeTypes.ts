@@ -13,10 +13,12 @@ export interface FinanceDevQueryResult {
   page: number;
   pageSize: number;
 }
+/** `exchange` is a currency exchange with savings: neither income nor expense. */
 export type FinanceTransactionType =
-  "income" | "expense" | "transfer" | "adjustment";
+  "income" | "expense" | "transfer" | "adjustment" | "exchange";
+/** `card_unpaid` is a card expense that no loaded statement includes yet. */
 export type FinanceTransactionStatus =
-  "pending" | "confirmed" | "corrected" | "discarded";
+  "pending" | "confirmed" | "corrected" | "discarded" | "card_unpaid";
 
 export interface FinanceAccount {
   id: string;
@@ -40,7 +42,10 @@ export interface FinanceTransaction {
   transactionType: FinanceTransactionType;
   amount: string;
   currency: FinanceCurrency;
+  /** Day the movement counts; for a card expense, the day its statement is due. */
   effectiveDate: string;
+  /** Day of the purchase when it is not the day it counts. */
+  purchaseDate?: string | null;
   accountId: string;
   destinationAccountId?: string | null;
   categoryId?: string | null;
@@ -59,55 +64,6 @@ export interface FinanceTransaction {
   rawSource?: string | null;
   createdAt?: string;
   updatedAt?: string;
-}
-
-export interface FinancePurchaseItem {
-  id: string;
-  originalDescription: string;
-  normalizedDescription?: string | null;
-  quantity: string;
-  unitPrice: string;
-  discountAmount: string;
-  lineTotal: string;
-  categoryId?: string | null;
-}
-
-export interface FinancePurchaseRecord {
-  id: string;
-  accountId: string;
-  /** Categoría del gasto asociado al ticket. Las líneas pueden conservar su propia categoría. */
-  categoryId?: string | null;
-  serviceId?: string | null;
-  merchantName: string;
-  observedAt: string;
-  currency: FinanceCurrency;
-  subtotalAmount: string;
-  discountAmount: string;
-  taxAmount: string;
-  totalAmount: string;
-  status: Exclude<FinanceTransactionStatus, "discarded">;
-  sourceReference?: string | null;
-  rawExtraction?: string | null;
-  contentHash?: string | null;
-  items: FinancePurchaseItem[];
-}
-
-export interface FinancePurchaseValidation {
-  valid: boolean;
-  calculatedTotal: string;
-  discrepancy: string;
-}
-
-export interface FinanceSavedPurchase {
-  purchase: FinancePurchaseRecord;
-  validation: FinancePurchaseValidation;
-}
-
-export interface FinanceExtractionResult {
-  artifactId: string;
-  extractor: string;
-  status: string;
-  rawResult: unknown;
 }
 
 export interface FinancePurchaseSummary {
@@ -137,6 +93,25 @@ export interface FinancePriceObservation {
   status: FinanceTransactionStatus;
 }
 
+export interface FinanceProductPrice {
+  merchantId?: string | null;
+  merchantName?: string | null;
+  observedAt: string;
+  currency: FinanceCurrency;
+  quantity: string;
+  unitPrice: string;
+  finalAmount: string;
+}
+
+/** A product with the last price paid at each merchant. */
+export interface FinanceProductSummary {
+  id: string;
+  name: string;
+  observationCount: number;
+  lastObservedAt?: string | null;
+  prices: FinanceProductPrice[];
+}
+
 export interface FinanceSalaryConcept {
   id: string;
   name: string;
@@ -154,7 +129,7 @@ export interface FinanceSalaryReceipt {
   netAmount: string;
   currency: FinanceCurrency;
   accountId: string;
-  status: Exclude<FinanceTransactionStatus, "discarded">;
+  status: Exclude<FinanceTransactionStatus, "discarded" | "card_unpaid">;
   signedDocument?: boolean;
   /** Native SQLite timestamp; it is returned by reads and never supplied by callers. */
   readonly createdAt?: string | null;
@@ -162,8 +137,6 @@ export interface FinanceSalaryReceipt {
   rawExtraction?: string | null;
   concepts: FinanceSalaryConcept[];
 }
-
-export type FinanceSalaryReceiptInput = Omit<FinanceSalaryReceipt, "createdAt">;
 
 export interface FinanceSalaryEvolution {
   salary: FinanceSalaryReceipt;
@@ -191,8 +164,10 @@ export interface FinanceCreditCardStatementItem {
   installmentNumber?: number | null;
   installmentCount?: number | null;
   transactionId?: string | null;
+  categoryId?: string | null;
 }
 
+/** A loaded statement is a paid one: its total is what was paid for the card. */
 export interface FinanceCreditCardStatement {
   id: string;
   accountId: string;
@@ -211,22 +186,12 @@ export interface FinanceCreditCardStatement {
   taxesAmount: string;
   totalDue: string;
   minimumPayment?: string | null;
-  status: Exclude<FinanceTransactionStatus, "discarded">;
+  status: Exclude<FinanceTransactionStatus, "discarded" | "card_unpaid">;
   /** Native SQLite timestamp; it is returned by reads and never supplied by callers. */
   readonly createdAt?: string | null;
   sourceReference?: string | null;
   rawExtraction?: string | null;
   items: FinanceCreditCardStatementItem[];
-}
-
-export type FinanceCreditCardStatementInput = Omit<FinanceCreditCardStatement, "createdAt">;
-
-export interface FinanceSavedCreditCardStatement {
-  statement: FinanceCreditCardStatement;
-  matchedExistingTransactions: number;
-  createdTransactions: number;
-  reconciliation: FinanceCardServiceReconciliation;
-  occurrences: FinanceServiceOccurrence[];
 }
 
 export interface FinanceInstallmentPlan {
@@ -240,32 +205,12 @@ export interface FinanceInstallmentPlan {
   installmentCount: number;
 }
 
-export interface FinanceInstallment {
-  id: string;
-  planId: string;
-  installmentNumber: number;
-  dueDate: string;
-  amount: string;
-  status: FinanceTransactionStatus;
+/** A plan with its pending installments, next due date and remaining total. */
+export interface FinanceInstallmentPlanSummary extends FinanceInstallmentPlan {
+  pendingCount: number;
+  nextDueDate?: string | null;
+  remainingAmount: string;
 }
-
-export interface FinanceInvestment {
-  id: string;
-  accountId?: string | null;
-  name: string;
-  assetType: "asset" | "debt" | "cash" | "security";
-  currency: FinanceCurrency;
-  active: boolean;
-  valuationDate: string;
-  valuationAmount: string;
-}
-
-export interface FinanceNetWorth {
-  asOf: string;
-  byCurrency: Record<FinanceCurrency, string | undefined>;
-}
-
-export type FinanceNetWorthHistoryPoint = FinanceNetWorth;
 
 export interface FinanceDebtRatioHistoryPoint {
   period: string;
@@ -284,6 +229,7 @@ export interface FinanceDashboard {
   incomeByCurrency: Record<string, string>;
   expenseByCurrency: Record<string, string>;
   netByCurrency: Record<string, string>;
+  /** Card statements due in the month: what was paid for the cards. */
   debtByCurrency: Record<string, string>;
   salaryByCurrency: Record<string, string>;
   debtRatioHistory: FinanceDebtRatioHistoryPoint[];
@@ -293,27 +239,8 @@ export interface FinanceDashboard {
   merchants: FinanceMerchant[];
 }
 
-export type FinanceServiceModality = "fixed" | "variable";
 export type FinanceServiceOccurrenceStatus =
   | "pending" | "current" | "accepted" | "rejected" | "discarded" | "failed" | "outdated";
-export type FinanceAuditStatus = "pending" | "running" | "completed" | "failed" | "outdated";
-export type FinanceAuditProposalStatus =
-  | "pending" | "accepted" | "rejected" | "cancelled" | "outdated" | "failed";
-
-export interface FinanceService {
-  id: string;
-  name: string;
-  categoryId: string;
-  currency: FinanceCurrency;
-  expectedAmount: string;
-  dueDay?: number | null;
-  defaultAccountId?: string | null;
-  provider?: string | null;
-  modality: FinanceServiceModality;
-  active: boolean;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-}
 
 export interface FinanceServiceOccurrence {
   id: string;
@@ -341,188 +268,29 @@ export interface FinanceServiceOccurrenceVersion extends FinanceServiceOccurrenc
   reason?: string | null;
 }
 
-export interface FinanceServiceInvoice {
-  id: string;
-  serviceId?: string | null;
-  period: string;
-  dueDate?: string | null;
-  provider?: string | null;
-  amount: string;
-  currency: FinanceCurrency;
-  transactionId?: string | null;
-  artifactId?: string | null;
-  validationStatus: "pending" | "valid" | "invalid" | "duplicate";
-  sourceReference?: string | null;
-  rawExtraction?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-}
-
-export interface FinanceAuditRun {
-  id: string;
-  period: string;
-  triggerFingerprint: string;
-  status: FinanceAuditStatus;
-  actorLibraryUserId?: string | null;
-  source: string;
-  reason?: string | null;
-  errorMessage?: string | null;
-  createdAt?: string | null;
-  completedAt?: string | null;
-}
-
-export interface FinanceAuditProposal {
-  id: string;
-  auditRunId: string;
-  proposalType: string;
-  status: FinanceAuditProposalStatus;
-  ruleKey: string;
-  dataFingerprint: string;
-  serviceId?: string | null;
-  period: string;
-  reason: string;
-  currentData: string;
-  suggestedChange: string;
-  evidence?: string | null;
-  actorLibraryUserId?: string | null;
-  source: string;
-  createdAt?: string | null;
-  decidedAt?: string | null;
-}
-
-export type FinanceRelationRepairType = "purchase-transaction" | "statement-item-transaction" | "savings-movement-transaction";
-
-export interface FinanceRelationRepair {
-  id: string;
-  operationId: string;
-  relationType: FinanceRelationRepairType;
-  relationId: string;
-  previousTransactionId?: string | null;
-  newTransactionId?: string | null;
-  actorLibraryUserId?: string | null;
-  source: string;
-  reason?: string | null;
-  createdAt?: string | null;
-}
-
-export interface FinanceCardServiceAssignment {
-  statementId: string;
-  lineId: string;
+/** An active service in a month, as the backend classifies it. */
+export interface FinanceServiceMonthStatus {
   serviceId: string;
-  transactionId: string;
-  purchaseDate: string;
-  period: string;
-  amount: string;
+  name: string;
+  provider?: string | null;
   currency: FinanceCurrency;
-  assignmentStatus: "new" | "already-reconciled";
-  evidence: Record<string, unknown>;
+  expectedAmount: string;
+  paidAmount?: string | null;
+  dueDay?: number | null;
+  status: "paid" | "pending" | "not-applicable";
+  occurrenceId?: string | null;
 }
 
-export interface FinanceCardServiceReason {
-  code: string;
-  message: string;
-  lineIds: string[];
-  candidateServiceIds: string[];
-}
-
-export interface FinanceCardServiceAmbiguousGroup {
-  statementId: string;
-  serviceId?: string | null;
-  lineIds: string[];
-  candidateServiceIds: string[];
-  statementPeriod: string;
-  reason: FinanceCardServiceReason;
-}
-
-export interface FinanceCardServiceReconciliation {
-  status: "no-matches" | "ready" | "partial" | "ambiguous" | "applied" | "partial-applied";
-  assignments: FinanceCardServiceAssignment[];
-  ambiguousGroups: FinanceCardServiceAmbiguousGroup[];
-  reasons: FinanceCardServiceReason[];
-}
-
-export type FinanceCardServiceResolution = FinanceCardServiceAssignment;
-
-function previewText(value: unknown): string {
-  if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return "";
-}
-
-function previewRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-/** Renders the native reconciliation preview without exposing JSON as the only UI. */
-export function formatFinanceAuditProposalPreview(
-  proposal: FinanceAuditProposal,
-  services: readonly FinanceService[] = [],
-  statements: readonly FinanceCreditCardStatement[] = [],
-): string {
-  if (proposal.proposalType !== "service-card-reconciliation") return proposal.currentData;
-  let data: Record<string, unknown> | null = null;
-  try { data = previewRecord(JSON.parse(proposal.currentData)); } catch { return proposal.currentData; }
-  if (!data) return proposal.currentData;
-
-  const statementId = previewText(data.statementId);
-  const statement = statements.find((candidate) => candidate.id === statementId);
-  const statementPeriod = previewText(data.statementPeriod) || statement?.period || proposal.period;
-  const lineById = new Map((statement?.items ?? []).map((line) => [line.id, line]));
-  const serviceName = (serviceId: string) => (services.find((service) => service.id === serviceId)?.name ?? serviceId) || "Servicio no identificado";
-  const lineText = (lineId: string, details: Record<string, unknown> | null, targetPeriod?: string) => {
-    const line = lineById.get(lineId);
-    const serviceId = previewText(details?.serviceId);
-    const purchaseDate = previewText(details?.purchaseDate) || line?.purchaseDate || "fecha desconocida";
-    const amount = previewText(details?.amount) || line?.amount || "importe desconocido";
-    const currency = previewText(details?.currency) || line?.currency || "moneda desconocida";
-    const description = previewText(details?.description) || line?.description || "línea sin descripción";
-    const evidence = previewRecord(details?.evidence);
-    const evidenceText = [
-      previewText(evidence?.matching),
-      previewText(evidence?.provider),
-      previewText(evidence?.normalizedDescription),
-    ].filter(Boolean).join(", ");
-    const transactionId = previewText(details?.transactionId) || line?.transactionId || "transacción desconocida";
-    return `línea ${lineId} (${description}), servicio ${serviceName(serviceId)}, compra ${purchaseDate}, período del resumen ${statementPeriod}, período destino ${targetPeriod || "sin asignar"}, importe ${amount} ${currency}, transacción ${transactionId}${evidenceText ? `, evidencia ${evidenceText}` : ""}`;
-  };
-
-  const assignments = Array.isArray(data.assignments)
-    ? data.assignments.flatMap((value) => {
-      const assignment = previewRecord(value);
-      const lineId = previewText(assignment?.lineId);
-      return lineId ? [lineText(lineId, assignment, previewText(assignment?.period))] : [];
-    })
-    : [];
-  const ambiguousGroups = Array.isArray(data.ambiguousGroups)
-    ? data.ambiguousGroups.flatMap((value) => {
-      const group = previewRecord(value);
-      const reason = previewRecord(group?.reason);
-      const lineIds = Array.isArray(group?.lineIds) ? group.lineIds.map(previewText).filter(Boolean) : [];
-      const candidateIds = Array.isArray(group?.candidateServiceIds) ? group.candidateServiceIds.map(previewText).filter(Boolean) : [];
-      const groupLines = lineIds.map((lineId) => lineText(lineId, { serviceId: previewText(group?.serviceId) }, "requiere decisión"));
-      const message = previewText(reason?.message) || "El grupo requiere una decisión manual.";
-      return [`grupo ambiguo: ${groupLines.join("; ") || `líneas ${lineIds.join(", ") || "no identificadas"}`}, candidatos ${candidateIds.map(serviceName).join(", ") || "sin coincidencia única"}, motivo ${message}. No se aplicará automáticamente.`];
-    })
-    : [];
-  const reasons = Array.isArray(data.reasons)
-    ? data.reasons.flatMap((value) => {
-      const reason = previewRecord(value);
-      const message = previewText(reason?.message);
-      return message ? [`motivo: ${message}`] : [];
-    })
-    : [];
-  const status = ambiguousGroups.length > 0
-    ? assignments.length > 0 ? "parcial, con grupos ambiguos" : "ambiguo"
-    : assignments.length > 0 ? "listo para aplicar" : "sin coincidencias";
-  return [
-    `Tipo de propuesta: ${proposal.proposalType}`,
-    `Resumen ${statementId || "no identificado"}, período real ${statementPeriod}`,
-    `Conciliación: ${status}; ${assignments.length} asignación(es), ${ambiguousGroups.length} grupo(s) ambiguo(s)`,
-    `Motivo general: ${proposal.reason}`,
-    ...assignments,
-    ...ambiguousGroups,
-    ...reasons,
-  ].join(" | ");
+/** A doubt left by an automatic link; the assistant asks it in the chat. */
+export interface FinanceReviewItem {
+  id: string;
+  kind: string;
+  status: "pending" | "resolved" | "dismissed";
+  question: string;
+  options: Array<{ id: string; label: string }>;
+  resolution?: string | null;
+  createdAt: string;
+  resolvedAt?: string | null;
 }
 
 export interface FinanceMerchant {
@@ -558,27 +326,6 @@ export interface FinanceSavingsMovement {
   actorUserId?: number | null;
   actorLibraryUserId?: string | null;
   linkedTransactionId?: string | null;
-}
-
-export interface FinanceSavingsExchange {
-  id: string;
-  reserveId: string;
-  sourceAccountId: string;
-  sourceAmount: string;
-  sourceCurrency: FinanceCurrency;
-  savingsAmount: string;
-  savingsCurrency: FinanceCurrency;
-  effectiveDate: string;
-  description: string;
-  actorUserId?: number | null;
-  actorLibraryUserId?: string | null;
-  sourceReference?: string | null;
-  rawSource?: string | null;
-}
-
-export interface FinanceSavedSavingsExchange {
-  movement: FinanceSavingsMovement;
-  transaction: FinanceTransaction;
 }
 
 export interface FinanceContext {

@@ -1,4 +1,4 @@
-import type { FinanceCurrency, FinanceSalaryConcept } from "./financeTypes"
+import type { FinanceCurrency } from "./financeTypes"
 
 // Derived finance views computed by the backend (`finance_views.rs`).
 
@@ -74,62 +74,4 @@ export interface FinanceDailySummary {
   savingsRateByCurrency: FinanceNullableCurrencyTotals
   savings: FinanceSavingsSummary
   coverage: FinanceSummaryCoverage
-}
-
-export type FinanceRelationEntity =
-  | "transaction"
-  | "purchase"
-  | "service"
-  | "statement"
-  | "service-occurrence"
-  | "service-invoice"
-  | "savings-movement"
-  | "investment"
-
-export type FinanceRelationName =
-  | "account"
-  | "destination-account"
-  | "category"
-  | "service"
-  | "source-artifact"
-  | "transaction"
-  | "reserve"
-  | "purchase"
-  | "currency"
-
-export type FinanceRelationIssueSeverity = "warning" | "error"
-
-export interface FinanceRelationIssue {
-  entity: FinanceRelationEntity
-  entityId: string
-  targetId?: string
-  currentTransactionId?: string | null
-  relation: FinanceRelationName
-  severity: FinanceRelationIssueSeverity
-  code:
-    | "missing-required"
-    | "missing-optional"
-    | "not-found"
-    | "currency-mismatch"
-    | "kind-mismatch"
-    | "duplicate"
-  message: string
-}
-
-export interface FinanceRelationAudit {
-  issues: FinanceRelationIssue[]
-  entityCount: number
-  completeEntityCount: number
-  incompleteEntityCount: number
-}
-
-export interface SalaryExtractionDraft {
-  period?: string
-  paymentDate?: string
-  employer?: string
-  grossAmount?: string
-  deductionsTotal?: string
-  netAmount?: string
-  currency?: FinanceCurrency
-  concepts?: FinanceSalaryConcept[]
 }

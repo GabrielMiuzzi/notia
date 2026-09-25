@@ -34,12 +34,12 @@ export function DebtRatioEvolutionChart({ data }: DebtRatioEvolutionChartProps) 
   return <article className="finance-card finance-credit-card-chart-card" aria-labelledby="finance-debt-ratio-chart-title">
     <div className="finance-section-heading">
       <div>
-        <h3 id="finance-debt-ratio-chart-title">Deuda respecto del sueldo</h3>
-        <p className="finance-muted">Porcentaje histórico de tarjetas y deudas registradas sobre el sueldo de cada período.</p>
+        <h3 id="finance-debt-ratio-chart-title">Tarjetas respecto del sueldo</h3>
+        <p className="finance-muted">Lo pagado de tarjetas cada mes sobre el sueldo cobrado ese mes.</p>
       </div>
       {data.series.length > 1 && <div className="finance-card-chart-legend" aria-label="Monedas incluidas">{data.series.map((series, index) => <span key={series.currency}><i className={`finance-card-chart__line--${index % 4}`} />{series.currency}</span>)}</div>}
     </div>
-    {data.series.length === 0 ? <p className="finance-muted">Cargá sueldos y deudas para ver su evolución.</p> : <div className="finance-chart-scroll"><svg className="finance-credit-card-chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="Histórico del porcentaje de deuda respecto del sueldo">
+    {data.series.length === 0 ? <p className="finance-muted">Cargá sueldos y resúmenes de tarjeta para ver su evolución.</p> : <div className="finance-chart-scroll"><svg className="finance-credit-card-chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="Histórico del porcentaje de tarjetas pagadas respecto del sueldo">
       <line x1={CHART_PADDING.left} y1={chartBottom} x2={CHART_WIDTH - CHART_PADDING.right} y2={chartBottom} className="finance-salary-chart__axis" />
       <line x1={CHART_PADDING.left} y1={CHART_PADDING.top} x2={CHART_PADDING.left} y2={chartBottom} className="finance-salary-chart__axis" />
       <text x={CHART_PADDING.left} y="16" className="finance-salary-chart__label">{maximum.toLocaleString('es-AR', { maximumFractionDigits: 1 })}%</text>
