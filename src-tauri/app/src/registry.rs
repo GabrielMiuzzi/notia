@@ -49,7 +49,6 @@ fn route(command: &str) -> Option<Route> {
         "library_link_suggestions" => library_link_suggestions,
         "backend_library_graph_search" => backend_library_graph_search,
         "backend_library_search" => backend_library_search,
-        "calendar_argentina_holidays" => calendar_argentina_holidays,
         "backend_library_catalog" => backend_library_catalog,
         "backend_agent_history" => backend_agent_history,
         "backend_save_pending_clarification" => backend_save_pending_clarification,
@@ -99,7 +98,6 @@ fn route(command: &str) -> Option<Route> {
         "find_library_user" => find_library_user,
         "link_library_user_telegram" => link_library_user_telegram,
         "unlink_library_user_telegram" => unlink_library_user_telegram,
-        "finance_get_dashboard" => finance_get_dashboard,
         "routine_get_dashboard" => routine_get_dashboard,
         "routine_apply_mutation" => routine_apply_mutation,
         "agenda_get_view" => agenda_get_view,
@@ -108,20 +106,12 @@ fn route(command: &str) -> Option<Route> {
         "finance_dev_query_table" => finance_dev_query_table,
         "finance_dev_query_sql" => finance_dev_query_sql,
         "finance_dev_seed_demo_data" => finance_dev_seed_demo_data,
-        "finance_list_service_occurrence_versions" => finance_list_service_occurrence_versions,
         "finance_clear_all_data" => finance_clear_all_data,
-        "finance_list_purchases" => finance_list_purchases,
-        "finance_dashboard_insights" => finance_dashboard_insights,
-        "finance_service_month_status" => finance_service_month_status,
-        "finance_list_products" => finance_list_products,
-        "finance_salary_analysis" => finance_salary_analysis,
+        "finance_overview" => finance_overview,
+        "finance_movements" => finance_movements,
+        "finance_products" => finance_products,
+        "finance_salary_savings" => finance_salary_savings,
         "finance_dollar_quotes" => finance_dollar_quotes,
-        "finance_inflation_indices" => finance_inflation_indices,
-        "finance_historical_dollar_quotes" => finance_historical_dollar_quotes,
-        "finance_list_price_history" => finance_list_price_history,
-        "finance_list_salaries" => finance_list_salaries,
-        "finance_list_credit_card_statements" => finance_list_credit_card_statements,
-        "finance_list_installment_plans" => finance_list_installment_plans,
         "get_speech_capabilities" => get_speech_capabilities,
         "prepare_speech_model" => prepare_speech_model,
         "get_speech_model_status" => get_speech_model_status,
@@ -239,7 +229,6 @@ pub const COMMAND_NAMES: &[&str] = &[
     "library_link_suggestions",
     "backend_library_graph_search",
     "backend_library_search",
-    "calendar_argentina_holidays",
     "backend_library_catalog",
     "backend_agent_history",
     "backend_save_pending_clarification",
@@ -289,7 +278,6 @@ pub const COMMAND_NAMES: &[&str] = &[
     "find_library_user",
     "link_library_user_telegram",
     "unlink_library_user_telegram",
-    "finance_get_dashboard",
     "routine_get_dashboard",
     "routine_apply_mutation",
     "agenda_get_view",
@@ -298,20 +286,12 @@ pub const COMMAND_NAMES: &[&str] = &[
     "finance_dev_query_table",
     "finance_dev_query_sql",
     "finance_dev_seed_demo_data",
-    "finance_list_service_occurrence_versions",
     "finance_clear_all_data",
-    "finance_list_purchases",
-    "finance_dashboard_insights",
-    "finance_service_month_status",
-    "finance_list_products",
-    "finance_salary_analysis",
+    "finance_overview",
+    "finance_movements",
+    "finance_products",
+    "finance_salary_savings",
     "finance_dollar_quotes",
-    "finance_inflation_indices",
-    "finance_historical_dollar_quotes",
-    "finance_list_price_history",
-    "finance_list_salaries",
-    "finance_list_credit_card_statements",
-    "finance_list_installment_plans",
     "get_speech_capabilities",
     "prepare_speech_model",
     "get_speech_model_status",
@@ -579,12 +559,6 @@ fn backend_library_search(app: &AppHandle, _window_label: &str, command: &str, a
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::library_graph::backend_library_search(arg0, arg1).await) })))
 }
 
-fn calendar_argentina_holidays(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    let arg0 = arg(command, args, "year")?;
-    let arg1 = app.state();
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::services::calendar_holidays::calendar_argentina_holidays(arg0, arg1).await) })))
-}
-
 fn backend_library_catalog(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::library_catalog::backend_library_catalog(app.clone(), app.state()))))
 }
@@ -817,10 +791,6 @@ fn unlink_library_user_telegram(app: &AppHandle, _window_label: &str, command: &
     Ok(Dispatch::Ready(reply_result(crate::library_users::unlink_library_user_telegram(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_get_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_get_dashboard(app.clone(), arg(command, args, "context")?, arg(command, args, "month")?))))
-}
-
 fn routine_get_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::routine::routine_get_dashboard(app.clone(), arg(command, args, "context")?))))
 }
@@ -853,66 +823,31 @@ fn finance_dev_seed_demo_data(app: &AppHandle, _window_label: &str, command: &st
     Ok(Dispatch::Ready(reply_result(crate::finance::finance_dev_seed_demo_data(app.clone(), arg(command, args, "context")?))))
 }
 
-fn finance_list_service_occurrence_versions(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance::finance_list_service_occurrence_versions(app.clone(), arg(command, args, "context")?, arg(command, args, "occurrenceId")?))))
-}
-
 fn finance_clear_all_data(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::finance::finance_clear_all_data(app.clone(), arg(command, args, "context")?))))
 }
 
-fn finance_list_purchases(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_purchases(app.clone(), arg(command, args, "payload")?))))
+fn finance_overview(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::finance_screen::finance_overview(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_service_month_status(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_service_month_status(app.clone(), arg(command, args, "context")?, arg(command, args, "period")?))))
+fn finance_movements(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::finance_screen::finance_movements(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_list_products(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_products(app.clone(), arg(command, args, "payload")?))))
+fn finance_products(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::finance_screen::finance_products(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn finance_dashboard_insights(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_views::finance_dashboard_insights(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_salary_analysis(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+fn finance_salary_savings(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::finance_views::finance_salary_analysis(arg0, arg1).await) })))
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::finance_screen::finance_salary_savings(arg0, arg1).await) })))
 }
 
 fn finance_dollar_quotes(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
 
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::services::finance_external::finance_dollar_quotes().await) })))
-}
-
-fn finance_inflation_indices(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
-
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::services::finance_external::finance_inflation_indices().await) })))
-}
-
-fn finance_historical_dollar_quotes(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    let arg0 = arg(command, args, "from")?;
-    let arg1 = arg(command, args, "to")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::services::finance_external::finance_historical_dollar_quotes(arg0, arg1).await) })))
-}
-
-fn finance_list_price_history(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_price_history(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_salaries(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_salaries(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_credit_card_statements(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_credit_card_statements(app.clone(), arg(command, args, "payload")?))))
-}
-
-fn finance_list_installment_plans(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::finance_records::finance_list_installment_plans(app.clone(), arg(command, args, "context")?))))
 }
 
 fn get_speech_capabilities(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
@@ -1403,15 +1338,15 @@ mod tests {
     #[test]
     fn app_invoke_reports_missing_arguments_like_tauri() {
         let app = crate::create_app(AppPaths::default(), HostPorts::default());
-        let body = serde_json::json!({ "command": "calendar_argentina_holidays" });
+        let body = serde_json::json!({ "command": "finance_overview" });
         assert_eq!(
             ready_error(dispatch_app_invoke(&app, "main", &body)),
-            Value::String("command calendar_argentina_holidays missing required key year".into())
+            Value::String("command finance_overview missing required key payload".into())
         );
-        let invalid = serde_json::json!({ "command": "calendar_argentina_holidays", "args": { "year": "x" } });
+        let invalid = serde_json::json!({ "command": "finance_overview", "args": { "payload": "x" } });
         assert!(ready_error(dispatch_app_invoke(&app, "main", &invalid))
             .as_str()
             .unwrap()
-            .starts_with("invalid args `year` for command `calendar_argentina_holidays`"));
+            .starts_with("invalid args `payload` for command `finance_overview`"));
     }
 }

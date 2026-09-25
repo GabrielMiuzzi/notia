@@ -19,7 +19,6 @@ import {
   COLDPASS_WORKSPACE_TAB_PATH,
   MEETING_WORKSPACE_TAB_PATH,
   FINANCE_WORKSPACE_TAB_PATH,
-  CALENDAR_WORKSPACE_TAB_PATH,
   AGENDA_WORKSPACE_TAB_PATH,
   MULTICHAT_WORKSPACE_TAB_PATH,
   ROUTINE_WORKSPACE_TAB_PATH,
@@ -50,7 +49,6 @@ interface OpenWorkspaceSpecialTabs {
   coldPass: boolean
   meeting: boolean
   finance: boolean
-  calendar: boolean
   agenda: boolean
   multichat: boolean
   routine: boolean
@@ -107,7 +105,6 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.coldPass) { tabs.push({ path: COLDPASS_WORKSPACE_TAB_PATH, title: 'ColdPass' }) }
   if (specialTabs.meeting) { tabs.push({ path: MEETING_WORKSPACE_TAB_PATH, title: 'Meeting' }) }
   if (specialTabs.finance) { tabs.push({ path: FINANCE_WORKSPACE_TAB_PATH, title: 'Finanzas' }) }
-  if (specialTabs.calendar) { tabs.push({ path: CALENDAR_WORKSPACE_TAB_PATH, title: 'Calendario' }) }
   if (specialTabs.agenda) { tabs.push({ path: AGENDA_WORKSPACE_TAB_PATH, title: 'Agenda' }) }
   if (specialTabs.multichat) { tabs.push({ path: MULTICHAT_WORKSPACE_TAB_PATH, title: 'Multichat' }) }
   if (specialTabs.routine) { tabs.push({ path: ROUTINE_WORKSPACE_TAB_PATH, title: 'Rutina' }) }
@@ -218,7 +215,6 @@ export function useTabManager({
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
       || tabPath === MEETING_WORKSPACE_TAB_PATH
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
-      || tabPath === CALENDAR_WORKSPACE_TAB_PATH
       || tabPath === AGENDA_WORKSPACE_TAB_PATH
       || tabPath === MULTICHAT_WORKSPACE_TAB_PATH
       || tabPath === ROUTINE_WORKSPACE_TAB_PATH
@@ -231,7 +227,6 @@ export function useTabManager({
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !currentSpecialTabs.coldPass)
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !currentSpecialTabs.meeting)
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !currentSpecialTabs.finance)
-        || (tabPath === CALENDAR_WORKSPACE_TAB_PATH && !currentSpecialTabs.calendar)
         || (tabPath === AGENDA_WORKSPACE_TAB_PATH && !currentSpecialTabs.agenda)
         || (tabPath === MULTICHAT_WORKSPACE_TAB_PATH && !currentSpecialTabs.multichat)
         || (tabPath === ROUTINE_WORKSPACE_TAB_PATH && !currentSpecialTabs.routine)
@@ -248,7 +243,6 @@ export function useTabManager({
         coldPass: tabPath === COLDPASS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.coldPass,
         meeting: tabPath === MEETING_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.meeting,
         finance: tabPath === FINANCE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.finance,
-        calendar: tabPath === CALENDAR_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.calendar,
         agenda: tabPath === AGENDA_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.agenda,
         multichat: tabPath === MULTICHAT_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.multichat,
         routine: tabPath === ROUTINE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.routine,
@@ -385,7 +379,6 @@ export function useTabManager({
       || tabPath === COLDPASS_WORKSPACE_TAB_PATH
       || tabPath === MEETING_WORKSPACE_TAB_PATH
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
-      || tabPath === CALENDAR_WORKSPACE_TAB_PATH
       || tabPath === AGENDA_WORKSPACE_TAB_PATH
       || tabPath === MULTICHAT_WORKSPACE_TAB_PATH
       || tabPath === ROUTINE_WORKSPACE_TAB_PATH
@@ -398,7 +391,6 @@ export function useTabManager({
         || (tabPath === COLDPASS_WORKSPACE_TAB_PATH && !specialTabs.coldPass)
         || (tabPath === MEETING_WORKSPACE_TAB_PATH && !specialTabs.meeting)
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !specialTabs.finance)
-        || (tabPath === CALENDAR_WORKSPACE_TAB_PATH && !specialTabs.calendar)
         || (tabPath === AGENDA_WORKSPACE_TAB_PATH && !specialTabs.agenda)
         || (tabPath === MULTICHAT_WORKSPACE_TAB_PATH && !specialTabs.multichat)
         || (tabPath === ROUTINE_WORKSPACE_TAB_PATH && !specialTabs.routine)

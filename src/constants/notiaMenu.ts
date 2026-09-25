@@ -14,7 +14,6 @@ import {
   Square,
   Mic,
   WalletCards,
-  CalendarDays,
   CalendarCheck,
   CalendarClock,
   UsersRound,
@@ -34,7 +33,6 @@ export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
     { id: 'finance', label: 'Finanzas', icon: WalletCards },
   ],
   [
-    { id: 'calendar', label: 'Calendario', icon: CalendarDays },
     { id: 'agenda', label: 'Agenda', icon: CalendarClock },
     { id: 'multichat', label: 'Multichat', icon: UsersRound },
     { id: 'routine', label: 'Rutina', icon: CalendarCheck },

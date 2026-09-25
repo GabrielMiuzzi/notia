@@ -187,10 +187,3 @@ pub async fn finance_dollar_quotes() -> Result<Vec<DollarQuote>, String> {
 pub async fn finance_inflation_indices() -> Result<InflationIndices, String> {
     inflation_indices().await
 }
-
-pub async fn finance_historical_dollar_quotes(
-    from: Option<String>,
-    to: Option<String>,
-) -> Result<Vec<HistoricalDollarQuote>, String> {
-    historical_dollar_quotes(from.as_deref(), to.as_deref()).await
-}

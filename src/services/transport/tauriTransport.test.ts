@@ -21,15 +21,15 @@ describe('tauriTransport', () => {
   it('sends every command through the single app_invoke entry point', async () => {
     invoke.mockResolvedValue({ ok: true })
     await expect(tauriTransport.call('finance_dollar_quotes')).resolves.toEqual({ ok: true })
-    await tauriTransport.call('calendar_argentina_holidays', { year: 2026 })
+    await tauriTransport.call('finance_overview', { payload: { month: '2026-09' } })
     expect(invoke).toHaveBeenNthCalledWith(1, APP_INVOKE_COMMAND, { command: 'finance_dollar_quotes', args: {} })
-    expect(invoke).toHaveBeenNthCalledWith(2, APP_INVOKE_COMMAND, { command: 'calendar_argentina_holidays', args: { year: 2026 } })
+    expect(invoke).toHaveBeenNthCalledWith(2, APP_INVOKE_COMMAND, { command: 'finance_overview', args: { payload: { month: '2026-09' } } })
   })
 
   it('keeps the backend error as the rejection', async () => {
-    invoke.mockRejectedValue({ code: 'invalidInput', message: 'Año inválido.' })
-    await expect(tauriTransport.call('calendar_argentina_holidays', { year: 1 }))
-      .rejects.toEqual({ code: 'invalidInput', message: 'Año inválido.' })
+    invoke.mockRejectedValue({ code: 'invalidInput', message: 'Mes inválido.' })
+    await expect(tauriTransport.call('finance_overview', { payload: { month: '2026-13' } }))
+      .rejects.toEqual({ code: 'invalidInput', message: 'Mes inválido.' })
   })
 
   it('hands event payloads to the handler', async () => {

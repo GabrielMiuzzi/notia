@@ -21,6 +21,7 @@ import {
 } from '../../../../services/chat/chatSessionStorage'
 import { writeAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { readChatFileAsAttachment } from './chatImageAttachment'
+import { subscribeToChatComposerRequests } from '../../../../services/chat/chatComposerRequests'
 import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
 import { useChatAttachmentMenu } from './useChatAttachmentMenu'
@@ -289,6 +290,16 @@ export function ChatWorkspaceViewComponent({
     virtualChatHistoryItems,
     chatHistoryTotalSize,
   } = chatState
+
+  // Views (Finanzas) put a message in the side chat's composer to review and send.
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0)
+  useEffect(() => {
+    if (showHistoryPanel) return undefined
+    return subscribeToChatComposerRequests((text) => {
+      if (text !== null) setDraft(text)
+      setComposerFocusRequest((request) => request + 1)
+    })
+  }, [setDraft, showHistoryPanel])
 
   const hidesAttachedFileContext = agentScope === 'task-manager'
   const resolvedSelectedLibraryFilePaths = hidesAttachedFileContext ? EMPTY_CONTEXT_PATHS : selectedLibraryFilePaths
@@ -865,6 +876,7 @@ export function ChatWorkspaceViewComponent({
         : undefined}
       draft={draft}
       setDraft={setDraft}
+      focusRequest={composerFocusRequest}
       canSubmit={canSubmit}
       isSubmitting={isSubmitting}
       awaitingAgentClarification={Boolean(pendingAgentQuestion && clarificationResolverRef.current)}

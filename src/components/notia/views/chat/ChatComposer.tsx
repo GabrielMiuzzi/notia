@@ -23,6 +23,8 @@ interface ChatComposerProps {
   onOpenLibraryFoldersModal?: () => void
   draft: string
   setDraft: (value: string) => void
+  /** Changes when a view put a message in the composer; it takes the focus. */
+  focusRequest?: number
   canSubmit: boolean
   isSubmitting: boolean
   awaitingAgentClarification?: boolean
@@ -64,6 +66,7 @@ function ChatComposerComponent({
   onOpenLibraryFoldersModal,
   draft,
   setDraft,
+  focusRequest = 0,
   canSubmit,
   isSubmitting,
   awaitingAgentClarification = false,
@@ -100,6 +103,10 @@ function ChatComposerComponent({
   const [conversationStatus, setConversationStatus] = useState('')
   void conversationStatus
   const waitingForAssistantRef = useRef(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (focusRequest > 0) textareaRef.current?.focus()
+  }, [focusRequest])
   const lastSpokenAssistantRef = useRef<string | null>(null)
   const voice = useVoiceTranscription({
     draft,
@@ -367,6 +374,7 @@ function ChatComposerComponent({
       ) : null}
       <label className="notia-chat-composer-field" aria-label="Escribir mensaje">
         <textarea
+          ref={textareaRef}
           value={draft}
           rows={1}
           placeholder={awaitingAgentClarification

@@ -22,7 +22,7 @@ mod finance_matching;
 mod finance_migration;
 mod finance_reconciliation;
 mod finance_records;
-mod finance_views;
+mod finance_screen;
 mod agenda;
 mod agenda_view;
 mod routine;
@@ -75,7 +75,6 @@ mod task_manager_publication;
 mod task_manager_publication_source;
 mod task_manager_store;
 mod services {
-    pub mod calendar_holidays;
     pub mod ai_service;
     pub mod bluetooth_service;
     #[cfg(all(feature = "bluetooth", not(any(target_os = "android", target_os = "ios"))))]
@@ -127,7 +126,6 @@ pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
     app.manage(device_preferences::DevicePreferencesState::default());
     app.manage(telegram_worker::TelegramWorkerState::default());
     app.manage(library_graph::LibraryGraphState::default());
-    app.manage(services::calendar_holidays::CalendarHolidaysState::default());
     app.manage(backup::service::BackupState::default());
     app.manage(commands::remote_speech::RemoteSpeechState::default());
     app

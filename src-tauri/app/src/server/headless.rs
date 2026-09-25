@@ -730,9 +730,9 @@ mod tests {
         let app = crate::create_app(AppPaths::default(), HostPorts::default());
         let refused = invoke(br#"{"command":"start_speech_session","args":{}}"#, &app);
         assert!(String::from_utf8_lossy(&refused).starts_with("HTTP/1.1 403"));
-        let missing = invoke(br#"{"command":"calendar_argentina_holidays"}"#, &app);
+        let missing = invoke(br#"{"command":"finance_overview"}"#, &app);
         let text = String::from_utf8_lossy(&missing);
         assert!(text.starts_with("HTTP/1.1 400"));
-        assert!(text.contains("missing required key year"));
+        assert!(text.contains("missing required key payload"));
     }
 }

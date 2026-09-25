@@ -12,7 +12,6 @@ import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { ColdPassView } from './views/ColdPassView'
 import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
-import { CalendarView } from './views/CalendarView'
 import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
 import { MultichatView } from './views/MultichatView'
@@ -233,10 +232,6 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'finance') {
     return <FinanceView library={activeLibrary} />
-  }
-
-  if (activeWorkspaceView === 'calendar') {
-    return <CalendarView />
   }
 
   if (activeWorkspaceView === 'agenda') {

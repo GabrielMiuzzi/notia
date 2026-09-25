@@ -10,7 +10,7 @@ const EMPTY_CONTEXT_PATHS: string[] = []
 
 interface UseRightPanelChatContextParams {
   activeDocument: OpenFileDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'agenda' | 'multichat' | 'documents' | 'routine'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'multichat' | 'documents' | 'routine'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
@@ -92,7 +92,7 @@ export function shouldSelectMatchingRightPanelChat(
 }
 
 function buildRightPanelChatContextLabel(
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'calendar' | 'agenda' | 'multichat' | 'documents' | 'routine',
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'multichat' | 'documents' | 'routine',
   activeDocument: OpenFileDocument | null,
   taskManagerPanelId: string,
   markdownSelection: MarkdownSelectionContext | null,

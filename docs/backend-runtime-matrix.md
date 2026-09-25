@@ -34,7 +34,6 @@ Esta matriz es un artefacto de desarrollo. Describe la frontera vigente entre la
 | Voz, Meeting y adjuntos | límites, cola, estado de operación y `remote_audio` | ASR, TTS, captura y decodificación | controles y transcripción | registro; sesiones de voz solo locales; dictado remoto por fragmentos | hecho |
 | Telegram | worker por biblioteca, offsets y cola | HTTP/Telegram y multimedia nativos | configuración y feedback | worker Rust sin interfaz | hecho |
 | Backups y bandeja Windows | ciclo de vida de aplicación | adaptadores Windows; bandeja en el host Tauri | preferencias | registro (selector de carpeta solo local) | hecho |
-| Calendario | normalización y timeout de proveedores | HTTP nativo | calendario React | registro | hecho |
 
 ## Matriz de tools
 

@@ -9,7 +9,6 @@ pub mod agent;
 pub mod agent_knowledge;
 pub mod agent_workspace;
 pub mod ai_settings;
-pub mod calendar;
 pub mod catalog;
 pub mod chat_attachments;
 pub mod chat_context;

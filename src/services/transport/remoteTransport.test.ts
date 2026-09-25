@@ -30,7 +30,7 @@ describe('remoteTransport', () => {
   it('runs commands through /api/invoke and keeps the backend error as the rejection', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse(200, { result: { libraries: [] } }))
-      .mockResolvedValueOnce(jsonResponse(400, { error: { code: 'invalidInput', message: 'Año inválido.' } }))
+      .mockResolvedValueOnce(jsonResponse(400, { error: { code: 'invalidInput', message: 'Mes inválido.' } }))
     const transport = createRemoteTransport({ capabilities, onSessionExpired: vi.fn(), fetchImpl, eventsUrl: 'wss://h/api/events' })
     await expect(transport.call('backend_library_catalog')).resolves.toEqual({ libraries: [] })
     expect(fetchImpl).toHaveBeenCalledWith('/api/invoke', expect.objectContaining({
@@ -38,8 +38,8 @@ describe('remoteTransport', () => {
       credentials: 'same-origin',
       body: JSON.stringify({ command: 'backend_library_catalog', args: {} }),
     }))
-    await expect(transport.call('calendar_argentina_holidays', { year: 1 }))
-      .rejects.toEqual({ code: 'invalidInput', message: 'Año inválido.' })
+    await expect(transport.call('finance_overview', { payload: { month: '2026-13' } }))
+      .rejects.toEqual({ code: 'invalidInput', message: 'Mes inválido.' })
   })
 
   it('reports an expired session and refused commands as errors', async () => {

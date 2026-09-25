@@ -42,10 +42,10 @@
 - Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.
 - Modo servidor sin ventana (`notia --headless`, Windows y Linux): API HTTPS con contraseña del dueño, eventos por WebSocket, registro de bibliotecas por consola y bloqueo exclusivo de la carpeta de datos compartida con la aplicación.
 - Uso de Notia desde el navegador contra un servidor headless: ingreso con la contraseña del dueño, la misma interfaz con eventos en vivo, imágenes de las bibliotecas y dictado grabado en el navegador; recupera los eventos perdidos al reconectar o avisa que hay que recargar; las funciones que dependen del equipo servidor se ocultan.
-- Finanzas personales de seguimiento informal, cargadas y corregidas por el asistente en el chat o Telegram: gastos del mes, tickets, sueldos, resúmenes de tarjeta pagados, cuotas pendientes, ahorro con compra y venta de moneda, servicios mensuales integrados en Home y facturas/boletas.
+- Finanzas personales de seguimiento informal, cargadas y corregidas por el asistente en el chat o Telegram: gastos del mes, tickets, sueldos, resúmenes de tarjeta pagados, cuotas pendientes, ahorro con compra y venta de moneda, servicios mensuales y facturas/boletas.
+- Pantalla de Finanzas con pestañas Resumen, Movimientos, Sueldo y ahorro, y Productos y tickets, adaptada a teléfono, con acciones que llevan preguntas y pedidos al chat.
 - Vínculos automáticos entre tickets, gastos con tarjeta, líneas del resumen, cuotas y servicios, que el asistente informa y puede deshacer; los casos dudosos quedan en «Para revisar» y se responden en la conversación.
 - Catálogo de productos con el último precio por comercio, historial de precios, alias y unificación de productos y comercios.
-- Calendario con feriados nacionales y bancarios de Argentina.
 - Agenda por usuario con calendario mensual, semana en bloques de 15 minutos para agendar tareas con prioridad (mouse, táctil y teclado), anotador rápido del día y próximos eventos, persistida en SQLite.
 - Rutina de hábitos por usuario con rutinas, tareas por días, marcas diarias, rachas, calendario, evolución, progreso semanal y rueda de la vida con metas, persistida en SQLite y operable con tools de IA confirmadas.
 - Temas claro y oscuro.

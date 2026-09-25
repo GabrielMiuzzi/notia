@@ -152,26 +152,6 @@ fn transaction_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FinanceTran
     })
 }
 
-/// Movements whose counting day falls inside a range, for period summaries.
-pub(crate) fn list_transactions_between(
-    connection: &Connection,
-    from: &str,
-    to: &str,
-) -> Result<Vec<FinanceTransaction>, String> {
-    let mut statement = connection
-        .prepare(&format!(
-            "{TRANSACTION_SELECT} WHERE t.deleted_at IS NULL AND substr(t.effective_date,1,10) BETWEEN ?1 AND ?2
-             ORDER BY t.effective_date DESC,t.created_at DESC"
-        ))
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(params![from, to], transaction_from_row)
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    Ok(rows)
-}
-
 pub(crate) fn load_transaction(connection: &Connection, id: &str) -> Result<Option<FinanceTransaction>, String> {
     connection
         .query_row(
@@ -649,7 +629,7 @@ pub fn finance_dev_query_sql(
     .map_err(Into::into)
 }
 
-fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
+pub(crate) fn seed_finance_demo_data(connection: &mut Connection) -> Result<(), String> {
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -850,6 +830,11 @@ fn validate_finance_actor(connection: &Connection, context: &FinanceContext) -> 
     Ok(())
 }
 
+/// Event the Finanzas screen listens to, to read its figures again.
+pub const FINANCE_DATA_CHANGED_EVENT: &str = "notia:finance-data-changed";
+
+/// Every finance write ends here: it saves the Android copy back to the
+/// library and tells the open screen that the records changed.
 pub(crate) fn sync_context(context: &FinanceContext, app: &crate::host::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
@@ -858,13 +843,15 @@ pub(crate) fn sync_context(context: &FinanceContext, app: &crate::host::AppHandl
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| "La biblioteca perdió su URI SAF. Volvé a seleccionarla.".to_string())?;
-        crate::database::sync_mobile_library_connection(app, directory_uri)
+        crate::database::sync_mobile_library_connection(app, directory_uri)?;
     }
     #[cfg(not(target_os = "android"))]
-    {
-        let _ = (context, app);
-        Ok(())
+    let _ = context;
+    use crate::host::Emitter;
+    if let Err(error) = app.emit(FINANCE_DATA_CHANGED_EVENT, ()) {
+        log::warn!("[notia:finance] evento de cambio no emitido: {error}");
     }
+    Ok(())
 }
 fn valid_amount(value: &str) -> bool {
     parse_cents(value).is_ok()
@@ -1332,18 +1319,6 @@ pub fn finance_save_service_occurrence(
     Ok(persisted)
 }
 
-pub fn finance_list_service_occurrence_versions(
-    app: crate::host::AppHandle,
-    context: FinanceContext,
-    occurrence_id: String,
-) -> FinanceCommandResult<Vec<FinanceServiceOccurrenceVersion>> {
-    let connection = validate_context(&context, &app)?;
-    let result = connection.prepare("SELECT id,occurrence_id,version_number,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,reason,created_at FROM finance_service_occurrence_versions WHERE occurrence_id=?1 ORDER BY version_number DESC").map_err(|error| error.to_string())?
-        .query_map([occurrence_id], |row| Ok(FinanceServiceOccurrenceVersion { id: row.get(0)?, occurrence_id: row.get(1)?, version_number: row.get(2)?, expected_amount: row.get(3)?, paid_amount: row.get(4)?, effective_date: row.get(5)?, status: row.get(6)?, transaction_id: row.get(7)?, artifact_id: row.get(8)?, source_reference: row.get(9)?, raw_source: row.get(10)?, actor_library_user_id: row.get(11)?, source: row.get(12)?, reason: row.get(13)?, created_at: row.get(14)? })).map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string().into());
-    result
-}
-
 pub fn finance_list_all_service_occurrence_versions(
     app: crate::host::AppHandle,
     context: FinanceContext,
@@ -1755,7 +1730,7 @@ fn finance_debt_by_currency(
 /// Month a service payment was made: its expense's month (a card line
 /// counts in its statement's due month), else the payment date, else the
 /// service month.
-const SERVICE_PAYMENT_MONTH: &str =
+pub(crate) const SERVICE_PAYMENT_MONTH: &str =
     "substr(COALESCE(t.effective_date,o.effective_date,o.period || '-01'),1,7)";
 
 /// What was paid for services in a month, by the month of each payment.
@@ -2583,7 +2558,7 @@ fn finance_list_accounts_inner(connection: &Connection) -> Result<Vec<FinanceAcc
         .map_err(|e| e.to_string())
 }
 
-fn finance_list_savings_inner(
+pub(crate) fn finance_list_savings_inner(
     connection: &Connection,
 ) -> Result<Vec<FinanceSavingsReserve>, String> {
     let mut statement = connection.prepare("SELECT id,name,currency,opening_balance,objective,active FROM finance_savings_reserves ORDER BY name").map_err(|error| error.to_string())?;

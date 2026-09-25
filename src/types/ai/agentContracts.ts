@@ -11,7 +11,6 @@ export type WorkspaceAiView =
   | 'meeting'
   | 'finance'
   | 'multichat'
-  | 'calendar'
   | 'agenda'
   | 'routine'
 

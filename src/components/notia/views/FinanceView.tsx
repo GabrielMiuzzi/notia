@@ -1,21 +1,10 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import type { NotiaLibrary } from '../../../types/notia'
-import { FinanceDashboard } from '../../../modules/finance/components/FinanceDashboard'
-import { FinanceDeveloperView } from '../../../modules/finance/components/FinanceDeveloperView'
-import { FinanceServicesView } from '../../../modules/finance/components/FinanceServicesView'
+import { FinanceScreen } from '../../../modules/finance/components/FinanceScreen'
 
 function FinanceViewComponent({ library }: { library: NotiaLibrary | null }) {
-  const [activeTab, setActiveTab] = useState<'home' | 'dev'>('home')
-  if (!library) return <main className="notia-main finance-module" role="status">Abrí una librería para usar Finanzas.</main>
-  return <main className="notia-main finance-view-shell">
-    <nav className="finance-tabs" aria-label="Secciones de Finanzas">
-      <button type="button" role="tab" aria-selected={activeTab === 'home'} onClick={() => setActiveTab('home')}>Home</button>
-      <button type="button" role="tab" aria-selected={activeTab === 'dev'} onClick={() => setActiveTab('dev')}>Dev</button>
-    </nav>
-    {activeTab === 'home'
-      ? <section className="finance-home-tabpanel" role="tabpanel"><div className="notia-finance-view"><div className="finance-home-panel"><FinanceDashboard library={library} /><FinanceServicesView library={library} /></div></div></section>
-      : <section role="tabpanel"><FinanceDeveloperView library={library} /></section>}
-  </main>
+  if (!library) return <main className="notia-main finance-screen finance-screen--empty" role="status">Abrí una librería para usar Finanzas.</main>
+  return <FinanceScreen library={library} />
 }
 
 export const FinanceView = memo(FinanceViewComponent)

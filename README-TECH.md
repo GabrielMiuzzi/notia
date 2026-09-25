@@ -214,17 +214,17 @@ Set-Cookie: notia_session=<64 hex>; HttpOnly; Secure; SameSite=Strict; Path=/; M
 Comando:
 
 ```json
-{ "command": "calendar_argentina_holidays", "args": { "year": 2026 } }
+{ "command": "finance_dollar_quotes", "args": {} }
 ```
 
 ```json
-{ "result": [ { "date": "2026-01-01", "name": "Año Nuevo", "kind": "national" } ] }
+{ "result": [ { "kind": "oficial", "name": "Oficial", "buy": 1490, "sell": 1540, "updatedAt": "2026-09-24T15:00:00-03:00" } ] }
 ```
 
 Error del backend (HTTP 400):
 
 ```json
-{ "error": "command calendar_argentina_holidays missing required key year" }
+{ "error": "command finance_overview missing required key payload" }
 ```
 
 Comando reservado al equipo servidor (HTTP 403):
@@ -2673,7 +2673,7 @@ No se ejecutaron Vitest, la suite Rust, el empaquetado release ni un ciclo compl
 
 10. **Backend separado de la interfaz**: el mismo backend corre dentro de la ventana (Windows y Android) o como servidor `notia --headless` (Windows y Linux) para navegadores de la red. Ver «Arquitectura vigente: backend Rust, hosts y transporte».
 
-9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos tipados del backend; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa. La pestaña especial `__workspace_calendar__` monta `CalendarView`, que consulta en paralelo `https://api.argentinadatos.com/v1/feriados/{año}` y `https://api.argentinadatos.com/v1/feriados-bancarios/{año}`, valida sus respuestas y diferencia ambos tipos en la grilla mensual.
+9. **Módulo de Finanzas**: `FinanceView` monta el módulo React nativo de `src/modules/finance/` dentro de la pestaña especial `__workspace_finance__`. Sus datos estructurados viven en SQLite por librería y se acceden mediante servicios TypeScript y comandos tipados del backend; no se usa un iframe ni almacenamiento financiero en el navegador. Compras, sueldos, ahorro y cuotas usan transacciones SQLite para conservar sus relaciones contables. La pestaña interna **Dev** permite inspeccionar entidades financieras y ejecutar una única consulta `SELECT`/`WITH` paginada; el comando nativo rechaza SQL de escritura. Desde allí también se puede cargar una semilla idempotente de julio/agosto de 2026, que cubre todas las entidades financieras sin borrar ni modificar datos existentes. Home muestra tarjetas con compra y venta de los dólares oficial, blue y tarjeta, consultados desde `https://dolarapi.com/v1/dolares` con validación y timeout. Documentos y patrimonio agrega un gráfico salarial dual ARS/USD sobre todo el historial disponible: convierte cada cobro con la venta oficial histórica más reciente de `https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial`, calcula escalas monetarias legibles en el eje Y, ofrece un tooltip exacto por período mediante hover, foco o toque y amplía horizontalmente el SVG para conservar legibles los períodos. Las tarjetas de resumen contrastan la variación salarial móvil contra el IPC acumulado y la inflación interanual de `https://api.argentinadatos.com/v1/finanzas/indices/inflacion` y `https://api.argentinadatos.com/v1/finanzas/indices/inflacionInteranual`; cada respuesta se valida, se cancela tras diez segundos y solo se compara cuando los doce meses y el período interanual están alineados. No monta un chat propio: el chat lateral común recibe el scope `finance` cuando esta vista está activa. La pestaña Calendario (feriados de ArgentinaDatos) se retiró el 2026-09-25.
 
 ### Contratos financieros del backend
 
@@ -3449,7 +3449,7 @@ flowchart LR
 
 #### Descripción y límites
 
-Multichat es una superficie de aplicación para Windows y Android. Se accede desde la acción `multichat` del tercer grupo de `LEFT_RAIL_GROUPS`, inmediatamente después de `calendar`, y se monta como `MultichatView`. No agrega un motor de inferencia ni comandos Tauri nuevos: `multichatRuntime.ts` invoca directamente el adaptador existente `streamAiChatReply` de Ollama una vez por agente, con callbacks separados para thinking y respuesta.
+Multichat es una superficie de aplicación para Windows y Android. Se accede desde la acción `multichat` del tercer grupo de `LEFT_RAIL_GROUPS`, inmediatamente después de `agenda`, y se monta como `MultichatView`. No agrega un motor de inferencia ni comandos Tauri nuevos: `multichatRuntime.ts` invoca directamente el adaptador existente `streamAiChatReply` de Ollama una vez por agente, con callbacks separados para thinking y respuesta.
 
 La sala es efímera en cuanto a historial: `MultichatView` conserva el estado únicamente mientras la pestaña está montada, no crea archivos en `chat/chats/`, no usa `localStorage` y no se rehidrata al abrir Multichat nuevamente. Tampoco carga ni persiste memoria global: el runtime envía `longTermMemories: []`, `files: []` e `image: null` en cada llamada plana al adaptador.
 
@@ -3515,7 +3515,7 @@ Una respuesta vacía no se agrega como mensaje en blanco. El motor notifica `onA
 
 ```mermaid
 flowchart TD
-    Menu[Calendario → Multichat] --> Setup[Dinámica + contexto opcional + 1..6 prompts]
+    Menu[Agenda → Multichat] --> Setup[Dinámica + contexto opcional + 1..6 prompts]
     Setup --> Load[Cargar .agent/dynamics y .agent/promps]
     Load --> Validate{Archivos y selección válidos}
     Validate -->|No| Error[Error seguro, sin crear sala]
@@ -5590,9 +5590,8 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `device_preferences` | `backend_device_preferences`, `backend_save_device_preferences` | `devicePreferencesStorage` |
 | `filesystem::commands` | `backend_export_markdown_document` | `markdownExportEngine` |
 | `filesystem::watch` | `stop_library_tree_watch` | `libraryTreeWatchRuntime` |
-| `finance` | `finance_get_dashboard`, `finance_dev_list_tables`, `finance_dev_query_table`, `finance_dev_query_sql`, `finance_dev_seed_demo_data`, `finance_list_service_occurrence_versions`, `finance_clear_all_data` | `financeService` |
-| `finance_records` | `finance_list_purchases`, `finance_list_price_history`, `finance_list_products`, `finance_list_salaries`, `finance_list_credit_card_statements`, `finance_list_installment_plans` | `financeService` |
-| `finance_views` | `finance_dashboard_insights`, `finance_service_month_status`, `finance_salary_analysis` | `financeService` |
+| `finance` | `finance_dev_list_tables`, `finance_dev_query_table`, `finance_dev_query_sql`, `finance_dev_seed_demo_data`, `finance_clear_all_data` | `financeService` |
+| `finance_screen` | `finance_overview`, `finance_movements`, `finance_products`, `finance_salary_savings` | `financeService` |
 | `library_catalog` | `backend_library_catalog`, `backend_save_library_catalog` | `libraryStorage` |
 | `library_config` | `backend_read_library_config`, `backend_write_library_config`, `backend_ensure_library_config` | `libraryConfig` |
 | `library_graph` | `backend_library_graph`, `library_link_targets`, `library_link_suggestions`, `backend_library_graph_search`, `backend_library_search` | `libraryLinkRuntime`, `librarySearchGraphIndex`, `useLibraryGraphData` |
@@ -5603,8 +5602,7 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `multichat` | `multichat_catalog`, `multichat_open`, `multichat_send`, `multichat_cancel`, `multichat_close` | `multichatRuntime` |
 | `page_links` | `backend_sync_page_link` | `MarkdownView` |
 | `routine` | `routine_get_dashboard`, `routine_apply_mutation` | `routineService` |
-| `services::calendar_holidays` | `calendar_argentina_holidays` | `argentinaHolidaysService` |
-| `services::finance_external` | `finance_dollar_quotes`, `finance_inflation_indices`, `finance_historical_dollar_quotes` | `argentinaDollarHistoryService`, `argentinaInflationService`, `dollarQuotesService` |
+| `services::finance_external` | `finance_dollar_quotes` | `dollarQuotesService` |
 | `task_manager_commands` | `task_manager_board_view`, `task_manager_board_execute`, `task_manager_pomodoro`, `task_manager_delete_pomodoro`, `task_manager_read_ticket_source`, `task_manager_write_ticket_source` | `taskManagerPublicationClient`, `taskManagerService` |
 | `task_manager_publication` | `publish_task_manager_ai_stream_event`, `get_task_manager_publication_url`, `get_task_manager_publication_status`, `open_task_manager_publication`, `stop_task_manager_publication`, `begin_task_manager_publication_batch`, `end_task_manager_publication_batch` | `taskManagerPublicationClient`, `taskManagerPublicationRuntime`, `useTaskManagerPublicationAiHostBridge` |
 | `task_manager_publication_source` | `backend_publish_task_manager` | `taskManagerPublicationRuntime` |
@@ -7175,6 +7173,8 @@ Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteri
 
 ### Lecturas y tablero
 
+> Desde el rediseño del 2026-09-25, `finance_dashboard_insights` y `finance_service_month_status` ya no existen: la pantalla lee `finance_screen.rs` (ver «Interfaz»). `finance_get_dashboard` y el resto de las lecturas siguen disponibles para las tools del agente.
+
 - **`finance_get_dashboard`:**
   - `debtByCurrency` es lo pagado de tarjetas: el total de los resúmenes que vencen en el mes;
   - `servicesByCurrency` es lo pagado de servicios en el mes: ocurrencias con importe pagado, contadas en el mes de su gasto (una línea de tarjeta cuenta en el vencimiento de su resumen), o si no en su fecha de pago o su período;
@@ -7220,20 +7220,47 @@ Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteri
 
 ### Interfaz (`src/modules/finance`)
 
-- **Tablero:**
-  - métricas: gastos del mes, pagado de tarjetas, en tarjeta a pagar, ahorrado este mes (con su costo), tarjetas/sueldo y ahorro/sueldo;
-  - «Para revisar» (solo lectura, con el aviso de responder por chat o Telegram);
-  - resumen del período (por defecto el mes), con categorías separadas por moneda;
-  - movimientos con tipo, estado y fecha de compra en castellano;
-  - ahorro con saldo, con los tipos en castellano.
-- **Registros:** productos (búsqueda y, al tocar uno, su historial de precios), tickets, últimos sueldos, resúmenes pagados, cuotas pendientes y gráficos.
-- **Gráficos:**
-  - «Pagado por tarjeta»: una serie por tarjeta y moneda, por mes de vencimiento;
-  - «Tarjetas respecto del sueldo» y «Servicios respecto del sueldo» (`SalaryRatioChart`, un solo componente con título y textos por props);
-  - todos marcan cada mes con un punto, así que un único mes con datos también se ve.
-- **Servicios:** estado del mes por servicio e historial de versiones.
-- **Se eliminaron** todos los formularios, las acciones por fila, «Relaciones y evidencia», «Auditoría del mes», patrimonio y `CreditCardStatementForm.tsx`.
-- **Estilos:** `.finance-list-button` para la lista táctil de productos, con los tokens del tema.
+Rediseño del 2026-09-25 según el canvas «Notia · Finanzas rediseño» (https://claude.ai/artifact/JNijaDH9muBxtTBxaNW4W9): boards Resumen, Movimientos, Sueldo y ahorro, Resumen · teléfono, Productos y tickets, y Productos sin datos.
+
+**Frontera Rust/React.** Rust deriva todo lo que la pantalla muestra en `app/src/finance_screen.rs`; React solo formatea (`engines/financeFormat.ts`, `engines/financeMovementText.ts`) y distribuye. Cuatro comandos de lectura, todos con `{ payload: { context, … } }`:
+
+| Comando | Entrada | Devuelve |
+|---|---|---|
+| `finance_overview` | `month` | `FinanceOverview`: tarjetas de «Para revisar», uso del sueldo, gastos del mes, ahorrado, categorías, los cuatro gastos más grandes, resúmenes que vencen, cuotas, servicios del mes con historial de seis meses y los cinco últimos movimientos. |
+| `finance_movements` | `month`, `filter`, `search` | Chips con cantidades, resumen del filtro, grupos por cuenta con sus filas y el texto de «Pedir un cambio en el chat» por movimiento. |
+| `finance_products` | `search`, `sort` (`recent`, `rising`, `az`), `selectedId` | Productos con precio confirmado, detalle del elegido (precio por comercio, serie para el gráfico, alias, duda de producto parecido) y los últimos 50 tickets. |
+| `finance_salary_savings` (async) | `month` | Barras de sueldo (hasta 12 períodos hasta el mes anterior), promedio, comparación con la inflación, las tres partes del sueldo mes a mes, cotizaciones con brecha, última compra de dólares y reservas con sus movimientos del mes. |
+
+**Reglas que decide Rust:**
+
+- **Uso del sueldo:** sueldo neto del período anterior en su moneda principal (pesos si hay).
+  - Partes: tarjetas = total de los resúmenes que vencen en el mes; ahorro = costo de las compras de moneda ligadas a un aporte, más los aportes en esa moneda sin cambio; servicios aparte = ocurrencias pagadas en el mes cuyo gasto no está en una tarjeta de crédito; sin registrar = el resto, nunca negativo (`exceeded` si lo registrado supera el sueldo).
+  - Porcentajes con un decimal, truncados, como los ratios de tarjeta.
+- **Resumen de tarjeta:** las líneas (compras, cargos, intereses e impuestos, menos créditos; los pagos no cuentan) se comparan con el total menos el saldo anterior impago, con tolerancia de un peso: `matches`, `missing` o `extra`. Si no cuadra, genera una tarjeta «Resumen de tarjeta» en «Para revisar».
+- **«Para revisar»:** los casos pendientes de `finance_review_items` (el texto entre «» va en negrita y cada opción arma el mensaje del chat con el id del caso), una tarjeta «Categorías» si hay gastos sin categoría y las de los resúmenes que no cuadran.
+- **Movimientos:**
+  - filtros `all`, `uncategorized`, `category:<id>`, `card-unpaid`, `pending`, `income`, `savings` y `discarded`; un filtro desconocido vuelve a `all`;
+  - la búsqueda normaliza acentos y cubre descripción, cuenta, categoría, servicio y comercio;
+  - los grupos siguen el orden de los resúmenes que vencen (mayor total primero) y luego las demás cuentas;
+  - la nota del detalle explica un descartado, un gasto en tarjeta a pagar, un pendiente o la duda que lo marca.
+- **Cuentas:** una tarjeta se nombra con emisor y últimos dígitos del último resumen (`Mastercard ••0-3`) y su insignia se deduce del emisor (`MC`, `VISA`, `AMEX`, `NX`, `CABAL`, `TC`); las demás cuentas muestran su moneda.
+- **Productos:** solo precios `confirmed`/`corrected`, en la moneda más usada del producto; la variación es la del comercio con más compras.
+- **Partes del sueldo:** doce meses que terminan en el mes elegido; un mes sin registros o sin sueldo del mes anterior no tiene valor.
+
+**Pantalla:** `FinanceScreen` (encabezado, pestañas, mes compartido entre Resumen y Movimientos, pie del teléfono) y una pestaña por componente (`FinanceOverviewTab`, `FinanceMovementsTab`, `FinanceSalaryTab`, `FinanceProductsTab`); Dev queda como pestaña pequeña al final, fuera del canvas. `useFinanceResource` carga cada vista, descarta respuestas viejas y recarga ante cambios.
+
+**Chat:** los botones de «Para revisar», «Categorizar en el chat», «Pedir un cambio en el chat», «Corregir en el chat» y «Mandar un ticket» abren el chat lateral (`setRightChatPanelOpen`) y ponen el texto en su compositor mediante `services/chat/chatComposerRequests.ts`, sin enviarlo; «Cargar con el asistente» solo lo abre y le da el foco. Si el chat lateral todavía no está montado, el último pedido espera a que se suscriba.
+
+**Refresco:** `finance::sync_context`, por donde terminan todas las escrituras financieras (también las del agente y Telegram), emite `notia:finance-data-changed`; `subscribeToFinanceDataChanges` escucha ese evento además del aviso local.
+
+**Estilos:** `styles/finance.css`, con los tokens de la paleta (el teal del canvas es el acento; tarjetas, periwinkle; avisos, ámbar) y container queries: 12 columnas desde 1181 px, dos columnas hasta 900 px y el diseño de teléfono hasta 640 px. En el teléfono las dudas se deslizan con scroll-snap y el detalle de un movimiento es una hoja inferior.
+
+**Se retiraron:**
+
+- los componentes del tablero anterior: `FinanceDashboard`, `FinanceRecordsPanel`, `FinanceServicesView`, `DollarQuotesCards`, los tres gráficos y sus motores;
+- `app/src/finance_views.rs`;
+- los comandos `finance_get_dashboard`, `finance_dashboard_insights`, `finance_service_month_status`, `finance_salary_analysis`, `finance_list_purchases`, `finance_list_price_history`, `finance_list_products`, `finance_list_salaries`, `finance_list_credit_card_statements`, `finance_list_installment_plans`, `finance_list_service_occurrence_versions`, `finance_inflation_indices` y `finance_historical_dollar_quotes` (el agente sigue usando sus funciones Rust);
+- en `backend-core/finance_insights.rs`, lo que solo usaba el tablero anterior (vistas de resumen, ratios, `savings_to_income`, variaciones).
 
 ### Validaciones ejecutadas
 
@@ -7247,9 +7274,18 @@ Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteri
 - `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint src` y `npx vitest run` (268 aprobados): sin errores.
 - Vista previa en Chrome headless con datos simulados, en ancho de escritorio y de teléfono.
 
+**Rediseño de la pantalla (2026-09-25):**
+
+- `cargo test --offline -p notia-app`: 332 aprobados y 1 ignorado; incluye 8 pruebas nuevas de `finance_screen` sobre la semilla de desarrollo (uso del sueldo, resúmenes que cuadran, tipo de cambio de la compra de dólares, filtros y búsqueda, productos y partes del sueldo).
+- `cargo test --offline` en `backend-core`: 286 aprobados.
+- `cargo check` de escritorio y `--target aarch64-linux-android`: sin errores, 39 y 62 advertencias (las mismas de antes).
+- `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint src`, `npx vitest run` (67 archivos, 265 pruebas) y `git diff --check`: sin errores.
+- Vista previa en Chrome headless con datos simulados del canvas: las cuatro pestañas en escritorio, 880 y 700 px, teléfono de 390 px, hoja de detalle y tema claro.
+
 ### Pendientes
 
 - Probar con datos reales la migración v26 sobre la biblioteca del usuario (queda la copia `.pre-v26.sqlite`).
 - Validar la carga por Telegram: ticket con tarjeta y luego resumen, y resumen y luego ticket.
 - Probar en un Android físico.
 - Compilar en Linux (WSL).
+- Probar la pantalla nueva con datos reales, en Windows y en un Android físico (deslizar «Para revisar», hoja de detalle, teclado virtual al abrir el chat).
