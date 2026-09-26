@@ -8,7 +8,7 @@
 - Bloques de GitBook en notas Markdown con su sintaxis: avisos, pestañas, desplegables, pasos, columnas, novedades, código con título, prompts, contenido condicional, tarjetas, URL embebidas, archivos, enlaces a páginas, contenido reutilizable y dibujos; en la línea, botones, íconos, variables (`vars:` de la nota y `.gitbook/vars.yaml`), imágenes del tamaño del texto y anotaciones que se muestran al pasar el puntero o al tocar. Se exportan a PDF y Word con formato.
 - Barra de formato sobre la selección en notas Markdown: tipo de bloque, negrita, cursiva, subrayado, tachado, código, color de texto, resaltado, alineación, enlaces y quitar formato.
 - Bloques de las notas resaltados con su handle y movibles por arrastre, con línea de destino.
-- Wikilinks y enlaces bidireccionales entre notas.
+- Wikilinks y enlaces bidireccionales entre notas, que en el editor se leen sin corchetes y se deshabilitan borrando un corchete.
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
 - Gráficos XGraph interactivos en notas Markdown.

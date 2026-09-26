@@ -7325,6 +7325,29 @@ Había dos problemas con `[[archivo]]` en el editor.
 
 - Probar en Windows y en un Android físico. En Android, tocar el enlace lo abre y tocar a su derecha permite editar la línea.
 
+### Enlaces sin corchetes (2026-09-26)
+
+El editor muestra un wikilink solo con su texto: `[[Ejemplo]]` se lee «Ejemplo», `[[notas/Alfa.md|el alias]]` se lee «el alias» y `[[nota.md]]` se lee «nota». El archivo no cambia.
+
+- `findWikiLinkMatches` (`wikiLinkEngine.ts`) indica dónde está el texto visible de cada enlace (`labelStartOffset` y `labelEndOffset`) y arma `displayLabel` con esas mismas posiciones.
+- `buildWikiLinkDecorations` marca como sintaxis (`.notia-wikilink-syntax`) lo que queda fuera del texto visible: los corchetes, la referencia antes del `|` y el `.md`. Si el cursor o la selección tocan el enlace, bordes incluidos (`isEditingWikiLink`), la sintaxis se ve atenuada. Si no, lleva `is-hidden` (`display: none`).
+- Esto permite deshabilitar un enlace: con el cursor pegado a su final se ve `[[Ejemplo]]`, y un Retroceso nativo borra el último `]`. Queda `[[Ejemplo]`, que ya no es un enlace y se ve tal cual. En el archivo se guarda como `\[\[Ejemplo]`: el escritor de Markdown escapa los corchetes de un enlace incompleto, que así sigue deshabilitado.
+- Si se ocultara la sintaxis sin más, un clic a la derecha de «Ejemplo» dejaría el cursor del navegador al final del texto visible, es decir, antes de `]]` y dentro del enlace. `snapIntoWikiLinkEdge`, desde el `appendTransaction` del plugin, lleva el cursor al borde exterior: después de `]]`, o antes de `[[` si cayó a la izquierda. Solo actúa cuando el cursor llega desde afuera sin cambios en el documento; mientras se edita el enlace, el cursor se mueve libremente dentro de él.
+- Tocar el texto visible sigue abriendo la nota (`resolveClickedWikiLinkPath`).
+
+**Validación**
+
+- `wikiLinkEngine.test.ts` (nuevo) y `wikiLinkPlugin.test.ts`: 4 pruebas nuevas. Cubren el texto visible con alias, `.md` y espacios, el enlace que deja de serlo al perder un corchete, la búsqueda del enlace por posición y el movimiento del cursor. `npx vitest run`: 76 archivos, 318 pruebas. `tsc`, `eslint` y `vite build`: sin errores.
+- Prueba con clics y teclas reales en Chrome headless sobre el editor real:
+  - las líneas se leen «Ver Alfa y más», «Alfa» y «el alias fin»;
+  - con un clic a la derecha de un enlace al final de la línea se ve `[[Alfa]]`, y un Retroceso deja `[[Alfa]` sin enlace;
+  - escribir después del enlace guarda `[[Alfa]] sigue` y, con el cursor en otro lado, se lee «Alfa sigue»;
+  - un clic sobre «Alfa» abre la nota.
+
+**Pendientes**
+
+- Probar en Windows y con el dedo en Android, incluido el teclado de Android borrando desde el final del enlace.
+
 ## Chat lateral: rediseño del encabezado y del compositor
 
 El chat lateral sigue el canvas https://claude.ai/artifact/5rC6dAzdraQcVaaR5YXgVe (artboard «Explorador — interactivo», columna del asistente). Es un cambio de presentación: no hay comandos nuevos ni cambios en Rust.

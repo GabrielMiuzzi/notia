@@ -11,6 +11,12 @@ export interface InlineWikiLinkContext {
 export interface WikiLinkTextMatch {
   startOffset: number
   endOffset: number
+  /**
+   * Where the text the link shows sits inside the match: `nota` in
+   * `[[nota.md]]`, `alias` in `[[nota|alias]]`. The rest is syntax.
+   */
+  labelStartOffset: number
+  labelEndOffset: number
   rawInner: string
   reference: string
   displayLabel: string
@@ -137,15 +143,26 @@ export function findWikiLinkMatches(text: string): WikiLinkTextMatch[] {
   let result = pattern.exec(text)
   while (result) {
     const fullMatch = result[0]
-    const rawInner = result[1]?.trim() ?? ''
+    const inner = result[1] ?? ''
+    const rawInner = inner.trim()
     const reference = normalizeWikiLinkReference(rawInner)
-    const [rawReferencePart, rawAliasPart] = rawInner.split('|', 2)
-    const displayLabel = (rawAliasPart?.trim() || rawReferencePart?.trim() || rawInner).replace(/\.md$/i, '')
+    // The alias is shown when there is one; otherwise the reference without `.md`.
+    const innerStart = result.index + 2
+    const pipe = inner.indexOf('|')
+    const alias = pipe >= 0 ? inner.slice(pipe + 1) : ''
+    const [segment, segmentStart] = alias.trim()
+      ? [alias, innerStart + pipe + 1]
+      : [pipe >= 0 ? inner.slice(0, pipe) : inner, innerStart]
+    const labelStartOffset = segmentStart + segment.length - segment.trimStart().length
+    const labelEndOffset = labelStartOffset + segment.trim().replace(/\.md$/i, '').length
+    const displayLabel = text.slice(labelStartOffset, labelEndOffset)
 
     if (rawInner && reference) {
       matches.push({
         startOffset: result.index,
         endOffset: result.index + fullMatch.length,
+        labelStartOffset,
+        labelEndOffset,
         rawInner,
         reference,
         displayLabel,

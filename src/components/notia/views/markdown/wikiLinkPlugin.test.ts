@@ -6,7 +6,8 @@ import { gfm } from '@milkdown/kit/preset/gfm'
 import { getMarkdown } from '@milkdown/kit/utils'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { buildWikiLinkLookup } from '../../../../engines/markdown/wikiLinkEngine'
-import { configureWikiLinkSerializer, resolveClickedWikiLinkPath } from './wikiLinkPlugin'
+import { EditorState, TextSelection } from '@milkdown/kit/prose/state'
+import { configureWikiLinkSerializer, findWikiLinkAt, isEditingWikiLink, resolveClickedWikiLinkPath, snapIntoWikiLinkEdge } from './wikiLinkPlugin'
 
 const note = (name: string) => ({
   path: `C:/lib/${name}.md`, name, title: name, relativePath: name, relativePathWithExtension: `${name}.md`, wikiLink: name,
@@ -95,5 +96,32 @@ describe('configureWikiLinkSerializer', () => {
     expect(markdown).toContain(String.raw`Otra [[Beta|alias]] y \[texto] suelto`)
     expect(markdown).toContain(String.raw`[[Beta\|alias]]`)
     expect(markdown).not.toContain(String.raw`\[\[`)
+  })
+})
+
+describe('hidden wikilink syntax', () => {
+  const at = (state: EditorState, position: number) => state.apply(state.tr.setSelection(TextSelection.create(state.doc, position)))
+
+  it('finds the link around a position, edges included', async () => {
+    const view = await open('Ver [[Alfa]] y más')
+    const from = positionOf(view, '[[Alfa]]')
+    const link = findWikiLinkAt(view.state, from + 8)
+    expect(link).toMatchObject({ from, to: from + 8, labelFrom: from + 2, labelTo: from + 6 })
+    expect(findWikiLinkAt(view.state, from - 1)).toBeNull()
+    expect(isEditingWikiLink({ from: from + 8, to: from + 8 }, link!)).toBe(true)
+    expect(isEditingWikiLink({ from: from + 9, to: from + 9 }, link!)).toBe(false)
+  })
+
+  it('moves a cursor that lands on the hidden brackets to the edge of the link', async () => {
+    const view = await open('Ver [[Alfa]] y más')
+    const from = positionOf(view, '[[Alfa]]')
+    const away = at(view.state, 1)
+    // A click right of `Alfa` leaves the browser caret at the end of the visible text.
+    expect(snapIntoWikiLinkEdge(away, at(away, from + 6))).toBe(from + 8)
+    expect(snapIntoWikiLinkEdge(away, at(away, from + 2))).toBe(from)
+    expect(snapIntoWikiLinkEdge(away, at(away, from + 4))).toBeNull()
+    // While the link is being edited, the cursor moves freely through it.
+    const editing = at(view.state, from + 8)
+    expect(snapIntoWikiLinkEdge(editing, at(editing, from + 7))).toBeNull()
   })
 })

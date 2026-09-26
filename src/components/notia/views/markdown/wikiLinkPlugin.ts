@@ -1,4 +1,5 @@
-import { Plugin, PluginKey, type EditorState } from '@milkdown/kit/prose/state'
+import { Plugin, PluginKey, TextSelection, type EditorState, type Selection } from '@milkdown/kit/prose/state'
+import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
 import { remarkStringifyOptionsCtx } from '@milkdown/kit/core'
@@ -9,9 +10,12 @@ import {
   resolveWikiLinkTarget,
   restoreEscapedWikiLinks,
   type MarkdownWikiLinkLookup,
+  type WikiLinkTextMatch,
 } from '../../../../engines/markdown/wikiLinkEngine'
 
 const WIKI_LINK_PLUGIN_KEY = new PluginKey('notia-wikilink-plugin')
+/** Brackets, `|` and `.md` of a link: dimmed while it is edited, hidden otherwise. */
+const WIKI_LINK_SYNTAX_CLASS = 'notia-wikilink-syntax'
 /** Class of a link that points to an existing note; only a click on it opens the note. */
 const RESOLVED_WIKI_LINK_CLASS = 'notia-wikilink-token--resolved'
 
@@ -68,6 +72,56 @@ function buildMenuContext(view: EditorView): WikiLinkMenuContext | null {
   }
 }
 
+/** A wikilink in the document: the whole `[[…]]` and the text it shows. */
+export interface WikiLinkRange {
+  from: number
+  to: number
+  labelFrom: number
+  labelTo: number
+  match: WikiLinkTextMatch
+}
+
+function toRange(textPosition: number, match: WikiLinkTextMatch): WikiLinkRange {
+  return {
+    from: textPosition + match.startOffset,
+    to: textPosition + match.endOffset,
+    labelFrom: textPosition + match.labelStartOffset,
+    labelTo: textPosition + match.labelEndOffset,
+    match,
+  }
+}
+
+/** Code keeps its brackets: a wikilink inside code is plain text. */
+function isCodeText(node: ProseNode, parent: ProseNode | null): boolean {
+  return parent?.type.name === 'code_block' || node.marks.some((mark) => mark.type.name === 'code')
+}
+
+/** The wikilink whose `[[…]]` contains `position` (its edges included), if any. */
+export function findWikiLinkAt(state: EditorState, position: number): WikiLinkRange | null {
+  const $position = state.doc.resolve(position)
+  const block = $position.parent
+  if (!block.isTextblock || block.type.name === 'code_block') return null
+  const start = $position.start()
+  let found: WikiLinkRange | null = null
+  block.forEach((node, offset) => {
+    if (found || !node.isText || !node.text || isCodeText(node, block)) return
+    const link = findWikiLinkMatches(node.text)
+      .map((match) => toRange(start + offset, match))
+      .find((range) => position >= range.from && position <= range.to)
+    if (link) found = link
+  })
+  return found
+}
+
+/**
+ * Whether the person is working on the link: the cursor or the selection
+ * touches it. Then its brackets show, so deleting from its end leaves
+ * `[[nota]` and the link goes away; otherwise only the text it shows is seen.
+ */
+export function isEditingWikiLink(selection: Pick<Selection, 'from' | 'to'>, link: Pick<WikiLinkRange, 'from' | 'to'>): boolean {
+  return selection.from <= link.to && selection.to >= link.from
+}
+
 function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLookup): DecorationSet {
   const decorations: Decoration[] = []
 
@@ -76,34 +130,45 @@ function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLo
       return false
     }
 
-    if (!node.isText || !node.text) {
+    if (!node.isText || !node.text || isCodeText(node, parent)) {
       return
     }
 
-    if (parent?.type.name === 'code_block' || node.marks.some((mark) => mark.type.name === 'code')) {
-      return
-    }
-
-    const matches = findWikiLinkMatches(node.text)
-    for (const match of matches) {
-      const matchFrom = position + match.startOffset
-      const matchTo = position + match.endOffset
+    for (const match of findWikiLinkMatches(node.text)) {
+      const link = toRange(position, match)
       const target = resolveWikiLinkTarget(lookup, match.reference)
       const className = target
         ? `notia-wikilink-token ${RESOLVED_WIKI_LINK_CLASS}`
         : 'notia-wikilink-token notia-wikilink-token--broken'
 
-      decorations.push(
-        Decoration.inline(matchFrom, matchTo, {
-          class: className,
-        }),
-      )
+      decorations.push(Decoration.inline(link.from, link.to, { class: className }))
+      if (link.labelTo <= link.labelFrom) continue
+      const syntaxClass = isEditingWikiLink(state.selection, link) ? WIKI_LINK_SYNTAX_CLASS : `${WIKI_LINK_SYNTAX_CLASS} is-hidden`
+      decorations.push(Decoration.inline(link.from, link.labelFrom, { class: syntaxClass }))
+      if (link.labelTo < link.to) decorations.push(Decoration.inline(link.labelTo, link.to, { class: syntaxClass }))
     }
 
     return
   })
 
   return DecorationSet.create(state.doc, decorations)
+}
+
+/**
+ * Where the cursor goes when it lands on a hidden part of a link from
+ * outside, or `null` to leave it. Clicking right of `nota` puts the browser
+ * caret at the end of the visible text, which is inside `]]`; the cursor
+ * moves past `]]` (or before `[[` on the left) so typing continues outside
+ * the link and Backspace deletes its last bracket.
+ */
+export function snapIntoWikiLinkEdge(previous: EditorState, next: EditorState): number | null {
+  const { selection } = next
+  if (!selection.empty) return null
+  const link = findWikiLinkAt(next, selection.from)
+  if (!link || isEditingWikiLink(previous.selection, link)) return null
+  if (selection.from >= link.labelTo && selection.from < link.to) return link.to
+  if (selection.from > link.from && selection.from <= link.labelFrom) return link.from
+  return null
 }
 
 function resolveWikiLinkPathAtPosition(
@@ -213,6 +278,13 @@ export function createWikiLinkPlugin(config: CreateWikiLinkPluginConfig) {
               config.onMenuContextChange(null)
             },
           }
+        },
+        appendTransaction: (transactions, previous, next) => {
+          // Only a cursor that moved on its own: typing is never redirected.
+          if (transactions.some((transaction) => transaction.docChanged)) return null
+          if (!transactions.some((transaction) => transaction.selectionSet)) return null
+          const position = snapIntoWikiLinkEdge(previous, next)
+          return position === null ? null : next.tr.setSelection(TextSelection.create(next.doc, position))
         },
         props: {
           decorations: (state) => buildWikiLinkDecorations(state, config.getLookup()),

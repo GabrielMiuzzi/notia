@@ -5156,6 +5156,16 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   text-decoration-thickness: 1px;
 }
 
+/* Brackets, `|` and `.md` of a wikilink: dimmed while the cursor touches the link, hidden otherwise. */
+.notia-wikilink-syntax {
+  color: var(--color-muted-text);
+  text-decoration: none;
+}
+
+.notia-wikilink-syntax.is-hidden {
+  display: none;
+}
+
 .notia-wikilink-menu {
   position: fixed;
   width: 320px;
