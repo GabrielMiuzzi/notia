@@ -9,7 +9,6 @@ pub enum BackendChannel {
     Telegram,
     Meeting,
     Published,
-    Multichat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

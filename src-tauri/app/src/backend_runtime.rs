@@ -953,11 +953,6 @@ struct TauriBackendToolExecutor {
 /// Documents a single multi-document apply may touch.
 const MAX_MULTI_DOCUMENT_APPLY: usize = 20;
 
-/// Tools the app runtime can execute; a turn may ask for a subset.
-pub(crate) fn supported_tool_names() -> &'static [&'static str] {
-    TauriBackendToolExecutor::supported_tool_names()
-}
-
 impl TauriBackendToolExecutor {
     fn supported_tool_names() -> &'static [&'static str] {
         &[
@@ -2662,7 +2657,6 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     "docx" => crate::backend::ExportFormat::Docx,
                     _ => return Err(BackendError::invalid_input("El formato de exportación no es válido.")),
                 };
-                crate::device_preferences::ensure_export_allowed(&self.app, format)?;
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 let picker = self.app.state::<AndroidDirectoryPickerState>();
                 let receipt = crate::filesystem::adapter::export_library_document(
@@ -3908,12 +3902,17 @@ pub(crate) fn execute_backend_request(
     state
         .journal
         .hydrate_record(app, registry, &request.context, &request.idempotency_key)?;
-    request.tools = project_canonical_tool_catalog(
-        &request.context,
-        &principal,
-        &requested_tool_names,
-        ToolCatalogProjection::Full,
-    )?;
+    // The chat's switches narrow what the actor and the scope allow.
+    request.tools = notia_backend_core::restrict_tool_access(
+        project_canonical_tool_catalog(
+            &request.context,
+            &principal,
+            &requested_tool_names,
+            ToolCatalogProjection::Full,
+        )?,
+        request.tool_access,
+        request.library_search,
+    );
     state.journal.store_request(&request)?;
     let provider_settings = provider_settings_for_library(app, state, &request.context.library_id)?;
     let provider = OllamaAgentProvider::with_transport(
@@ -4050,20 +4049,6 @@ fn provider_settings_for_library(
                 false,
             )
         })
-}
-
-/// HTTP settings, model and `think` value of a library's AI provider.
-pub(crate) fn library_ai_provider(
-    app: &AppHandle,
-    library_id: &str,
-) -> Result<(crate::services::ai_service::AiHttpSettings, String, Value), BackendError> {
-    let state = app.state::<BackendRuntimeState>();
-    let settings = provider_settings_for_library(app, &state, library_id)?;
-    Ok((
-        crate::services::ai_service::AiHttpSettings { ollama_url: settings.ollama_url, api_key: settings.api_key },
-        settings.model,
-        settings.think,
-    ))
 }
 
 /// One completion without tools for a background task of the library

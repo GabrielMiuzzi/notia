@@ -17,6 +17,11 @@ const document: StoredChatDocument = {
   selectedContextFiles: ['/library/notas/a.md'],
   selectedContextFolders: [],
   libraryRagEnabled: true,
+  toolsEnabled: true,
+  writeEnabled: true,
+  permanentContext: '',
+  dynamic: null,
+  agents: [],
   messages: [{ role: 'user', content: 'Hola' }],
 }
 

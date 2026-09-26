@@ -18,16 +18,15 @@ import {
   loadRightPanelWidth,
   saveRightPanelWidth,
 } from '../../services/preferences/rightPanelStorage'
-import { shouldSelectMatchingRightPanelChat } from './hooks/useRightPanelChatContext'
+import { shouldSelectMatchingRightPanelChat, type RightPanelChatContextChip } from './hooks/useRightPanelChatContext'
 
 interface NotiaRightPanelProps {
   isMeetingContext: boolean
-  isMultichatContext: boolean
   agentCorpusPaths: string[]
   agentScope: ChatAgentScope | null
   previousChats: { id: string; filePath: string; title: string }[]
   rightPanelChatContextKey: string
-  rightPanelChatContextLabel: string
+  rightPanelChatContext: RightPanelChatContextChip
   rightPanelPreferredContextPaths: string[]
   rightPanelPreferredContextName: string | null
   rightPanelPreferredContextMode: ChatFileContextMode | null
@@ -35,7 +34,6 @@ interface NotiaRightPanelProps {
   rightPanelTransientContextPaths: string[]
   rightPanelTransientContextMode: ChatFileContextMode | null
   rightPanelTransientContextSummary: string | null
-  rightPanelMultichatRoomId: string | null
   rightPanelTransientSelectedPaths: string[]
   onRightPanelTransientSelectedPathsChange: (paths: string[]) => void
   markdownSelection: MarkdownSelectionContext | null
@@ -44,12 +42,11 @@ interface NotiaRightPanelProps {
 
 function NotiaRightPanelComponent({
   isMeetingContext,
-  isMultichatContext,
   agentCorpusPaths,
   agentScope,
   previousChats,
   rightPanelChatContextKey,
-  rightPanelChatContextLabel,
+  rightPanelChatContext,
   rightPanelPreferredContextPaths,
   rightPanelPreferredContextName,
   rightPanelPreferredContextMode,
@@ -57,7 +54,6 @@ function NotiaRightPanelComponent({
   rightPanelTransientContextPaths,
   rightPanelTransientContextMode,
   rightPanelTransientContextSummary,
-  rightPanelMultichatRoomId,
   rightPanelTransientSelectedPaths,
   onRightPanelTransientSelectedPathsChange,
   markdownSelection,
@@ -151,11 +147,12 @@ function NotiaRightPanelComponent({
           onPointerCancel={handleResizePointerEnd}
         />
       ) : null}
-      {isRightChatPanelOpen ? (
+      {/* The side chat draws its own header (agent, history, new chat); Meeting keeps this one. */}
+      {isRightChatPanelOpen && isMeetingContext ? (
         <header className="notia-right-panel-header">
           <span className="notia-right-panel-title">
             <Sparkles size={15} strokeWidth={1.75} aria-hidden="true" />
-            {isMeetingContext ? 'Asistente de la reunión' : 'Asistente'}
+            Asistente de la reunión
           </span>
           <button
             type="button"
@@ -185,10 +182,9 @@ function NotiaRightPanelComponent({
                 library={activeLibrary}
                 aiPreferences={aiPreferences}
                 previousChats={previousChats}
-                title="Chat lateral"
-                description="Acceso rapido a la IA desde el panel derecho."
                 showHistoryPanel={false}
-                composerContextLabel={rightPanelChatContextLabel}
+                composerContext={rightPanelChatContext}
+                onClosePanel={handleToggleRightPanel}
                 preferredContextPaths={rightPanelPreferredContextPaths}
                 preferredContextName={rightPanelPreferredContextName}
                 preferredContextMode={rightPanelPreferredContextMode}
@@ -197,11 +193,9 @@ function NotiaRightPanelComponent({
                 transientContextMode={rightPanelTransientContextMode}
                 transientContextSummary={rightPanelTransientContextSummary}
                 transientContextContent={rightPanelTransientContextSummary}
-                multichatRoomId={rightPanelMultichatRoomId}
                 transientContextDisplayPaths={rightPanelTransientSelectedPaths}
                  onTransientContextPathRemove={handleTransientContextPathRemove}
                 persistTransientContext={false}
-                ephemeralChat={agentScope === 'graph' || isMultichatContext}
                 selectMatchingChatOnly={shouldSelectMatchingRightPanelChat(rightPanelPreferredContextScopeKey, rightPanelPreferredContextPaths)}
                 onChatCreated={chatCallbacks.onChatCreated}
                 onChatDeleted={chatCallbacks.onChatDeleted}

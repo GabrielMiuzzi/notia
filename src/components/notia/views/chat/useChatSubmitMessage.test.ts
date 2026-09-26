@@ -86,6 +86,11 @@ describe('useChatSubmitMessage lifecycle', () => {
       selectedContextFiles: [],
       selectedContextFolders: [],
       libraryRagEnabled: true,
+      toolsEnabled: true,
+      writeEnabled: true,
+      permanentContext: '',
+      dynamic: null,
+      agents: [],
       messages: [],
     }
     const setState = vi.fn()
@@ -163,6 +168,11 @@ describe('useChatSubmitMessage lifecycle', () => {
       selectedContextFiles: [],
       selectedContextFolders: [],
       libraryRagEnabled: true,
+      toolsEnabled: true,
+      writeEnabled: true,
+      permanentContext: '',
+      dynamic: null,
+      agents: [],
       messages: [
         { role: 'user' as const, content: 'Analiza esta teoria.', attachments: [attachment] },
         { role: 'assistant' as const, content: 'Voy a revisarla.' },

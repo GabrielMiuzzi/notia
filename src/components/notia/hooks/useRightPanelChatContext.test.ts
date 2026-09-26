@@ -87,10 +87,10 @@ describe('resolveRightPanelAgentScope', () => {
     expect(resolveRightPanelAgentScope('finance', null)).toBe('finance')
   })
 
-  it('uses the library scope and isolated context key for Multichat', () => {
-    expect(resolveRightPanelAgentScope('multichat', null)).toBe('library')
-    expect(resolveRightPanelContextScopeKey('multichat', null, null)).toBe('multichat:right-panel')
-    expect(resolveRightPanelAttachedContextPaths('multichat', null)).toEqual([])
+  it('uses the library scope for Agenda and Rutina', () => {
+    expect(resolveRightPanelAgentScope('agenda', null)).toBe('library')
+    expect(resolveRightPanelAgentScope('routine', null)).toBe('library')
+    expect(resolveRightPanelAttachedContextPaths('agenda', null)).toEqual([])
   })
 })
 

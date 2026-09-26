@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import type { StoredChatDocument, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
+import { loadChatDocument, type StoredChatDocument, type StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
+import { DEFAULT_CHAT_SETTINGS } from '../../../../services/chat/chatAgentsRuntime'
 import { createChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { checkAiHealth } from '../../../../services/ai/aiRuntime'
 import { startChatTurn, subscribeChatTitles, type ChatTurnHandle } from '../../../../services/chat/aiChatRuntime'
@@ -47,12 +48,11 @@ export function useChatSubmitMessage(
     selectedLibraryFolderPaths = [],
     libraryRagEnabled = true,
     newChatAgentMemoryEnabled = true,
-    ephemeralChat = false,
+    newChatSettings = DEFAULT_CHAT_SETTINGS,
     preferredContextScopeKey,
     persistTransientContext,
     hasTransientContext,
     transientContextContent,
-    multichatRoomId,
     activeMarkdownSource,
     workspaceSnapshot,
     onActiveMarkdownDocumentChanged,
@@ -67,6 +67,7 @@ export function useChatSubmitMessage(
     setOptimisticThreadMessages,
     setStreamingThinking,
     setStreamingAssistantMessage,
+    setStreamingAgent,
     setSelectedChatFilePath,
     setActiveChatDocument,
     setChatTitleOverrides,
@@ -164,20 +165,13 @@ export function useChatSubmitMessage(
     let targetChatFilePath = selectedChatFilePath
 
     if (!targetChatDocument || !targetChatFilePath) {
-      if (ephemeralChat) {
-        targetChatDocument = {
-          title: 'Chat efímero',
-          ...buildAutoCreateChatPayload(newChatAgentMemoryEnabled),
-          contextScopeKey: preferredContextScopeKey,
-          selectedContextMode: 'direct',
-          selectedContextFiles: [],
-          selectedContextFolders: [],
-          libraryRagEnabled: true,
-          messages: [],
-        }
-        targetChatFilePath = null
-      } else try {
-        const created = await createChatDraftFile(library, buildAutoCreateChatPayload(newChatAgentMemoryEnabled), selection)
+      try {
+        const created = await createChatDraftFile(
+          library,
+          buildAutoCreateChatPayload(newChatAgentMemoryEnabled),
+          selection,
+          newChatSettings,
+        )
         if (!mountedRef.current) return
         setPendingAutoCreatedChatFilePath(created.filePath)
         setSelectedChatFilePath(created.filePath)
@@ -210,6 +204,9 @@ export function useChatSubmitMessage(
     const previousChatDocument: StoredChatDocument = targetChatDocument
     const optimisticMessages = [...targetChatDocument.messages, userMessage]
     const previousDraft = draft
+    // Messages of the chat's agents, shown as each one finishes.
+    let turnMessages = optimisticMessages
+    let agentMessageCount = 0
 
     setDraft('')
     setIsSubmitting(true)
@@ -237,16 +234,29 @@ export function useChatSubmitMessage(
         scope: effectiveAgentScope,
         message: trimmedMessage,
         context: transientContextContent,
-        multichatRoomId: multichatRoomId ?? undefined,
         attachments: selectedImageAttachments,
         promptName: agentPromptFileName || undefined,
         undoOperationId,
         workspace: workspaceSnapshot,
         selection,
-        chat: targetChatFilePath
-          ? { kind: 'saved', path: targetChatFilePath }
-          : { kind: 'ephemeral', document: targetChatDocument },
+        chat: { kind: 'saved', path: targetChatFilePath },
       }, {
+        onAgentStart: (agent) => {
+          setStreamingAgent?.(agent)
+          setStreamingThinking('')
+          setStreamingAssistantMessage('')
+        },
+        onAgentMessage: (message) => {
+          agentMessageCount += 1
+          turnMessages = [...turnMessages, message]
+          setOptimisticThreadMessages(turnMessages)
+          setStreamingThinking('')
+          setStreamingAssistantMessage('')
+        },
+        onAgentSilent: () => {
+          setStreamingThinking('')
+          setStreamingAssistantMessage('')
+        },
         onThinkingDelta: (delta) => setStreamingThinking((current) => current + delta),
         onMessageDelta: (delta) => setStreamingAssistantMessage((current) => current + delta),
         onAgentProgress,
@@ -310,10 +320,19 @@ export function useChatSubmitMessage(
       })
       setPendingAutoCreatedChatFilePath((current) => (targetChatFilePath && current === targetChatFilePath ? null : current))
       setOptimisticThreadMessages(null)
-      setDraft(previousDraft)
-      setActiveChatDocument(previousChatDocument)
       setStreamingThinking('')
       setStreamingAssistantMessage('')
+      if (agentMessageCount > 0 && targetChatFilePath) {
+        // The backend saved the message and what the agents said before the
+        // error or the cancel: the chat shows that instead of the draft.
+        const savedDocument = await loadChatDocument(targetChatFilePath, previousChatDocument.title, library)
+          .catch(() => ({ ...previousChatDocument, messages: turnMessages }))
+        if (!mountedRef.current) return
+        setActiveChatDocument(savedDocument)
+      } else {
+        setDraft(previousDraft)
+        setActiveChatDocument(previousChatDocument)
+      }
       setSelectedImageAttachments(previousImageAttachments)
       setSelectedLibraryFilePaths(previousLibraryFilePaths)
       setSelectedLibraryFileOptions(previousLibraryFileOptions)
@@ -323,6 +342,7 @@ export function useChatSubmitMessage(
       )
     } finally {
       if (mountedRef.current) {
+        setStreamingAgent?.(null)
         setIsSubmitting(false)
         // The submit button ended a tap; registering the window here lets the
         // tap-to-mount path suppress the phantom native click that follows.

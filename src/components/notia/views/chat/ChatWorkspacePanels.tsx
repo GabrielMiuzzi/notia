@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   AlignLeft,
   Brain,
@@ -159,6 +160,7 @@ export function ChatContextPanel({
   onAgentMemoryChange,
   onOpenMemory,
   onClose,
+  children,
 }: {
   libraryName: string | null
   contextFiles: Array<{ path: string; name: string }>
@@ -177,6 +179,8 @@ export function ChatContextPanel({
   onAgentMemoryChange: (enabled: boolean) => void
   onOpenMemory: () => void
   onClose: () => void
+  /** Sections after the memory: permissions, permanent context, dynamic and agents. */
+  children?: ReactNode
 }) {
   return (
     <>
@@ -329,6 +333,7 @@ export function ChatContextPanel({
             Administrar memoria
           </button>
         </section>
+        {children}
       </aside>
     </>
   )

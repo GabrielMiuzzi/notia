@@ -67,6 +67,9 @@ fn route(command: &str) -> Option<Route> {
         "backend_list_chats" => backend_list_chats,
         "backend_match_chat" => backend_match_chat,
         "backend_set_chat_context" => backend_set_chat_context,
+        "backend_set_chat_settings" => backend_set_chat_settings,
+        "backend_set_chat_pinned" => backend_set_chat_pinned,
+        "backend_rename_chat" => backend_rename_chat,
         "backend_save_chat" => backend_save_chat,
         "backend_chat_image_previews" => backend_chat_image_previews,
         "backend_classify_chat_file" => backend_classify_chat_file,
@@ -76,6 +79,8 @@ fn route(command: &str) -> Option<Route> {
         "backend_disable_backups" => backend_disable_backups,
         "backend_migrate_backup_directory" => backend_migrate_backup_directory,
         "backend_sync_page_link" => backend_sync_page_link,
+        "markdown_blocks_resolve" => markdown_blocks_resolve,
+        "markdown_set_page_mode" => markdown_set_page_mode,
         "coldpass_unlock" => coldpass_unlock,
         "coldpass_status" => coldpass_status,
         "coldpass_generate_password" => coldpass_generate_password,
@@ -193,11 +198,7 @@ fn route(command: &str) -> Option<Route> {
         "ai_list_models" => ai_list_models,
         "ai_resolve_model" => ai_resolve_model,
         "ai_recognize_inkmath" => ai_recognize_inkmath,
-        "multichat_catalog" => multichat_catalog,
-        "multichat_open" => multichat_open,
-        "multichat_send" => multichat_send,
-        "multichat_cancel" => multichat_cancel,
-        "multichat_close" => multichat_close,
+        "chat_agents_catalog" => chat_agents_catalog,
         "library_open" => library_open,
         "library_refresh" => library_refresh,
         "library_read_directory" => library_read_directory,
@@ -249,6 +250,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "backend_list_chats",
     "backend_match_chat",
     "backend_set_chat_context",
+    "backend_set_chat_settings",
+    "backend_set_chat_pinned",
+    "backend_rename_chat",
     "backend_save_chat",
     "backend_chat_image_previews",
     "backend_classify_chat_file",
@@ -258,6 +262,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "backend_disable_backups",
     "backend_migrate_backup_directory",
     "backend_sync_page_link",
+    "markdown_blocks_resolve",
+    "markdown_set_page_mode",
     "coldpass_unlock",
     "coldpass_status",
     "coldpass_generate_password",
@@ -354,11 +360,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "ai_list_models",
     "ai_resolve_model",
     "ai_recognize_inkmath",
-    "multichat_catalog",
-    "multichat_open",
-    "multichat_send",
-    "multichat_cancel",
-    "multichat_close",
+    "chat_agents_catalog",
     "library_open",
     "library_refresh",
     "library_read_directory",
@@ -653,6 +655,24 @@ fn backend_set_chat_context(app: &AppHandle, _window_label: &str, command: &str,
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::chat_history::backend_set_chat_context(arg0, arg1).await) })))
+}
+
+fn backend_set_chat_settings(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::chat_history::backend_set_chat_settings(arg0, arg1).await) })))
+}
+
+fn backend_set_chat_pinned(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::chat_history::backend_set_chat_pinned(arg0, arg1).await) })))
+}
+
+fn backend_rename_chat(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::chat_history::backend_rename_chat(arg0, arg1).await) })))
 }
 
 fn backend_save_chat(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1193,30 +1213,20 @@ fn ai_recognize_inkmath(app: &AppHandle, _window_label: &str, command: &str, arg
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_tasks::ai_recognize_inkmath(arg0, arg1).await) })))
 }
 
-fn multichat_catalog(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+fn markdown_blocks_resolve(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::multichat::multichat_catalog(arg0, arg1).await) })))
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gitbook_blocks::markdown_blocks_resolve(arg0, arg1).await) })))
 }
 
-fn multichat_open(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+fn markdown_set_page_mode(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::note_page_mode::markdown_set_page_mode(arg(command, args, "payload")?))))
+}
+
+fn chat_agents_catalog(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::multichat::multichat_open(arg0, arg1).await) })))
-}
-
-fn multichat_send(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    let arg0 = app.clone();
-    let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::multichat::multichat_send(arg0, arg1).await) })))
-}
-
-fn multichat_cancel(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready({ crate::multichat::multichat_cancel(app.clone(), arg(command, args, "payload")?); Ok(Value::Null) }))
-}
-
-fn multichat_close(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready({ crate::multichat::multichat_close(app.clone(), arg(command, args, "payload")?); Ok(Value::Null) }))
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::chat_agents::chat_agents_catalog(arg0, arg1).await) })))
 }
 
 fn library_open(app: &AppHandle, window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

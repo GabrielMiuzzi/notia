@@ -6,11 +6,14 @@ import type { LibraryGraphModel } from '../types/graph/libraryGraph'
 const EMPTY_GRAPH_MODEL: LibraryGraphModel = {
   nodes: [],
   edges: [],
+  summary: { notes: 0, links: 0, orphans: 0, contexts: [], topConnected: [] },
 }
 
 export interface GraphSearchResult {
   path: string
   label: string
+  /** First folder of the note, empty at the library root. */
+  folder: string
   preview: string
   score: number
 }

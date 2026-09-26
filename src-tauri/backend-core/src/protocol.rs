@@ -253,6 +253,32 @@ pub struct AgentRequest {
     /// adds preferences; it can never replace the embedded base prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_name: Option<String>,
+    /// Tools the person allows for this request, on top of what its actor
+    /// and scope allow.
+    #[serde(default)]
+    pub tool_access: ToolAccess,
+    /// The agent may search and read the whole library. Off, the tools that
+    /// read or search it are left out and the turn keeps only the files the
+    /// person chose.
+    #[serde(default = "library_search_default")]
+    pub library_search: bool,
+}
+
+fn library_search_default() -> bool {
+    true
+}
+
+/// Tools a chat allows. Memory tools depend on the memory policy, not on
+/// this: a chat with memory keeps them even without other tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolAccess {
+    #[default]
+    All,
+    /// Only tools that do not change library data.
+    ReadOnly,
+    /// No tools.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -743,6 +769,8 @@ mod tests {
             attachments: Vec::new(),
             idempotency_key: "request-1".to_string(),
             prompt_name: None,
+            tool_access: Default::default(),
+            library_search: true,
         }
     }
 

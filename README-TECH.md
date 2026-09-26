@@ -275,7 +275,7 @@ Llegan por `subscribeBackend`: en la ventana por el `emit` de Tauri y en el nave
 |---|---|---|
 | `notia:backend-event` | `backend_tauri.rs` (sobre versionado con secuencia por request) | `aiChatRuntime` |
 | `ai-chat-interaction`, `ai-chat-title` | `ai_chat.rs` | `aiChatRuntime` |
-| `multichat-event` | `multichat.rs` | `multichatRuntime` |
+| `ai-chat-agent` | `ai_chat.rs` | `aiChatRuntime` |
 | `notia-library-tree-changed` | `filesystem/watch.rs` | `libraryTreeWatchRuntime` |
 | `task-manager-changed`, `task-manager-publication-changed` | `task_manager_commands.rs`, `task_manager_publication.rs` | `useTaskManager` |
 | `notia-task-manager-publication-ai-request` | `task_manager_publication.rs` | `useTaskManagerPublicationAiHostBridge` |
@@ -966,11 +966,11 @@ Cuarto y último paso de la fase 1 del plan de separación. Con esta iteración,
   - `best_match`: el chat abierto gana los empates;
   - `apply_view_context`.
 - Comandos nuevos en `chat_history.rs`:
-  - `backend_list_chats { libraryId }` lista `chat/chats` con los títulos leídos, del más nuevo al más viejo. Lista la carpeta real, incluso en Android sin expandir el árbol.
+  - `backend_list_chats { libraryId, clock? }` lista `chat/chats` con los títulos leídos, del más nuevo al más viejo; con el reloj del dispositivo agrupa por día y pone primero los fijados (ver «Historial de chats del chat lateral»). Lista la carpeta real, incluso en Android sin expandir el árbol.
   - `backend_match_chat { libraryId, scopeKey, mode, files, selected }` elige el chat que corresponde a la vista.
   - `backend_set_chat_context { libraryId, logicalPath, scopeKey, mode, files }` da al chat el contexto de la vista y lo guarda.
 - **Plataforma.** En Android se leen los 8 chats más recientes para títulos y coincidencias; en escritorio, todos. La decisión pasó a Rust y se eliminó la prop `historyHydrationMode`.
-- **Multichat.** El chat lateral envía `multichatRoomId`. `ai_chat_send` compone el contexto de la sala con `multichat::room_chat_context` (dinámica, agentes, contexto y últimos 40 mensajes). `MultichatPanelContext` quedó con `{ roomId, label }`.
+- **Multichat.** El chat lateral enviaba `multichatRoomId` para consultar una sala. Multichat se eliminó (ver «Chat IA: agentes, dinámica, permisos y contexto permanente»).
 - **Snapshot.** La instantánea del workspace dejó de llevar capacidades: Rust las deriva del scope. También se eliminaron de `agentContracts.ts` las guardas sin uso (`isWorkspaceAiSnapshot`, `isToolResult`, `isWebSearchRequest`).
 
 ### Enlaces wiki y exportación
@@ -1090,6 +1090,9 @@ Tercer paso del plan de separación. Las tareas de IA del proveedor, Multichat y
 | `ai_improve_transcript` | `{ settings, transcript }` | transcripción mejorada |
 
 ### Multichat (`multichat.rs`, `backend-core/src/multichat.rs`)
+
+> **Eliminado (2026-09-25).** Las salas y sus comandos se quitaron; las reglas de rondas pasaron a `backend-core/src/chat_agents.rs` y los agentes se agregan en el Chat IA. Ver «Chat IA: agentes, dinámica, permisos y contexto permanente». Lo que sigue describe la versión anterior.
+
 
 - **Reglas de la sala (en `backend-core`):**
   - validación de dinámicas y agentes (uno a seis, sin repetidos, con prompt);
@@ -2682,7 +2685,7 @@ No se ejecutaron Vitest, la suite Rust, el empaquetado release ni un ciclo compl
 
 Estado vigente: `FinanceContext` incluye `actorLibraryUserId` y `source`. `validate_context` abre la biblioteca y verifica el usuario en `library_users`; un usuario que no sea Owner debe tener exactamente el contexto `#Confidencial` para cualquier lectura o escritura financiera. El agente transmite el actor estable en cada comando financiero, incluido patrimonio, historiales, cotizaciones y extraccion. La migracion SQLite de actor estable aplica a los registros financieros que ya tenian actor; el ID numerico de Telegram permanece separado como identidad externa historica.
 
-El chat efimero de Graph View se construye en memoria y no crea un Markdown. El host de la URL publica recibe desde Rust los nombres de tableros publicados; `scopePaths` solo es un hint y se acepta unicamente cuando pertenece a uno de esos tableros. Android valida el sobre global antes de enviarlo al plugin y el plugin vuelve a validar sus campos obligatorios sin incorporarlos al payload de Ollama.
+El chat de Graph View se guarda en `chat/chats/` como los demás chats (antes era efímero, ver «Nuevo chat y eliminación del chat abierto»). El host de la URL publica recibe desde Rust los nombres de tableros publicados; `scopePaths` solo es un hint y se acepta unicamente cuando pertenece a uno de esos tableros. Android valida el sobre global antes de enviarlo al plugin y el plugin vuelve a validar sus campos obligatorios sin incorporarlos al payload de Ollama.
 <!-- El detalle financiero histórico siguiente queda fuera de la vista; el contrato vigente se resume inmediatamente después.
 
 Los DTO usan `camelCase` y todos reciben `FinanceContext { libraryPath, androidDirectoryUri }`. Los comandos base son `finance_get_dashboard`, `finance_save_account`, `finance_save_category`, `finance_save_transaction`, sus bajas lógicas, y los comandos de reservas/ahorro. Los dominios documentales agregan `finance_save_purchase`, `finance_list_purchases`, `finance_list_price_history`, `finance_save_salary`, `finance_list_salaries`, `finance_save_installment_plan`, `finance_save_investment`, `finance_get_net_worth` y `finance_list_net_worth_history`. La validación de tickets compara importes en centavos exactos, contempla impuestos informativos ya incluidos y admite una diferencia fiscal máxima de un centavo; el gasto siempre toma el total final impreso. Los ajustes de redondeo visibles se extraen como líneas independientes. Los recibos validan cuenta y moneda, conceptos tipados y unicidad por empleador/período; normalmente también exigen que el neto coincida con bruto menos descuentos. Cuando la evidencia es un PDF que indica una firma digital, electrónica o manuscrita, conservan `signed_document` y aceptan el neto impreso como autoritativo aunque existan adelantos, ajustes u otros conceptos que no cierren esa ecuación simple. Al confirmarse crean el ingreso neto en la misma transacción y las consultas históricas recuperan conceptos y evidencia. El agente común expone `create_finance_salary`, que en Telegram requiere confirmación individual reforzada y vuelve a leer el período guardado para comprobar el registro completo; antes de enviar el mensaje terminal, el bridge repite la lectura con el ID y todos los campos devueltos. Una respuesta que afirme la carga sin esa prueba se reemplaza por un error y nunca se comunica como éxito. Duplicados, validación y almacenamiento conservan resultados deterministas como `create_finance_purchase`. `finance_clear_all_data` recibe directamente `{ context: FinanceContext }` y vacía los datos y catálogos financieros personalizados en una única transacción respetando claves foráneas; dentro de esa misma transacción restaura las diez categorías de gasto iniciales y conserva `notia_schema_migrations`, el archivo SQLite y cualquier tabla ajena a Finanzas. La UI solo lo invoca desde **Configuraciones → Finanzas** después de aceptar un modal destructivo y publica un evento interno para refrescar cualquier dashboard montado. Todos los comandos financieros devuelven errores serializables `{ code, message }`, con códigos `validation`, `notFound`, `conflict` o `storage`. `extract_finance_document` acepta únicamente un archivo dentro de la biblioteca desktop, de hasta 15 MB y extensión PDF/PNG/JPG/WEBP; la API key se lee de `LLAMA_CLOUD_API_KEY` en Rust y nunca forma parte del payload frontend.
@@ -3117,6 +3120,8 @@ No se modifican APIs, comandos Tauri ni datos SQLite, por lo que no hay migraci�
 ### 2.4 Graph View
 
 #### Descripción
+> Estado vigente de la pantalla y del contrato: ver «Graph View: rediseño».
+
 Construcción y visualización de un grafo de conocimiento donde los nodos son archivos Markdown y las aristas son wikilinks entre ellos. Graph View utiliza `ForceGraph2D` de **react-force-graph-2d**: recibe el modelo tipado de nodos y aristas, ejecuta un layout de fuerzas y renderiza un canvas 2D, con títulos persistentes sobre los nodos, zoom, paneo y foco de resultados.
 
 Cada nodo Markdown resuelve su `contexto` desde el frontmatter y el color desde el catálogo de la biblioteca. Para los archivos bajo `task-mannager/` o `task-manager/`, `libraryGraphEngine.ts` usa primero el contexto aplicado al tablero y solo recurre al frontmatter si no puede resolver ese tablero; `GraphView.tsx` aplica el color al nodo 2D y muestra una leyenda completa. Task Manager continúa sincronizando el contexto del tablero sobre los archivos al crear o editar un tablero.
@@ -3448,151 +3453,7 @@ flowchart LR
 
 ### 2.5.1 Multichat
 
-#### Descripción y límites
-
-Multichat es una superficie de aplicación para Windows y Android. Se accede desde la acción `multichat` del tercer grupo de `LEFT_RAIL_GROUPS`, inmediatamente después de `agenda`, y se monta como `MultichatView`. No agrega un motor de inferencia ni comandos Tauri nuevos: `multichatRuntime.ts` invoca directamente el adaptador existente `streamAiChatReply` de Ollama una vez por agente, con callbacks separados para thinking y respuesta.
-
-La sala es efímera en cuanto a historial: `MultichatView` conserva el estado únicamente mientras la pestaña está montada, no crea archivos en `chat/chats/`, no usa `localStorage` y no se rehidrata al abrir Multichat nuevamente. Tampoco carga ni persiste memoria global: el runtime envía `longTermMemories: []`, `files: []` e `image: null` en cada llamada plana al adaptador.
-
-La configuración muestra un textbox accesible **Contexto adicional (opcional)**. Al crear la sala, el contenido se recorta con `trim()` y se guarda en `MultichatRoom.contextContent`; desde ese momento queda fijo e inmutable junto con la dinámica y los agentes. Si no contiene texto, no se agrega una sección vacía al prompt. Cuando existe, `multichatRuntime.ts` lo incorpora en cada llamada junto con la dinámica seleccionada y el prompt individual, como sección separada de `serializeMultichatHistory`, que limita el historial conversacional a 40 mensajes. Es contenido ingresado por el usuario y no confiable; no concede permisos.
-
-#### Archivos Markdown y carga segura
-
-`multichatLibraryRuntime.ts` usa estas ubicaciones dentro de la biblioteca activa:
-
-| Recurso | Ubicación | Contrato de lectura |
-|---|---|---|
-| Dinámicas | `.agent/dynamics/` | Archivos Markdown directos (`*.md`), sin subdirectorios. El nombre visible es el nombre de archivo sin extensión y el frontmatter se elimina solo al componer el contenido. |
-| Agentes | `.agent/promps/` | Reutiliza `listAgentPrompts`/`loadAgentPrompt`; solo se aceptan archivos Markdown válidos y el nombre visible omite `.md`. |
-
-`ensureAgentPromptFile` crea de forma idempotente `.agent/`, `promps/`, `dynamics/`, `skills/` y la estructura de memoria, sin reemplazar dinámicas existentes. La lectura usa el adaptador de filesystem de escritorio o el URI SAF de Android. `isValidMultichatMarkdownFileName` rechaza nombres vacíos, extensiones distintas de `.md`, separadores de ruta, `.` y `..`, evitando traversal. `stripMultichatFrontmatter` devuelve el cuerpo recortado sin modificar el archivo original.
-
-La vista bloquea el inicio si falta una dinámica, si su cuerpo está vacío, si un prompt no puede leerse o está vacío, o si la selección no contiene entre uno y seis agentes. La validación se repite después de cargar los archivos para cubrir cambios ocurridos entre el listado y la creación. También rechaza agentes repetidos y conserva únicamente el conjunto cargado para esa sala. Los errores visibles distinguen carga general, dinámica inválida/vacía, prompt inválido/ilegible/vacío y cantidad de agentes inválida.
-
-#### Contratos de estado y mensajes
-
-`src/types/multichat.ts` define los límites y contratos serializables:
-
-| Tipo | Campos relevantes |
-|---|---|
-| `MultichatRoom` | `id`, `dynamic`, `agents`, `contextContent`, `messages`, `round`, `cancelled` y `libraryId`. La dinámica, el contexto adicional y los agentes son inmutables desde la vista una vez creada; no existe un campo de permisos. |
-| `MultichatAgent` | `fileName`, `name`, `prompt`, `icon` y `color`. El nombre deriva del archivo; iconos y colores se asignan por posición desde una paleta fija. |
-| `MultichatMessage` | `id`, `speakerId` (`user` o `agent:<archivo>`), `speakerName`, `content` y `createdAt`. |
-| `MultichatSerializedMessage` | `speaker`, `name` y `content`; es la forma enviada al contexto de cada agente y al panel derecho. |
-| `MultichatRoundState` | Estado observable (`configuration`, `empty`, `user-turn`, `agent-turn`, `waiting-user`, `loading`, `error`, `cancelled` o `agent-no-response`), contador/límite de rondas automáticas (`automaticRounds`/`automaticRoundLimit`), agente activo y error seguro. |
-| `MultichatPanelContext` | ID de sala, etiqueta, nombre de dinámica, nombres de agentes, `contextContent` y conversación serializada para el panel derecho. |
-
-La sala se crea vacía y el primer mensaje siempre lo agrega el usuario. El estado visual puede conservar más mensajes mientras la pestaña siga montada, pero `serializeMultichatHistory` acota a los últimos `MULTICHAT_MAX_MESSAGES = 40` mensajes cada vez que construye el contexto conversacional. El `contextContent` fijo no forma parte de esa ventana: se concatena por separado en cada prompt de agente. Cada línea conserva el hablante explícito (`Usuario` o el nombre del agente), incluso cuando se transforma a los roles `user`/`assistant` que consume el adaptador de Ollama.
-
-#### Selección y orquestación de turnos
-
-`multichatEngine.ts` implementa la coordinación pura:
-
-1. `validateAgentSelection` exige entre `MULTICHAT_MIN_AGENTS = 1` y `MULTICHAT_MAX_AGENTS = 6`, nombres de archivo únicos y prompts no vacíos.
-2. `selectMultichatParticipants` parte únicamente de los agentes fijados en la sala y limita la entrada al máximo de seis agentes. Si la dinámica contiene el nombre de uno o más agentes fijados, selecciona esos agentes; si contiene una indicación explícita de participación total (`todos`, `todas`, `all`, `everyone` o `cada agente`), conserva todo el conjunto fijado. Cuando ambas señales aparecen, la selección por nombres prevalece, igual que en la implementación. En ambos casos mezcla aleatoriamente el orden. Sin una de esas instrucciones, elige un subconjunto no vacío aleatorio y luego lo ordena aleatoriamente. La fuente aleatoria es inyectable para pruebas y nunca agrega un agente externo a la sala.
-3. `runSequentialMultichatTurns` invoca cada agente en orden. Cuando una respuesta no vacía se completa, `MultichatView` la agrega inmediatamente al estado visible y al contexto de la sala antes de invocar al siguiente agente; así las respuestas anteriores permanecen acumuladas en orden mientras el siguiente transmite y los agentes posteriores reciben todo lo ya completado dentro de la ventana de 40 mensajes.
-4. `chooseAutomaticRoundLimit` fija al crear la sala un límite aleatorio de 1 a 4 rondas. Una ronda es una ejecución completa de `runMultichatRound` y puede incluir todos los agentes seleccionados; el contador aumenta una vez por ronda completada, no una vez por respuesta individual. `dynamicAllowsAutomaticTurns` permite continuar automáticamente por defecto y solo devuelve `false` cuando la dinámica pide explícitamente esperar al usuario o desactivar el encadenamiento.
-5. Al terminar una ronda sin error ni respuesta vacía, la vista inicia la siguiente ronda automáticamente mientras `automaticRounds < automaticRoundLimit`. Un nuevo mensaje del usuario reinicia el contador en cero; una respuesta vacía, un error o una dinámica que pida intervención detienen la cadena.
-
-La dinámica y el contexto adicional son contenido del usuario, no una fuente de permisos. Multichat no crea un agente global ni envía `requestedScope`, `WorkspaceAiSnapshot`, herramientas o una política de autorización: construye un prompt plano con dinámica, prompt individual, contexto adicional fijo cuando existe, política de participación e historial etiquetado de hasta 40 mensajes. Ese prompt se pasa a `streamAiChatReply` junto con el historial como `previousMessages` y los campos vacíos `longTermMemories`, `files` e `image`.
-
-#### Llamada plana y ausencia de capacidades de agente
-
-Multichat no recibe catálogo de tools y no ejecuta `createChatScopedAgent`, `createGlobalAiAgent` ni `runGlobalAiChat`. Por diseño no ofrece búsqueda web, lectura o escritura de biblioteca, mutaciones, planes, aclaraciones ni confirmaciones. No existe `MultichatPermission`, ni selector `read-only`/`read-write`, ni una política de sala que proyectar. La autorización y los permisos normales del panel derecho no se heredan a Multichat porque la sala no ejecuta herramientas.
-
-`streamAiChatReply` recibe `previousMessages` con los mensajes de usuario como `role: 'user'` y las respuestas anteriores como `role: 'assistant'`, prefijadas con el nombre del agente. Sus opciones reciben el `AbortSignal`, `onThinkingDelta` y `onMessageDelta`. La UI mantiene ambos flujos en un estado de streaming temporal; cuando `onAgentComplete` recibe un `MultichatMessage` no vacío, lo confirma de inmediato en la lista visible y actualiza el contexto del panel antes de que comience el siguiente agente. La actualización es idempotente por `message.id`, por lo que el cierre de la ronda no vuelve a agregar respuestas ya mostradas. El thinking y los deltas parciales nunca se guardan como mensajes.
-
-#### Cancelación, errores y limpieza
-
-`MultichatView` mantiene un `AbortController` por cadena. El `AbortSignal` se propaga a `runMultichatRound` y a `streamAiChatReply`, y se comprueba antes y después de cada agente; una cancelación produce `AbortError`, marca la sala como `cancelled`, limpia el agente activo y no inicia otra ronda automática. Al desmontar la vista o cambiar de biblioteca también se aborta la operación y se elimina el contexto del panel. Los errores del adaptador se muestran de forma segura; Multichat no agrega un timeout, ciclo de tools ni política de permisos propios.
-
-Una respuesta vacía no se agrega como mensaje en blanco. El motor notifica `onAgentComplete(agent, null)`; la vista muestra `agent-no-response` y el nombre del agente, conserva las respuestas no vacías ya obtenidas y detiene la continuación automática. Si todos los agentes de una ronda quedan sin respuesta, la ronda termina sin nuevas entradas y muestra el error visible correspondiente. Un error no cancelado marca `error`, limpia el agente activo y tampoco continúa la cadena.
-
-#### Contexto auxiliar del panel derecho
-
-`multichatSessionStore.ts` mantiene en memoria el `MultichatPanelContext` activo. `useRightPanelChatContext` reconoce la vista, usa scope `library`, clave `multichat:right-panel`, rutas adjuntas vacías y etiqueta `Contexto activo: sala Multichat`. El resumen contiene la dinámica, los nombres de agentes, el contexto adicional fijo cuando existe y como máximo los últimos 40 mensajes. El contexto adicional se expone solo como información auxiliar y conserva su carácter de contenido no confiable, sin modificar la autorización del panel. Al cerrar la sala, desmontar la vista o cambiar de biblioteca se invalida el contexto.
-
-`NotiaRightPanel` monta `ChatWorkspaceView` con `ephemeralChat` y sin persistencia del contexto auxiliar. El panel es un único asistente: puede consultar el resumen de la sala, pero no se incorpora a `MultichatRoom`, no recibe turnos ni publica mensajes dentro de ella. Su scope y permisos normales de chat permanecen independientes de Multichat.
-
-```mermaid
-flowchart TD
-    Menu[Agenda → Multichat] --> Setup[Dinámica + contexto opcional + 1..6 prompts]
-    Setup --> Load[Cargar .agent/dynamics y .agent/promps]
-    Load --> Validate{Archivos y selección válidos}
-    Validate -->|No| Error[Error seguro, sin crear sala]
-    Validate -->|Sí| Room[Sala efímera en memoria]
-    Room --> User[Mensaje del usuario]
-    User --> Select[Seleccionar subconjunto y orden según dinámica]
-    Select --> Round[Turnos secuenciales por adaptador Ollama]
-    Round --> History[Streaming separado y guardar solo respuesta final]
-    History --> Auto{¿Otra ronda? dinámica + límite 1..4}
-    Auto -->|Continuar| Select
-    Auto -->|Esperar| Room
-    Room -. contexto auxiliar .-> Panel[Panel derecho, asistente único]
-```
-
-```mermaid
-sequenceDiagram
-    participant U as Usuario
-    participant V as MultichatView
-    participant E as multichatEngine
-    participant O as streamAiChatReply / Ollama
-    participant P as Panel derecho
-    U->>V: Crear sala y enviar mensaje
-    V->>E: Seleccionar participantes fijados
-    loop Agentes de la ronda
-        E->>O: prompt plano + historial máximo 40
-        O-->>E: deltas de thinking y respuesta
-        E->>V: Confirmar respuesta completada en la UI
-        V->>E: Incorporar respuesta al contexto siguiente
-    end
-    E-->>V: Mensajes, espera, error o cancelación
-    V->>P: Actualizar contexto auxiliar en memoria
-```
-
-#### Validación, compatibilidad y pendientes técnicos
-
-Las pruebas unitarias y de integración cubren selección acotada, nombres explícitos, selección por defecto de subconjunto no vacío, orden aleatorio, indicación explícita de todos los agentes, exclusión de agentes no fijados, aleatoriedad inyectable, límite de 1–4 rondas, continuidad automática por defecto y espera explícita al usuario, distinción entre rondas y respuestas de agentes, orden secuencial, ventana de 40, contexto adicional incluido en cada prompt, respuesta vacía, carga Markdown sin frontmatter, rechazo de traversal, llamada plana sin tools, callbacks separados de thinking/respuesta, cancelación, descarte de resultados obsoletos, cierre del contexto en memoria, aislamiento por `roomId`, suscripción independiente y scope independiente del panel derecho. En esta iteración, `src/services/multichat/multichatLibraryRuntime.test.ts` fija la delegación idempotente de la creación de `.agent/dynamics/`, el filtrado de nombres Markdown, la extracción de frontmatter sin modificar la fuente y los límites de selección 1..6; `src/engines/multichat/multichatEngine.test.ts` cubre la selección determinista de subconjuntos, nombres concretos, participación explícita de todos, exclusión del conjunto de la sala, cancelación antes de invocar y descarte de una respuesta que se vuelve obsoleta; `src/services/multichat/multichatSessionStore.test.ts` verifica los 40 mensajes de contexto, el aislamiento por sala y la notificación independiente del panel.
-
-Validaciones acumuladas de la implementación base:
-
-- `npm test -- --run`: 121 archivos y 633 tests aprobados.
-- `npx vitest run src/services/multichat src/engines/multichat`: 4 archivos y 11 tests aprobados.
-- `npx tsc --noEmit`: aprobado.
-- `npm run lint`: aprobado.
-- `npm run build -- --minify=false`: build correcto; permanecen warnings existentes de chunks e importaciones dinámicas.
-- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: aprobado previamente.
-- `cargo check --manifest-path src-tauri/Cargo.toml --tests`: aprobado previamente; permanecen warnings existentes.
-- `git diff --check`: aprobado.
-
-Validaciones ejecutadas para esta corrección de acumulación visible:
-
-- `npx tsc --noEmit`: aprobado.
-- `npx vitest run src/services/multichat src/engines/multichat`: 4 archivos y 11 tests aprobados.
-- ESLint del archivo `src/components/notia/views/MultichatView.tsx`: aprobado.
-- `git diff --check`: aprobado.
-
-Validaciones ejecutadas para esta corrección de rondas automáticas:
-
-- `npm test -- --run`: 121 archivos y 633 tests aprobados.
-- `npm run lint`: aprobado.
-- `npx tsc --noEmit`: aprobado.
-- `npx vitest run src/services/multichat src/engines/multichat`: 4 archivos y 11 tests aprobados.
-- `git diff --check`: aprobado.
-
-Validaciones ejecutadas en esta iteración de selección determinista de participantes de Multichat:
-
-- `npm test -- --run`: 121 archivos y 640 tests aprobados.
-- `npx tsc --noEmit`: aprobado.
-- `npm run lint`: aprobado.
-- `npm run build -- --minify=false`: build correcto con 5851 módulos; conserva warnings Vite existentes.
-- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: aprobado.
-- `cargo check --manifest-path src-tauri/Cargo.toml --tests`: aprobado; conserva warnings Rust existentes.
-- `git diff --check`: aprobado.
-
-La implementación conserva la carga de dinámicas/prompts mediante los adaptadores de filesystem local de Windows y SAF/bridge de Android, pero la inferencia de Multichat usa el adaptador conversacional existente y no el contrato global de agentes con tools. Siguen pendientes las pruebas de UI y accesibilidad, además de la validación manual en Windows, Android, SAF y con Ollama real por falta de un entorno dedicado; también permanecen pendientes los escenarios manuales con uno y seis agentes, respuestas largas y mensajes intercalados, tal como queda declarado en `tasks.md`.
-
----
+> **Eliminado (2026-09-25).** Multichat ya no existe como módulo: los agentes y la dinámica se agregan en el panel de contexto del Chat IA y responden con los permisos del chat. Ver «Chat IA: agentes, dinámica, permisos y contexto permanente».
 
 ### 2.6 ColdPass
 
@@ -5581,7 +5442,7 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `ai_chat` | `ai_chat_send`, `ai_chat_answer`, `ai_chat_cancel` | `aiChatRuntime` |
 | `ai_tasks` | `ai_check_health`, `ai_list_models`, `ai_resolve_model`, `ai_recognize_inkmath` | `aiRuntime` |
 | `backup::service` | `backend_backup_status`, `backend_pick_backup_directory` †, `backend_disable_backups`, `backend_migrate_backup_directory` | `SettingsModal`, `backupSettingsStorage` |
-| `chat_history` | `backend_create_chat`, `backend_load_chat`, `backend_list_chats`, `backend_match_chat`, `backend_set_chat_context`, `backend_save_chat`, `backend_chat_image_previews`, `backend_classify_chat_file` | `chatDocumentStorage`, `chatImageAttachment`, `chatSessionStorage` |
+| `chat_history` | `backend_create_chat`, `backend_load_chat`, `backend_list_chats`, `backend_match_chat`, `backend_set_chat_context`, `backend_set_chat_settings`, `backend_set_chat_pinned`, `backend_rename_chat`, `backend_save_chat`, `backend_chat_image_previews`, `backend_classify_chat_file` | `chatDocumentStorage`, `chatImageAttachment`, `chatSessionStorage` |
 | `coldpass` | `coldpass_unlock`, `coldpass_status`, `coldpass_generate_password`, `coldpass_lock`, `coldpass_save_entry`, `coldpass_delete_entry`, `coldpass_pick_csv_import` †, `coldpass_confirm_import` | `ColdPassView`, `coldpassStorage` |
 | `commands::bluetooth` | `coldpass_bluetooth_status` †, `coldpass_bluetooth_connect` †, `coldpass_bluetooth_submit_pin` †, `coldpass_bluetooth_authenticate` †, `coldpass_bluetooth_send_message` †, `coldpass_bluetooth_disconnect` † | `ColdPassView`, `coldpassBluetooth` |
 | `commands::qwen3_tts` | `get_qwen3_tts_status`, `reload_qwen3_tts`, `synthesize_qwen3_tts_speech`, `qwen3_tts_speech_plan`, `prepare_qwen3_tts` | `qwen3TtsRuntime` |
@@ -5600,8 +5461,9 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `library_session` | `library_open`, `library_refresh`, `library_read_directory`, `library_read_document`, `library_write_document`, `library_mutate_entry`, `library_pick_directory` †, `library_list_files` | `LibraryManagerModal`, `chatAttachmentRuntime`, `libraryDocumentRuntime`, `libraryRuntime` |
 | `library_users` | `list_library_roles`, `create_library_role`, `list_library_users`, `create_library_user`, `update_library_user_password`, `delete_library_user`, `update_library_user_name`, `update_library_user_role`, `update_library_user_contexts`, `resolve_library_telegram_user`, `find_library_user`, `link_library_user_telegram`, `unlink_library_user_telegram` | `libraryUsers` |
 | `meeting` | `meeting_snapshot` †, `meeting_discard` †, `meeting_add_mark` †, `meeting_remove_mark` †, `meeting_set_notes` †, `meeting_set_live_answers` †, `meeting_regenerate_answer` †, `meeting_pin_answer` †, `meeting_rename_speaker` †, `meeting_merge_speakers` †, `meeting_generate_insights` †, `meeting_save_note` †, `meeting_export` †, `meeting_task_boards` †, `meeting_send_tasks` † | `meetingService` |
-| `multichat` | `multichat_catalog`, `multichat_open`, `multichat_send`, `multichat_cancel`, `multichat_close` | `multichatRuntime` |
+| `chat_agents` | `chat_agents_catalog` | `chatAgentsRuntime` |
 | `page_links` | `backend_sync_page_link` | `MarkdownView` |
+| `gitbook_blocks` | `markdown_blocks_resolve` | `gitbookBlocksRuntime` |
 | `routine` | `routine_get_dashboard`, `routine_apply_mutation` | `routineService` |
 | `services::finance_external` | `finance_dollar_quotes` | `dollarQuotesService` |
 | `task_manager_commands` | `task_manager_board_view`, `task_manager_board_execute`, `task_manager_pomodoro`, `task_manager_delete_pomodoro`, `task_manager_read_ticket_source`, `task_manager_write_ticket_source` | `taskManagerPublicationClient`, `taskManagerService` |
@@ -6478,8 +6340,6 @@ flowchart LR
     Policy -->|otro actor o ephemeral-no-memory| NoMemory[Sin memoria global]
     Agent --> Knowledge[add_agent_rule / add_agent_memory]
     Knowledge --> Files[.agent/memory]
-    Multichat[MultichatView] --> Flat[streamAiChatReply]
-    Flat --> FlatOllama[Ollama configurado]
 ```
 
 ```mermaid
@@ -6829,7 +6689,7 @@ La vista Chat IA del rail (`ChatWorkspaceView` con `showHistoryPanel`) sigue el 
 
 **Estructura.** `main.notia-chat-view--workspace` contiene tres columnas:
 
-- `ChatHistoryPanel`: encabezado con ocultar, **Nuevo chat** (abre `CreateChatModal`), búsqueda, lista virtualizada (`CHAT_HISTORY_ITEM_HEIGHT = 60`) y tarjeta de la librería activa. Cerrado, no se renderiza; la barra superior muestra el botón para abrirlo. Cada fila tiene un botón **⋯** que abre el mismo menú que el clic derecho, así eliminar un chat no depende del clic derecho (Android). El estado inicial abierto/cerrado sale de `CHAT_HISTORY_DOCKED_QUERY` (`min-width: 981px`); por debajo el panel flota con backdrop y se cierra al elegir un chat.
+- `ChatHistoryPanel`: encabezado con ocultar, **Nuevo chat** (vuelve al estado vacío; ver «Nuevo chat y eliminación del chat abierto»), búsqueda, lista virtualizada (`CHAT_HISTORY_ITEM_HEIGHT = 60`) y tarjeta de la librería activa. Cerrado, no se renderiza; la barra superior muestra el botón para abrirlo. Cada fila tiene un botón **⋯** que abre el mismo menú que el clic derecho, así eliminar un chat no depende del clic derecho (Android). El estado inicial abierto/cerrado sale de `CHAT_HISTORY_DOCKED_QUERY` (`min-width: 981px`); por debajo el panel flota con backdrop y se cierra al elegir un chat.
 - Columna central (`ChatWorkspacePanels.tsx`): `ChatTopBar` (título del chat o «Nuevo chat», píldora del modelo resuelto por `resolveActiveModel` que abre **Configuraciones → IA**, toggle del panel de contexto) y `.notia-chat-stage`. El stage renderiza en la misma posición del árbol `ChatWelcomeHero` o `ChatThread`, luego el dock del compositor y, en estado vacío, `ChatStarterCards`; como el compositor no cambia de posición, React no lo vuelve a montar al enviar el primer mensaje (no se pierde foco ni estado del dictado).
 - `ChatContextPanel`: alcance (librería completa o archivos elegidos con su modo Referencia/Directo, quitar uno por uno, abrir `ChatLibraryFilesModal`), acciones rápidas (completan el borrador) y acceso al modal de memoria persistente, que antes estaba en el engranaje del historial. Abre por defecto solo con `min-width: 1280px`; por debajo flota con backdrop.
 
@@ -6868,7 +6728,7 @@ Validación: `cargo test --offline -p notia-backend-core` (229), `cargo test --o
 
 Cada chat guarda en su encabezado `agentMemory: true|false` (`StoredChatDocument.agent_memory_enabled`, `agentMemoryEnabled` en TypeScript). Si falta la clave, como en los chats anteriores, el valor es `true` (`flag` en el parser y `#[serde(default)]` en el documento y en `CreateChatPayload`).
 
-- **Elección:** el panel de contexto de la vista Chat IA muestra un interruptor (`role="switch"`). Sin chat seleccionado, controla `newChatAgentMemoryEnabled`, que usan los dos caminos de creación: `createChatDraftFile` desde **Nuevo chat** y el primer envío (`useChatSubmitMessage` → `buildAutoCreateChatPayload(agentMemoryEnabled)`). Con un chat seleccionado, el interruptor muestra `activeChatDocument.agentMemoryEnabled` bloqueado: la elección no cambia en un chat existente. La barra superior muestra **Sin memoria** cuando el valor efectivo es `false`. El chat lateral no expone el interruptor y crea sus chats con memoria.
+- **Elección:** el panel de contexto de la vista Chat IA muestra un interruptor (`role="switch"`). Sin chat seleccionado, controla `newChatAgentMemoryEnabled`, que usa el primer envío al crear el chat (`useChatSubmitMessage` → `buildAutoCreateChatPayload(agentMemoryEnabled)`); **Nuevo chat** ya no crea el archivo. Con un chat seleccionado, el interruptor muestra `activeChatDocument.agentMemoryEnabled` bloqueado: la elección no cambia en un chat existente. La barra superior muestra **Sin memoria** cuando el valor efectivo es `false`. El chat lateral no expone el interruptor y crea sus chats con memoria.
 - **Motor:** `chat_turn::chat_persistence_policy` convierte la política `Persistent` de `turn_route` en `EphemeralNoMemory` cuando el documento del turno tiene `agent_memory_enabled = false`; Meeting y la publicación conservan la suya. Con esa política `load_prompt_parts_with_request` sigue cargando `rules.md` pero no `memory.md`, `authorize_agent_path` rechaza las rutas de memoria y `append_agent_file` rechaza escrituras.
 - **Catálogo:** `authorize_tool_call` exige, además del Owner, `persistence_policy.allows_memory()` para `ToolPolicy::Memory`, así que `add_agent_rule` y `add_agent_memory` no se ofrecen al modelo en turnos sin memoria (antes se ofrecían y fallaban, por ejemplo en Meeting). Un chat sin memoria tampoco agrega reglas nuevas.
 
@@ -6896,13 +6756,106 @@ Regresión: `ChatLibraryFilesModal.test.tsx` (happy-dom) comprueba que los archi
 2. `expand_context_files` suma los archivos del inventario bajo cada carpeta (prefijo con `/`, sin tomar carpetas hermanas con el mismo comienzo), sin repetir y hasta `MAX_CONTEXT_FILES = 500`.
 3. En modo directo lee cada archivo con `library_session::read_library_text` (misma lectura que el editor, incluido SAF en Android).
 4. `context_block` arma el texto: contenido completo hasta `MAX_DIRECT_CONTEXT_CHARS = 30.000` y la lista de omitidos; o, en referencia, hasta `MAX_INDEX_FILES = 50` rutas / `MAX_INDEX_CHARS = 6.000`. Sin búsqueda, agrega la instrucción de no buscar otros archivos (o de que no hay acceso a la librería). `prompt_with_context` lo agrega al mensaje del turno.
-5. Sin búsqueda, `tools_without_library_rag` envía en `AgentRequest.tools` las herramientas soportadas del catálogo canónico salvo las de `ToolPolicy::LibraryRead` (búsquedas, lecturas, metadatos, referencias, comparación). El runtime proyecta solo esas, así que la restricción la aplica Rust. Las herramientas de escritura, Task Manager, memoria y web se conservan.
+5. Sin búsqueda, el turno envía `AgentRequest.library_search = false` (`true` si falta) y `backend_runtime` quita del catálogo proyectado las herramientas de `ToolPolicy::LibraryRead` (búsquedas, lecturas, metadatos, referencias, comparación) con `catalog::restrict_tool_access`. Antes el turno mandaba en `AgentRequest.tools` la lista de todas las demás herramientas; desde que el catálogo pasó las 64 herramientas (124 hoy, 114 sin las de lectura), esa lista superaba `BackendLimits::max_tools` y el chat respondía «El request supera el límite de tools» con «Toda la librería» apagada. Se eliminaron `chat_context::tools_without_library_rag` y `backend_runtime::supported_tool_names`. Las herramientas de escritura, Task Manager, memoria y web se conservan.
 
 La lectura directa ocurre en el turno del Owner (el chat de la app siempre usa `user-owner`, que tiene todos los contextos); no se ofrece a otros actores.
 
 **Interfaz.** `useChatState` guarda `selectedLibraryFolderPaths` y `libraryRagEnabled` y los rehidrata del chat abierto. `ChatComposer` (variante `workspace`) muestra el interruptor `role="switch"` y las carpetas como chips; el menú **+** suma **Buscar carpetas de la librería**. `ChatLibraryFilesModal` recibe `kind: 'files' | 'folders'` (textos, cargador y cantidad de archivos por carpeta); el modo Directo/Referencia es uno solo para archivos y carpetas. `ChatContextPanel` muestra si la búsqueda está activa, lista carpetas y archivos (se quitan uno por uno) y abre ambos selectores.
 
 **Validación.** `cargo test --offline -p notia-backend-core` (235; `chat_context` agrega carpetas, expansión, bloque directo y sin búsqueda), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings), `cargo check` Android (63 warnings, sin nuevos), `tsc`, `eslint`, `vitest run` (219; el selector de carpetas y el envío de `folders`/`libraryRag`) y `vite build`. Pendiente: probar con un modelo real en Windows y Android que sin búsqueda el agente no consulta otros archivos, que una carpeta grande respeta los límites y que el selector de carpetas funciona con SAF.
+
+## Chat IA: agentes, dinámica, permisos y contexto permanente
+
+La vista Chat IA sigue el lienzo «Notia · Chat IA rediseño» (artboards *Conversación*, *Nuevo chat · estado vacío*, *Agregar agente*, *Menú adjuntar*, *Modal · Carpetas de la librería* y *Selector de dinámica*). El panel **Contexto** suma, después de Memoria, las secciones **Permisos**, **Contexto permanente**, **Dinámica** y **Agentes**. Multichat se eliminó: un chat con agentes funciona como funcionaba una sala, pero cada agente corre como el asistente completo con los permisos del chat, y la conversación se guarda como cualquier chat.
+
+### Qué decide cada ajuste
+
+| Ajuste | Efecto en Rust |
+|---|---|
+| Memoria (sin cambios, se elige al crear) | `chat_persistence_policy`: con memoria, el motor carga `memory.md` y ofrece `add_agent_rule`/`add_agent_memory`; sin memoria, no. Vale igual para Notia y para cada agente. |
+| Uso de herramientas | Apagado: `ToolAccess::None`. Encendido: según lectura/escritura. |
+| Lectura/escritura | Solo lectura: `ToolAccess::ReadOnly`, solo las herramientas con `read_only`. Escritura: `ToolAccess::All`. Sin herramientas el interruptor queda deshabilitado. |
+| Contexto permanente | `chat_turn::permanent_context_block` lo agrega a cada turno de Notia y de cada agente como instrucciones del usuario (contenido no confiable, sin permisos). Hasta 20.000 caracteres. |
+| Dinámica | Archivo de `.agent/dynamics`. Solo guía cómo conversan los agentes: entra en la instrucción de cada agente, puede nombrar agentes o pedir que hablen todos, y puede pedir esperar al usuario. |
+| Agentes | Hasta seis archivos de `.agent/promps`. Sin agentes responde Notia; con agentes responden ellos y Notia no. |
+
+`AgentRequest.tool_access` (`backend-core::protocol::ToolAccess`, `#[serde(default)]` = `All`) es nuevo. `backend_runtime` proyecta el catálogo como antes y después aplica `catalog::restrict_tool_access` con el acceso y `library_search`: deja las herramientas que el acceso permite (sin búsqueda, sin las de lectura de la librería) y siempre las de `ToolPolicy::Memory`, cuya oferta depende de la política de memoria. Si no queda ninguna herramienta, el motor responde sin tools (`provider.chat`). Telegram, Meeting y la publicación siguen con `All`. Se quitó `BackendChannel::Multichat`, que nadie usaba.
+
+### Formato del chat
+
+`StoredChatDocument` suma `tools_enabled`, `write_enabled` (los dos `true` si faltan, como en los chats anteriores), `permanent_context`, `dynamic` y `agents`. El encabezado los guarda como `tools`, `write`, `permanentContext` (texto JSON si tiene saltos de línea), `dynamic` (o `null`) y `agents` (lista). `validate` rechaza un contexto demasiado largo, una dinámica o un agente con nombre de archivo inválido, más de seis agentes o repetidos; al leer, un valor inválido se descarta en lugar de romper el chat.
+
+`StoredChatMessage.agent` guarda el archivo del agente que escribió un mensaje del asistente. En el Markdown del chat va en el marcador: `<!-- NOTIA_CHAT_MESSAGE role:assistant agent:epicteto.md -->`. Un marcador de usuario o con un archivo inválido se lee sin agente. `append_last_messages` agrega los N mensajes del turno (el del usuario y los de los agentes); `append_chat_messages` sigue agregando dos.
+
+### Turno con agentes (`ai_chat.rs`)
+
+```mermaid
+sequenceDiagram
+    participant UI as ChatWorkspaceView
+    participant T as ai_chat::send
+    participant E as Motor (una ejecución por agente)
+    UI->>T: ai_chat_send (requestId)
+    loop Rondas (1 a 4, azar)
+        T->>T: select_participants(agentes, dinámica)
+        loop Cada agente de la ronda
+            T-->>UI: ai-chat-agent start (runRequestId)
+            T->>E: Run con prompt_name = agente, tool_access del chat
+            E-->>UI: notia:backend-event (requestId = runRequestId)
+            T-->>UI: ai-chat-agent message
+        end
+    end
+    T->>T: guarda usuario + mensajes de agentes
+    T-->>UI: ChatTurnOutcome (documento)
+```
+
+- `chat_agents::chat_agents` lee cada archivo de agente; uno que ya no existe o está vacío no habla. `chat_dynamic` lee la dinámica sin frontmatter.
+- Cada agente corre con `request_id` `<turno>-<n>` e idempotencia propia, `prompt_name` igual a su archivo (el prompt del agente entra como prompt personalizado sobre la base de Notia), el contexto de librería, las herramientas y el `tool_access` del chat, y la política de memoria del chat.
+- Ve los últimos 40 mensajes del chat (`chat_agents::MAX_MESSAGES`) con cada mensaje de agente firmado con su nombre, y como último mensaje la instrucción de `agent_turn_prompt` (quién es, los otros agentes, la dinámica, la política de participación), más el contexto permanente y el de librería.
+- `select_participants`, `automatic_round_limit` y `dynamic_allows_automatic_turns` son las reglas de Multichat: ronda con subconjunto y orden al azar, salvo que la dinámica nombre agentes o pida todos; entre 1 y 4 rondas; una ronda sin respuestas o una dinámica que pide esperar corta la cadena. Sin dinámica, los agentes conversan igual.
+- `ActiveTurn.identity` pasa a la ejecución del agente en curso, así que `ai_chat_cancel` cancela al agente que está hablando; entre agentes se revisa si el turno se canceló. Las aclaraciones y confirmaciones de cualquier agente se preguntan con el `requestId` del turno.
+- `strip_speaker_name` quita el «Nombre:» con que un agente a veces empieza, porque así ve el historial.
+- Si un agente falla o se cancela, lo que dijeron los anteriores se guarda con el mensaje del usuario y el error llega a la interfaz.
+
+Evento nuevo `ai-chat-agent { requestId, phase, … }`: `start { runRequestId, agent: { fileName, name, initials } }`, `message { runRequestId, message }` y `silent { runRequestId }`.
+
+### Comandos
+
+| Comando | Entrada (`payload`) | Salida |
+|---|---|---|
+| `chat_agents_catalog` | `{ libraryId }` | `{ dynamics, agents }`, cada uno `{ fileName, name, description, initials, valid }` |
+| `backend_set_chat_settings` | `{ libraryId, logicalPath, settings: { toolsEnabled, writeEnabled, permanentContext, dynamic, agents } }` | el chat guardado |
+| `backend_create_chat` | suma `settings?` con la misma forma | — |
+
+`chat_agents_catalog` crea `.agent/` si falta (como antes Multichat). El nombre de un archivo es su primer título hasta un guion largo («# Epicteto — agente…» es «Epicteto») o el nombre del archivo; la descripción es el campo `description`/`descripcion` del frontmatter o su primer párrafo, hasta 90 caracteres; las iniciales son dos letras del nombre. `default.md` usa el prompt embebido.
+
+### Interfaz
+
+- `useChatAgentSettings` carga el catálogo (y lo recarga al volver el foco a la ventana), guarda los ajustes del chat nuevo hasta crearlo y, en un chat existente, guarda cada cambio con `backend_set_chat_settings` (actualiza en el lugar y lo revierte si Rust lo rechaza, mostrando el error en el panel). Los controles se deshabilitan mientras hay un turno en curso.
+- `ChatAgentPanel.tsx`: interruptores de permisos (`role="switch"`), contexto permanente (se guarda 800 ms después de dejar de escribir y al salir del campo), selector de dinámica (`listbox`, con «Ninguna») y agentes (diálogo con búsqueda, «Agregado»/«Agregar», máximo seis, lista con **Quitar**). Los popovers se cierran tocando afuera o con Escape.
+- `aiChatRuntime` sigue los eventos de cada `runRequestId` con su propia secuencia y expone `onAgentStart`, `onAgentMessage` y `onAgentSilent`. `useChatSubmitMessage` muestra cada mensaje de agente al terminar y el que está escribiendo con su avatar; si el turno se corta después de alguna respuesta, recarga el chat en lugar de devolver el mensaje al compositor.
+- `ChatThread` muestra el avatar (iniciales) y el nombre de cada agente. Los colores salen de la paleta (`--color-periwinkle`, `violet`, `amber`, `sage`, `gold`, `coral`) por posición del agente en el chat.
+
+### Eliminado
+
+`app/src/multichat.rs` (salas en memoria y comandos `multichat_*`, evento `multichat-event`), `MultichatView.tsx`, `services/multichat/*`, `types/multichat.ts`, la acción `multichat` del rail, la pestaña especial `__workspace_multichat__`, el contexto de sala del chat lateral (`multichatRoomId`) y sus estilos. `backend-core/src/multichat.rs` pasó a `chat_agents.rs` con las reglas de rondas. Las dinámicas y prompts de `.agent/` no cambian.
+
+### Validación
+
+- Corrección posterior («El request supera el límite de tools» con «Toda la librería» apagada, ver «Búsqueda en la librería y contexto de carpetas»): `a_turn_without_library_search_fits_the_tool_limit` y el caso sin búsqueda de `a_chat_keeps_all_tools_only_those_that_read_or_none_but_memory`; `backend-core` 296, `notia-app` 343, warnings 38 escritorio y 61 Android.
+- `cargo test -p notia-backend-core`: 295 (nuevos: archivos de agentes, rondas sin dinámica, historial firmado, instrucción del agente, nombre/descripción/iniciales, marcador de agente, ajustes inválidos, acceso a herramientas y ajustes del chat).
+- `cargo test -p notia-app --features bluetooth`: 343 y 1 ignorado (nuevo: firma del agente). Linux (WSL): `notia-app` 288, `backend-core` 295, 146 warnings sin cambios.
+- `cargo check` del crate raíz, Android (61 warnings) y escritorio (38), sin warnings nuevos (se quitó `library_ai_provider`, que solo usaba Multichat).
+- Vitest 274 (nuevos: panel de agentes y seguimiento de eventos de agentes), `tsc` de `tsconfig.app.json` y `tsconfig.node.json`, ESLint y `vite build`.
+- Vista previa con Chrome sin ventana en tema oscuro y claro: panel con permisos, contexto permanente, dinámica y agentes, selector de dinámica abierto, diálogo de agentes y avatares en el hilo.
+- Pendiente de prueba manual con un modelo real, en Windows y Android: un chat con dos o más agentes y con y sin dinámica (rondas, respuestas entre agentes, cancelación), herramientas apagadas y solo lectura (que no escriba), memoria apagada con agentes, contexto permanente, y el chat lateral abriendo un chat con agentes.
+
+## Nuevo chat y eliminación del chat abierto
+
+- **Nuevo chat** en el historial deselecciona el chat (`selectedChatFilePath`, `matchedPreferredChatFilePath` y `activeChatDocument` en `null`) y la vista muestra el estado vacío «¿En qué trabajamos hoy?». El archivo se crea con el primer mensaje, como ya hacía el envío sin chat, con la memoria, los permisos, el contexto permanente, la dinámica y los agentes elegidos en el panel de contexto y la memoria de contexto por defecto (10 mensajes). Se eliminó `CreateChatModal` (memoria de contexto y cantidad de mensajes), su estado en `useChatState`, `handleCreateChat`, `CreateChatPayload` y sus estilos.
+- **Eliminar el chat abierto** mostraba «No se pudo cargar el chat seleccionado.» después de borrarlo. `handleDeleteChat` borraba el archivo con el chat todavía seleccionado; al marcarlo como eliminado cambiaba la lista, y con ella el título de respaldo del efecto de carga de `useChatState`, que volvía a leer un archivo que ya no existía. Ahora deselecciona el chat antes de borrarlo y lo vuelve a seleccionar si el borrado falla.
+- **Chat lateral de Graph View sin mensajes.** El chat efímero (Graph View) no tiene archivo, así que `selectedChatFilePath` queda en `null` durante todo el turno. El efecto de carga de `useChatState` depende de `isSubmitting` y, sin chat seleccionado, vaciaba `activeChatDocument` y `optimisticThreadMessages`: al empezar el envío desaparecía el mensaje y al terminar, la respuesta, aunque el turno se enviaba y respondía. Ahora `loadedChatFilePathRef` recuerda qué chat está en pantalla y la conversación solo se vacía al dejar un chat seleccionado (por ejemplo, **Nuevo chat**). Se reprodujo con el chat lateral de Graph View montado en Chrome sin ventana con el transporte simulado: antes el hilo quedaba vacío tras enviar; ahora muestra la pregunta durante el turno y la respuesta al terminar.
+- **Graph View deja de ser efímero.** El chat lateral de Graph View era el único que usaba `ephemeralChat`: un documento en memoria sin archivo. Cada envío sin chat seleccionado armaba un documento nuevo y vacío, así que el segundo mensaje borraba el primero y su respuesta. Se eliminaron `ephemeralChat` (props de `ChatWorkspaceView` y `useChatSubmitMessage`, borrado de archivos al desmontar), el destino `ephemeral` de `ChatTurnTarget` y `ChatTarget::Ephemeral` en `ai_chat.rs`. Ahora el primer mensaje crea el chat en `chat/chats/` con la clave `graph-view:right-panel` y el panel lo vuelve a elegir al volver a Graph View (`selectMatchingChatOnly`). El turno sigue con scope `graph` y proyección de solo lectura: no escribe notas ni memoria (`add_agent_memory` no está en el scope `graph`); lee `memory.md` si el chat tiene memoria, como antes. Verificado con el chat lateral de Graph View en Chrome sin ventana y transporte simulado: dos mensajes seguidos quedan en el hilo y el segundo turno usa el chat guardado. `tsc`, ESLint, Vitest 274, `notia-app` 343 y checks de Android y del crate raíz sin warnings nuevos.
+- Validación: `tsc -p tsconfig.app.json`, ESLint de `views/chat` y Vitest 274. Pendiente: probar en la app (Windows y Android) **Nuevo chat** con el historial fijo y flotante, y eliminar el chat abierto y otro distinto del abierto.
 
 ## Organización de memory.md
 
@@ -7213,6 +7166,258 @@ Implementa las opciones que el lienzo «Notia · Editor rediseño» sumó al tab
 - **Pendiente**:
   - abrir el `.docx` en Word: en esta máquina no hay Word ni LibreOffice; se validó la estructura y el orden de los elementos contra el esquema;
   - probar la exportación en la app de Windows y en Android.
+
+## Editor Markdown: bloques GitBook
+
+El editor lee y escribe los bloques y elementos en línea de GitBook con la sintaxis de GitBook, así que una biblioteca sincronizada con GitBook (Git Sync) sigue siendo válida en los dos sentidos. Referencia de sintaxis: `gitbook-skills/skills/write-docs/references/blocks.md` y las páginas «Representation in Markdown» de la documentación de GitBook.
+
+| Elemento | Sintaxis en el archivo | Nodo ProseMirror |
+|---|---|---|
+| Aviso | `{% hint style="info\|success\|warning\|danger" icon="…" %}…{% endhint %}` | `gitbook_hint` |
+| Pestañas | `{% tabs %}{% tab title="…" %}…{% endtab %}{% endtabs %}` | `gitbook_tabs` > `gitbook_tab` |
+| Pasos | `{% stepper %}{% step %}…{% endstep %}{% endstepper %}` | `gitbook_stepper` > `gitbook_step` |
+| Columnas (dos como máximo) | `{% columns %}{% column width="…" %}…{% endcolumn %}{% endcolumns %}` | `gitbook_columns` > `gitbook_column` |
+| Novedades | `{% updates format="full" %}{% update date="AAAA-MM-DD" tags="a,b" %}…{% endupdate %}{% endupdates %}` | `gitbook_updates` > `gitbook_update` |
+| Desplegable | `<details [open]><summary>…</summary>…</details>` | `gitbook_details` |
+| Código con título | `{% code title="…" overflow="wrap" lineNumbers="true" %}` + bloque de código + `{% endcode %}` | `gitbook_code` > `code_block` |
+| Prompt | `{% prompt description="…" icon="…" openInAIProviders="…" defaultExpanded="…" %}…{% endprompt %}` | `gitbook_prompt` |
+| Contenido condicional | `{% if expresión %}…{% endif %}` | `gitbook_condition` |
+| URL embebida | `{% embed url="…" %}` con leyenda opcional hasta `{% endembed %}` | `gitbook_embed` (átomo) |
+| Archivo | `{% file src="…" %}leyenda{% endfile %}` | `gitbook_file` (átomo) |
+| Enlace a página | `{% content-ref url="…" %}[texto](url){% endcontent-ref %}` | `gitbook_content_ref` (átomo) |
+| Contenido reutilizable | `{% include "ruta/relativa.md" %}` | `gitbook_include` (átomo) |
+| Tarjetas | `<table data-view="cards">…</table>` (columna oculta `data-card-target`, portada `data-card-cover`, ícono `<i class="fa-…">`) | `gitbook_cards` (átomo) |
+| Dibujo | `<img src="…" alt="…" class="gitbook-drawing">`, opcionalmente dentro de `<figure>` con `<figcaption>` | `gitbook_drawing` (átomo) |
+| Botón | `<a href="…" class="button primary\|secondary" data-icon="…">texto</a>` | `gitbook_button` (en línea) |
+| Ícono | `<i class="fa-nombre">texto</i>` | `gitbook_icon` (en línea) |
+| Variable / expresión | `<code class="expression">page.vars.x</code>` | `gitbook_expression` (en línea) |
+| Imagen en línea | `<img src="…" alt="…" data-size="line">` | `gitbook_inline_image` (en línea) |
+| Anotación | nota al pie de GFM: `texto[^1]` y `[^1]: nota` | `footnote_reference` / `footnote_definition` de preset-gfm |
+
+**Lectura y escritura (frontend, `src/engines/markdown/gitbookMarkdown.ts`).**
+
+1. `isolateGitbookBlocks` prepara todo texto que el editor parsea: deja cada etiqueta `{% … %}`, cada pieza de `<details>`, cada tabla de tarjetas y cada dibujo en una línea propia entre líneas en blanco, fuera de bloques de código y de spans de código. Sin esto CommonMark une la etiqueta con el párrafo, el ítem de lista o el bloque HTML vecino. El plugin `gitbookParser` (`gitbookSchema.ts`) envuelve `parserCtx` de Milkdown —no el parser de remark— porque Milkdown vuelve a pasar el texto original a `runSync` y `remarkMarker` lee offsets de ese texto; envolviendo `parserCtx`, el texto preparado es el mismo en las dos pasadas. El plugin registra un timer que `editorStateTimerCtx` espera, así que la nota inicial, `replaceAll` y el pegado usan el parser envuelto.
+2. `transformGitbookMarkdown` agrupa en el árbol mdast los párrafos que son etiquetas conocidas (se compara el texto fuente por `position`, no el texto parseado) en nodos `gitbookHint`, `gitbookTabs`, etc., en la raíz, citas, ítems de lista y notas al pie. Una etiqueta sin cierre, un cierre suelto y las etiquetas desconocidas (`{% openapi %}`) quedan como texto. Pestañas, pasos, columnas y novedades sueltos reciben su contenedor. Los elementos en línea se arman emparejando nodos HTML (`<a class="button">`…`</a>`, `<i class="fa-…">`…`</i>`, `<code class="expression">`…`</code>`) y los `<img data-size="line">`.
+3. `gitbookMarkdownHandlers` escribe los nodos con la sintaxis de GitBook mediante `toMarkdownExtensions`. Una tabla de tarjetas sin cambios se escribe tal como se leyó (`source`/`sourceCards`); editada, se escribe la tabla canónica de GitBook. El resumen de `<details>` se guarda como texto plano.
+
+**Nodos y vistas (`src/components/notia/views/markdown/gitbook/`).** `gitbookSchema.ts` define los 23 nodos a partir de una tabla de especificaciones (atributos por defecto, contenido, átomo o en línea); `toDOM`/`parseDOM` guardan los atributos en `data-attrs` para copiar y pegar dentro del editor. `gitbookBlockViews.ts` tiene las vistas con contenido editable (aviso con selector de estilo, pestañas con barra táctil —la activa se renombra en su campo, «+» agrega y «×» quita—, pasos numerados, columnas en grilla que se apilan en pantallas angostas, novedades con fecha y etiquetas, marco de código con título y conmutadores de números de línea y ajuste, prompt con «Copiar», condición con su estado y desplegable con «Abierto al leer»). Las partes (pestaña, paso, columna, novedad) tienen su propia vista para que `data-active` no se lea como edición, y no muestran handle de bloque (`GITBOOK_PART_NODE_NAMES` en el `filterNodes` de `MarkdownView`). `gitbookAtomViews.ts` tiene los átomos, que se editan con campos propios (se confirman al perder el foco, con Enter o se revierten con Escape) y los elementos en línea, que abren un panel al tocarlos. `gitbookMenu.ts` suma al menú `/` los grupos «Bloques GitBook» y «En la línea», y `insertGitbookInline` también se usa desde el botón «+» de la barra de formato para insertar a mitad de línea (el texto seleccionado pasa a ser el texto del botón o la expresión). `gitbookAnnotations.ts` muestra el texto de la nota de una anotación al posar el puntero o al tocar la referencia. `gitbookDrawingEditor.ts` es el tablero de dibujo (lápiz, dedo o mouse, siete colores de la paleta, tres grosores, deshacer y borrar): guarda un SVG en una dirección `data:` dentro de la nota, con `data-notia-drawing="1"` para volver a editarlo; los dibujos de GitBook con ruta se muestran pero no se editan. Los íconos de Font Awesome se dibujan con el ícono Lucide más cercano (`gitbookIcons.ts`) o un círculo. Estilos en `gitbook.css`, solo con tokens del tema; controles de 30 px, 44 px con puntero grueso. Las URL embebidas no se incrustan en un iframe (la CSP no permite `frame-src` externos): se muestran como tarjeta con miniatura de YouTube cuando corresponde y un botón para abrir en el navegador.
+
+**Resolución en Rust.** El frontend no evalúa expresiones ni resuelve rutas: `GitbookResolver` junta en lotes (120 ms) lo que piden las vistas y llama a `markdown_blocks_resolve` (`app/src/gitbook_blocks.rs`, reglas en `backend-core/src/gitbook_blocks/`). Contrato:
+
+| Comando | Entrada (`payload`) | Salida |
+|---|---|---|
+| `markdown_blocks_resolve` | `{ libraryId, path, source, expressions[], conditions[], references[], includes[] }` | `{ expressions: [{ expression, value, dependsOnReader, error }], conditions: [{ expression, state }], references: [{ reference, kind, target, exists, title }], includes: [{ reference, target, title, markdown, truncated, error }] }` |
+
+- `path` es la ruta visible de la nota (se resuelve con `resolve_logical_path`); `source` es la nota tal como está en el editor, guardada o no, para leer su `vars:`. El resolvedor vuelve a preguntar expresiones y condiciones cuando cambia el frontmatter, y todo cuando cambia la biblioteca o la ruta de la nota.
+- Variables: `page.vars` es el mapa `vars:` del frontmatter de la nota y `space.vars` es `.gitbook/vars.yaml` en la raíz de la biblioteca (líneas `nombre: valor` de primer nivel). Los nombres empiezan con letra y usan letras, dígitos y `_`.
+- Expresiones (`expression.rs`): subconjunto de JavaScript sin efectos —literales, `page.vars.x`, `space.vars.x`, `visitor.*`, `.` y `[]`, `.length`, `!`, `+ - * / %`, comparaciones, `== != === !==`, `&& || ??` y `?:`—, hasta 500 caracteres y 32 niveles de anidamiento. `visitor.*` solo existe para un lector publicado: la expresión queda marcada `dependsOnReader` y su valor es indefinido.
+- Condiciones: `satisfied`, `notSatisfied`, `dependsOnReader` o `invalid`.
+- Referencias (enlaces a página, archivos, imágenes, destinos de tarjetas): relativas a la nota o, con `/`, a la raíz; `./` o una carpeta apuntan a su `README.md`; `#sección` es la misma nota; se decodifican los `%XX`; nada sale de la raíz de la biblioteca, y otros esquemas o unidades de Windows son inválidos. `target` es la ruta visible (que el editor abre con `onOpenLinkedFile` o carga con `backendFileUrl`) o la dirección web. `title` es la propiedad `title`, el primer `# Título` o el nombre del archivo.
+- Contenido reutilizable: solo notas `.md`; se devuelve el cuerpo sin propiedades, hasta 20.000 caracteres, y el editor lo muestra de solo lectura con el renderizador de Markdown del chat.
+- Cada lista se deduplica y se limita a 200 elementos; la nota puede medir hasta 16 MB (`MAX_EXPORT_INPUT_BYTES`). Las lecturas usan `TauriFilesystemDocumentAdapter`, igual en escritorio y en SAF de Android.
+
+**Exportación.** `export_library_document` pasa la nota por `gitbook_blocks::expand_for_export` antes de `render_markdown_export`: los avisos pasan a citas con su etiqueta en negrita; pestañas, pasos («Paso n»), novedades (fecha y etiquetas), código con título y prompts reciben un título en negrita; las columnas y los enlaces a página quedan en secuencia; `{% if %}` se evalúa (lo que no se cumple o depende del lector se omite); `{% include %}` inserta la nota reutilizable con hasta 3 niveles, sin ciclos y hasta 50 inserciones; las expresiones se reemplazan por su valor; los botones pasan a enlaces; los íconos se omiten; las tarjetas pasan a una lista; los dibujos e imágenes en línea quedan como «[Dibujo: …]» / «[Imagen: …]»; las URL embebidas y los archivos quedan como enlace o nombre. El código cercado no se toca y las notas sin bloques GitBook no cambian.
+
+**Propiedades anidadas.** `frontmatterEngine` conserva ahora los mapas anidados (`vars:`, `layout:`) como líneas indentadas en `FrontmatterEntry.nested` y los vuelve a escribir igual; antes, guardar la nota los borraba. El panel de propiedades los muestra de solo lectura (`clave: valor · …`). Las ediciones de propiedades en Rust (`SetFrontmatter`) ya reemplazaban solo la línea de la clave.
+
+**Validación**
+
+- `cargo test -p notia-backend-core`: 311 aprobados (15 nuevos de `gitbook_blocks`: variables, expresiones, condiciones, referencias, títulos, resolución y exportación).
+- `cargo test --offline -p notia-app --features bluetooth`: 343 aprobados y 1 ignorado; `cargo check -p notia-app`: 38 advertencias (las mismas); `cargo clippy -p notia-backend-core`: sin advertencias en el módulo nuevo.
+- `cargo check --target aarch64-linux-android`: sin errores, 61 advertencias (las mismas). Linux (WSL): `notia-app` 288 y `backend-core` 311 aprobados, 146 advertencias (las mismas).
+- `npx vitest run`: 71 archivos, 289 pruebas (15 nuevas: ida y vuelta de todos los bloques, etiquetas sin cierre o dentro de código, vistas de pestañas, avisos, expresiones resueltas, URL embebidas, tarjetas, menú de inserción, inserción en la selección y SVG de dibujos). `npx tsc -p tsconfig.app.json --noEmit`, `npx eslint .` y `npx vite build`: sin errores.
+- Vista previa en Chrome headless del `MarkdownView` real con respuestas simuladas de Rust: tema oscuro en escritorio, tema claro a 400 px, tablero de dibujo y panel de un botón.
+
+**Pendientes**
+
+- Probar en Windows y en un Android físico con una biblioteca real: variables de `.gitbook/vars.yaml`, includes y enlaces relativos, imágenes en línea de la biblioteca, tablero de dibujo con el dedo, paneles con el teclado virtual y exportación PDF/DOCX de una nota con bloques.
+- Abrir en GitBook (Git Sync) una nota editada en Notia para confirmar que GitBook la lee sin cambios de contenido.
+- Los elementos en línea se insertan desde el menú `/` solo en una línea vacía (el menú de Crepe solo aparece así); a mitad de línea se usa el «+» de la barra de formato, que aparece al seleccionar texto.
+
+## Editor Markdown: el modo página es una propiedad de la nota
+
+Estado vigente desde 2026-09-26. Reemplaza lo que «Editor Markdown: modo página, configuración y lápiz» dice sobre el interruptor, `editorPage.pageMode` y `canExportPdf`.
+
+Antes, el modo página era una preferencia del dispositivo: al activarlo, todas las notas se abrían en hojas. Ahora cada nota lo guarda en su frontmatter como `pageMode: true`, así que abre como se la dejó. Sin esa propiedad, la nota se abre en el editor normal, que es el modo por defecto. El tamaño, la orientación, los márgenes y la numeración siguen siendo del dispositivo y valen para todas las notas en modo página.
+
+**Rust.**
+
+- `markdown_editing::note_page_mode(source)` indica si la nota está en modo página. Lee `pageMode` en el primer nivel del frontmatter; `true` puede ir con o sin comillas y en cualquier combinación de mayúsculas. Ignora las líneas con sangría (`tags:`, `vars:`) y un frontmatter sin cierre.
+- `set_note_page_mode(source, enabled)`:
+  - encendido, escribe `pageMode: true` (reemplaza un `pageMode: false` o agrega la línea antes del cierre; si la nota no tiene frontmatter, lo crea);
+  - apagado, borra la línea;
+  - conserva los saltos de línea de la nota y rechaza un frontmatter sin cierre.
+- Comando nuevo `markdown_set_page_mode`: recibe `{ source, enabled }` y devuelve `{ source, pageMode }`. Rechaza documentos por encima de `MAX_DOCUMENT_CHARS`.
+- `page_setup::ensure_export_allowed(format, note_in_page_mode)` recibe ahora el modo de la nota. `export_library_document` lo aplica con `note_page_mode` sobre la nota tal como está guardada, tanto para el comando del editor como para la herramienta `export_document` del agente. Se quitaron `device_preferences::ensure_export_allowed`, `pageMode` de `normalize_editor_page` (un valor guardado por versiones anteriores se descarta) y `canExportPdf` de `page_setup_view`.
+
+**Frontend.**
+
+- `services/markdown/notePageModeRuntime.ts` expone `setNotePageMode`, que llama a Rust, y `readNotePageMode`. Esta última lee la propiedad ya interpretada por `frontmatterEngine`, como hace el panel de propiedades, y solo decide si se dibujan hojas.
+- `MainView` calcula el modo de la nota abierta. El menú «⋯» y el interruptor de **Configuración → Página** (`EditorSettingsModal`, props nuevas `pageMode` y `onTogglePageMode`) llaman a `togglePageMode`, que pide a Rust la nota nueva y la entrega por `onTextDocumentChange`. Si mientras tanto cambió la nota o la pestaña, el cambio se descarta. `MarkdownView` toma el frontmatter nuevo como cualquier cambio externo, y la propiedad aparece en el panel como casilla, desde donde también puede cambiarse.
+- `EditorPagePreferences` pierde `pageMode` y `EditorPageSetup` pierde `canExportPdf`. «Exportar como PDF» se habilita con el modo de la nota.
+
+**Validación**
+
+- `cargo test -p notia-backend-core`: 318 (2 nuevas: lectura de la propiedad y escritura/borrado sin tocar el resto; `page_setup` y `device_preferences` actualizadas). `cargo test --offline -p notia-app --features bluetooth`: 344 y 1 ignorada.
+- `cargo check` de escritorio y Android: 38 y 61 advertencias (las mismas). Linux (WSL): 289 y 318 aprobados, 146 advertencias.
+- `npx vitest run`: 75 archivos, 314 pruebas. Hay 3 nuevas: `notePageModeRuntime.test.ts` y, en `EditorSettingsModal.test.tsx`, el interruptor que cambia la nota y el interruptor deshabilitado sin nota. `npx tsc -p tsconfig.app.json --noEmit`, `npx eslint .` y `npx vite build`: sin errores.
+
+**Pendientes**
+
+- Probar en Windows y Android: activar el modo en una nota, cambiar de nota y volver, reiniciar la app y exportar a PDF.
+- El PDF usa la nota guardada. Si se exporta enseguida después de activar el modo, antes del guardado automático, Rust puede rechazarlo con «Activá el modo página para exportar a PDF.».
+
+## Editor Markdown: línea nueva debajo de un bloque
+
+Entre dos bloques que no son texto (código, fórmula, Mermaid, XGraph, tabla, imagen, cita, lista, separador o un bloque GitBook) quedaba un hueco de 4 a 10 px, y hacer clic ahí no hacía nada: no había línea donde escribir. Al final de la nota sí funcionaba, porque `@milkdown/plugin-trailing` siempre deja un párrafo vacío.
+
+`markdown/blockGapPlugin.ts` escucha `mousedown` en la fase de captura de `view.dom`. Así se adelanta a las vistas de nodo, como CodeMirror o las tablas. Un toque en Android también llega como `mousedown` después de soltar el dedo. Si el clic cae en el hueco debajo de un bloque que no es texto y lo que sigue tampoco es un párrafo o título (o no sigue nada), el plugin inserta un párrafo vacío ahí y pone el cursor en él.
+
+- **Zona de clic.** El hueco se amplía 6 px hacia los bloques vecinos con mouse y 12 px con el dedo (`pickGapIndex`).
+- **Bloques contenedores.** La búsqueda empieza por el bloque que está bajo el puntero. Si un aviso, una pestaña, una columna o un ítem de lista terminan en un bloque de código, la línea se agrega dentro de ese contenedor.
+- **Dónde no actúa.** Solo inserta donde el esquema admite un párrafo (`canReplaceWith`), así que no lo hace entre filas de tabla, entre ítems de lista ni entre pestañas. Tampoco actúa si el clic cae sobre un botón, enlace o campo, si hay una tecla modificadora o si el editor es de solo lectura.
+- **Detección de texto.** Un bloque de código es un *textblock* en ProseMirror; por eso el plugin cuenta como línea solo a los párrafos y títulos.
+
+**Validación**
+
+- `blockGapPlugin.test.ts`: 5 pruebas de la elección del hueco. `npx vitest run`: 73 archivos, 304 pruebas. `npx tsc -p tsconfig.app.json --noEmit`, `npx eslint .` y `npx vite build`: sin errores.
+- Prueba con clics reales en Chrome headless (protocolo DevTools) sobre el editor real, con un documento de bloques pegados: hacer clic en el hueco debajo de cada tipo de bloque y escribir agrega la línea justo debajo, también dentro de un aviso. Hacer clic en una línea de código o en una celda de tabla sigue escribiendo ahí. El Markdown guardado queda como se esperaba.
+
+**Pendientes**
+
+- Probar en Windows y en un Android físico, con el dedo, entre bloques pegados.
+
+### Clic debajo del último bloque (2026-09-26)
+
+El espacio vacío debajo de la nota no pertenece al editor. En modo página es la hoja (`.notia-markdown-pages`); sin él, es el contenedor (`.notia-markdown-host`). Un clic ahí no hacía nada o llevaba el cursor al final del último bloque. Por eso, una nota que terminaba en una lista, una cita, un enlace o un bloque GitBook no podía seguir con un párrafo aparte.
+
+- `handleClickBelowContent` (en `blockGapPlugin.ts`) se engancha en `MarkdownView` con un `mousedown` en captura sobre `.notia-markdown-host`.
+- Si el clic cae debajo del último bloque y dentro del ancho de la hoja, agrega un párrafo vacío al final y pone el cursor en él. Si la nota ya termina en un párrafo vacío, por ejemplo el que deja `plugin-trailing` después de un bloque de código, solo lleva el cursor ahí.
+- No actúa sobre la barra de formato ni sobre el menú de wikilinks, que están fuera de `.notia-markdown-zoom-content`. Tampoco sobre botones o enlaces, ni con teclas modificadoras.
+- Validación: 3 pruebas nuevas en `blockGapPlugin.test.ts` (nota que termina en lista, párrafo vacío reutilizado, clic sobre el último bloque o fuera de la hoja). `npx vitest run`: 74 archivos, 311 pruebas; `tsc`, `eslint` y `vite build` sin errores. En Chrome headless, con clics reales 150 px debajo de notas que terminan en wikilink, lista, cita, prompt GitBook y código, escribir después del clic guarda un párrafo nuevo al final. Los 10 casos, con y sin modo página, dieron el resultado esperado, y ninguno abrió el enlace.
+- Pendiente: probar en Windows y con el dedo en Android.
+
+## Editor Markdown: clic y guardado de los wikilinks
+
+Había dos problemas con `[[archivo]]` en el editor.
+
+**1. La línea quedaba bloqueada.** El `handleClick` de `wikiLinkPlugin.ts` abría la nota cuando la posición del clic caía dentro del enlace o justo después de `]]`. ProseMirror convierte cualquier clic a la derecha del final de una línea en la posición que sigue al último carácter. Por eso, si la línea terminaba en un wikilink, un clic en cualquier lugar de ese espacio abría la nota, y no se podía poner el cursor al final para seguir escribiendo ni para borrar el enlace.
+
+- Ahora `resolveClickedWikiLinkPath` exige que el clic caiga sobre el enlace mismo (`event.target` dentro de `.notia-wikilink-token--resolved`).
+- Si dos enlaces van pegados (`[[A]][[B]]`), abre el que se tocó: la posición del límite corresponde al enlace que empieza ahí.
+- Un enlace a una nota que existe muestra el cursor de mano (`cursor: pointer`).
+
+**2. Los corchetes se guardaban escapados.** El escritor de Markdown (mdast-util-to-markdown) escapa todo `[` para que no empiece un enlace Markdown. Así, cada vez que se editaba una nota, `[[nota]]` se guardaba como `\[\[nota]]`. Por eso el grafo de Rust acepta también ese formato (`link_references`, «legacy escaped wikilinks»).
+
+- `configureWikiLinkSerializer(ctx)`, en el `config` de `MarkdownView`, envuelve el escritor de texto que Milkdown pasa en `remarkStringifyOptionsCtx`. Una extensión con `toMarkdownExtensions` no alcanza, porque esas opciones tienen prioridad. El envoltorio aplica `restoreEscapedWikiLinks` (`wikiLinkEngine.ts`).
+- `restoreEscapedWikiLinks` quita la barra solo delante de un `[[…]]` completo. Un `[` suelto sigue escapado, y el `\|` de un alias dentro de una tabla se conserva.
+- Las notas guardadas antes con `\[\[` se corrigen solas la próxima vez que se editan. El grafo sigue leyendo los dos formatos.
+
+**Validación**
+
+- `wikiLinkPlugin.test.ts`: 4 pruebas. Cubren el clic después del final de la línea, el clic sobre el enlace, dos enlaces pegados, un enlace a una nota que no existe y el guardado con alias, tabla y corchete suelto. `npx vitest run`: 74 archivos, 308 pruebas. `npx tsc -p tsconfig.app.json --noEmit`, `npx eslint .` y `npx vite build`: sin errores.
+- Prueba con clics reales en Chrome headless sobre el editor real, con la línea `Ver [[Alfa]]`:
+  - un clic en el espacio después del final de la línea no abre la nota y Retroceso borra el enlace;
+  - escribir después del enlace guarda `Ver [[Alfa]] y más`;
+  - un clic sobre el enlace abre la nota.
+
+**Pendientes**
+
+- Probar en Windows y en un Android físico. En Android, tocar el enlace lo abre y tocar a su derecha permite editar la línea.
+
+## Chat lateral: rediseño del encabezado y del compositor
+
+El chat lateral sigue el canvas https://claude.ai/artifact/5rC6dAzdraQcVaaR5YXgVe (artboard «Explorador — interactivo», columna del asistente). Es un cambio de presentación: no hay comandos nuevos ni cambios en Rust.
+
+- **Encabezado único (`ChatPanelHeader.tsx`).** Reemplaza el encabezado «Asistente» de `NotiaRightPanel`, el `<select>` de agente y el encabezado compacto con los tres chats recientes (`ChatHistoryPanelHeaderCompact`, eliminado). A la izquierda está el agente que responde: avatar con iniciales y color, nombre y chevron. Lo sigue «· título del chat» cuando hay un chat abierto. A la derecha están Historial, Nuevo chat y Cerrar. Meeting conserva su encabezado «Asistente de la reunión».
+- **Selector de agente.** Es una lista (`role="listbox"`) de los prompts de `.agent/promps`, con avatar, nombre, descripción y una marca en el elegido. Los datos salen de `chat_agents_catalog` (el mismo catálogo que usan los agentes del chat principal: nombre por el primer título, descripción por el frontmatter o el primer párrafo, iniciales). Si el catálogo no llega, usa `backend_agent_prompts`. La elección se sigue guardando con `backend_select_agent_prompt`. En las vistas sin agente (`agentScope` nulo) el encabezado muestra «Asistente».
+- **Historial.** Es una lista de todos los chats de `chat/chats` con el abierto marcado. Elegir uno o tocar «Nuevo chat» llama a `pickChat` (`useChatState`), que marca la selección como hecha por la persona. Mientras no cambie lo que está abierto, el panel ya no vuelve al chat que coincide con la nota (`isChatPickedByPerson` corta el efecto de selección automática). Antes, un chat reciente distinto del que coincidía con la nota se reemplazaba enseguida.
+- **Chat vacío (`ChatPanelWelcome.tsx`).** Muestra «¿En qué te ayudo?», «Hablás con *agente*: descripción» y las sugerencias como botones con flecha que envían el mensaje. Reemplaza el aviso «Selecciona o crea un chat».
+- **Compositor (`ChatComposer`, variante `panel`).** La primera fila tiene los chips de contexto: el archivo o la vista abiertos, seguidos de los adjuntos y el modo. Debajo está el campo «Escribí tu mensaje…». Al final, una barra con adjuntar (+), dictar, el botón del modelo (nombre y chevron; abre la configuración de IA) y enviar (32 px, teal; «detener» mientras responde). Debajo del compositor va «Enter para enviar · Shift + Enter para salto de línea», oculto con puntero grueso. La leyenda «Contexto activo: …» pasó a ser el chip. `useRightPanelChatContext` expone `rightPanelChatContext` (`{ label, kind: 'document' | 'view' | 'none' }`, tipo `ChatComposerContext`) en lugar de `rightPanelChatContextLabel`. Sin archivo abierto, el chip punteado dice «Sin nota en contexto». Se quitaron las props `title` y `description` de `ChatWorkspaceView`, que solo usaba el encabezado compacto, y se sumaron `composerContext` y `onClosePanel`.
+- **Estilos.** Usan solo tokens del tema (`--color-card-bg`, `--color-border-strong`, `--color-row-hover`, `--color-accent-*`). Los controles pasan de 28–32 px a 44 px con puntero grueso. Se borró el CSS del encabezado compacto, de los chips de chats recientes y del selector anterior. `useDismissablePopover` es el cierre por toque afuera o Escape que comparten los selectores del chat.
+- **Agente y firma.** El agente elegido sigue siendo una preferencia del dispositivo. Desde la versión nueva del historial, cada respuesta queda firmada con el prompt que la escribió (ver abajo): el hilo muestra ese nombre y los mensajes anteriores conservan el suyo aunque después se cambie de agente.
+
+**Validación**
+
+- `npx vitest run`: 72 archivos, 295 pruebas. Las 6 nuevas, en `ChatPanelHeader.test.tsx`, cubren elegir agente, abrir un chat del historial, nuevo chat, cerrar, el caso sin agentes, el chat vacío que envía una sugerencia y los chips de contexto. `npx tsc -p tsconfig.app.json --noEmit`, `npx eslint .` y `npx vite build`: sin errores.
+- Vista previa en Chrome headless del `ChatWorkspaceView` real dentro del panel, con respuestas simuladas: chat vacío, selector de agente, historial y conversación en tema oscuro, y conversación en tema claro.
+
+**Pendientes**
+
+- Probar en Windows y en un Android físico: listas con el dedo, teclado virtual con el compositor y cambio de agente con un chat abierto.
+
+### Historial de chats del chat lateral (2026-09-26, versión nueva del canvas)
+
+El canvas cambió el submenú del historial. Ahora es un panel (`role="dialog"`) con:
+
+- el título «Historial» y el atajo Ctrl H;
+- el buscador «Buscar conversaciones»;
+- los chats agrupados en Fijados, Hoy, Ayer, Esta semana y Anteriores. Cada fila tiene el avatar y el nombre del agente del chat, la marca «Actual» en el abierto y las acciones Fijar/Desfijar, Renombrar y Eliminar, que aparecen al pasar el puntero o con el foco y quedan siempre visibles con puntero grueso;
+- al pie, «Nuevo chat» con el atajo Ctrl N.
+
+Con el foco dentro del chat lateral, Ctrl+H abre o cierra el historial y Ctrl+N empieza un chat nuevo. Abrir un chat del historial también elige el agente con el que se habló por última vez en ese chat.
+
+**Rust.**
+
+- `backend_list_chats` acepta `clock: { nowMs, utcOffsetMinutes }` (el reloj del dispositivo, para que los días sean locales). Cada elemento suma `group` (`pinned`, `today`, `yesterday`, `thisWeek`, `earlier`; solo con reloj), `pinned` y `agent`. Con reloj, la lista vuelve fijados primero y después por última actividad. Sin reloj, se mantiene el orden anterior (del más nuevo al más viejo por nombre), así que los demás consumidores no cambian.
+- La última actividad es la fecha de modificación del archivo o, si la plataforma no la informa (Android SAF), la hora que lleva el nombre `Chat-AAAA-MM-DD-HH-MM-SS.md`.
+- «Esta semana» son los seis días anteriores a ayer.
+- En Android solo se leen los 8 chats más recientes (`READ_CHATS_LIMIT`). Un chat fijado más viejo aparece allí en su grupo por fecha, sin la marca.
+- Las reglas están en `backend-core/src/chat_list.rs`: `ChatClock`, `chat_group`, `activity_local_ms`, `stamp_local_ms`, `last_agent` e `history_order`.
+- `StoredChatDocument.pinned` se guarda en el frontmatter como `pinned: true`, y solo en los chats fijados, así los demás archivos no cambian.
+- Cuando un prompt distinto de `default.md` responde solo, su respuesta queda firmada con ese archivo (`agent` del mensaje, `prompt_agent` en `ai_chat.rs`). Así el historial sabe con qué agente habla cada chat y el hilo muestra su nombre en lugar de «Notia». El prompt por defecto sigue firmando «Notia».
+
+| Comando | Entrada (`payload`) | Salida |
+|---|---|---|
+| `backend_list_chats` | `{ libraryId, clock? }` | `[{ id, filePath, title, group?, pinned, agent }]` |
+| `backend_set_chat_pinned` | `{ libraryId, logicalPath, pinned }` | nada |
+| `backend_rename_chat` | `{ libraryId, logicalPath, title }` (una línea, de 1 a 300 caracteres) | el chat guardado |
+
+**Frontend.** `useChatHistoryList` lee la lista cada vez que se abre el historial y la vuelve a leer después de fijar, renombrar o eliminar. Eliminar usa la misma confirmación que el menú del chat principal (`deleteChat` en `ChatWorkspaceView`). El buscador filtra por título lo que ya está en pantalla. Estilos: `.notia-chat-history-*` en `notia.css`.
+
+**Validación**
+
+- `cargo test -p notia-backend-core`: 315 (4 nuevas: días locales y grupos, hora del nombre, último agente y fijado en el frontmatter).
+- `cargo test --offline -p notia-app --features bluetooth`: 344 y 1 ignorada (1 nueva: firma de la respuesta con el prompt).
+- `cargo check` de escritorio y Android: 38 y 61 advertencias (las mismas). Linux (WSL): 289 y 315 aprobados, 146 advertencias (las mismas).
+- `npx vitest run`: 297. `ChatPanelHeader.test.tsx` cubre grupos, «Actual», agente de cada fila, abrir, buscar, fijar, renombrar, eliminar y nuevo chat. `npx tsc`, `npx eslint .` y `npx vite build`: sin errores.
+- Vista previa en Chrome headless del panel real con respuestas simuladas, en tema oscuro (con una fila enfocada) y claro.
+
+## Graph View: rediseño
+
+Graph View sigue el canvas https://claude.ai/artifact/Xprcvq7qWmvfMf2u5HJiaT. Reemplaza lo que la sección 2.4 dice sobre la leyenda, el clic que abre la nota, el botón **Centrar grafo**, las partículas en hover y la búsqueda con ojo/`+`/archivo.
+
+**Pantalla.**
+
+- **Barra superior (`GraphTopBar.tsx`).** «Grafo», notas y enlaces visibles, el selector Global/Local y un chip por etiqueta con su cantidad. Tocar un chip oculta o muestra esas notas.
+- **Buscador flotante (`GraphSearchPanel.tsx`).** Usa `backend_search_library_graph`. Cada resultado muestra el título con la coincidencia resaltada, la carpeta y la cantidad de coincidencias; elegirlo selecciona y centra el nodo. Los nodos que coinciden llevan un anillo ámbar.
+- **Inspector (`GraphInspector.tsx`).** Sin selección muestra «Resumen de *biblioteca*»: notas, enlaces, huérfanas, una barra por etiqueta y las 5 notas más conectadas. Con una nota seleccionada muestra su etiqueta, título, «biblioteca / carpeta · N enlaces», **Abrir nota**, **Sumar al chat** / **Quitar del chat**, **Ver grafo local** / **Volver al global** y sus conexiones (tocar una la selecciona).
+- **Dock inferior (`GraphDock.tsx`).** Alejar, porcentaje (vuelve al 100 %), acercar, **Encuadrar**; Nombres **Auto** / **Todos**; interruptores **Huérfanas** y **Carpetas**; el popover **Fuerzas** con repulsión, distancia de enlace y cohesión de carpetas, y **Restablecer**.
+- **Minimapa (`GraphMinimap.tsx`).** Todo el grafo con el recuadro de lo que está en pantalla.
+- **Lienzo (`graphCanvas.ts`).** Los colores salen de los tokens del tema (`readGraphPalette`). El tamaño del nodo crece con sus enlaces (`nodeRadius`). Los enlaces son curvos. Con **Carpetas**, cada carpeta de primer nivel tiene un halo punteado (envolvente convexa) con su nombre y cantidad, y una fuerza suave (`folder`) acerca sus notas a un ancla propia sobre un círculo. Con Nombres **Auto** se muestran los de los nodos con 4 o más enlaces, el seleccionado y sus vecinos, el que está bajo el puntero, las coincidencias y todos a partir de un zoom de 1,4.
+
+**Interacción.** Tocar un nodo lo selecciona y lo centra (ya no abre la nota: eso lo hace **Abrir nota**). Arrastrarlo lo deja fijo; un doble toque lo suelta. Shift+clic lo suma o quita del chat. El modo Local muestra la nota seleccionada y sus vecinos directos. El grafo se encuadra solo al cargar o cambiar las fuerzas, dentro del espacio que deja libre el inspector. Nombres, huérfanas, carpetas y fuerzas se guardan en el dispositivo (`notia.graphView.preferences.v2`). Los filtros por etiqueta, la selección y el modo local son estado de presentación.
+
+**Rust (contrato de `backend_library_graph`).**
+
+- `GraphNodeDto` suma `folder` (primer segmento de la ruta; vacío en la raíz) y `neighbors` (rutas vecinas, de más a menos conectada y después por título).
+- `GraphModelDto` suma `summary`: `{ notes, links, orphans, contexts: [{ tag, color, count }], topConnected }`. Las etiquetas van de mayor a menor cantidad; `topConnected` tiene hasta 5 rutas. Lo arma `finish_model` en `backend-core/src/library_graph.rs`.
+- `GraphSearchResultDto` suma `folder`.
+- `notia-app` traduce `neighbors` y `topConnected` a rutas visibles igual que los nodos.
+- Se borró `engines/graph/graphLegendEngine.ts` (y su prueba): los conteos por etiqueta los da Rust. `GraphView` ya no recibe `contexts`.
+
+**Responsive.** Los cortes usan container queries: por debajo de 1100 px se achican las tarjetas; por debajo de 760 px el inspector pasa a ser una hoja inferior y se ocultan el resumen y el minimapa. Con puntero grueso los controles miden 44 px. Estilos: `.notia-gv-*` en `views/graph/graphView.css`; se borró el bloque `.notia-graph-*` de `notia.css`.
+
+**Validación**
+
+- `cargo test -p notia-backend-core`: 316 (1 nueva: carpeta, vecinos y resumen).
+- `cargo test --offline -p notia-app --features bluetooth`: 344 y 1 ignorada. Linux (WSL): 289 y 316 aprobados, 146 advertencias (las mismas).
+- `npx vitest run`: 72 archivos, 299 pruebas. `graphView.test.tsx` cubre la geometría (envolvente, radio, colores), el resumen, el detalle con sus acciones y el dock con las fuerzas. `npx tsc -p tsconfig.app.json --noEmit`, `npx eslint .` y `npx vite build`: sin errores.
+- Vista previa en Chrome headless con un modelo simulado: resumen, selección, modo local, búsqueda y fuerzas en tema oscuro; tema claro a 420 px.
+
+**Pendientes**
+
+- Probar en Windows y en un Android físico: tocar, arrastrar y soltar nodos con el dedo, pellizcar para hacer zoom, la hoja inferior del inspector y el rendimiento con una biblioteca grande.
 
 ## Finanzas: seguimiento informal cargado por el asistente
 

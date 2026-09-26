@@ -1,10 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, FileImage, FileText, Files, Folder, FolderSearch, Info, Library, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, ChevronDown, FileImage, FileText, Files, Folder, FolderSearch, LayoutGrid, Library, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
 import type { ChatFileContextMode, ChatLibraryFileOption } from '../../../../services/chat/chatAttachmentRuntime'
-import type { SelectedImageAttachment, AttachmentMenuPosition } from './ChatWorkspaceViewTypes'
+import type { ChatComposerContext, SelectedImageAttachment, AttachmentMenuPosition } from './ChatWorkspaceViewTypes'
 import { useVoiceTranscription } from './useVoiceTranscription'
 import { useAppSelector } from '../../../../store/hooks'
 import { selectQwen3TtsSettings } from '../../../../features/preferences/preferencesSelectors'
@@ -30,8 +30,11 @@ interface ChatComposerProps {
   awaitingAgentClarification?: boolean
   isAiAvailable: boolean
   library: import('../../../../types/notia').NotiaLibrary | null
-  composerContextLabel?: string
+  /** Side panel: the open file or view, shown as the first chip. */
+  composerContext?: ChatComposerContext | null
   activeModelLabel: string
+  /** Side panel: the model button opens the AI settings. */
+  onOpenModelSettings?: () => void
   selectedImageAttachments: SelectedImageAttachment[]
   selectedLibraryFileSummary: ChatLibraryFileOption[]
   selectedLibraryFilePaths: string[]
@@ -72,8 +75,9 @@ function ChatComposerComponent({
   awaitingAgentClarification = false,
   isAiAvailable,
   library,
-  composerContextLabel,
+  composerContext = null,
   activeModelLabel,
+  onOpenModelSettings,
   selectedImageAttachments,
   selectedLibraryFileSummary,
   selectedLibraryFilePaths,
@@ -252,19 +256,24 @@ function ChatComposerComponent({
           })
         }}
       />
-      {composerContextLabel ? (
-        <div className="notia-chat-context-indicator" aria-live="polite">
-          <Info size={14} />
-          <span>{composerContextLabel}</span>
-        </div>
-      ) : null}
-      {hasAnyAttachment ? (
+      {hasAnyAttachment || composerContext ? (
         <div
           className="notia-chat-attachments"
           role="region"
-          aria-label="Archivos adjuntos"
+          aria-label="Contexto y archivos adjuntos"
           tabIndex={0}
         >
+          {composerContext ? (
+            <div
+              className={`notia-chat-context-chip notia-chat-context-chip--${composerContext.kind}`}
+              title={composerContext.kind === 'none' ? undefined : `Contexto: ${composerContext.label}`}
+              aria-live="polite"
+            >
+              {composerContext.kind === 'document' ? <FileText size={12} aria-hidden="true" /> : null}
+              {composerContext.kind === 'view' ? <LayoutGrid size={12} aria-hidden="true" /> : null}
+              <span>{composerContext.label}</span>
+            </div>
+          ) : null}
           {selectedImageAttachments.map((attachment, index) => (
             <div className="notia-chat-attachment-pill" key={`${attachment.name}-${index}`}>
               {attachment.kind === 'image' ? <FileImage size={14} /> : <FileText size={14} />}
@@ -381,7 +390,7 @@ function ChatComposerComponent({
             ? 'Escribí la aclaración para que el agente continúe...'
             : !library
               ? 'Primero elegí una librería activa...'
-              : variant === 'workspace' ? 'Preguntá sobre tus notas y tareas…' : 'Escribi tu mensaje...'}
+              : variant === 'workspace' ? 'Preguntá sobre tus notas y tareas…' : 'Escribí tu mensaje…'}
           disabled={!library}
           readOnly={voice.isActive}
           onChange={(event) => {
@@ -497,51 +506,66 @@ function ChatComposerComponent({
           )}
         </div>
       ) : (
-        <div className="notia-chat-composer-footer">
-          <span>{activeModelLabel} · Enter para enviar. Shift + Enter para salto de linea.</span>
-          <div className="notia-chat-composer-actions">
-            <NotiaButton
+        <div className="notia-chat-panel-composer-bar">
+          <div className="notia-chat-attachment-menu-shell">
+            <button
+              ref={triggerRef}
               type="button"
-              size="icon"
-              variant="secondary"
-              title="Dictar mensaje sin conexion"
-              aria-label="Iniciar dictado por microfono"
-              onClick={voice.start}
-              disabled={!library || voice.isActive || !voice.isModelReady}
+              className="notia-chat-panel-composer-tool"
+              title="Adjuntar archivo o nota"
+              aria-label="Adjuntar archivo o nota"
+              onClick={onToggleAttachmentMenu}
+              disabled={!library || isSubmitting || !isAiAvailable}
             >
-              <Mic size={16} />
-            </NotiaButton>
-            <div className="notia-chat-attachment-menu-shell">
-              <NotiaButton
-                ref={triggerRef}
-                size="icon"
-                variant="secondary"
-                title="Adjuntar archivo"
-                aria-label="Adjuntar archivo"
-                onClick={onToggleAttachmentMenu}
-                disabled={!library || isSubmitting || !isAiAvailable}
-              >
-                <Plus size={16} />
-              </NotiaButton>
-              {attachmentMenu}
-            </div>
-            <NotiaButton type="submit" variant="primary" disabled={!canSubmit && !isSubmitting}>
-              {awaitingAgentClarification ? 'Responder' : isSubmitting ? 'Enviando...' : 'Enviar'}
-              <ArrowUp size={16} />
-            </NotiaButton>
-            {isSubmitting && onCancel ? (
-              <NotiaButton
-                type="button"
-                variant="secondary"
-                onClick={(event) => {
-                  event.preventDefault()
-                  onCancel()
-                }}
-              >
-                Cancelar
-              </NotiaButton>
-            ) : null}
+              <Plus size={16} strokeWidth={1.75} />
+            </button>
+            {attachmentMenu}
           </div>
+          <button
+            type="button"
+            className="notia-chat-panel-composer-tool"
+            title="Dictar mensaje sin conexión"
+            aria-label="Iniciar dictado por micrófono"
+            onClick={voice.start}
+            disabled={!library || voice.isActive || !voice.isModelReady}
+          >
+            <Mic size={16} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            className="notia-chat-panel-model"
+            title="Modelo de IA · abrir configuración"
+            aria-label={`Modelo ${activeModelLabel}. Abrir configuración de IA`}
+            onClick={onOpenModelSettings}
+            disabled={!onOpenModelSettings}
+          >
+            <span>{activeModelLabel}</span>
+            <ChevronDown size={12} aria-hidden="true" />
+          </button>
+          {isSubmitting && onCancel ? (
+            <button
+              type="button"
+              className="notia-chat-send-button notia-chat-send-button--stop"
+              title="Detener respuesta"
+              aria-label="Detener respuesta"
+              onClick={(event) => {
+                event.preventDefault()
+                onCancel()
+              }}
+            >
+              <Square size={14} />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="notia-chat-send-button"
+              title={awaitingAgentClarification ? 'Responder (Enter)' : 'Enviar (Enter)'}
+              aria-label={awaitingAgentClarification ? 'Responder' : 'Enviar mensaje'}
+              disabled={!canSubmit}
+            >
+              <ArrowUp size={16} />
+            </button>
+          )}
         </div>
       )}
     </form>

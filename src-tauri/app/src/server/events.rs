@@ -127,10 +127,10 @@ mod tests {
         let (first, _) = hub.subscribe(None);
         let (second, _) = hub.subscribe(None);
         drop(second);
-        hub.emit("multichat-event", serde_json::json!({ "roomId": "r" })).expect("emit");
+        hub.emit("ai-chat-agent", serde_json::json!({ "roomId": "r" })).expect("emit");
         let message = parse(&first.recv().expect("message"));
         assert_eq!(message["seq"], 1);
-        assert_eq!(message["event"], "multichat-event");
+        assert_eq!(message["event"], "ai-chat-agent");
         assert_eq!(message["payload"]["roomId"], "r");
         assert_eq!(hub.subscriber_count(), 1);
     }

@@ -1032,6 +1032,78 @@ pub fn ensure_markdown_defaults(source: &str, created_at_ms: u64) -> Option<Stri
     }
 }
 
+/// Frontmatter property that shows a note on pages. Notes without it open in
+/// the normal, continuous editor.
+pub const PAGE_MODE_PROPERTY: &str = "pageMode";
+
+/// Lines between the frontmatter fences and where the closing fence starts;
+/// `None` without frontmatter. An opening fence without a closing one is an
+/// error, so a malformed note is never rewritten.
+fn frontmatter_lines(source: &str) -> Result<Option<(Vec<LineSpan>, usize)>, BackendError> {
+    let lines = line_spans(source);
+    if lines.first().is_none_or(|line| line.text != "---") {
+        return Ok(None);
+    }
+    let close = lines
+        .iter()
+        .skip(1)
+        .position(|line| line.text == "---" || line.text == "...")
+        .map(|index| index + 1)
+        .ok_or_else(|| BackendError::invalid_input("El frontmatter no tiene cierre."))?;
+    Ok(Some((lines[1..close].to_vec(), lines[close].start)))
+}
+
+/// Value of a top-level `key: value` line. Indented lines belong to lists
+/// or maps (`tags:`, `vars:`) and are skipped.
+fn top_level_value<'a>(line: &'a LineSpan, key: &str) -> Option<&'a str> {
+    if line.text.starts_with([' ', '\t']) {
+        return None;
+    }
+    let (name, value) = line.text.split_once(':')?;
+    (name.trim() == key).then(|| value.trim())
+}
+
+/// Whether the note asks to be shown on pages (`pageMode: true`).
+pub fn note_page_mode(source: &str) -> bool {
+    let Ok(Some((lines, _))) = frontmatter_lines(source) else {
+        return false;
+    };
+    lines
+        .iter()
+        .filter_map(|line| top_level_value(line, PAGE_MODE_PROPERTY))
+        .last()
+        .is_some_and(|value| value.trim_matches(['"', '\'']).eq_ignore_ascii_case("true"))
+}
+
+/// The note with page mode turned on (`pageMode: true`) or off (the
+/// property removed, so the note goes back to the normal editor).
+pub fn set_note_page_mode(source: &str, enabled: bool) -> Result<String, BackendError> {
+    let newline = newline_for(source);
+    let property = format!("{PAGE_MODE_PROPERTY}: true");
+    let Some((lines, close_start)) = frontmatter_lines(source)? else {
+        return Ok(if enabled {
+            format!("---{newline}{property}{newline}---{newline}{source}")
+        } else {
+            source.to_string()
+        });
+    };
+    let existing = lines
+        .iter()
+        .filter(|line| top_level_value(line, PAGE_MODE_PROPERTY).is_some())
+        .collect::<Vec<_>>();
+    if enabled {
+        return match existing.first() {
+            Some(line) => replace_range(source, line.start, line.text_end, &property),
+            None => replace_range(source, close_start, close_start, &format!("{property}{newline}")),
+        };
+    }
+    let mut result = source.to_string();
+    for line in existing.iter().rev() {
+        result.replace_range(line.start..line.end, "");
+    }
+    Ok(result)
+}
+
 fn replace_range(
     source: &str,
     start: usize,
@@ -1601,6 +1673,85 @@ mod tests {
         );
         assert_eq!(ensure_markdown_defaults("", 1), None);
         assert_eq!(ensure_markdown_defaults("---\nsin cierre\n", 1), None);
+    }
+
+    #[test]
+    fn page_mode_is_a_note_property_and_off_by_default() {
+        assert!(!note_page_mode("# Nota
+"));
+        assert!(!note_page_mode("---
+contexto: \"#Personal\"
+---
+Hola
+"));
+        assert!(note_page_mode("---
+tags:
+  - a
+pageMode: true
+---
+Hola
+"));
+        assert!(note_page_mode("---
+pageMode: \"True\"
+---
+"));
+        assert!(!note_page_mode("---
+pageMode: false
+---
+"));
+        assert!(!note_page_mode("---
+vars:
+  pageMode: true
+---
+"));
+        assert!(!note_page_mode("---
+pageMode: true
+"));
+    }
+
+    #[test]
+    fn page_mode_is_written_and_removed_without_touching_the_rest() {
+        let note = "---
+tags:
+  - a
+contexto: \"#Personal\"
+---
+Hola
+";
+        let paged = set_note_page_mode(note, true).expect("on");
+        assert_eq!(paged, "---
+tags:
+  - a
+contexto: \"#Personal\"
+pageMode: true
+---
+Hola
+");
+        assert!(note_page_mode(&paged));
+        assert_eq!(set_note_page_mode(&paged, true).expect("again"), paged);
+        assert_eq!(set_note_page_mode(&paged, false).expect("off"), note);
+        assert_eq!(
+            set_note_page_mode("---
+pageMode: false
+---
+", true).expect("flip"),
+            "---
+pageMode: true
+---
+"
+        );
+        assert_eq!(set_note_page_mode("Hola
+", true).expect("new"), "---
+pageMode: true
+---
+Hola
+");
+        assert_eq!(set_note_page_mode("Hola
+", false).expect("same"), "Hola
+");
+        assert!(set_note_page_mode("---
+sin cierre
+", true).is_err());
     }
 
     #[test]

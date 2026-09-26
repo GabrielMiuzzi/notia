@@ -1,14 +1,19 @@
 import { Plugin, PluginKey, type EditorState } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
+import { remarkStringifyOptionsCtx } from '@milkdown/kit/core'
+import type { Ctx } from '@milkdown/kit/ctx'
 import {
   findActiveWikiLinkContext,
   findWikiLinkMatches,
   resolveWikiLinkTarget,
+  restoreEscapedWikiLinks,
   type MarkdownWikiLinkLookup,
 } from '../../../../engines/markdown/wikiLinkEngine'
 
 const WIKI_LINK_PLUGIN_KEY = new PluginKey('notia-wikilink-plugin')
+/** Class of a link that points to an existing note; only a click on it opens the note. */
+const RESOLVED_WIKI_LINK_CLASS = 'notia-wikilink-token--resolved'
 
 export interface WikiLinkMenuContext {
   query: string
@@ -85,7 +90,7 @@ function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLo
       const matchTo = position + match.endOffset
       const target = resolveWikiLinkTarget(lookup, match.reference)
       const className = target
-        ? 'notia-wikilink-token notia-wikilink-token--resolved'
+        ? `notia-wikilink-token ${RESOLVED_WIKI_LINK_CLASS}`
         : 'notia-wikilink-token notia-wikilink-token--broken'
 
       decorations.push(
@@ -106,10 +111,12 @@ function resolveWikiLinkPathAtPosition(
   position: number,
   lookup: MarkdownWikiLinkLookup,
 ): string | null {
-  let resolvedPath: string | null = null
+  let insidePath: string | null = null
+  // Position right after `]]`: the link on its left, unless another one starts there.
+  let endingPath: string | null = null
 
   state.doc.descendants((node, nodePosition, parent) => {
-    if (resolvedPath) {
+    if (insidePath) {
       return false
     }
 
@@ -138,14 +145,56 @@ function resolveWikiLinkPathAtPosition(
         continue
       }
 
-      resolvedPath = target.path
+      if (position === to) {
+        endingPath ??= target.path
+        continue
+      }
+
+      insidePath = target.path
       return false
     }
 
     return
   })
 
-  return resolvedPath
+  return insidePath ?? endingPath
+}
+
+/**
+ * Note a click opens, or `null`. ProseMirror maps a click anywhere past the
+ * end of a line to the position right after its last character, so a line
+ * ending in `[[nota]]` opened the note wherever it was clicked and could not
+ * be edited. The click has to land on the link itself.
+ */
+export function resolveClickedWikiLinkPath(
+  state: EditorState,
+  position: number,
+  target: EventTarget | null,
+  lookup: MarkdownWikiLinkLookup,
+): string | null {
+  if (!(target instanceof Element) || !target.closest(`.${RESOLVED_WIKI_LINK_CLASS}`)) {
+    return null
+  }
+
+  return resolveWikiLinkPathAtPosition(state, position, lookup)
+}
+
+/**
+ * Keeps the brackets of `[[nota]]` unescaped when the note is saved. The
+ * writer escapes every `[` so it cannot start a Markdown link, which turned
+ * wikilinks into `\[\[nota]]`. Milkdown passes its own text writer through
+ * the stringify options, which win over extensions, so this wraps that one.
+ */
+export function configureWikiLinkSerializer(ctx: Ctx): void {
+  ctx.update(remarkStringifyOptionsCtx, (options) => {
+    const writeText = options.handlers?.text
+    if (!writeText) {
+      return options
+    }
+
+    const text: typeof writeText = (node, parent, state, info) => restoreEscapedWikiLinks(writeText(node, parent, state, info))
+    return { ...options, handlers: { ...options.handlers, text } }
+  })
 }
 
 export function createWikiLinkPlugin(config: CreateWikiLinkPluginConfig) {
@@ -206,7 +255,7 @@ export function createWikiLinkPlugin(config: CreateWikiLinkPluginConfig) {
               return false
             }
 
-            const resolvedPath = resolveWikiLinkPathAtPosition(view.state, position, config.getLookup())
+            const resolvedPath = resolveClickedWikiLinkPath(view.state, position, mouseEvent.target, config.getLookup())
             if (!resolvedPath) {
               return false
             }

@@ -10,7 +10,6 @@ export type WorkspaceAiView =
   | 'coldpass'
   | 'meeting'
   | 'finance'
-  | 'multichat'
   | 'agenda'
   | 'routine'
 

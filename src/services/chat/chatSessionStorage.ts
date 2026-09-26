@@ -2,6 +2,7 @@ import { callBackend } from '../transport'
 import type { NotiaLibrary } from '../../types/notia'
 import { mutateLibraryEntry } from '../libraries/libraryRuntime'
 import type { StoredChatDocument } from './chatDocumentStorage'
+import type { ChatSettings } from './chatAgentsRuntime'
 
 export interface CreateChatFileInput {
   agentMemoryEnabled: boolean
@@ -25,13 +26,15 @@ export interface CreateChatContext {
   keepChatContext: boolean
 }
 
+/** Creates a chat; `settings` are the ones chosen before it existed. */
 export async function createChatDraftFile(
   library: NotiaLibrary,
   config: CreateChatFileInput,
   context?: CreateChatContext,
+  settings?: ChatSettings,
 ): Promise<{ filePath: string; document: StoredChatDocument }> {
   const { path, document } = await callBackend<{ path: string; document: StoredChatDocument }>('backend_create_chat', {
-    payload: { libraryId: library.id, localStamp: localStamp(new Date()), ...config, context },
+    payload: { libraryId: library.id, localStamp: localStamp(new Date()), ...config, context, settings },
   })
   return { filePath: path, document }
 }

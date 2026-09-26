@@ -5,25 +5,23 @@ import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { useConfirmationEngine } from '../../../../context/confirmation/useConfirmationEngine'
 import { AppDialogModal } from '../../AppDialogModal'
-import { CreateChatModal, type CreateChatModalSubmitPayload } from '../../CreateChatModal'
 import { ChatLibraryFilesModal } from './ChatLibraryFilesModal'
 import { ChatThread } from './ChatThread'
 import { ChatComposer } from './ChatComposer'
-import {
-  ChatHistoryPanel,
-  ChatHistoryPanelHeaderCompact,
-} from './ChatHistoryPanel'
+import { ChatHistoryPanel } from './ChatHistoryPanel'
+import { ChatPanelHeader, type ChatPanelAgent, type ChatPanelAgentLook } from './ChatPanelHeader'
+import { ChatPanelWelcome } from './ChatPanelWelcome'
 import { ChatContextPanel, ChatStarterCards, ChatTopBar, ChatWelcomeHero } from './ChatWorkspacePanels'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
-import {
-  deleteChatDraftFile,
-  createChatDraftFile,
-} from '../../../../services/chat/chatSessionStorage'
+import { deleteChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { writeAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { readChatFileAsAttachment } from './chatImageAttachment'
 import { subscribeToChatComposerRequests } from '../../../../services/chat/chatComposerRequests'
 import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
+import { useChatAgentSettings } from './useChatAgentSettings'
+import { ChatAgentPanelSections } from './ChatAgentPanel'
+import type { ChatAgentSpeaker } from '../../../../services/chat/aiChatRuntime'
 import { useChatAttachmentMenu } from './useChatAttachmentMenu'
 import { beginPhantomClickSuppression } from '../../../../utils/interactions/phantomClickSuppression'
 import { notiaTimer } from '../../../../services/runtime/notiaLogger'
@@ -78,11 +76,10 @@ export function ChatWorkspaceViewComponent({
   library,
   aiPreferences,
   previousChats = EMPTY_PREVIOUS_CHATS,
-  title = 'Notia Chat',
-  description = 'Una vista de chat reutilizable para futuras integraciones.',
   suggestions = DEFAULT_SUGGESTIONS,
   showHistoryPanel = true,
-  composerContextLabel,
+  composerContext = null,
+  onClosePanel,
   preferredContextPaths = EMPTY_CONTEXT_PATHS,
   preferredContextName = null,
   preferredContextMode = null,
@@ -91,11 +88,9 @@ export function ChatWorkspaceViewComponent({
   transientContextMode = null,
   transientContextSummary = null,
   transientContextContent = transientContextSummary,
-  multichatRoomId = null,
   transientContextDisplayPaths = EMPTY_CONTEXT_PATHS,
   onTransientContextPathRemove,
   persistTransientContext = false,
-  ephemeralChat = false,
   selectMatchingChatOnly = false,
   onChatCreated,
   onChatDeleted,
@@ -103,11 +98,9 @@ export function ChatWorkspaceViewComponent({
   activeMarkdownSource = null,
   onActiveMarkdownDocumentChanged,
 }: ChatWorkspaceViewProps) {
-  const ephemeralChatPathsRef = useRef<Set<string>>(new Set())
   const mountTimerRef = useRef(
     notiaTimer('chat', 'ChatWorkspaceView mount', {
       showHistoryPanel,
-      ephemeralChat,
       selectMatchingChatOnly,
     }),
   )
@@ -117,17 +110,6 @@ export function ChatWorkspaceViewComponent({
       timer.success()
     }
   }, [])
-
-  useEffect(() => {
-    const ephemeralChatPaths = ephemeralChatPathsRef.current
-    return () => {
-      if (!ephemeralChat || !library) return
-      for (const filePath of ephemeralChatPaths) {
-        void deleteChatDraftFile(filePath, library).catch(() => undefined)
-      }
-      ephemeralChatPaths.clear()
-    }
-  }, [ephemeralChat, library])
 
   const chatState = useChatState({
     library,
@@ -216,6 +198,7 @@ export function ChatWorkspaceViewComponent({
     setChatTitleOverrides,
     setMatchedPreferredChatFilePath,
     setPendingAutoCreatedChatFilePath,
+    pickChat,
 
     draft,
     setDraft,
@@ -224,12 +207,6 @@ export function ChatWorkspaceViewComponent({
 
     isHistoryPanelOpen,
     setIsHistoryPanelOpen,
-    isCreateChatModalOpen,
-    setIsCreateChatModalOpen,
-    createChatErrorMessage,
-    setCreateChatErrorMessage,
-    isCreateChatSubmitting,
-    setIsCreateChatSubmitting,
     dialogMessage,
     setDialogMessage,
     isChatToolsModalOpen,
@@ -290,6 +267,15 @@ export function ChatWorkspaceViewComponent({
     virtualChatHistoryItems,
     chatHistoryTotalSize,
   } = chatState
+
+  const agentSettings = useChatAgentSettings({
+    library,
+    selectedChatFilePath,
+    activeChatDocument,
+    setActiveChatDocument,
+  })
+  // The agent of the chat whose answer is streaming; `null` while Notia answers.
+  const [streamingAgent, setStreamingAgent] = useState<ChatAgentSpeaker | null>(null)
 
   // Views (Finanzas) put a message in the side chat's composer to review and send.
   const [composerFocusRequest, setComposerFocusRequest] = useState(0)
@@ -418,12 +404,9 @@ export function ChatWorkspaceViewComponent({
 
   const workspaceContextFolders = selectedLibraryFolderPaths.map((path) => ({ path, name: buildAttachmentDisplayName(path) }))
 
+  // The side chat's model button shows only the name, as the canvas does.
   const resolvedActiveModel = activeModelLabel
-    ? `Modelo: ${activeModelLabel}`
-    : isResolvingActiveModel
-      ? 'Modelo: ...'
-      : 'Modelo: por defecto'
-
+    ?? (isResolvingActiveModel ? 'Buscando modelo…' : 'Modelo por defecto')
 
   const {
     panelRef: chatContextMenuPanelRef,
@@ -557,16 +540,12 @@ export function ChatWorkspaceViewComponent({
       selectedLibraryFolderPaths: showHistoryPanel ? selectedLibraryFolderPaths : [],
       libraryRagEnabled: showHistoryPanel ? libraryRagEnabled : true,
       newChatAgentMemoryEnabled,
-      ephemeralChat,
+      newChatSettings: showHistoryPanel ? agentSettings.newChatSettings : undefined,
       preferredContextScopeKey,
       persistTransientContext,
       hasTransientContext,
       transientContextContent,
-      multichatRoomId,
-      onChatCreated: async (filePath) => {
-        if (ephemeralChat) ephemeralChatPathsRef.current.add(filePath)
-        await onChatCreated?.(filePath)
-      },
+      onChatCreated,
       activeMarkdownSource,
       workspaceSnapshot,
       onActiveMarkdownDocumentChanged,
@@ -579,6 +558,7 @@ export function ChatWorkspaceViewComponent({
       setOptimisticThreadMessages,
       setStreamingThinking,
       setStreamingAssistantMessage,
+      setStreamingAgent,
       setSelectedChatFilePath,
       setActiveChatDocument,
       setChatTitleOverrides,
@@ -619,38 +599,20 @@ export function ChatWorkspaceViewComponent({
     setAgentExecutionPlan([])
   }
 
-  const handleCreateChat = async (payload: CreateChatModalSubmitPayload) => {
-    if (!library || isCreateChatSubmitting) {
-      return
-    }
-
-    setCreateChatErrorMessage(null)
-    setIsCreateChatSubmitting(true)
-
-    try {
-      const { filePath } = await createChatDraftFile(library, { ...payload, agentMemoryEnabled: newChatAgentMemoryEnabled })
-      setIsCreateChatModalOpen(false)
-      setSelectedChatFilePath(filePath)
-      setMatchedPreferredChatFilePath(filePath)
-      await onChatCreated?.(filePath)
-    } catch (error) {
-      setCreateChatErrorMessage(
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : 'No se pudo crear el archivo del chat.',
-      )
-    } finally {
-      setIsCreateChatSubmitting(false)
-    }
-  }
-
   const handleDeleteChat = async () => {
-    if (!chatContextMenuState || !library) {
+    if (!chatContextMenuState) {
       return
     }
-
     const targetChat = chatContextMenuState
     setChatContextMenuState(null)
+    await deleteChat(targetChat)
+  }
+
+  /** Asks and deletes a chat of the history (full view menu or side panel list). */
+  const deleteChat = async (targetChat: { filePath: string; title: string }) => {
+    if (!library) {
+      return
+    }
 
     const accepted = await confirm({
       title: 'Eliminar chat',
@@ -664,18 +626,22 @@ export function ChatWorkspaceViewComponent({
       return
     }
 
+    // The open chat is closed before its file goes away: the list changes
+    // while it is deleted, and the chat would be read again after it was gone.
+    const wasSelected = selectedChatFilePath === targetChat.filePath
     try {
+      if (wasSelected) {
+        setSelectedChatFilePath(null)
+        setActiveChatDocument(null)
+      }
       setLocallyDeletedChatPaths((current) => (
         current.includes(targetChat.filePath) ? current : [...current, targetChat.filePath]
       ))
       await deleteChatDraftFile(targetChat.filePath, library)
-      if (selectedChatFilePath === targetChat.filePath) {
-        setSelectedChatFilePath(null)
-        setActiveChatDocument(null)
-      }
       await onChatDeleted?.(targetChat.filePath)
     } catch (error) {
       setLocallyDeletedChatPaths((current) => current.filter((filePath) => filePath !== targetChat.filePath))
+      if (wasSelected) setSelectedChatFilePath(targetChat.filePath)
       setDialogMessage(
         error instanceof Error && error.message.trim()
           ? error.message
@@ -777,6 +743,48 @@ export function ChatWorkspaceViewComponent({
     && !pendingAgentConfirmation
     && agentExecutionPlan.length === 0
 
+  const isPanelWelcomeState = !showHistoryPanel
+    && !isCheckingAiHealth
+    && !aiAvailabilityMessage
+    && !isChatLoading
+    && !isSubmitting
+    && displayedMessages.length === 0
+    && !pendingAgentQuestion
+    && !pendingAgentConfirmation
+    && agentExecutionPlan.length === 0
+
+  // The side chat answers with a prompt file of `.agent/promps`; the catalog
+  // brings its name, description and initials.
+  const panelAgents: ChatPanelAgent[] = !agentScope ? [] : agentSettings.catalog.agents.length > 0
+    ? agentSettings.catalog.agents.map((agent, index) => ({
+      fileName: agent.fileName,
+      name: agent.name,
+      description: agent.description,
+      initials: agent.initials,
+      colorIndex: index % 6,
+    }))
+    : agentPromptOptions.map((option, index) => ({
+      fileName: option.fileName,
+      name: option.name,
+      description: '',
+      initials: option.name.slice(0, 2).toUpperCase(),
+      colorIndex: index % 6,
+    }))
+  const panelAgent = panelAgents.find((agent) => agent.fileName === agentPromptFileName) ?? panelAgents[0] ?? null
+  const panelAgentLookOf = (agentFile: string | null): ChatPanelAgentLook => {
+    const fileName = agentFile ?? 'default.md'
+    const agent = panelAgents.find((candidate) => candidate.fileName === fileName)
+    if (agent) return agent
+    const name = fileName.replace(/\.md$/i, '')
+    return { name, initials: name.slice(0, 2).toUpperCase(), colorIndex: 0 }
+  }
+  const selectPanelAgent = (nextFileName: string) => {
+    setAgentPromptFileName(nextFileName)
+    if (library) {
+      void saveSelectedAgentPromptFileName(library.id, nextFileName).catch(() => undefined)
+    }
+  }
+
   const thread = (
     <ChatThread
       messages={displayedMessages}
@@ -788,6 +796,8 @@ export function ChatWorkspaceViewComponent({
       showHistoryPanel={showHistoryPanel}
       streamingThinking={streamingThinking}
       streamingAssistantMessage={streamingAssistantMessage}
+      agentLooks={agentSettings.agentLooks}
+      streamingAgent={streamingAgent}
       pendingAgentQuestion={pendingAgentQuestion}
       pendingAgentAnswer={pendingAgentAnswer}
       pendingAgentConfirmation={pendingAgentConfirmation}
@@ -882,7 +892,8 @@ export function ChatWorkspaceViewComponent({
       awaitingAgentClarification={Boolean(pendingAgentQuestion && clarificationResolverRef.current)}
       isAiAvailable={isAiAvailable}
       library={library}
-      composerContextLabel={composerContextLabel}
+      composerContext={composerContext}
+      onOpenModelSettings={handleOpenAiSettings}
       activeModelLabel={resolvedActiveModel}
       selectedImageAttachments={selectedImageAttachments}
       selectedLibraryFileSummary={resolvedSelectedLibraryFileSummary}
@@ -982,8 +993,10 @@ export function ChatWorkspaceViewComponent({
               selectedChatFilePath={selectedChatFilePath}
               setSelectedChatFilePath={setSelectedChatFilePath}
               onCreateChat={() => {
-                setCreateChatErrorMessage(null)
-                setIsCreateChatModalOpen(true)
+                // A new chat starts empty; the file is created with its first message.
+                setSelectedChatFilePath(null)
+                setMatchedPreferredChatFilePath(null)
+                setActiveChatDocument(null)
               }}
               setChatContextMenuState={setChatContextMenuState}
               isHistoryPanelOpen={isHistoryPanelOpen}
@@ -1001,26 +1014,6 @@ export function ChatWorkspaceViewComponent({
           ) : null}
 
           <section className="notia-chat-main">
-            {!showHistoryPanel && agentScope ? (
-              <label className="notia-chat-agent-select">
-                <span>Agente</span>
-                <select
-                  value={agentPromptFileName}
-                  disabled={isSubmitting}
-                  onChange={(event) => {
-                    const nextFileName = event.target.value
-                    setAgentPromptFileName(nextFileName)
-                    if (library) {
-                      void saveSelectedAgentPromptFileName(library.id, nextFileName).catch(() => undefined)
-                    }
-                  }}
-                >
-                  {agentPromptOptions.map((option) => (
-                    <option key={option.fileName} value={option.fileName}>{option.name}</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
             {showHistoryPanel ? (
               <ChatTopBar
                 title={activeChatDocument?.title ?? 'Nuevo chat'}
@@ -1035,12 +1028,26 @@ export function ChatWorkspaceViewComponent({
                 onToggleContextPanel={() => setIsContextPanelOpen((current) => !current)}
               />
             ) : (
-              <ChatHistoryPanelHeaderCompact
-                title={activeChatDocument?.title ?? title}
-                description={description}
-                compactRecentChats={compactRecentChats}
+              <ChatPanelHeader
+                agents={panelAgents}
+                selectedAgentFileName={agentPromptFileName}
+                isAgentChangeDisabled={isSubmitting}
+                onSelectAgent={selectPanelAgent}
+                chatTitle={selectedChatFilePath ? activeChatDocument?.title ?? null : null}
+                library={library}
                 selectedChatFilePath={selectedChatFilePath}
-                setSelectedChatFilePath={setSelectedChatFilePath}
+                agentLookOf={panelAgentLookOf}
+                onPickChat={(chat) => {
+                  pickChat(chat.filePath)
+                  // A chat opens with the agent it talks with.
+                  const agentFile = chat.agent ?? 'default.md'
+                  if (agentFile !== agentPromptFileName && panelAgents.some((agent) => agent.fileName === agentFile)) {
+                    selectPanelAgent(agentFile)
+                  }
+                }}
+                onNewChat={() => pickChat(null)}
+                onDeleteChat={deleteChat}
+                onClose={onClosePanel}
               />
             )}
 
@@ -1054,8 +1061,16 @@ export function ChatWorkspaceViewComponent({
               </div>
             ) : (
               <>
-                {thread}
+                {isPanelWelcomeState ? (
+                  <ChatPanelWelcome
+                    agent={panelAgent}
+                    starters={visibleSuggestions}
+                    isDisabled={!library || !isAiAvailable}
+                    onSendStarter={(prompt) => void submitComposerMessage(prompt)}
+                  />
+                ) : thread}
                 {composer}
+                <p className="notia-chat-panel-hint">Enter para enviar · Shift + Enter para salto de línea</p>
               </>
             )}
           </section>
@@ -1079,7 +1094,28 @@ export function ChatWorkspaceViewComponent({
               onAgentMemoryChange={setNewChatAgentMemoryEnabled}
               onOpenMemory={() => setIsChatToolsModalOpen(true)}
               onClose={() => setIsContextPanelOpen(false)}
-            />
+            >
+              {agentSettings.settingsError ? (
+                <p className="notia-chat-context-error" role="alert">
+                  {agentSettings.settingsError}
+                  <button
+                    type="button"
+                    className="notia-chat-icon-button notia-chat-icon-button--small"
+                    aria-label="Cerrar aviso"
+                    onClick={agentSettings.dismissSettingsError}
+                  >
+                    ×
+                  </button>
+                </p>
+              ) : null}
+              <ChatAgentPanelSections
+                catalog={agentSettings.catalog}
+                settings={agentSettings.settings}
+                looks={agentSettings.agentLooks}
+                isDisabled={!library || isSubmitting}
+                onChange={(next) => void agentSettings.updateSettings(next)}
+              />
+            </ChatContextPanel>
           ) : null}
         </div>
 
@@ -1111,21 +1147,6 @@ export function ChatWorkspaceViewComponent({
             setSelectedLibraryFolderPaths(selectedPaths)
             setSelectedFileContextMode(contextMode)
             setIsLibraryFoldersModalOpen(false)
-          }}
-        />
-        <CreateChatModal
-          open={isCreateChatModalOpen}
-          errorMessage={createChatErrorMessage}
-          isSubmitting={isCreateChatSubmitting}
-          onClose={() => {
-            if (isCreateChatSubmitting) {
-              return
-            }
-            setCreateChatErrorMessage(null)
-            setIsCreateChatModalOpen(false)
-          }}
-          onSubmit={(payload) => {
-            void handleCreateChat(payload)
           }}
         />
         <AppDialogModal
@@ -1252,14 +1273,6 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
-  if (previous.title !== next.title) {
-    return false
-  }
-
-  if (previous.description !== next.description) {
-    return false
-  }
-
   if ((previous.suggestions ?? DEFAULT_SUGGESTIONS) !== (next.suggestions ?? DEFAULT_SUGGESTIONS)) {
     return false
   }
@@ -1268,7 +1281,12 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
-  if (previous.composerContextLabel !== next.composerContextLabel) {
+  if (previous.composerContext?.label !== next.composerContext?.label
+    || previous.composerContext?.kind !== next.composerContext?.kind) {
+    return false
+  }
+
+  if (previous.onClosePanel !== next.onClosePanel) {
     return false
   }
 
@@ -1301,10 +1319,6 @@ function areChatWorkspaceViewPropsEqual(
   }
 
   if (previous.transientContextContent !== next.transientContextContent) {
-    return false
-  }
-
-  if (previous.multichatRoomId !== next.multichatRoomId) {
     return false
   }
 

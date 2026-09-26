@@ -53,11 +53,11 @@ fn choice<'a>(value: &Value, key: &str, allowed: impl IntoIterator<Item = &'a st
     allowed.into_iter().find(|option| *option == chosen).unwrap_or(fallback)
 }
 
-/// The editor's page setup with every value valid. Page mode starts off; the
-/// other values also shape the PDF exports.
+/// The device's page setup with every value valid; it also shapes the PDF
+/// exports. Whether a note is shown on pages is not here: it is the note's
+/// `pageMode` property (`markdown_editing::note_page_mode`).
 pub fn normalize_editor_page(value: &Value) -> Value {
     json!({
-        "pageMode": value.get("pageMode").and_then(Value::as_bool) == Some(true),
         "format": choice(value, "format", PAPER_FORMATS.iter().map(|format| format.id), DEFAULT_FORMAT),
         "orientation": choice(value, "orientation", ORIENTATIONS, "portrait"),
         "margins": choice(value, "margins", MARGIN_PRESETS.iter().map(|preset| preset.id), DEFAULT_MARGINS),
@@ -94,9 +94,9 @@ pub fn page_geometry(editor_page: &Value) -> PageGeometry {
 }
 
 /// A PDF lays the note out on the sheets page mode shows, so it is only
-/// exported with page mode on. Word exports do not depend on it.
-pub fn ensure_export_allowed(format: ExportFormat, editor_page: &Value) -> Result<(), BackendError> {
-    if format == ExportFormat::Pdf && normalize_editor_page(editor_page)["pageMode"] != true {
+/// exported from a note in page mode. Word exports do not depend on it.
+pub fn ensure_export_allowed(format: ExportFormat, note_in_page_mode: bool) -> Result<(), BackendError> {
+    if format == ExportFormat::Pdf && !note_in_page_mode {
         return Err(BackendError::new(
             BackendErrorCode::Unsupported,
             "Activá el modo página para exportar a PDF.",
@@ -114,8 +114,7 @@ impl Default for PageGeometry {
 }
 
 /// What the editor shows of a page setup: the formats with their size in the
-/// chosen orientation, the margin presets, the resulting page and whether a
-/// PDF can be exported.
+/// chosen orientation, the margin presets and the resulting page.
 pub fn page_setup_view(editor_page: &Value) -> Value {
     let landscape = normalize_editor_page(editor_page)["orientation"] == "landscape";
     let geometry = page_geometry(editor_page);
@@ -131,7 +130,6 @@ pub fn page_setup_view(editor_page: &Value) -> Value {
         "heightMm": geometry.height_mm,
         "marginMm": geometry.margin_mm,
         "pageNumbers": geometry.page_numbers,
-        "canExportPdf": ensure_export_allowed(ExportFormat::Pdf, editor_page).is_ok(),
     })
 }
 
@@ -141,12 +139,13 @@ mod tests {
 
     #[test]
     fn invalid_values_take_their_defaults() {
-        let normalized = normalize_editor_page(&json!({ "pageMode": "si", "format": "tabloid", "orientation": 3, "margins": "enormes" }));
+        // A `pageMode` saved by older versions is dropped: it is a note property now.
+        let normalized = normalize_editor_page(&json!({ "pageMode": true, "format": "tabloid", "orientation": 3, "margins": "enormes" }));
         assert_eq!(
             normalized,
-            json!({ "pageMode": false, "format": "a4", "orientation": "portrait", "margins": "normal", "pageNumbers": true })
+            json!({ "format": "a4", "orientation": "portrait", "margins": "normal", "pageNumbers": true })
         );
-        assert_eq!(normalize_editor_page(&json!({ "format": " Letter ", "pageMode": true }))["format"], "letter");
+        assert_eq!(normalize_editor_page(&json!({ "format": " Letter " }))["format"], "letter");
     }
 
     #[test]
@@ -165,15 +164,10 @@ mod tests {
     }
 
     #[test]
-    fn a_pdf_needs_page_mode() {
-        let continuous = json!({ "pageMode": false });
-        let paged = json!({ "pageMode": true });
-        let refused = ensure_export_allowed(ExportFormat::Pdf, &continuous).unwrap_err();
+    fn a_pdf_needs_a_note_in_page_mode() {
+        let refused = ensure_export_allowed(ExportFormat::Pdf, false).unwrap_err();
         assert_eq!(refused.code, BackendErrorCode::Unsupported);
-        assert!(ensure_export_allowed(ExportFormat::Pdf, &Value::Null).is_err());
-        assert!(ensure_export_allowed(ExportFormat::Pdf, &paged).is_ok());
-        assert!(ensure_export_allowed(ExportFormat::Docx, &continuous).is_ok());
-        assert_eq!(page_setup_view(&continuous)["canExportPdf"], false);
-        assert_eq!(page_setup_view(&paged)["canExportPdf"], true);
+        assert!(ensure_export_allowed(ExportFormat::Pdf, true).is_ok());
+        assert!(ensure_export_allowed(ExportFormat::Docx, false).is_ok());
     }
 }

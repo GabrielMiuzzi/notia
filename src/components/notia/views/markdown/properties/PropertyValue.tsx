@@ -302,6 +302,11 @@ export function PropertyValue({
       )
   }
 
+  // A nested map (GitBook's `vars:`) is shown, not edited: the field would flatten it.
+  if (entry.nested && entry.nested.length > 0) {
+    return <span className="notia-properties-text">{entry.nested.map((line) => line.trim()).join(' · ')}</span>
+  }
+
   if (isEditing) {
     const initialValue = value === '' ? '' : formatFrontmatterValue(value)
     return (

@@ -1473,6 +1473,8 @@ mod tests {
             attachments: Vec::new(),
             idempotency_key: "idem-1".into(),
             prompt_name: None,
+            tool_access: Default::default(),
+            library_search: true,
         }
     }
 

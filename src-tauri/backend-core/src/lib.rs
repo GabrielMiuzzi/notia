@@ -11,9 +11,11 @@ pub mod agent_workspace;
 pub mod ai_settings;
 pub mod audio_resample;
 pub mod catalog;
+pub mod chat_agents;
 pub mod chat_attachments;
 pub mod chat_context;
 pub mod chat_history;
+pub mod chat_list;
 pub mod chat_turn;
 pub mod coldpass;
 pub mod context;
@@ -26,6 +28,7 @@ pub mod export_render;
 pub mod finance_answer;
 pub mod finance_insights;
 pub mod formatting;
+pub mod gitbook_blocks;
 pub mod interaction;
 pub mod isolation;
 pub mod library_config;
@@ -36,7 +39,6 @@ pub mod pomodoro_log;
 pub mod library_tools;
 pub mod markdown_editing;
 pub mod meeting;
-pub mod multichat;
 pub mod page_links;
 pub mod page_setup;
 pub mod paths;
@@ -63,7 +65,8 @@ pub use agent::{
 };
 pub use catalog::{
     authorize_tool_call, canonical_tool_catalog, project_canonical_tool_catalog,
-    project_tool_catalog, tool_policy, AuthorizationPrincipal, ToolCatalogProjection, ToolPolicy,
+    project_tool_catalog, restrict_tool_access, tool_policy, AuthorizationPrincipal, ToolCatalogProjection,
+    ToolPolicy,
 };
 pub use paths::{
     authorize_agent_path, authorize_agent_path_for, authorize_library_path,
@@ -131,7 +134,7 @@ pub use library_tools::{
 };
 pub use markdown_editing::{
     apply_markdown_preview, apply_multi_document_markdown_preview, ensure_markdown_defaults,
-    preview_markdown_edit,
+    note_page_mode, preview_markdown_edit, set_note_page_mode, PAGE_MODE_PROPERTY,
     materialize_markdown_preview, preview_markdown_edit_from_port,
     preview_multi_document_markdown_edit,
     validate_markdown_format, MarkdownAnchor, MarkdownAnchorKind, MarkdownApplyResult,
@@ -149,7 +152,7 @@ pub use protocol::{
     OperationState, OperationStatus, PendingInteraction, PlanDecision, PreviewDocument,
     PreviewHunk, ProtocolVersion, ResumeDecision, ResumeRequest, ReviewRequest,
     SelectionBlockSnapshot, SelectionSnapshot,
-    SnapshotCapabilities, ToolCall, ToolDefinition, ToolResult, UndoOperationRequest,
+    SnapshotCapabilities, ToolAccess, ToolCall, ToolDefinition, ToolResult, UndoOperationRequest,
     MAX_BACKEND_PROTOCOL_VERSION,
 };
 pub use runtime::InteractionRuntime;

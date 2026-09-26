@@ -22,6 +22,9 @@ interface EditorSettingsModalProps {
   tab: EditorSettingsTab
   onTabChange: (tab: EditorSettingsTab) => void
   onClose: () => void
+  /** Page mode of the open note (its `pageMode` property); `null` without a note. */
+  pageMode: boolean | null
+  onTogglePageMode: () => void
 }
 
 /** Largest side of the paper icon in the format tiles. */
@@ -93,7 +96,7 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function PageTab() {
+function PageTab({ pageMode, onTogglePageMode }: Pick<EditorSettingsModalProps, 'pageMode' | 'onTogglePageMode'>) {
   const { editorPage, editorPageSetup, updatePage } = useEditorPreferences()
   if (!editorPage || !editorPageSetup) {
     return <p className="notia-editor-settings-loading" role="status">Cargando la configuración…</p>
@@ -103,12 +106,12 @@ function PageTab() {
       <div className="notia-editor-settings-lead">
         <div>
           <h3>Modo página</h3>
-          <p>Divide el documento en hojas de tamaño fijo, como en un procesador de texto. Desactivado, el documento sigue siendo un lienzo continuo.</p>
+          <p>Divide esta nota en hojas de tamaño fijo, como en un procesador de texto. Se guarda en la nota, así que cada nota abre como la dejaste; sin activarlo, la nota es un lienzo continuo. El tamaño, la orientación y los márgenes valen para todas las notas en modo página.</p>
         </div>
-        <SettingsSwitch label="Modo página" checked={editorPage.pageMode} onChange={(pageMode) => updatePage({ pageMode })} />
+        <SettingsSwitch label="Modo página" checked={pageMode === true} disabled={pageMode === null} onChange={onTogglePageMode} />
       </div>
 
-      <div className="notia-editor-settings-options" data-dimmed={!editorPage.pageMode || undefined}>
+      <div className="notia-editor-settings-options" data-dimmed={pageMode !== true || undefined}>
         <Group label="Tamaño">
           <div className="notia-editor-settings-formats" role="radiogroup" aria-label="Tamaño de página">
             {editorPageSetup.formats.map((format) => {
@@ -229,7 +232,7 @@ function PenTab() {
 }
 
 /** Editor settings: page mode with its page setup, and the pen. */
-export function EditorSettingsModal({ open, tab, onTabChange, onClose }: EditorSettingsModalProps) {
+export function EditorSettingsModal({ open, tab, onTabChange, onClose, pageMode, onTogglePageMode }: EditorSettingsModalProps) {
   const { error } = useEditorPreferences()
   return (
     <NotiaModalShell open={open} onClose={onClose} size="lg" panelClassName="notia-editor-settings">
@@ -252,7 +255,7 @@ export function EditorSettingsModal({ open, tab, onTabChange, onClose }: EditorS
         </nav>
         <div className="notia-editor-settings-content">
           {error ? <p className="notia-editor-settings-error" role="alert">{error}</p> : null}
-          {tab === 'page' ? <PageTab /> : <PenTab />}
+          {tab === 'page' ? <PageTab pageMode={pageMode} onTogglePageMode={onTogglePageMode} /> : <PenTab />}
         </div>
       </div>
     </NotiaModalShell>

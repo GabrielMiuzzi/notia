@@ -16,6 +16,8 @@ const MAX_MESSAGES: usize = 5_000;
 
 const MESSAGE_MARKER_PREFIX: &str = "<!-- NOTIA_CHAT_MESSAGE role:";
 const ATTACHMENTS_MARKER_PREFIX: &str = "<!-- NOTIA_CHAT_ATTACHMENTS:";
+/// Written after the role of an agent's message.
+const AGENT_MARKER: &str = " agent:";
 const MARKER_SUFFIX: &str = " -->";
 const CONFIDENTIAL_CONTEXT: &str = "#Confidencial";
 const RENDERABLE_IMAGE_MIME_TYPES: [&str; 6] =
@@ -69,6 +71,10 @@ pub struct StoredChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<StoredChatAttachment>,
+    /// Agent that wrote an assistant message (its prompt file); `None` for
+    /// Notia and for the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -96,6 +102,10 @@ fn library_rag_default() -> bool {
     true
 }
 
+fn enabled_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredChatDocument {
@@ -118,6 +128,25 @@ pub struct StoredChatDocument {
     /// chats, which could.
     #[serde(default = "library_rag_default")]
     pub library_rag_enabled: bool,
+    /// The agents may use tools; missing in older chats, which could.
+    #[serde(default = "enabled_default")]
+    pub tools_enabled: bool,
+    /// The agents may use tools that write; off keeps only reading tools.
+    #[serde(default = "enabled_default")]
+    pub write_enabled: bool,
+    /// Instructions of the person that every turn keeps.
+    #[serde(default)]
+    pub permanent_context: String,
+    /// Dynamic under `.agent/dynamics` that guides how the agents talk.
+    #[serde(default)]
+    pub dynamic: Option<String>,
+    /// Agents (prompt files under `.agent/promps`) that answer in rounds;
+    /// without agents Notia answers.
+    #[serde(default)]
+    pub agents: Vec<String>,
+    /// Kept at the top of the chat history.
+    #[serde(default)]
+    pub pinned: bool,
     #[serde(default)]
     pub messages: Vec<StoredChatMessage>,
 }
@@ -135,6 +164,12 @@ impl StoredChatDocument {
             selected_context_files: Vec::new(),
             selected_context_folders: Vec::new(),
             library_rag_enabled: true,
+            tools_enabled: true,
+            write_enabled: true,
+            permanent_context: String::new(),
+            dynamic: None,
+            agents: Vec::new(),
+            pinned: false,
             messages: Vec::new(),
         }
     }
@@ -156,6 +191,21 @@ impl StoredChatDocument {
             if !single_line(&attachment.name) || !single_line(&attachment.mime_type) {
                 return Err(BackendError::invalid_input("Un adjunto del chat no es válido."));
             }
+        }
+        if self.permanent_context.chars().count() > crate::chat_agents::MAX_PERMANENT_CONTEXT_CHARS {
+            return Err(BackendError::invalid_input("El contexto permanente del chat es demasiado largo."));
+        }
+        if self.dynamic.as_deref().is_some_and(|dynamic| !crate::chat_agents::is_valid_markdown_file_name(dynamic)) {
+            return Err(BackendError::invalid_input("La dinámica del chat no es válida."));
+        }
+        crate::chat_agents::validate_agent_files(&self.agents)?;
+        if self
+            .messages
+            .iter()
+            .filter_map(|message| message.agent.as_deref())
+            .any(|agent| !crate::chat_agents::is_valid_markdown_file_name(agent))
+        {
+            return Err(BackendError::invalid_input("Un mensaje del chat tiene un agente no válido."));
         }
         Ok(())
     }
@@ -299,30 +349,55 @@ fn marker_content<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     line.strip_prefix(prefix)?.strip_suffix(MARKER_SUFFIX)
 }
 
+/// Role and agent of a message marker: `assistant` or
+/// `assistant agent:<file name>`.
+fn parse_marker(token: &str) -> (Option<ChatRole>, Option<String>) {
+    let token = token.trim();
+    let (role, agent) = match token.split_once(AGENT_MARKER) {
+        Some((role, agent)) => (role.trim(), Some(agent.trim().to_string())),
+        None => (token, None),
+    };
+    let role = match role.to_lowercase().as_str() {
+        "assistant" => Some(ChatRole::Assistant),
+        "user" => Some(ChatRole::User),
+        _ => None,
+    };
+    let agent = agent.filter(|agent| {
+        role == Some(ChatRole::Assistant) && crate::chat_agents::is_valid_markdown_file_name(agent)
+    });
+    (role, agent)
+}
+
 fn extract_messages(body: &str) -> Vec<StoredChatMessage> {
     let mut messages = Vec::new();
     let mut role: Option<ChatRole> = None;
+    let mut agent: Option<String> = None;
     let mut buffer = Vec::<&str>::new();
     let mut attachments = Vec::new();
-    let mut flush = |role: &mut Option<ChatRole>, buffer: &mut Vec<&str>, attachments: &mut Vec<StoredChatAttachment>| {
+    let mut flush = |role: &mut Option<ChatRole>,
+                     agent: &mut Option<String>,
+                     buffer: &mut Vec<&str>,
+                     attachments: &mut Vec<StoredChatAttachment>| {
         if let Some(current) = role.take() {
             let content = buffer.join("\n").trim().to_string();
             if !content.is_empty() || !attachments.is_empty() {
-                messages.push(StoredChatMessage { role: current, content, attachments: std::mem::take(attachments) });
+                messages.push(StoredChatMessage {
+                    role: current,
+                    content,
+                    attachments: std::mem::take(attachments),
+                    agent: agent.take(),
+                });
             }
         }
+        *agent = None;
         buffer.clear();
         attachments.clear();
     };
     for line in body.split('\n') {
         let trimmed = line.trim();
         if let Some(token) = marker_content(trimmed, MESSAGE_MARKER_PREFIX) {
-            flush(&mut role, &mut buffer, &mut attachments);
-            role = match token.trim().to_lowercase().as_str() {
-                "assistant" => Some(ChatRole::Assistant),
-                "user" => Some(ChatRole::User),
-                _ => None,
-            };
+            flush(&mut role, &mut agent, &mut buffer, &mut attachments);
+            (role, agent) = parse_marker(token);
             continue;
         }
         if role.is_some() {
@@ -335,12 +410,18 @@ fn extract_messages(body: &str) -> Vec<StoredChatMessage> {
             buffer.push(line);
         }
     }
-    flush(&mut role, &mut buffer, &mut attachments);
+    flush(&mut role, &mut agent, &mut buffer, &mut attachments);
     messages
 }
 
 fn message_block(message: &StoredChatMessage) -> String {
-    let mut lines = vec![format!("{MESSAGE_MARKER_PREFIX}{}{MARKER_SUFFIX}", message.role.as_str())];
+    let agent = message
+        .agent
+        .as_deref()
+        .filter(|_| message.role == ChatRole::Assistant)
+        .map(|agent| format!("{AGENT_MARKER}{agent}"))
+        .unwrap_or_default();
+    let mut lines = vec![format!("{MESSAGE_MARKER_PREFIX}{}{agent}{MARKER_SUFFIX}", message.role.as_str())];
     if !message.attachments.is_empty() {
         lines.push(format!("{ATTACHMENTS_MARKER_PREFIX}{}{MARKER_SUFFIX}", encode_attachments(&message.attachments)));
     }
@@ -389,6 +470,18 @@ pub fn parse_chat_document(source: &str, fallback_title: &str) -> StoredChatDocu
         selected_context_files: list("selectedContextFiles"),
         selected_context_folders: list("selectedContextFolders"),
         library_rag_enabled: flag("libraryRag"),
+        tools_enabled: flag("tools"),
+        write_enabled: flag("write"),
+        permanent_context: match find("permanentContext") {
+            Some(Value::Scalar(Scalar::Text(text))) => text.trim().to_string(),
+            _ => String::new(),
+        },
+        dynamic: text("dynamic").filter(|dynamic| crate::chat_agents::is_valid_markdown_file_name(dynamic)),
+        agents: {
+            let agents = list("agents");
+            if crate::chat_agents::validate_agent_files(&agents).is_ok() { agents } else { Vec::new() }
+        },
+        pinned: matches!(find("pinned"), Some(Value::Scalar(Scalar::Bool(true)))),
         messages: extract_messages(&body),
     }
 }
@@ -421,6 +514,23 @@ pub fn serialize_chat_document(document: &StoredChatDocument) -> String {
         }
     }
     lines.push(format!("libraryRag: {}", document.library_rag_enabled));
+    lines.push(format!("tools: {}", document.tools_enabled));
+    lines.push(format!("write: {}", document.write_enabled));
+    lines.push(format!("permanentContext: {}", serialize_text(document.permanent_context.trim())));
+    lines.push(format!(
+        "dynamic: {}",
+        document.dynamic.as_deref().map_or_else(|| "null".to_string(), serialize_text)
+    ));
+    if document.agents.is_empty() {
+        lines.push("agents: []".to_string());
+    } else {
+        lines.push("agents:".to_string());
+        lines.extend(document.agents.iter().map(|agent| format!("  - {}", serialize_text(agent))));
+    }
+    // Only a pinned chat writes it, so the files of the others do not change.
+    if document.pinned {
+        lines.push("pinned: true".to_string());
+    }
     format!("---\n{}\n---\n\n{}", lines.join("\n"), chat_body(document, &document.messages))
 }
 
@@ -428,6 +538,13 @@ pub fn serialize_chat_document(document: &StoredChatDocument) -> String {
 /// existing chat file when its header matches, so a long history is not
 /// rewritten on every message. `None` asks for a full rewrite.
 pub fn append_chat_messages(source: &str, document: &StoredChatDocument) -> Option<String> {
+    let count = if document.messages.len() > 2 { 2 } else { document.messages.len().min(1) };
+    append_last_messages(source, document, count)
+}
+
+/// Appends the last `count` messages of `document` to its file, as
+/// `append_chat_messages` does for a turn of any length.
+pub fn append_last_messages(source: &str, document: &StoredChatDocument, count: usize) -> Option<String> {
     let normalized = source.replace("\r\n", "\n");
     let body_start = normalized
         .strip_prefix("---\n")
@@ -443,8 +560,7 @@ pub fn append_chat_messages(source: &str, document: &StoredChatDocument) -> Opti
     if marker_content(last_marker, MESSAGE_MARKER_PREFIX).is_none() {
         return None;
     }
-    let count = if document.messages.len() > 2 { 2 } else { document.messages.len().min(1) };
-    let tail = &document.messages[document.messages.len() - count..];
+    let tail = &document.messages[document.messages.len().saturating_sub(count)..];
     if tail.is_empty() {
         return None;
     }
@@ -539,9 +655,20 @@ mod tests {
         document.selected_context_folders = vec!["notas/2026".into()];
         document.library_rag_enabled = false;
         document.context_scope_key = Some("library".into());
+        document.tools_enabled = false;
+        document.write_enabled = false;
+        document.permanent_context = "Respondé corto.\nCitá: la nota".into();
+        document.dynamic = Some("debate.md".into());
+        document.agents = vec!["marco aurelio.md".into(), "epicteto.md".into()];
         document.messages = vec![
-            StoredChatMessage { role: ChatRole::User, content: "Hola".into(), attachments: vec![attachment()] },
-            StoredChatMessage { role: ChatRole::Assistant, content: "¿Qué tal?\n\nlínea".into(), attachments: vec![] },
+            StoredChatMessage { role: ChatRole::User, content: "Hola".into(), attachments: vec![attachment()], agent: None },
+            StoredChatMessage { role: ChatRole::Assistant, content: "¿Qué tal?\n\nlínea".into(), attachments: vec![], agent: None },
+            StoredChatMessage {
+                role: ChatRole::Assistant,
+                content: "Yo opino.".into(),
+                attachments: vec![],
+                agent: Some("marco aurelio.md".into()),
+            },
         ];
         document
     }
@@ -558,6 +685,8 @@ mod tests {
         let parsed = parse_chat_document("# Solo cuerpo\n", "Fallback");
         assert_eq!(parsed.title, "Fallback");
         assert!(parsed.agent_memory_enabled && parsed.context_memory_enabled && parsed.library_rag_enabled);
+        assert!(parsed.tools_enabled && parsed.write_enabled);
+        assert!(parsed.permanent_context.is_empty() && parsed.dynamic.is_none() && parsed.agents.is_empty());
         assert!(parsed.selected_context_folders.is_empty());
         assert_eq!(parsed.context_memory_message_count, 10);
         assert!(parsed.messages.is_empty());
@@ -567,11 +696,43 @@ mod tests {
     fn appends_the_last_turn_and_rewrites_foreign_files() {
         let mut current = document();
         let source = serialize_chat_document(&current);
-        current.messages.push(StoredChatMessage { role: ChatRole::User, content: "Otra".into(), attachments: vec![] });
-        current.messages.push(StoredChatMessage { role: ChatRole::Assistant, content: "Respuesta".into(), attachments: vec![] });
+        current.messages.push(StoredChatMessage { role: ChatRole::User, content: "Otra".into(), attachments: vec![], agent: None });
+        current.messages.push(StoredChatMessage { role: ChatRole::Assistant, content: "Respuesta".into(), attachments: vec![], agent: None });
         let appended = append_chat_messages(&source, &current).expect("append");
         assert_eq!(parse_chat_document(&appended, "x"), current);
+        // A round of agents appends every message of the turn.
+        for agent in ["epicteto.md", "marco aurelio.md"] {
+            current.messages.push(StoredChatMessage {
+                role: ChatRole::Assistant,
+                content: format!("Habla {agent}"),
+                attachments: vec![],
+                agent: Some(agent.into()),
+            });
+        }
+        let appended = append_last_messages(&appended, &current, 2).expect("append agents");
+        assert_eq!(parse_chat_document(&appended, "x"), current);
         assert_eq!(append_chat_messages("---\ntitle: x\n---\n\n# Otro\n", &current), None);
+    }
+
+    #[test]
+    fn an_agent_marker_needs_an_assistant_and_a_valid_file() {
+        assert_eq!(parse_marker("assistant agent:ana.md"), (Some(ChatRole::Assistant), Some("ana.md".into())));
+        assert_eq!(parse_marker("user agent:ana.md"), (Some(ChatRole::User), None));
+        assert_eq!(parse_marker("assistant agent:../x.md"), (Some(ChatRole::Assistant), None));
+        assert_eq!(parse_marker("assistant"), (Some(ChatRole::Assistant), None));
+    }
+
+    #[test]
+    fn invalid_agent_settings_are_rejected_and_ignored_when_read() {
+        let mut invalid = document();
+        invalid.agents = vec!["a.md".into(), "A.md".into()];
+        assert!(invalid.validate().is_err());
+        let mut long = document();
+        long.permanent_context = "x".repeat(crate::chat_agents::MAX_PERMANENT_CONTEXT_CHARS + 1);
+        assert!(long.validate().is_err());
+        assert!(document().validate().is_ok());
+        let parsed = parse_chat_document("---\ntitle: x\nagents: [a.md, A.md]\ndynamic: ../d.md\n---\n", "x");
+        assert!(parsed.agents.is_empty() && parsed.dynamic.is_none());
     }
 
     #[test]

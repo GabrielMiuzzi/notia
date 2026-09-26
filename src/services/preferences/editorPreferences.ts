@@ -8,9 +8,12 @@ export type PaperFormatId = 'a3' | 'a4' | 'a5' | 'b5' | 'letter' | 'legal'
 export type PageOrientation = 'portrait' | 'landscape'
 export type PageMarginsId = 'narrow' | 'normal' | 'wide'
 
-/** Page mode and the page setup it uses; the PDF exports use it too. */
+/**
+ * The page a note in page mode is drawn on; the PDF exports use it too.
+ * Whether a note is in page mode is the note's own `pageMode` property
+ * (`services/markdown/notePageModeRuntime`).
+ */
 export interface EditorPagePreferences {
-  pageMode: boolean
   format: PaperFormatId
   orientation: PageOrientation
   margins: PageMarginsId
@@ -41,8 +44,6 @@ export interface EditorPageSetup {
   heightMm: number
   marginMm: number
   pageNumbers: boolean
-  /** Rust only exports a PDF with page mode on. */
-  canExportPdf: boolean
 }
 
 /** The page the editor draws in page mode. */

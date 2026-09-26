@@ -617,46 +617,7 @@
   gap: 0;
 }
 
-/* Assistant panel: header strip, plain assistant replies, teal user bubbles. */
-.notia-right-panel .notia-chat-header--compact {
-  gap: 8px;
-  padding: 10px 14px;
-  border: 0;
-  border-bottom: 1px solid var(--color-border-strong);
-  border-radius: 0;
-  background: transparent;
-}
-
-.notia-right-panel .notia-chat-header-copy--compact p {
-  display: none;
-}
-
-.notia-right-panel .notia-chat-title-subtle {
-  color: var(--color-heading-text);
-}
-
-.notia-right-panel .notia-chat-compact-recent {
-  gap: 6px;
-}
-
-.notia-right-panel .notia-chat-compact-recent-item {
-  min-height: 26px;
-  padding: 4px 8px;
-  border-color: var(--color-border-strong);
-  background: var(--color-app-bg);
-  color: var(--color-subtle-text);
-}
-
-.notia-right-panel .notia-chat-compact-recent-item--active {
-  border-color: var(--color-active-border);
-  background: var(--color-accent-bg);
-  color: var(--color-heading-text);
-}
-
-.notia-right-panel .notia-chat-agent-select {
-  margin: 10px 14px 0;
-}
-
+/* Assistant panel: plain assistant replies, teal user bubbles. */
 .notia-right-panel .notia-chat-thread {
   overflow-y: auto;
   overflow-x: hidden;
@@ -714,10 +675,583 @@
   color: var(--color-heading-text);
 }
 
-.notia-right-panel .notia-chat-composer {
-  margin: 8px 12px 12px;
-  padding: 10px;
+/* Header: the agent that answers, the chat's title, history, new chat and close. */
+.notia-chat-panel-header {
+  position: relative;
+  z-index: 4;
+  height: var(--titlebar-height);
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
   gap: 8px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--color-border-strong);
+}
+
+.notia-chat-panel-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-heading-text);
+}
+
+.notia-chat-panel-assistant {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notia-chat-panel-assistant svg {
+  color: var(--color-accent-text);
+}
+
+.notia-chat-panel-chat-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-panel-agent,
+.notia-chat-panel-history {
+  flex-shrink: 0;
+}
+
+.notia-chat-panel-agent-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  height: 30px;
+  margin-left: -6px;
+  padding: 0 6px 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notia-chat-panel-agent-button:hover:not(:disabled),
+.notia-chat-panel-agent-button.is-open {
+  background: var(--color-row-hover);
+}
+
+.notia-chat-panel-agent-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.notia-chat-panel-agent-button > svg {
+  flex-shrink: 0;
+  color: var(--color-icon-muted);
+  transition: transform 120ms ease;
+}
+
+.notia-chat-panel-agent-button.is-open > svg {
+  transform: rotate(180deg);
+}
+
+.notia-chat-panel-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-panel-action {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-icon-muted);
+  cursor: pointer;
+}
+
+.notia-chat-panel-action:hover,
+.notia-chat-panel-action.is-open {
+  background: var(--color-row-hover);
+  color: var(--color-heading-text);
+}
+
+.notia-chat-panel-agent-button:focus-visible,
+.notia-chat-panel-action:focus-visible,
+.notia-chat-panel-agent-option:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+/* Agent and history lists, under the header. */
+.notia-chat-panel-popover {
+  position: absolute;
+  top: calc(var(--titlebar-height) + 4px);
+  left: 8px;
+  z-index: 21;
+  width: min(320px, calc(100% - 16px));
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 16px 40px var(--color-menu-shadow);
+}
+
+.notia-chat-panel-popover-title {
+  margin: 0;
+  padding: 8px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-panel-popover-note {
+  margin: 4px 0 0;
+  padding: 8px 10px 4px;
+  border-top: 1px solid var(--color-border-strong);
+  font-size: 12px;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-panel-agent-option {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-panel-agent-option:hover {
+  background: var(--color-row-hover);
+}
+
+.notia-chat-panel-agent-option.is-selected {
+  background: var(--color-accent-bg);
+}
+
+.notia-chat-panel-agent-option > svg {
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: auto;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-panel-agent-option-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.notia-chat-panel-agent-option-text > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notia-chat-panel-agent-option-text > span + span {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-subtle-text);
+}
+
+/* History: search, chats grouped by day with their agent, pin, rename and delete. */
+.notia-chat-panel-popover--history {
+  left: auto;
+  right: 8px;
+  width: min(344px, calc(100% - 16px));
+  max-height: min(520px, 80vh);
+  overflow: hidden;
+  padding: 6px 6px 4px;
+}
+
+.notia-chat-panel-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--color-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--color-card-bg);
+  color: var(--color-subtle-text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.notia-chat-history-search {
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 4px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-app-bg);
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-history-search:focus-within {
+  border-color: var(--color-focus-ring);
+}
+
+.notia-chat-history-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.notia-chat-history-search input::placeholder {
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-history-list {
+  min-height: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.notia-chat-history-group {
+  margin: 0;
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-history-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.notia-chat-history-row:hover {
+  background: var(--color-row-hover);
+}
+
+.notia-chat-history-row.is-current {
+  background: var(--color-accent-bg);
+}
+
+.notia-chat-history-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-history-open .notia-chat-agent-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+
+.notia-chat-history-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.notia-chat-history-title,
+.notia-chat-history-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-history-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.notia-chat-history-meta {
+  font-size: 11.5px;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-history-current {
+  flex-shrink: 0;
+  padding-right: 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-history-actions {
+  flex-shrink: 0;
+  display: none;
+  gap: 2px;
+  padding-right: 6px;
+}
+
+.notia-chat-history-row:hover .notia-chat-history-actions,
+.notia-chat-history-row:focus-within .notia-chat-history-actions {
+  display: flex;
+}
+
+.notia-chat-history-row:hover .notia-chat-history-current,
+.notia-chat-history-row:focus-within .notia-chat-history-current {
+  display: none;
+}
+
+.notia-chat-history-action {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-icon-muted);
+  cursor: pointer;
+}
+
+.notia-chat-history-action:hover {
+  background: var(--color-row-hover);
+  color: var(--color-heading-text);
+}
+
+.notia-chat-history-action.is-pinned {
+  color: var(--color-accent-text);
+}
+
+.notia-chat-history-action--danger:hover {
+  color: var(--color-coral);
+}
+
+.notia-chat-history-rename {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  margin: 4px 6px;
+  padding: 0 8px;
+  border: 1px solid var(--color-focus-ring);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--color-app-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.notia-chat-history-empty {
+  margin: 0;
+  padding: 18px 10px;
+  font-size: 12.5px;
+  color: var(--color-subtle-text);
+  text-align: center;
+}
+
+.notia-chat-panel-popover-foot {
+  flex-shrink: 0;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-border-strong);
+}
+
+.notia-chat-panel-popover-link {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-subtle-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-panel-popover-link span {
+  flex: 1;
+}
+
+.notia-chat-panel-popover-link:hover {
+  background: var(--color-row-hover);
+  color: var(--color-heading-text);
+}
+
+.notia-chat-history-open:focus-visible,
+.notia-chat-history-action:focus-visible,
+.notia-chat-panel-popover-link:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+/* Touch has no hover: the actions stay visible and grow to finger size. */
+@media (pointer: coarse) {
+  .notia-chat-history-actions {
+    display: flex;
+  }
+
+  .notia-chat-history-current {
+    display: none;
+  }
+
+  .notia-chat-history-action {
+    width: 40px;
+    height: 40px;
+  }
+
+  .notia-chat-history-open {
+    min-height: 48px;
+  }
+
+  .notia-chat-panel-popover-link {
+    height: 44px;
+  }
+
+  .notia-chat-kbd {
+    display: none;
+  }
+}
+
+/* A chat without messages. */
+.notia-chat-panel-welcome {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+}
+
+.notia-chat-panel-welcome-copy h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--color-heading-text);
+}
+
+.notia-chat-panel-welcome-copy p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-panel-welcome-copy strong {
+  font-weight: 600;
+  color: var(--color-heading-text);
+}
+
+.notia-chat-panel-starters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notia-chat-panel-starter {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-panel-starter:hover:not(:disabled) {
+  border-color: var(--color-accent-text);
+}
+
+.notia-chat-panel-starter:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.notia-chat-panel-starter svg {
+  flex-shrink: 0;
+  color: var(--color-icon-muted);
+}
+
+.notia-chat-panel-starter:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Composer: context chips, text and a bar with attach, dictate, model and send. */
+.notia-right-panel .notia-chat-composer {
+  flex-shrink: 0;
+  margin: 8px 12px 6px;
+  padding: 0;
+  gap: 0;
   border-color: var(--color-border-strong);
   border-radius: 12px;
   background: var(--color-card-bg);
@@ -728,51 +1262,174 @@
   border-color: var(--color-focus-ring);
 }
 
-.notia-right-panel .notia-chat-composer-field textarea {
-  min-height: 44px;
-  font-size: 13.5px;
+.notia-right-panel .notia-chat-attachments {
+  gap: 6px;
+  padding: 8px 8px 0;
 }
 
-.notia-right-panel .notia-chat-context-indicator {
-  padding: 4px 8px;
-  border-color: var(--color-border-strong);
+.notia-right-panel .notia-chat-attachment-pill,
+.notia-chat-context-chip {
+  min-height: 24px;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
   background: var(--color-app-bg);
   color: var(--color-heading-text);
+  font-size: 12px;
 }
 
-.notia-right-panel .notia-chat-context-indicator svg {
+.notia-chat-context-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding-right: 8px;
+}
+
+.notia-chat-context-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-context-chip svg {
+  flex-shrink: 0;
   color: var(--color-accent-text);
 }
 
-.notia-right-panel .notia-chat-composer-footer span {
-  font-size: 11px;
+.notia-chat-context-chip--none {
+  border-style: dashed;
+  color: var(--color-subtle-text);
 }
 
-.notia-right-panel .notia-chat-composer-actions .notia-button--secondary {
-  border-color: transparent;
+.notia-right-panel .notia-chat-attachment-mode-badge {
+  min-height: 24px;
+  border-radius: 6px;
+}
+
+.notia-right-panel .notia-chat-composer-field textarea {
+  min-height: 44px;
+  max-height: 160px;
+  resize: none;
+  box-sizing: border-box;
+  padding: 10px 12px 4px;
+  font-size: 13.5px;
+}
+
+.notia-right-panel .notia-chat-voice-status {
+  margin: 0 8px;
+}
+
+.notia-chat-panel-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px;
+}
+
+.notia-chat-panel-composer-tool {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--color-icon-muted);
+  cursor: pointer;
 }
 
-.notia-right-panel .notia-chat-composer-actions .notia-button--secondary:hover:not(:disabled) {
+.notia-chat-panel-composer-tool:hover:not(:disabled) {
   background: var(--color-row-hover);
   color: var(--color-heading-text);
 }
 
-.notia-right-panel .notia-chat-composer-actions button[type='submit'] {
-  border-color: var(--color-accent-text);
-  background: var(--color-accent-text);
-  color: var(--color-on-accent);
+.notia-chat-panel-composer-tool:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
-.notia-right-panel .notia-chat-composer-actions button[type='submit']:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-accent-text) 88%, var(--color-heading-text));
+.notia-chat-panel-model {
+  min-width: 0;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-subtle-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.notia-right-panel .notia-chat-composer-actions button[type='submit']:disabled {
-  border-color: transparent;
+.notia-chat-panel-model span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-panel-model svg {
+  flex-shrink: 0;
+}
+
+.notia-chat-panel-model:hover:not(:disabled) {
   background: var(--color-row-hover);
-  color: var(--color-icon-muted);
-  opacity: 1;
+  color: var(--color-heading-text);
+}
+
+.notia-chat-panel-model:disabled {
+  cursor: default;
+}
+
+.notia-chat-panel-composer-bar .notia-chat-send-button {
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  border-radius: 8px;
+}
+
+.notia-chat-panel-composer-tool:focus-visible,
+.notia-chat-panel-model:focus-visible,
+.notia-chat-panel-composer-bar .notia-chat-send-button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.notia-chat-panel-hint {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 11px;
+  color: var(--color-subtle-text);
+}
+
+@media (pointer: coarse) {
+  .notia-chat-panel-action,
+  .notia-chat-panel-composer-tool {
+    width: 44px;
+    height: 44px;
+  }
+
+  .notia-chat-panel-agent-button,
+  .notia-chat-panel-model {
+    height: 44px;
+  }
+
+  .notia-chat-panel-composer-bar .notia-chat-send-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Phones write with their own keyboard; the Enter hint does not apply. */
+  .notia-chat-panel-hint {
+    display: none;
+  }
 }
 
 /* ── Shell: rail ────────────────────────────────────────── */
@@ -1496,101 +2153,6 @@
   color: var(--color-accent-text);
 }
 
-.notia-create-chat-modal {
-  width: min(460px, calc(100vw - 44px));
-  border: 1px solid var(--color-border-soft);
-  border-radius: 10px;
-  background: var(--color-modal-bg);
-  box-shadow: 0 24px 60px var(--color-modal-shadow);
-  overflow: hidden;
-}
-
-.notia-create-chat-modal-header {
-  height: 46px;
-  border-bottom: 1px solid var(--color-border-strong);
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.notia-create-chat-modal-header h2 {
-  margin: 0;
-  font-size: 14px;
-  color: var(--color-heading-text);
-  font-weight: 600;
-}
-
-.notia-create-chat-modal-body {
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.notia-create-chat-modal-check {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  color: var(--color-body-text);
-}
-
-.notia-create-chat-modal-check input {
-  margin-top: 2px;
-}
-
-.notia-create-chat-modal-check div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.notia-create-chat-modal-check strong {
-  color: var(--color-heading-text);
-  font-size: 13px;
-}
-
-.notia-create-chat-modal-check span {
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.notia-create-chat-modal-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  color: var(--color-body-text);
-  font-size: 12px;
-}
-
-.notia-create-chat-modal-field input {
-  height: 34px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  background: var(--color-card-bg);
-  color: var(--color-heading-text);
-  padding: 0 10px;
-  font: inherit;
-}
-
-.notia-create-chat-modal-field input:disabled {
-  opacity: 0.6;
-}
-
-.notia-create-chat-modal-error {
-  color: var(--color-alert-text);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.notia-create-chat-modal-actions {
-  border-top: 1px solid var(--color-border-strong);
-  padding-top: 12px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .notia-chat-files-modal {
   display: flex;
   flex-direction: column;
@@ -1943,256 +2505,6 @@
   overflow: hidden;
 }
 
-.multichat-view {
-  overflow: auto;
-  padding: clamp(16px, 4vw, 40px);
-}
-
-.multichat-setup,
-.multichat-room {
-  width: min(100%, 900px);
-  margin: 0 auto;
-  box-sizing: border-box;
-}
-
-.multichat-setup {
-  display: grid;
-  gap: 16px;
-  padding: clamp(18px, 4vw, 32px);
-}
-
-.multichat-setup h1,
-.multichat-room h1 {
-  margin: 0;
-  color: var(--color-heading-text);
-}
-
-.multichat-setup p {
-  margin: 0;
-  color: var(--color-subtle-text);
-}
-
-.multichat-field {
-  display: grid;
-  gap: 7px;
-  color: var(--color-heading-text);
-  font-weight: 600;
-}
-
-.multichat-field-help {
-  color: var(--color-subtle-text);
-  font-size: 12px;
-  font-weight: 400;
-}
-
-.multichat-select,
-.multichat-room textarea,
-.multichat-context-input {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  background: var(--color-main-bg);
-  color: var(--color-heading-text);
-  font: inherit;
-  padding: 9px 10px;
-}
-
-.multichat-select:focus-visible,
-.multichat-room textarea:focus-visible,
-.multichat-context-input:focus-visible,
-.multichat-choice input:focus-visible {
-  outline: 2px solid var(--color-active-border);
-  outline-offset: 2px;
-}
-
-.multichat-choice-group {
-  display: grid;
-  gap: 9px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  padding: 12px;
-}
-
-.multichat-choice-group legend {
-  padding: 0 5px;
-  color: var(--color-heading-text);
-  font-weight: 600;
-}
-
-.multichat-choice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-height: 24px;
-  color: var(--color-subtle-text);
-  cursor: pointer;
-}
-
-.multichat-choice input {
-  margin: 2px 0 0;
-  accent-color: var(--color-active-border);
-}
-
-.multichat-room {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.multichat-room header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.multichat-room header span {
-  border: 1px solid var(--color-border-soft);
-  border-radius: 999px;
-  padding: 4px 9px;
-  color: var(--color-subtle-text);
-  font-size: 12px;
-}
-
-.multichat-room-context {
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  padding: 9px 11px;
-  color: var(--color-subtle-text);
-}
-
-.multichat-room-context summary {
-  cursor: pointer;
-  color: var(--color-heading-text);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.multichat-room-context p {
-  margin: 9px 0 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.multichat-agents {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.multichat-agents span {
-  border: 1px solid var(--color-border-soft);
-  border-radius: 999px;
-  padding: 5px 9px;
-  background: color-mix(in srgb, var(--color-modal-bg) 72%, transparent);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.multichat-messages {
-  min-height: 180px;
-  flex: 1;
-  overflow: auto;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
-  padding: 14px;
-  background: color-mix(in srgb, var(--color-modal-bg) 65%, transparent);
-}
-
-.multichat-messages > p {
-  color: var(--color-subtle-text);
-  text-align: center;
-}
-
-.multichat-message {
-  max-width: min(82%, 700px);
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
-  overflow-wrap: anywhere;
-}
-
-.multichat-message:last-child {
-  margin-bottom: 0;
-}
-
-.multichat-message--user {
-  margin-left: auto;
-  background: color-mix(in srgb, var(--color-accent-bg) 30%, transparent);
-}
-
-.multichat-message--agent {
-  background: color-mix(in srgb, var(--color-hover-surface) 60%, transparent);
-}
-
-.multichat-message--streaming {
-  border-style: dashed;
-}
-
-.multichat-message--streaming details {
-  margin: 0 0 8px;
-  color: var(--color-subtle-text);
-}
-
-.multichat-message--streaming summary {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.multichat-message--streaming details p {
-  margin-top: 6px;
-  font-size: 12px;
-  white-space: pre-wrap;
-}
-
-.multichat-message strong {
-  display: block;
-  margin-bottom: 5px;
-  font-size: 12px;
-}
-
-.multichat-message p {
-  margin: 0;
-  white-space: pre-wrap;
-}
-
-.multichat-room > [role="status"] {
-  min-height: 20px;
-  margin: 0;
-  color: var(--color-subtle-text);
-}
-
-.multichat-room textarea {
-  min-height: 84px;
-  resize: vertical;
-}
-
-.multichat-composer-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-@media (max-width: 560px) {
-  .multichat-view {
-    padding: 12px;
-  }
-
-  .multichat-setup {
-    padding: 16px;
-  }
-
-  .multichat-message {
-    max-width: 94%;
-  }
-}
-
 .notia-main-header {
   min-height: 48px;
   border-bottom: 1px solid var(--color-border-strong);
@@ -2315,785 +2627,6 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
-}
-
-.notia-graph-content {
-  overflow: hidden;
-  position: relative;
-}
-
-.notia-graph-canvas {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  position: relative;
-  touch-action: none;
-  background:
-    radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--color-graph-bg) 90%, white 10%), transparent 42%),
-    radial-gradient(circle at 82% 76%, color-mix(in srgb, var(--color-graph-bg) 86%, black 14%), transparent 40%),
-    var(--color-graph-bg);
-  cursor: grab;
-}
-
-.notia-graph-canvas--dragging {
-  cursor: grabbing;
-}
-
-.notia-graph-2d-canvas {
-  isolation: isolate;
-  touch-action: none;
-  cursor: grab;
-  background:
-    radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--color-graph-bg) 88%, var(--color-graph-node) 12%), transparent 44%),
-    radial-gradient(circle at 82% 76%, color-mix(in srgb, var(--color-graph-bg) 82%, var(--color-graph-node-border) 18%), transparent 42%),
-    var(--color-graph-bg);
-}
-
-.notia-graph-2d-canvas:active {
-  cursor: grabbing;
-}
-
-.notia-graph-2d-canvas canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  touch-action: none;
-}
-
-.notia-graph-svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  overflow: visible;
-}
-
-.notia-graph-controls {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 6;
-  -webkit-app-region: no-drag;
-}
-
-.notia-graph-controls-button {
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-card-bg) 88%, transparent);
-  color: var(--color-heading-text);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.notia-graph-controls-button:hover {
-  background: var(--color-hover-surface);
-}
-
-.notia-graph-controls-panel {
-  margin-top: 8px;
-  width: 290px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-modal-bg) 90%, transparent);
-  box-shadow: 0 14px 34px var(--color-menu-shadow);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.notia-graph-controls-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--color-heading-text);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.notia-graph-controls-close {
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-subtle-text);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.notia-graph-controls-close:hover {
-  background: var(--color-hover-surface);
-  color: var(--color-heading-text);
-}
-
-.notia-graph-control-label {
-  color: var(--color-subtle-text);
-  font-size: 12px;
-}
-
-.notia-graph-control-value {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--color-subtle-text);
-}
-
-.notia-graph-control-value strong {
-  color: var(--color-heading-text);
-  font-weight: 600;
-}
-
-.notia-graph-control-inputs {
-  display: grid;
-  grid-template-columns: 1fr 72px;
-  gap: 10px;
-  align-items: center;
-}
-
-.notia-graph-control-inputs input[type='range'] {
-  width: 100%;
-}
-
-.notia-graph-control-inputs input[type='number'] {
-  width: 100%;
-  height: 28px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  background: var(--color-card-bg);
-  color: var(--color-heading-text);
-  font-size: 12px;
-  padding: 0 6px;
-}
-
-.notia-graph-edge-halo {
-  stroke: var(--color-graph-edge-glow);
-  stroke-linecap: round;
-  pointer-events: none;
-  mix-blend-mode: screen;
-  transition: opacity 140ms ease, stroke-width 140ms ease, filter 180ms ease;
-  filter:
-    blur(2px)
-    drop-shadow(0 0 8px color-mix(in srgb, var(--color-graph-edge-glow) 82%, transparent))
-    drop-shadow(0 0 18px color-mix(in srgb, var(--color-graph-edge-glow) 54%, transparent));
-}
-
-.notia-graph-edge-halo--outer {
-  stroke-opacity: 0.18;
-  stroke-width: 12;
-}
-
-.notia-graph-edge-halo--inner {
-  stroke-opacity: 0.3;
-  stroke-width: 6.5;
-}
-
-.notia-graph-edge {
-  stroke: var(--color-graph-edge);
-  stroke-opacity: 0.9;
-  stroke-width: 1.9;
-  filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--color-graph-edge-glow) 88%, transparent))
-    drop-shadow(0 0 14px color-mix(in srgb, var(--color-graph-edge-glow) 62%, transparent));
-  transition: stroke-opacity 140ms ease, stroke-width 140ms ease, filter 180ms ease;
-}
-
-.notia-graph-edge-halo.notia-graph-edge--dim {
-  stroke-opacity: 0.08;
-}
-
-.notia-graph-edge--dim {
-  stroke-opacity: 0.24;
-}
-
-.notia-graph-edge-halo.notia-graph-edge--selected.notia-graph-edge-halo--outer {
-  stroke-opacity: 0.28;
-  stroke-width: 15;
-}
-
-.notia-graph-edge-halo.notia-graph-edge--selected.notia-graph-edge-halo--inner {
-  stroke-opacity: 0.4;
-  stroke-width: 8;
-}
-
-.notia-graph-edge--selected {
-  stroke-opacity: 0.98;
-  stroke-width: 2.35;
-  filter:
-    drop-shadow(0 0 7px color-mix(in srgb, var(--color-graph-edge-glow) 92%, transparent))
-    drop-shadow(0 0 20px color-mix(in srgb, var(--color-graph-edge-glow) 76%, transparent));
-}
-
-.notia-graph-node {
-  cursor: pointer;
-}
-
-.notia-graph-node-halo {
-  pointer-events: none;
-  fill: var(--color-graph-node-glow-connected);
-  transition: opacity 180ms ease, transform 180ms ease, r 180ms ease;
-  transform-origin: center;
-}
-
-.notia-graph-node-halo--outer {
-  opacity: 0.12;
-}
-
-.notia-graph-node-halo--inner {
-  opacity: 0.24;
-}
-
-.notia-graph-node circle {
-  fill: var(--color-graph-node);
-  fill-opacity: 0.24;
-  stroke: var(--color-graph-node-border);
-  stroke-width: 1.4;
-  filter:
-    drop-shadow(0 0 6px var(--color-graph-node-glow-connected))
-    drop-shadow(0 0 16px color-mix(in srgb, var(--color-graph-node-glow-connected) 58%, transparent));
-  transition: fill-opacity 150ms ease, stroke-width 150ms ease, filter 180ms ease, transform 180ms ease;
-}
-
-.notia-graph-node text {
-  fill: var(--color-graph-label);
-  font-size: 12px;
-  font-weight: 500;
-  user-select: none;
-  filter: drop-shadow(0 1px 8px color-mix(in srgb, var(--color-graph-bg) 30%, transparent));
-  transition: fill 160ms ease, font-size 160ms ease, font-weight 160ms ease, filter 180ms ease;
-}
-
-.notia-graph-node--dim {
-  opacity: 0.32;
-}
-
-.notia-graph-node--hovered .notia-graph-node-halo--outer {
-  opacity: 0.18;
-  transform: scale(1.08);
-}
-
-.notia-graph-node--hovered .notia-graph-node-halo--inner {
-  opacity: 0.3;
-  transform: scale(1.05);
-}
-
-.notia-graph-node--hovered circle {
-  fill-opacity: 0.48;
-  stroke-width: 1.8;
-  transform: scale(1.06);
-}
-
-.notia-graph-node--linked circle {
-  fill-opacity: 0.44;
-  stroke-width: 1.85;
-}
-
-.notia-graph-node--selected circle {
-  fill-opacity: 0.66;
-  stroke-width: 2.2;
-  transform: scale(1.08);
-}
-
-.notia-graph-node--selected .notia-graph-node-halo--outer {
-  opacity: 0.22;
-  transform: scale(1.12);
-}
-
-.notia-graph-node--selected .notia-graph-node-halo--inner {
-  opacity: 0.38;
-  transform: scale(1.08);
-}
-
-.notia-graph-node--dragged {
-  cursor: grabbing;
-}
-
-.notia-graph-node--dragged .notia-graph-node-halo--outer {
-  opacity: 0.28;
-  transform: scale(1.16);
-}
-
-.notia-graph-node--dragged .notia-graph-node-halo--inner {
-  opacity: 0.42;
-  transform: scale(1.12);
-}
-
-.notia-graph-node--dragged circle {
-  fill-opacity: 0.62;
-  stroke-width: 2;
-  transform: scale(1.12);
-}
-
-.notia-graph-node--connected .notia-graph-node-halo {
-  fill: var(--color-graph-node-glow-connected);
-}
-
-.notia-graph-node--connected circle {
-  filter:
-    drop-shadow(0 0 6px var(--color-graph-node-glow-connected))
-    drop-shadow(0 0 16px color-mix(in srgb, var(--color-graph-node-glow-connected) 58%, transparent));
-}
-
-.notia-graph-node--hub .notia-graph-node-halo--outer {
-  fill: var(--color-graph-node-glow-hub);
-  opacity: 0.18;
-}
-
-.notia-graph-node--hub .notia-graph-node-halo--inner {
-  fill: var(--color-graph-node-glow-hub);
-  opacity: 0.32;
-}
-
-.notia-graph-node--hub circle {
-  filter:
-    drop-shadow(0 0 8px var(--color-graph-node-glow-hub))
-    drop-shadow(0 0 20px color-mix(in srgb, var(--color-graph-node-glow-hub) 72%, transparent));
-}
-
-.notia-graph-node--isolated .notia-graph-node-halo--outer {
-  fill: var(--color-graph-node-glow-isolated);
-  opacity: 0.12;
-}
-
-.notia-graph-node--isolated .notia-graph-node-halo--inner {
-  fill: var(--color-graph-node-glow-isolated);
-  opacity: 0.22;
-}
-
-.notia-graph-node--isolated circle {
-  filter:
-    drop-shadow(0 0 5px var(--color-graph-node-glow-isolated))
-    drop-shadow(0 0 14px color-mix(in srgb, var(--color-graph-node-glow-isolated) 60%, transparent));
-}
-
-.notia-graph-node--search-preview .notia-graph-node-halo--outer {
-  fill: rgba(255, 225, 122, 0.54);
-  opacity: 0.34;
-  transform: scale(1.28);
-  animation: notia-graph-search-preview-pulse 1.15s ease-in-out infinite;
-}
-
-.notia-graph-node--search-preview .notia-graph-node-halo--inner {
-  fill: rgba(255, 225, 122, 0.76);
-  opacity: 0.48;
-  transform: scale(1.18);
-  animation: notia-graph-search-preview-pulse 0.9s ease-in-out infinite;
-}
-
-.notia-graph-node--search-preview circle {
-  fill: #ffe17a;
-  stroke: #ffe17a;
-  fill-opacity: 0.64;
-  stroke-width: 2.25;
-  transform: scale(1.26);
-  filter:
-    drop-shadow(0 0 10px rgba(255, 225, 122, 0.88))
-    drop-shadow(0 0 24px rgba(255, 225, 122, 0.58));
-}
-
-.notia-graph-node--title-emphasis text,
-.notia-graph-node-title--search-preview {
-  fill: #fff2b6;
-  font-size: 15px;
-  font-weight: 700;
-  filter:
-    drop-shadow(0 0 8px rgba(255, 225, 122, 0.48))
-    drop-shadow(0 1px 10px color-mix(in srgb, var(--color-graph-bg) 24%, transparent));
-}
-
-@keyframes notia-graph-search-preview-pulse {
-  0% {
-    opacity: 0.28;
-  }
-  50% {
-    opacity: 0.54;
-  }
-  100% {
-    opacity: 0.28;
-  }
-}
-
-.notia-graph-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--color-subtle-text);
-  font-size: 12px;
-}
-
-.notia-graph-reset {
-  height: 24px;
-  border: 1px solid var(--color-border-soft);
-  background: var(--color-card-bg);
-  color: var(--color-heading-text);
-  border-radius: 6px;
-  font-size: 12px;
-  padding: 0 8px;
-  cursor: pointer;
-}
-
-.notia-graph-reset:hover {
-  background: var(--color-hover-surface);
-}
-
-.notia-graph-empty {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-subtle-text);
-  font-size: 13px;
-}
-
-.notia-graph-loading-screen {
-  position: absolute;
-  inset: 0;
-  z-index: 8;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background:
-    radial-gradient(circle at top, color-mix(in srgb, var(--color-graph-node-border) 18%, transparent), transparent 46%),
-    color-mix(in srgb, var(--color-graph-bg) 82%, rgba(0, 0, 0, 0.18));
-  backdrop-filter: blur(6px);
-}
-
-.notia-graph-loading-card {
-  min-width: min(360px, calc(100vw - 56px));
-  max-width: 420px;
-  border: 1px solid color-mix(in srgb, var(--color-border-soft) 86%, transparent);
-  border-radius: 18px;
-  padding: 22px 24px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-card-bg) 94%, white 6%) 0%, color-mix(in srgb, var(--color-card-bg) 88%, transparent) 100%);
-  box-shadow: 0 24px 70px color-mix(in srgb, var(--color-menu-shadow) 72%, transparent);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  text-align: center;
-}
-
-.notia-graph-loading-card strong {
-  color: var(--color-heading-text);
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.notia-graph-loading-card span {
-  color: var(--color-subtle-text);
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.notia-graph-search-shell {
-  position: absolute;
-  left: 50%;
-  bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
-  transform: translateX(-50%);
-  z-index: 7;
-  width: min(620px, calc(100% - 28px));
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-}
-
-.notia-graph-node--search-match .nodeLabel,
-.notia-graph-node--search-match .nodeLabel span,
-.notia-graph-node--search-match .nodeLabel p {
-  color: var(--color-accent-text) !important;
-  fill: var(--color-accent-text) !important;
-  font-weight: 700;
-  transition: color 140ms ease, filter 140ms ease;
-}
-
-.notia-graph-node--search-match > rect,
-.notia-graph-node--search-match > polygon,
-.notia-graph-node--search-match > path,
-.notia-graph-node--search-match .label-container {
-  transition: stroke 140ms ease, stroke-width 140ms ease;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .notia-graph-node--search-match:hover > rect,
-  .notia-graph-node--search-match:hover > polygon,
-  .notia-graph-node--search-match:hover > path,
-  .notia-graph-node--search-match:hover .label-container {
-    stroke: var(--color-accent-text) !important;
-    stroke-width: 2px !important;
-  }
-
-  .notia-graph-node--search-match:hover .nodeLabel,
-  .notia-graph-node--search-match:hover .nodeLabel span,
-  .notia-graph-node--search-match:hover .nodeLabel p {
-    color: var(--color-heading-text) !important;
-    fill: var(--color-heading-text) !important;
-    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--color-accent-text) 40%, transparent));
-  }
-}
-
-.notia-graph-search-clear {
-  width: 48px;
-  height: 48px;
-  border: 1px solid color-mix(in srgb, var(--color-border-soft) 82%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-card-bg) 94%, transparent);
-  color: var(--color-subtle-text);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--color-menu-shadow) 34%, transparent);
-  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease, border-color 140ms ease;
-}
-
-.notia-graph-search-clear:hover {
-  background: color-mix(in srgb, var(--color-hover-surface) 84%, transparent);
-  color: var(--color-heading-text);
-  border-color: color-mix(in srgb, var(--color-graph-search-accent) 34%, transparent);
-  transform: scale(1.04);
-}
-
-.notia-graph-search-results {
-  width: 100%;
-  max-height: min(280px, 42vh);
-  overflow-y: auto;
-  overflow-x: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--color-border-soft) 88%, transparent);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-card-bg) 96%, transparent) 0%, color-mix(in srgb, var(--color-card-bg) 90%, transparent) 100%);
-  box-shadow:
-    0 18px 48px color-mix(in srgb, var(--color-menu-shadow) 58%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-graph-search-glow) 18%, transparent);
-  backdrop-filter: blur(12px) saturate(112%);
-  user-select: none;
-}
-
-.notia-graph-search-empty {
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-subtle-text);
-  font-size: 13px;
-}
-
-.notia-graph-search-result {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--color-main-bg) 44%, transparent);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(3, 48px);
-  align-items: stretch;
-  gap: 6px;
-  padding: 6px;
-  transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
-}
-
-.notia-graph-search-result-check {
-  min-height: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-graph-search-glow) 9%, transparent);
-  cursor: pointer;
-}
-
-.notia-graph-search-result-check input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--color-graph-search-accent);
-  cursor: pointer;
-}
-
-.notia-graph-search-result-main {
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-body-text);
-  padding: 4px 6px;
-  text-align: left;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.notia-graph-search-result .notia-graph-search-result-main {
-  min-height: 56px;
-  padding: 10px 12px;
-}
-
-.notia-graph-search-result-action {
-  width: 48px;
-  min-height: 48px;
-  align-self: center;
-  border: 0;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-hover-surface) 64%, transparent);
-  color: var(--color-subtle-text);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
-}
-
-.notia-graph-search-result-action:hover:not(:disabled),
-.notia-graph-search-result-action:focus-visible {
-  background: var(--color-active-item-bg);
-  color: var(--color-accent-text);
-  transform: translateY(-1px);
-}
-
-.notia-graph-search-result-action:focus-visible {
-  outline: 2px solid var(--color-accent-text);
-  outline-offset: 1px;
-}
-
-.notia-graph-search-result-action:disabled {
-  cursor: default;
-  opacity: 0.42;
-}
-
-.notia-graph-search-result-action.is-selected {
-  background: color-mix(in srgb, var(--color-danger, #e05252) 16%, transparent);
-  color: var(--color-danger, #e05252);
-}
-
-.notia-graph-search-result-action.is-selected:hover:not(:disabled),
-.notia-graph-search-result-action.is-selected:focus-visible {
-  background: color-mix(in srgb, var(--color-danger, #e05252) 24%, transparent);
-  color: var(--color-danger, #e05252);
-}
-
-@media (max-width: 560px) {
-  .notia-graph-search-result {
-    grid-template-columns: minmax(0, 1fr) repeat(3, 48px);
-    gap: 2px;
-  }
-
-  .notia-graph-search-result .notia-graph-search-result-main {
-    padding-inline: 6px;
-  }
-}
-
-.notia-graph-search-result strong {
-  color: var(--color-heading-text);
-  font-size: 13px;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notia-graph-search-result span {
-  color: var(--color-muted-text);
-  font-size: 12px;
-  line-height: 1.45;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notia-graph-search-result:hover {
-  border-color: color-mix(in srgb, var(--color-graph-search-accent) 52%, transparent);
-  background: color-mix(in srgb, var(--color-hover-surface) 72%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-graph-search-glow) 18%, transparent);
-  transform: translateY(-1px);
-}
-
-.notia-graph-search-result-focus {
-  width: 38px;
-  min-height: 100%;
-  border: 0;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-graph-search-glow) 12%, transparent);
-  color: var(--color-graph-search-accent);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
-}
-
-.notia-graph-search-result-focus:hover {
-  background: color-mix(in srgb, var(--color-graph-search-glow) 24%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-graph-search-accent) 26%, transparent);
-  transform: scale(1.04);
-}
-
-.notia-graph-search-bar {
-  width: 100%;
-  min-height: 52px;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 2px 4px 2px 16px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--color-graph-search-accent) 36%, var(--color-border-soft));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-card-bg) 96%, transparent) 0%, color-mix(in srgb, var(--color-card-bg) 88%, transparent) 100%);
-  color: var(--color-heading-text);
-  box-shadow:
-    0 18px 44px color-mix(in srgb, var(--color-menu-shadow) 54%, transparent),
-    0 0 24px color-mix(in srgb, var(--color-graph-search-glow) 18%, transparent);
-  backdrop-filter: blur(14px) saturate(118%);
-}
-
-.notia-graph-search-bar svg {
-  color: var(--color-graph-search-accent);
-}
-
-.notia-graph-search-bar input {
-  width: 100%;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--color-heading-text);
-  font-size: 14px;
-}
-
-.notia-graph-search-bar input::placeholder {
-  color: var(--color-subtle-text);
-}
-
-.notia-graph-loading-spinner {
-  width: 52px;
-  height: 52px;
-  border-radius: 999px;
-  border: 3px solid color-mix(in srgb, var(--color-graph-node-border) 24%, transparent);
-  border-top-color: var(--color-graph-node);
-  border-right-color: var(--color-graph-node-border);
-  box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-graph-node) 10%, transparent);
-  animation: notia-graph-loading-spin 900ms linear infinite;
-}
-
-@keyframes notia-graph-loading-spin {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .notia-main-empty {
@@ -5607,7 +5140,7 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 }
 
 .notia-wikilink-token--resolved {
-  cursor: text;
+  cursor: pointer;
   color: var(--color-accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -5975,107 +5508,6 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 .notia-meeting-chat-error {
   color: var(--color-error-text);
   font-size: 12px;
-}
-
-.notia-chat-agent-select {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
-  color: var(--color-muted-text);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.notia-chat-agent-select select {
-  min-width: 0;
-  min-height: 48px;
-  flex: 1;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: var(--color-input-bg);
-  color: var(--color-heading-text);
-  font: inherit;
-}
-
-.notia-chat-agent-select select:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
-  outline-offset: 2px;
-}
-
-.notia-chat-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 20px 22px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-card-bg) 92%, transparent);
-  box-shadow: 0 18px 40px color-mix(in srgb, var(--color-menu-shadow) 45%, transparent);
-}
-
-.notia-chat-header-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.notia-chat-header-copy p {
-  margin: 0;
-  max-width: 680px;
-  color: var(--color-muted-text);
-}
-
-.notia-chat-header--compact {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 12px;
-  padding: 12px 14px;
-  box-shadow: none;
-}
-
-.notia-chat-header-copy--compact {
-  gap: 4px;
-}
-
-.notia-chat-title-subtle {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-subtle-text);
-  line-height: 1.35;
-}
-
-.notia-chat-compact-recent {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.notia-chat-compact-recent-item {
-  border: 1px solid var(--color-border-soft);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--color-card-bg) 88%, transparent);
-  color: var(--color-heading-text);
-  padding: 7px 10px;
-  font-size: 12px;
-  line-height: 1.35;
-  cursor: pointer;
-  text-align: left;
-}
-
-.notia-chat-compact-recent-item:hover {
-  background: color-mix(in srgb, var(--color-hover-surface) 75%, var(--color-card-bg));
-}
-
-.notia-chat-compact-recent-item--active {
-  border-color: var(--color-active-border);
-  background: color-mix(in srgb, var(--color-accent-bg) 68%, var(--color-card-bg));
 }
 
 .notia-chat-thread {
@@ -8479,6 +7911,403 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 .notia-chat-context-link:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* Chat permissions, permanent context, dynamic and agents (context panel) */
+.notia-chat-permissions {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+}
+
+.notia-chat-permission-row {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-permission-row > svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-permission-row:disabled {
+  cursor: default;
+}
+
+.notia-chat-permission-row:disabled .notia-chat-switch,
+.notia-chat-permission-row:disabled .notia-chat-permission-text {
+  opacity: 0.6;
+}
+
+.notia-chat-permission-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
+}
+
+.notia-chat-permission-hint {
+  color: var(--color-subtle-text);
+  font-size: 11.5px;
+}
+
+.notia-chat-permissions-divider {
+  height: 1px;
+  margin: 0 12px;
+  background: var(--color-border-soft);
+}
+
+.notia-chat-permission-row[aria-checked='true'] .notia-chat-switch {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-bg);
+}
+
+.notia-chat-permission-row[aria-checked='true'] .notia-chat-switch-thumb {
+  transform: translateX(14px);
+  background: var(--color-accent-text);
+}
+
+.notia-chat-permanent-context {
+  min-height: 72px;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  background: var(--color-main-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.notia-chat-permanent-context:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent-text) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.notia-chat-popover-anchor {
+  position: relative;
+}
+
+.notia-chat-dynamic-button {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-dynamic-button > svg:first-child {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-dynamic-button > svg:last-child {
+  flex-shrink: 0;
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-dynamic-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notia-chat-dynamic-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 8;
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--color-main-bg) 70%, transparent);
+}
+
+/* The agent list opens right under the "Agregar agente" button. */
+.notia-chat-popover--agents {
+  top: 58px;
+}
+
+.notia-chat-popover-option,
+.notia-chat-agent-option {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-popover-option:hover:not(:disabled),
+.notia-chat-agent-option:hover:not(:disabled),
+.notia-chat-popover-option[aria-selected='true'] {
+  background: var(--color-hover-surface);
+}
+
+.notia-chat-popover-option:disabled,
+.notia-chat-agent-option:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.notia-chat-popover-option > svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-popover-option-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.notia-chat-popover-option-text > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notia-chat-popover-option-text > span:last-child:not(:first-child) {
+  overflow: hidden;
+  color: var(--color-subtle-text);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-popover-note {
+  margin: 4px 8px;
+  color: var(--color-subtle-text);
+  font-size: 11.5px;
+}
+
+.notia-chat-popover-search {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  background: var(--color-main-bg);
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-popover-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.notia-chat-agent-option-state {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-accent-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.notia-chat-agent-option-state--added {
+  color: var(--color-subtle-text);
+}
+
+.notia-chat-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 4px;
+}
+
+.notia-chat-section-heading > .notia-chat-section-label {
+  padding: 0;
+}
+
+.notia-chat-section-count {
+  color: var(--color-subtle-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.notia-chat-add-agent {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-accent-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.notia-chat-add-agent:hover:not(:disabled) {
+  border-color: var(--color-accent-text);
+}
+
+.notia-chat-add-agent:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.notia-chat-agents-empty {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--color-card-bg);
+  color: var(--color-subtle-text);
+  font-size: 12px;
+}
+
+.notia-chat-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notia-chat-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+}
+
+.notia-chat-agent-avatar {
+  --agent-color: var(--color-periwinkle);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--agent-color) 22%, transparent);
+  color: var(--agent-color);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.notia-theme-light .notia-chat-agent-avatar {
+  background: color-mix(in srgb, var(--agent-color) 12%, transparent);
+}
+
+.notia-chat-agent-avatar--medium {
+  width: 28px;
+  height: 28px;
+  font-size: 10.5px;
+}
+
+.notia-chat-agent-avatar--small {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 9px;
+}
+
+.notia-chat-agent-avatar--c1 { --agent-color: var(--color-violet); }
+.notia-chat-agent-avatar--c2 { --agent-color: var(--color-amber); }
+.notia-chat-agent-avatar--c3 { --agent-color: var(--color-sage); }
+.notia-chat-agent-avatar--c4 { --agent-color: var(--color-gold); }
+.notia-chat-agent-avatar--c5 { --agent-color: var(--color-coral); }
+
+/* In the conversation the agent's avatar takes Notia's place. */
+.notia-chat-message > .notia-chat-agent-avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 11px;
+}
+
+.notia-right-panel .notia-chat-message > .notia-chat-agent-avatar,
+.notia-chat-view--workspace .notia-chat-message--assistant > .notia-chat-agent-avatar {
+  grid-column: 1;
+  grid-row: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 9px;
+}
+
+.notia-chat-context-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-coral) 45%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-coral) 12%, transparent);
+  color: var(--color-heading-text);
+  font-size: 12px;
+}
+
+.notia-chat-context-error > button {
+  margin-left: auto;
+}
+
+@media (pointer: coarse) {
+  .notia-chat-add-agent,
+  .notia-chat-dynamic-button {
+    min-height: 44px;
+  }
 }
 
 .notia-chat-memory-off {

@@ -12,7 +12,7 @@ use crate::host::{AppHandle, Manager};
 
 use crate::backend::device_preferences::normalize_device_preferences;
 use crate::backend::page_setup::{page_geometry as geometry_of, page_setup_view};
-use crate::backend::{BackendError, BackendErrorCode, ExportFormat, PageGeometry};
+use crate::backend::{BackendError, BackendErrorCode, PageGeometry};
 
 const FILE: &str = "device-preferences.json";
 const MAX_BYTES: u64 = 256 * 1024;
@@ -57,11 +57,6 @@ pub(crate) fn section(app: &AppHandle, key: &str) -> Value {
 /// Page size, margins and numbering of the PDF exports, from the page setup.
 pub(crate) fn page_geometry(app: &AppHandle) -> PageGeometry {
     geometry_of(&section(app, "editorPage"))
-}
-
-/// Refuses a PDF export while page mode is off; Word exports always pass.
-pub(crate) fn ensure_export_allowed(app: &AppHandle, format: ExportFormat) -> Result<(), BackendError> {
-    crate::backend::page_setup::ensure_export_allowed(format, &section(app, "editorPage"))
 }
 
 /// What the client receives: the stored preferences plus the page setup the

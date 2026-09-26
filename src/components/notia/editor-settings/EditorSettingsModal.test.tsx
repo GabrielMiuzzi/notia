@@ -26,25 +26,25 @@ const SETUP = {
   heightMm: 297,
   marginMm: 25.4,
   pageNumbers: true,
-  canExportPdf: false,
 } as DevicePreferences['editorPageSetup']
 
 const PREFERENCES = {
-  editorPage: { pageMode: false, format: 'a4', orientation: 'portrait', margins: 'normal', pageNumbers: true },
+  editorPage: { format: 'a4', orientation: 'portrait', margins: 'normal', pageNumbers: true },
   pen: { tool: 'fountain', color: 'ink', thickness: 3, smoothing: 40, pressure: true, palmRejection: true, penOnly: false, sideButton: 'eraser' },
   editorPageSetup: SETUP,
 } as unknown as DevicePreferences
 
-function renderModal(tab: EditorSettingsTab = 'page') {
+function renderModal(tab: EditorSettingsTab = 'page', pageMode: boolean | null = false) {
   const store = configureStore({ reducer: { preferences: preferencesReducer } })
   store.dispatch(hydrateDevicePreferences(PREFERENCES))
   const onTabChange = vi.fn()
+  const onTogglePageMode = vi.fn()
   render(
     <Provider store={store}>
-      <EditorSettingsModal open tab={tab} onTabChange={onTabChange} onClose={vi.fn()} />
+      <EditorSettingsModal open tab={tab} onTabChange={onTabChange} onClose={vi.fn()} pageMode={pageMode} onTogglePageMode={onTogglePageMode} />
     </Provider>,
   )
-  return { store, onTabChange }
+  return { store, onTabChange, onTogglePageMode }
 }
 
 describe('EditorSettingsModal', () => {
@@ -54,20 +54,29 @@ describe('EditorSettingsModal', () => {
   })
   afterEach(cleanup)
 
-  it('turns page mode on and saves the page setup in the backend', async () => {
-    const { store } = renderModal()
+  it('turns page mode on for the note and saves the page setup in the backend', async () => {
+    const { onTogglePageMode } = renderModal()
     expect(screen.getByRole('radio', { name: /A4/ }).getAttribute('aria-checked')).toBe('true')
 
+    // Page mode is the note's property: the switch asks the note to change, not the device.
     fireEvent.click(screen.getByRole('switch', { name: 'Modo página' }))
-    expect(store.getState().preferences.editorPage?.pageMode).toBe(true)
+    expect(onTogglePageMode).toHaveBeenCalled()
     fireEvent.click(screen.getByRole('radio', { name: /A5/ }))
     fireEvent.click(screen.getByRole('radio', { name: 'Horizontal' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Estrechos' }))
 
-    await waitFor(() => expect(saveDevicePreferences).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(saveDevicePreferences).toHaveBeenCalledTimes(3))
     expect(saveDevicePreferences).toHaveBeenLastCalledWith({
-      editorPage: { pageMode: true, format: 'a5', orientation: 'landscape', margins: 'narrow', pageNumbers: true },
+      editorPage: { format: 'a5', orientation: 'landscape', margins: 'narrow', pageNumbers: true },
     })
+  })
+
+  it('shows the note in page mode and needs a note to turn it on', () => {
+    renderModal('page', true)
+    expect((screen.getByRole('switch', { name: 'Modo página' }) as HTMLInputElement).checked).toBe(true)
+    cleanup()
+    renderModal('page', null)
+    expect((screen.getByRole('switch', { name: 'Modo página' }) as HTMLInputElement).disabled).toBe(true)
   })
 
   it('restores the previous value and says so when the backend refuses it', async () => {

@@ -121,6 +121,15 @@ export function findActiveWikiLinkContext(text: string, cursorOffset: number): I
   }
 }
 
+/**
+ * Undoes the escape the Markdown writer puts on the brackets of a wikilink:
+ * it writes `[` as `\[` so it cannot start a link, which turned `[[nota]]`
+ * into `\[\[nota]]` on every save. Only complete links are restored.
+ */
+export function restoreEscapedWikiLinks(markdown: string): string {
+  return markdown.replace(/\\\[\\\[(?=[^\n\]]+?\]\])/g, '[[')
+}
+
 export function findWikiLinkMatches(text: string): WikiLinkTextMatch[] {
   const matches: WikiLinkTextMatch[] = []
   const pattern = /\[\[([^\n\]]+?)\]\]/g

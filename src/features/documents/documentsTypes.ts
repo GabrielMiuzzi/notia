@@ -19,7 +19,6 @@ export interface OpenWorkspaceSpecialTabs {
   meeting: boolean
   finance: boolean
   agenda: boolean
-  multichat: boolean
   routine: boolean
 }
 

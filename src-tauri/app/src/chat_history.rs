@@ -11,7 +11,8 @@ use crate::host::{AppHandle, Manager};
 use crate::backend::chat_history::{
     self as history, ChatImagePreview, StoredChatDocument, CHAT_HISTORY_DIRECTORY, CHAT_ROOT_DIRECTORY,
 };
-use crate::backend::chat_turn::{self, ContextSelection, ViewContext};
+use crate::backend::chat_list::{self, ChatClock, ChatGroup};
+use crate::backend::chat_turn::{self, ChatSettings, ContextSelection, ViewContext};
 use crate::backend::{BackendError, BackendErrorCode};
 use crate::library_documents::{inventory_paths, with_documents};
 use crate::library_registry::LibraryBindingRegistry;
@@ -50,6 +51,18 @@ pub(crate) struct CreateChatPayload {
     /// Context files of the composer when the chat starts with a message.
     #[serde(default)]
     context: Option<ContextSelection>,
+    /// Permissions, permanent context, dynamic and agents chosen before the
+    /// chat existed.
+    #[serde(default)]
+    settings: Option<ChatSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatSettingsPayload {
+    library_id: String,
+    logical_path: String,
+    settings: ChatSettings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,16 +216,22 @@ pub(crate) fn load(app: &AppHandle, library_id: &str, logical_path: &str, fallba
     Ok(visible_document(app, library_id, history::parse_chat_document(&source, fallback_title)))
 }
 
-/// Appends the last turn when the file still matches the chat; otherwise
-/// (or when the file changed meanwhile) rewrites the whole document.
-pub(crate) fn append_turn(app: &AppHandle, library_id: &str, logical_path: &str, document: &StoredChatDocument) -> Result<bool, BackendError> {
+/// Appends the last `count` messages when the file still matches the chat;
+/// otherwise (or when the file changed meanwhile) rewrites the whole document.
+pub(crate) fn append_turn(
+    app: &AppHandle,
+    library_id: &str,
+    logical_path: &str,
+    document: &StoredChatDocument,
+    count: usize,
+) -> Result<bool, BackendError> {
     let document = stored_document(app, library_id, document);
     document.validate()?;
     let appended = with_documents(app, library_id, |documents| {
         let Some(source) = documents.read(logical_path)? else {
             return Ok(false);
         };
-        let Some(next) = history::append_chat_messages(&source, &document) else {
+        let Some(next) = history::append_last_messages(&source, &document, count) else {
             return Ok(false);
         };
         let revision = crate::backend::compute_document_revision(&source);
@@ -269,12 +288,15 @@ pub(crate) fn create(app: &AppHandle, payload: &CreateChatPayload) -> Result<Cre
         Err(BackendError::new(BackendErrorCode::Conflict, "No se pudo reservar un nombre para el chat.", true))
     })?;
     let mut document = document;
+    let before = document.clone();
     if let Some(context) = &payload.context {
-        let before = document.clone();
         chat_turn::prepare_new_chat(&mut document, context);
-        if document != before {
-            save(app, &payload.library_id, &logical_path, &document)?;
-        }
+    }
+    if let Some(settings) = &payload.settings {
+        chat_turn::apply_chat_settings(&mut document, settings)?;
+    }
+    if document != before {
+        save(app, &payload.library_id, &logical_path, &document)?;
     }
     Ok(CreatedChat {
         path: crate::library_session::visible_path(app, &payload.library_id, &logical_path),
@@ -307,6 +329,9 @@ pub(crate) async fn backend_save_chat(app: AppHandle, payload: SaveChatPayload) 
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListChatsPayload {
     library_id: String,
+    /// The device's clock, to group the chats by the person's local days.
+    #[serde(default)]
+    clock: Option<ChatClock>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,6 +342,37 @@ pub(crate) struct ChatListItem {
     /// Path of the chat as the explorer shows it.
     file_path: String,
     title: String,
+    /// Group of the history; only with a clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<ChatGroup>,
+    pinned: bool,
+    /// Prompt file that answered last; `None` for Notia (`default.md`).
+    agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PinChatPayload {
+    library_id: String,
+    logical_path: String,
+    pinned: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RenameChatPayload {
+    library_id: String,
+    logical_path: String,
+    title: String,
+}
+
+/// A chat file of the library.
+struct ChatFile {
+    logical_path: String,
+    /// Path of the chat as the explorer shows it.
+    file_path: String,
+    /// Modification time, when the platform reports it.
+    modified_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,8 +395,8 @@ pub(crate) struct ViewContextPayload {
     context: ViewContext,
 }
 
-/// Chats of the library, newest first: logical and explorer paths.
-async fn chat_files(app: &AppHandle, library_id: &str) -> Result<Vec<(String, String)>, BackendError> {
+/// Chats of the library, newest first.
+async fn chat_files(app: &AppHandle, library_id: &str) -> Result<Vec<ChatFile>, BackendError> {
     let nodes = match crate::library_session::read_directory(app, library_id, CHAT_HISTORY_DIRECTORY).await {
         Ok(nodes) => nodes,
         Err(error) if error.code == BackendErrorCode::NotFound => return Ok(Vec::new()),
@@ -350,9 +406,13 @@ async fn chat_files(app: &AppHandle, library_id: &str) -> Result<Vec<(String, St
         .into_iter()
         .filter(|node| node.node_type == crate::backend::library_tree::LibraryNodeKind::File)
         .filter(|node| node.name.to_ascii_lowercase().ends_with(".md"))
-        .map(|node| (format!("{CHAT_HISTORY_DIRECTORY}/{}", node.name), node.id))
+        .map(|node| ChatFile {
+            logical_path: format!("{CHAT_HISTORY_DIRECTORY}/{}", node.name),
+            file_path: node.id,
+            modified_at: node.modified_at,
+        })
         .collect::<Vec<_>>();
-    files.sort_by(|left, right| right.0.cmp(&left.0));
+    files.sort_by(|left, right| right.logical_path.cmp(&left.logical_path));
     Ok(files)
 }
 
@@ -367,22 +427,69 @@ fn file_stem(logical_path: &str) -> String {
     name.rsplit_once('.').map_or(name, |(stem, _)| stem).to_string()
 }
 
-/// Chats of the library with their titles, newest first.
+/// Chats of the library with their titles, pinned state and last agent.
+/// With the device's clock they come grouped by day of last activity,
+/// pinned first; without it, newest first.
 pub(crate) async fn backend_list_chats(app: AppHandle, payload: ListChatsPayload) -> Result<Vec<ChatListItem>, BackendError> {
     let files = chat_files(&app, &payload.library_id).await?;
     blocking(move || {
-        Ok(files
+        let mut items = files
             .into_iter()
             .enumerate()
-            .map(|(index, (logical_path, file_path))| {
-                let title = (index < READ_CHATS_LIMIT)
-                    .then(|| stored_chat(&app, &payload.library_id, &logical_path))
-                    .flatten()
-                    .map(|document| document.title)
-                    .unwrap_or_else(|| file_stem(&logical_path));
-                ChatListItem { id: logical_path, file_path, title }
+            .map(|(index, file)| {
+                let document = (index < READ_CHATS_LIMIT)
+                    .then(|| stored_chat(&app, &payload.library_id, &file.logical_path))
+                    .flatten();
+                let pinned = document.as_ref().is_some_and(|document| document.pinned);
+                let name = file.logical_path.rsplit('/').next().unwrap_or(&file.logical_path).to_string();
+                let activity = payload.clock.and_then(|clock| chat_list::activity_local_ms(clock, file.modified_at, &name));
+                let item = ChatListItem {
+                    title: document.as_ref().map(|document| document.title.clone()).unwrap_or_else(|| file_stem(&file.logical_path)),
+                    group: payload.clock.map(|clock| chat_list::chat_group(clock, pinned, activity)),
+                    agent: document.as_ref().and_then(chat_list::last_agent),
+                    pinned,
+                    id: file.logical_path,
+                    file_path: file.file_path,
+                };
+                (item, activity)
             })
-            .collect())
+            .collect::<Vec<_>>();
+        if payload.clock.is_some() {
+            items.sort_by(|left, right| {
+                chat_list::history_order((left.0.group.unwrap_or(ChatGroup::Earlier), left.1), (right.0.group.unwrap_or(ChatGroup::Earlier), right.1))
+            });
+        }
+        Ok(items.into_iter().map(|(item, _)| item).collect())
+    })
+    .await
+}
+
+/// Pins a chat to the top of the history, or unpins it.
+pub(crate) async fn backend_set_chat_pinned(app: AppHandle, payload: PinChatPayload) -> Result<(), BackendError> {
+    blocking(move || {
+        let logical_path = chat_logical_path(&app, &payload.library_id, &payload.logical_path)?;
+        let mut document = load(&app, &payload.library_id, &logical_path, chat_turn::DEFAULT_CHAT_TITLE)?;
+        if document.pinned == payload.pinned {
+            return Ok(());
+        }
+        document.pinned = payload.pinned;
+        save(&app, &payload.library_id, &logical_path, &document)
+    })
+    .await
+}
+
+/// Renames a chat; the title is its first line and its `title` property.
+pub(crate) async fn backend_rename_chat(app: AppHandle, payload: RenameChatPayload) -> Result<StoredChatDocument, BackendError> {
+    blocking(move || {
+        let title = payload.title.trim().to_string();
+        if title.is_empty() || title.chars().count() > 300 || title.contains(['\n', '\r']) {
+            return Err(BackendError::invalid_input("El título del chat debe tener una línea de hasta 300 caracteres."));
+        }
+        let logical_path = chat_logical_path(&app, &payload.library_id, &payload.logical_path)?;
+        let mut document = load(&app, &payload.library_id, &logical_path, chat_turn::DEFAULT_CHAT_TITLE)?;
+        document.title = title;
+        save(&app, &payload.library_id, &logical_path, &document)?;
+        Ok(visible_document(&app, &payload.library_id, document))
     })
     .await
 }
@@ -405,9 +512,9 @@ pub(crate) async fn backend_match_chat(app: AppHandle, payload: MatchChatPayload
         let scores = files
             .iter()
             .take(READ_CHATS_LIMIT)
-            .filter_map(|(logical_path, file_path)| {
-                let document = stored_chat(&app, library_id, logical_path)?;
-                Some((file_path.clone(), chat_turn::context_match_score(&document, &context, prefix.as_deref())))
+            .filter_map(|file| {
+                let document = stored_chat(&app, library_id, &file.logical_path)?;
+                Some((file.file_path.clone(), chat_turn::context_match_score(&document, &context, prefix.as_deref())))
             })
             .collect::<Vec<_>>();
         Ok(chat_turn::best_match(&scores, payload.selected.as_deref()))
@@ -421,6 +528,22 @@ pub(crate) async fn backend_set_chat_context(app: AppHandle, payload: ViewContex
         let logical_path = chat_logical_path(&app, &payload.library_id, &payload.logical_path)?;
         let mut document = load(&app, &payload.library_id, &logical_path, chat_turn::DEFAULT_CHAT_TITLE)?;
         if chat_turn::apply_view_context(&mut document, &payload.context) {
+            save(&app, &payload.library_id, &logical_path, &document)?;
+        }
+        Ok(document)
+    })
+    .await
+}
+
+/// Changes the permissions, permanent context, dynamic or agents of a chat;
+/// returns the chat. The agent memory stays as the chat was created.
+pub(crate) async fn backend_set_chat_settings(app: AppHandle, payload: ChatSettingsPayload) -> Result<StoredChatDocument, BackendError> {
+    blocking(move || {
+        let logical_path = chat_logical_path(&app, &payload.library_id, &payload.logical_path)?;
+        let mut document = load(&app, &payload.library_id, &logical_path, chat_turn::DEFAULT_CHAT_TITLE)?;
+        let before = document.clone();
+        chat_turn::apply_chat_settings(&mut document, &payload.settings)?;
+        if document != before {
             save(&app, &payload.library_id, &logical_path, &document)?;
         }
         Ok(document)

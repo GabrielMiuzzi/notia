@@ -11,6 +11,14 @@ import type {
 import type { ChatAgentScope, TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import type { MarkdownSelectionContext } from '../../../../types/views/markdownSelection'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview, WorkspaceAiSnapshot } from '../../../../types/ai/agentContracts'
+import type { ChatSettings } from '../../../../services/chat/chatAgentsRuntime'
+import type { ChatAgentSpeaker } from '../../../../services/chat/aiChatRuntime'
+
+/** The open file or view the side chat works on, shown as a chip in its composer. */
+export interface ChatComposerContext {
+  label: string
+  kind: 'document' | 'view' | 'none'
+}
 
 export interface ChatWorkspaceViewProps {
   agentCorpusPaths?: string[]
@@ -22,11 +30,11 @@ export interface ChatWorkspaceViewProps {
     title: string
     filePath: string
   }>
-  title?: string
-  description?: string
   suggestions?: ChatStarter[]
   showHistoryPanel?: boolean
-  composerContextLabel?: string
+  composerContext?: ChatComposerContext | null
+  /** Side panel only: closes the panel from the chat's header. */
+  onClosePanel?: () => void
   preferredContextPaths?: string[]
   preferredContextName?: string | null
   preferredContextMode?: ChatFileContextMode | null
@@ -38,13 +46,10 @@ export interface ChatWorkspaceViewProps {
   transientContextDisplayPaths?: string[]
   onTransientContextPathRemove?: (path: string) => void
   persistTransientContext?: boolean
-  ephemeralChat?: boolean
   selectMatchingChatOnly?: boolean
   onChatCreated?: (filePath: string) => void | Promise<void>
   onChatDeleted?: (filePath: string) => void | Promise<void>
   markdownSelection?: MarkdownSelectionContext | null
-  /** Multichat room beside the chat, whose conversation the backend adds as context. */
-  multichatRoomId?: string | null
   activeMarkdownSource?: string | null
   onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
 }
@@ -78,11 +83,6 @@ export interface ChatContextMenuState {
   title: string
   top: number
   left: number
-}
-
-export interface CreateChatPayload {
-  contextMemoryEnabled: boolean
-  contextMemoryMessageCount: number
 }
 
 export interface ChatSelectionState {
@@ -124,9 +124,6 @@ export interface ChatStreamingState {
 }
 
 export interface ChatModalState {
-  isCreateChatModalOpen: boolean
-  createChatErrorMessage: string | null
-  isCreateChatSubmitting: boolean
   isChatToolsModalOpen: boolean
   isLibraryFilesModalOpen: boolean
   dialogMessage: string | null
@@ -179,12 +176,12 @@ export interface UseChatSubmitMessageDependencies {
   libraryRagEnabled?: boolean
   /** Whether a chat created by this send uses the agent memory (`memory.md`). */
   newChatAgentMemoryEnabled?: boolean
-  ephemeralChat?: boolean
+  /** Permissions, permanent context, dynamic and agents of a chat created by this send. */
+  newChatSettings?: ChatSettings
   preferredContextScopeKey: string | null
   persistTransientContext: boolean
   hasTransientContext: boolean
   transientContextContent?: string | null
-  multichatRoomId?: string | null
   activeMarkdownSource: string | null
   workspaceSnapshot: WorkspaceAiSnapshot | null
   onActiveMarkdownDocumentChanged?: (documentPath: string, source: string, revision?: string) => void | Promise<void>
@@ -199,6 +196,8 @@ export interface UseChatSubmitMessageState {
   isSubmitting: boolean
   setStreamingThinking: React.Dispatch<React.SetStateAction<string>>
   setStreamingAssistantMessage: React.Dispatch<React.SetStateAction<string>>
+  /** The agent of the chat whose answer is streaming; `null` for Notia. */
+  setStreamingAgent?: (agent: ChatAgentSpeaker | null) => void
   setOptimisticThreadMessages: React.Dispatch<React.SetStateAction<StoredChatMessage[] | null>>
   setSelectedChatFilePath: React.Dispatch<React.SetStateAction<string | null>>
   setActiveChatDocument: React.Dispatch<React.SetStateAction<StoredChatDocument | null>>
@@ -245,12 +244,6 @@ export interface UseChatStateResult {
   // UI panels
   isHistoryPanelOpen: boolean
   setIsHistoryPanelOpen: React.Dispatch<React.SetStateAction<boolean>>
-  isCreateChatModalOpen: boolean
-  setIsCreateChatModalOpen: React.Dispatch<React.SetStateAction<boolean>>
-  createChatErrorMessage: string | null
-  setCreateChatErrorMessage: React.Dispatch<React.SetStateAction<string | null>>
-  isCreateChatSubmitting: boolean
-  setIsCreateChatSubmitting: React.Dispatch<React.SetStateAction<boolean>>
   dialogMessage: string | null
   setDialogMessage: React.Dispatch<React.SetStateAction<string | null>>
   isChatToolsModalOpen: boolean

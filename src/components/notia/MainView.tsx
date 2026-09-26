@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { File, FileText, MessageSquare, PencilLine, Search } from 'lucide-react'
 import { FileViewHost } from './views/FileViewHost' // memoized export
 import { isTextFileDocument, type NotiaDocumentSaveStatus, type OpenFileDocument } from '../../types/views/fileDocument'
@@ -11,6 +11,7 @@ import { useAppDispatch } from '../../store/hooks'
 import { setDialogState } from '../../features/documents/documentsSlice'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 import type { MarkdownPageLayout } from '../../services/preferences/editorPreferences'
+import { readNotePageMode, setNotePageMode } from '../../services/markdown/notePageModeRuntime'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 import type { NotiaLibrary } from '../../types/notia'
@@ -63,8 +64,13 @@ function MainViewComponent({
   const [exportingFormat, setExportingFormat] = useState<MarkdownExportFormat | null>(null)
   /** Open tab of the editor settings, or `null` when they are closed. */
   const [settingsTab, setSettingsTab] = useState<EditorSettingsTab | null>(null)
-  const { editorPage, editorPageSetup, updatePage } = useEditorPreferences()
+  const { editorPage, editorPageSetup } = useEditorPreferences()
   const isMarkdownOpen = activeDocument?.viewKind === 'markdown'
+  const markdownSource = activeDocument && isTextFileDocument(activeDocument) && isMarkdownOpen ? activeDocument.source : null
+  /** Page mode belongs to the note (`pageMode` property); without it the note opens in the normal editor. */
+  const notePageMode = useMemo(() => (markdownSource === null ? false : readNotePageMode(markdownSource)), [markdownSource])
+  const latestDocumentRef = useRef({ path: activeDocument?.path ?? null, source: markdownSource })
+  latestDocumentRef.current = { path: activeDocument?.path ?? null, source: markdownSource }
 
   useEffect(() => {
     setMarkdownZoom(DEFAULT_MARKDOWN_ZOOM)
@@ -84,7 +90,7 @@ function MainViewComponent({
   }, [isMarkdownOpen])
 
   const pageLayout = useMemo<MarkdownPageLayout | null>(() => (
-    editorPage?.pageMode && editorPageSetup
+    notePageMode && editorPageSetup
       ? {
         widthMm: editorPageSetup.widthMm,
         heightMm: editorPageSetup.heightMm,
@@ -92,9 +98,28 @@ function MainViewComponent({
         pageNumbers: editorPageSetup.pageNumbers,
       }
       : null
-  ), [editorPage?.pageMode, editorPageSetup])
+  ), [notePageMode, editorPageSetup])
   const formatLabel = editorPageSetup?.formats.find((format) => format.id === editorPage?.format)?.label ?? ''
   const orientationLabel = editorPage?.orientation === 'landscape' ? 'Horizontal' : 'Vertical'
+
+  /** Writes or removes the note's `pageMode` property through Rust. */
+  const togglePageMode = useCallback(async () => {
+    const { path, source } = latestDocumentRef.current
+    if (!path || source === null) return
+    try {
+      const nextSource = await setNotePageMode(source, !readNotePageMode(source))
+      // Typing or another tab in the meantime wins; the toggle is dropped.
+      const latest = latestDocumentRef.current
+      if (latest.path !== path || latest.source !== source) return
+      onTextDocumentChange(nextSource)
+    } catch (error) {
+      dispatch(setDialogState({
+        type: 'info',
+        title: 'No se pudo cambiar el modo página',
+        message: error instanceof Error ? error.message : 'No se pudo cambiar el modo página de la nota.',
+      }))
+    }
+  }, [dispatch, onTextDocumentChange])
 
   const handleExplorerToolClick = useNotiaAction('explorerToolClick')
   const handleHeaderActionClick = useNotiaAction('headerActionClick')
@@ -193,7 +218,7 @@ function MainViewComponent({
               {getSaveStatusLabel(saveStatus)}
             </span>
           ) : null}
-          {isMarkdownDocument && editorPage?.pageMode && formatLabel ? (
+          {isMarkdownDocument && notePageMode && formatLabel ? (
             <button type="button" className="notia-page-chip" onClick={() => setSettingsTab('page')} title="Configurar la página">
               <File size={12} aria-hidden="true" />
               {formatLabel} · {orientationLabel}
@@ -222,11 +247,11 @@ function MainViewComponent({
                 Restablecer
               </button>
               <MarkdownDocumentMenu
-                pageMode={editorPage ? editorPage.pageMode : null}
-                pageSizeLabel={editorPage?.pageMode && formatLabel ? formatLabel : 'Continuo'}
-                canExportPdf={editorPageSetup?.canExportPdf ?? false}
+                pageMode={notePageMode}
+                pageSizeLabel={notePageMode && formatLabel ? formatLabel : 'Continuo'}
+                canExportPdf={notePageMode}
                 exportingFormat={exportingFormat}
-                onTogglePageMode={() => updatePage({ pageMode: !editorPage?.pageMode })}
+                onTogglePageMode={() => void togglePageMode()}
                 onOpenPageSettings={() => setSettingsTab('page')}
                 onOpenPenSettings={() => setSettingsTab('pen')}
                 onExport={(format) => void handleExport(format)}
@@ -257,6 +282,8 @@ function MainViewComponent({
         tab={settingsTab ?? 'page'}
         onTabChange={setSettingsTab}
         onClose={() => setSettingsTab(null)}
+        pageMode={isMarkdownDocument ? notePageMode : null}
+        onTogglePageMode={() => void togglePageMode()}
       />
     </main>
   )

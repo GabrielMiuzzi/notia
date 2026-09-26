@@ -1,4 +1,4 @@
-import { callBackend } from '../../../services/transport'
+import { backendFileUrl, callBackend } from '../../../services/transport'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAppSelector } from '../../../store/hooks'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
@@ -39,7 +39,7 @@ import {
   WikiLinkSuggestionMenu,
   type WikiLinkSuggestionMenuState,
 } from './markdown/WikiLinkSuggestionMenu'
-import { createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
+import { configureWikiLinkSerializer, createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
 import { useMarkdownZoom } from './markdown/useMarkdownZoom'
 import { createXGraphPlaceholder, isXGraphLanguage } from '../../../engines/markdown/xgraphEngine'
 import { observeXGraphPreviews } from '../../../services/markdown/xgraphPreviewRuntime'
@@ -77,6 +77,7 @@ import {
   trackPointerRow,
 } from './markdown/blockHandle'
 import { createFormatToolbarPlugin, type FormatToolbarState } from './markdown/formatToolbarPlugin'
+import { createBlockGapPlugin, handleClickBelowContent } from './markdown/blockGapPlugin'
 import {
   clearFormatting,
   selectBlockText,
@@ -89,6 +90,13 @@ import { MarkdownFormatToolbar, type MarkdownFormatToolbarActions } from './mark
 import { createPaginationPlugin, requestPagination, type PaginationGeometry } from './markdown/paginationPlugin'
 import type { MarkdownPageLayout } from '../../../services/preferences/editorPreferences'
 import './markdown/markdownEditor.css'
+import { createGitbookPlugins, GITBOOK_PART_NODE_NAMES } from './markdown/gitbook/gitbookPlugins'
+import { addGitbookMenu, insertGitbookInline } from './markdown/gitbook/gitbookMenu'
+import { GitbookResolver } from './markdown/gitbook/gitbookResolver'
+import { editDrawing } from './markdown/gitbook/gitbookDrawingEditor'
+import { mountMarkdownPreview } from './markdown/gitbook/gitbookMarkdownPreview'
+import { resolveGitbookBlocks } from '../../../services/markdown/gitbookBlocksRuntime'
+import './markdown/gitbook/gitbook.css'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -442,6 +450,7 @@ function MarkdownViewInner({
   const onSelectionChangeRef = useRef(onSelectionChange)
   const selectionCleanupRef = useRef<(() => void) | null>(null)
   const mermaidPreviewBlockIndexRef = useRef(0)
+  const gitbookResolverRef = useRef<GitbookResolver | null>(null)
 
   useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange)
 
@@ -515,6 +524,16 @@ function MarkdownViewInner({
     documentPathRef.current = documentPath
   }, [documentPath])
 
+  // The GitBook blocks resolve against the library and path of the note.
+  useEffect(() => {
+    gitbookResolverRef.current?.invalidate()
+  }, [libraryId, documentPath])
+
+  // Expressions and conditions read the note's `vars:` property.
+  useEffect(() => {
+    gitbookResolverRef.current?.noteSourceChanged(source)
+  }, [source])
+
   useEffect(() => {
     onOpenLinkedFileRef.current = onOpenLinkedFile
   }, [onOpenLinkedFile])
@@ -569,6 +588,7 @@ function MarkdownViewInner({
                 })
               },
             })
+            addGitbookMenu(builder)
             advancedGroup.addItem('mermaid', {
               label: 'Mermaid',
               icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
@@ -589,6 +609,12 @@ function MarkdownViewInner({
 
     let isMounted = true
     const cleanupXGraphPreviews = observeXGraphPreviews(rootRef.current)
+    const gitbookResolver = new GitbookResolver((request) => {
+      const currentLibraryId = libraryIdRef.current
+      if (!currentLibraryId) return Promise.resolve(null)
+      return resolveGitbookBlocks(currentLibraryId, documentPathRef.current, latestComposedSourceRef.current, request)
+    }, latestComposedSourceRef.current)
+    gitbookResolverRef.current = gitbookResolver
     const inlineHosts = new Set<HTMLElement>()
     const inkMathApp = createMarkdownInkMathApp(() => documentPathRef.current)
 
@@ -800,15 +826,28 @@ function MarkdownViewInner({
             }
           }
 
+          // Tabs, steps, columns and updates move with their block.
+          if (GITBOOK_PART_NODE_NAMES.has(node.type.name)) {
+            return false
+          }
+
           return shouldShowMarkdownBlockHandle(node.type.name, hasExcludedAncestor, isInsideTable)
         },
       }))
       ctx.update(tableCellSchema.key, (prev) => () => extendTableCellSchemaWithBlocks(prev(ctx)))
       ctx.update(tableHeaderSchema.key, (prev) => () => extendTableCellSchemaWithBlocks(prev(ctx)))
       configureBlockAlignment(ctx)
+      configureWikiLinkSerializer(ctx)
     })
 
     crepe.editor.use(richTextPlugins)
+    crepe.editor.use(createGitbookPlugins({
+      resolver: gitbookResolver,
+      openLibraryPath: (path) => onOpenLinkedFileRef.current(path),
+      fileUrl: backendFileUrl,
+      editDrawing: (drawing) => editDrawing(drawing, rootRef.current),
+      renderMarkdown: mountMarkdownPreview,
+    }))
     crepe.editor.use($prose(() => activeBlockPlugin))
     crepe.editor.use($prose(() => createPaginationPlugin({
       getGeometry: () => paginationGeometryRef.current,
@@ -899,6 +938,7 @@ function MarkdownViewInner({
     crepe.editor.use(cursor)
     crepe.editor.use(indent)
     crepe.editor.use(trailing)
+    crepe.editor.use($prose(() => createBlockGapPlugin()))
     crepe.editor.use(clipboard)
 
     crepeRef.current = crepe
@@ -962,6 +1002,14 @@ function MarkdownViewInner({
       const stopTrackingPointerRow = trackPointerRow(editorView, (clientY) => {
         pointerRowRef.current = clientY
       })
+      // The blank page under the note belongs to the host, not to the editor.
+      const onHostMouseDown = (event: MouseEvent) => {
+        const pages = pagesRef.current
+        const target = event.target
+        const isOnPage = target === host || (target instanceof Node && zoomContentRef.current?.contains(target))
+        if (pages && isOnPage) handleClickBelowContent(editorView, event, pages.getBoundingClientRect())
+      }
+      host?.addEventListener('mousedown', onHostMouseDown, true)
       selectionCleanupRef.current = () => {
         editorView.dom.removeEventListener('keyup', notifySelectionChange)
         editorView.dom.removeEventListener('mouseup', notifySelectionChange)
@@ -971,6 +1019,7 @@ function MarkdownViewInner({
         detachDragGhost()
         stopHidingHandle()
         stopTrackingPointerRow()
+        host?.removeEventListener('mousedown', onHostMouseDown, true)
       }
       notifySelectionChange()
       onSelectionChangeRef.current(buildMarkdownSelectionContext(
@@ -987,6 +1036,8 @@ function MarkdownViewInner({
       onSelectionChangeRef.current(null)
       codeBlockObserver.disconnect()
       cleanupXGraphPreviews()
+      gitbookResolver.dispose()
+      if (gitbookResolverRef.current === gitbookResolver) gitbookResolverRef.current = null
       cleanupInlinePreviews()
       clearDocumentRefs()
       selectionCleanupRef.current?.()
@@ -1172,6 +1223,12 @@ function MarkdownViewInner({
     // Crepe's link tooltip asks for the address.
     onLink: () => runFormat(() => crepeRef.current?.editor.action((ctx) => ctx.get(commandsCtx).call(toggleLinkCommand.key))),
     onClear: () => runFormat(clearFormatting),
+    // Inline elements go at the selection, not over a whole block.
+    onInsertInline: (kind) => {
+      const crepe = crepeRef.current
+      if (!crepe || !isReadyRef.current) return
+      insertGitbookInline(crepe.editor.action((ctx) => ctx.get(editorViewCtx)), kind)
+    },
   }
 
   const handleWikiLinkSelect = (index: number) => {

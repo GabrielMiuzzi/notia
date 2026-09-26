@@ -4,14 +4,17 @@
 //!
 //! A turn reads the chat, picks the messages the agent sees, runs the agent,
 //! asks the interface for the clarifications, confirmations and plans the
-//! agent needs, saves the turn and schedules the chat title and long-term
-//! memories. The interface sends the message and the visible workspace,
-//! renders the streamed events and answers the questions it is asked.
+//! agent needs, saves the turn and schedules the chat title. A chat with
+//! agents runs them instead of Notia: each agent answers with the chat's
+//! permissions, and they keep answering each other for a few rounds. The
+//! interface sends the message and the visible workspace, renders the
+//! streamed events and answers the questions it is asked.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use crate::host::{AppHandle, Emitter, Manager};
 
@@ -19,6 +22,7 @@ use crate::backend::ai_settings::AiSettingsInput;
 use crate::backend::chat_history::{ChatRole, StoredChatAttachment, StoredChatDocument, StoredChatMessage};
 use crate::backend::chat_context::{self, ContextFile};
 use crate::backend::chat_history::ChatContextMode;
+use crate::backend::chat_agents::{self as agent_rules, ChatAgent};
 use crate::backend::chat_turn::{self, ContextSelection, TurnMode, WorkspaceInput};
 use crate::backend::{
     AgentRequest, AgentResponse, BackendActor, BackendError, BackendErrorCode, BackendEvent, BackendRequest,
@@ -33,6 +37,8 @@ use crate::library_registry::LibraryBindingRegistry;
 pub(crate) const INTERACTION_EVENT: &str = "ai-chat-interaction";
 /// The AI title of a new chat was saved.
 pub(crate) const TITLE_EVENT: &str = "ai-chat-title";
+/// An agent of the chat starts answering, or finished its message.
+pub(crate) const AGENT_EVENT: &str = "ai-chat-agent";
 /// How long a question waits for the person before the turn is cancelled.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Questions one turn may ask before it is considered stuck.
@@ -65,8 +71,6 @@ pub(crate) struct AiChatState {
 pub(crate) enum ChatTarget {
     /// A chat file of the library, by the path the interface holds.
     Saved { path: String },
-    /// A chat the interface keeps without a file.
-    Ephemeral { document: StoredChatDocument },
     /// Previous messages of a conversation without settings (Meeting, published boards).
     Transient {
         #[serde(default)]
@@ -106,15 +110,13 @@ pub(crate) struct ChatSendPayload {
     /// Library user of a published Task Manager asking through the host.
     #[serde(default)]
     library_user_id: Option<String>,
-    /// Multichat room open beside the chat; its conversation is the context.
-    #[serde(default)]
-    multichat_room_id: Option<String>,
     chat: ChatTarget,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChatTurnOutcome {
+    /// Notia's answer, or the last agent's message.
     answer: String,
     /// The agent changed library data (the open note may need a reload).
     data_changed: bool,
@@ -178,6 +180,33 @@ pub(crate) struct ChatAnswerPayload {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChatCancelPayload {
     request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSpeakerDto {
+    file_name: String,
+    name: String,
+    initials: String,
+}
+
+/// Progress of the agents of a turn. `runRequestId` identifies the engine
+/// run of the agent, whose streamed events carry that id.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "phase", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+enum AgentPhase {
+    Start { run_request_id: String, agent: AgentSpeakerDto },
+    Message { run_request_id: String, message: StoredChatMessage },
+    /// The agent answered nothing.
+    Silent { run_request_id: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentEvent {
+    request_id: String,
+    #[serde(flatten)]
+    phase: AgentPhase,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,11 +334,13 @@ fn cancel_request(app: &AppHandle, runtime: &BackendRuntimeState, identity: &Req
     );
 }
 
-/// Runs the agent until it answers, resuming after each question.
+/// Runs the agent until it answers, resuming after each question. The
+/// questions go to the turn `turn_id`, whose run may be one of its agents.
 fn run_agent(
     app: &AppHandle,
     state: &AiChatState,
     runtime: &BackendRuntimeState,
+    turn_id: &str,
     identity: &RequestIdentity,
     mut request: BackendRequest,
 ) -> Result<AgentResponse, BackendError> {
@@ -325,7 +356,7 @@ fn run_agent(
                 let (Some(operation), Some(interaction)) = (status.operation, status.interaction) else {
                     break;
                 };
-                let Some(decision) = ask(app, state, &identity.context.request_id, &interaction, &operation) else {
+                let Some(decision) = ask(app, state, turn_id, &interaction, &operation) else {
                     cancel_request(app, runtime, identity, Some(operation));
                     return Err(cancelled());
                 };
@@ -446,18 +477,17 @@ fn workspace_of(mode: TurnMode, workspace: Option<WorkspaceInput>) -> Result<Wor
 }
 
 /// What a library chat turn adds for the library: the chosen files as a
-/// context block and, without library search, the tools it keeps.
+/// context block and whether the agent may search the rest.
 struct LibraryTurnContext {
     block: Option<String>,
-    /// Empty: the full catalog.
-    tools: Vec<crate::backend::protocol::ToolDefinition>,
+    library_search: bool,
 }
 
 /// The chosen files and folders of the main library chat. Other chats keep
 /// their own context (views, rooms, boards) and the full catalog.
 fn library_context(app: &AppHandle, library_id: &str, mode: TurnMode, scope: &str, selection: &ContextSelection) -> LibraryTurnContext {
     if mode != TurnMode::Chat || scope != "library" || selection.keep_chat_context {
-        return LibraryTurnContext { block: None, tools: Vec::new() };
+        return LibraryTurnContext { block: None, library_search: true };
     }
     let logical = |paths: &[String]| {
         paths
@@ -482,11 +512,7 @@ fn library_context(app: &AppHandle, library_id: &str, mode: TurnMode, scope: &st
         .collect::<Vec<_>>();
     LibraryTurnContext {
         block: chat_context::context_block(selection.mode, selection.library_rag, &files),
-        tools: if selection.library_rag {
-            Vec::new()
-        } else {
-            chat_context::tools_without_library_rag(crate::backend_runtime::supported_tool_names().iter().copied())
-        },
+        library_search: selection.library_rag,
     }
 }
 
@@ -503,6 +529,190 @@ fn schedule_chat_title(app: &AppHandle, library_id: &str, logical_path: String, 
         Err(error) => log::warn!("[notia:chat] no se pudo titular el chat: {}", error.message),
     });
 }
+
+/// What every run of a turn shares: the chat's library context, its tools
+/// and its permanent context.
+struct TurnSetup {
+    library_id: String,
+    snapshot: crate::backend::BackendSnapshot,
+    library_block: Option<String>,
+    library_search: bool,
+    tool_access: crate::backend::ToolAccess,
+    permanent_block: Option<String>,
+}
+
+impl TurnSetup {
+    /// The prompt of a run with the chat's permanent and library context.
+    fn prompt(&self, prompt: String) -> String {
+        let prompt = match &self.permanent_block {
+            Some(block) => format!("{prompt}\n\n{block}"),
+            None => prompt,
+        };
+        chat_context::prompt_with_context(prompt, self.library_block.clone())
+    }
+
+    fn request(
+        &self,
+        identity: &RequestIdentity,
+        history: &[StoredChatMessage],
+        prompt: &str,
+        attachments: &[StoredChatAttachment],
+        prompt_name: Option<String>,
+    ) -> BackendRequest {
+        BackendRequest::Run(AgentRequest {
+            context: identity.context.clone(),
+            messages: chat_turn::turn_messages(history, prompt, attachments),
+            snapshot: Some(self.snapshot.clone()),
+            tools: Vec::new(),
+            attachments: Vec::new(),
+            idempotency_key: identity.idempotency_key.clone(),
+            prompt_name,
+            tool_access: self.tool_access,
+            library_search: self.library_search,
+        })
+    }
+}
+
+/// Messages the agents added in a turn and whether they changed data. When
+/// a run fails, what the agents said before stays with the error.
+struct AgentRounds {
+    replies: Vec<StoredChatMessage>,
+    changed: bool,
+    error: Option<BackendError>,
+}
+
+fn is_cancelled(state: &AiChatState, turn_id: &str) -> bool {
+    state.turns.lock().map(|turns| turns.get(turn_id).is_none_or(|turn| turn.cancelled)).unwrap_or(true)
+}
+
+/// The agents answer the person's message and then each other, for as many
+/// rounds as the chain allows. Each agent runs as the engine with its own
+/// prompt and the chat's permissions; cancelling stops the running agent.
+#[allow(clippy::too_many_arguments)]
+fn run_agent_rounds(
+    app: &AppHandle,
+    state: &AiChatState,
+    runtime: &BackendRuntimeState,
+    turn: &RequestIdentity,
+    setup: &TurnSetup,
+    agents: &[ChatAgent],
+    dynamic: Option<&str>,
+    conversation: &mut Vec<StoredChatMessage>,
+) -> AgentRounds {
+    let turn_id = turn.context.request_id.clone();
+    let names = |file: &str| {
+        agents
+            .iter()
+            .find(|agent| agent.file_name == file)
+            .map(|agent| agent.name.clone())
+            .unwrap_or_else(|| agent_rules::file_stem(file))
+    };
+    let mut random = || rand::thread_rng().gen::<f64>();
+    let round_limit = agent_rules::automatic_round_limit(&mut random);
+    let mut outcome = AgentRounds { replies: Vec::new(), changed: false, error: None };
+    let mut run = 0;
+    for _ in 0..round_limit {
+        let mut answered = 0;
+        for index in agent_rules::select_participants(agents, dynamic, &mut random) {
+            if is_cancelled(state, &turn_id) {
+                outcome.error = Some(cancelled());
+                return outcome;
+            }
+            let agent = &agents[index];
+            run += 1;
+            let run_id = format!("{turn_id}-{run}");
+            let identity = RequestIdentity {
+                idempotency_key: format!("{}:{run_id}", setup.library_id),
+                context: BackendRequestContext { request_id: run_id.clone(), ..turn.context.clone() },
+            };
+            // Cancelling the turn now cancels this agent's run.
+            if let Ok(mut turns) = state.turns.lock() {
+                if let Some(active) = turns.get_mut(&turn_id) {
+                    active.identity = identity.clone();
+                }
+            }
+            let emit = |phase: AgentPhase| {
+                let _ = app.emit(AGENT_EVENT, AgentEvent { request_id: turn_id.clone(), phase });
+            };
+            emit(AgentPhase::Start {
+                run_request_id: run_id.clone(),
+                agent: AgentSpeakerDto {
+                    file_name: agent.file_name.clone(),
+                    name: agent.name.clone(),
+                    initials: agent_rules::initials(&agent.name),
+                },
+            });
+            let others = agents
+                .iter()
+                .filter(|other| other.file_name != agent.file_name)
+                .map(|other| other.name.clone())
+                .collect::<Vec<_>>();
+            let prompt = setup.prompt(agent_rules::agent_turn_prompt(agent, &others, dynamic));
+            let history = agent_rules::agent_history(conversation, &names);
+            let request = setup.request(&identity, &history, &prompt, &[], Some(agent.file_name.clone()));
+            let response = run_agent(app, state, runtime, &turn_id, &identity, request);
+            remember_undoable(state, runtime, &identity);
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    outcome.error = Some(error);
+                    return outcome;
+                }
+            };
+            outcome.changed |= response.changed || response.tool_results.iter().any(|result| result.ok && result.changed);
+            let content = strip_speaker_name(response.response.markdown.trim(), &agent.name);
+            if content.is_empty() {
+                emit(AgentPhase::Silent { run_request_id: run_id });
+                continue;
+            }
+            let message = StoredChatMessage {
+                role: ChatRole::Assistant,
+                content,
+                attachments: Vec::new(),
+                agent: Some(agent.file_name.clone()),
+            };
+            conversation.push(message.clone());
+            outcome.replies.push(message.clone());
+            emit(AgentPhase::Message { run_request_id: run_id, message });
+            answered += 1;
+        }
+        // A round without answers, or a dynamic that waits for the person,
+        // ends the chain.
+        if answered == 0 || !agent_rules::dynamic_allows_automatic_turns(dynamic) {
+            break;
+        }
+    }
+    outcome
+}
+
+/// Agents often start with their own name, as the history shows them.
+fn strip_speaker_name(content: &str, name: &str) -> String {
+    content
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .map_or(content, str::trim_start)
+        .to_string()
+}
+
+fn notia_reply(content: String) -> StoredChatMessage {
+    StoredChatMessage { role: ChatRole::Assistant, content, attachments: Vec::new(), agent: None }
+}
+
+/// The prompt file that answered a turn alone signs its reply, so the chat
+/// history shows which agent a chat talks with; the default prompt is Notia.
+fn prompt_agent(prompt_name: Option<&str>) -> Option<String> {
+    prompt_name
+        .map(str::trim)
+        .filter(|name| {
+            notia_backend_core::chat_agents::is_valid_markdown_file_name(name)
+                && !name.eq_ignore_ascii_case(notia_backend_core::agent_workspace::DEFAULT_PROMPT_FILE)
+        })
+        .map(str::to_string)
+}
+
+/// Replies of a turn, whether they changed data and the error that stopped
+/// the agents after some of them answered.
+type TurnReplies = (Vec<StoredChatMessage>, bool, Option<BackendError>);
 
 fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, BackendError> {
     let message = payload.message.trim().to_string();
@@ -522,10 +732,6 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
             let document = crate::chat_history::load(app, &library_id, &logical_path, chat_turn::DEFAULT_CHAT_TITLE)?;
             let history = chat_turn::memory_window(&document).to_vec();
             (Some(document), Some(logical_path), history)
-        }
-        ChatTarget::Ephemeral { document } => {
-            let history = chat_turn::memory_window(&document).to_vec();
-            (Some(document), None, history)
         }
         ChatTarget::Transient { messages } => (None, None, chat_turn::transient_window(&messages).to_vec()),
     };
@@ -561,40 +767,64 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
         }
         turns.insert(payload.request_id.clone(), ActiveTurn { identity: identity.clone(), answer: None, cancelled: false });
     }
-    let result = match payload.undo_operation_id.as_deref() {
-        Some(operation_id) => undo(app, &state, &runtime, operation_id).map(|path| (chat_turn::undo_answer(path.as_deref()), true)),
+    // Agents speak in the chats of the app, not in Meeting or published boards.
+    let agents = match (&chat, payload.mode) {
+        (Some(document), TurnMode::Chat) if payload.undo_operation_id.is_none() => {
+            crate::chat_agents::chat_agents(app, &library_id, &document.agents)
+        }
+        _ => Vec::new(),
+    };
+    let user_message = StoredChatMessage {
+        role: ChatRole::User,
+        content: message.clone(),
+        attachments: payload.attachments.clone(),
+        agent: None,
+    };
+    let result: Result<TurnReplies, BackendError> = match payload.undo_operation_id.as_deref() {
+        Some(operation_id) => undo(app, &state, &runtime, operation_id)
+            .map(|path| (vec![notia_reply(chat_turn::undo_answer(path.as_deref()))], true, None)),
         None => {
-            let room_context = payload
-                .multichat_room_id
-                .as_deref()
-                .and_then(|room_id| crate::multichat::room_chat_context(app, &library_id, room_id));
-            let context = room_context.as_deref().or(payload.context.as_deref());
             let library_context = library_context(app, &library_id, payload.mode, &payload.scope, &payload.selection);
-            let prompt = chat_context::prompt_with_context(
-                chat_turn::turn_prompt(payload.mode, &message, context),
-                library_context.block,
-            );
-            let request = BackendRequest::Run(AgentRequest {
-                context: identity.context.clone(),
-                messages: chat_turn::turn_messages(&history, &prompt, &payload.attachments),
-                snapshot: Some(chat_turn::workspace_snapshot(&workspace, &library_id)),
-                tools: library_context.tools,
-                attachments: Vec::new(),
-                idempotency_key: identity.idempotency_key.clone(),
-                prompt_name: payload.prompt_name.clone(),
-            });
-            let response = run_agent(app, &state, &runtime, &identity, request);
-            remember_undoable(&state, &runtime, &identity);
-            response.map(|response| {
-                let changed = response.changed || response.tool_results.iter().any(|result| result.ok && result.changed);
-                (response.response.markdown, changed)
-            })
+            let setup = TurnSetup {
+                library_id: library_id.clone(),
+                snapshot: chat_turn::workspace_snapshot(&workspace, &library_id),
+                library_block: library_context.block,
+                library_search: library_context.library_search,
+                tool_access: chat_turn::chat_tool_access(chat.as_ref()),
+                permanent_block: chat_turn::permanent_context_block(chat.as_ref()),
+            };
+            if agents.is_empty() {
+                let prompt = setup.prompt(chat_turn::turn_prompt(payload.mode, &message, payload.context.as_deref()));
+                let request = setup.request(&identity, &history, &prompt, &payload.attachments, payload.prompt_name.clone());
+                let response = run_agent(app, &state, &runtime, &payload.request_id, &identity, request);
+                remember_undoable(&state, &runtime, &identity);
+                response.map(|response| {
+                    let changed = response.changed || response.tool_results.iter().any(|result| result.ok && result.changed);
+                    let mut reply = notia_reply(response.response.markdown);
+                    reply.agent = prompt_agent(payload.prompt_name.as_deref());
+                    (vec![reply], changed, None)
+                })
+            } else {
+                let dynamic = chat
+                    .as_ref()
+                    .and_then(|document| crate::chat_agents::chat_dynamic(app, &library_id, document.dynamic.as_deref()));
+                let mut conversation = chat.as_ref().map(|document| document.messages.clone()).unwrap_or_default();
+                conversation.push(user_message.clone());
+                let rounds =
+                    run_agent_rounds(app, &state, &runtime, &identity, &setup, &agents, dynamic.as_deref(), &mut conversation);
+                // What the agents said before an error or a cancel is kept.
+                match (rounds.replies.is_empty(), rounds.error) {
+                    (true, Some(error)) => Err(error),
+                    (_, error) => Ok((rounds.replies, rounds.changed, error)),
+                }
+            }
         }
     };
     if let Ok(mut turns) = state.turns.lock() {
         turns.remove(&payload.request_id);
     }
-    let (answer, data_changed) = result?;
+    let (replies, data_changed, interrupted) = result?;
+    let answer = replies.last().map(|reply| reply.content.clone()).unwrap_or_default();
 
     // Save the turn in its chat.
     let document = match chat {
@@ -603,13 +833,13 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
             let previous_messages = document.messages.clone();
             chat_turn::apply_turn_context(&mut document, &payload.selection);
             document.title = chat_turn::persisted_title(&previous_title, !previous_messages.is_empty(), &message);
-            document.messages.push(StoredChatMessage { role: ChatRole::User, content: message.clone(), attachments: payload.attachments });
-            document.messages.push(StoredChatMessage { role: ChatRole::Assistant, content: answer.clone(), attachments: Vec::new() });
+            document.messages.push(user_message);
+            document.messages.extend(replies.iter().cloned());
             if let Some(logical_path) = &logical_path {
                 if document.title != previous_title {
                     crate::chat_history::save_chat(app, &library_id, logical_path, &document)?;
                 } else {
-                    crate::chat_history::append_turn(app, &library_id, logical_path, &document)?;
+                    crate::chat_history::append_turn(app, &library_id, logical_path, &document, 1 + replies.len())?;
                 }
             }
             // Memory and rules belong to the global engine: the agent reads
@@ -622,6 +852,10 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
         }
         None => None,
     };
+    // The messages are saved; the person still learns why the agents stopped.
+    if let Some(error) = interrupted {
+        return Err(error);
+    }
     Ok(ChatTurnOutcome {
         answer,
         data_changed,
@@ -673,4 +907,24 @@ pub(crate) async fn ai_chat_cancel(app: AppHandle, payload: ChatCancelPayload) -
     })
     .await
     .map_err(|_| internal("No se pudo cancelar la consulta."))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prompt_agent, strip_speaker_name};
+
+    #[test]
+    fn a_custom_prompt_signs_its_reply_and_the_default_one_does_not() {
+        assert_eq!(prompt_agent(Some("tasks.md")).as_deref(), Some("tasks.md"));
+        assert_eq!(prompt_agent(Some("default.md")), None);
+        assert_eq!(prompt_agent(Some("../x.md")), None);
+        assert_eq!(prompt_agent(None), None);
+    }
+
+    #[test]
+    fn an_agent_that_signs_its_message_loses_the_signature() {
+        assert_eq!(strip_speaker_name("Ana: Hola", "Ana"), "Hola");
+        assert_eq!(strip_speaker_name("Ana dice hola", "Ana"), "Ana dice hola");
+        assert_eq!(strip_speaker_name("Hola", "Ana"), "Hola");
+    }
 }

@@ -6,6 +6,9 @@ import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes
 import { agentToolLabel } from '../../../../services/ai/agentToolLabels'
 import type { MutationPreview } from '../../../../types/ai/agentContracts'
 import type { AiOperationHistoryEntry } from '../../../../services/ai/aiOperationHistory'
+import type { ChatAgentSpeaker } from '../../../../services/chat/aiChatRuntime'
+import { ChatAgentAvatar } from './ChatAgentPanel'
+import type { ChatAgentLook } from './useChatAgentSettings'
 
 interface ChatThreadProps {
   messages: StoredChatMessage[]
@@ -17,6 +20,10 @@ interface ChatThreadProps {
   showHistoryPanel: boolean
   streamingThinking: string
   streamingAssistantMessage: string
+  /** How each agent of the chat looks, by its prompt file. */
+  agentLooks?: Record<string, ChatAgentLook>
+  /** Agent whose answer is streaming; `null` while Notia answers. */
+  streamingAgent?: ChatAgentSpeaker | null
   pendingAgentQuestion?: { question: string; choices: string[] } | null
   pendingAgentAnswer?: string | null
   pendingAgentConfirmation?: string | null
@@ -55,6 +62,19 @@ export interface AiOperationHistoryDiff {
 }
 
 const COPY_FEEDBACK_MS = 1_600
+const NO_AGENT_LOOKS: Record<string, ChatAgentLook> = {}
+
+/** The agent that wrote a message, or `null` for Notia and the person. */
+function agentLookOf(fileName: string | undefined, looks: Record<string, ChatAgentLook>): ChatAgentLook | null {
+  if (!fileName) return null
+  return looks[fileName] ?? { name: fileName.replace(/\.md$/i, ''), initials: fileName.slice(0, 2).toUpperCase(), colorIndex: 0 }
+}
+
+function AssistantAvatar({ agent }: { agent: ChatAgentLook | null }) {
+  return agent
+    ? <ChatAgentAvatar look={agent} size="small" />
+    : <div className="notia-chat-message-avatar" aria-hidden="true"><Sparkles size={16} /></div>
+}
 
 function CopyMessageButton({ source }: { source: string }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
@@ -98,6 +118,8 @@ function ChatThreadComponent({
   showHistoryPanel,
   streamingThinking,
   streamingAssistantMessage,
+  agentLooks = NO_AGENT_LOOKS,
+  streamingAgent = null,
   pendingAgentQuestion,
   pendingAgentAnswer,
   pendingAgentConfirmation,
@@ -125,6 +147,9 @@ function ChatThreadComponent({
   onOpenAiSettings,
 }: ChatThreadProps) {
   const hasMessages = messages.length > 0
+  const streamingAgentLook: ChatAgentLook | null = streamingAgent
+    ? agentLooks[streamingAgent.fileName] ?? { name: streamingAgent.name, initials: streamingAgent.initials, colorIndex: 0 }
+    : null
   const thinkingContentRef = useRef<HTMLDivElement | null>(null)
   const [isEditingPlan, setIsEditingPlan] = useState(false)
   const [draftPlan, setDraftPlan] = useState<TaskExecutionStep[]>([])
@@ -175,17 +200,19 @@ function ChatThreadComponent({
         </div>
       ) : hasMessages ? (
         <>
-          {messages.map((message, index) => (
+          {messages.map((message, index) => {
+            const agent = message.role === 'assistant' ? agentLookOf(message.agent, agentLooks) : null
+            return (
             <article
               key={`${message.role}-${index}-${message.content.length}`}
               className={`notia-chat-message notia-chat-message--${message.role}`}
             >
-              <div className="notia-chat-message-avatar" aria-hidden="true">
-                {message.role === 'assistant' ? <Sparkles size={16} /> : <User2 size={16} />}
-              </div>
+              {message.role === 'assistant'
+                ? <AssistantAvatar agent={agent} />
+                : <div className="notia-chat-message-avatar" aria-hidden="true"><User2 size={16} /></div>}
               <div className="notia-chat-message-bubble">
                 <span className="notia-chat-message-role">
-                  {message.role === 'assistant' ? 'Notia' : 'Vos'}
+                  {message.role === 'assistant' ? agent?.name ?? 'Notia' : 'Vos'}
                 </span>
                 {message.attachments?.length ? (
                   <div className="notia-chat-message-attachments" role="status" aria-label="Archivos adjuntos conservados en este mensaje">
@@ -197,7 +224,8 @@ function ChatThreadComponent({
                 {message.role === 'assistant' ? <CopyMessageButton source={message.content} /> : null}
               </div>
             </article>
-          ))}
+            )
+          })}
           {agentExecutionPlan.length > 0 ? (
             <article className="notia-chat-message notia-chat-message--assistant">
               <div className="notia-chat-message-avatar" aria-hidden="true"><Sparkles size={16} /></div>
@@ -472,11 +500,11 @@ function ChatThreadComponent({
               ) : null}
               {!pendingAgentQuestion && !pendingAgentConfirmation ? (
               <article className="notia-chat-message notia-chat-message--assistant">
-                <div className="notia-chat-message-avatar" aria-hidden="true">
-                  <Sparkles size={16} />
-                </div>
+                <AssistantAvatar agent={streamingAgentLook} />
                 <div className="notia-chat-message-bubble notia-chat-message-bubble--thinking">
-                  <span className="notia-chat-message-role">Progreso</span>
+                  <span className="notia-chat-message-role">
+                    {streamingAgentLook ? `${streamingAgentLook.name} · pensando` : 'Progreso'}
+                  </span>
                   {streamingThinking.trim() ? (
                     <div
                       ref={thinkingContentRef}
@@ -497,11 +525,9 @@ function ChatThreadComponent({
               ) : null}
               {streamingAssistantMessage.trim() ? (
                 <article className="notia-chat-message notia-chat-message--assistant">
-                  <div className="notia-chat-message-avatar" aria-hidden="true">
-                    <Sparkles size={16} />
-                  </div>
+                  <AssistantAvatar agent={streamingAgentLook} />
                   <div className="notia-chat-message-bubble">
-                    <span className="notia-chat-message-role">Notia</span>
+                    <span className="notia-chat-message-role">{streamingAgentLook?.name ?? 'Notia'}</span>
                     <ChatMarkdownMessage source={streamingAssistantMessage} />
                   </div>
                 </article>

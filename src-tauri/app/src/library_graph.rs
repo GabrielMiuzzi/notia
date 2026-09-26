@@ -156,6 +156,12 @@ pub(crate) async fn backend_library_graph(
         for node in &mut model.nodes {
             node.id = visible(&node.id);
             node.path = visible(&node.path);
+            for neighbor in &mut node.neighbors {
+                *neighbor = visible(neighbor);
+            }
+        }
+        for path in &mut model.summary.top_connected {
+            *path = visible(path);
         }
         for edge in &mut model.edges {
             edge.source_path = visible(&edge.source_path);

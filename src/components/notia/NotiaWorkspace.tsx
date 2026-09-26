@@ -14,7 +14,6 @@ import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
 import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
-import { MultichatView } from './views/MultichatView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../../modules/task-manager/types/taskManagerTypes'
@@ -171,7 +170,6 @@ function NotiaWorkspaceComponent({
             graphModel={graphModel}
             searchGraph={searchGraph}
             libraryName={libraryName}
-            contexts={libraryContexts}
             isLoading={isGraphLoading}
             onOpenFile={handleOpenFileFromView}
             chatSelectedPaths={graphChatSelectedPaths}
@@ -240,10 +238,6 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'routine') {
     return <RoutineView library={activeLibrary} />
-  }
-
-  if (activeWorkspaceView === 'multichat') {
-    return <MultichatView library={activeLibrary} />
   }
 
   return (

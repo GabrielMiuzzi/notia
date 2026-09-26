@@ -742,6 +742,8 @@ impl Worker {
             attachments: Vec::new(),
             idempotency_key: idempotency_key.clone(),
             prompt_name: None,
+            tool_access: Default::default(),
+            library_search: true,
         });
         let progress = Progress::start(self, chat_id, progress_enabled, edit_progress);
         let outcome = loop {

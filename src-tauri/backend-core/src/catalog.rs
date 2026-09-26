@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use super::context::{BackendRequestContext, BackendScope};
 use super::error::{BackendError, BackendErrorCode};
-use super::protocol::ToolDefinition;
+use super::protocol::{ToolAccess, ToolDefinition};
 
 const CONFIDENTIAL_CONTEXT: &str = "#Confidencial";
 
@@ -376,6 +376,25 @@ impl AuthorizationPrincipal {
     }
 }
 
+/// Keeps the tools a chat allows: all, only those that read, or none, and,
+/// without library search, none of those that read or search the library.
+/// Memory tools stay: whether they are offered depends on the memory policy.
+pub fn restrict_tool_access(tools: Vec<ToolDefinition>, access: ToolAccess, library_search: bool) -> Vec<ToolDefinition> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            let policy = tool_policy(&tool.name);
+            policy == ToolPolicy::Memory
+                || (library_search || policy != ToolPolicy::LibraryRead)
+                    && match access {
+                        ToolAccess::All => true,
+                        ToolAccess::ReadOnly => tool.read_only,
+                        ToolAccess::None => false,
+                    }
+        })
+        .collect()
+}
+
 pub fn tool_policy(tool_name: &str) -> ToolPolicy {
     match tool_name {
         "search_web"
@@ -573,6 +592,37 @@ mod tests {
             assert!(parameters["properties"].is_object(), "{name}");
             assert!(!entry["description"].as_str().unwrap_or_default().is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn a_chat_keeps_all_tools_only_those_that_read_or_none_but_memory() {
+        let tools = || {
+            canonical_tool_catalog()
+                .into_iter()
+                .filter(|tool| ["read_library_documents", "create_library_note", "add_agent_memory"].contains(&tool.name.as_str()))
+                .collect::<Vec<_>>()
+        };
+        let names = |tools: Vec<ToolDefinition>| tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
+        assert_eq!(names(restrict_tool_access(tools(), ToolAccess::All, true)).len(), tools().len());
+        let read_only = names(restrict_tool_access(tools(), ToolAccess::ReadOnly, true));
+        assert!(read_only.contains(&"read_library_documents".to_string()));
+        assert!(!read_only.contains(&"create_library_note".to_string()));
+        assert!(read_only.contains(&"add_agent_memory".to_string()));
+        assert_eq!(names(restrict_tool_access(tools(), ToolAccess::None, true)), vec!["add_agent_memory".to_string()]);
+        let without_search = names(restrict_tool_access(tools(), ToolAccess::All, false));
+        assert!(!without_search.contains(&"read_library_documents".to_string()));
+        assert!(without_search.contains(&"create_library_note".to_string()));
+    }
+
+    #[test]
+    fn a_turn_without_library_search_fits_the_tool_limit() {
+        // Before, the turn listed every other tool and the catalog outgrew
+        // the limit of the request ("El request supera el límite de tools").
+        let catalog = canonical_tool_catalog();
+        let limits = crate::protocol::BackendLimits::default();
+        assert!(catalog.len() > limits.max_tools);
+        let kept = restrict_tool_access(catalog, ToolAccess::All, false);
+        assert!(kept.iter().all(|tool| tool_policy(&tool.name) != ToolPolicy::LibraryRead));
     }
 
     #[test]

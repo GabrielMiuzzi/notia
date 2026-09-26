@@ -20,10 +20,10 @@ import type {
 const BACKEND_EVENT = 'notia:backend-event'
 const INTERACTION_EVENT = 'ai-chat-interaction'
 const TITLE_EVENT = 'ai-chat-title'
+const AGENT_EVENT = 'ai-chat-agent'
 
 export type ChatTurnTarget =
   | { kind: 'saved'; path: string }
-  | { kind: 'ephemeral'; document: StoredChatDocument }
   | { kind: 'transient'; messages: StoredChatMessage[] }
 
 export interface ChatTurnInput {
@@ -46,12 +46,23 @@ export interface ChatTurnInput {
     keepChatContext: boolean
   }
   libraryUserId?: string
-  /** Multichat room beside the chat; the backend adds its conversation as context. */
-  multichatRoomId?: string
   chat: ChatTurnTarget
 }
 
+/** Agent of the chat that is answering. */
+export interface ChatAgentSpeaker {
+  fileName: string
+  name: string
+  initials: string
+}
+
+type AgentEvent =
+  | { requestId: string; phase: 'start'; runRequestId: string; agent: ChatAgentSpeaker }
+  | { requestId: string; phase: 'message'; runRequestId: string; message: StoredChatMessage }
+  | { requestId: string; phase: 'silent'; runRequestId: string }
+
 export interface ChatTurnOutcome {
+  /** Notia's answer, or the last agent's message. */
   answer: string
   dataChanged: boolean
   document?: StoredChatDocument
@@ -59,6 +70,12 @@ export interface ChatTurnOutcome {
 }
 
 export interface ChatTurnHandlers {
+  /** An agent of the chat starts answering; the deltas that follow are its own. */
+  onAgentStart?: (agent: ChatAgentSpeaker) => void
+  /** An agent finished its message, which the backend saves with the turn. */
+  onAgentMessage?: (message: StoredChatMessage) => void
+  /** An agent answered nothing. */
+  onAgentSilent?: () => void
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
   onAgentProgress?: (event: AgentProgressEvent) => void
@@ -149,7 +166,9 @@ async function answerInteraction(
 export function startChatTurn(input: ChatTurnInput, handlers: ChatTurnHandlers = {}): ChatTurnHandle {
   const requestId = crypto.randomUUID()
   const controller = new AbortController()
-  let lastSequence = 0
+  // Each agent of the chat runs with its own request id; the turn follows
+  // the events of all of them, each with its own sequence.
+  const lastSequences = new Map<string, number>([[requestId, 0]])
 
   const cancel = () => {
     void callBackend('ai_chat_cancel', { payload: { requestId } }).catch(() => undefined)
@@ -160,9 +179,21 @@ export function startChatTurn(input: ChatTurnInput, handlers: ChatTurnHandlers =
     try {
       unlisteners.push(await subscribeBackend<BackendEventEnvelope>(BACKEND_EVENT, (envelope) => {
         // Events can arrive twice (live emit plus replay); only newer ones count.
-        if (envelope.requestId !== requestId || envelope.sequence <= lastSequence) return
-        lastSequence = envelope.sequence
-        forwardEvent(requestId, envelope, handlers)
+        const lastSequence = lastSequences.get(envelope.requestId)
+        if (lastSequence === undefined || envelope.sequence <= lastSequence) return
+        lastSequences.set(envelope.requestId, envelope.sequence)
+        forwardEvent(envelope.requestId, envelope, handlers)
+      }))
+      unlisteners.push(await subscribeBackend<AgentEvent>(AGENT_EVENT, (event) => {
+        if (event.requestId !== requestId) return
+        if (event.phase === 'start') {
+          lastSequences.set(event.runRequestId, 0)
+          handlers.onAgentStart?.(event.agent)
+        } else if (event.phase === 'message') {
+          handlers.onAgentMessage?.(event.message)
+        } else {
+          handlers.onAgentSilent?.()
+        }
       }))
       unlisteners.push(await subscribeBackend<{ requestId: string; interaction: Interaction }>(INTERACTION_EVENT, (event) => {
         if (event.requestId !== requestId) return

@@ -1206,7 +1206,24 @@ pub(crate) fn export_library_document(
         registry, library_id, picker,
     )?;
     let source = reader.read_document(&source_locator)?;
-    let bytes = crate::backend::render_markdown_export(&source.content, format, page)?;
+    // A PDF needs the note in page mode (its `pageMode` property, as saved).
+    crate::backend::page_setup::ensure_export_allowed(
+        format,
+        crate::backend::note_page_mode(&source.content),
+    )?;
+    // GitBook blocks become Markdown the export shows: reusable content
+    // inserted, conditions and expressions evaluated.
+    let mut files = crate::gitbook_blocks::LibraryFiles::new(
+        library_id,
+        TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?,
+        None,
+    );
+    let markdown = crate::backend::gitbook_blocks::expand_for_export(
+        &source.content,
+        source_locator.logical_path.as_str(),
+        &mut files,
+    );
+    let bytes = crate::backend::render_markdown_export(&markdown, format, page)?;
     let writer = TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?;
     for attempt in 1..=crate::backend::MAX_EXPORT_NAME_ATTEMPTS {
         let destination = crate::backend::export_destination_path(

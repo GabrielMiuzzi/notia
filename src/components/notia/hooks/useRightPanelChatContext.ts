@@ -1,16 +1,16 @@
-import { useMemo, useSyncExternalStore } from 'react'
+import { useMemo } from 'react'
 import type { TaskManagerChatContext } from '../../../modules/task-manager/types/taskManagerTypes'
 import type { ChatFileContextMode } from '../../../services/chat/chatAttachmentRuntime'
 import type { OpenFileDocument } from '../../../types/views/fileDocument'
 import type { ChatAgentScope } from '../../../services/chat/chatAgentTypes'
 import type { MarkdownSelectionContext } from '../../../types/views/markdownSelection'
-import { getMultichatPanelContext, subscribeMultichatPanelContext } from '../../../services/multichat/multichatSessionStore'
+import type { ChatComposerContext } from '../views/chat/ChatWorkspaceViewTypes'
 
 const EMPTY_CONTEXT_PATHS: string[] = []
 
 interface UseRightPanelChatContextParams {
   activeDocument: OpenFileDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'multichat' | 'documents' | 'routine'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
@@ -42,7 +42,7 @@ export function resolveRightPanelAgentScope(
   if (activeWorkspaceView === 'task-manager') return 'task-manager'
   if (activeWorkspaceView === 'graph') return 'graph'
   if (activeWorkspaceView === 'finance') return 'finance'
-  if (activeWorkspaceView === 'multichat' || activeWorkspaceView === 'routine' || activeWorkspaceView === 'agenda') return 'library'
+  if (activeWorkspaceView === 'routine' || activeWorkspaceView === 'agenda') return 'library'
   return activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
     ? 'document'
     : null
@@ -77,7 +77,6 @@ export function resolveRightPanelContextScopeKey(
       : `task-manager:${normalizedScopeKey || taskManagerPanelId.trim() || 'default'}`
   }
   if (activeWorkspaceView === 'graph') return 'graph-view:right-panel'
-  if (activeWorkspaceView === 'multichat') return 'multichat:right-panel'
   if (activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown') {
     return `document:${activeDocument.path.replace(/\\/g, '/')}`
   }
@@ -91,76 +90,36 @@ export function shouldSelectMatchingRightPanelChat(
   return Boolean(preferredContextScopeKey || preferredContextPaths.length > 0)
 }
 
-function buildRightPanelChatContextLabel(
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'multichat' | 'documents' | 'routine',
+/** What the side chat shows as its context: the open file or the view. */
+export type RightPanelChatContextChip = ChatComposerContext
+
+function viewChip(label: string): RightPanelChatContextChip {
+  return { label, kind: 'view' }
+}
+
+export function buildRightPanelChatContextChip(
+  activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
   activeDocument: OpenFileDocument | null,
   taskManagerPanelId: string,
   markdownSelection: MarkdownSelectionContext | null,
-): string {
+): RightPanelChatContextChip {
   if (activeWorkspaceView === 'task-manager') {
-    if (taskManagerPanelId === '__finished__') {
-      return 'Contexto activo: Task Manager, panel Completadas'
-    }
-
-    if (taskManagerPanelId === '__cancelled__') {
-      return 'Contexto activo: Task Manager, panel Canceladas'
-    }
-
-    if (taskManagerPanelId === '__pomodoro__') {
-      return 'Contexto activo: Task Manager, panel Pomodoro'
-    }
-
-    if (taskManagerPanelId.trim()) {
-      return `Contexto activo: Task Manager, panel ${taskManagerPanelId}`
-    }
-
-    return 'Contexto activo: vista Task Manager'
+    const panel = taskManagerPanelId === '__finished__' ? 'Completadas'
+      : taskManagerPanelId === '__cancelled__' ? 'Canceladas'
+        : taskManagerPanelId === '__pomodoro__' ? 'Pomodoro'
+          : taskManagerPanelId.trim()
+    return viewChip(panel ? `Task Manager · ${panel}` : 'Task Manager')
   }
-
-  if (activeWorkspaceView === 'coldpass') {
-    return 'Contexto activo: vista ColdPass'
-  }
-
-  if (activeWorkspaceView === 'graph') {
-    return 'Contexto activo: Graph view'
-  }
-
-  if (activeWorkspaceView === 'chat') {
-    return 'Contexto activo: vista principal de chat'
-  }
-
-  if (activeWorkspaceView === 'finance') {
-    return 'Contexto activo: Finanzas'
-  }
-
-  if (activeWorkspaceView === 'routine') {
-    return 'Contexto activo: Rutina'
-  }
-
-  if (activeWorkspaceView === 'agenda') {
-    return 'Contexto activo: Agenda'
-  }
-
-  if (activeWorkspaceView === 'multichat') {
-    return 'Contexto activo: sala Multichat'
-  }
-
-  if (!activeDocument) {
-    return 'Contexto activo: sin pestaña seleccionada'
-  }
-
-  if (activeDocument.viewKind === 'markdown') {
-    const selectionLabel = markdownSelection && markdownSelection.blocks.length > 0
-      ? ` · selección: ${markdownSelection.blocks.length} bloque(s)`
-      : ''
-    return `Contexto activo: archivo Markdown ${activeDocument.name}${selectionLabel}`
-  }
-
-  if (activeDocument.viewKind === 'image') {
-    return `Contexto activo: imagen ${activeDocument.name}`
-  }
-
-  return `Contexto activo: archivo de texto ${activeDocument.name}`
+  if (activeWorkspaceView === 'coldpass') return viewChip('ColdPass')
+  if (activeWorkspaceView === 'graph') return viewChip('Graph View')
+  if (activeWorkspaceView === 'chat') return viewChip('Chat')
+  if (activeWorkspaceView === 'finance') return viewChip('Finanzas')
+  if (activeWorkspaceView === 'routine') return viewChip('Rutina')
+  if (activeWorkspaceView === 'agenda') return viewChip('Agenda')
+  if (!activeDocument) return { label: 'Sin nota en contexto', kind: 'none' }
+  const blocks = activeDocument.viewKind === 'markdown' ? markdownSelection?.blocks.length ?? 0 : 0
+  const selection = blocks === 0 ? '' : blocks === 1 ? ' · 1 bloque' : ` · ${blocks} bloques`
+  return { label: `${activeDocument.name}${selection}`, kind: 'document' }
 }
 
 export function useRightPanelChatContext({
@@ -174,19 +133,12 @@ export function useRightPanelChatContext({
   markdownSelection,
 }: UseRightPanelChatContextParams) {
   const agentScope = resolveRightPanelAgentScope(activeWorkspaceView, activeDocument)
-  const multichatContext = useSyncExternalStore(subscribeMultichatPanelContext, getMultichatPanelContext, getMultichatPanelContext)
-  const rightPanelChatContextLabel = useMemo(
-    () => activeWorkspaceView === 'multichat'
-      ? multichatContext?.label ?? 'Contexto activo: sala Multichat'
-      : buildRightPanelChatContextLabel(activeWorkspaceView, activeDocument, taskManagerActivePanelId, markdownSelection),
-    [activeDocument, activeWorkspaceView, markdownSelection, multichatContext?.label, taskManagerActivePanelId],
+  const rightPanelChatContext = useMemo(
+    () => buildRightPanelChatContextChip(activeWorkspaceView, activeDocument, taskManagerActivePanelId, markdownSelection),
+    [activeDocument, activeWorkspaceView, markdownSelection, taskManagerActivePanelId],
   )
 
   const rightPanelChatContextKey = useMemo(() => {
-    if (activeWorkspaceView === 'multichat') {
-      return `multichat:${multichatContext?.roomId ?? 'empty'}`
-    }
-
     if (activeWorkspaceView === 'task-manager') {
       return `task-manager:${taskManagerChatContext?.scopeKey ?? taskManagerActivePanelId}`
     }
@@ -196,17 +148,13 @@ export function useRightPanelChatContext({
     }
 
     return `${activeWorkspaceView}:default`
-  }, [activeDocument, activeWorkspaceView, multichatContext?.roomId, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
+  }, [activeDocument, activeWorkspaceView, taskManagerActivePanelId, taskManagerChatContext?.scopeKey])
 
   const preferredContextPaths = useMemo(() => {
     return resolveRightPanelAttachedContextPaths(activeWorkspaceView, activeDocument)
   }, [activeDocument, activeWorkspaceView])
 
   const agentCorpusPaths = useMemo(() => {
-    if (activeWorkspaceView === 'multichat') {
-      return EMPTY_CONTEXT_PATHS
-    }
-
     if (activeWorkspaceView === 'task-manager') {
       return taskManagerChatContext?.filePaths ?? EMPTY_CONTEXT_PATHS
     }
@@ -256,11 +204,9 @@ export function useRightPanelChatContext({
     preferredContextPaths,
     preferredContextScopeKey,
     rightPanelChatContextKey,
-    rightPanelChatContextLabel,
+    rightPanelChatContext,
     transientContextMode,
     transientContextPaths,
-    transientContextSummary: activeWorkspaceView !== 'multichat' && graphChatHasExplicitSelection ? graphChatContextSummary : null,
-    /** Multichat room beside the chat; the backend adds its conversation as context. */
-    multichatRoomId: activeWorkspaceView === 'multichat' ? multichatContext?.roomId ?? null : null,
+    transientContextSummary: graphChatHasExplicitSelection ? graphChatContextSummary : null,
   }
 }

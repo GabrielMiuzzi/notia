@@ -422,11 +422,10 @@ function NotiaMenuComponent() {
     preferredContextPaths: rightPanelPreferredContextPaths,
     preferredContextScopeKey: rightPanelPreferredContextScopeKey,
     rightPanelChatContextKey,
-    rightPanelChatContextLabel,
+    rightPanelChatContext,
     transientContextMode: rightPanelTransientContextMode,
     transientContextPaths: rightPanelTransientContextPaths,
     transientContextSummary: rightPanelTransientContextSummary,
-    multichatRoomId: rightPanelMultichatRoomId,
   } = useRightPanelChatContext({
     activeDocument,
     activeWorkspaceView,
@@ -549,12 +548,11 @@ function NotiaMenuComponent() {
           <PerformanceProfiler id="right-panel">
             <NotiaRightPanel
               isMeetingContext={activeWorkspaceView === 'meeting'}
-              isMultichatContext={activeWorkspaceView === 'multichat'}
               agentCorpusPaths={rightPanelAgentCorpusPaths}
               agentScope={rightPanelAgentScope}
               previousChats={previousChatFiles}
               rightPanelChatContextKey={rightPanelChatContextKey}
-              rightPanelChatContextLabel={rightPanelChatContextLabel}
+              rightPanelChatContext={rightPanelChatContext}
               rightPanelPreferredContextPaths={rightPanelPreferredContextPaths}
               rightPanelPreferredContextName={rightPanelPreferredContextName}
               rightPanelPreferredContextMode={rightPanelPreferredContextMode}
@@ -562,7 +560,6 @@ function NotiaMenuComponent() {
               rightPanelTransientContextPaths={rightPanelTransientContextPaths}
               rightPanelTransientContextMode={rightPanelTransientContextMode}
               rightPanelTransientContextSummary={rightPanelTransientContextSummary}
-              rightPanelMultichatRoomId={rightPanelMultichatRoomId}
               rightPanelTransientSelectedPaths={graphChatSelectedPaths}
               onRightPanelTransientSelectedPathsChange={setGraphChatSelectedPaths}
               markdownSelection={markdownSelection}

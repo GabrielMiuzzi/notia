@@ -176,49 +176,5 @@ function ChatHistoryPanelComponent({
   )
 }
 
-function ChatHistoryPanelHeaderCompactComponent({
-  title,
-  description,
-  compactRecentChats,
-  selectedChatFilePath,
-  setSelectedChatFilePath,
-}: {
-  title: string
-  description: string
-  compactRecentChats: Array<{ id: string; title: string; filePath: string }>
-  selectedChatFilePath: string | null
-  setSelectedChatFilePath: (filePath: string | null) => void
-}) {
-  return (
-    <header className="notia-chat-header notia-chat-header--compact">
-      <div className="notia-chat-header-copy notia-chat-header-copy--compact">
-        <span className="notia-chat-title-subtle">{title}</span>
-        <p>{description}</p>
-      </div>
-      {compactRecentChats.length > 0 ? (
-        <div className="notia-chat-compact-recent" aria-label="Chats recientes">
-          {compactRecentChats.map((chat) => (
-            <button
-              key={chat.id}
-              type="button"
-              className={`notia-chat-compact-recent-item ${
-                selectedChatFilePath === chat.filePath ? 'notia-chat-compact-recent-item--active' : ''
-              }`}
-              onClick={() => {
-                setSelectedChatFilePath(chat.filePath)
-              }}
-              title={chat.title}
-            >
-              {chat.title}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </header>
-  )
-}
-
 export const ChatHistoryPanel = memo(ChatHistoryPanelComponent)
-export const ChatHistoryPanelHeaderCompact = memo(ChatHistoryPanelHeaderCompactComponent)
 ChatHistoryPanel.displayName = 'ChatHistoryPanel'
-ChatHistoryPanelHeaderCompact.displayName = 'ChatHistoryPanelHeaderCompact'

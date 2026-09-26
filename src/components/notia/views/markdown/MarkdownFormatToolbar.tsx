@@ -1,10 +1,11 @@
 import { useLayoutEffect, useState, type MouseEvent, type RefObject } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Code, Highlighter, Link2, RemoveFormatting } from 'lucide-react'
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Code, Highlighter, Link2, Plus, RemoveFormatting } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { RICH_TEXT_COLORS, type BlockAlignment, type RichTextColor } from '../../../../engines/markdown/richTextMarkdown'
 import { BLOCK_KINDS, type BlockKind, type ColorMarkName, type ToggleMarkName } from './formatCommands'
 import type { FormatToolbarState } from './formatToolbarPlugin'
 import { HIGHLIGHT_MARK, TEXT_COLOR_MARK, UNDERLINE_MARK } from './richTextMarks'
+import { GITBOOK_INLINE_ITEMS, type GitbookInlineKind } from './gitbook/gitbookMenu'
 
 /** Room between the toolbar and the text it formats. */
 const TOOLBAR_GAP = 10
@@ -43,6 +44,8 @@ export interface MarkdownFormatToolbarActions {
   onAlign: (align: BlockAlignment) => void
   onLink: () => void
   onClear: () => void
+  /** GitBook inline element at the selection (button, icon, variable, image, annotation). */
+  onInsertInline: (kind: GitbookInlineKind) => void
 }
 
 interface MarkdownFormatToolbarProps extends MarkdownFormatToolbarActions {
@@ -51,7 +54,7 @@ interface MarkdownFormatToolbarProps extends MarkdownFormatToolbarActions {
   toolbarRef: RefObject<HTMLDivElement | null>
 }
 
-type OpenMenu = 'kind' | 'color' | null
+type OpenMenu = 'kind' | 'color' | 'insert' | null
 
 /** Buttons keep the editor focused, so the selection they format stays in place. */
 const keepEditorFocus = (event: MouseEvent) => event.preventDefault()
@@ -217,8 +220,40 @@ export function MarkdownFormatToolbar({ state, hostRef, toolbarRef, ...actions }
           >
             <RemoveFormatting size={16} aria-hidden="true" />
           </NotiaButton>
+          <NotiaButton
+            variant="ghost"
+            className="notia-format-toolbar-button"
+            aria-label="Insertar en la línea"
+            title="Insertar en la línea"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'insert'}
+            onMouseDown={keepEditorFocus}
+            onClick={() => toggleMenu('insert')}
+          >
+            <Plus size={16} aria-hidden="true" />
+          </NotiaButton>
         </div>
       </div>
+
+      {openMenu === 'insert' ? (
+        <div className="notia-format-toolbar-menu notia-format-toolbar-kind-menu" role="menu" aria-label="Insertar en la línea">
+          {GITBOOK_INLINE_ITEMS.map((item) => (
+            <NotiaButton
+              key={item.kind}
+              variant="ghost"
+              role="menuitem"
+              className="notia-format-toolbar-menu-item"
+              onMouseDown={keepEditorFocus}
+              onClick={() => {
+                setOpenMenu(null)
+                actions.onInsertInline(item.kind)
+              }}
+            >
+              {item.label}
+            </NotiaButton>
+          ))}
+        </div>
+      ) : null}
 
       {openMenu === 'kind' ? (
         <div className="notia-format-toolbar-menu notia-format-toolbar-kind-menu" role="menu" aria-label="Tipo de bloque">

@@ -5,27 +5,30 @@
 - Editor enriquecido de archivos Markdown, con aviso de conflicto al guardar una nota que el agente modificó.
 - Bloques Markdown, gráficos, imágenes y otros bloques compatibles dentro de celdas de tablas, con selector, selección, eliminación y arrastre entre posiciones o celdas.
 - Propiedades y frontmatter editables en notas Markdown: panel plegable con resumen, valores por tipo (contexto, fechas, casillas, etiquetas y enlaces a notas con buscador y creación de la nota) y alta de propiedades eligiendo su tipo.
+- Bloques de GitBook en notas Markdown con su sintaxis: avisos, pestañas, desplegables, pasos, columnas, novedades, código con título, prompts, contenido condicional, tarjetas, URL embebidas, archivos, enlaces a páginas, contenido reutilizable y dibujos; en la línea, botones, íconos, variables (`vars:` de la nota y `.gitbook/vars.yaml`), imágenes del tamaño del texto y anotaciones que se muestran al pasar el puntero o al tocar. Se exportan a PDF y Word con formato.
 - Barra de formato sobre la selección en notas Markdown: tipo de bloque, negrita, cursiva, subrayado, tachado, código, color de texto, resaltado, alineación, enlaces y quitar formato.
 - Bloques de las notas resaltados con su handle y movibles por arrastre, con línea de destino.
 - Wikilinks y enlaces bidireccionales entre notas.
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
 - Gráficos XGraph interactivos en notas Markdown.
-- Graph View 2D de relaciones entre documentos, con zoom, paneo, foco y colores por contexto.
-- Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con leyenda completa y coloración de nodos en Graph View.
+- Graph View 2D de relaciones entre documentos, con zoom, paneo, colores por contexto, grafo local, filtros por etiqueta, inspector de nota y resumen de la biblioteca, halos por carpeta, fuerzas ajustables y minimapa.
+- Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con chips por etiqueta y coloración de nodos en Graph View.
 - Motor común de IA para chat principal, chats desplegables, Meeting, Telegram y publicación, con actor estable por biblioteca y autorización exacta por contexto.
 - Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
-- Exportación de notas a PDF (solo con el modo página activo) y DOCX con formato y sin las propiedades: fórmulas compuestas como texto en el PDF y como ecuaciones editables en Word, con el tamaño de página, los márgenes y la numeración configurados.
-- Modo página en notas Markdown: hojas de tamaño fijo (A3, A4, A5, B5, Carta u Oficio), orientación, márgenes y numeración, con títulos que pasan a la hoja siguiente junto con lo que introducen.
+- Exportación de notas a PDF (solo de notas en modo página) y DOCX con formato y sin las propiedades: fórmulas compuestas como texto en el PDF y como ecuaciones editables en Word, con el tamaño de página, los márgenes y la numeración configurados.
+- Modo página por nota (propiedad `pageMode`, apagado por defecto) en notas Markdown: hojas de tamaño fijo (A3, A4, A5, B5, Carta u Oficio), orientación, márgenes y numeración, con títulos que pasan a la hoja siguiente junto con lo que introducen.
 - Configuración del lápiz (herramienta, color, grosor, suavizado, presión, rechazo de palma y botón lateral), guardada para la escritura a mano que llegará más adelante.
 - InkMath para reconocer fórmulas manuscritas.
 - Vista Chat IA con historial buscable, eliminación de chats también desde táctil, estado vacío con sugerencias, modelo activo visible, copia de respuestas y panel de contexto con alcance, acciones rápidas e interruptor para crear chats sin memoria del agente.
 - Chat IA con interruptor de búsqueda en toda la librería (RAG) y contexto fijo de archivos o carpetas completas de la librería.
+- Chat lateral con encabezado de agente (lista con descripción), título del chat, historial (búsqueda, grupos por día, agente de cada chat, fijar, renombrar y eliminar), nuevo chat y cierre; compositor con chip del contexto abierto, adjuntar, dictar, modelo y enviar.
 - Chat local con IA mediante Ollama, con prompt default del sistema embebido y visualizador sincronizado, prompts Markdown alternativos seleccionables, continuidad conversacional, análisis/comparaciones y reintento seguro de respuestas nativas vacías transitorias después de rondas de tools.
 - Adjuntos locales múltiples en el chat, conservados en los mensajes del historial y reutilizables en seguimientos, con eliminación individual, bloques separados para texto, colección visual ordenada para imágenes y páginas de PDF y previews acotados de imágenes raster persistidas al abrir chats Markdown.
-- Multichat efímero con dinámicas Markdown, contexto adicional opcional fijo, de uno a seis agentes, selección por ronda de subconjunto y orden aleatorios —o agentes concretos/todos según la dinámica—, turnos secuenciales, streaming separado de thinking/respuesta y contexto auxiliar del panel derecho, sin tools, búsqueda web ni mutaciones.
+- Chat IA con hasta seis agentes de `.agent/promps` y una dinámica de `.agent/dynamics`: los agentes responden en rondas automáticas y entre ellos, con avatar y nombre, guardados en el chat.
+- Chat IA con permisos por chat (uso de herramientas y solo lectura o escritura) y contexto permanente.
 - Memoria persistente y herramientas nativas para el agente de IA.
-- Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca, guardado de datos personales en el mismo turno y organización automática de memory.md en segundo plano; Meeting, Graph View, Multichat, publicación y Telegram de otros usuarios sin memoria global.
+- Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca, guardado de datos personales en el mismo turno y organización automática de memory.md en segundo plano; Meeting, Graph View, publicación y Telegram de otros usuarios sin memoria global.
 - Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas; la grabación sigue al cambiar de módulo.
 - Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
 - Meeting: «Pasar por IA» (resumen, puntos clave, tareas enviables al Task Manager y corrección), preguntas a la reunión con el minuto citado, guardado como nota Markdown y exportación a PDF o Word.

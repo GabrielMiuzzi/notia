@@ -5,8 +5,6 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::catalog::{canonical_tool_catalog, tool_policy, ToolPolicy};
-use crate::protocol::ToolDefinition;
 use crate::chat_history::ChatContextMode;
 
 /// Characters of file content a turn carries in direct mode.
@@ -148,15 +146,6 @@ pub fn prompt_with_context(prompt: String, block: Option<String>) -> String {
     }
 }
 
-/// Tools of a turn without library search: the catalog tools among `names`
-/// except the ones that read or search the library.
-pub fn tools_without_library_rag<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<ToolDefinition> {
-    let names = names.into_iter().collect::<HashSet<_>>();
-    canonical_tool_catalog()
-        .into_iter()
-        .filter(|tool| names.contains(tool.name.as_str()) && tool_policy(&tool.name) != ToolPolicy::LibraryRead)
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -211,9 +200,5 @@ mod tests {
         assert!(context_block(ChatContextMode::Direct, false, &[]).expect("block").contains("no tenés acceso"));
         let index = context_block(ChatContextMode::Index, false, &[ContextFile { path: "a.md".into(), content: None }]).expect("block");
         assert!(index.contains("usá solo los archivos elegidos") && index.contains("- a.md"));
-        let tools = tools_without_library_rag(["search_library_documents", "read_library_documents", "search_web", "create_library_note", "not_a_tool"]);
-        let mut names = tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>();
-        names.sort();
-        assert_eq!(names, paths(&["create_library_note", "search_web"]));
     }
 }

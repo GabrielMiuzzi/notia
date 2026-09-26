@@ -8,7 +8,7 @@ Esta matriz es un artefacto de desarrollo. Describe la frontera vigente entre la
 | --- | --- |
 | Identidad | `libraryId` + `libraryUserId` + `requestId` + `idempotencyKey` |
 | Actor | Resuelto por SQLite nativo; el cliente solo propone el identificador |
-| Canal | `app`, `telegram`, `meeting`, `published` o `multichat` |
+| Canal | `app`, `telegram`, `meeting` o `published` |
 | Scope | `library`, `document`, `task-manager`, `graph` o `finance` |
 | Persistencia | `persistent`, `ephemeral-no-memory` o `published-no-memory` |
 | Mutación | Preview, confirmación, revisión, idempotencia y verificación antes de informar éxito |
@@ -29,7 +29,7 @@ Esta matriz es un artefacto de desarrollo. Describe la frontera vigente entre la
 | Chat IA | agente, catálogo, interacción, protocolo, prompt y guía por scope | Ollama desktop nativo / `AiBridgePlugin` Android | compositores de chat | registro y eventos | hecho |
 | Finanzas | SQLite, reconciliación, `finance_insights` y extracción nativa | comandos financieros y proveedores | dashboard y formularios | registro | hecho |
 | Graph View | índice, referencias y `wiki_links` | inventario SQLite | canvas React | registro | hecho |
-| Multichat | sesión efímera y política de lectura | Ollama | sala React | registro y eventos | hecho |
+| Agentes del Chat IA | reglas de rondas (`chat_agents`), permisos (`ToolAccess`) y contexto permanente | motor del chat, un Run por agente | panel de contexto y hilo | registro y eventos (`ai-chat-agent`) | hecho |
 | ColdPass y Bluetooth | cifrado, sesión y generador | vault Rust y enlace Bluetooth nativo | panel de credenciales | registro; Bluetooth e importación CSV solo locales | hecho |
 | Voz, Meeting y adjuntos | límites, cola, estado de operación y `remote_audio` | ASR, TTS, captura y decodificación | controles y transcripción | registro; sesiones de voz solo locales; dictado remoto por fragmentos | hecho |
 | Telegram | worker por biblioteca, offsets y cola | HTTP/Telegram y multimedia nativos | configuración y feedback | worker Rust sin interfaz | hecho |
@@ -62,7 +62,7 @@ Los nombres seleccionados por el cliente solo actúan como filtro: no pueden cam
 | Superficie | Request | Actor/canal | Scope/snapshot | Persistencia | Eventos | Resultado |
 | --- | --- | --- | --- | --- | --- | --- |
 | Chat de biblioteca/documento | `BackendRequest::Run` con mensajes, selección de tools y snapshot | usuario de biblioteca / app | library o document + snapshot visual | persistent | fase, thinking, tool, interacción, resultado/fallo | respuesta de canal + `ToolResult` |
-| Graph y Multichat | Run read-only o sesión efímera | usuario / app o multichat | graph/library + snapshot acotado | ephemeral-no-memory | progreso y respuesta | respuesta sin mutación |
+| Graph | Run read-only | usuario / app | graph + snapshot acotado | ephemeral-no-memory | progreso y respuesta | respuesta sin mutación |
 | Task Manager | snapshot, preview/apply y receipt | usuario / app o published | task-manager + tablero autorizado | según canal | snapshot, preview, conflicto, receipt | snapshot/receipt verificable |
 | Finanzas | lectura, preview o mutación tipada | usuario / app, Telegram o publicado | finance + contexto confidencial | persistent o ephemeral-no-memory | fase, confirmación, persistencia y fallo | entidades, auditoría o error recuperable |
 | Telegram | request/continuación con identidad externa | usuario vinculado / telegram | scope autorizado de la biblioteca | Owner persistent; resto efímero | progreso editable, aclaración, confirmación y resultado | texto seguro y evidencia |

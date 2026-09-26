@@ -73,7 +73,6 @@ pub(crate) fn backend_export_markdown_document(
                 ))
             }
         };
-        crate::device_preferences::ensure_export_allowed(&app, format)?;
         let source_logical_path = crate::library_session::resolve_logical_path(
             &app,
             &payload.library_id,

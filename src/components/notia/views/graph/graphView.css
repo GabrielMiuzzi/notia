@@ -1,0 +1,794 @@
+/*
+ * Graph View. Colors come from the theme tokens; mixes only soften a token.
+ * Breakpoints are container queries on the view, so it adapts to the side
+ * panels as well as to the window. Controls are 44px under a coarse pointer.
+ */
+
+.notia-gv {
+  --gv-control: 32px;
+  container: notia-gv / inline-size;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-app-bg);
+  color: var(--color-heading-text);
+  font-size: 13px;
+}
+
+@media (pointer: coarse) {
+  .notia-gv {
+    --gv-control: 44px;
+  }
+}
+
+.notia-gv button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.notia-gv button:disabled {
+  cursor: not-allowed;
+}
+
+.notia-gv button:focus-visible,
+.notia-gv input:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.notia-gv-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.notia-gv-muted {
+  color: var(--color-muted-text);
+}
+
+.notia-gv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.notia-gv-card {
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+  box-shadow: 0 12px 32px var(--color-menu-shadow);
+}
+
+.notia-gv-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.notia-gv-icon-button {
+  width: var(--gv-control);
+  height: var(--gv-control);
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted-text);
+}
+
+.notia-gv-icon-button:hover {
+  background: var(--color-row-hover);
+  color: var(--color-heading-text);
+}
+
+.notia-gv-text-button {
+  height: var(--gv-control);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.notia-gv-text-button:hover,
+.notia-gv-text-button[aria-pressed='true'] {
+  background: var(--color-row-hover);
+  color: var(--color-heading-text);
+}
+
+.notia-gv-segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-app-bg);
+}
+
+.notia-gv-segmented button {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.notia-gv-segmented button[aria-pressed='true'] {
+  background: var(--color-border-soft);
+  color: var(--color-heading-text);
+}
+
+.notia-gv-segmented button:disabled {
+  opacity: 0.5;
+}
+
+.notia-gv-segmented--small {
+  padding: 2px;
+  border: 0;
+}
+
+.notia-gv-segmented--small button {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.notia-gv-row {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+}
+
+.notia-gv-row:hover,
+.notia-gv-row.is-selected {
+  background: var(--color-row-hover);
+}
+
+.notia-gv-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-heading-text);
+}
+
+.notia-gv-empty {
+  margin: 0;
+  padding: 10px 8px;
+  font-size: 13px;
+  color: var(--color-muted-text);
+}
+
+/* ---------- Top bar ---------- */
+
+.notia-gv-topbar {
+  min-height: 52px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 16px 8px 20px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-sidebar-bg);
+}
+
+.notia-gv-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.notia-gv-title h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.notia-gv-title-mark {
+  display: flex;
+  color: var(--color-accent-text);
+}
+
+.notia-gv-chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.notia-gv-chips-label {
+  flex-shrink: 0;
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--color-muted-text);
+}
+
+.notia-gv-chip {
+  min-height: 30px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: var(--color-card-bg);
+  font-size: 12.5px;
+}
+
+.notia-gv-chip[aria-pressed='false'] {
+  opacity: 0.5;
+  color: var(--color-muted-text);
+}
+
+.notia-gv-chip-dot {
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border: 1.5px solid;
+  border-radius: 50%;
+}
+
+/* ---------- Stage ---------- */
+
+.notia-gv-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.notia-gv-canvas {
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-app-bg);
+  background-image: radial-gradient(color-mix(in srgb, var(--color-muted-text) 10%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  touch-action: none;
+}
+
+.notia-gv-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--color-muted-text);
+  pointer-events: none;
+}
+
+/* ---------- Search ---------- */
+
+.notia-gv-search {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  z-index: 3;
+  width: min(380px, calc(100% - 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notia-gv-search-field {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+  box-shadow: 0 8px 24px var(--color-menu-shadow);
+  color: var(--color-muted-text);
+}
+
+.notia-gv-search-field:focus-within {
+  border-color: var(--color-focus-ring);
+}
+
+.notia-gv-search-field input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.notia-gv-search-field input::placeholder {
+  color: var(--color-muted-text);
+}
+
+.notia-gv-search-count {
+  flex-shrink: 0;
+  color: var(--color-amber);
+}
+
+.notia-gv-search-results {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+
+.notia-gv-match {
+  background: transparent;
+  color: var(--color-amber);
+  font-weight: 600;
+}
+
+/* ---------- Inspector ---------- */
+
+.notia-gv-inspector {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 3;
+  width: 328px;
+  max-height: calc(100% - 32px - 184px);
+  overflow-y: auto;
+  border-radius: 12px;
+  scrollbar-width: thin;
+}
+
+.notia-gv-inspector-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.notia-gv-inspector-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notia-gv-tag {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: var(--color-app-bg);
+  font-size: 11.5px;
+  color: var(--color-muted-text);
+}
+
+.notia-gv-tag .notia-gv-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.notia-gv-inspector-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 23px;
+  overflow-wrap: anywhere;
+}
+
+.notia-gv-inspector-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.notia-gv-meta-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-muted-text);
+}
+
+.notia-gv-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.notia-gv-button {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-row-hover);
+  font-size: 13px;
+}
+
+.notia-gv-button:hover {
+  border-color: var(--color-muted-text);
+}
+
+.notia-gv-button[aria-pressed='true'],
+.notia-gv-button.is-active {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-gv-button--primary {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-text);
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+
+.notia-gv-button--primary:hover {
+  background: color-mix(in srgb, var(--color-accent-text) 88%, var(--color-heading-text));
+}
+
+.notia-gv-button--wide {
+  width: 100%;
+  background: transparent;
+}
+
+.notia-gv-inspector-section {
+  padding: 12px 8px 10px;
+}
+
+.notia-gv-section-title {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  padding: 0 8px 8px;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-text);
+}
+
+.notia-gv-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.notia-gv-summary .notia-gv-section-title {
+  padding: 0 0 6px;
+}
+
+.notia-gv-summary .notia-gv-row {
+  margin: 0 -8px;
+  width: calc(100% + 16px);
+}
+
+.notia-gv-summary-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.notia-gv-summary p {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.notia-gv-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.notia-gv-stats > div {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-app-bg);
+}
+
+.notia-gv-stats strong {
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.notia-gv-stats span {
+  font-size: 11.5px;
+  color: var(--color-muted-text);
+}
+
+.notia-gv-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notia-gv-bar-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.notia-gv-bar-row > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-gv-bar-row > span:last-child {
+  text-align: right;
+}
+
+.notia-gv-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--color-app-bg);
+}
+
+.notia-gv-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+/* ---------- Dock, forces and minimap ---------- */
+
+.notia-gv-dock {
+  position: absolute;
+  left: 20px;
+  bottom: 16px;
+  z-index: 3;
+  max-width: calc(100% - 40px - 220px);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.notia-gv-zoom {
+  min-width: 52px;
+  height: var(--gv-control);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.notia-gv-zoom:hover {
+  background: var(--color-row-hover);
+}
+
+.notia-gv-divider {
+  width: 1px;
+  height: 22px;
+  flex-shrink: 0;
+  margin: 0 6px;
+  background: var(--color-border-soft);
+}
+
+.notia-gv-dock-label {
+  flex-shrink: 0;
+  margin-right: 2px;
+  font-size: 12px;
+}
+
+.notia-gv-switch {
+  height: var(--gv-control);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.notia-gv-switch:hover {
+  background: var(--color-row-hover);
+}
+
+.notia-gv-switch-track {
+  position: relative;
+  width: 26px;
+  height: 15px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--color-border-soft);
+}
+
+.notia-gv-switch-track > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color-heading-text);
+  transition: left 120ms ease;
+}
+
+.notia-gv-switch[aria-checked='true'] .notia-gv-switch-track {
+  background: var(--color-accent-text);
+}
+
+.notia-gv-switch[aria-checked='true'] .notia-gv-switch-track > span {
+  left: 13px;
+  background: var(--color-on-accent);
+}
+
+.notia-gv-forces {
+  position: absolute;
+  left: 20px;
+  bottom: 70px;
+  z-index: 4;
+  width: min(300px, calc(100% - 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 14px 12px;
+  border-radius: 12px;
+}
+
+.notia-gv-forces-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.notia-gv-forces-head .notia-gv-text-button {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.notia-gv-force {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notia-gv-force > span {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+}
+
+.notia-gv-force input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--color-accent-text);
+}
+
+.notia-gv-forces-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+.notia-gv-minimap {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2;
+  padding: 8px;
+  pointer-events: none;
+}
+
+.notia-gv-minimap canvas {
+  display: block;
+  border-radius: 6px;
+  background: var(--color-app-bg);
+}
+
+/* ---------- Narrow views ---------- */
+
+@container notia-gv (max-width: 1100px) {
+  .notia-gv-chips-label {
+    display: none;
+  }
+
+  .notia-gv-inspector {
+    width: 288px;
+  }
+}
+
+@container notia-gv (max-width: 760px) {
+  .notia-gv-topbar {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 12px;
+  }
+
+  .notia-gv-chips {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .notia-gv-search {
+    top: 12px;
+    left: 12px;
+    width: calc(100% - 24px);
+  }
+
+  /* The note's detail is a sheet above the dock; the summary stays hidden. */
+  .notia-gv-inspector {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 72px;
+    width: auto;
+    max-height: 45%;
+  }
+
+  .notia-gv-inspector--summary,
+  .notia-gv-minimap {
+    display: none;
+  }
+
+  .notia-gv-dock {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: none;
+  }
+
+  .notia-gv-forces {
+    left: 12px;
+    bottom: 68px;
+  }
+}

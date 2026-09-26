@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { StoredChatDocument, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import { loadChatDocument, matchChat, setChatViewContext } from '../../../../services/chat/chatDocumentStorage'
 import { checkAiHealth, resolveActiveModel } from '../../../../services/ai/aiRuntime'
@@ -136,6 +136,12 @@ export interface UseChatStateResult {
   setMatchedPreferredChatFilePath: React.Dispatch<React.SetStateAction<string | null>>
   pendingAutoCreatedChatFilePath: string | null
   setPendingAutoCreatedChatFilePath: React.Dispatch<React.SetStateAction<string | null>>
+  /**
+   * Opens a chat the person chose (history) or a new one (`null`). The side
+   * chat then stops following the chat that fits the open note until what
+   * is open changes.
+   */
+  pickChat: (filePath: string | null) => void
 
   // Composer
   draft: string
@@ -146,12 +152,6 @@ export interface UseChatStateResult {
   // UI panels
   isHistoryPanelOpen: boolean
   setIsHistoryPanelOpen: React.Dispatch<React.SetStateAction<boolean>>
-  isCreateChatModalOpen: boolean
-  setIsCreateChatModalOpen: React.Dispatch<React.SetStateAction<boolean>>
-  createChatErrorMessage: string | null
-  setCreateChatErrorMessage: React.Dispatch<React.SetStateAction<string | null>>
-  isCreateChatSubmitting: boolean
-  setIsCreateChatSubmitting: React.Dispatch<React.SetStateAction<boolean>>
   dialogMessage: string | null
   setDialogMessage: React.Dispatch<React.SetStateAction<string | null>>
   isChatToolsModalOpen: boolean
@@ -266,12 +266,10 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     () => typeof window === 'undefined' || window.matchMedia(CHAT_HISTORY_DOCKED_QUERY).matches,
   )
   const [chatHistoryQuery, setChatHistoryQuery] = useState('')
-  const [isCreateChatModalOpen, setIsCreateChatModalOpen] = useState(false)
-  const [createChatErrorMessage, setCreateChatErrorMessage] = useState<string | null>(null)
-  const [isCreateChatSubmitting, setIsCreateChatSubmitting] = useState(false)
   const [dialogMessage, setDialogMessage] = useState<string | null>(null)
   const [isChatToolsModalOpen, setIsChatToolsModalOpen] = useState(false)
   const [selectedChatFilePath, setSelectedChatFilePath] = useState<string | null>(null)
+  const [isChatPickedByPerson, setIsChatPickedByPerson] = useState(false)
   const [activeChatDocument, setActiveChatDocument] = useState<StoredChatDocument | null>(null)
   const [isChatLoading, setIsChatLoading] = useState(false)
   const [chatTitleOverrides, setChatTitleOverrides] = useState<Record<string, string>>({})
@@ -474,10 +472,15 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     setStreamingAssistantMessage('')
   }, [preferredContextSignature, selectMatchingChatOnly])
 
+  // What is open changed: the side chat follows it again.
+  useEffect(() => {
+    setIsChatPickedByPerson(false)
+  }, [preferredContextSignature])
+
   // Auto-select chat file path based on matching preferred context or first available.
   // The full chat view opens on a new chat instead: it only changes the selection on request.
   useEffect(() => {
-    if (showHistoryPanel) {
+    if (showHistoryPanel || isChatPickedByPerson) {
       return
     }
 
@@ -542,6 +545,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     selectMatchingChatOnly,
     selectedChatFilePath,
     showHistoryPanel,
+    isChatPickedByPerson,
   ])
 
   // Keep the optimistic selection until context matching has hydrated the new chat.
@@ -633,13 +637,22 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     })
   }, [preferredContextMode, preferredContextOption, resolvedPreferredContextPaths])
 
+  // Chat whose conversation is on screen; `undefined` before the first run.
+  const loadedChatFilePathRef = useRef<string | null | undefined>(undefined)
   // Load active chat document when selection changes
   useEffect(() => {
     if (!selectedChatFilePath) {
-      setActiveChatDocument(null)
-      setOptimisticThreadMessages(null)
-      setStreamingThinking('')
-      setStreamingAssistantMessage('')
+      // Only leaving a chat clears the conversation. A chat without a file
+      // (the ephemeral side chat, or a new chat before its first message)
+      // keeps its messages while it is answered: `isSubmitting` changing
+      // runs this effect again without changing the chat.
+      if (loadedChatFilePathRef.current !== null) {
+        setActiveChatDocument(null)
+        setOptimisticThreadMessages(null)
+        setStreamingThinking('')
+        setStreamingAssistantMessage('')
+      }
+      loadedChatFilePathRef.current = null
       setSelectedLibraryFilePaths((current) => (
         areStringArraysEqual(current, resolvedPreferredContextPaths)
           ? current
@@ -655,6 +668,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
       })
       return
     }
+    loadedChatFilePathRef.current = selectedChatFilePath
 
     if (isSubmitting) {
       return
@@ -806,6 +820,15 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     selectedChatFilePath,
   ])
 
+  const pickChat = useCallback((filePath: string | null) => {
+    setIsChatPickedByPerson(true)
+    setSelectedChatFilePath(filePath)
+    if (filePath === null) {
+      setMatchedPreferredChatFilePath(null)
+      setActiveChatDocument(null)
+    }
+  }, [])
+
   return {
     selectedChatFilePath,
     setSelectedChatFilePath,
@@ -819,6 +842,7 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
     setMatchedPreferredChatFilePath,
     pendingAutoCreatedChatFilePath,
     setPendingAutoCreatedChatFilePath,
+    pickChat,
 
     draft,
     setDraft,
@@ -827,12 +851,6 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
 
     isHistoryPanelOpen,
     setIsHistoryPanelOpen,
-    isCreateChatModalOpen,
-    setIsCreateChatModalOpen,
-    createChatErrorMessage,
-    setCreateChatErrorMessage,
-    isCreateChatSubmitting,
-    setIsCreateChatSubmitting,
     dialogMessage,
     setDialogMessage,
     isChatToolsModalOpen,

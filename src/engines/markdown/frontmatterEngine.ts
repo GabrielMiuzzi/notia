@@ -4,6 +4,11 @@ export type FrontmatterValue = FrontmatterScalarValue | FrontmatterScalarValue[]
 export interface FrontmatterEntry {
   key: string
   value: FrontmatterValue
+  /**
+   * Indented lines of a nested map (GitBook's `vars:` or `layout:`), kept as
+   * written so saving the note does not drop them.
+   */
+  nested?: string[]
 }
 
 export interface FrontmatterDocument {
@@ -137,6 +142,18 @@ function parseFrontmatterLines(lines: string[]): FrontmatterEntry[] {
         continue
       }
 
+      const nested: string[] = []
+      let nestedIndex = index + 1
+      while (nestedIndex < lines.length && /^\s+\S/.test(lines[nestedIndex])) {
+        nested.push(lines[nestedIndex])
+        nestedIndex += 1
+      }
+      if (nested.length > 0) {
+        entries.push({ key, value: '', nested })
+        index = nestedIndex
+        continue
+      }
+
       entries.push({ key, value: '' })
       index += 1
       continue
@@ -188,6 +205,10 @@ function serializeScalarValue(value: FrontmatterScalarValue): string {
 }
 
 function serializeEntry(entry: FrontmatterEntry): string[] {
+  if (entry.value === '' && entry.nested && entry.nested.length > 0) {
+    return [`${entry.key}:`, ...entry.nested]
+  }
+
   if (Array.isArray(entry.value)) {
     if (entry.value.length === 0) {
       return [`${entry.key}: []`]

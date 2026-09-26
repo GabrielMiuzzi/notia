@@ -20,6 +20,11 @@ pub struct GraphNodeDto {
     pub context_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_color: Option<String>,
+    /// First folder of the path (Graph View draws a halo around each);
+    /// empty at the library root.
+    pub folder: String,
+    /// Linked notes, most connected first.
+    pub neighbors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -34,6 +39,77 @@ pub struct GraphEdgeDto {
 pub struct GraphModelDto {
     pub nodes: Vec<GraphNodeDto>,
     pub edges: Vec<GraphEdgeDto>,
+    pub summary: GraphSummaryDto,
+}
+
+/// Notes of one context (`tag` `None`: without context).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphContextCountDto {
+    pub tag: Option<String>,
+    pub color: Option<String>,
+    pub count: usize,
+}
+
+/// What Graph View shows of the whole library when no note is selected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphSummaryDto {
+    pub notes: usize,
+    pub links: usize,
+    /// Notes without links.
+    pub orphans: usize,
+    /// Notes per context, most common first; the catalog's contexts without
+    /// notes are left out.
+    pub contexts: Vec<GraphContextCountDto>,
+    /// The most connected notes, by path.
+    pub top_connected: Vec<String>,
+}
+
+const TOP_CONNECTED: usize = 5;
+
+fn top_folder(path: &str) -> String {
+    path.split_once('/').map(|(folder, _)| folder.to_string()).unwrap_or_default()
+}
+
+/// Neighbors of each node, the summary, and nodes ordered by label.
+fn finish_model(mut nodes: Vec<GraphNodeDto>, edges: Vec<GraphEdgeDto>) -> GraphModelDto {
+    let degree = nodes.iter().map(|node| (node.path.clone(), (node.degree, node.label.to_lowercase()))).collect::<HashMap<_, _>>();
+    let mut neighbors = HashMap::<String, Vec<String>>::new();
+    for edge in &edges {
+        neighbors.entry(edge.source_path.clone()).or_default().push(edge.target_path.clone());
+        neighbors.entry(edge.target_path.clone()).or_default().push(edge.source_path.clone());
+    }
+    let by_connections = |left: &String, right: &String| {
+        let (left_degree, left_label) = degree.get(left).cloned().unwrap_or_default();
+        let (right_degree, right_label) = degree.get(right).cloned().unwrap_or_default();
+        right_degree.cmp(&left_degree).then_with(|| left_label.cmp(&right_label))
+    };
+    for node in &mut nodes {
+        let mut linked = neighbors.remove(&node.path).unwrap_or_default();
+        linked.sort_by(by_connections);
+        node.neighbors = linked;
+    }
+    let mut contexts = Vec::<GraphContextCountDto>::new();
+    for node in &nodes {
+        match contexts.iter_mut().find(|entry| entry.tag == node.context_tag) {
+            Some(entry) => entry.count += 1,
+            None => contexts.push(GraphContextCountDto { tag: node.context_tag.clone(), color: node.context_color.clone(), count: 1 }),
+        }
+    }
+    contexts.sort_by(|left, right| right.count.cmp(&left.count).then_with(|| left.tag.is_none().cmp(&right.tag.is_none())));
+    let mut ranked = nodes.iter().filter(|node| node.degree > 0).map(|node| node.path.clone()).collect::<Vec<_>>();
+    ranked.sort_by(by_connections);
+    ranked.truncate(TOP_CONNECTED);
+    let summary = GraphSummaryDto {
+        notes: nodes.len(),
+        links: edges.len(),
+        orphans: nodes.iter().filter(|node| node.degree == 0).count(),
+        contexts,
+        top_connected: ranked,
+    };
+    nodes.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
+    GraphModelDto { nodes, edges, summary }
 }
 
 /// Context catalog entry (`#tag` and color) of the library configuration.
@@ -321,7 +397,7 @@ pub fn build_library_graph(
             }
         }
     }
-    let mut nodes = files
+    let nodes = files
         .iter()
         .map(|path| {
             let name = file_name(path);
@@ -346,11 +422,12 @@ pub fn build_library_graph(
                 degree: degree.get(*path).copied().unwrap_or(0),
                 context_tag: context.as_ref().map(|context| context.tag.clone()),
                 context_color: context.map(|context| context.color),
+                folder: top_folder(path),
+                neighbors: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
-    nodes.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
-    GraphModelDto { nodes, edges }
+    finish_model(nodes, edges)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -358,6 +435,8 @@ pub fn build_library_graph(
 pub struct GraphSearchResultDto {
     pub path: String,
     pub label: String,
+    /// First folder of the note, empty at the library root.
+    pub folder: String,
     pub preview: String,
     pub score: i64,
 }
@@ -432,6 +511,7 @@ pub fn search_library_graph(
             Some(GraphSearchResultDto {
                 path: node.path.clone(),
                 label: node.label.clone(),
+                folder: node.folder.clone(),
                 preview: search_preview(source, &query),
                 score,
             })
@@ -575,6 +655,31 @@ mod tests {
         let results = search_library_graph(&model, &sources, "CAFÉ", 8);
         assert_eq!(results.iter().map(|result| result.path.as_str()).collect::<Vec<_>>(), vec!["cafe.md", "otro.md"]);
         assert!(results[1].preview.contains("café"));
+    }
+
+    #[test]
+    fn nodes_know_their_folder_and_neighbors_and_the_model_its_summary() {
+        let model = build(
+            &["notas/a.md", "notas/b.md", "otra/c.md", "p.md", "sola.md"],
+            &[
+                ("notas/a.md", "[[b]] [[c]] [[p]]"),
+                ("notas/b.md", "[[c]]"),
+                ("p.md", "---
+contexto: \"#laboral\"
+---
+"),
+            ],
+        );
+        let node = |path: &str| model.nodes.iter().find(|node| node.path == path).expect(path);
+        assert_eq!(node("notas/a.md").folder, "notas");
+        assert_eq!(node("p.md").folder, "");
+        // Most connected first: b and c have two links, p one.
+        assert_eq!(node("notas/a.md").neighbors, vec!["notas/b.md", "otra/c.md", "p.md"]);
+        let summary = &model.summary;
+        assert_eq!((summary.notes, summary.links, summary.orphans), (5, 4, 1));
+        assert_eq!(summary.top_connected[0], "notas/a.md");
+        assert_eq!(summary.contexts[0], GraphContextCountDto { tag: None, color: None, count: 4 });
+        assert_eq!(summary.contexts[1].tag.as_deref(), Some("#Laboral"));
     }
 
     #[test]
