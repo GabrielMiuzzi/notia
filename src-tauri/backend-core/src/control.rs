@@ -43,6 +43,17 @@ impl RequestControl {
         Ok(())
     }
 
+    /// A control for a shorter call inside this request: it shares the
+    /// cancellation and ends at `timeout` or at the request's deadline,
+    /// whichever comes first.
+    pub fn with_timeout(&self, timeout: Duration) -> Self {
+        let deadline = Instant::now() + timeout;
+        Self {
+            cancelled: Arc::clone(&self.cancelled),
+            deadline: Some(self.deadline.map_or(deadline, |current| current.min(deadline))),
+        }
+    }
+
     pub fn remaining(&self) -> Option<Duration> {
         self.deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))

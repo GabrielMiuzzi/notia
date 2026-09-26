@@ -3,7 +3,13 @@ import { loadChatDocument, type StoredChatDocument, type StoredChatMessage } fro
 import { DEFAULT_CHAT_SETTINGS } from '../../../../services/chat/chatAgentsRuntime'
 import { createChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { checkAiHealth } from '../../../../services/ai/aiRuntime'
-import { startChatTurn, subscribeChatTitles, type ChatTurnHandle } from '../../../../services/chat/aiChatRuntime'
+import {
+  interjectChatTurn,
+  startChatTurn,
+  subscribeChatTitles,
+  type ChatInterruptDecision,
+  type ChatTurnHandle,
+} from '../../../../services/chat/aiChatRuntime'
 import { startPerformanceMeasurement } from '../../../../services/runtime/performanceBaseline'
 import { readLibraryDocument } from '../../../../services/libraries/libraryDocumentRuntime'
 import { buildAutoCreateChatPayload, normalizeChatTitle } from './useChatState'
@@ -17,14 +23,16 @@ import { describeAiFeedbackError } from '../../../../services/ai/aiFeedbackRunti
  * Sends the composer's message as a chat turn. The backend picks the
  * messages the agent sees, runs it, saves the turn and names new chats; this
  * hook shows the turn optimistically, streams the answer and restores the
- * composer when the turn fails.
+ * composer when the turn fails. A message sent while the turn runs goes to
+ * the backend, which decides whether it stops the turn or waits for the next.
  */
 export function useChatSubmitMessage(
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
 ): {
-  submitMessage: (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string) => Promise<void>
+  submitMessage: (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string, fromQueue?: boolean) => Promise<void>
   cancelActiveReply: () => void
+  interjectMessage: (rawMessage: string) => Promise<ChatInterruptDecision>
 } {
   const {
     agentCorpusPaths,
@@ -129,7 +137,16 @@ export function useChatSubmitMessage(
     activeReplyRef.current = null
   }
 
-  const submitMessage = async (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string) => {
+  /** A message sent while a turn runs; without a running turn it simply waits for the next one. */
+  function interjectMessage(rawMessage: string): Promise<ChatInterruptDecision> {
+    const message = rawMessage.trim()
+    const turn = activeReplyRef.current
+    if (!message || !turn) return Promise.resolve('queue')
+    return interjectChatTurn(turn.requestId, message)
+  }
+
+  /** `fromQueue`: a message the person typed during an earlier turn; the composer keeps what they write now. */
+  const submitMessage = async (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string, fromQueue = false) => {
     const trimmedMessage = rawMessage.trim()
     if (!trimmedMessage || isSubmitting || !library) {
       return
@@ -208,7 +225,7 @@ export function useChatSubmitMessage(
     let turnMessages = optimisticMessages
     let agentMessageCount = 0
 
-    setDraft('')
+    if (!fromQueue) setDraft('')
     setIsSubmitting(true)
     setOptimisticThreadMessages(optimisticMessages)
     setIsAttachmentMenuOpen(false)
@@ -330,7 +347,9 @@ export function useChatSubmitMessage(
         if (!mountedRef.current) return
         setActiveChatDocument(savedDocument)
       } else {
-        setDraft(previousDraft)
+        // A queued message that failed goes back to an empty composer.
+        if (fromQueue) setDraft((current) => (current.trim() ? current : trimmedMessage))
+        else setDraft(previousDraft)
         setActiveChatDocument(previousChatDocument)
       }
       setSelectedImageAttachments(previousImageAttachments)
@@ -351,5 +370,5 @@ export function useChatSubmitMessage(
     }
   }
 
-  return { submitMessage, cancelActiveReply }
+  return { submitMessage, cancelActiveReply, interjectMessage }
 }

@@ -845,6 +845,11 @@ fn compose_request_system_prompt(
         system.push_str("\n\n");
         system.push_str(&guidance);
     }
+    let tool_names = visible_tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>();
+    if let Some(mail) = crate::mail_tools::guidance(app, &request.context.library_id, &tool_names) {
+        system.push_str("\n\n");
+        system.push_str(&mail);
+    }
     system.push_str(&format!(
         "\n\nContexto backend: scope {:?}, canal {:?}, política {:?}. No afirmes mutaciones sin receipt.",
         request.context.scope,
@@ -1077,6 +1082,16 @@ impl TauriBackendToolExecutor {
             "reorder_routine_tasks",
             "set_routine_completions",
             "set_routine_goal",
+            "list_gmail_messages",
+            "read_gmail_message",
+            "list_gmail_labels",
+            "trash_gmail_messages",
+            "move_gmail_messages",
+            "mark_gmail_spam",
+            "mark_gmail_read",
+            "send_gmail_message",
+            "list_calendar_events",
+            "create_calendar_event",
         ]
     }
 
@@ -2277,6 +2292,29 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 allowed_actions: vec![
                     MutationPreviewAction::ApplyAll,
                     MutationPreviewAction::ApplySelected,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
+        if notia_backend_core::mail_tools::is_mail_write_tool(&call.name) {
+            // Reading the messages it touches lets the person check them; an
+            // unknown id or label goes back to the model.
+            let (summary, detail) = crate::mail_tools::preview(&self.app, context, call)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary,
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("gmail:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: detail,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
                     MutationPreviewAction::Reject,
                     MutationPreviewAction::Cancel,
                 ],
@@ -3698,6 +3736,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 &call.arguments,
             )
             .map_err(Self::routine_error)?,
+            name if notia_backend_core::mail_tools::is_mail_tool(name) => crate::mail_tools::execute(&self.app, context, call)?,
             _ => {
                 return Err(BackendError::new(
                     BackendErrorCode::Unsupported,
@@ -3718,7 +3757,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -3882,12 +3921,21 @@ pub(crate) fn execute_backend_request(
         &request.context.library_id,
         &request.context.actor.library_user_id,
     )?;
+    // A new turn with no tools of its own is routed by area; a resumed one
+    // keeps the tools stored with it.
+    let fresh_run = resume_decision.is_none() && request.tools.is_empty();
     let requested_tool_names = request
         .tools
         .iter()
         .map(|tool| tool.name.clone())
         .collect::<Vec<_>>();
-    let available_tool_names = TauriBackendToolExecutor::supported_tool_names();
+    // The mail tools are offered only when the library has a connected account.
+    let mail_connected = crate::mail_tools::has_connected_account(app, &request.context.library_id);
+    let available_tool_names = TauriBackendToolExecutor::supported_tool_names()
+        .iter()
+        .copied()
+        .filter(|name| mail_connected || !notia_backend_core::mail_tools::is_mail_tool(name))
+        .collect::<Vec<_>>();
     let requested_tool_names = if requested_tool_names.is_empty() {
         available_tool_names
             .iter()
@@ -3913,8 +3961,15 @@ pub(crate) fn execute_backend_request(
         request.tool_access,
         request.library_search,
     );
+    if fresh_run && request.context.scope == BackendScope::Library {
+        let tools = std::mem::take(&mut request.tools);
+        request.tools = route_turn_tools(app, state, &request, tools);
+    }
     state.journal.store_request(&request)?;
     let provider_settings = provider_settings_for_library(app, state, &request.context.library_id)?;
+    // The same model checks the replies that only announce a step, so the
+    // agent keeps working instead of stopping on them.
+    let continuation_judge = notia_backend_core::continuation::ContinuationJudge(Arc::new(quick_provider(app, &provider_settings)?));
     let provider = OllamaAgentProvider::with_transport(
         OllamaProviderConfig::new(
             crate::services::ai_service::AiHttpSettings {
@@ -3927,6 +3982,7 @@ pub(crate) fn execute_backend_request(
         platform_ollama_transport(app),
     );
     let mut options = AgentRuntimeOptions::default();
+    options.continuation_judge = Some(continuation_judge);
     options.projection = if matches!(request.context.persistence_policy, PersistencePolicy::PublishedNoMemory)
     {
         ToolCatalogProjection::PublishedTaskManager
@@ -4051,19 +4107,136 @@ fn provider_settings_for_library(
         })
 }
 
+/// Longest wait for the routing call; a slower model leaves the choice to
+/// words. It covers loading a local model, which the turn then reuses.
+const ROUTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Tools of a library-chat turn: the model reads the recent conversation and
+/// picks the areas it needs among those the actor may use (the tools come
+/// already projected for the actor's contexts); words decide when it does
+/// not answer. See `backend_core::tool_routing`.
+fn route_turn_tools(
+    app: &AppHandle,
+    state: &BackendRuntimeState,
+    request: &AgentRequest,
+    tools: Vec<notia_backend_core::ToolDefinition>,
+) -> Vec<notia_backend_core::ToolDefinition> {
+    use notia_backend_core::tool_routing::{
+        fallback_areas, needs_routing, offered_areas, parse_router_answer, router_prompt, tools_for_areas, RouterMessage,
+    };
+    use notia_backend_core::MessageRole;
+    if !needs_routing(&tools) {
+        return tools;
+    }
+    let offered = offered_areas(&tools);
+    let conversation = request
+        .messages
+        .iter()
+        .filter(|message| matches!(message.role, MessageRole::User | MessageRole::Assistant))
+        .map(|message| RouterMessage { from_user: message.role == MessageRole::User, content: &message.content })
+        .collect::<Vec<_>>();
+    let last_request = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .map(|message| message.content.as_str())
+        .unwrap_or_default();
+    let (system, user) = router_prompt(&offered, &conversation);
+    let picked = provider_settings_for_library(app, state, &request.context.library_id)
+        .and_then(|settings| complete_with(app, settings, request.context.clone(), &system, &user, ROUTING_TIMEOUT))
+        .ok()
+        .and_then(|answer| parse_router_answer(&answer, &offered));
+    let (areas, source) = match picked {
+        Some(areas) => (areas, "modelo"),
+        None => (fallback_areas(last_request, &offered), "palabras"),
+    };
+    log::info!(
+        "[notia:router] áreas {:?} elegidas por {source}",
+        areas.iter().map(|area| area.id()).collect::<Vec<_>>()
+    );
+    tools_for_areas(tools, &areas, BackendLimits::default().max_tools)
+}
+
 /// One completion without tools for a background task of the library
 /// (titles, memories), with the library's saved AI settings.
 pub(crate) fn complete_text(app: &AppHandle, library_id: &str, system: &str, user: &str) -> Result<String, BackendError> {
     let config = crate::library_config::read_library_config(app, library_id)?.unwrap_or(Value::Null);
     let settings = provider_settings_from_config(&config)?;
-    let provider = OllamaAgentProvider::with_transport(
+    let context = BackendRequestContext {
+        request_id: uuid::Uuid::new_v4().simple().to_string(),
+        library_id: library_id.to_string(),
+        actor: notia_backend_core::BackendActor { library_user_id: "user-owner".to_string(), external_identity: None },
+        channel: notia_backend_core::BackendChannel::App,
+        scope: BackendScope::Library,
+        persistence_policy: PersistencePolicy::EphemeralNoMemory,
+    };
+    complete_with(app, settings, context, system, user, std::time::Duration::from_secs(180))
+}
+
+/// Decides what to do with a message sent while a request of the same chat
+/// runs: stop it, stop it and run the message next, or queue the message.
+/// A short call to the library's model decides, in parallel with the run;
+/// an explicit command needs no model and words decide when it does not
+/// answer in time (see `backend_core::turn_interrupts`).
+pub(crate) fn classify_interrupt(
+    app: &AppHandle,
+    context: &BackendRequestContext,
+    running: &str,
+    message: &str,
+) -> notia_backend_core::turn_interrupts::InterruptDecision {
+    use notia_backend_core::turn_interrupts::{
+        fallback_decision, interrupt_prompt, is_cancel_command, parse_interrupt_answer, InterruptDecision,
+        INTERRUPT_TIMEOUT,
+    };
+    if is_cancel_command(message) {
+        return InterruptDecision::Cancel;
+    }
+    let state = app.state::<BackendRuntimeState>();
+    let (system, user) = interrupt_prompt(running, message);
+    let context = BackendRequestContext {
+        request_id: uuid::Uuid::new_v4().simple().to_string(),
+        persistence_policy: PersistencePolicy::EphemeralNoMemory,
+        ..context.clone()
+    };
+    let decided = provider_settings_for_library(app, state.inner(), &context.library_id)
+        .and_then(|settings| complete_with(app, settings, context, &system, &user, INTERRUPT_TIMEOUT))
+        .ok()
+        .and_then(|answer| parse_interrupt_answer(&answer));
+    let (decision, source) = match decided {
+        Some(decision) => (decision, "modelo"),
+        None => (fallback_decision(message), "palabras"),
+    };
+    log::info!("[notia:interrupt] {decision:?} decidido por {source}");
+    decision
+}
+
+/// Provider for short calls without tools or thinking: titles, memories and
+/// the checks that run beside the agent.
+fn quick_provider(app: &AppHandle, settings: &BackendProviderSettings) -> Result<OllamaAgentProvider, BackendError> {
+    Ok(OllamaAgentProvider::with_transport(
         OllamaProviderConfig::new(
-            crate::services::ai_service::AiHttpSettings { ollama_url: settings.ollama_url, api_key: settings.api_key },
-            settings.model,
+            crate::services::ai_service::AiHttpSettings {
+                ollama_url: settings.ollama_url.clone(),
+                api_key: settings.api_key.clone(),
+            },
+            settings.model.clone(),
             Value::Bool(false),
         )?,
         platform_ollama_transport(app),
-    );
+    ))
+}
+
+/// One completion without tools, without thinking, within `timeout`.
+fn complete_with(
+    app: &AppHandle,
+    settings: BackendProviderSettings,
+    context: BackendRequestContext,
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
+) -> Result<String, BackendError> {
+    let provider = quick_provider(app, &settings)?;
     let message = |role, content: &str| notia_backend_core::ProviderMessage {
         role,
         content: content.to_string(),
@@ -4072,21 +4245,14 @@ pub(crate) fn complete_text(app: &AppHandle, library_id: &str, system: &str, use
         tool_name: None,
     };
     let request = notia_backend_core::ProviderRequest {
-        context: BackendRequestContext {
-            request_id: uuid::Uuid::new_v4().simple().to_string(),
-            library_id: library_id.to_string(),
-            actor: notia_backend_core::BackendActor { library_user_id: "user-owner".to_string(), external_identity: None },
-            channel: notia_backend_core::BackendChannel::App,
-            scope: BackendScope::Library,
-            persistence_policy: PersistencePolicy::EphemeralNoMemory,
-        },
+        context,
         messages: vec![
             message(notia_backend_core::ProviderMessageRole::System, system),
             message(notia_backend_core::ProviderMessageRole::User, user),
         ],
         tools: Vec::new(),
     };
-    let control = RequestControl::new(Some(std::time::Duration::from_secs(180)));
+    let control = RequestControl::new(Some(timeout));
     use notia_backend_core::AgentProvider as _;
     Ok(provider.chat(&request, &control)?.message.content)
 }
@@ -4184,6 +4350,61 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    /// Every turn sends the supported tools the scope allows (the library
+    /// chat, routed by area); a scope that outgrows the limit fails every run
+    /// with «El request supera el límite de tools» (Finanzas did, with 77,
+    /// while the limit was 64).
+    #[test]
+    fn every_scope_fits_the_tool_limit_for_the_owner() {
+        use notia_backend_core::{
+            AuthorizationPrincipal, BackendActor, BackendChannel, BackendLimits, BackendRequestContext, BackendScope,
+            PersistencePolicy, ToolAccess, ToolCatalogProjection,
+        };
+        let names = TauriBackendToolExecutor::supported_tool_names().iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let principal = AuthorizationPrincipal {
+            library_id: "library-1".into(),
+            library_user_id: "user-owner".into(),
+            allowed_contexts: Vec::new(),
+            all_contexts: true,
+        };
+        for scope in [BackendScope::Library, BackendScope::Finance, BackendScope::Document, BackendScope::TaskManager, BackendScope::Graph] {
+            let context = BackendRequestContext {
+                request_id: "request-1".into(),
+                library_id: "library-1".into(),
+                actor: BackendActor { library_user_id: "user-owner".into(), external_identity: None },
+                channel: BackendChannel::App,
+                scope: scope.clone(),
+                persistence_policy: PersistencePolicy::Persistent,
+            };
+            let tools = notia_backend_core::restrict_tool_access(
+                notia_backend_core::project_canonical_tool_catalog(&context, &principal, &names, ToolCatalogProjection::Full).expect("catalog"),
+                ToolAccess::All,
+                true,
+            );
+            let max = BackendLimits::default().max_tools;
+            if scope == BackendScope::Library {
+                // Routed: every area it offers fits in a turn.
+                use notia_backend_core::tool_routing::{needs_routing, offered_areas, tool_area, tools_for_areas};
+                assert!(needs_routing(&tools));
+                for area in offered_areas(&tools) {
+                    let turn = tools_for_areas(tools.clone(), &[area], max);
+                    assert!(turn.len() <= max && turn.iter().any(|tool| tool_area(&tool.name) == Some(area)), "{area:?}");
+                }
+            } else {
+                assert!(tools.len() <= max, "{scope:?}: {} tools", tools.len());
+            }
+        }
+    }
+
+    /// A mail tool in the catalog without an adapter would reach the model
+    /// and fail on every call.
+    #[test]
+    fn every_mail_tool_of_the_catalog_has_an_adapter() {
+        for tool in notia_backend_core::mail_tools::mail_tool_contracts() {
+            assert!(TauriBackendToolExecutor::supported_tool_names().contains(&tool.name.as_str()), "{}", tool.name);
+        }
+    }
 
     /// A supported tool missing from the canonical catalog makes every run
     /// fail during projection; one without an argument schema is unusable

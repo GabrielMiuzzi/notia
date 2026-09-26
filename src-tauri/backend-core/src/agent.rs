@@ -240,6 +240,9 @@ pub struct AgentRuntimeOptions {
     pub max_pending_action_corrections: u32,
     pub stream_final_response: bool,
     pub projection: ToolCatalogProjection,
+    /// Model that decides whether a reply without tools only announces a
+    /// step; without it, fixed phrases decide (`contains_pending_action`).
+    pub continuation_judge: Option<super::continuation::ContinuationJudge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +263,7 @@ impl Default for AgentRuntimeOptions {
             max_pending_action_corrections: 2,
             stream_final_response: true,
             projection: ToolCatalogProjection::Full,
+            continuation_judge: None,
         }
     }
 }
@@ -461,6 +465,7 @@ fn run_agent_inner(
     let mut pending_action_corrections = 0;
     let mut finance_corrections = 0;
     let mut had_tool_result = false;
+    let mut streamed_in_turn = false;
     let mut event_count = 0usize;
 
     if let (Some(continuation), Some(decision)) = (continuation, resume_decision) {
@@ -608,11 +613,13 @@ fn run_agent_inner(
             control,
             options.max_provider_retries,
             should_stream,
+            streamed_in_turn,
             events,
             &mut streamed_content,
         )?;
-        // The streamed round has no tools: a model that answers it empty may
-        // still need one, so the round is asked again with its tools.
+        // A streamed answer that was only markup (a call written as text
+        // that could not be recovered) comes back empty; the round is asked
+        // again without streaming.
         if should_stream
             && provider_response.message.content.trim().is_empty()
             && provider_response.message.tool_calls.is_empty()
@@ -623,10 +630,12 @@ fn run_agent_inner(
                 control,
                 options.max_provider_retries,
                 false,
+                false,
                 events,
                 &mut streamed_content,
             )?;
         }
+        streamed_in_turn |= streamed_content;
         let provider_message = provider_response.message;
         let content = provider_message.content.trim().to_string();
         let calls = provider_message
@@ -667,13 +676,27 @@ fn run_agent_inner(
                     ),
                 );
             }
-            if !tools.is_empty() && contains_pending_action(&content) {
-                if pending_action_corrections < options.max_pending_action_corrections
-                    && rounds < options.max_rounds
-                {
+            let can_continue = pending_action_corrections < options.max_pending_action_corrections
+                && rounds < options.max_rounds;
+            if !tools.is_empty()
+                && announces_pending_step(request, options, control, &content, tool_results.len(), can_continue)
+            {
+                control.check()?;
+                if can_continue {
                     pending_action_corrections += 1;
+                    // The agent keeps working, as a command-line agent does:
+                    // the announcement is its status and the loop goes on.
+                    emit(
+                        events,
+                        options,
+                        &mut event_count,
+                        BackendEvent::AssistantNote {
+                            request_id: request.context.request_id.clone(),
+                            text: content.clone(),
+                        },
+                    )?;
                     messages.push(system_correction(
-                        "La respuesta anuncia una acción pendiente pero no solicitó una herramienta. Ejecuta ahora la acción mediante las herramientas disponibles, respetando autorización y confirmaciones, o explica el resultado real sin prometerla.",
+                        "Tu respuesta anunció un paso pero no solicitó ninguna herramienta. Seguí trabajando ahora: llamá las herramientas que necesites para completar el pedido, respetando autorización y confirmaciones. Cuando termines, respondé con el resultado real; no repitas el anuncio.",
                     ));
                     continue;
                 }
@@ -744,6 +767,17 @@ fn run_agent_inner(
             return Ok(response);
         }
 
+        if !content.is_empty() {
+            emit(
+                events,
+                options,
+                &mut event_count,
+                BackendEvent::AssistantNote {
+                    request_id: request.context.request_id.clone(),
+                    text: content.clone(),
+                },
+            )?;
+        }
         empty_responses = 0;
         pending_action_corrections = 0;
         let mut repeated_call = false;
@@ -1071,12 +1105,16 @@ fn validate_runtime_request(
     Ok(())
 }
 
+/// `separate` starts the streamed text on a new paragraph, after the text an
+/// earlier round of the turn already streamed.
+#[allow(clippy::too_many_arguments)]
 fn call_provider_with_retry(
     provider: &dyn AgentProvider,
     request: &ProviderRequest,
     control: &RequestControl,
     max_retries: u32,
     stream: bool,
+    separate: bool,
     events: &dyn BackendEventSink,
     streamed_content: &mut bool,
 ) -> Result<ProviderResponse, BackendError> {
@@ -1093,6 +1131,12 @@ fn call_provider_with_retry(
                     summary,
                 }),
                 ProviderStreamDelta::Content(delta) => {
+                    if separate && !*streamed_content {
+                        events.publish(BackendEvent::AssistantDelta {
+                            request_id: request.context.request_id.clone(),
+                            delta: "\n\n".to_string(),
+                        })?;
+                    }
                     *streamed_content = true;
                     events.publish(BackendEvent::AssistantDelta {
                         request_id: request.context.request_id.clone(),
@@ -1167,6 +1211,30 @@ fn finance_turn_facts(
             .filter_map(|result| names.get(result.call_id.as_str()).map(|name| name.to_string()))
             .collect(),
     }
+}
+
+/// Whether a reply without tools only announces a step. The judge model
+/// decides while the agent may still continue; the fixed phrases decide
+/// without a judge, when it does not answer, and once the corrections ran out.
+fn announces_pending_step(
+    request: &AgentRequest,
+    options: &AgentRuntimeOptions,
+    control: &RequestControl,
+    content: &str,
+    tools_run: usize,
+    can_continue: bool,
+) -> bool {
+    let judged = options.continuation_judge.as_ref().filter(|_| can_continue).and_then(|judge| {
+        let last_request = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        judge.announces_pending_step(&request.context, control, last_request, content, tools_run)
+    });
+    judged.unwrap_or_else(|| contains_pending_action(content))
 }
 
 fn system_correction(content: &str) -> ProviderMessage {
@@ -1542,6 +1610,7 @@ mod tests {
             &RequestControl::new(None),
             0,
             true,
+            false,
             &events,
             &mut streamed,
         )
@@ -1709,6 +1778,146 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, BackendEvent::AssistantDelta { .. })));
+    }
+
+    /// The judge model reads each reply without tools.
+    struct Judge {
+        checked: Mutex<Vec<String>>,
+    }
+
+    impl AgentProvider for Judge {
+        fn chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            let user = request.messages.last().map(|message| message.content.clone()).unwrap_or_default();
+            let announces = user.contains("Voy a ver");
+            self.checked.lock().expect("checked").push(user);
+            Ok(ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content: format!("{{\"continuar\": {announces}}}"),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_name: None,
+                },
+            })
+        }
+        fn stream_chat(
+            &self,
+            _: &ProviderRequest,
+            _: &RequestControl,
+            _: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
+        ) -> Result<ProviderResponse, BackendError> {
+            unreachable!()
+        }
+        fn tool_chat(&self, _: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn an_announced_step_keeps_the_agent_working_until_it_answers() {
+        let reply = |content: &str, calls: Vec<ProviderToolCall>| ProviderResponse {
+            message: ProviderMessage {
+                role: ProviderMessageRole::Assistant,
+                content: content.into(),
+                images: Vec::new(),
+                tool_calls: calls,
+                tool_name: None,
+            },
+        };
+        let call = |id: &str, page: u32| ProviderToolCall {
+            id: id.into(),
+            name: "read_library_documents".into(),
+            arguments: serde_json::json!({"documentId": "one", "page": page}),
+        };
+        let provider = Provider {
+            responses: Mutex::new(vec![
+                reply("", vec![call("call-1", 1)]),
+                // Without a tool, this used to be the final answer.
+                reply("Voy a ver el volumen total antes de borrar.", Vec::new()),
+                reply("", vec![call("call-2", 2)]),
+                reply("Borré 12 correos.", Vec::new()),
+            ]),
+            calls: Mutex::new(0),
+        };
+        let executor = Executor {
+            executions: Mutex::new(0),
+            result: ToolResult {
+                call_id: String::new(),
+                ok: true,
+                changed: false,
+                data: Some(serde_json::json!({"ok": true})),
+                error: None,
+                preview: None,
+            },
+        };
+        let judge = std::sync::Arc::new(Judge { checked: Mutex::new(Vec::new()) });
+        let options = AgentRuntimeOptions {
+            continuation_judge: Some(crate::continuation::ContinuationJudge(judge.clone())),
+            ..AgentRuntimeOptions::default()
+        };
+        let events = VecEventSink::default();
+        let response = run_agent(
+            &provider,
+            &executor,
+            &NoopAgentState,
+            &events,
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &options,
+        )
+        .expect("agent completes");
+        assert_eq!(response.response.markdown, "Borré 12 correos.");
+        assert_eq!(*executor.executions.lock().expect("executions"), 2);
+        let checked = judge.checked.lock().expect("checked");
+        assert_eq!(checked.len(), 2);
+        assert!(checked[0].contains("Pedido de la persona:\nhola"));
+        assert!(checked[0].contains("Herramientas usadas en este turno: 1"));
+        let events = events.events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BackendEvent::AssistantNote { text, .. } if text == "Voy a ver el volumen total antes de borrar."
+        )));
+        let streamed = events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::AssistantDelta { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(streamed, "Voy a ver el volumen total antes de borrar.\n\nBorré 12 correos.");
+    }
+
+    #[test]
+    fn without_a_judge_only_the_fixed_phrases_continue() {
+        let provider = Provider {
+            responses: Mutex::new(vec![ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content: "Voy a ver el volumen total antes de borrar.".into(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_name: None,
+                },
+            }]),
+            calls: Mutex::new(0),
+        };
+        let executor = Executor {
+            executions: Mutex::new(0),
+            result: ToolResult { call_id: String::new(), ok: true, changed: false, data: None, error: None, preview: None },
+        };
+        let response = run_agent(
+            &provider,
+            &executor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+        )
+        .expect("agent completes");
+        assert_eq!(response.response.markdown, "Voy a ver el volumen total antes de borrar.");
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::backend::library_config::{
     default_library_config, normalize_library_config, parse_library_config,
     serialize_library_config, LIBRARY_CONFIG_DIRECTORY, LIBRARY_CONFIG_LOGICAL_PATH,
 };
+use crate::backend::mail_accounts::{without_google_secrets, GOOGLE_CLOUD_KEY, MAIL_ACCOUNTS_KEY};
 use crate::backend::{BackendError, BackendErrorCode, DocumentLocatorDto};
 use crate::filesystem::adapter::TauriFilesystemDocumentAdapter;
 use crate::library_registry::{LibraryBinding, LibraryBindingRegistry, LibraryBindingRoot};
@@ -34,11 +35,13 @@ pub(crate) struct LibraryConfigResult {
 }
 
 impl LibraryConfigResult {
+    /// The Google Cloud client and the mail accounts' tokens stay in the
+    /// backend: clients get the configuration without them.
     fn from_result(result: Result<Option<Value>, BackendError>) -> Self {
         match result {
             Ok(config) => Self {
                 ok: true,
-                config,
+                config: config.map(without_google_secrets),
                 error: None,
             },
             Err(error) => Self {
@@ -144,6 +147,24 @@ pub(crate) fn read_library_config(app: &crate::host::AppHandle, library_id: &str
     LibraryConfigStore::open(registry.inner(), library_id, picker.inner())?.read()
 }
 
+/// Changes the stored configuration from the backend (for example the mail
+/// accounts, which clients cannot write) and returns what was persisted.
+pub(crate) fn update_library_config(
+    app: &crate::host::AppHandle,
+    library_id: &str,
+    change: impl FnOnce(Value) -> Value,
+) -> Result<Value, BackendError> {
+    use crate::host::Manager;
+    let registry = app.state::<LibraryBindingRegistry>();
+    let picker = app.state::<AndroidDirectoryPickerState>();
+    let store = LibraryConfigStore::open(registry.inner(), library_id, picker.inner())?;
+    let exists = store.exists()?;
+    let stored = if exists { store.read()? } else { None };
+    let normalized = normalize_library_config(&change(stored.unwrap_or_else(default_library_config))).config;
+    store.persist(&normalized, exists)?;
+    Ok(normalized)
+}
+
 fn unavailable() -> BackendError {
     BackendError::new(
         BackendErrorCode::Forbidden,
@@ -187,7 +208,9 @@ pub(crate) fn backend_write_library_config(
         let stored = if exists { store.read().ok().flatten() } else { None };
         let mut merged = stored.unwrap_or_else(|| Value::Object(Default::default()));
         if let (Some(target), Some(updates)) = (merged.as_object_mut(), config.as_object()) {
-            for (key, value) in updates {
+            // The Google Cloud client and the mail accounts are written only
+            // by the backend's own commands.
+            for (key, value) in updates.iter().filter(|(key, _)| key.as_str() != MAIL_ACCOUNTS_KEY && key.as_str() != GOOGLE_CLOUD_KEY) {
                 target.insert(key.clone(), value.clone());
             }
         }

@@ -5,8 +5,11 @@
 //! configuration. The worker polls Telegram on one thread and runs queued
 //! requests on another through the Rust agent runtime; confirmations,
 //! clarifications and plans pause the run and resume it with the user's
-//! answer. Offsets, processed updates and the queue survive restarts; the
-//! text of queued requests is never stored.
+//! answer. A message sent while the chat's request runs goes through a short
+//! parallel call to the model that decides whether it stops that request or
+//! waits in the queue (see `backend_core::turn_interrupts`). Offsets,
+//! processed updates and the queue survive restarts; the text of queued
+//! requests is never stored.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -39,6 +42,9 @@ const LINK_TIMEOUT: Duration = Duration::from_secs(120);
 const LINK_MAX_ATTEMPTS: u32 = 5;
 const LINK_COOLDOWN: Duration = Duration::from_secs(30);
 const MAX_PROCESSED_UPDATES: usize = 200;
+/// A cancel sent before the run registered its control is tried again.
+const CANCEL_RETRY_DELAY: Duration = Duration::from_millis(500);
+const CANCEL_ATTEMPTS: u32 = 120;
 const OWNER: &str = "user-owner";
 /// Event emitted to the interface after a Telegram request changed data.
 pub(crate) const LIBRARY_CHANGED_EVENT: &str = "notia://telegram-library-changed";
@@ -140,6 +146,16 @@ struct Job {
     text: String,
 }
 
+/// The request running now, so a message of its chat can stop it. Its text
+/// stays in memory only, for the decision about new messages.
+struct CurrentRun {
+    chat_id: i64,
+    text: String,
+    context: BackendRequestContext,
+    idempotency_key: String,
+    cancelled: Arc<AtomicBool>,
+}
+
 enum Reply {
     Decision(bool),
     Text(String, Option<usize>),
@@ -179,6 +195,7 @@ struct Worker {
     queue_ready: Condvar,
     interrupted: Mutex<Vec<StoredJob>>,
     active: Mutex<Option<StoredJob>>,
+    current: Mutex<Option<CurrentRun>>,
     prompt: Mutex<Option<(i64, Prompt, mpsc::Sender<Reply>)>>,
     history: Mutex<HashMap<i64, VecDeque<BackendMessage>>>,
     links: Mutex<HashMap<i64, LinkFlow>>,
@@ -215,6 +232,7 @@ impl Worker {
             queue: Mutex::new(VecDeque::new()),
             queue_ready: Condvar::new(),
             active: Mutex::new(None),
+            current: Mutex::new(None),
             prompt: Mutex::new(None),
             history: Mutex::new(HashMap::new()),
             links: Mutex::new(HashMap::new()),
@@ -388,7 +406,112 @@ impl Worker {
         if attachment.is_none() && self.answer_prompt(update.chat_id, &text) {
             return;
         }
-        self.enqueue(update.chat_id, update.user.id, library_user_id, text, attachment);
+        // A message of the chat whose request runs may ask to stop it; the
+        // decision runs beside the request and the polling goes on.
+        if attachment.is_none() && self.running_request(update.chat_id).is_some() {
+            let worker = Arc::clone(self);
+            let (chat_id, telegram_user_id) = (update.chat_id, update.user.id);
+            let _ = std::thread::Builder::new()
+                .name("notia-telegram-interrupt".into())
+                .spawn(move || worker.interrupt(chat_id, telegram_user_id, library_user_id, text));
+            return;
+        }
+        self.enqueue(update.chat_id, update.user.id, library_user_id, text, attachment, true);
+    }
+
+    /// Text and context of the request that runs for `chat_id`.
+    fn running_request(&self, chat_id: i64) -> Option<(String, BackendRequestContext)> {
+        self.current
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|run| run.chat_id == chat_id)
+            .map(|run| (run.text.clone(), run.context.clone()))
+    }
+
+    fn cancel_requested(&self, chat_id: i64) -> bool {
+        self.current
+            .lock()
+            .ok()
+            .and_then(|current| current.as_ref().filter(|run| run.chat_id == chat_id).map(|run| run.cancelled.load(Ordering::SeqCst)))
+            .unwrap_or(false)
+    }
+
+    /// Decides whether a message sent during the chat's request stops it,
+    /// stops it and runs next, or waits in the queue.
+    fn interrupt(self: &Arc<Self>, chat_id: i64, telegram_user_id: i64, library_user_id: String, text: String) {
+        let Some((running, context)) = self.running_request(chat_id) else {
+            // The request ended meanwhile: the message is a new one.
+            self.enqueue(chat_id, telegram_user_id, library_user_id, text, None, true);
+            return;
+        };
+        let decision = crate::backend_runtime::classify_interrupt(&self.app, &context, &running, &text);
+        match (decision.cancels(), decision.queues()) {
+            (true, true) => {
+                self.send_html(chat_id, &format!("{} Después sigo con tu nuevo pedido.", bot::CANCELLING_MESSAGE), Vec::new());
+                self.enqueue(chat_id, telegram_user_id, library_user_id, text, None, false);
+                self.cancel_current(chat_id, &context.request_id);
+            }
+            (true, false) => {
+                self.send_html(chat_id, bot::CANCELLING_MESSAGE, Vec::new());
+                self.cancel_current(chat_id, &context.request_id);
+            }
+            _ => self.enqueue(chat_id, telegram_user_id, library_user_id, text, None, true),
+        }
+    }
+
+    /// Stops the chat's request `request_id`: the question or confirmation
+    /// it waits on is dropped, or its run is cancelled. A cancel that
+    /// arrives before the run registered its control is tried again while
+    /// that request is still the current one.
+    fn cancel_current(&self, chat_id: i64, request_id: &str) {
+        let target = self.current.lock().ok().and_then(|current| {
+            current.as_ref().filter(|run| run.chat_id == chat_id && run.context.request_id == request_id).map(|run| {
+                run.cancelled.store(true, Ordering::SeqCst);
+                (run.context.clone(), run.idempotency_key.clone())
+            })
+        });
+        let Some((context, idempotency_key)) = target else {
+            return;
+        };
+        let dropped_prompt = self
+            .prompt
+            .lock()
+            .map(|mut prompt| {
+                let waiting = prompt.as_ref().is_some_and(|(prompt_chat, ..)| *prompt_chat == chat_id);
+                if waiting {
+                    *prompt = None;
+                }
+                waiting
+            })
+            .unwrap_or(false);
+        if dropped_prompt {
+            return;
+        }
+        let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
+        for _ in 0..CANCEL_ATTEMPTS {
+            let still_current = self
+                .current
+                .lock()
+                .map(|current| current.as_ref().is_some_and(|run| run.context.request_id == request_id))
+                .unwrap_or(false);
+            if !still_current {
+                return;
+            }
+            let cancelled = {
+                let registry = self.app.state::<crate::library_registry::LibraryBindingRegistry>();
+                crate::backend_runtime::execute_backend_request(
+                    &self.app,
+                    cancel_envelope(&context, &idempotency_key, None),
+                    &runtime,
+                    registry.inner(),
+                )
+            };
+            if cancelled.is_ok_and(|envelope| !matches!(envelope.response, BackendResponse::Error { .. })) {
+                return;
+            }
+            std::thread::sleep(CANCEL_RETRY_DELAY);
+        }
     }
 
     fn handle_callback(&self, chat_id: i64, data: &str) {
@@ -477,9 +600,19 @@ impl Worker {
         self.send(chat_id, &message);
     }
 
-    fn enqueue(&self, chat_id: i64, telegram_user_id: i64, library_user_id: String, text: String, attachment: Option<JobAttachment>) {
+    fn enqueue(
+        &self,
+        chat_id: i64,
+        telegram_user_id: i64,
+        library_user_id: String,
+        text: String,
+        attachment: Option<JobAttachment>,
+        announce: bool,
+    ) {
+        // Photos and PDFs are finance documents; text goes to the library
+        // chat, where the model picks the tool areas the request needs.
         let document = attachment.is_some();
-        let finance = document || bot::is_finance_request(&text);
+        let finance = document;
         let ahead = {
             let Ok(mut queue) = self.queue.lock() else {
                 return;
@@ -498,7 +631,7 @@ impl Worker {
         };
         self.persist();
         self.queue_ready.notify_all();
-        if ahead > 0 {
+        if announce && ahead > 0 {
             self.send_html(chat_id, &bot::queued_message(ahead, document), Vec::new());
         }
     }
@@ -663,7 +796,11 @@ impl Worker {
             }
             self.persist();
             let chat_id = job.stored.chat_id;
-            if let Err(message) = self.run_job(&job) {
+            let result = self.run_job(&job);
+            if let Ok(mut current) = self.current.lock() {
+                *current = None;
+            }
+            if let Err(message) = result {
                 self.send(chat_id, &message);
             }
             if let Ok(mut active) = self.active.lock() {
@@ -734,6 +871,16 @@ impl Worker {
         let mut messages = self.history.lock().map(|history| history.get(&chat_id).map(|items| items.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
         messages.push(BackendMessage { role: MessageRole::User, content: text.clone(), images, attachments: Vec::new() });
         let idempotency_key = format!("{}:{}", self.library.id, job.stored.request_id);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = self.current.lock() {
+            *current = Some(CurrentRun {
+                chat_id,
+                text: text.clone(),
+                context: context.clone(),
+                idempotency_key: idempotency_key.clone(),
+                cancelled: Arc::clone(&cancelled),
+            });
+        }
         let mut request = BackendRequest::Run(AgentRequest {
             context: context.clone(),
             messages,
@@ -766,14 +913,27 @@ impl Worker {
                 Ok(envelope) => envelope.response,
                 Err(error) => break Err(error.message),
             };
+            let stopped = cancelled.load(Ordering::SeqCst);
             match response {
+                // The run finished before the cancel reached it.
                 BackendResponse::Result { response } => break Ok(response),
+                BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } if stopped => {
+                    if let Some(operation) = status.operation {
+                        self.cancel_operation(&context, &idempotency_key, operation);
+                    }
+                    break Err(bot::CANCELLED_MESSAGE.to_string());
+                }
+                _ if stopped => break Err(bot::CANCELLED_MESSAGE.to_string()),
                 BackendResponse::Error { error, .. } => break Err(error.message),
                 BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } => {
                     let (Some(operation), Some(interaction)) = (status.operation.clone(), status.interaction.clone()) else {
                         break Err("El runtime no devolvió una respuesta final.".to_string());
                     };
                     let Some(decision) = self.ask(chat_id, interaction, &operation) else {
+                        if cancelled.load(Ordering::SeqCst) {
+                            self.cancel_operation(&context, &idempotency_key, operation);
+                            break Err(bot::CANCELLED_MESSAGE.to_string());
+                        }
                         break Err("Operación cancelada.".to_string());
                     };
                     request = BackendRequest::Resume(ResumeRequest {
@@ -788,21 +948,51 @@ impl Worker {
                 _ => break Err("El runtime no devolvió una respuesta final.".to_string()),
             }
         };
-        progress.finish(outcome.is_ok());
-        let response = outcome?;
-        self.send_html(chat_id, &response.response.telegram_html, Vec::new());
-        if let Ok(mut history) = self.history.lock() {
-            let entries = history.entry(chat_id).or_default();
-            entries.push_back(BackendMessage { role: MessageRole::User, content: text, images: Vec::new(), attachments: Vec::new() });
-            entries.push_back(BackendMessage { role: MessageRole::Assistant, content: response.response.markdown.clone(), images: Vec::new(), attachments: Vec::new() });
-            while entries.len() > bot::MAX_HISTORY_MESSAGES {
-                entries.pop_front();
-            }
+        let stopped = cancelled.load(Ordering::SeqCst);
+        progress.finish(match (&outcome, stopped) {
+            (Ok(_), _) => "<b>Respuesta enviada</b>",
+            (Err(_), true) => "<b>Solicitud cancelada</b>",
+            (Err(_), false) => "<b>No pude completar la operación</b>",
+        });
+        if stopped && outcome.is_err() {
+            // The next request of the chat knows what was cancelled.
+            self.remember(chat_id, text, bot::CANCELLED_MESSAGE.to_string());
+            return Err(bot::CANCELLED_MESSAGE.to_string());
         }
+        let response = outcome?;
+        if stopped {
+            self.send(chat_id, bot::TOO_LATE_TO_CANCEL_MESSAGE);
+        }
+        self.send_html(chat_id, &response.response.telegram_html, Vec::new());
+        self.remember(chat_id, text, response.response.markdown.clone());
         if response.changed {
             let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
         }
         Ok(())
+    }
+
+    /// Adds a request and its answer to the chat's recent history.
+    fn remember(&self, chat_id: i64, request: String, answer: String) {
+        if let Ok(mut history) = self.history.lock() {
+            let entries = history.entry(chat_id).or_default();
+            entries.push_back(BackendMessage { role: MessageRole::User, content: request, images: Vec::new(), attachments: Vec::new() });
+            entries.push_back(BackendMessage { role: MessageRole::Assistant, content: answer, images: Vec::new(), attachments: Vec::new() });
+            while entries.len() > bot::MAX_HISTORY_MESSAGES {
+                entries.pop_front();
+            }
+        }
+    }
+
+    /// Marks the operation a cancelled run was waiting on as cancelled.
+    fn cancel_operation(&self, context: &BackendRequestContext, idempotency_key: &str, operation: crate::backend::OperationToken) {
+        let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
+        let registry = self.app.state::<crate::library_registry::LibraryBindingRegistry>();
+        let _ = crate::backend_runtime::execute_backend_request(
+            &self.app,
+            cancel_envelope(context, idempotency_key, Some(operation)),
+            &runtime,
+            registry.inner(),
+        );
     }
 
     /// Shows the pending interaction and waits for the user's answer.
@@ -813,6 +1003,9 @@ impl Worker {
         operation: &crate::backend::OperationToken,
     ) -> Option<ResumeDecision> {
         use crate::backend::PendingInteraction as Interaction;
+        if self.cancel_requested(chat_id) {
+            return None;
+        }
         let (sender, receiver) = mpsc::channel();
         let confirm_buttons = |id: &str| {
             vec![("Confirmar".to_string(), format!("confirm:{id}:yes")), ("Cancelar".to_string(), format!("confirm:{id}:no"))]
@@ -842,9 +1035,14 @@ impl Worker {
         if let Ok(mut pending) = self.prompt.lock() {
             *pending = Some((chat_id, prompt, sender));
         }
-        let reply = receiver.recv_timeout(timeout).ok();
+        // A cancel that arrived while the question was being sent drops it.
+        let reply = if self.cancel_requested(chat_id) { None } else { receiver.recv_timeout(timeout).ok() };
         if let Ok(mut pending) = self.prompt.lock() {
             *pending = None;
+        }
+        // A cancel dropped the question: the run stops without an answer.
+        if self.cancel_requested(chat_id) {
+            return None;
         }
         match (interaction, reply) {
             (Interaction::Confirmation(_), reply) => {
@@ -972,12 +1170,28 @@ impl Progress {
             .ok()
     }
 
-    fn finish(&self, ok: bool) {
+    /// Leaves the progress message with the outcome `text` (HTML).
+    fn finish(&self, text: &str) {
         let Some(id) = self.message_id.lock().ok().and_then(|value| *value).filter(|_| self.enabled && self.edit) else {
             return;
         };
-        let text = if ok { "<b>Respuesta enviada</b>" } else { "<b>No pude completar la operación</b>" };
         let _ = block_on(telegram::edit_message(&self.token, self.chat_id, id, text, Vec::new(), Some("HTML")));
+    }
+}
+
+fn cancel_envelope(
+    context: &BackendRequestContext,
+    idempotency_key: &str,
+    operation: Option<crate::backend::OperationToken>,
+) -> BackendRequestEnvelope {
+    BackendRequestEnvelope {
+        protocol_version: ProtocolVersion::default(),
+        request: BackendRequest::Cancel(crate::backend::CancelRequest {
+            context: context.clone(),
+            idempotency_key: idempotency_key.to_string(),
+            request_id: context.request_id.clone(),
+            operation,
+        }),
     }
 }
 

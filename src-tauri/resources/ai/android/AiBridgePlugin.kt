@@ -131,9 +131,11 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     /**
-     * Streams a backend-built `/api/chat` request (raw messages, no tools) to
-     * the Rust runtime. Deltas go through the Rust-owned `onEvent` channel
-     * tagged with `requestId`; the command resolves with the final answer.
+     * Streams a backend-built `/api/chat` request (raw messages, and tools
+     * when `toolsJson` has them) to the Rust runtime. Deltas go through the
+     * Rust-owned `onEvent` channel tagged with `requestId`; the command
+     * resolves with the final answer and the whole `message` (content,
+     * thinking and tool calls), shaped like a non-streamed tool response.
      * `cancelStreaming` with the same `requestId` disconnects the stream.
      */
     @Command
@@ -295,6 +297,8 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
             .put("model", args.string("model"))
             .put("stream", true)
             .put("messages", JSONArray(args.string("messagesJson")))
+        val toolsJson = args.string("toolsJson")
+        if (toolsJson.isNotBlank()) body.put("tools", JSONArray(toolsJson))
         args.value("think")?.let { body.put("think", JSONObject.wrap(it)) }
         val connection = openConnection(
             args.string("ollamaUrl"),
@@ -306,6 +310,8 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         )
         activeStreams[requestId] = connection
         val answer = StringBuilder()
+        val thinking = StringBuilder()
+        val toolCalls = JSONArray()
         try {
             connection.outputStream.use { output -> output.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
@@ -316,6 +322,7 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
                     val message = JSONObject(line).optJSONObject("message") ?: return@forEachLine
                     val thinkingDelta = message.optString("thinking")
                     if (thinkingDelta.isNotEmpty()) {
+                        thinking.append(thinkingDelta)
                         channel.send(JSObject().put("requestId", requestId).put("type", "thinking").put("delta", thinkingDelta))
                     }
                     val answerDelta = message.optString("content")
@@ -323,9 +330,18 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
                         answer.append(answerDelta)
                         channel.send(JSObject().put("requestId", requestId).put("type", "content").put("delta", answerDelta))
                     }
+                    // Ollama sends each tool call whole, in its own chunk.
+                    message.optJSONArray("tool_calls")?.let { calls ->
+                        for (index in 0 until calls.length()) toolCalls.put(calls.get(index))
+                    }
                 }
             }
-            return JSObject().put("ok", true).put("answer", answer.toString())
+            val finalMessage = JSONObject()
+                .put("role", "assistant")
+                .put("content", answer.toString())
+                .put("thinking", thinking.toString())
+                .put("tool_calls", toolCalls)
+            return JSObject().put("ok", true).put("answer", answer.toString()).put("message", finalMessage)
         } finally {
             activeStreams.remove(requestId, connection)
             connection.disconnect()

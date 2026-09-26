@@ -622,7 +622,9 @@ impl Default for BackendLimits {
             max_rounds: 12,
             max_messages: 128,
             max_message_chars: 100_000,
-            max_tools: 64,
+            // Finanzas offers 77 tools; 96 keeps room and stays under the 128
+            // tools the strictest model APIs accept.
+            max_tools: 96,
             max_attachments: 16,
             max_images: 8,
             max_documents: 8,

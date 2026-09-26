@@ -60,6 +60,16 @@ const TOOL_LABELS: Record<string, string> = {
   get_active_document_outline: 'ubicando la sección del documento',
   read_active_document_range: 'leyendo la parte necesaria del documento',
   request_file_read_permission: 'solicitando permiso para leer un archivo',
+  list_gmail_messages: 'revisando tu correo',
+  read_gmail_message: 'leyendo el correo',
+  list_gmail_labels: 'consultando tus carpetas de correo',
+  trash_gmail_messages: 'preparando el envío a la papelera',
+  move_gmail_messages: 'preparando el cambio de carpeta',
+  mark_gmail_spam: 'preparando la marca de spam',
+  mark_gmail_read: 'preparando la marca de leídos',
+  send_gmail_message: 'preparando el correo',
+  list_calendar_events: 'revisando tu calendario',
+  create_calendar_event: 'preparando el evento del calendario',
 }
 
 export function agentToolLabel(toolName: string): string {

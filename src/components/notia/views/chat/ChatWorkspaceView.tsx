@@ -30,7 +30,7 @@ import {
   saveSelectedAgentPromptFileName,
   type AgentPromptOption,
 } from '../../../../services/ai/agentPromptRuntime'
-import type { ChatStarter, ChatWorkspaceViewProps } from './ChatWorkspaceViewTypes'
+import type { ChatStarter, ChatWorkspaceViewProps, QueuedChatMessage } from './ChatWorkspaceViewTypes'
 import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview } from '../../../../types/ai/agentContracts'
 import {
@@ -433,7 +433,7 @@ export function ChatWorkspaceViewComponent({
     attachmentMenuPanelRef,
   )
 
-  const { submitMessage, cancelActiveReply } = useChatSubmitMessage(
+  const { submitMessage, cancelActiveReply, interjectMessage } = useChatSubmitMessage(
     {
       agentCorpusPaths,
       agentScope,
@@ -572,7 +572,34 @@ export function ChatWorkspaceViewComponent({
     },
   )
 
+  // Messages typed while a turn runs, sent in order when it ends. The backend
+  // decides for each one whether it stops the turn or waits.
+  const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([])
+  const [isSendingQueuedMessage, setIsSendingQueuedMessage] = useState(false)
+
+  const interjectComposerMessage = async (message: string): Promise<void> => {
+    const text = message.trim()
+    if (!text) return
+    const id = crypto.randomUUID()
+    setDraft('')
+    setQueuedMessages((current) => [...current, { id, text, deciding: true }])
+    // If the decision fails the message still waits: it is never lost.
+    const decision = await interjectMessage(text).catch(() => 'queue' as const)
+    setQueuedMessages((current) => (decision === 'cancel'
+      ? current.filter((item) => item.id !== id)
+      : current.map((item) => (item.id === id ? { ...item, deciding: false } : item))))
+  }
+
+  useEffect(() => {
+    const next = queuedMessages[0]
+    if (isSubmitting || isSendingQueuedMessage || !next || next.deciding) return
+    setQueuedMessages((current) => current.slice(1))
+    setIsSendingQueuedMessage(true)
+    void submitMessage(next.text, undefined, undefined, true).finally(() => setIsSendingQueuedMessage(false))
+  }, [isSendingQueuedMessage, isSubmitting, queuedMessages, submitMessage])
+
   const submitComposerMessage = (message: string): Promise<void> => {
+    if (isSubmitting) return interjectComposerMessage(message)
     const operationId = lastAppliedOperationId && isNaturalUndoRequest(message)
       ? lastAppliedOperationId
       : undefined
@@ -887,8 +914,10 @@ export function ChatWorkspaceViewComponent({
       draft={draft}
       setDraft={setDraft}
       focusRequest={composerFocusRequest}
-      canSubmit={canSubmit}
+      canSubmit={canSubmit || (isSubmitting && Boolean(library) && draft.trim().length > 0)}
       isSubmitting={isSubmitting}
+      queuedMessages={queuedMessages}
+      onRemoveQueuedMessage={(id) => setQueuedMessages((current) => current.filter((item) => item.id !== id))}
       awaitingAgentClarification={Boolean(pendingAgentQuestion && clarificationResolverRef.current)}
       isAiAvailable={isAiAvailable}
       library={library}

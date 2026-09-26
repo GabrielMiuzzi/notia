@@ -96,6 +96,25 @@ pub trait OllamaTransport: Send + Sync {
         control: &RequestControl,
         on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
     ) -> Result<String, BackendError>;
+
+    /// A tool round streamed: content and thinking arrive as deltas and the
+    /// result has the shape of `tool_chat` (`{"message": {...}}`). A
+    /// transport without it asks the round without streaming.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_tool_chat(
+        &self,
+        settings: &AiHttpSettings,
+        model: &str,
+        messages: &Value,
+        tools: &Value,
+        think: &Value,
+        timeout_secs: u64,
+        control: &RequestControl,
+        on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+    ) -> Result<Value, BackendError> {
+        let _ = on_delta;
+        self.tool_chat(settings, model, messages, tools, think, timeout_secs, control)
+    }
 }
 
 /// Transport of the current platform. Desktop talks to Ollama over the native
@@ -238,77 +257,126 @@ impl OllamaTransport for NativeOllamaTransport {
         control: &RequestControl,
         on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
     ) -> Result<String, BackendError> {
-        control.check()?;
-
-        enum StreamMessage {
-            Delta(AiChatStreamDelta),
-            Done(Result<String, String>),
-        }
-
-        let (sender, receiver) = mpsc::channel();
-        let cancellation = Arc::new(AtomicBool::new(false));
-        let worker_cancellation = Arc::clone(&cancellation);
         let settings = settings.clone();
         let model = model.to_string();
         let messages = messages.to_vec();
         let think = think.clone();
-
-        std::thread::spawn(move || {
-            let sender_for_delta = sender.clone();
-            let result = crate::host::async_runtime::block_on(
+        let result = drive_native_stream(control, on_delta, move |cancellation, on_delta| {
+            crate::host::async_runtime::block_on(
                 crate::services::ai_service::stream_ollama_chat_with_cancellation(
                     &settings,
                     &model,
                     &messages,
                     &think,
-                    worker_cancellation,
-                    move |delta| {
-                        sender_for_delta
-                            .send(StreamMessage::Delta(delta))
-                            .map_err(|_| "El consumidor del stream se desconecto.".to_string())
-                    },
+                    cancellation,
+                    on_delta,
                 ),
-            );
-            let _ = sender.send(StreamMessage::Done(result));
-        });
+            )
+        })?;
+        // An empty answer is not a transport failure: the agent decides how
+        // to continue (see `run_agent`).
+        let result = match result {
+            Err(error) if error == EMPTY_ANSWER => Ok(String::new()),
+            other => other,
+        };
+        result.map_err(map_service_error).and_then(|answer| {
+            control.check()?;
+            Ok(answer)
+        })
+    }
 
-        loop {
-            match receiver.recv_timeout(STREAM_POLL_INTERVAL) {
-                Ok(StreamMessage::Delta(delta)) => {
-                    if let Err(error) = control.check() {
-                        cancellation.store(true, Ordering::Release);
-                        return Err(error);
-                    }
-                    if let Err(error) = on_delta(delta) {
-                        cancellation.store(true, Ordering::Release);
-                        return Err(error);
-                    }
+    fn stream_tool_chat(
+        &self,
+        settings: &AiHttpSettings,
+        model: &str,
+        messages: &Value,
+        tools: &Value,
+        think: &Value,
+        timeout_secs: u64,
+        control: &RequestControl,
+        on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+    ) -> Result<Value, BackendError> {
+        let settings = settings.clone();
+        let model = model.to_string();
+        let messages = messages.clone();
+        let tools = tools.clone();
+        let think = think.clone();
+        let result = drive_native_stream(control, on_delta, move |cancellation, on_delta| {
+            crate::host::async_runtime::block_on(
+                crate::services::ai_service::stream_ollama_tool_chat_with_cancellation(
+                    &settings,
+                    &model,
+                    &messages,
+                    &tools,
+                    &think,
+                    timeout_secs,
+                    cancellation,
+                    on_delta,
+                ),
+            )
+        })?;
+        result.map_err(map_service_error).and_then(|payload| {
+            control.check()?;
+            Ok(payload)
+        })
+    }
+}
+
+/// Runs a native stream on a worker thread: its deltas reach `on_delta` on
+/// the calling thread while the request control is polled, and a cancel or
+/// a failing consumer stops the worker's stream.
+#[cfg(not(target_os = "android"))]
+fn drive_native_stream<T, F>(
+    control: &RequestControl,
+    on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+    work: F,
+) -> Result<Result<T, String>, BackendError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<AtomicBool>, &mut dyn FnMut(AiChatStreamDelta) -> Result<(), String>) -> Result<T, String>
+        + Send
+        + 'static,
+{
+    enum StreamMessage<T> {
+        Delta(AiChatStreamDelta),
+        Done(Result<T, String>),
+    }
+
+    control.check()?;
+    let (sender, receiver) = mpsc::channel();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let worker_cancellation = Arc::clone(&cancellation);
+    std::thread::spawn(move || {
+        let delta_sender = sender.clone();
+        let result = work(worker_cancellation, &mut |delta| {
+            delta_sender
+                .send(StreamMessage::Delta(delta))
+                .map_err(|_| "El consumidor del stream se desconecto.".to_string())
+        });
+        let _ = sender.send(StreamMessage::Done(result));
+    });
+
+    loop {
+        match receiver.recv_timeout(STREAM_POLL_INTERVAL) {
+            Ok(StreamMessage::Delta(delta)) => {
+                if let Err(error) = control.check().and_then(|()| on_delta(delta)) {
+                    cancellation.store(true, Ordering::Release);
+                    return Err(error);
                 }
-                Ok(StreamMessage::Done(result)) => {
-                    // An empty answer is not a transport failure: the agent
-                    // decides how to continue (see `run_agent`).
-                    let result = match result {
-                        Err(error) if error == EMPTY_ANSWER => Ok(String::new()),
-                        other => other,
-                    };
-                    return result.map_err(map_service_error).and_then(|answer| {
-                        control.check()?;
-                        Ok(answer)
-                    });
+            }
+            Ok(StreamMessage::Done(result)) => return Ok(result),
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(error) = control.check() {
+                    cancellation.store(true, Ordering::Release);
+                    return Err(error);
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Err(error) = control.check() {
-                        cancellation.store(true, Ordering::Release);
-                        return Err(error);
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(BackendError::new(
-                        BackendErrorCode::Internal,
-                        "El stream de Ollama se cerro sin una respuesta.",
-                        true,
-                    ));
-                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(BackendError::new(
+                    BackendErrorCode::Internal,
+                    "El stream de Ollama se cerro sin una respuesta.",
+                    true,
+                ));
             }
         }
     }
@@ -404,10 +472,6 @@ impl OllamaTransport for AndroidOllamaTransport {
         control: &RequestControl,
         on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
     ) -> Result<String, BackendError> {
-        use crate::mobile_ai_bridge::AndroidStreamEvent;
-
-        control.check()?;
-        let request_id = uuid::Uuid::new_v4().to_string();
         let payload = json!({
             "ollamaUrl": settings.ollama_url,
             "apiKey": settings.api_key,
@@ -418,6 +482,57 @@ impl OllamaTransport for AndroidOllamaTransport {
             })?,
             "timeoutSeconds": DEFAULT_TOOL_TIMEOUT_SECS,
         });
+        let value = self.stream_raw(payload, control, on_delta)?;
+        Ok(value
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    fn stream_tool_chat(
+        &self,
+        settings: &AiHttpSettings,
+        model: &str,
+        messages: &Value,
+        tools: &Value,
+        think: &Value,
+        timeout_secs: u64,
+        control: &RequestControl,
+        on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+    ) -> Result<Value, BackendError> {
+        let payload = json!({
+            "ollamaUrl": settings.ollama_url,
+            "apiKey": settings.api_key,
+            "model": model,
+            "think": think,
+            "messagesJson": messages.to_string(),
+            "toolsJson": tools.to_string(),
+            "timeoutSeconds": timeout_secs,
+        });
+        let value = self.stream_raw(payload, control, on_delta)?;
+        let message = value.get("message").filter(|message| message.is_object()).cloned().unwrap_or_else(|| {
+            json!({ "role": "assistant", "content": value.get("answer").cloned().unwrap_or(Value::Null) })
+        });
+        Ok(json!({ "message": message }))
+    }
+}
+
+#[cfg(target_os = "android")]
+impl AndroidOllamaTransport {
+    /// Streams a backend-built `/api/chat` request through the Kotlin bridge
+    /// and returns its final result once the bridge resolved it.
+    fn stream_raw(
+        &self,
+        payload: Value,
+        control: &RequestControl,
+        on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+    ) -> Result<Value, BackendError> {
+        use crate::mobile_ai_bridge::AndroidStreamEvent;
+
+        control.check()?;
+        let request_id = uuid::Uuid::new_v4().to_string();
         let (sender, receiver) = mpsc::channel();
         let app = self.app.clone();
         let worker_request_id = request_id.clone();
@@ -451,13 +566,7 @@ impl OllamaTransport for AndroidOllamaTransport {
                         return Err(map_service_error(message));
                     }
                     control.check()?;
-                    let answer = value
-                        .get("answer")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .unwrap_or_default()
-                        .to_string();
-                    return Ok(answer);
+                    return Ok(value);
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if let Err(error) = control.check() {
@@ -521,6 +630,9 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
         on_delta: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
     ) -> Result<ProviderResponse, BackendError> {
         control.check()?;
+        if !request.tools.is_empty() {
+            return self.stream_tool_round(request, control, on_delta);
+        }
         let messages = translate_messages(&request.messages);
         let answer = self.transport.stream_chat(
             &self.config.settings,
@@ -570,6 +682,43 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
             &self.config.think,
             self.config.tool_timeout_secs,
             control,
+        )?;
+        control.check()?;
+        let tool_names = request.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>();
+        translate_tool_response(response, &tool_names).map_err(map_service_error)
+    }
+}
+
+impl<T: OllamaTransport> OllamaAgentProvider<T> {
+    /// A round with tools, streamed: the agent can keep calling tools after
+    /// its first result instead of only being able to answer, and the text
+    /// the model writes before its calls reaches the person as it arrives.
+    fn stream_tool_round(
+        &self,
+        request: &ProviderRequest,
+        control: &RequestControl,
+        on_delta: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
+    ) -> Result<ProviderResponse, BackendError> {
+        let messages =
+            serde_json::to_value(translate_messages(&request.messages)).map_err(|_| {
+                BackendError::invalid_input("Los mensajes no se pudieron serializar para Ollama.")
+            })?;
+        let tools = translate_tools(&request.tools);
+        let response = self.transport.stream_tool_chat(
+            &self.config.settings,
+            &self.config.model,
+            &messages,
+            &tools,
+            &self.config.think,
+            self.config.tool_timeout_secs,
+            control,
+            &mut |delta| {
+                control.check()?;
+                on_delta(match delta {
+                    AiChatStreamDelta::Thinking(value) => ProviderStreamDelta::Thinking(value),
+                    AiChatStreamDelta::Content(value) => ProviderStreamDelta::Content(value),
+                })
+            },
         )?;
         control.check()?;
         let tool_names = request.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>();
@@ -893,6 +1042,53 @@ mod tests {
         }
     }
 
+    /// Streams a tool round: a note, then a call.
+    struct StreamingToolTransport {
+        seen_tools: Arc<Mutex<Option<Value>>>,
+    }
+
+    impl OllamaTransport for StreamingToolTransport {
+        fn chat(&self, _: &AiHttpSettings, _: &str, _: &[AiChatMessage], _: &Value, _: &RequestControl) -> Result<AiChatResult, BackendError> {
+            unreachable!()
+        }
+
+        fn tool_chat(&self, _: &AiHttpSettings, _: &str, _: &Value, _: &Value, _: &Value, _: u64, _: &RequestControl) -> Result<Value, BackendError> {
+            unreachable!()
+        }
+
+        fn stream_chat(
+            &self,
+            _: &AiHttpSettings,
+            _: &str,
+            _: &[AiChatMessage],
+            _: &Value,
+            _: &RequestControl,
+            _: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+        ) -> Result<String, BackendError> {
+            unreachable!("a round with tools streams with its tools")
+        }
+
+        fn stream_tool_chat(
+            &self,
+            _: &AiHttpSettings,
+            _: &str,
+            _: &Value,
+            tools: &Value,
+            _: &Value,
+            _: u64,
+            _: &RequestControl,
+            on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
+        ) -> Result<Value, BackendError> {
+            *self.seen_tools.lock().expect("tools lock") = Some(tools.clone());
+            on_delta(AiChatStreamDelta::Content("Voy a leer la nota.".to_string()))?;
+            Ok(json!({"message": {
+                "role": "assistant",
+                "content": "Voy a leer la nota.",
+                "tool_calls": [{"function": {"name": "read_note", "arguments": {"path": "a.md"}}}]
+            }}))
+        }
+    }
+
     fn config() -> OllamaProviderConfig {
         OllamaProviderConfig::new(
             AiHttpSettings {
@@ -941,6 +1137,29 @@ mod tests {
                 Vec::new()
             },
         }
+    }
+
+    #[test]
+    fn a_streamed_round_with_tools_sends_them_and_returns_the_calls() {
+        let seen_tools = Arc::new(Mutex::new(None));
+        let provider = OllamaAgentProvider::with_transport(
+            config(),
+            StreamingToolTransport { seen_tools: Arc::clone(&seen_tools) },
+        );
+        let mut deltas = Vec::new();
+        let response = provider
+            .stream_chat(&request(true), &RequestControl::new(None), &mut |delta| {
+                deltas.push(delta);
+                Ok(())
+            })
+            .expect("streamed tool round");
+        assert_eq!(deltas, vec![ProviderStreamDelta::Content("Voy a leer la nota.".to_string())]);
+        assert_eq!(response.message.content, "Voy a leer la nota.");
+        assert_eq!(response.message.tool_calls.len(), 1);
+        assert_eq!(response.message.tool_calls[0].name, "read_note");
+        assert_eq!(response.message.tool_calls[0].arguments, json!({"path": "a.md"}));
+        let tools = seen_tools.lock().expect("tools lock").clone().expect("tools sent");
+        assert_eq!(tools[0]["function"]["name"], "read_note");
     }
 
     #[test]

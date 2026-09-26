@@ -8,7 +8,10 @@
 //! agents runs them instead of Notia: each agent answers with the chat's
 //! permissions, and they keep answering each other for a few rounds. The
 //! interface sends the message and the visible workspace, renders the
-//! streamed events and answers the questions it is asked.
+//! streamed events and answers the questions it is asked. A message sent
+//! while a turn runs goes through a short call to the model that decides
+//! whether it stops the turn or waits for the next one; a turn stopped that
+//! way is saved with a note, so the next message keeps its context.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Mutex};
@@ -30,6 +33,7 @@ use crate::backend::{
     ConfirmationDecision, GetOperationRequest, MutationPreview, OperationToken, PendingInteraction, PlanDecision,
     PlanStepStatus, ProtocolVersion, ResumeDecision, ResumeRequest, UndoOperationRequest, OWNER_LIBRARY_USER_ID,
 };
+use crate::backend::turn_interrupts::{InterruptDecision, CANCELLED_REPLY};
 use crate::backend_runtime::{execute_backend_request, BackendRuntimeState};
 use crate::library_registry::LibraryBindingRegistry;
 
@@ -54,9 +58,13 @@ struct RequestIdentity {
 
 struct ActiveTurn {
     identity: RequestIdentity,
+    /// The person's message, for the decision about messages sent meanwhile.
+    message: String,
     /// Present while a question waits for the person.
     answer: Option<mpsc::Sender<InteractionAnswer>>,
     cancelled: bool,
+    /// A message sent during the turn asked to stop it.
+    stopped_by_message: bool,
 }
 
 #[derive(Default)]
@@ -180,6 +188,22 @@ pub(crate) struct ChatAnswerPayload {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChatCancelPayload {
     request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatInterjectPayload {
+    /// The turn that runs.
+    request_id: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatInterjectOutcome {
+    /// `cancel`, `cancel-and-queue` or `queue`: the interface sends the
+    /// message after the turn unless it only asked to stop it.
+    decision: InterruptDecision,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -765,7 +789,16 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
         if turns.contains_key(&payload.request_id) {
             return Err(BackendError::invalid_input("La consulta ya está en curso."));
         }
-        turns.insert(payload.request_id.clone(), ActiveTurn { identity: identity.clone(), answer: None, cancelled: false });
+        turns.insert(
+            payload.request_id.clone(),
+            ActiveTurn {
+                identity: identity.clone(),
+                message: message.clone(),
+                answer: None,
+                cancelled: false,
+                stopped_by_message: false,
+            },
+        );
     }
     // Agents speak in the chats of the app, not in Meeting or published boards.
     let agents = match (&chat, payload.mode) {
@@ -820,9 +853,13 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
             }
         }
     };
-    if let Ok(mut turns) = state.turns.lock() {
-        turns.remove(&payload.request_id);
-    }
+    let stopped_by_message = state
+        .turns
+        .lock()
+        .ok()
+        .and_then(|mut turns| turns.remove(&payload.request_id))
+        .is_some_and(|turn| turn.stopped_by_message);
+    let result = if stopped_by_message { closed_by_message(result) } else { result };
     let (replies, data_changed, interrupted) = result?;
     let answer = replies.last().map(|reply| reply.content.clone()).unwrap_or_default();
 
@@ -864,6 +901,21 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
     })
 }
 
+/// A turn a message stopped is saved with a note instead of failing, so the
+/// chat shows what happened and the next message keeps its context. What the
+/// agents said before stays; the data may have changed before the cancel.
+fn closed_by_message(result: Result<TurnReplies, BackendError>) -> Result<TurnReplies, BackendError> {
+    let note = notia_reply(CANCELLED_REPLY.to_string());
+    match result {
+        Err(error) if error.code == BackendErrorCode::Cancelled => Ok((vec![note], true, None)),
+        Ok((mut replies, _, Some(error))) if error.code == BackendErrorCode::Cancelled => {
+            replies.push(note);
+            Ok((replies, true, None))
+        }
+        other => other,
+    }
+}
+
 /// Runs one chat turn; it returns when the agent answered and the turn was saved.
 pub(crate) async fn ai_chat_send(app: AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, BackendError> {
     crate::host::async_runtime::spawn_blocking(move || send(&app, payload))
@@ -887,31 +939,79 @@ pub(crate) fn ai_chat_answer(state: crate::host::State<'_, AiChatState>, payload
 
 /// Cancels a turn: the question it waits on, or the running agent.
 pub(crate) async fn ai_chat_cancel(app: AppHandle, payload: ChatCancelPayload) -> Result<(), BackendError> {
-    crate::host::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AiChatState>();
-        let identity = {
-            let mut turns = state.turns.lock().map_err(|_| internal("No se pudo cancelar la consulta."))?;
-            let Some(turn) = turns.get_mut(&payload.request_id) else {
-                return Ok(());
-            };
-            turn.cancelled = true;
-            // Dropping the pending answer lets the turn cancel its question.
-            if turn.answer.take().is_some() {
-                return Ok(());
-            }
-            turn.identity.clone()
+    crate::host::async_runtime::spawn_blocking(move || cancel_turn(&app, &payload.request_id, false))
+        .await
+        .map_err(|_| internal("No se pudo cancelar la consulta."))?
+}
+
+fn cancel_turn(app: &AppHandle, request_id: &str, by_message: bool) -> Result<(), BackendError> {
+    let state = app.state::<AiChatState>();
+    let identity = {
+        let mut turns = state.turns.lock().map_err(|_| internal("No se pudo cancelar la consulta."))?;
+        let Some(turn) = turns.get_mut(request_id) else {
+            return Ok(());
         };
-        let runtime = app.state::<BackendRuntimeState>().inner().clone();
-        cancel_request(&app, &runtime, &identity, None);
-        Ok(())
+        turn.cancelled = true;
+        turn.stopped_by_message |= by_message;
+        // Dropping the pending answer lets the turn cancel its question.
+        if turn.answer.take().is_some() {
+            return Ok(());
+        }
+        turn.identity.clone()
+    };
+    let runtime = app.state::<BackendRuntimeState>().inner().clone();
+    cancel_request(app, &runtime, &identity, None);
+    Ok(())
+}
+
+/// A message the person sent while the turn `request_id` runs: a short call
+/// to the model, beside the turn, decides whether it stops the turn, stops
+/// it and goes next, or waits for the next turn. A turn that already ended
+/// leaves the message for a new turn.
+pub(crate) async fn ai_chat_interject(app: AppHandle, payload: ChatInterjectPayload) -> Result<ChatInterjectOutcome, BackendError> {
+    crate::host::async_runtime::spawn_blocking(move || {
+        let message = payload.message.trim().to_string();
+        if message.is_empty() {
+            return Err(BackendError::invalid_input("El mensaje no puede estar vacío."));
+        }
+        let running = app
+            .state::<AiChatState>()
+            .turns
+            .lock()
+            .map_err(|_| internal("No se pudo leer la consulta en curso."))?
+            .get(&payload.request_id)
+            .filter(|turn| !turn.cancelled)
+            .map(|turn| (turn.message.clone(), turn.identity.context.clone()));
+        let Some((running, context)) = running else {
+            return Ok(ChatInterjectOutcome { decision: InterruptDecision::Queue });
+        };
+        let decision = crate::backend_runtime::classify_interrupt(&app, &context, &running, &message);
+        if decision.cancels() {
+            cancel_turn(&app, &payload.request_id, true)?;
+        }
+        Ok(ChatInterjectOutcome { decision })
     })
     .await
-    .map_err(|_| internal("No se pudo cancelar la consulta."))?
+    .map_err(|_| internal("No se pudo decidir qué hacer con el mensaje."))?
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{prompt_agent, strip_speaker_name};
+    use super::{closed_by_message, notia_reply, prompt_agent, strip_speaker_name, BackendError, BackendErrorCode, CANCELLED_REPLY};
+
+    #[test]
+    fn a_turn_a_message_stopped_is_saved_with_a_note() {
+        let cancelled = || BackendError::new(BackendErrorCode::Cancelled, "Consulta cancelada.", false);
+        let (replies, changed, error) = closed_by_message(Err(cancelled())).expect("saved");
+        assert_eq!(replies.iter().map(|reply| reply.content.as_str()).collect::<Vec<_>>(), [CANCELLED_REPLY]);
+        assert!(changed && error.is_none());
+        let (replies, _, error) =
+            closed_by_message(Ok((vec![notia_reply("Ana: busco".into())], false, Some(cancelled())))).expect("saved");
+        assert_eq!(replies.len(), 2);
+        assert!(error.is_none());
+        let failure = BackendError::new(BackendErrorCode::ProviderUnavailable, "sin IA", true);
+        assert!(closed_by_message(Err(failure)).is_err());
+    }
 
     #[test]
     fn a_custom_prompt_signs_its_reply_and_the_default_one_does_not() {

@@ -19,6 +19,9 @@ pub enum ToolPolicy {
     RoutineRead,
     RoutineWrite,
     Memory,
+    /// Gmail and Google Calendar of the library's connected accounts;
+    /// confidential, like finance.
+    Mail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +77,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         BackendScope::Document,
         true,
     ));
-    catalog.extend(alias_tools(
+    catalog.extend(finance_tools(
         [
             "get_finance_dashboard",
             "get_finance_dollar_quotes",
@@ -98,10 +101,9 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
             "get_finance_record",
             "list_finance_records",
         ],
-        BackendScope::Finance,
         true,
     ));
-    catalog.extend(alias_tools(
+    catalog.extend(finance_tools(
         [
             "create_finance_transaction",
             "create_finance_savings_movement",
@@ -141,16 +143,14 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
             "merge_finance_products",
             "merge_finance_merchants",
         ],
-        BackendScope::Finance,
         false,
     ));
-    catalog.extend(alias_tools(
+    catalog.extend(finance_tools(
         [
             "list_finance_installment_plans",
             "list_finance_installments",
             "list_finance_artifacts",
         ],
-        BackendScope::Finance,
         true,
     ));
     catalog.extend(routine_tools(
@@ -187,6 +187,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         "delete_library_document",
     ]));
     catalog.extend(plan_tools());
+    catalog.extend(super::mail_tools::mail_tool_contracts());
     catalog.into_iter().map(with_canonical_schema).collect()
 }
 
@@ -313,6 +314,23 @@ fn alias_tools<const N: usize>(
         .collect()
 }
 
+/// Finance tools serve the Finanzas chat and, routed by area
+/// (`tool_routing`), the library chat and Telegram, so one request can mix
+/// finance with mail or notes.
+fn finance_tools<const N: usize>(names: [&str; N], read_only: bool) -> Vec<ToolDefinition> {
+    names
+        .into_iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Tool versionada del catálogo backend.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![BackendScope::Finance, BackendScope::Library],
+            read_only,
+            requires_confirmation: !read_only,
+        })
+        .collect()
+}
+
 /// Rutina is reachable from the library chat and from Finanzas, because
 /// Telegram routes a message to Finanzas by its wording ("pagué la cuenta").
 fn routine_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
@@ -397,6 +415,7 @@ pub fn restrict_tool_access(tools: Vec<ToolDefinition>, access: ToolAccess, libr
 
 pub fn tool_policy(tool_name: &str) -> ToolPolicy {
     match tool_name {
+        name if super::mail_tools::is_mail_tool(name) => ToolPolicy::Mail,
         "search_web"
         | "request_user_clarification"
         | "request_user_confirmation"
@@ -513,6 +532,14 @@ pub fn authorize_tool_call(
         ToolPolicy::Memory => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta no está autorizada para este usuario.",
+            false,
+        )),
+        // Mail and calendar are confidential: the owner or whoever may see
+        // #Confidencial.
+        ToolPolicy::Mail if principal.can_access_confidential_context() => Ok(()),
+        ToolPolicy::Mail => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "El correo y el calendario requieren autorización del contexto confidencial.",
             false,
         )),
         ToolPolicy::TaskRead | ToolPolicy::TaskWrite
@@ -669,6 +696,44 @@ mod tests {
             read_only,
             requires_confirmation: !read_only,
         }
+    }
+
+    #[test]
+    fn mail_tools_are_confidential_and_fit_the_tool_limit() {
+        let mut owner = principal();
+        owner.all_contexts = true;
+        let limits = crate::protocol::BackendLimits::default();
+        for scope in [BackendScope::Document, BackendScope::TaskManager] {
+            let tools = project_tool_catalog(&context(scope.clone()), &owner, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+            assert!(tools.iter().any(|tool| tool.name == "send_gmail_message"), "{scope:?}");
+            assert!(restrict_tool_access(tools, ToolAccess::All, true).len() <= limits.max_tools, "{scope:?}");
+        }
+        // The library chat reaches every area and is routed: each area fits
+        // in a turn with the tools every turn keeps.
+        let library = restrict_tool_access(
+            project_tool_catalog(&context(BackendScope::Library), &owner, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog"),
+            ToolAccess::All,
+            true,
+        );
+        assert!(crate::tool_routing::needs_routing(&library));
+        let offered = crate::tool_routing::offered_areas(&library);
+        assert!(offered.contains(&crate::tool_routing::ToolArea::Finance) && offered.contains(&crate::tool_routing::ToolArea::Mail));
+        for area in offered {
+            let turn = crate::tool_routing::tools_for_areas(library.clone(), &[area], limits.max_tools);
+            assert!(turn.iter().any(|tool| crate::tool_routing::tool_area(&tool.name) == Some(area)), "{area:?}");
+        }
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-guest".into();
+        let mut confidential = principal();
+        confidential.library_user_id = "user-guest".into();
+        let tools = project_tool_catalog(&guest, &confidential, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        assert!(tools.iter().any(|tool| tool.name == "list_gmail_messages"));
+        let mut personal_only = confidential.clone();
+        personal_only.allowed_contexts = vec!["#Personal".into()];
+        let tools = project_tool_catalog(&guest, &personal_only, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        assert!(!tools.iter().any(|tool| tool_policy(&tool.name) == ToolPolicy::Mail));
+        let graph = project_tool_catalog(&context(BackendScope::Graph), &owner, &canonical_tool_catalog(), ToolCatalogProjection::ReadOnly).expect("catalog");
+        assert!(!graph.iter().any(|tool| tool_policy(&tool.name) == ToolPolicy::Mail));
     }
 
     #[test]

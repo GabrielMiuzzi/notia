@@ -32,6 +32,13 @@ pub enum BackendEvent {
         request_id: String,
         delta: String,
     },
+    /// Text the agent wrote while it keeps working: a note that comes with
+    /// its tool calls, or a step it announced and is asked to take now.
+    AssistantNote {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        text: String,
+    },
     ToolStarted {
         #[serde(rename = "requestId")]
         request_id: String,
@@ -100,6 +107,7 @@ impl BackendEvent {
             | Self::RoundStarted { request_id, .. }
             | Self::ThinkingSummary { request_id, .. }
             | Self::AssistantDelta { request_id, .. }
+            | Self::AssistantNote { request_id, .. }
             | Self::ToolStarted { request_id, .. }
             | Self::ToolCompleted { request_id, .. }
             | Self::ClarificationRequired { request_id, .. }

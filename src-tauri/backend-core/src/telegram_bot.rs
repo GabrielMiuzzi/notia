@@ -78,6 +78,9 @@ pub fn redact_detail(value: &str) -> String {
     text.trim().to_string()
 }
 
+/// Longest agent note the progress message shows.
+const MAX_NOTE_CHARS: usize = 300;
+
 fn bounded(value: &str) -> String {
     if value.chars().count() > MAX_DETAIL_CHARS {
         format!("{}\n…", value.chars().take(MAX_DETAIL_CHARS).collect::<String>())
@@ -121,8 +124,24 @@ pub fn plan_message(plan: &ExecutionPlan) -> String {
     )
 }
 
+/// Whether a message is about mail or the calendar. Those requests stay in
+/// the library, where the Gmail and Calendar tools are, even when they say
+/// «cuenta» («de mi cuenta de gmail»).
+pub fn is_mail_request(value: &str) -> bool {
+    static TERMS: OnceLock<Regex> = OnceLock::new();
+    TERMS
+        .get_or_init(|| {
+            Regex::new(r"\b(gmail|correos?|e-?mails?|mails?|bandeja de entrada|casilla de correo|calendario|google calendar)\b").expect("mail terms")
+        })
+        .is_match(&fold(value))
+}
+
 /// Whether a message is about personal finances; documents always are.
+/// Mail and calendar requests are not, even when they name an account.
 pub fn is_finance_request(value: &str) -> bool {
+    if is_mail_request(value) {
+        return false;
+    }
     static TERMS: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
     let (terms, amount, verb) = TERMS.get_or_init(|| {
         (
@@ -143,6 +162,11 @@ pub fn tool_label(tool: &str) -> &'static str {
         "read_library_document" | "read_library_documents" => "leyendo documentos autorizados",
         "read_all_task_tickets" | "search_task_tickets" | "get_task_board_summary" => "consultando las tareas",
         "search_web" => "consultando fuentes públicas",
+        "list_gmail_messages" | "read_gmail_message" | "list_gmail_labels" => "revisando tu correo",
+        "send_gmail_message" => "preparando el correo",
+        "trash_gmail_messages" | "move_gmail_messages" | "mark_gmail_spam" | "mark_gmail_read" => "preparando el cambio en tu correo",
+        "list_calendar_events" => "revisando tu calendario",
+        "create_calendar_event" => "preparando el evento del calendario",
         "request_user_clarification" => "preparando una pregunta para vos",
         "get_finance_dollar_quotes" | "get_finance_historical_dollar_quotes" => "consultando cotizaciones",
         "get_finance_inflation_indices" => "consultando índices económicos",
@@ -178,8 +202,10 @@ pub fn progress_message(events: &[BackendEvent]) -> Option<String> {
     let mut phase = None;
     let mut activity = None;
     let mut round = None;
+    let mut note = None;
     for event in events {
         match event {
+            BackendEvent::AssistantNote { text, .. } => note = Some(text.as_str()),
             BackendEvent::PhaseChanged { phase: value, round: value_round, .. } => {
                 phase = Some(phase_label(value));
                 if value_round.is_some() {
@@ -196,11 +222,33 @@ pub fn progress_message(events: &[BackendEvent]) -> Option<String> {
     }
     let phase = phase.or(round.map(|_| phase_label("reading")))?;
     let step = round.map(|value| format!(" (paso {value})")).unwrap_or_default();
+    // The agent's last note is its status, as a command-line agent shows it.
+    let note = note
+        .map(|text| format!("\n<i>{}</i>", escape_telegram_html(&clipped_note(text))))
+        .unwrap_or_default();
     Some(match activity {
-        Some(activity) => format!("<b>{phase}</b>{step}\nAhora: {activity}."),
-        None => format!("<b>{phase}</b>{step}"),
+        Some(activity) => format!("<b>{phase}</b>{step}{note}\nAhora: {activity}."),
+        None => format!("<b>{phase}</b>{step}{note}"),
     })
 }
+
+fn clipped_note(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() > MAX_NOTE_CHARS {
+        format!("{}…", text.chars().take(MAX_NOTE_CHARS).collect::<String>())
+    } else {
+        text.to_string()
+    }
+}
+
+/// Reply when a message asks to stop the running request (HTML).
+pub const CANCELLING_MESSAGE: &str = "<b>Cancelando la solicitud en curso…</b>";
+
+/// Reply once the running request stopped.
+pub const CANCELLED_MESSAGE: &str = crate::turn_interrupts::CANCELLED_REPLY;
+
+/// Reply when the request finished before the cancellation reached it.
+pub const TOO_LATE_TO_CANCEL_MESSAGE: &str = "La solicitud ya había terminado cuando llegó la cancelación.";
 
 /// Reply when a request waits behind others (HTML).
 pub fn queued_message(ahead: usize, document: bool) -> String {
@@ -246,6 +294,14 @@ mod tests {
         assert!(is_finance_request("¿Cuánto gasté en nafta?"));
         assert!(is_finance_request("anotá $ 500 de almuerzo"));
         assert!(!is_finance_request("resumí la nota de ayer"));
+        // «cuenta» names the mail account here: the request goes to the
+        // library, where the Gmail tools are.
+        let mail = "necesito que de mi cuenta de gmail, elimines todos los email de \"Tienda Vapor\"";
+        assert!(is_mail_request(mail));
+        assert!(!is_finance_request(mail));
+        assert!(is_mail_request("¿qué tengo en el calendario mañana?"));
+        assert!(is_finance_request("pagué la cuenta de la luz"));
+        assert!(!is_mail_request("pagué la cuenta de la luz"));
     }
 
     #[test]
@@ -256,5 +312,24 @@ mod tests {
         ];
         assert_eq!(progress_message(&events).as_deref(), Some("<b>Leyendo la información necesaria</b> (paso 1)\nAhora: buscando en la biblioteca."));
         assert_eq!(progress_message(&[]), None);
+    }
+
+    #[test]
+    fn progress_shows_the_last_note_of_the_agent() {
+        let events = vec![
+            BackendEvent::RoundStarted { request_id: "r".into(), round: 2 },
+            BackendEvent::AssistantNote { request_id: "r".into(), text: "Busco los correos.".into() },
+            BackendEvent::AssistantNote { request_id: "r".into(), text: "Voy a ver el volumen total <antes> de borrar.".into() },
+            BackendEvent::ToolStarted { request_id: "r".into(), tool_name: "search_library_documents".into(), round: 2 },
+        ];
+        assert_eq!(
+            progress_message(&events).as_deref(),
+            Some("<b>Leyendo la información necesaria</b> (paso 2)\n<i>Voy a ver el volumen total &lt;antes&gt; de borrar.</i>\nAhora: buscando en la biblioteca.")
+        );
+        let long = vec![
+            BackendEvent::RoundStarted { request_id: "r".into(), round: 1 },
+            BackendEvent::AssistantNote { request_id: "r".into(), text: "x".repeat(400) },
+        ];
+        assert!(progress_message(&long).expect("message").ends_with("…</i>"));
     }
 }

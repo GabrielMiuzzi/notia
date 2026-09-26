@@ -81,6 +81,15 @@ fn route(command: &str) -> Option<Route> {
         "backend_sync_page_link" => backend_sync_page_link,
         "markdown_blocks_resolve" => markdown_blocks_resolve,
         "markdown_set_page_mode" => markdown_set_page_mode,
+        "backend_mail_accounts" => backend_mail_accounts,
+        "backend_connect_mail_account" => backend_connect_mail_account,
+        "backend_cancel_mail_account_connection" => backend_cancel_mail_account_connection,
+        "backend_disconnect_mail_account" => backend_disconnect_mail_account,
+        "backend_set_mail_account_type" => backend_set_mail_account_type,
+        "backend_save_google_cloud_credentials" => backend_save_google_cloud_credentials,
+        "backend_check_google_cloud_credentials" => backend_check_google_cloud_credentials,
+        "backend_remove_google_cloud_credentials" => backend_remove_google_cloud_credentials,
+        "backend_import_google_cloud_json" => backend_import_google_cloud_json,
         "coldpass_unlock" => coldpass_unlock,
         "coldpass_status" => coldpass_status,
         "coldpass_generate_password" => coldpass_generate_password,
@@ -194,6 +203,7 @@ fn route(command: &str) -> Option<Route> {
         "ai_chat_send" => ai_chat_send,
         "ai_chat_answer" => ai_chat_answer,
         "ai_chat_cancel" => ai_chat_cancel,
+        "ai_chat_interject" => ai_chat_interject,
         "ai_check_health" => ai_check_health,
         "ai_list_models" => ai_list_models,
         "ai_resolve_model" => ai_resolve_model,
@@ -264,6 +274,15 @@ pub const COMMAND_NAMES: &[&str] = &[
     "backend_sync_page_link",
     "markdown_blocks_resolve",
     "markdown_set_page_mode",
+    "backend_mail_accounts",
+    "backend_connect_mail_account",
+    "backend_cancel_mail_account_connection",
+    "backend_disconnect_mail_account",
+    "backend_set_mail_account_type",
+    "backend_save_google_cloud_credentials",
+    "backend_check_google_cloud_credentials",
+    "backend_remove_google_cloud_credentials",
+    "backend_import_google_cloud_json",
     "coldpass_unlock",
     "coldpass_status",
     "coldpass_generate_password",
@@ -356,6 +375,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "ai_chat_send",
     "ai_chat_answer",
     "ai_chat_cancel",
+    "ai_chat_interject",
     "ai_check_health",
     "ai_list_models",
     "ai_resolve_model",
@@ -418,6 +438,10 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "library_pick_directory",
     "backend_pick_backup_directory",
     "coldpass_pick_csv_import",
+    // Opens the browser and listens on the loopback address of this computer.
+    "backend_connect_mail_account",
+    "backend_cancel_mail_account_connection",
+    "backend_import_google_cloud_json",
 ];
 
 /// Whether a remote client (headless server) may call `command`.
@@ -1189,6 +1213,12 @@ fn ai_chat_cancel(app: &AppHandle, _window_label: &str, command: &str, args: &Va
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_chat::ai_chat_cancel(arg0, arg1).await) })))
 }
 
+fn ai_chat_interject(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_chat::ai_chat_interject(arg0, arg1).await) })))
+}
+
 fn ai_check_health(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
@@ -1221,6 +1251,56 @@ fn markdown_blocks_resolve(app: &AppHandle, _window_label: &str, command: &str, 
 
 fn markdown_set_page_mode(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::note_page_mode::markdown_set_page_mode(arg(command, args, "payload")?))))
+}
+
+fn backend_mail_accounts(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_mail_accounts(arg0, arg1).await) })))
+}
+
+fn backend_connect_mail_account(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_connect_mail_account(arg0, arg1).await) })))
+}
+
+fn backend_cancel_mail_account_connection(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::mail_accounts::backend_cancel_mail_account_connection())))
+}
+
+fn backend_disconnect_mail_account(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_disconnect_mail_account(arg0, arg1).await) })))
+}
+
+fn backend_set_mail_account_type(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_set_mail_account_type(arg0, arg1).await) })))
+}
+
+fn backend_save_google_cloud_credentials(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_save_google_cloud_credentials(arg0, arg1).await) })))
+}
+
+fn backend_check_google_cloud_credentials(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_check_google_cloud_credentials(arg0).await) })))
+}
+
+fn backend_remove_google_cloud_credentials(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_remove_google_cloud_credentials(arg0, arg1).await) })))
+}
+
+fn backend_import_google_cloud_json(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::mail_accounts::backend_import_google_cloud_json(arg0).await) })))
 }
 
 fn chat_agents_catalog(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

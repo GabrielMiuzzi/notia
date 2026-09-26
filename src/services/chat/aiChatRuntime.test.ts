@@ -10,11 +10,14 @@ vi.mock('../transport', () => ({
     return () => listeners.delete(event)
   }),
   callBackend: vi.fn((command: string) => (
-    command === 'ai_chat_send' ? new Promise((resolve) => { resolveSend = resolve }) : Promise.resolve(null)
+    command === 'ai_chat_send'
+      ? new Promise((resolve) => { resolveSend = resolve })
+      : Promise.resolve(command === 'ai_chat_interject' ? { decision: 'cancel-and-queue' } : null)
   )),
 }))
 
-const { startChatTurn } = await import('./aiChatRuntime')
+const { interjectChatTurn, startChatTurn } = await import('./aiChatRuntime')
+const { callBackend } = await import('../transport')
 
 async function flush() {
   for (let index = 0; index < 5; index += 1) await Promise.resolve()
@@ -59,5 +62,36 @@ describe('startChatTurn', () => {
 
     resolveSend({ answer: 'Hola', dataChanged: false })
     await expect(turn.promise).resolves.toEqual({ answer: 'Hola', dataChanged: false })
+  })
+})
+
+describe('interjectChatTurn', () => {
+  it('sends the message of a running turn and returns what the backend decided', async () => {
+    await expect(interjectChatTurn('turn-1', 'pará y mejor borrá solo los de hoy')).resolves.toBe('cancel-and-queue')
+    expect(callBackend).toHaveBeenCalledWith('ai_chat_interject', {
+      payload: { requestId: 'turn-1', message: 'pará y mejor borrá solo los de hoy' },
+    })
+  })
+
+  it('closes a question that still waits when the turn ends', async () => {
+    let signal: AbortSignal | null = null
+    const turn = startChatTurn(
+      { libraryId: 'library', mode: 'chat', message: 'Borrá', chat: { kind: 'saved', path: 'chat/chats/a.md' } },
+      {
+        requestConfirmation: (_question, abortSignal) => {
+          signal = abortSignal
+          return new Promise(() => undefined)
+        },
+      },
+    )
+    await flush()
+    listeners.get('ai-chat-interaction')!({
+      requestId: turn.requestId,
+      interaction: { type: 'confirmation', preview: { summary: 'Borrar 12 correos', hunks: [] } },
+    })
+    expect(signal!.aborted).toBe(false)
+    resolveSend({ answer: 'Cancelé la solicitud en curso a pedido tuyo.', dataChanged: true })
+    await turn.promise
+    expect(signal!.aborted).toBe(true)
   })
 })

@@ -1,5 +1,6 @@
 import {
   Archive,
+  AtSign,
   CreditCard,
   Globe,
   Info,
@@ -14,15 +15,15 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-export type SettingsSection = 'General' | 'Contextos' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Finanzas' | 'Backups' | 'Publicar'
+export type SettingsSection = 'General' | 'Contextos' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Cuentas asociadas' | 'Finanzas' | 'Backups' | 'Publicar'
 
-export const SETTINGS_SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Finanzas', 'Backups', 'Publicar']
+export const SETTINGS_SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Cuentas asociadas', 'Finanzas', 'Backups', 'Publicar']
 
 export const SETTINGS_GROUPS: Array<{ label: string; sections: SettingsSection[] }> = [
   { label: 'Biblioteca', sections: ['General', 'Contextos'] },
   { label: 'Acceso', sections: ['Usuarios', 'Roles'] },
   { label: 'Editor', sections: ['Panel desplegable', 'InkMath'] },
-  { label: 'Integraciones', sections: ['IA', 'Voz', 'Telegram'] },
+  { label: 'Integraciones', sections: ['IA', 'Voz', 'Telegram', 'Cuentas asociadas'] },
   { label: 'Datos', sections: ['Backups', 'Publicar', 'Finanzas'] },
 ]
 
@@ -43,6 +44,7 @@ export const SETTINGS_SECTION_META: Record<SettingsSection, SettingsSectionMeta>
   IA: { description: 'Conexión con Ollama, modelo y cómo informa su progreso el agente.', icon: Sparkles, keywords: 'ollama api key modelo thinking host' },
   Voz: { description: 'Reconocimiento y síntesis de voz locales.', icon: Mic, keywords: 'dictado parakeet qwen tts idioma' },
   Telegram: { description: 'Bot de esta biblioteca y usuarios vinculados.', icon: Send, keywords: 'bot token' },
+  'Cuentas asociadas': { description: 'Credenciales de Google Cloud y cuenta de Gmail de la biblioteca activa.', icon: AtSign, keywords: 'gmail correo mail email google cloud gcp client id secret oauth' },
   Backups: { description: 'Copias automáticas de la biblioteca activa.', icon: Archive, keywords: 'copia zip carpeta' },
   Publicar: { description: 'Compartí tableros del Task Manager en la red local.', icon: Globe, keywords: 'task manager puerto navegador red' },
   Finanzas: { description: 'Datos del módulo Finanzas en la biblioteca activa.', icon: CreditCard, keywords: 'eliminar borrar datos' },

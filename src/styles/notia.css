@@ -1303,6 +1303,84 @@
   color: var(--color-subtle-text);
 }
 
+/* Messages typed while a turn runs; they go after it. */
+.notia-chat-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 8px 0;
+  list-style: none;
+}
+
+.notia-chat-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 4px 0 8px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-app-bg);
+  color: var(--color-heading-text);
+  font-size: 12px;
+}
+
+.notia-chat-queue-item svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-queue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-queue-state {
+  flex-shrink: 0;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+}
+
+.notia-chat-queue-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-subtle-text);
+  cursor: pointer;
+}
+
+.notia-chat-queue-remove:hover {
+  color: var(--color-heading-text);
+}
+
+.notia-chat-queue-remove:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+/* While a turn runs, the stop and send buttons sit side by side. */
+.notia-chat-send-button + .notia-chat-send-button {
+  margin-left: 6px;
+}
+
+@media (pointer: coarse) {
+  .notia-chat-queue-remove {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .notia-right-panel .notia-chat-attachment-mode-badge {
   min-height: 24px;
   border-radius: 6px;

@@ -848,6 +848,147 @@ where
     Ok(answer.trim().to_string())
 }
 
+/// Streams a tool round of `/api/chat`: content and thinking arrive as
+/// deltas, and the result has the shape of a round without streaming
+/// (`{"message": {"content", "thinking", "tool_calls"}}`), so the same
+/// reading and recovery of calls apply. An empty answer comes back as is.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_ollama_tool_chat_with_cancellation<F>(
+    settings: &AiHttpSettings,
+    model: &str,
+    messages: &serde_json::Value,
+    tools: &serde_json::Value,
+    think: &serde_json::Value,
+    timeout_secs: u64,
+    cancellation: Arc<AtomicBool>,
+    mut on_delta: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnMut(AiChatStreamDelta) -> Result<(), String>,
+{
+    let normalized_model = model.trim();
+    if normalized_model.is_empty() {
+        return Err("El modelo de Ollama es obligatorio.".to_string());
+    }
+    if !messages.as_array().is_some_and(|items| !items.is_empty()) {
+        return Err("No hay mensajes para enviar a la IA.".to_string());
+    }
+
+    let client = build_client(timeout_secs)?;
+    let endpoint = build_endpoint(&settings.ollama_url, "/api/chat")?;
+    let response = with_auth(
+        client
+            .post(endpoint)
+            .header(reqwest::header::ACCEPT, "application/x-ndjson")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({
+                "model": normalized_model,
+                "stream": true,
+                "think": think,
+                "messages": messages,
+                "tools": tools,
+            })),
+        settings,
+    )
+    .send()
+    .await
+    .map_err(|error| describe_request_error(error, "No se pudo iniciar el stream de IA."))?;
+
+    if !response.status().is_success() {
+        return Err(read_error_detail(response).await);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::<u8>::new();
+    let mut round = StreamedToolRound::default();
+
+    loop {
+        let next_chunk = Box::pin(stream.next());
+        let wait_for_cancellation = Box::pin(wait_for_cancellation(Arc::clone(&cancellation)));
+        let chunk = match futures::future::select(next_chunk, wait_for_cancellation).await {
+            futures::future::Either::Left((chunk, _)) => chunk,
+            futures::future::Either::Right((_, _)) => {
+                return Err("El stream de IA fue cancelado.".to_string());
+            }
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
+        let chunk = chunk
+            .map_err(|error| describe_request_error(error, "Se interrumpio el stream de IA."))?;
+        buffer.extend_from_slice(&chunk);
+
+        while let Some(line_end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let line = buffer.drain(..=line_end).collect::<Vec<_>>();
+            process_tool_stream_line(&line, &mut round, &mut on_delta)?;
+        }
+    }
+
+    if !buffer.is_empty() {
+        process_tool_stream_line(&buffer, &mut round, &mut on_delta)?;
+    }
+    Ok(round.into_payload())
+}
+
+/// What a streamed tool round has said so far.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Default)]
+struct StreamedToolRound {
+    content: String,
+    thinking: String,
+    tool_calls: Vec<serde_json::Value>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl StreamedToolRound {
+    fn into_payload(self) -> serde_json::Value {
+        serde_json::json!({
+            "message": {
+                "role": "assistant",
+                "content": self.content,
+                "thinking": self.thinking,
+                "tool_calls": self.tool_calls,
+            }
+        })
+    }
+}
+
+/// One NDJSON line of a streamed tool round: text goes out as deltas, calls
+/// are kept for the end (Ollama sends each call whole, in its own chunk).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn process_tool_stream_line<F>(line: &[u8], round: &mut StreamedToolRound, on_delta: &mut F) -> Result<(), String>
+where
+    F: FnMut(AiChatStreamDelta) -> Result<(), String>,
+{
+    let line = std::str::from_utf8(line)
+        .map_err(|_| "Ollama devolvio texto UTF-8 invalido.".to_string())?
+        .trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+    let payload: serde_json::Value = serde_json::from_str(line)
+        .map_err(|error| format!("No se pudo interpretar un fragmento de IA: {error}"))?;
+    if let Some(error) = payload.get("error").and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty()) {
+        return Err(error.to_string());
+    }
+    let Some(message) = payload.get("message") else {
+        return Ok(());
+    };
+    if let Some(thinking) = message.get("thinking").and_then(serde_json::Value::as_str).filter(|value| !value.is_empty()) {
+        round.thinking.push_str(thinking);
+        on_delta(AiChatStreamDelta::Thinking(thinking.to_string()))?;
+    }
+    if let Some(content) = message.get("content").and_then(serde_json::Value::as_str).filter(|value| !value.is_empty()) {
+        round.content.push_str(content);
+        on_delta(AiChatStreamDelta::Content(content.to_string()))?;
+    }
+    if let Some(calls) = message.get("tool_calls").and_then(serde_json::Value::as_array) {
+        round.tool_calls.extend(calls.iter().cloned());
+    }
+    Ok(())
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn wait_for_cancellation(cancellation: Arc<AtomicBool>) {
     while !cancellation.load(Ordering::Acquire) {
@@ -885,7 +1026,38 @@ where
 
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod stream_tests {
-    use super::{process_stream_line, AiChatStreamDelta};
+    use super::{process_stream_line, process_tool_stream_line, AiChatStreamDelta, StreamedToolRound};
+
+    #[test]
+    fn a_streamed_tool_round_keeps_its_text_and_its_calls() {
+        let mut round = StreamedToolRound::default();
+        let mut deltas = Vec::new();
+        let mut on_delta = |delta: AiChatStreamDelta| {
+            deltas.push(match delta {
+                AiChatStreamDelta::Thinking(value) => format!("thinking:{value}"),
+                AiChatStreamDelta::Content(value) => format!("content:{value}"),
+            });
+            Ok(())
+        };
+        for line in [
+            br#"{"message":{"role":"assistant","content":"Voy a ver ","thinking":"cuento"}}"#.as_slice(),
+            br#"{"message":{"role":"assistant","content":"el total."}}"#.as_slice(),
+            br#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"list_gmail_messages","arguments":{"query":"from:vapor"}}}]}}"#.as_slice(),
+            br#"{"done":true}"#.as_slice(),
+        ] {
+            process_tool_stream_line(line, &mut round, &mut on_delta).expect("valid line");
+        }
+        assert_eq!(deltas, vec!["thinking:cuento", "content:Voy a ver ", "content:el total."]);
+        let payload = round.into_payload();
+        assert_eq!(payload["message"]["content"], "Voy a ver el total.");
+        assert_eq!(payload["message"]["thinking"], "cuento");
+        assert_eq!(payload["message"]["tool_calls"][0]["function"]["name"], "list_gmail_messages");
+        let mut round = StreamedToolRound::default();
+        assert_eq!(
+            process_tool_stream_line(br#"{"error":"modelo no encontrado"}"#, &mut round, &mut |_| Ok(())),
+            Err("modelo no encontrado".to_string())
+        );
+    }
 
     #[test]
     fn separates_thinking_and_answer_deltas() {

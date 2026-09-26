@@ -35,6 +35,11 @@
 - Chat efímero de Meeting en el panel lateral con la transcripción como contexto.
 - Dictado y síntesis de voz offline, con reconocimiento Parakeet TDT.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
+- Cuentas de Gmail asociadas por biblioteca (hasta 10, cada una laboral, personal o estudiantil), con las credenciales del propio proyecto de Google Cloud (escritas o importadas del JSON, y probadas contra Google), conectada con OAuth en el navegador (lectura, envío, borrado y movimiento de correos) y marcada como laboral, personal o estudiantil.
+- Trabajo continuo del agente: rondas con herramientas también por streaming (escritorio y Android) y una revisión corta del modelo que lo hace seguir cuando solo anunció un paso; notas de estado en el progreso de Telegram.
+- Cola de mensajes durante una respuesta (chat de la app y Telegram): una llamada corta al modelo decide si el mensaje cancela, cancela y sigue con el pedido nuevo, o queda en cola; `/cancelar` sin modelo y respaldo por palabras.
+- Elección de herramientas por el modelo en el chat principal y en Telegram: áreas (notas, tareas, finanzas, rutina, correo y calendario) según el pedido y la conversación, limitadas a las que el usuario tiene autorizadas, con respaldo por palabras.
+- Herramientas del asistente para Gmail (buscar, leer, papelera, mover de carpeta, spam, leídos, enviar y responder) y Google Calendar (listar y crear eventos), confidenciales (Owner o acceso a #Confidencial), que distinguen de qué cuenta y tipo es cada correo o evento, con confirmación antes de cada cambio o envío.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.

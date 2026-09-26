@@ -1,14 +1,17 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, FileImage, FileText, Files, Folder, FolderSearch, LayoutGrid, Library, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, ChevronDown, Clock, FileImage, FileText, Files, Folder, FolderSearch, LayoutGrid, Library, Mic, Pause, Play, Plus, Square, X } from 'lucide-react'
 import { NotiaButton } from '../../../common/NotiaButton'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
 import type { ChatFileContextMode, ChatLibraryFileOption } from '../../../../services/chat/chatAttachmentRuntime'
-import type { ChatComposerContext, SelectedImageAttachment, AttachmentMenuPosition } from './ChatWorkspaceViewTypes'
+import type { ChatComposerContext, SelectedImageAttachment, AttachmentMenuPosition, QueuedChatMessage } from './ChatWorkspaceViewTypes'
 import { useVoiceTranscription } from './useVoiceTranscription'
 import { useAppSelector } from '../../../../store/hooks'
 import { selectQwen3TtsSettings } from '../../../../features/preferences/preferencesSelectors'
 import { playConversationReadyCue, speakWithQwen3Tts, stopQwen3TtsSpeech } from '../../../../services/qwen3Tts/qwen3TtsRuntime'
+
+/** Title of the send button while a turn runs. */
+const QUEUE_SEND_TITLE = 'Enviar: la IA decide si detiene la respuesta o lo deja en cola'
 
 interface ChatComposerProps {
   /** `workspace` is the full chat view layout; `panel` keeps the compact side panel layout. */
@@ -27,6 +30,9 @@ interface ChatComposerProps {
   focusRequest?: number
   canSubmit: boolean
   isSubmitting: boolean
+  /** Messages typed while the turn runs; they go after it. */
+  queuedMessages?: QueuedChatMessage[]
+  onRemoveQueuedMessage?: (id: string) => void
   awaitingAgentClarification?: boolean
   isAiAvailable: boolean
   library: import('../../../../types/notia').NotiaLibrary | null
@@ -72,6 +78,8 @@ function ChatComposerComponent({
   focusRequest = 0,
   canSubmit,
   isSubmitting,
+  queuedMessages = [],
+  onRemoveQueuedMessage,
   awaitingAgentClarification = false,
   isAiAvailable,
   library,
@@ -174,6 +182,8 @@ function ChatComposerComponent({
   // the legacy handlers isolated until the dedicated call surface is removed.
   void stopConversation
   void startConversation
+  // While a turn runs, the stop button stays and a typed message can still be sent.
+  const showsSendButton = !isSubmitting || !onCancel || draft.trim().length > 0
   const hasAnyAttachment = selectedImageAttachments.length > 0
     || selectedLibraryFileSummary.length > 0
     || transientContextSummaryLabel
@@ -381,6 +391,28 @@ function ChatComposerComponent({
           ) : null}
         </div>
       ) : null}
+      {queuedMessages.length > 0 ? (
+        <ul className="notia-chat-queue" aria-label="Mensajes en cola">
+          {queuedMessages.map((item) => (
+            <li key={item.id} className="notia-chat-queue-item">
+              <Clock size={13} aria-hidden="true" />
+              <span className="notia-chat-queue-text">{item.text}</span>
+              <span className="notia-chat-queue-state">{item.deciding ? 'Decidiendo…' : 'En cola'}</span>
+              {onRemoveQueuedMessage ? (
+                <button
+                  type="button"
+                  className="notia-chat-queue-remove"
+                  title="Quitar de la cola"
+                  aria-label={`Quitar de la cola: ${item.text}`}
+                  onClick={() => onRemoveQueuedMessage(item.id)}
+                >
+                  <X size={13} />
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <label className="notia-chat-composer-field" aria-label="Escribir mensaje">
         <textarea
           ref={textareaRef}
@@ -493,17 +525,18 @@ function ChatComposerComponent({
             >
               <Square size={14} />
             </button>
-          ) : (
+          ) : null}
+          {showsSendButton ? (
             <button
               type="submit"
               className="notia-chat-send-button"
-              title={awaitingAgentClarification ? 'Responder' : 'Enviar'}
+              title={awaitingAgentClarification ? 'Responder' : isSubmitting ? QUEUE_SEND_TITLE : 'Enviar'}
               aria-label={awaitingAgentClarification ? 'Responder' : 'Enviar mensaje'}
               disabled={!canSubmit}
             >
               <ArrowUp size={17} />
             </button>
-          )}
+          ) : null}
         </div>
       ) : (
         <div className="notia-chat-panel-composer-bar">
@@ -555,17 +588,18 @@ function ChatComposerComponent({
             >
               <Square size={14} />
             </button>
-          ) : (
+          ) : null}
+          {showsSendButton ? (
             <button
               type="submit"
               className="notia-chat-send-button"
-              title={awaitingAgentClarification ? 'Responder (Enter)' : 'Enviar (Enter)'}
+              title={awaitingAgentClarification ? 'Responder (Enter)' : isSubmitting ? QUEUE_SEND_TITLE : 'Enviar (Enter)'}
               aria-label={awaitingAgentClarification ? 'Responder' : 'Enviar mensaje'}
               disabled={!canSubmit}
             >
               <ArrowUp size={16} />
             </button>
-          )}
+          ) : null}
         </div>
       )}
     </form>

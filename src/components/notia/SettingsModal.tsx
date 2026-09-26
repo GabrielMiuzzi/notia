@@ -22,6 +22,7 @@ import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
+import { MailAccountsSection } from './settings/MailAccountsSection'
 import { selectQwen3TtsSettings, selectSpeechRecognitionSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { setQwen3TtsSettings, setSpeechRecognitionSettings } from '../../features/preferences/preferencesSlice'
 import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
@@ -1470,6 +1471,8 @@ export function SettingsModal({
                     ))}
                   </SettingsCard>
                 </>
+              ) : activeSection === 'Cuentas asociadas' ? (
+                <MailAccountsSection libraryId={activeLibrary?.id ?? null} />
               ) : activeSection === 'Finanzas' ? (
                 <>
                   <SettingsCard>

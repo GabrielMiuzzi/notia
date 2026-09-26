@@ -6962,6 +6962,378 @@ La ventana sigue el lienzo de diseño «Notia — Configuraciones» (un artboard
 - **Responsive**: con 760 px o menos de ancho de la ventana (container query), la navegación pasa a ser una tira horizontal sobre el contenido y se desplaza hasta la sección abierta. Con 560 px o menos, los campos ocupan todo el ancho debajo de su etiqueta. Con puntero táctil, los controles miden 44 px. En pantallas de 720 px o menos, los modales con `fill` ocupan la pantalla menos 16 px en lugar del 75 %; Configuraciones queda a 16 px de cada borde por el tope del motor.
 - **Validación**: `tsc`, ESLint, `vitest run` (233; `SettingsNav.test.tsx` cubre la búsqueda, la sección activa, `Esc` y las secciones por plataforma) y `vite build` aprobados. Se revisó el modal real con Chrome sin ventana, Redux y el transporte simulado, en tema oscuro y claro, a 1600 px y en ancho angosto. Pendiente: prueba en la app de Windows y en Android (teléfono y tableta).
 
+## Configuraciones: Cuentas asociadas (Google Cloud y Gmail)
+
+Sección del canvas https://claude.ai/artifact/Ka4XCBqVc1wdudkcoW7y1C (artboard «Cuentas asociadas», grupo Integraciones). Configura el proyecto de Google Cloud de la biblioteca y conecta una cuenta de Gmail, con permisos para leer, enviar, eliminar (a la papelera) y mover correos entre etiquetas. Todavía no hay herramientas que usen la cuenta: esta entrega deja la conexión.
+
+Historia del mismo día:
+
+- La primera versión incluía Outlook; se quitó en el canvas y en el código.
+- Las credenciales OAuth se leían de variables de compilación. Pasaron a la biblioteca, porque Notia es una app de escritorio y cada persona que la instala usa su propio proyecto de Google Cloud.
+
+**Pantalla (`settings/MailAccountsSection.tsx`).**
+
+- **Google Cloud (GCP).** Sin credenciales, la tarjeta muestra:
+  - la marca «Sin configurar» y los cinco pasos para crear el cliente;
+  - los campos **Client ID** y **Client secret** (este último oculto);
+  - los botones **Importar JSON**, **Probar conexión** y **Guardar**.
+
+  Una vez guardadas, se reduce a «GCP configurado» con **Eliminar**. Eliminar borra las credenciales y desconecta la cuenta, que no puede conectarse sin ellas.
+- **Conectar una cuenta.** El bloque de Gmail (hasta 380 px) muestra «Configurá GCP primero» hasta que haya credenciales, y después **Conectar** o «Conectada». Mientras se espera al navegador aparece «Esperando al navegador…» con **Cancelar**.
+- **Cuentas conectadas.** Muestra la cuenta con su dirección, **Reconectar**, **Desconectar** y **Tipo de cuenta**: Laboral, Personal (por defecto) o Estudiantil, con el control segmentado de Configuraciones. Si no hay cuenta, dice «Conectá tu cuenta de Gmail arriba para empezar.».
+- Un cliente del servidor headless no puede importar el JSON ni conectar: el selector de archivos, el navegador y la vuelta tienen que estar en la computadora que ejecuta Notia.
+- Colores de la paleta: `--color-periwinkle` para GCP y `--color-coral` para Gmail.
+
+**Credenciales (`backend-core/src/mail_accounts.rs`).**
+
+- **Dónde se guardan.** En `.notia/notiaConfig.json`, sección `googleCloud: { clientId, clientSecret }`, como la API key de Ollama.
+- **Validación.** `validate_google_client` exige un Client ID terminado en `.apps.googleusercontent.com` y valores sin espacios, de hasta 256 caracteres.
+- **Probar conexión.** `backend_check_google_cloud_credentials` prueba los valores del formulario sin guardarlos. Manda al endpoint de tokens un código que no existe (`client_check_body`): Google revisa el cliente antes que el código, así que `invalid_grant` significa que las credenciales son correctas e `invalid_client` que no (`client_check_result`).
+- **Importar JSON.** `backend_import_google_cloud_json` abre el selector nativo (el mismo del CSV de ColdPass, con lectura `content://` en Android) y `parse_google_client_json` lee el `client_secret_*.json` que descarga Google. Solo acepta un cliente `installed` (App de escritorio); uno `web` se rechaza con el motivo. Devuelve los valores para completar el formulario, que se guarda con **Guardar**.
+
+**Flujo OAuth (`app/src/mail_accounts.rs`).** Es el flujo *authorization code* con PKCE (S256) y vuelta a la dirección loopback, el que Google documenta para apps instaladas:
+
+1. Rust lee el cliente de la biblioteca y abre un puerto al azar en `127.0.0.1` (`REDIRECT_HOST`).
+2. Arma la URL de autorización con `state` y `code_challenge` al azar, `access_type=offline` y `prompt=consent`, y abre el navegador. En Windows usa `rundll32 url.dll,FileProtocolHandler`, porque `cmd start` corta la dirección en cada `&`. En Android usa `ContinuityPlugin.openUrl` (`Intent.ACTION_VIEW`, solo https), y el trabajo en primer plano de ese plugin mantiene vivo el proceso.
+3. Espera hasta 5 minutos la vuelta del navegador (`parse_redirect`). Rechaza un `state` distinto, ignora pedidos como `/favicon.ico` y muestra una página de «Listo» o del error. **Cancelar** corta la espera.
+4. Canjea el código, lee la dirección en el userinfo de Google y guarda la cuenta en la lista `mailAccounts`, con `email`, `accessToken`, `refreshToken`, `expiresAtMs`, `scope`, `connectedAtMs` y `accountType`. Al reconectar se conservan el tipo y, si Google no manda uno nuevo, el refresh token.
+
+Los errores de Google se traducen a mensajes propios: nunca se repite lo que Google devolvió y no se registran credenciales, tokens ni direcciones.
+
+Permisos: `openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events`. Cubren leer, redactar, enviar, mandar a la papelera y cambiar etiquetas de Gmail, y leer y crear eventos de Google Calendar; no borran definitivamente, lo que pediría `https://mail.google.com/`. Las herramientas del agente que los usan están en la sección siguiente.
+
+**Secretos.** Por decisión del usuario, las credenciales y los tokens viajan con la biblioteca a copias, backups o repositorios, igual que la API key. Aun así, nunca llegan al WebView:
+
+- `LibraryConfigResult` devuelve la configuración pasada por `without_google_secrets`, sin `googleCloud` ni `mailAccounts`.
+- `backend_write_library_config` ignora esas dos claves si las manda el cliente.
+- Solo los comandos de esta sección las escriben, mediante `update_library_config`.
+- `normalize_library_config` las conserva validadas y descarta lo inválido, como una cuenta de Outlook.
+
+| Comando | Entrada (`payload`) | Salida |
+|---|---|---|
+| `backend_mail_accounts` | `{ libraryId }` | `{ googleCloudConfigured, providers: [{ provider: 'gmail', label, configured }], accounts: [{ provider, label, email, connectedAtMs, accountType }] }` |
+| `backend_save_google_cloud_credentials` | `{ libraryId, clientId, clientSecret }` | la vista |
+| `backend_check_google_cloud_credentials` | `{ clientId, clientSecret }` | nada; error `unauthorized` si Google no reconoce el cliente |
+| `backend_import_google_cloud_json` | — | `{ clientId, clientSecret }` o `null` si se cerró el selector |
+| `backend_remove_google_cloud_credentials` | `{ libraryId }` | la vista, sin credenciales ni cuenta |
+| `backend_connect_mail_account` | `{ libraryId, provider: 'gmail', email? }` | la vista; error `cancelled` si se canceló |
+| `backend_cancel_mail_account_connection` | — | nada |
+| `backend_disconnect_mail_account` | `{ libraryId, email }` | la vista |
+| `backend_set_mail_account_type` | `{ libraryId, email, accountType: 'laboral' \| 'personal' \| 'estudiantil' }` | la vista |
+
+Importar, conectar y cancelar están en `LOCAL_ONLY_COMMANDS`. En el frontend, `services/mail/mailAccountsRuntime.ts` convierte el `BackendError` en `MailAccountError` (con `cancelled`), y una cancelación no se muestra como error.
+
+**Validación**
+
+- `cargo test -p notia-backend-core`: 327 (9 de la sección):
+  - la URL de autorización y el rechazo de otro proveedor;
+  - validar, importar (escritorio, web e inválido) y guardar las credenciales, y ocultarlas al cliente;
+  - distinguir credenciales correctas de incorrectas en la prueba de conexión;
+  - la vuelta del navegador;
+  - el canje del código;
+  - los tokens y el perfil;
+  - el tipo de cuenta y los tokens ocultos;
+  - la codificación del formulario;
+  - la configuración que conserva `googleCloud` y `mailAccounts`.
+- `cargo test --offline -p notia-app --features bluetooth`: 347 y 1 ignorada (3 de la sección: el reto PKCE del RFC 7636, el listener y la cancelación).
+- `cargo check`: escritorio 37 advertencias, Android 61 y Linux (WSL) 144. Linux: 292 y 327 aprobados.
+- `npx vitest run`: 77 archivos, 323 pruebas. Las 5 de `MailAccountsSection.test.tsx` cubren:
+  - credenciales que se prueban y se guardan;
+  - importar el JSON;
+  - conectar y elegir el tipo;
+  - esperar y cancelar sin mostrar error;
+  - un error del proveedor, desconectar y eliminar las credenciales.
+
+  `npx tsc`, `npx eslint .` y `npx vite build`: sin errores.
+- Vista previa en Chrome headless de la sección real, sin credenciales y con GCP configurado más la cuenta conectada, en tema oscuro, y a 440 px en tema claro.
+
+**Pendientes**
+
+- Probar con un proyecto real de Google Cloud en Windows y Android: probar la conexión, importar el JSON, conectar, reconectar y eliminar. No se pudo probar aquí: no hay credenciales.
+- En Android, confirmar que el navegador vuelve a `127.0.0.1` con la app en segundo plano y que Google acepta el cliente de escritorio desde el teléfono.
+- La copia generada de `ContinuityPlugin.kt` en `gen/android` se actualiza sola al compilar para Android (`build.rs`).
+- La renovación del access token y las herramientas de correo y calendario están en «Agente: herramientas de Gmail y Google Calendar». El tipo de cuenta queda disponible para asociarla a un contexto.
+
+## Agente: herramientas de Gmail y Google Calendar
+
+El agente usa la cuenta de Gmail conectada en **Configuraciones → Cuentas asociadas** (sección anterior). Las reglas están en `backend-core/src/mail_tools.rs` y la ejecución en `app/src/mail_tools.rs`.
+
+| Tool | Qué hace | Confirmación |
+|---|---|---|
+| `list_gmail_messages` | Busca con la sintaxis de Gmail (`query`) y por carpetas (`labels`, por nombre). Devuelve id, remitente, destinatario, asunto, fecha, extracto, etiquetas y si está sin leer (hasta 25, con `pageToken`). | no |
+| `read_gmail_message` | Lee un correo: encabezados, texto (`text/plain`, o `text/html` pasado a texto, hasta 12 000 caracteres) y nombres de adjuntos. | no |
+| `list_gmail_labels` | Carpetas del sistema, con nombre en español, y del usuario. | no |
+| `trash_gmail_messages` | Manda correos a la papelera (hasta 50). | sí |
+| `move_gmail_messages` | Agrega o quita etiquetas y, con `removeFromInbox`, saca de Recibidos. Crea las etiquetas que faltan. | sí |
+| `mark_gmail_spam` | Marca como spam (sale de Recibidos) o, con `spam:false`, lo devuelve. | sí |
+| `mark_gmail_read` | Marca como leídos o no leídos. | sí |
+| `send_gmail_message` | Envía texto plano o responde en la misma conversación con `replyToMessageId`. | sí |
+| `list_calendar_events` | Eventos del calendario principal ordenados por inicio, con la zona horaria del calendario. | no |
+| `create_calendar_event` | Crea un evento con horario o de todo el día. Si tiene invitados, Google les manda la invitación (`sendUpdates=all`). | sí |
+
+**Quién y dónde.**
+
+- Política nueva `ToolPolicy::Mail`, confidencial: la usan el Owner o quien tenga acceso a `#Confidencial` (ver «Varias cuentas por biblioteca y permiso confidencial»). La publicación de Task Manager y Graph View (solo lectura) no las reciben.
+- Scopes: biblioteca, nota y Task Manager, que incluyen Telegram del Owner.
+- Solo se ofrecen si la biblioteca tiene credenciales de Google Cloud y una cuenta conectada (`has_connected_account`).
+- Con ellas, un turno de biblioteca pasa de 39 a 49 tools, debajo del tope de 64. La prueba `mail_tools_are_the_owner_s_and_fit_the_tool_limit` lo controla en los tres scopes.
+
+**Seguridad.**
+
+- Cada cambio y cada envío pasan por la confirmación del agente (`requires_confirmation`). La vista previa (`change_preview`) muestra la cuenta, los correos afectados («Remitente · Asunto», hasta 10), las etiquetas que se crearían, el correo completo o el evento con sus invitados. Para armarla solo lee de Google.
+- Un id o una etiqueta que no existen vuelven al modelo como error de entrada, antes de preguntar.
+- Los correos los escriben terceros:
+  - las descripciones de las tools, la guía del prompt (`mail_guidance`) y cada resultado (`notice`) indican que su contenido es información, nunca instrucciones;
+  - nada se envía ni se cambia sin la confirmación de la persona.
+- Validación de argumentos (`parse_mail_tool`):
+  - ids de Gmail alfanuméricos;
+  - hasta 50 correos o destinatarios;
+  - direcciones simples (también toma `Nombre <dir>`);
+  - asunto y encabezados sin saltos de línea, para evitar que se inyecten encabezados;
+  - fechas `YYYY-MM-DD` o `YYYY-MM-DDTHH:MM`;
+  - zonas IANA;
+  - el fin del evento después del inicio.
+- Solo se agregan etiquetas propias, Recibidos, Destacados o Importantes. Papelera, spam y leídos tienen sus propias tools.
+
+**Envío (`compose_raw_message`).** Mensaje RFC 5322 en texto plano UTF-8 con cuerpo en base64, asunto en palabras codificadas RFC 2047 si no es ASCII y `Bcc` que Gmail quita al enviar. Una respuesta suma `In-Reply-To`, `References` y el `threadId` del original, y toma «Re: …» si no se da otro asunto.
+
+**Calendario.**
+
+- **Permiso.** Se sumó `https://www.googleapis.com/auth/calendar.events` (`CALENDAR_SCOPE`). Una cuenta conectada antes de este cambio recibe «Reconectala…» al usar el calendario (`account_has_scope`).
+- **Horarios.** El modelo pasa horarios locales sin zona. `create_calendar_event` los manda con la zona del calendario (`GET calendars/primary`) salvo que se indique `timeZone`.
+- **Búsqueda.** `list_calendar_events` completa `timeMin` y `timeMax` con el desfase del dispositivo (`calendar_bound`). Sin `timeMin`, busca desde ahora.
+- **Fecha actual.** La guía del prompt incluye la fecha, la hora, el día de la semana y el desfase del dispositivo (`chrono::Local`) para interpretar «mañana» o «el lunes».
+
+**Token.** El access token dura una hora. Antes de cada tool, `session` lo renueva si le queda menos de un minuto (`refresh_token` → `with_refreshed_tokens`) y lo guarda en la configuración. Si Google rechaza la renovación, el error pide reconectar la cuenta.
+
+**Errores de Google.** `google_error` los traduce:
+
+- 401: reconectar la cuenta;
+- 403 por API deshabilitada: habilitar la API de Gmail o de Google Calendar en el proyecto;
+- 403 por permiso insuficiente: reconectar;
+- 404: no existe;
+- 429: esperar.
+
+**Interfaz.** Etiquetas de progreso en `agentToolLabels.ts` y en Telegram (`telegram_bot::tool_label`). En **Cuentas asociadas**, los pasos piden habilitar también la API de Google Calendar y el bloque de Gmail dice «correo y calendario».
+
+**Validación**
+
+- `cargo test -p notia-backend-core`: 336 (9 nuevas):
+  - validación de argumentos;
+  - envío protegido contra inyección de encabezados;
+  - mensaje RFC 5322 con respuesta;
+  - resumen y texto de un correo HTML con adjunto;
+  - etiquetas por nombre y límites al moverlos;
+  - eventos con horario local y de todo el día;
+  - vistas previas;
+  - renovación del token;
+  - el catálogo solo del Owner dentro del tope.
+- `cargo test --offline -p notia-app --features bluetooth`: 350 y 1 ignorada (3 nuevas: errores de Google, hora local y adaptador de cada tool de correo).
+- `cargo check`: escritorio 37 advertencias, Android 61 y Linux (WSL) 144. Linux: 295 y 336 aprobados.
+- `npx vitest run`: 77 archivos, 323 pruebas. `npx tsc`, `npx eslint .` y `npx vite build`: sin errores.
+
+**Pendientes**
+
+- Probar con una cuenta real (Windows, Android y Telegram):
+  - buscar, leer, mover, marcar, mandar a la papelera, enviar y responder;
+  - listar y crear eventos, con y sin invitados.
+
+  No se pudo probar aquí: no hay credenciales de Google.
+- Las cuentas conectadas antes de este cambio tienen que reconectarse para usar el calendario.
+- Adjuntar archivos al enviar y leer el contenido de los adjuntos quedan fuera.
+
+### Varias cuentas por biblioteca y permiso confidencial (2026-09-26)
+
+Reemplaza lo que esta sección y la anterior dicen sobre una sola cuenta y sobre el acceso solo del Owner.
+
+**Permiso.** `ToolPolicy::Mail` exige el contexto `#Confidencial` (`principal.can_access_confidential_context()`), igual que Finanzas: el Owner, que tiene todos los contextos, o un usuario de la biblioteca con acceso a `#Confidencial`. Los demás no reciben las tools. La prueba `mail_tools_are_confidential_and_fit_the_tool_limit` cubre al Owner, a un usuario con `#Confidencial` y a uno solo con `#Personal`.
+
+**Cuentas.**
+
+- `mailAccounts` es una lista de hasta 10 cuentas (`MAX_MAIL_ACCOUNTS`), cada una con `provider`, `email`, tokens, `scope`, `connectedAtMs` y `accountType`.
+- La dirección identifica la cuenta, sin distinguir mayúsculas. Conectar una dirección que ya estaba la actualiza y conserva su tipo y su refresh token.
+- La forma anterior (un objeto por proveedor) se lee como lista al normalizar.
+- En `mail_accounts.rs`: `connected_accounts`, `find_account`, `with_mail_account` (agrega o reemplaza), `without_mail_account`, `without_mail_accounts`, `with_account_type(config, email, tipo)` y `check_room_for`. Este último frena una cuenta nueva cuando ya hay 10, antes de abrir el navegador y otra vez con la dirección real.
+
+**Configuraciones.**
+
+- El bloque de Gmail ofrece «Conectar» o, si ya hay cuentas, «Conectar otra cuenta».
+- Cada cuenta conectada tiene su **Reconectar**, que sugiere su dirección, su **Desconectar** y su **Tipo de cuenta**.
+- Eliminar las credenciales de GCP desconecta todas las cuentas.
+- Comandos:
+  - `backend_connect_mail_account` recibe `{ libraryId, provider, email? }`; con `email` reconecta esa cuenta.
+  - `backend_disconnect_mail_account` recibe `{ libraryId, email }`.
+  - `backend_set_mail_account_type` recibe `{ libraryId, email, accountType }`.
+
+**Tools.** Todas reciben `account`: la dirección o el tipo (`laboral`, `personal`, `estudiantil`, con sinónimos como «trabajo», «facultad» o «universidad»). `select_accounts` decide:
+
+- **Sin `account`:** con una sola cuenta, usa esa. `list_gmail_messages`, `list_gmail_labels` y `list_calendar_events` recorren todas, salvo cuando se pagina con `pageToken`, que es de una cuenta. Las demás tools, si hay varias cuentas, devuelven un error que las lista para que el modelo pregunte o elija.
+- **Con un tipo que tienen varias cuentas:** las búsquedas usan todas las de ese tipo; las demás tools piden la dirección.
+- **Resultados:**
+  - las búsquedas devuelven `{ accounts: [{ account, accountType, … }] }`, un grupo por cuenta;
+  - si una cuenta falla (por ejemplo, hay que reconectarla), su grupo trae `error` y las demás responden igual;
+  - leer, cambiar, enviar y crear eventos devuelven su resultado con `account` y `accountType`.
+- **Confirmación y errores.** La confirmación (`change_preview`) nombra la cuenta con su tipo, por ejemplo «ana@uni.edu (cuenta estudiantil)». Los errores de Google también dicen de qué cuenta son.
+- **Prompt.** `mail_guidance` lista las cuentas conectadas con su tipo. Explica que el tipo dice de dónde viene cada correo, que hay que aclarar siempre de qué cuenta es cada correo o evento, y que hay que preguntar desde qué cuenta enviar o en qué calendario crear si el usuario no lo dijo.
+
+**Validación.**
+
+- `cargo test -p notia-backend-core`: 338. Pruebas nuevas o actualizadas: varias cuentas con su tipo, límite y duplicados, lectura de la forma anterior, elegir la cuenta por dirección o tipo, y el catálogo confidencial.
+- `cargo test --offline -p notia-app --features bluetooth`: 350 y 1 ignorada.
+- `cargo check`: escritorio 37 advertencias, Android 61 y Linux (WSL) 144. Linux: 295 y 338 aprobados.
+- `npx vitest run`: 77 archivos, 323 pruebas. `MailAccountsSection.test.tsx` cubre conectar otra cuenta, elegir el tipo de cada una, reconectar por dirección y cancelar, y desconectar una sola. `tsc`, `eslint` y `vite build`: sin errores.
+- Pendiente, sin credenciales reales: probar con dos cuentas (por ejemplo, laboral y estudiantil) que las búsquedas las agrupen, que enviar pida la cuenta y que un usuario con `#Confidencial` las use.
+
+### Telegram: pedidos de correo y límite de tools (2026-09-26)
+
+El pedido por Telegram «necesito que de mi cuenta de gmail, elimines todos los email de "Tienda Vapor"» terminó en «El request supera el límite de tools.». Había dos causas:
+
+1. **Ruteo.** `telegram_bot::is_finance_request` manda a Finanzas los mensajes con términos como «cuenta». Este era de correo, pero cayó en el scope Finanzas, que no tiene las tools de Gmail.
+   - `is_mail_request` reconoce Gmail, correo, mail, e-mail, bandeja de entrada, casilla de correo, calendario y Google Calendar.
+   - Esos mensajes ya no son financieros y van al scope de la biblioteca.
+   - Un pedido que mezcla las dos cosas, como «mandame por mail el gasto del mes», va a la biblioteca y no ve las tools financieras.
+2. **Límite.** El scope Finanzas ofrecía 77 tools (finanzas, rutina y públicas) con `max_tools` en 64, así que cualquier turno de Finanzas fallaba, incluido el chat de Finanzas de la app. Las tools de correo no cuentan en ese scope. El desborde viene de la ampliación de las tools financieras (commit `f2d4831`) y ninguna prueba lo controlaba.
+   - `BackendLimits::default().max_tools` pasa a 96: deja lugar y sigue debajo de las 128 tools que aceptan las APIs de modelos más estrictas.
+   - La prueba nueva `every_scope_fits_the_tool_limit_for_the_owner` (`backend_runtime.rs`) arma para el Owner la lista real de cada scope (biblioteca 48, Finanzas 77, nota 32, Task Manager 35, Graph) y falla si alguno supera el límite.
+
+Validación:
+
+- `telegram_bot`: pruebas del ruteo; el mensaje del reporte va a la biblioteca y «pagué la cuenta de la luz» sigue en Finanzas.
+- `cargo test -p notia-backend-core`: 338.
+- `cargo test --offline -p notia-app --features bluetooth`: 351 y 1 ignorada.
+- `cargo check` de escritorio y Android: 37 y 61 advertencias.
+- Linux (WSL): 296 y 338 aprobados, 144 advertencias.
+
+Pendiente: repetir el pedido por Telegram con la cuenta real. Debería buscar los correos de «Tienda Vapor», pedir la confirmación con la lista y mandarlos a la papelera.
+
+### Áreas de herramientas elegidas por el modelo (2026-09-26)
+
+Reemplaza el ruteo por palabras de Telegram (sección anterior), que ahora queda solo como respaldo.
+
+**Problema.** El chat de la biblioteca en la app y Telegram atienden cualquier pedido, pero darle al modelo todas las herramientas del Owner (unas 109 en el scope biblioteca, con Finanzas) supera el límite de 96 y le cuesta elegir, sobre todo a los modelos locales. Telegram elegía entre Finanzas y biblioteca por palabras sueltas, y «cuenta» mandaba los pedidos de correo a Finanzas.
+
+**Solución (`backend-core/src/tool_routing.rs`, `route_turn_tools` en `app/src/backend_runtime.rs`).**
+
+1. **Áreas.** Las herramientas se agrupan por área (`tool_area`): biblioteca, tareas, finanzas, rutina y correo (Gmail y Calendar). Las públicas, la memoria y los planes quedan en todos los turnos.
+2. **Cuándo se rutea.** En un turno nuevo del scope biblioteca, después de proyectar el catálogo para el actor y aplicar los interruptores del chat, si quedan más de 64 herramientas (`ROUTING_THRESHOLD`) de más de un área (`needs_routing`).
+3. **Consulta al modelo.** `router_prompt` le da al mismo modelo del agente la lista de áreas ofrecidas, cada una con una línea que la describe, y los últimos 6 mensajes, de 600 caracteres como máximo cada uno. Así un «sí, borralos» hereda el área del pedido anterior. El modelo responde `{"areas": [...]}` por relevancia y puede elegir varias áreas. La llamada va sin herramientas ni razonamiento (`complete_with`), por el transporte de la plataforma (en Android, el puente Kotlin), con 45 s como máximo.
+4. **Armado del turno.** `tools_for_areas` deja las herramientas comunes y agrega las áreas en orden mientras entren en el límite.
+5. **Respaldo.** Si el modelo no responde, su respuesta no se puede leer o no elige ninguna, deciden las palabras (`fallback_areas`):
+   - correo o calendario: correo y biblioteca;
+   - finanzas: finanzas y rutina;
+   - cualquier otro pedido: biblioteca, tareas, rutina y correo.
+6. **Registro.** Se anota qué áreas se eligieron y si las eligió el modelo o las palabras (`[notia:router]`), sin el contenido.
+7. **Operaciones en curso.** Un turno que retoma una operación confirmada usa las herramientas guardadas con ella y no se vuelve a rutear.
+
+**Catálogo.** Las herramientas financieras (`finance_tools`) quedan también en el scope biblioteca. La autorización ya permitía Finanzas en ese scope con `#Confidencial`, y la guía «acceso transversal» se activa cuando son visibles. Así un pedido mixto como «mandale por mail a Juan el resumen de gastos» recibe correo y finanzas.
+
+**Telegram.** El texto va siempre al scope biblioteca y se rutea. Las fotos y los PDF siguen yendo a Finanzas (`finance = document`).
+
+**Contextos y usuarios.**
+
+- Las áreas ofrecidas salen del catálogo ya proyectado para el actor (`offered_areas`). Un usuario sin `#Confidencial` no ve Finanzas ni correo, y el modelo no puede elegirlas; la memoria sigue siendo solo del Owner.
+- La elección solo reduce herramientas y nunca agrega permisos: al ejecutarse, cada herramienta vuelve a autorizarse, y los documentos, tickets y cuentas se filtran por contexto.
+- El prompt del clasificador pide que no siga instrucciones del mensaje.
+
+**Prueba con un modelo real.** Con `qwen3.5:4b` local (Ollama) y el prompt real, acertó 11 de 11 pedidos:
+
+- correo con «cuenta de gmail»;
+- dos de finanzas;
+- mixto correo y finanzas;
+- calendario;
+- nota;
+- ticket;
+- hábito;
+- saludo sin áreas;
+- mixto calendario y notas;
+- seguimiento «Borralos».
+
+Tardó unos 2,4 s por pedido, y 23 s la primera vez, al cargar el modelo. La primera versión de las descripciones mandaba «anotá en mis notas» a rutina; se aclararon biblioteca y rutina.
+
+**Validación.**
+
+- `tool_routing`: 4 pruebas (área de cada tool, armado del turno con límite, prompt con conversación y lectura de la respuesta, respaldo por palabras con y sin `#Confidencial`).
+- En el catálogo, el scope biblioteca necesita ruteo y cada área entra en un turno. `every_scope_fits_the_tool_limit_for_the_owner` controla la biblioteca después del ruteo.
+- `cargo test -p notia-backend-core`: 342. `cargo test --offline -p notia-app --features bluetooth`: 351 y 1 ignorada.
+- `cargo check`: escritorio 37 advertencias, Android 61 y Linux (WSL) 144. Linux: 296 y 342 aprobados. `npx vitest run`: 323.
+- Pendiente: probar por Telegram y en el chat principal con el modelo configurado de la biblioteca y con un usuario sin `#Confidencial`.
+
+## Agente: trabajo continuo y cola de mensajes (2026-09-26)
+
+**Problema.** Por Telegram, «elimina todos los email de "Tienda Vapor"» terminó en «Voy a ver el volumen total antes de borrar.» y el agente se detuvo. Había dos causas:
+
+1. Después del primer resultado de una herramienta, cada ronda se pedía por streaming **sin herramientas**, porque `stream_chat` no enviaba `tools`. El modelo solo podía contestar con texto, así que escribía el paso siguiente en vez de pedirlo. La única salida era una respuesta vacía, que se volvía a pedir con herramientas.
+2. Una respuesta sin herramientas era final salvo que tuviera una de diez frases fijas (`contains_pending_action`), y «Voy a ver» no estaba entre ellas.
+
+**Streaming con herramientas.**
+
+- `OllamaTransport::stream_tool_chat` pide la ronda por streaming con sus `tools` y devuelve el mismo formato que `tool_chat` (`{"message": {content, thinking, tool_calls}}`).
+- En escritorio lo implementa `stream_ollama_tool_chat_with_cancellation` (NDJSON). `drive_native_stream` comparte con el stream sin herramientas el hilo de trabajo, el control de la solicitud y la cancelación.
+- En Android, `rawChatStreaming` de `AiBridgePlugin.kt` acepta `toolsJson` y devuelve también `message`; Ollama manda cada llamada entera en su propio fragmento.
+- `OllamaAgentProvider::stream_chat` usa `stream_tool_chat` cuando la ronda tiene herramientas y lee la respuesta con `translate_tool_response`, que incluye la recuperación de llamadas escritas como texto.
+- Un transporte sin streaming de herramientas cae a `tool_chat`.
+
+**El agente sigue trabajando (`backend-core/src/continuation.rs`).** El loop continúa mientras el modelo pide herramientas, como un agente de línea de comandos. Cuando responde solo con texto:
+
+1. `ContinuationJudge` hace una llamada corta al mismo modelo, sin herramientas ni razonamiento. Le pasa el pedido (hasta 600 caracteres), la cantidad de herramientas usadas en el turno y el final de la respuesta (hasta 1.200 caracteres), y el modelo responde `{"continuar": true|false}`.
+2. La llamada tiene 20 s como máximo. `RequestControl::with_timeout` comparte la cancelación de la solicitud.
+3. Si la respuesta anuncia un paso, se emite `AssistantNote` y una corrección interna pide ejecutarlo.
+4. Se permiten dos correcciones seguidas. El contador se reinicia después de una ronda con herramientas y sigue vigente el límite de rondas.
+5. Las frases fijas deciden sin juez, cuando el juez no responde algo legible y cuando ya no quedan correcciones.
+
+**Estado visible.**
+
+- El texto que acompaña a las llamadas y cada anuncio se publican como `BackendEvent::AssistantNote`.
+- Telegram muestra la última nota en cursiva en el mensaje de progreso, escapada y con 300 caracteres como máximo.
+- En la app, cada ronda transmitida después de la primera empieza en un párrafo nuevo (`\n\n`), y la respuesta final reemplaza el borrador.
+
+**Cola de mensajes con decisión del modelo (`backend-core/src/turn_interrupts.rs`, `classify_interrupt` en `app/src/backend_runtime.rs`).**
+
+- Un mensaje que llega mientras corre un pedido del mismo chat se decide con una llamada corta, en paralelo con el pedido. La llamada recibe el pedido en curso y el mensaje nuevo (600 caracteres cada uno) y tiene 30 s como máximo. El modelo elige entre `cancelar`, `cancelar_y_encolar` y `encolar` (`InterruptDecision::{Cancel, CancelAndQueue, Queue}`).
+- `/cancelar`, `/cancel`, `/stop` y `/parar` cancelan sin consultar al modelo.
+- Si el modelo no responde, deciden las palabras (`fallback_decision`). Cancela un mensaje de hasta 5 palabras con «cancelá», «frená», «stop», «basta» o «pará» al inicio; cualquier otro espera en la cola, para que un mensaje ambiguo no corte el trabajo.
+- **Telegram (`telegram_worker.rs`).**
+  - `CurrentRun` guarda en memoria el pedido que corre: chat, texto, contexto y la bandera `cancelled`.
+  - Un mensaje de texto de ese chat que no responde una confirmación o aclaración pendiente lanza `interrupt` en un hilo aparte, y el polling sigue.
+  - Cancelar descarta la pregunta pendiente o manda `BackendRequest::Cancel`. Si el pedido todavía no registró su control, lo reintenta cada 500 ms, durante 60 s como máximo.
+  - Al cancelarse, se marca cancelada la operación que esperaba y el progreso queda «Solicitud cancelada». Se responde `CANCELLED_MESSAGE`, y el historial del chat guarda el pedido con esa nota, así un «mejor solo los de hoy» tiene contexto.
+  - Si el pedido terminó antes de que llegara la cancelación, se avisa y se entrega la respuesta.
+  - Con `cancelar_y_encolar` se avisa una sola vez y el mensaje se encola sin el aviso de cola.
+- **App (`ai_chat.rs`).**
+  - `ai_chat_interject { requestId, message }` devuelve `{ decision }`. Rust decide y cancela el turno con `cancel_turn`, que marca `stopped_by_message`.
+  - Un turno cancelado así no falla: `closed_by_message` lo guarda con la nota `CANCELLED_REPLY`, conserva lo que ya dijeron los agentes y devuelve `dataChanged: true`.
+  - Durante un turno con texto en el compositor se ven el botón de enviar y el de detener.
+  - `ChatWorkspaceView` guarda los mensajes pendientes como estado de presentación («Decidiendo…», «En cola», botón para quitar, de 44 px en pantallas táctiles). Al terminar el turno los manda en orden con `submitMessage(…, fromQueue)`, que no toca el borrador; si uno falla, vuelve al compositor solo si está vacío.
+  - `startChatTurn` aborta su señal al terminar, para cerrar una confirmación o aclaración que todavía esperaba.
+- **Usuarios y contextos.** Un mensaje solo puede detener el pedido de su propio chat: en Telegram, el chat privado vinculado; en la app, el turno de ese `requestId`. La decisión no agrega permisos: el mensaje encolado corre como un pedido nuevo, con su ruteo y su autorización.
+
+**Prueba con un modelo real.** Con `qwen3.5:4b` local y los prompts reales, acertó 16 de 16, a unos 2,3 s por llamada (7 s la primera):
+
+- Nueve interrupciones durante «eliminá los mails de Tienda Vapor»:
+  - cancelar: «Cancela la ejecucion», «pará» y «no, dejalo, no borres nada»;
+  - cancelar y encolar: dos pedidos de otra cosa en su lugar;
+  - encolar: cuatro mensajes, incluido «cancelá la reunión del lunes en el calendario».
+- Siete respuestas: tres anuncios y cuatro finales (resultado, pregunta, «no encontré» y error).
+
+**Validación.**
+
+- `cargo test -p notia-backend-core`: 351, antes 342. Cubre:
+  - el juez que hace seguir y después termina;
+  - la corrida sin juez;
+  - la separación de párrafos del stream y la nota;
+  - los prompts y la lectura de las respuestas;
+  - el respaldo por palabras;
+  - el progreso de Telegram con la nota.
+- `cargo test --offline -p notia-app --features bluetooth`: 354 y 1 ignorada. Cubre la ronda transmitida con herramientas, la línea NDJSON con herramientas y el turno cerrado por un mensaje.
+- `npx vitest run`: 327 pruebas en 78 archivos. Cubre `interjectChatTurn`, el cierre de la pregunta pendiente y el compositor con la cola.
+- `tsc`, `eslint` y `vite build` sin errores.
+- `cargo check` para Android: 61 advertencias, las mismas que antes.
+- Linux (WSL): notia-app 299 y backend-core 351 aprobados, 144 advertencias, las mismas que antes.
+- Pendiente:
+  - probar por Telegram y en la app con Ollama real, cancelando durante una ronda, durante una confirmación y antes de que el pedido registre su control;
+  - probar el streaming con herramientas en un dispositivo Android;
+  - probar un modelo que no admita herramientas por streaming.
+
 ## Task Manager: edición de tareas con el editor de notas
 
 El doble clic sobre una tarjeta abre `TaskSourceDialog` (`src/modules/task-manager/components/dialogs/`), que edita el archivo de la tarea con `MarkdownView`, el mismo editor Milkdown (Crepe) de las notas. Tiene el panel de propiedades para el frontmatter, wikilinks, Mermaid, XGraph, InkMath y zoom. Reemplaza al `TextField` con el Markdown crudo. La lectura y el guardado no cambian: `loadTaskSource` / `saveTaskSource` (`task_manager_read_ticket_source` / `task_manager_write_ticket_source`) con la revisión leída.

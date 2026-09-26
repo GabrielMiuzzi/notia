@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import app.tauri.annotation.Command
@@ -51,6 +52,26 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(JSObject().put("ok", false).put("error", "El sistema rechazó el servicio en primer plano: ${error.message}"))
         } catch (error: Exception) {
             invoke.resolve(JSObject().put("ok", false).put("error", error.message ?: "No se pudo asegurar la continuidad en segundo plano."))
+        }
+    }
+
+    /**
+     * Opens an https address in the device's browser while the backend keeps
+     * working, for example to sign in to a mail provider and come back to
+     * the loopback redirect.
+     */
+    @Command
+    fun openUrl(invoke: Invoke) {
+        try {
+            val uri = Uri.parse(invoke.parseArgs(UrlArgs::class.java).url)
+            if (uri.scheme != "https") {
+                invoke.resolve(JSObject().put("ok", false).put("error", "Solo se abren direcciones https."))
+                return
+            }
+            activity.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            invoke.resolve(JSObject().put("ok", true))
+        } catch (error: Exception) {
+            invoke.resolve(JSObject().put("ok", false).put("error", "No se pudo abrir el navegador."))
         }
     }
 
@@ -147,3 +168,5 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
 }
 
 private data class WorkArgs(val workKind: String)
+
+private data class UrlArgs(val url: String)

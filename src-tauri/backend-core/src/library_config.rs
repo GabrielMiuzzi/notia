@@ -109,6 +109,14 @@ pub fn normalize_library_config(value: &Value) -> NormalizedLibraryConfig {
     if let Some(llamacloud) = normalize_llamacloud(candidate.get("llamacloud")) {
         config.insert("llamacloud".into(), llamacloud);
     }
+    // Google Cloud client and connected mail accounts; clients never
+    // receive them.
+    if let Some(client) = crate::mail_accounts::normalize_google_cloud(candidate.get(crate::mail_accounts::GOOGLE_CLOUD_KEY)) {
+        config.insert(crate::mail_accounts::GOOGLE_CLOUD_KEY.into(), client);
+    }
+    if let Some(accounts) = crate::mail_accounts::normalize_mail_accounts(candidate.get(crate::mail_accounts::MAIL_ACCOUNTS_KEY)) {
+        config.insert(crate::mail_accounts::MAIL_ACCOUNTS_KEY.into(), accounts);
+    }
 
     NormalizedLibraryConfig {
         config: Value::Object(config),
@@ -268,6 +276,20 @@ fn normalize_telegram(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mail_accounts_survive_normalization_and_invalid_ones_are_dropped() {
+        let account = json!({ "email": "ana@gmail.com", "accessToken": "a", "refreshToken": "r", "expiresAtMs": 1, "connectedAtMs": 1 });
+        let normalized = normalize_library_config(&json!({
+            "contextDefaultsVersion": 1,
+            "googleCloud": { "clientId": "1-a.apps.googleusercontent.com", "clientSecret": "s" },
+            "mailAccounts": { "gmail": account, "outlook": { "email": "sin token" } },
+        }));
+        assert_eq!(normalized.config["googleCloud"]["clientSecret"], "s");
+        assert_eq!(normalized.config["mailAccounts"][0]["refreshToken"], "r");
+        assert_eq!(normalized.config["mailAccounts"].as_array().map(Vec::len), Some(1));
+        assert!(normalize_library_config(&json!({ "mailAccounts": {} })).config.get("mailAccounts").is_none());
+    }
 
     #[test]
     fn non_objects_become_the_default_configuration() {

@@ -190,9 +190,17 @@ export interface UseChatSubmitMessageDependencies {
   beginPhantomClickSuppression?: (element: Element | null) => void
 }
 
+/** A message typed while a turn runs, waiting to be sent after it. */
+export interface QueuedChatMessage {
+  id: string
+  text: string
+  /** The backend is still deciding whether it stops the turn. */
+  deciding: boolean
+}
+
 export interface UseChatSubmitMessageState {
   draft: string
-  setDraft: (value: string) => void
+  setDraft: React.Dispatch<React.SetStateAction<string>>
   isSubmitting: boolean
   setStreamingThinking: React.Dispatch<React.SetStateAction<string>>
   setStreamingAssistantMessage: React.Dispatch<React.SetStateAction<string>>

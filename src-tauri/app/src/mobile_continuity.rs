@@ -94,6 +94,24 @@ pub fn end_android_work(state: &ContinuityState) -> bool {
     run_continuity(state, "endWork", None).unwrap_or(false)
 }
 
+/// Opens an https address in the device's browser.
+#[cfg(target_os = "android")]
+pub fn open_android_url(state: &ContinuityState, url: &str) -> Result<(), String> {
+    let guard = state
+        .handle
+        .lock()
+        .map_err(|_| "No se pudo abrir el navegador.".to_string())?;
+    let handle = guard.as_ref().ok_or_else(|| "No se pudo abrir el navegador.".to_string())?;
+    let response = handle
+        .run_mobile_plugin::<ContinuityResponse>("openUrl", serde_json::json!({ "url": url }))
+        .map_err(|_| "No se pudo abrir el navegador.".to_string())?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response.error.unwrap_or_else(|| "No se pudo abrir el navegador.".to_string()))
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn begin_android_work(_state: &ContinuityState, _work_kind: Option<&str>) -> bool {
     true

@@ -162,6 +162,22 @@ async function answerInteraction(
   return { type: 'plan', accepted: decision.approved, stepIds: decision.steps?.map((step) => step.id) }
 }
 
+/** What the backend decided about a message sent while a turn runs. */
+export type ChatInterruptDecision = 'cancel' | 'cancel-and-queue' | 'queue'
+
+/**
+ * Sends a message typed while the turn `requestId` runs. The backend decides,
+ * with a short call to the model, whether it stops the turn and whether the
+ * message goes next, and cancels the turn itself; the interface only queues
+ * the message when told so.
+ */
+export async function interjectChatTurn(requestId: string, message: string): Promise<ChatInterruptDecision> {
+  const outcome = await callBackend<{ decision: ChatInterruptDecision }>('ai_chat_interject', {
+    payload: { requestId, message },
+  })
+  return outcome.decision
+}
+
 /** Starts a chat turn; the promise settles when the backend answered and saved it. */
 export function startChatTurn(input: ChatTurnInput, handlers: ChatTurnHandlers = {}): ChatTurnHandle {
   const requestId = crypto.randomUUID()
@@ -216,6 +232,8 @@ export function startChatTurn(input: ChatTurnInput, handlers: ChatTurnHandlers =
       throw turnError(error)
     } finally {
       unlisteners.forEach((unlisten) => unlisten())
+      // A turn a message stopped may end while a question waits: it closes.
+      if (!controller.signal.aborted) controller.abort()
     }
   }
 
