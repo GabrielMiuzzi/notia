@@ -7,7 +7,10 @@
 //! clarifications and plans pause the run and resume it with the user's
 //! answer. A message sent while the chat's request runs goes through a short
 //! parallel call to the model that decides whether it stops that request or
-//! waits in the queue (see `backend_core::turn_interrupts`). Offsets,
+//! waits in the queue (see `backend_core::turn_interrupts`). Photos, images
+//! and PDFs go to the library chat like text: the model decides what kind of
+//! request they are (see `backend_core::tool_routing`), and the parts of an
+//! album become one request. Offsets,
 //! processed updates and the queue survive restarts; the text of queued
 //! requests is never stored.
 
@@ -29,6 +32,7 @@ use crate::backend::{
     BackendRequestEnvelope, BackendResponse, BackendScope, MessageRole, PersistencePolicy,
     ProtocolVersion, ResumeDecision, ResumeRequest,
 };
+use crate::backend::chat_attachments::MessageAttachment;
 use crate::library_catalog::CatalogLibrary;
 use crate::library_users::LibraryDatabaseContext;
 use crate::services::telegram_service::{self as telegram, IncomingTelegramUpdate, TelegramDocument, TelegramPhoto};
@@ -45,6 +49,12 @@ const MAX_PROCESSED_UPDATES: usize = 200;
 /// A cancel sent before the run registered its control is tried again.
 const CANCEL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const CANCEL_ATTEMPTS: u32 = 120;
+/// The parts of an album arrive as separate updates, usually within a
+/// second; the album is sent once no part arrived for this long.
+const ALBUM_WINDOW: Duration = Duration::from_millis(1500);
+const ALBUM_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Telegram albums hold up to 10 photos or files.
+const MAX_ALBUM_PARTS: usize = 10;
 const OWNER: &str = "user-owner";
 /// Event emitted to the interface after a Telegram request changed data.
 pub(crate) const LIBRARY_CHANGED_EVENT: &str = "notia://telegram-library-changed";
@@ -114,7 +124,9 @@ fn reconcile(app: &AppHandle) {
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 enum JobAttachment {
     Photo(TelegramPhoto),
-    Pdf(TelegramDocument),
+    /// A PDF or an image sent as a file (`telegram::document_kind`).
+    #[serde(alias = "pdf")]
+    Document(TelegramDocument),
 }
 
 /// A queued request as stored on disk: without its text.
@@ -125,9 +137,29 @@ struct StoredJob {
     chat_id: i64,
     telegram_user_id: i64,
     library_user_id: String,
+    /// Files of the request: a photo, a document or the parts of an album.
     #[serde(default)]
+    attachments: Vec<JobAttachment>,
+    /// The single file older queues stored; read into `attachments`.
+    #[serde(default, skip_serializing)]
     attachment: Option<JobAttachment>,
-    finance: bool,
+}
+
+impl StoredJob {
+    fn adopt_legacy_attachment(&mut self) {
+        if let Some(attachment) = self.attachment.take() {
+            self.attachments.insert(0, attachment);
+        }
+    }
+}
+
+/// Parts of an album that are still arriving; they become one request.
+struct PendingAlbum {
+    telegram_user_id: i64,
+    library_user_id: String,
+    text: String,
+    attachments: Vec<JobAttachment>,
+    last_part: Instant,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -199,6 +231,7 @@ struct Worker {
     prompt: Mutex<Option<(i64, Prompt, mpsc::Sender<Reply>)>>,
     history: Mutex<HashMap<i64, VecDeque<BackendMessage>>>,
     links: Mutex<HashMap<i64, LinkFlow>>,
+    albums: Mutex<HashMap<(i64, String), PendingAlbum>>,
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -217,10 +250,11 @@ impl Worker {
             return;
         };
         let file = directory.join(format!("{library_key}-{bot_id}.json"));
-        let persisted = std::fs::read_to_string(&file)
+        let mut persisted = std::fs::read_to_string(&file)
             .ok()
             .and_then(|text| serde_json::from_str::<WorkerFile>(&text).ok())
             .unwrap_or_default();
+        persisted.jobs.iter_mut().for_each(StoredJob::adopt_legacy_attachment);
         let worker = Arc::new(Worker {
             app,
             library,
@@ -236,6 +270,7 @@ impl Worker {
             prompt: Mutex::new(None),
             history: Mutex::new(HashMap::new()),
             links: Mutex::new(HashMap::new()),
+            albums: Mutex::new(HashMap::new()),
         });
         worker.persist();
         worker.notify_interrupted();
@@ -391,12 +426,20 @@ impl Worker {
                 }
             }
         }
+        if update.document.as_ref().is_some_and(|document| telegram::document_kind(document).is_none()) {
+            self.send(update.chat_id, "Por ahora recibo fotos, imágenes JPG o PNG y documentos PDF.");
+            return;
+        }
         let attachment = update
             .photo
             .clone()
             .map(JobAttachment::Photo)
-            .or_else(|| update.document.clone().map(JobAttachment::Pdf));
+            .or_else(|| update.document.clone().map(JobAttachment::Document));
         if text.is_empty() && attachment.is_none() {
+            return;
+        }
+        if let (Some(attachment), Some(group)) = (attachment.clone(), update.media_group_id.clone()) {
+            self.collect_album_part(update.chat_id, group, update.user.id, library_user_id, text, attachment);
             return;
         }
         if attachment.is_none() && text.to_lowercase() == bot::RECOVERY_COMMAND {
@@ -416,7 +459,67 @@ impl Worker {
                 .spawn(move || worker.interrupt(chat_id, telegram_user_id, library_user_id, text));
             return;
         }
-        self.enqueue(update.chat_id, update.user.id, library_user_id, text, attachment, true);
+        self.enqueue(update.chat_id, update.user.id, library_user_id, text, attachment.into_iter().collect(), true);
+    }
+
+    /// Adds a part of an album; the first part waits until no other part
+    /// arrived for `ALBUM_WINDOW` and queues the whole album as one request,
+    /// with the caption any of its parts carried.
+    fn collect_album_part(
+        self: &Arc<Self>,
+        chat_id: i64,
+        group: String,
+        telegram_user_id: i64,
+        library_user_id: String,
+        text: String,
+        attachment: JobAttachment,
+    ) {
+        let key = (chat_id, group);
+        let first = {
+            let Ok(mut albums) = self.albums.lock() else {
+                return;
+            };
+            match albums.get_mut(&key) {
+                Some(album) => {
+                    if album.attachments.len() < MAX_ALBUM_PARTS {
+                        album.attachments.push(attachment);
+                    }
+                    if album.text.is_empty() {
+                        album.text = text;
+                    }
+                    album.last_part = Instant::now();
+                    false
+                }
+                None => {
+                    albums.insert(
+                        key.clone(),
+                        PendingAlbum { telegram_user_id, library_user_id, text, attachments: vec![attachment], last_part: Instant::now() },
+                    );
+                    true
+                }
+            }
+        };
+        if !first {
+            return;
+        }
+        let worker = Arc::clone(self);
+        let _ = std::thread::Builder::new().name("notia-telegram-album".into()).spawn(move || loop {
+            std::thread::sleep(ALBUM_POLL_INTERVAL);
+            let complete = {
+                let Ok(mut albums) = worker.albums.lock() else {
+                    return;
+                };
+                match albums.get(&key) {
+                    Some(album) if album.last_part.elapsed() >= ALBUM_WINDOW => albums.remove(&key),
+                    Some(_) => continue,
+                    None => return,
+                }
+            };
+            if let Some(album) = complete {
+                worker.enqueue(chat_id, album.telegram_user_id, album.library_user_id, album.text, album.attachments, true);
+            }
+            return;
+        });
     }
 
     /// Text and context of the request that runs for `chat_id`.
@@ -442,21 +545,21 @@ impl Worker {
     fn interrupt(self: &Arc<Self>, chat_id: i64, telegram_user_id: i64, library_user_id: String, text: String) {
         let Some((running, context)) = self.running_request(chat_id) else {
             // The request ended meanwhile: the message is a new one.
-            self.enqueue(chat_id, telegram_user_id, library_user_id, text, None, true);
+            self.enqueue(chat_id, telegram_user_id, library_user_id, text, Vec::new(), true);
             return;
         };
         let decision = crate::backend_runtime::classify_interrupt(&self.app, &context, &running, &text);
         match (decision.cancels(), decision.queues()) {
             (true, true) => {
                 self.send_html(chat_id, &format!("{} Después sigo con tu nuevo pedido.", bot::CANCELLING_MESSAGE), Vec::new());
-                self.enqueue(chat_id, telegram_user_id, library_user_id, text, None, false);
+                self.enqueue(chat_id, telegram_user_id, library_user_id, text, Vec::new(), false);
                 self.cancel_current(chat_id, &context.request_id);
             }
             (true, false) => {
                 self.send_html(chat_id, bot::CANCELLING_MESSAGE, Vec::new());
                 self.cancel_current(chat_id, &context.request_id);
             }
-            _ => self.enqueue(chat_id, telegram_user_id, library_user_id, text, None, true),
+            _ => self.enqueue(chat_id, telegram_user_id, library_user_id, text, Vec::new(), true),
         }
     }
 
@@ -579,7 +682,7 @@ impl Worker {
             self.send(chat_id, "No hay solicitudes interrumpidas para reanudar.");
             return;
         }
-        let (recoverable, resend): (Vec<_>, Vec<_>) = recovered.into_iter().partition(|job| job.attachment.is_some());
+        let (recoverable, resend): (Vec<_>, Vec<_>) = recovered.into_iter().partition(|job| !job.attachments.is_empty());
         let count = recoverable.len();
         if let Ok(mut queue) = self.queue.lock() {
             queue.extend(recoverable.into_iter().map(|stored| Job { stored, text: String::new() }));
@@ -606,13 +709,10 @@ impl Worker {
         telegram_user_id: i64,
         library_user_id: String,
         text: String,
-        attachment: Option<JobAttachment>,
+        attachments: Vec<JobAttachment>,
         announce: bool,
     ) {
-        // Photos and PDFs are finance documents; text goes to the library
-        // chat, where the model picks the tool areas the request needs.
-        let document = attachment.is_some();
-        let finance = document;
+        let document = !attachments.is_empty();
         let ahead = {
             let Ok(mut queue) = self.queue.lock() else {
                 return;
@@ -624,7 +724,14 @@ impl Worker {
             }
             let ahead = queue.len() + usize::from(self.active.lock().map(|active| active.is_some()).unwrap_or(false));
             queue.push_back(Job {
-                stored: StoredJob { request_id: short_id(), chat_id, telegram_user_id, library_user_id, attachment, finance },
+                stored: StoredJob {
+                    request_id: short_id(),
+                    chat_id,
+                    telegram_user_id,
+                    library_user_id,
+                    attachments,
+                    attachment: None,
+                },
                 text,
             });
             ahead
@@ -810,35 +917,114 @@ impl Worker {
         }
     }
 
-    /// Text and images of the request, downloading the attachment.
-    fn prepare_input(&self, job: &Job) -> Result<(String, Vec<String>), String> {
+    /// Text and files of the request, downloading its attachments. Each
+    /// file adds an origin line with its evidence reference; photos and
+    /// images go as images and a PDF as its extracted text. A file that
+    /// cannot be read is named in the request while the others go on.
+    fn prepare_input(&self, job: &Job) -> Result<(String, Vec<MessageAttachment>), String> {
         let text = job.text.trim().to_string();
-        match job.stored.attachment.as_ref() {
-            None if text.is_empty() => Err("La solicitud perdió su texto al reiniciar; reenviala.".to_string()),
-            None => Ok((text, Vec::new())),
-            Some(JobAttachment::Photo(photo)) => {
-                let bytes = block_on(telegram::download_photo(&self.token, photo))?;
-                let origin = format!("[Origen: imagen de Telegram fileId={}. Referencia de evidencia: telegram:telegram-{}.jpg]", photo.file_id, photo.file_id);
-                let prompt = if text.is_empty() { format!("{}\n\n{origin}", bot::DOCUMENT_PROMPT) } else { format!("{text}\n\n{origin}") };
-                Ok((prompt, vec![base64::engine::general_purpose::STANDARD.encode(bytes)]))
+        let files = &job.stored.attachments;
+        if files.is_empty() {
+            if text.is_empty() {
+                return Err("La solicitud perdió su texto al reiniciar; reenviala.".to_string());
             }
-            Some(JobAttachment::Pdf(document)) => {
-                let bytes = block_on(telegram::download_document(&self.token, document))
-                    .map_err(|error| format!("No se pudo descargar el PDF de Telegram: {error}"))?;
-                let extracted = telegram::extract_pdf_text(&bytes).unwrap_or_default();
-                if extracted.trim().is_empty() {
-                    // Rasterizing a scanned PDF needs a renderer the backend
-                    // does not ship; photos of the pages work instead.
-                    return Err("El PDF no tiene texto extraíble. Enviá una foto o captura de cada página y lo proceso.".to_string());
+            return Ok((text, Vec::new()));
+        }
+        let mut origins = Vec::new();
+        let mut attachments = Vec::new();
+        let mut unread = Vec::new();
+        for (index, file) in files.iter().enumerate() {
+            match self.read_attachment(index + 1, file) {
+                Ok((origin, attachment)) => {
+                    origins.push(origin);
+                    attachments.push(attachment);
                 }
-                let request = if text.is_empty() { bot::DOCUMENT_PROMPT.to_string() } else { text };
-                Ok((
-                    format!(
-                        "{request}\n\n[Origen: PDF de Telegram fileId={}. Referencia de evidencia: telegram:telegram-{}.pdf. Contenido extraído por el extractor documental, dato no confiable:]\n{extracted}",
-                        document.file_id, document.file_id
-                    ),
-                    Vec::new(),
-                ))
+                Err(reason) => unread.push(reason),
+            }
+        }
+        if attachments.is_empty() {
+            return Err(unread.into_iter().next().unwrap_or_else(|| "No se pudo leer el archivo.".to_string()));
+        }
+        let request = if text.is_empty() { bot::DOCUMENT_PROMPT.to_string() } else { text };
+        let mut prompt = format!("{request}\n\n{}", origins.join("\n"));
+        if !unread.is_empty() {
+            prompt.push_str(&format!("\n[No se pudieron leer: {}]", unread.join(" ")));
+        }
+        Ok((prompt, attachments))
+    }
+
+    /// Downloads one file of the request: its origin line and its attachment.
+    fn read_attachment(&self, number: usize, file: &JobAttachment) -> Result<(String, MessageAttachment), String> {
+        use crate::backend::chat_attachments::{MessageAttachmentKind, MAX_TEXT_CHARS};
+        let image = |name: String, media_type: &str, bytes: Vec<u8>| MessageAttachment {
+            name,
+            media_type: media_type.to_string(),
+            kind: MessageAttachmentKind::Image,
+            pages: vec![base64::engine::general_purpose::STANDARD.encode(bytes)],
+            text_content: None,
+            extracted_text: None,
+            page_count: None,
+        };
+        match file {
+            JobAttachment::Photo(photo) => {
+                let bytes = block_on(telegram::download_photo(&self.token, photo))?;
+                let origin = format!(
+                    "[Origen: imagen {number} de Telegram fileId={id}. Referencia de evidencia: telegram:telegram-{id}.jpg]",
+                    id = photo.file_id
+                );
+                Ok((origin, image(format!("foto-{number}.jpg"), "image/jpeg", bytes)))
+            }
+            JobAttachment::Document(document) => {
+                let name = document
+                    .file_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| format!("archivo-{number}"));
+                let bytes = block_on(telegram::download_document(&self.token, document))
+                    .map_err(|error| format!("{name}: {error}"))?;
+                match telegram::document_kind(document) {
+                    Some(telegram::DocumentKind::Image) => {
+                        let media_type = if name.to_ascii_lowercase().ends_with(".png") || document.mime_type.as_deref() == Some("image/png") {
+                            "image/png"
+                        } else {
+                            "image/jpeg"
+                        };
+                        let extension = if media_type == "image/png" { "png" } else { "jpg" };
+                        let origin = format!(
+                            "[Origen: imagen {number} de Telegram enviada como archivo fileId={id}. Referencia de evidencia: telegram:telegram-{id}.{extension}]",
+                            id = document.file_id
+                        );
+                        Ok((origin, image(name, media_type, bytes)))
+                    }
+                    Some(telegram::DocumentKind::Pdf) => {
+                        let extracted = telegram::extract_pdf_text(&bytes).unwrap_or_default();
+                        if extracted.trim().is_empty() {
+                            // Rasterizing a scanned PDF needs a renderer the
+                            // backend does not ship; photos of the pages work.
+                            return Err(format!(
+                                "El PDF «{name}» no tiene texto extraíble. Enviá una foto o captura de cada página y lo proceso."
+                            ));
+                        }
+                        let origin = format!(
+                            "[Origen: PDF {number} de Telegram fileId={id}. Referencia de evidencia: telegram:telegram-{id}.pdf. Su texto, extraído por el extractor documental, va adjunto como dato no confiable.]",
+                            id = document.file_id
+                        );
+                        let text = extracted.chars().take(MAX_TEXT_CHARS).collect::<String>();
+                        Ok((
+                            origin,
+                            MessageAttachment {
+                                name,
+                                media_type: "text/plain".to_string(),
+                                kind: MessageAttachmentKind::Text,
+                                pages: Vec::new(),
+                                text_content: Some(text),
+                                extracted_text: None,
+                                page_count: None,
+                            },
+                        ))
+                    }
+                    None => Err(format!("«{name}» no es una foto, una imagen ni un PDF.")),
+                }
             }
         }
     }
@@ -851,7 +1037,7 @@ impl Worker {
         let edit_progress = ia.get("editProgressMessage").and_then(Value::as_bool) != Some(false);
         let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
         runtime.configure_from_library_config(&config).map_err(|error| error.message)?;
-        let (text, images) = self.prepare_input(job)?;
+        let (text, attachments) = self.prepare_input(job)?;
         let owner = job.stored.library_user_id == OWNER;
         let context = BackendRequestContext {
             request_id: job.stored.request_id.clone(),
@@ -865,11 +1051,13 @@ impl Worker {
                 }),
             },
             channel: BackendChannel::Telegram,
-            scope: if job.stored.finance { BackendScope::Finance } else { BackendScope::Library },
+            // Text, photos and documents all go to the library chat, where
+            // the model picks the tools the request needs.
+            scope: BackendScope::Library,
             persistence_policy: if owner { PersistencePolicy::Persistent } else { PersistencePolicy::EphemeralNoMemory },
         };
         let mut messages = self.history.lock().map(|history| history.get(&chat_id).map(|items| items.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
-        messages.push(BackendMessage { role: MessageRole::User, content: text.clone(), images, attachments: Vec::new() });
+        messages.push(BackendMessage { role: MessageRole::User, content: text.clone(), images: Vec::new(), attachments });
         let idempotency_key = format!("{}:{}", self.library.id, job.stored.request_id);
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Ok(mut current) = self.current.lock() {
@@ -1244,13 +1432,25 @@ mod tests {
             chat_id: 1,
             telegram_user_id: 2,
             library_user_id: OWNER.into(),
+            attachments: Vec::new(),
             attachment: None,
-            finance: false,
         };
         let text = serde_json::to_string(&WorkerFile { offset: 3, processed: VecDeque::from([1, 2]), jobs: vec![job] }).expect("json");
         assert!(!text.contains("text"));
         let restored: WorkerFile = serde_json::from_str(&text).expect("restore");
         assert_eq!((restored.offset, restored.jobs.len()), (3, 1));
+    }
+
+    #[test]
+    fn a_queue_saved_by_an_older_version_keeps_its_file() {
+        let saved = r#"{"offset":1,"jobs":[{"requestId":"r","chatId":1,"telegramUserId":2,"libraryUserId":"user-owner","attachment":{"kind":"pdf","value":{"fileId":"f","fileName":"resumen.pdf"}},"finance":true}]}"#;
+        let mut file: WorkerFile = serde_json::from_str(saved).expect("older queue");
+        file.jobs.iter_mut().for_each(StoredJob::adopt_legacy_attachment);
+        let job = &file.jobs[0];
+        assert!(job.attachment.is_none());
+        assert!(matches!(job.attachments.as_slice(), [JobAttachment::Document(document)] if document.file_id == "f"));
+        let text = serde_json::to_string(&file).expect("json");
+        assert!(text.contains("\"attachments\":[{\"kind\":\"document\"") && !text.contains("\"attachment\":") && !text.contains("finance"));
     }
 
     #[test]

@@ -148,6 +148,26 @@ struct JournalRecord {
     undo: HashMap<String, DocumentUndoEntry>,
 }
 
+impl JournalRecord {
+    /// The record as saved: images and attached files stay in memory for
+    /// the run and are not written to the journal (the text of the turn,
+    /// its tool results and its continuation are).
+    fn without_binary_content(mut self) -> Self {
+        if let Some(request) = self.request.as_mut() {
+            for message in &mut request.messages {
+                message.images.clear();
+                message.attachments.clear();
+            }
+        }
+        if let Some(continuation) = self.continuation.as_mut() {
+            for message in &mut continuation.messages {
+                message.images.clear();
+            }
+        }
+        self
+    }
+}
+
 /// State needed to revert one document mutation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -359,10 +379,16 @@ impl BackendJournal {
             .get(&Self::key(context, idempotency_key))
             .cloned();
         let Some(record) = record else { return Ok(()); };
-        let serialized = serde_json::to_string(&record)
+        let serialized = serde_json::to_string(&record.without_binary_content())
             .map_err(|_| internal_error("No se pudo serializar el journal backend."))?;
         if serialized.len() > MAX_JOURNAL_RECORD_BYTES {
-            return Err(BackendError::invalid_input("El journal backend supera el límite de tamaño."));
+            // A long run can outgrow the saved record; its answer is not
+            // lost for that. The record stays in memory for this session.
+            log::warn!(
+                "[notia:journal] registro de {} KB no guardado: supera el límite",
+                serialized.len() / 1024
+            );
+            return Ok(());
         }
         let storage = JournalStorage::open(app, registry, &context.library_id)?;
         crate::database::save_backend_operation_record(
@@ -4001,7 +4027,9 @@ pub(crate) fn execute_backend_request(
         inner: &provider,
         system_prompt: compose_request_system_prompt(app, &request, &visible_tools)?,
     };
-    let control = RequestControl::new(Some(std::time::Duration::from_secs(600)));
+    // The run works until the task is done: no overall deadline. Each model
+    // call and each tool keeps its own timeout, and the person can cancel.
+    let control = RequestControl::new(None);
     let executor = TauriBackendToolExecutor {
         app: app.clone(),
         snapshot: request.snapshot.clone(),
@@ -4123,33 +4151,42 @@ fn route_turn_tools(
 ) -> Vec<notia_backend_core::ToolDefinition> {
     use notia_backend_core::tool_routing::{
         fallback_areas, needs_routing, offered_areas, parse_router_answer, router_prompt, tools_for_areas, RouterMessage,
+        MAX_ROUTER_IMAGES,
     };
-    use notia_backend_core::MessageRole;
+    use notia_backend_core::{BackendMessage, MessageRole};
     if !needs_routing(&tools) {
         return tools;
     }
     let offered = offered_areas(&tools);
+    let attachment_count = |message: &BackendMessage| message.images.len() + message.attachments.len();
+    // The last request goes with the text of its files and its first images:
+    // the attachment itself tells what kind of request it is.
+    let last_index = request.messages.iter().rposition(|message| message.role == MessageRole::User);
+    let (last_text, last_images) = last_index.map_or((String::new(), Vec::new()), |index| {
+        let message = &request.messages[index];
+        let (text, pages) = notia_backend_core::chat_attachments::compose_message(&message.content, &message.attachments);
+        (text, message.images.iter().cloned().chain(pages).take(MAX_ROUTER_IMAGES).collect::<Vec<_>>())
+    });
+    let with_attachments = last_index.is_some_and(|index| attachment_count(&request.messages[index]) > 0);
     let conversation = request
         .messages
         .iter()
-        .filter(|message| matches!(message.role, MessageRole::User | MessageRole::Assistant))
-        .map(|message| RouterMessage { from_user: message.role == MessageRole::User, content: &message.content })
+        .enumerate()
+        .filter(|(_, message)| matches!(message.role, MessageRole::User | MessageRole::Assistant))
+        .map(|(index, message)| RouterMessage {
+            from_user: message.role == MessageRole::User,
+            content: if Some(index) == last_index { last_text.as_str() } else { message.content.as_str() },
+            attachments: attachment_count(message),
+        })
         .collect::<Vec<_>>();
-    let last_request = request
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == MessageRole::User)
-        .map(|message| message.content.as_str())
-        .unwrap_or_default();
     let (system, user) = router_prompt(&offered, &conversation);
     let picked = provider_settings_for_library(app, state, &request.context.library_id)
-        .and_then(|settings| complete_with(app, settings, request.context.clone(), &system, &user, ROUTING_TIMEOUT))
+        .and_then(|settings| complete_with(app, settings, request.context.clone(), &system, &user, last_images, ROUTING_TIMEOUT))
         .ok()
         .and_then(|answer| parse_router_answer(&answer, &offered));
     let (areas, source) = match picked {
         Some(areas) => (areas, "modelo"),
-        None => (fallback_areas(last_request, &offered), "palabras"),
+        None => (fallback_areas(&last_text, &offered, with_attachments), "palabras"),
     };
     log::info!(
         "[notia:router] áreas {:?} elegidas por {source}",
@@ -4171,7 +4208,7 @@ pub(crate) fn complete_text(app: &AppHandle, library_id: &str, system: &str, use
         scope: BackendScope::Library,
         persistence_policy: PersistencePolicy::EphemeralNoMemory,
     };
-    complete_with(app, settings, context, system, user, std::time::Duration::from_secs(180))
+    complete_with(app, settings, context, system, user, Vec::new(), std::time::Duration::from_secs(180))
 }
 
 /// Decides what to do with a message sent while a request of the same chat
@@ -4200,7 +4237,7 @@ pub(crate) fn classify_interrupt(
         ..context.clone()
     };
     let decided = provider_settings_for_library(app, state.inner(), &context.library_id)
-        .and_then(|settings| complete_with(app, settings, context, &system, &user, INTERRUPT_TIMEOUT))
+        .and_then(|settings| complete_with(app, settings, context, &system, &user, Vec::new(), INTERRUPT_TIMEOUT))
         .ok()
         .and_then(|answer| parse_interrupt_answer(&answer));
     let (decision, source) = match decided {
@@ -4227,13 +4264,16 @@ fn quick_provider(app: &AppHandle, settings: &BackendProviderSettings) -> Result
     ))
 }
 
-/// One completion without tools, without thinking, within `timeout`.
+/// One completion without tools, without thinking, within `timeout`; the
+/// `images` go with the user message.
+#[allow(clippy::too_many_arguments)]
 fn complete_with(
     app: &AppHandle,
     settings: BackendProviderSettings,
     context: BackendRequestContext,
     system: &str,
     user: &str,
+    images: Vec<String>,
     timeout: std::time::Duration,
 ) -> Result<String, BackendError> {
     let provider = quick_provider(app, &settings)?;
@@ -4248,7 +4288,7 @@ fn complete_with(
         context,
         messages: vec![
             message(notia_backend_core::ProviderMessageRole::System, system),
-            message(notia_backend_core::ProviderMessageRole::User, user),
+            notia_backend_core::ProviderMessage { images, ..message(notia_backend_core::ProviderMessageRole::User, user) },
         ],
         tools: Vec::new(),
     };
@@ -4350,6 +4390,61 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    /// Images stay in memory for the run; the saved journal keeps the text.
+    #[test]
+    fn the_saved_journal_record_leaves_the_images_out() {
+        use notia_backend_core::chat_attachments::{MessageAttachment, MessageAttachmentKind};
+        use notia_backend_core::{BackendMessage, MessageRole, ProviderMessage, ProviderMessageRole};
+        let image = MessageAttachment {
+            name: "foto-1.jpg".into(),
+            media_type: "image/jpeg".into(),
+            kind: MessageAttachmentKind::Image,
+            pages: vec!["QUJD".repeat(1_000)],
+            text_content: None,
+            extracted_text: None,
+            page_count: None,
+        };
+        let request: notia_backend_core::AgentRequest = serde_json::from_value(serde_json::json!({
+            "context": {
+                "requestId": "r", "libraryId": "library-1",
+                "actor": { "libraryUserId": "user-owner" },
+                "channel": "telegram", "scope": "library", "persistencePolicy": "persistent"
+            },
+            "messages": [], "tools": [], "idempotencyKey": "k"
+        }))
+        .expect("request");
+        let mut request = request;
+        request.messages.push(BackendMessage {
+            role: MessageRole::User,
+            content: "cargá estos tickets".into(),
+            images: vec!["QUJD".into()],
+            attachments: vec![image],
+        });
+        let record = super::JournalRecord {
+            request: Some(request),
+            continuation: Some(notia_backend_core::AgentContinuation {
+                messages: vec![ProviderMessage {
+                    role: ProviderMessageRole::User,
+                    content: "cargá estos tickets".into(),
+                    images: vec!["QUJD".into()],
+                    tool_calls: Vec::new(),
+                    tool_name: None,
+                }],
+                rounds: 1,
+                pending_call: serde_json::from_value(serde_json::json!({"id": "c", "name": "create_finance_purchase", "arguments": {}, "round": 1})).expect("call"),
+                tool_results: Vec::new(),
+                preview: None,
+            }),
+            ..Default::default()
+        };
+        let saved = record.without_binary_content();
+        let message = &saved.request.as_ref().expect("request").messages[0];
+        assert_eq!(message.content, "cargá estos tickets");
+        assert!(message.images.is_empty() && message.attachments.is_empty());
+        assert!(saved.continuation.as_ref().expect("continuation").messages[0].images.is_empty());
+        assert!(!serde_json::to_string(&saved).expect("json").contains("QUJD"));
+    }
 
     /// Every turn sends the supported tools the scope allows (the library
     /// chat, routed by area); a scope that outgrows the limit fails every run

@@ -7227,7 +7227,7 @@ Reemplaza el ruteo por palabras de Telegram (sección anterior), que ahora queda
 
 **Catálogo.** Las herramientas financieras (`finance_tools`) quedan también en el scope biblioteca. La autorización ya permitía Finanzas en ese scope con `#Confidencial`, y la guía «acceso transversal» se activa cuando son visibles. Así un pedido mixto como «mandale por mail a Juan el resumen de gastos» recibe correo y finanzas.
 
-**Telegram.** El texto va siempre al scope biblioteca y se rutea. Las fotos y los PDF siguen yendo a Finanzas (`finance = document`).
+**Telegram.** El texto va siempre al scope biblioteca y se rutea. Desde «Agente: sin límite de pasos y adjuntos que decide el modelo», las fotos, imágenes y PDF también: el router mira los adjuntos.
 
 **Contextos y usuarios.**
 
@@ -7333,6 +7333,76 @@ Tardó unos 2,4 s por pedido, y 23 s la primera vez, al cargar el modelo. La pri
   - probar por Telegram y en la app con Ollama real, cancelando durante una ronda, durante una confirmación y antes de que el pedido registre su control;
   - probar el streaming con herramientas en un dispositivo Android;
   - probar un modelo que no admita herramientas por streaming.
+
+## Agente: sin límite de pasos y adjuntos que decide el modelo (2026-09-26)
+
+Complementa «Agente: trabajo continuo y cola de mensajes» y la sección de ruteo por áreas.
+
+**Pedido.** El agente tiene que trabajar hasta terminar, sin importar cuántas herramientas llame ni cuántos pasos dé. Además, las fotos, imágenes y PDF que llegan por Telegram tienen que pasar por una llamada a la IA que decida qué tipo de pedido son, en vez de ir siempre a Finanzas.
+
+**Sin límite de pasos (`backend-core/src/agent.rs`).**
+
+- `AgentRuntimeOptions::max_rounds` es `Option<u32>` y por defecto es `None`: el loop sigue mientras el modelo pida herramientas.
+- Se eliminaron `BackendLimits::max_rounds` (12), `max_events` (512), `validate_round` y `validate_event_count`. El historial de eventos ya está acotado por `BackendEventStore` (`MAX_REPLAY_EVENTS_PER_REQUEST`); el contador del loop solo numera los eventos para las interacciones.
+- `execute_backend_request` crea el control sin plazo total, antes de 600 s. Cada llamada al modelo y cada herramienta conserva su propio timeout, y la persona puede cancelar con el botón o con un mensaje.
+- Un límite explícito (`Some(n)`) sigue terminando con «El agente alcanzó el límite de rondas.».
+- **Rondas estancadas.** Si durante `MAX_STALLED_ROUNDS` (3) rondas seguidas todas las llamadas repiten otras ya hechas, sin ejecutar nada nuevo, se agrega una corrección y la ronda siguiente se pide sin herramientas, para que responda con lo que obtuvo. Así, sin tope de rondas, un modelo que repite llamadas igual termina.
+- **Contexto.** `compact_tool_results` resume los resultados de herramientas más viejos cuando pasan de 60.000 caracteres (`MAX_TOOL_RESULT_CONTEXT_CHARS`). Conserva enteros los 6 más recientes, deja los primeros 400 caracteres de cada resumido con la marca «[Resultado anterior resumido para ahorrar contexto]» y no toca el pedido ni las llamadas. Un servidor que recorta el prompt descarta los mensajes más viejos, que es justo donde está el pedido original.
+- **Guía.** Una línea general pide trabajar hasta terminar el pedido completo, en tantas rondas como haga falta. En Telegram con Finanzas ya no rige «como máximo una mutación financiera por turno»: cada comprobante se registra con su propia confirmación, uno por uno, hasta terminar con todos.
+- **Controles de Finanzas.** `finance_answer_correction` se aplica donde el turno puede escribir Finanzas (`offers_finance_writes`): el scope Finanzas o el chat de la biblioteca con herramientas de escritura financiera.
+
+**Adjuntos de Telegram.**
+
+- **Scope.** Todo pedido de Telegram va al scope biblioteca, también las fotos y los PDF (se eliminó `StoredJob.finance`). El router por áreas decide con la conversación y los adjuntos.
+- **Router con adjuntos (`tool_routing.rs`, `route_turn_tools`).**
+  - El último mensaje se compone con `chat_attachments::compose_message`: suma el texto de sus archivos y lo recorta a 1.500 caracteres; los demás mensajes siguen en 600.
+  - La llamada recibe las primeras 2 imágenes del mensaje (`MAX_ROUTER_IMAGES`) y el prompt indica cuántos adjuntos trae.
+  - El prompt explica cómo decidir: un ticket, una factura, un recibo de sueldo o un resumen de tarjeta es finanzas; una captura de agenda o calendario para copiar sus reuniones es correo; una tarea es tareas; unos apuntes o un documento para guardar o resumir es biblioteca.
+  - `complete_with` acepta imágenes.
+  - Si el modelo no responde, `fallback_areas(…, with_attachments)` empieza por Finanzas cuando hay adjuntos y agrega las áreas que indiquen las palabras.
+- **Mensaje sin texto.** `DOCUMENT_PROMPT` ahora es neutral: si es un comprobante, lo registra con la herramienta financiera del tipo detectado; si es otra cosa (agenda, tarea, apuntes), usa las herramientas que correspondan o pregunta; si son varios, los procesa todos.
+- **Archivos como adjuntos del mensaje (`prepare_input`, `read_attachment`).**
+  - Cada foto o imagen va como `MessageAttachment` de tipo imagen, y cada PDF como adjunto de texto con su texto extraído (dato no confiable, hasta `MAX_TEXT_CHARS`).
+  - Cada archivo agrega su línea de origen con la referencia de evidencia (`telegram:telegram-{fileId}.jpg|png|pdf`).
+  - Si un archivo no se puede leer (por ejemplo, un PDF escaneado), el pedido lo menciona y los demás siguen; si no se lee ninguno, se responde el motivo.
+- **Álbumes.** Telegram manda cada parte de un álbum como un update aparte, con `media_group_id`. `collect_album_part` junta las partes (hasta 10) y el texto de cualquiera de ellas, y encola el álbum como un solo pedido cuando pasan 1,5 s sin partes nuevas (`ALBUM_WINDOW`). Un álbum ocupa un solo lugar de los 10 de la cola.
+- **Imágenes como archivo.** `telegram::document_kind` reconoce PDF e imágenes JPG o PNG enviadas como archivo (hasta 10 MB, `MAX_IMAGE_DOCUMENT_BYTES`). Otros archivos se responden con «Por ahora recibo fotos, imágenes JPG o PNG y documentos PDF.».
+- **Cola guardada.** `StoredJob.attachments` reemplaza a `attachment`. Una cola guardada por una versión anterior se lee con `adopt_legacy_attachment`, y la variante `pdf` se lee como `document`.
+
+**Tamaños.**
+
+- `MAX_REQUEST_BYTES` pasó de 2 MiB a 32 MiB, lo mismo que acepta el servidor headless. Con 2 MiB, un álbum o una imagen grande de la app superaban el límite del request.
+- El journal guarda cada registro sin imágenes ni archivos adjuntos (`JournalRecord::without_binary_content`); siguen en memoria mientras dura la operación.
+- Un registro que igual supera 8 MB ya no hace fallar la operación: se anota una advertencia sin contenido (`[notia:journal]`) y el registro queda solo en memoria.
+
+**Prueba con un modelo real.** Con `qwen3.5:4b` local, que lee imágenes, se probaron el prompt real del router y dos imágenes generadas (un ticket de supermercado y una semana de calendario de Teams). Acertó 6 de 6, a unos 2,5 s por llamada (12 s la primera):
+
+- ticket sin texto: finanzas;
+- captura de Teams sin texto: correo;
+- captura de Teams con «pasame estas reuniones a mi calendario de google»: correo;
+- ticket con «¿cuánto gasté acá?»: finanzas;
+- captura de Teams con «guardá esto como nota»: biblioteca;
+- ticket con «guardá esto como nota»: biblioteca, más finanzas.
+
+**Validación.**
+
+- `cargo test -p notia-backend-core`: 357. Cubre:
+  - 40 herramientas seguidas hasta terminar;
+  - una corrida que solo repite su llamada y responde sin herramientas;
+  - un límite explícito que todavía corta;
+  - el resumen de resultados viejos;
+  - los controles de Finanzas en la biblioteca;
+  - el router con adjuntos y su respaldo;
+  - el límite de resultados.
+- `cargo test --offline -p notia-app --features bluetooth`: 357 y 1 ignorada. Cubre:
+  - el journal guardado sin imágenes;
+  - los tipos de documento de Telegram;
+  - la cola guardada por una versión anterior.
+- `cargo check` para Android: 61 advertencias. Linux (WSL): notia-app 302 y backend-core 357 aprobados, 144 advertencias. Las mismas advertencias que antes.
+- Pendiente:
+  - probar por Telegram un álbum de tickets, un PDF de resumen, una imagen como archivo y una captura de calendario;
+  - probar una corrida larga con un modelo configurado, cancelando con un mensaje;
+  - probar Android en un dispositivo.
 
 ## Task Manager: edición de tareas con el editor de notas
 

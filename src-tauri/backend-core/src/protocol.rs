@@ -4,7 +4,10 @@ use super::interaction::{ClarificationRequest, ExecutionPlan, OperationReview, O
 use super::{BackendError, BackendEvent, BackendRequestContext, BackendScope};
 
 pub const MAX_BACKEND_PROTOCOL_VERSION: u16 = 2;
-pub const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+/// Largest serialized agent request. It carries the images of the turn (a
+/// Telegram album of up to 10 photos, rendered PDF pages), so it matches the
+/// 32 MiB the headless server accepts.
+pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -603,7 +606,6 @@ fn validate_request_id(request_id: &str) -> Result<(), BackendError> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendLimits {
-    pub max_rounds: u32,
     pub max_messages: usize,
     pub max_message_chars: usize,
     pub max_tools: usize,
@@ -612,14 +614,12 @@ pub struct BackendLimits {
     pub max_documents: usize,
     pub max_attachment_bytes: u64,
     pub max_result_bytes: usize,
-    pub max_events: usize,
     pub max_request_bytes: usize,
 }
 
 impl Default for BackendLimits {
     fn default() -> Self {
         Self {
-            max_rounds: 12,
             max_messages: 128,
             max_message_chars: 100_000,
             // Finanzas offers 77 tools; 96 keeps room and stays under the 128
@@ -630,7 +630,6 @@ impl Default for BackendLimits {
             max_documents: 8,
             max_attachment_bytes: 25 * 1024 * 1024,
             max_result_bytes: 2 * 1024 * 1024,
-            max_events: 512,
             max_request_bytes: MAX_REQUEST_BYTES,
         }
     }
@@ -711,15 +710,6 @@ impl BackendLimits {
         Ok(())
     }
 
-    pub fn validate_round(&self, round: u32) -> Result<(), BackendError> {
-        if round == 0 || round > self.max_rounds {
-            return Err(BackendError::invalid_input(
-                "El request supera el límite de rondas.",
-            ));
-        }
-        Ok(())
-    }
-
     pub fn validate_result(&self, result: &ToolResult) -> Result<(), BackendError> {
         let result_bytes = serde_json::to_vec(result).map_err(|_| {
             BackendError::invalid_input("El resultado no puede serializarse de forma segura.")
@@ -727,15 +717,6 @@ impl BackendLimits {
         if result_bytes.len() > self.max_result_bytes {
             return Err(BackendError::invalid_input(
                 "El resultado de la tool es demasiado grande.",
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn validate_event_count(&self, count: usize) -> Result<(), BackendError> {
-        if count > self.max_events {
-            return Err(BackendError::invalid_input(
-                "La operación supera el límite de eventos.",
             ));
         }
         Ok(())
@@ -839,12 +820,9 @@ mod tests {
     }
 
     #[test]
-    fn enforces_round_result_and_event_limits() {
+    fn enforces_the_result_limit() {
         let mut limits = BackendLimits::default();
-        limits.max_rounds = 1;
         limits.max_result_bytes = 1;
-        limits.max_events = 1;
-        assert!(limits.validate_round(2).is_err());
         assert!(limits
             .validate_result(&ToolResult {
                 call_id: "call-1".to_string(),
@@ -855,7 +833,6 @@ mod tests {
                 preview: None,
             })
             .is_err());
-        assert!(limits.validate_event_count(2).is_err());
     }
 
     #[test]

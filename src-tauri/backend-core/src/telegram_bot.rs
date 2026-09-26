@@ -266,8 +266,9 @@ pub fn interrupted_message(count: usize) -> String {
     }
 }
 
-/// Prompt for a document without text: the model classifies and extracts it.
-pub const DOCUMENT_PROMPT: &str = "[Origen: documento de Telegram. Clasifica el documento como ticket de compra, factura o boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito u otro. Extrae todos los campos financieros legibles del tipo detectado y usa la herramienta de registro correspondiente; una factura de servicio debe asociarse a un servicio y no duplicar un gasto.]";
+/// Request of a photo, image or PDF sent without text: the model decides
+/// what it is, since the router and the agent both see the attachment.
+pub const DOCUMENT_PROMPT: &str = "[Origen: documento de Telegram sin texto. Mirá su contenido y hacé lo que corresponda: si es un comprobante financiero (ticket de compra, factura o boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito), extraé todos los campos legibles y registralo con la herramienta financiera del tipo detectado, sin duplicar como gasto una factura de servicio; si es otra cosa (por ejemplo, una agenda o un calendario, una tarea o apuntes), usá las herramientas que correspondan o preguntá qué hacer. Si son varios, procesalos todos.]";
 
 #[cfg(test)]
 mod tests {

@@ -36,6 +36,8 @@
 - Dictado y síntesis de voz offline, con reconocimiento Parakeet TDT.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
 - Cuentas de Gmail asociadas por biblioteca (hasta 10, cada una laboral, personal o estudiantil), con las credenciales del propio proyecto de Google Cloud (escritas o importadas del JSON, y probadas contra Google), conectada con OAuth en el navegador (lectura, envío, borrado y movimiento de correos) y marcada como laboral, personal o estudiantil.
+- Agente sin límite de pasos: trabaja hasta terminar (con cancelación por botón o mensaje), resume los resultados viejos para no perder el pedido y responde si solo repite llamadas.
+- Adjuntos de Telegram decididos por el modelo: fotos, imágenes JPG/PNG como archivo y PDF van al chat de la biblioteca y el router mira el adjunto (comprobante → Finanzas, calendario → Google Calendar, apuntes → nota); un álbum es un solo pedido.
 - Trabajo continuo del agente: rondas con herramientas también por streaming (escritorio y Android) y una revisión corta del modelo que lo hace seguir cuando solo anunció un paso; notas de estado en el progreso de Telegram.
 - Cola de mensajes durante una respuesta (chat de la app y Telegram): una llamada corta al modelo decide si el mensaje cancela, cancela y sigue con el pedido nuevo, o queda en cola; `/cancelar` sin modelo y respaldo por palabras.
 - Elección de herramientas por el modelo en el chat principal y en Telegram: áreas (notas, tareas, finanzas, rutina, correo y calendario) según el pedido y la conversación, limitadas a las que el usuario tiene autorizadas, con respaldo por palabras.

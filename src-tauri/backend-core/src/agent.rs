@@ -233,7 +233,10 @@ impl AgentStateHooks for NoopAgentState {
 #[derive(Debug, Clone)]
 pub struct AgentRuntimeOptions {
     pub limits: BackendLimits,
-    pub max_rounds: u32,
+    /// Rounds a run may take; `None` works until the task is done, like a
+    /// command-line agent. The person stops it by cancelling, and a run that
+    /// only repeats its calls is asked for its answer (see `MAX_STALLED_ROUNDS`).
+    pub max_rounds: Option<u32>,
     pub max_provider_retries: u32,
     pub max_tool_retries: u32,
     pub max_empty_responses: u32,
@@ -253,10 +256,9 @@ pub enum AgentRunResult {
 
 impl Default for AgentRuntimeOptions {
     fn default() -> Self {
-        let limits = BackendLimits::default();
         Self {
-            max_rounds: limits.max_rounds,
-            limits,
+            max_rounds: None,
+            limits: BackendLimits::default(),
             max_provider_retries: 1,
             max_tool_retries: 1,
             max_empty_responses: 1,
@@ -267,6 +269,18 @@ impl Default for AgentRuntimeOptions {
         }
     }
 }
+
+/// Consecutive rounds that only repeat calls already made before the run is
+/// asked for its answer without tools.
+const MAX_STALLED_ROUNDS: u32 = 3;
+/// Characters of tool results the conversation keeps in full. Past it, the
+/// results older than the most recent ones are reduced to a short summary,
+/// so a long run keeps its request and its recent evidence inside the
+/// model's context (a server that truncates drops the oldest messages).
+const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 60_000;
+const RECENT_TOOL_RESULTS_KEPT: usize = 6;
+const COMPACTED_RESULT_PREVIEW_CHARS: usize = 400;
+const COMPACTED_RESULT_MARKER: &str = "[Resultado anterior resumido para ahorrar contexto]";
 
 #[derive(Debug, Clone)]
 struct ExecutedTool {
@@ -449,10 +463,10 @@ fn run_agent_inner(
                 .map(provider_message_from_backend)
                 .collect::<Vec<_>>()
         });
-    let provider_request = |messages: &[ProviderMessage]| ProviderRequest {
+    let provider_request = |messages: &[ProviderMessage], with_tools: bool| ProviderRequest {
         context: request.context.clone(),
         messages: messages.to_vec(),
-        tools: tools.clone(),
+        tools: if with_tools { tools.clone() } else { Vec::new() },
     };
     let mut executed = HashMap::<String, ExecutedTool>::new();
     let mut tool_results = continuation
@@ -466,6 +480,7 @@ fn run_agent_inner(
     let mut finance_corrections = 0;
     let mut had_tool_result = false;
     let mut streamed_in_turn = false;
+    let mut stalled_rounds = 0;
     let mut event_count = 0usize;
 
     if let (Some(continuation), Some(decision)) = (continuation, resume_decision) {
@@ -592,7 +607,7 @@ fn run_agent_inner(
         },
     )?;
 
-    while rounds < options.max_rounds.min(options.limits.max_rounds) {
+    while options.max_rounds.is_none_or(|max| rounds < max) {
         control.check()?;
         rounds += 1;
         emit(
@@ -605,7 +620,10 @@ fn run_agent_inner(
             },
         )?;
         let should_stream = options.stream_final_response && had_tool_result;
-        let provider_request = provider_request(&messages);
+        // A run that kept repeating its calls answers with what it has.
+        let answer_only = stalled_rounds >= MAX_STALLED_ROUNDS;
+        compact_tool_results(&mut messages);
+        let provider_request = provider_request(&messages, !answer_only);
         let mut streamed_content = false;
         let mut provider_response = call_provider_with_retry(
             provider,
@@ -657,7 +675,7 @@ fn run_agent_inner(
 
         if calls.is_empty() {
             if content.is_empty() {
-                if empty_responses < options.max_empty_responses && rounds < options.max_rounds {
+                if empty_responses < options.max_empty_responses && has_rounds_left(rounds, options) {
                     empty_responses += 1;
                     messages.push(system_correction(
                         "La ronda anterior no devolvió contenido ni herramientas. Genera una respuesta útil o ejecuta la acción mediante las herramientas disponibles; no finalices vacío.",
@@ -677,8 +695,9 @@ fn run_agent_inner(
                 );
             }
             let can_continue = pending_action_corrections < options.max_pending_action_corrections
-                && rounds < options.max_rounds;
+                && has_rounds_left(rounds, options);
             if !tools.is_empty()
+                && !answer_only
                 && announces_pending_step(request, options, control, &content, tool_results.len(), can_continue)
             {
                 control.check()?;
@@ -712,10 +731,12 @@ fn run_agent_inner(
                     ),
                 );
             }
-            if request.context.scope == super::context::BackendScope::Finance && !tools.is_empty() {
+            // Finance answers are checked wherever the turn can write
+            // Finanzas: its scope, or the library chat with finance tools.
+            if offers_finance_writes(request, &tools) {
                 let facts = finance_turn_facts(request, &messages, &tool_results);
                 if let Some(correction) = super::finance_answer::finance_answer_correction(&content, &facts) {
-                    if finance_corrections < options.max_pending_action_corrections && rounds < options.max_rounds {
+                    if finance_corrections < options.max_pending_action_corrections && has_rounds_left(rounds, options) {
                         finance_corrections += 1;
                         messages.push(system_correction(correction.message));
                         continue;
@@ -781,6 +802,7 @@ fn run_agent_inner(
         empty_responses = 0;
         pending_action_corrections = 0;
         let mut repeated_call = false;
+        let mut progressed = false;
         let mut seen_call_keys = HashSet::new();
         for call in calls {
             control.check()?;
@@ -904,6 +926,7 @@ fn run_agent_inner(
                 }
             }
             let result = if should_execute {
+                progressed = true;
                 if prior.is_some() {
                     retry_count += 1;
                 }
@@ -1052,6 +1075,12 @@ fn run_agent_inner(
                 "No repitas una llamada idéntica ya ejecutada en esta operación. Reutiliza el resultado disponible y responde con la evidencia obtenida.",
             ));
         }
+        stalled_rounds = if progressed { 0 } else { stalled_rounds + 1 };
+        if stalled_rounds == MAX_STALLED_ROUNDS {
+            messages.push(system_correction(
+                "Las últimas rondas solo repitieron llamadas ya hechas. No llames más herramientas: respondé ahora con el resultado real que obtuviste y lo que no se pudo hacer.",
+            ));
+        }
     }
 
     fail(
@@ -1079,7 +1108,7 @@ fn validate_runtime_request(
             "El agente necesita al menos un mensaje.",
         ));
     }
-    if options.max_rounds == 0 {
+    if options.max_rounds == Some(0) {
         return Err(BackendError::invalid_input(
             "El límite de rondas debe ser mayor que cero.",
         ));
@@ -1479,15 +1508,58 @@ pub fn contains_pending_action(value: &str) -> bool {
     .any(|marker| without_code.contains(marker))
 }
 
+/// Publishes an event of the run. The count only numbers the run's events
+/// for its interactions; the event store keeps its own bounded history.
 fn emit(
     events: &dyn BackendEventSink,
-    options: &AgentRuntimeOptions,
+    _options: &AgentRuntimeOptions,
     event_count: &mut usize,
     event: BackendEvent,
 ) -> Result<(), BackendError> {
     *event_count += 1;
-    options.limits.validate_event_count(*event_count)?;
     events.publish(event)
+}
+
+/// Whether the run may take another round after `rounds`.
+fn has_rounds_left(rounds: u32, options: &AgentRuntimeOptions) -> bool {
+    options.max_rounds.is_none_or(|max| rounds < max)
+}
+
+/// Whether the turn can write Finanzas: its own scope, or another scope
+/// (the library chat) that offers the finance tools.
+fn offers_finance_writes(request: &AgentRequest, tools: &[ToolDefinition]) -> bool {
+    !tools.is_empty()
+        && (request.context.scope == super::context::BackendScope::Finance
+            || tools.iter().any(|tool| super::catalog::tool_policy(&tool.name) == super::catalog::ToolPolicy::FinanceWrite))
+}
+
+/// Reduces the oldest tool results to a short summary once the results
+/// outgrow `MAX_TOOL_RESULT_CONTEXT_CHARS`, keeping the most recent ones
+/// whole. The calls themselves stay, so the model still knows what it did.
+fn compact_tool_results(messages: &mut [ProviderMessage]) {
+    let tool_indexes = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.role == ProviderMessageRole::Tool)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut total = tool_indexes.iter().map(|&index| messages[index].content.chars().count()).sum::<usize>();
+    let compactable = tool_indexes.len().saturating_sub(RECENT_TOOL_RESULTS_KEPT);
+    for &index in &tool_indexes[..compactable] {
+        if total <= MAX_TOOL_RESULT_CONTEXT_CHARS {
+            return;
+        }
+        let content = &messages[index].content;
+        if content.starts_with(COMPACTED_RESULT_MARKER) {
+            continue;
+        }
+        let summary = format!(
+            "{COMPACTED_RESULT_MARKER} {}…",
+            content.chars().take(COMPACTED_RESULT_PREVIEW_CHARS).collect::<String>()
+        );
+        total = total - content.chars().count() + summary.chars().count();
+        messages[index].content = summary;
+    }
 }
 
 fn fail(
@@ -1503,7 +1575,7 @@ fn fail(
             error: error.clone(),
         });
     }
-    let _ = options.limits.validate_event_count(*event_count + 1);
+    let _ = (options, event_count);
     Err(error)
 }
 
@@ -1918,6 +1990,177 @@ mod tests {
         )
         .expect("agent completes");
         assert_eq!(response.response.markdown, "Voy a ver el volumen total antes de borrar.");
+    }
+
+    /// Answers with a tool call while it has tools: `distinct` gives each
+    /// call new arguments; otherwise it repeats the same call.
+    struct Looping {
+        distinct: bool,
+        calls: Mutex<u32>,
+        answer_after: u32,
+        tool_requests: Mutex<Vec<usize>>,
+    }
+
+    impl Looping {
+        fn respond(&self, request: &ProviderRequest) -> ProviderResponse {
+            self.tool_requests.lock().expect("requests").push(request.tools.len());
+            let mut calls = self.calls.lock().expect("calls");
+            *calls += 1;
+            let tool_calls = if request.tools.is_empty() || *calls > self.answer_after {
+                Vec::new()
+            } else {
+                vec![ProviderToolCall {
+                    id: format!("call-{calls}"),
+                    name: "read_library_documents".into(),
+                    arguments: serde_json::json!({"page": if self.distinct { *calls } else { 1 }}),
+                }]
+            };
+            let content = if tool_calls.is_empty() { "Terminé.".to_string() } else { String::new() };
+            ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content,
+                    images: Vec::new(),
+                    tool_calls,
+                    tool_name: None,
+                },
+            }
+        }
+    }
+
+    impl AgentProvider for Looping {
+        fn chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            Ok(self.respond(request))
+        }
+        fn stream_chat(
+            &self,
+            request: &ProviderRequest,
+            _: &RequestControl,
+            _: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
+        ) -> Result<ProviderResponse, BackendError> {
+            Ok(self.respond(request))
+        }
+        fn tool_chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            Ok(self.respond(request))
+        }
+    }
+
+    fn read_executor() -> Executor {
+        Executor {
+            executions: Mutex::new(0),
+            result: ToolResult {
+                call_id: String::new(),
+                ok: true,
+                changed: false,
+                data: Some(serde_json::json!({"ok": true})),
+                error: None,
+                preview: None,
+            },
+        }
+    }
+
+    #[test]
+    fn the_agent_works_until_it_finishes_however_many_steps_it_takes() {
+        let provider = Looping { distinct: true, calls: Mutex::new(0), answer_after: 40, tool_requests: Mutex::new(Vec::new()) };
+        let executor = read_executor();
+        let response = run_agent(
+            &provider,
+            &executor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+        )
+        .expect("agent completes");
+        assert_eq!(response.response.markdown, "Terminé.");
+        assert_eq!(*executor.executions.lock().expect("executions"), 40);
+        assert_eq!(response.rounds, 41);
+    }
+
+    #[test]
+    fn a_run_that_only_repeats_its_call_answers_without_tools() {
+        let provider = Looping { distinct: false, calls: Mutex::new(0), answer_after: u32::MAX, tool_requests: Mutex::new(Vec::new()) };
+        let executor = read_executor();
+        let response = run_agent(
+            &provider,
+            &executor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+        )
+        .expect("agent answers");
+        assert_eq!(response.response.markdown, "Terminé.");
+        assert_eq!(*executor.executions.lock().expect("executions"), 1);
+        // One call, three rounds that only repeat it, then a round without tools.
+        let requests = provider.tool_requests.lock().expect("requests").clone();
+        assert_eq!(requests.len(), 5);
+        assert!(requests[..4].iter().all(|&tools| tools == 1));
+        assert_eq!(requests[4], 0);
+    }
+
+    #[test]
+    fn an_explicit_round_limit_still_stops_the_run() {
+        let provider = Looping { distinct: true, calls: Mutex::new(0), answer_after: u32::MAX, tool_requests: Mutex::new(Vec::new()) };
+        let options = AgentRuntimeOptions { max_rounds: Some(3), ..AgentRuntimeOptions::default() };
+        let error = run_agent(
+            &provider,
+            &read_executor(),
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &options,
+        )
+        .expect_err("limit reached");
+        assert_eq!(error.message, "El agente alcanzó el límite de rondas.");
+    }
+
+    #[test]
+    fn old_tool_results_are_summarized_once_they_outgrow_the_context() {
+        let tool_message = |content: String| ProviderMessage {
+            role: ProviderMessageRole::Tool,
+            content,
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_name: Some("read_library_documents".into()),
+        };
+        let mut messages = vec![ProviderMessage {
+            role: ProviderMessageRole::User,
+            content: "x".repeat(50_000),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+        }];
+        messages.extend((0..12).map(|index| tool_message(format!("{{\"callId\":\"{index}\",\"ok\":true,\"data\":\"{}\"}}", "y".repeat(8_000)))));
+        compact_tool_results(&mut messages);
+        assert_eq!(messages[0].content.len(), 50_000, "the request stays whole");
+        let tools = &messages[1..];
+        let compacted = tools.iter().filter(|message| message.content.starts_with(COMPACTED_RESULT_MARKER)).count();
+        assert!(compacted > 0 && compacted <= tools.len() - RECENT_TOOL_RESULTS_KEPT);
+        assert!(tools[0].content.starts_with(COMPACTED_RESULT_MARKER) && tools[0].content.contains("\"callId\":\"0\""));
+        assert!(tools[tools.len() - RECENT_TOOL_RESULTS_KEPT..].iter().all(|message| !message.content.starts_with(COMPACTED_RESULT_MARKER)));
+        let total = tools.iter().map(|message| message.content.chars().count()).sum::<usize>();
+        assert!(total <= MAX_TOOL_RESULT_CONTEXT_CHARS);
+        let before = messages.clone();
+        compact_tool_results(&mut messages);
+        assert_eq!(messages, before, "compacting twice changes nothing");
+    }
+
+    #[test]
+    fn finance_answers_are_checked_where_finance_can_be_written() {
+        let library = request(Vec::new());
+        assert!(!offers_finance_writes(&library, &[tool("read_library_documents", true)]));
+        assert!(offers_finance_writes(&library, &[tool("create_finance_purchase", false)]));
+        let mut finance = request(Vec::new());
+        finance.context.scope = BackendScope::Finance;
+        assert!(offers_finance_writes(&finance, &[tool("get_finance_dashboard", true)]));
+        assert!(!offers_finance_writes(&finance, &[]));
     }
 
     #[test]
