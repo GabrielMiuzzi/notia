@@ -315,6 +315,38 @@ impl Worker {
         }
     }
 
+    /// Sends a Markdown text as one or more messages, split between
+    /// paragraphs so a long answer is neither cut nor loses its format.
+    fn send_markdown(&self, chat_id: i64, markdown: &str) {
+        self.send_parts(chat_id, bot::telegram_html_parts(markdown), Vec::new());
+    }
+
+    /// Sends whole the agent's notes the person has not read since the last
+    /// delivery (see `bot::notes_to_deliver`).
+    fn deliver_notes(
+        &self,
+        chat_id: i64,
+        runtime: &crate::backend_runtime::BackendRuntimeState,
+        context: &BackendRequestContext,
+        seen_events: &mut u64,
+        asking: bool,
+    ) {
+        let events = runtime.request_events(context, *seen_events).unwrap_or_default();
+        *seen_events = events.iter().map(|envelope| envelope.sequence).max().unwrap_or(*seen_events);
+        let events = events.into_iter().map(|envelope| envelope.event).collect::<Vec<_>>();
+        for note in bot::notes_to_deliver(&events, asking) {
+            self.send_markdown(chat_id, &note);
+        }
+    }
+
+    /// Sends the HTML parts of one text in order; the buttons go with the last.
+    fn send_parts(&self, chat_id: i64, parts: Vec<String>, buttons: Vec<(String, String)>) {
+        let last = parts.len().saturating_sub(1);
+        for (index, part) in parts.into_iter().enumerate() {
+            self.send_html(chat_id, &part, if index == last { buttons.clone() } else { Vec::new() });
+        }
+    }
+
     fn notify_interrupted(&self) {
         let jobs = self.interrupted.lock().map(|jobs| jobs.clone()).unwrap_or_default();
         let mut by_chat = HashMap::<i64, usize>::new();
@@ -1081,6 +1113,7 @@ impl Worker {
             library_search: true,
         });
         let progress = Progress::start(self, chat_id, progress_enabled, edit_progress);
+        let mut seen_events = 0;
         let outcome = loop {
             let running = Arc::new(AtomicBool::new(true));
             let observer = progress.observe(&runtime, &context, Arc::clone(&running));
@@ -1099,7 +1132,10 @@ impl Worker {
             }
             let response = match result {
                 Ok(envelope) => envelope.response,
-                Err(error) => break Err(error.message),
+                Err(error) => {
+                    crate::backend_runtime::log_request_failure(&runtime, "telegram", &context, &error);
+                    break Err(error.message);
+                }
             };
             let stopped = cancelled.load(Ordering::SeqCst);
             match response {
@@ -1112,11 +1148,17 @@ impl Worker {
                     break Err(bot::CANCELLED_MESSAGE.to_string());
                 }
                 _ if stopped => break Err(bot::CANCELLED_MESSAGE.to_string()),
-                BackendResponse::Error { error, .. } => break Err(error.message),
+                BackendResponse::Error { error, .. } => {
+                    crate::backend_runtime::log_request_failure(&runtime, "telegram", &context, &error);
+                    break Err(error.message);
+                }
                 BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } => {
                     let (Some(operation), Some(interaction)) = (status.operation.clone(), status.interaction.clone()) else {
                         break Err("El runtime no devolvió una respuesta final.".to_string());
                     };
+                    // What the agent wrote in the round it asks is the
+                    // context of the question: it goes whole before it.
+                    self.deliver_notes(chat_id, &runtime, &context, &mut seen_events, true);
                     let Some(decision) = self.ask(chat_id, interaction, &operation) else {
                         if cancelled.load(Ordering::SeqCst) {
                             self.cancel_operation(&context, &idempotency_key, operation);
@@ -1147,11 +1189,18 @@ impl Worker {
             self.remember(chat_id, text, bot::CANCELLED_MESSAGE.to_string());
             return Err(bot::CANCELLED_MESSAGE.to_string());
         }
+        // A failed request stays in the chat's history too, so «seguí» or
+        // «¿qué pasó?» has its context.
+        if let Err(error) = &outcome {
+            self.remember(chat_id, text.clone(), format!("No pude terminar: {error}"));
+        }
         let response = outcome?;
         if stopped {
             self.send(chat_id, bot::TOO_LATE_TO_CANCEL_MESSAGE);
         }
-        self.send_html(chat_id, &response.response.telegram_html, Vec::new());
+        // What the progress showed clipped arrives whole before the answer.
+        self.deliver_notes(chat_id, &runtime, &context, &mut seen_events, false);
+        self.send_markdown(chat_id, &response.response.markdown);
         self.remember(chat_id, text, response.response.markdown.clone());
         if response.changed {
             let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
@@ -1201,12 +1250,12 @@ impl Worker {
         let (prompt, timeout) = match &interaction {
             Interaction::Confirmation(request) => {
                 let id = short_id()[..8].to_string();
-                self.send_html(chat_id, &bot::confirmation_message(&request.preview), confirm_buttons(&id));
+                self.send_parts(chat_id, bot::confirmation_parts(&request.preview), confirm_buttons(&id));
                 (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT)
             }
             Interaction::Plan(plan) => {
                 let id = short_id()[..8].to_string();
-                self.send_html(chat_id, &bot::plan_message(plan), confirm_buttons(&id));
+                self.send_parts(chat_id, bot::plan_parts(plan), confirm_buttons(&id));
                 (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT)
             }
             Interaction::Clarification(request) => {
@@ -1214,9 +1263,9 @@ impl Worker {
                 let buttons = choices
                     .iter()
                     .enumerate()
-                    .map(|(index, label)| (label.chars().take(48).collect(), format!("choice:{index}")))
+                    .map(|(index, label)| (label.chars().take(bot::MAX_BUTTON_CHARS).collect(), format!("choice:{index}")))
                     .collect();
-                self.send_html(chat_id, &crate::backend::escape_telegram_html(&request.question), buttons);
+                self.send_parts(chat_id, bot::question_parts(&request.question, &choices), buttons);
                 (Prompt::Clarification { choices }, CLARIFICATION_TIMEOUT)
             }
         };

@@ -63,7 +63,18 @@ pub fn scope_guidance(
         BackendScope::Library => library(&mut guidance, context, today),
         BackendScope::Document => document(&mut guidance, snapshot),
     }
+    agenda_tools(&mut guidance, today);
     guidance.lines.join("\n")
+}
+
+/// The Agenda of Notia and Google Calendar are different places: a request
+/// names which one («en Notia», «en mi Gmail») or both.
+fn agenda_tools(guidance: &mut Guidance, today: &str) {
+    if guidance.has("create_agenda_event") {
+        guidance.push(format!(
+            "La Agenda de Notia es la agenda propia de la app (list_agenda para ver eventos y el anotador del día, create_agenda_event y delete_agenda_event para eventos con día y hora, add_agenda_note para un pendiente del día). Google Calendar tiene sus propias herramientas, pero la Agenda de Notia se sincroniza sola con Google Calendar cada 5 minutos en las dos direcciones. Si el usuario pide agendar «en Notia» o «en mi agenda», usá la Agenda de Notia y no crees una nota; si pide agendar en los dos, creá el evento solo en la Agenda de Notia, que llega a Google Calendar al sincronizar, y usá create_calendar_event solo cuando pide únicamente Google Calendar, una cuenta en particular o invitados. Hoy es {today}: interpretá «mañana» o «el jueves» desde esa fecha y pasá la fecha como YYYY-MM-DD y las horas como HH:MM."
+        ));
+    }
 }
 
 fn general(guidance: &mut Guidance, context: &BackendRequestContext) {
@@ -234,6 +245,22 @@ mod tests {
             scope,
             persistence_policy: PersistencePolicy::Persistent,
         }
+    }
+
+    #[test]
+    fn the_agenda_of_notia_is_told_apart_from_google_calendar() {
+        let with_agenda = scope_guidance(
+            &context(BackendScope::Library, BackendChannel::Telegram),
+            &tools(&["list_agenda", "create_agenda_event", "create_calendar_event"]),
+            None,
+            "2026-09-27",
+        );
+        assert!(with_agenda.contains("La Agenda de Notia es la agenda propia de la app"));
+        assert!(with_agenda.contains("no crees una nota"));
+        assert!(with_agenda.contains("creá el evento solo en la Agenda de Notia"));
+        assert!(with_agenda.contains("Hoy es 2026-09-27"));
+        let without = scope_guidance(&context(BackendScope::Library, BackendChannel::App), &tools(&["list_agenda"]), None, "2026-09-27");
+        assert!(!without.contains("La Agenda de Notia"));
     }
 
     fn tools(names: &[&str]) -> Vec<ToolDefinition> {

@@ -867,11 +867,13 @@ fn routine_apply_mutation(app: &AppHandle, _window_label: &str, command: &str, a
 }
 
 fn agenda_get_view(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::agenda::agenda_get_view(app.clone(), arg(command, args, "context")?, arg(command, args, "request")?))))
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "request")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::agenda::agenda_get_view(arg0, arg1, arg2).await) })))
 }
 
 fn agenda_apply_mutation(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::agenda::agenda_apply_mutation(app.clone(), arg(command, args, "payload")?))))
+    let (arg0, arg1) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::agenda::agenda_apply_mutation(arg0, arg1).await) })))
 }
 
 fn finance_dev_list_tables(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

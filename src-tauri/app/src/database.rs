@@ -12,7 +12,7 @@ use crate::host::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 26;
+pub const CURRENT_SCHEMA_VERSION: i64 = 27;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -1030,6 +1030,29 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
             )
         })?;
         transaction.execute("INSERT INTO notia_schema_migrations (version) VALUES (26)", [])?;
+        transaction.commit()?;
+    }
+    if current_version < 27 && target >= 27 {
+        // Which Google Calendar event each Agenda event is, and both sides as
+        // they were at the last sync. `event_id` has no foreign key: a link
+        // whose event is gone tells the sync to delete it in Google.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agenda_google_links (
+                 account_email TEXT NOT NULL,
+                 google_event_id TEXT NOT NULL,
+                 event_id TEXT NOT NULL,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 ical_uid TEXT,
+                 google_updated TEXT NOT NULL,
+                 notia_fingerprint TEXT NOT NULL,
+                 synced_at TEXT NOT NULL,
+                 PRIMARY KEY (account_email, google_event_id)
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_agenda_google_links_event
+                 ON agenda_google_links(event_id);
+             INSERT INTO notia_schema_migrations (version) VALUES (27);",
+        )?;
         transaction.commit()?;
     }
     // Some development builds recorded schema version 18/19 before the

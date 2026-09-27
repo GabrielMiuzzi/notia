@@ -54,11 +54,11 @@ impl ClarificationRequest {
     pub fn validate(&self) -> Result<(), BackendError> {
         validate_identifier("clarificationId", &self.clarification_id, 256)?;
         self.operation.validate()?;
-        validate_identifier("question", &self.question, MAX_INTERACTION_TEXT)?;
+        validate_text("question", &self.question, MAX_INTERACTION_TEXT)?;
         let mut ids = std::collections::HashSet::new();
         for option in &self.options {
             validate_identifier("optionId", &option.id, 256)?;
-            validate_identifier("optionLabel", &option.label, MAX_INTERACTION_TEXT)?;
+            validate_text("optionLabel", &option.label, MAX_INTERACTION_TEXT)?;
             if !ids.insert(&option.id) {
                 return Err(BackendError::invalid_input(
                     "La aclaración contiene opciones repetidas.",
@@ -311,9 +311,7 @@ pub fn validate_clarification_answer(
         return stale_interaction("La respuesta de aclaración ya no corresponde a la operación.");
     }
     let answer_text = answer.answer.trim();
-    if answer_text.chars().count() > MAX_INTERACTION_TEXT
-        || answer_text.chars().any(char::is_control)
-    {
+    if answer_text.chars().count() > MAX_INTERACTION_TEXT || has_hidden_control(answer_text) {
         return Err(BackendError::invalid_input(
             "La respuesta de aclaración no es válida.",
         ));
@@ -437,6 +435,20 @@ fn stale_interaction<T>(message: &str) -> Result<T, BackendError> {
 fn has_duplicates(values: &[String]) -> bool {
     let mut seen = std::collections::HashSet::new();
     values.iter().any(|value| !seen.insert(value))
+}
+
+/// Text a person or the model writes (a question, an option, an answer):
+/// several lines are fine, other control characters are not.
+fn validate_text(field: &str, value: &str, max_chars: usize) -> Result<(), BackendError> {
+    if value.trim().is_empty() || value.chars().count() > max_chars || has_hidden_control(value) {
+        return Err(BackendError::invalid_input(format!("{field} no es válido.")));
+    }
+    Ok(())
+}
+
+/// A control character other than a line break or a tab.
+fn has_hidden_control(value: &str) -> bool {
+    value.chars().any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
 }
 
 fn validate_identifier(field: &str, value: &str, max_chars: usize) -> Result<(), BackendError> {
@@ -703,6 +715,33 @@ mod tests {
                 .expect_err("stale answer")
                 .code,
             BackendErrorCode::Conflict
+        );
+    }
+
+    #[test]
+    fn questions_and_answers_may_span_several_lines_but_not_hide_control_characters() {
+        let request = ClarificationRequest {
+            clarification_id: "clarification-1".into(),
+            operation: token(1),
+            question: "¿Qué hago con esos dos grupos?\n(Decime también si incluyo los avisos de Mercado Libre.)".into(),
+            options: Vec::new(),
+            allow_free_text: true,
+        };
+        request.validate().expect("a question of two lines");
+        let answer = |text: &str| ClarificationAnswer {
+            clarification_id: "clarification-1".into(),
+            operation: token(1),
+            answer: text.into(),
+            option_id: None,
+        };
+        let pasted = "Spam y promos comerciales de recibidos:\n• LinkedIn (19)\n| DonWeb Cloud\t| 6 |\r\n";
+        assert_eq!(
+            validate_clarification_answer(&request, &answer(pasted)).expect("several lines"),
+            pasted.trim()
+        );
+        assert_eq!(
+            validate_clarification_answer(&request, &answer("sí\u{7}")).expect_err("hidden control").code,
+            BackendErrorCode::InvalidInput
         );
     }
 

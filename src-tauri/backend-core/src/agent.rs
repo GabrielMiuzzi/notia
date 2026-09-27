@@ -690,7 +690,7 @@ fn run_agent_inner(
         }
         streamed_in_turn |= streamed_content;
         let provider_message = provider_response.message;
-        let content = provider_message.content.trim().to_string();
+        let mut content = provider_message.content.trim().to_string();
         let calls = provider_message
             .tool_calls
             .iter()
@@ -712,11 +712,23 @@ fn run_agent_inner(
             if content.is_empty() {
                 if empty_responses < options.max_empty_responses && has_rounds_left(rounds, options) {
                     empty_responses += 1;
-                    messages.push(system_correction(
-                        "La ronda anterior no devolvió contenido ni herramientas. Genera una respuesta útil o ejecuta la acción mediante las herramientas disponibles; no finalices vacío.",
-                    ));
+                    messages.push(system_correction(if answer_only {
+                        "En esta ronda no hay herramientas. Respondé ahora con lo que ya hiciste y lo que falta, usando los resultados que tenés; no finalices vacío."
+                    } else {
+                        "La ronda anterior no devolvió contenido ni herramientas. Genera una respuesta útil o ejecuta la acción mediante las herramientas disponibles; no finalices vacío."
+                    }));
                     continue;
                 }
+            }
+        }
+        // A model that worked and then writes nothing still ends the turn:
+        // the person learns what was done instead of losing it to an error.
+        let summarized = calls.is_empty() && content.is_empty() && !tool_results.is_empty();
+        if summarized {
+            content = work_summary(&tool_results);
+        }
+        if calls.is_empty() {
+            if content.is_empty() {
                 return fail(
                     events,
                     options,
@@ -733,6 +745,7 @@ fn run_agent_inner(
                 && has_rounds_left(rounds, options);
             if !tools.is_empty()
                 && !answer_only
+                && !summarized
                 && announces_pending_step(request, options, control, &content, tool_results.len(), can_continue)
             {
                 control.check()?;
@@ -768,7 +781,7 @@ fn run_agent_inner(
             }
             // Finance answers are checked wherever the turn can write
             // Finanzas: its scope, or the library chat with finance tools.
-            if offers_finance_writes(request, &tools) {
+            if !summarized && offers_finance_writes(request, &tools) {
                 let facts = finance_turn_facts(request, &messages, &tool_results);
                 if let Some(correction) = super::finance_answer::finance_answer_correction(&content, &facts) {
                     if finance_corrections < options.max_pending_action_corrections && has_rounds_left(rounds, options) {
@@ -1482,6 +1495,28 @@ fn plan_from_call(call: &ToolCall) -> Result<super::ExecutionPlan, BackendError>
         status: PlanStatus::AwaitingApproval,
         steps,
     })
+}
+
+/// What the agent did, from its tool results, for a turn the model ended
+/// without writing an answer.
+fn work_summary(results: &[ToolResult]) -> String {
+    let done = results.iter().filter(|result| result.ok).count();
+    let changed = results.iter().filter(|result| result.ok && result.changed).count();
+    let failed = results.len() - done;
+    let plural = |count: usize, one: &str, many: &str| format!("{count} {}", if count == 1 { one } else { many });
+    let mut summary = format!(
+        "El modelo no redactó la respuesta final, pero trabajé en el pedido: {} con herramientas",
+        plural(done, "acción", "acciones")
+    );
+    if changed > 0 {
+        summary.push_str(&format!(" ({} datos)", plural(changed, "cambió", "cambiaron")));
+    }
+    summary.push('.');
+    if failed > 0 {
+        summary.push_str(&format!(" {}.", plural(failed, "falló", "fallaron")));
+    }
+    summary.push_str(" Pedime que revise cómo quedó si querés el detalle.");
+    summary
 }
 
 pub fn tool_call_key(name: &str, arguments: &serde_json::Value) -> String {
@@ -2215,6 +2250,70 @@ mod tests {
         fn tool_chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
             Ok(self.respond(request))
         }
+    }
+
+    /// Repeats the same call while it has tools and answers nothing once it
+    /// has none, as a model that wants to keep calling tools does.
+    struct SilentWithoutTools;
+
+    impl SilentWithoutTools {
+        fn respond(request: &ProviderRequest) -> ProviderResponse {
+            let tool_calls = if request.tools.is_empty() {
+                Vec::new()
+            } else {
+                vec![ProviderToolCall {
+                    id: String::new(),
+                    name: "read_library_documents".into(),
+                    arguments: serde_json::json!({"page": 1}),
+                }]
+            };
+            ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls,
+                    tool_name: None,
+                },
+            }
+        }
+    }
+
+    impl AgentProvider for SilentWithoutTools {
+        fn chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            Ok(Self::respond(request))
+        }
+        fn stream_chat(
+            &self,
+            request: &ProviderRequest,
+            _: &RequestControl,
+            _: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
+        ) -> Result<ProviderResponse, BackendError> {
+            Ok(Self::respond(request))
+        }
+        fn tool_chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            Ok(Self::respond(request))
+        }
+    }
+
+    #[test]
+    fn a_model_that_worked_and_then_answers_nothing_ends_with_what_was_done() {
+        let response = run_agent(
+            &SilentWithoutTools,
+            &read_executor(),
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+        )
+        .expect("the turn ends with a summary instead of an error");
+        assert!(
+            response.response.markdown.starts_with("El modelo no redactó la respuesta final, pero trabajé en el pedido: 1 acción con herramientas."),
+            "{}",
+            response.response.markdown
+        );
     }
 
     fn read_executor() -> Executor {

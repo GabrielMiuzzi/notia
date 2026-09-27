@@ -964,11 +964,18 @@ impl RevisionPort for TauriRevisionPort {
         )
         .map(|reader| reader.with_app(self.app.clone()))?;
         let locator = DocumentLocatorDto::new(&context.library_id, logical_path, None, None)?;
-        reader
-            .read_document(&locator)
-            .map(|document| Some(document.revision))
+        match reader.read_document(&locator) {
+            Ok(document) => Ok(Some(document.revision)),
+            // A note that does not exist yet has revision 0, the one a
+            // creation expects: created meanwhile, it no longer matches.
+            Err(error) if error.code == BackendErrorCode::NotFound => Ok(Some(MISSING_DOCUMENT_REVISION)),
+            Err(error) => Err(error),
+        }
     }
 }
+
+/// Revision of a document that does not exist, as a creation preview expects.
+const MISSING_DOCUMENT_REVISION: u64 = 0;
 
 struct TauriBackendToolExecutor {
     app: AppHandle,
@@ -1108,6 +1115,12 @@ impl TauriBackendToolExecutor {
             "reorder_routine_tasks",
             "set_routine_completions",
             "set_routine_goal",
+            "list_agenda",
+            "create_agenda_event",
+            "delete_agenda_event",
+            "add_agenda_note",
+            "set_agenda_note_done",
+            "delete_agenda_note",
             "list_gmail_messages",
             "read_gmail_message",
             "list_gmail_labels",
@@ -1570,6 +1583,25 @@ impl TauriBackendToolExecutor {
             actor_library_user_id: context.actor.library_user_id.clone(),
             source: source.to_string(),
         })
+    }
+
+    fn agenda_context(&self, context: &BackendRequestContext) -> Result<crate::agenda::AgendaContext, BackendError> {
+        let (library_path, android_directory_uri) = self.library_location(context)?;
+        Ok(crate::agenda::AgendaContext {
+            library_path,
+            android_directory_uri,
+            actor_library_user_id: context.actor.library_user_id.clone(),
+        })
+    }
+
+    fn agenda_error(error: crate::agenda::AgendaCommandError) -> BackendError {
+        use crate::agenda::AgendaErrorCode;
+        let code = match error.code {
+            AgendaErrorCode::Validation => BackendErrorCode::InvalidInput,
+            AgendaErrorCode::NotFound => BackendErrorCode::NotFound,
+            AgendaErrorCode::Storage => BackendErrorCode::Storage,
+        };
+        BackendError::new(code, error.message, code == BackendErrorCode::Storage)
     }
 
     fn routine_error(error: crate::routine::RoutineCommandError) -> BackendError {
@@ -2210,7 +2242,7 @@ impl TauriBackendToolExecutor {
                     locator,
                     String::new(),
                     Self::text(&call.arguments, "content"),
-                    0,
+                    MISSING_DOCUMENT_REVISION,
                 )))
             }
             "replace_library_document" => {
@@ -2376,6 +2408,33 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     end_line: 1,
                     old_text: String::new(),
                     new_text: detail,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
+        if crate::agenda_tools::is_agenda_write_tool(&call.name) {
+            // Validation runs in a rolled-back transaction; any rejection
+            // other than storage (an overlap, a bad time) goes back to the model.
+            let summary = crate::agenda_tools::preview_tool(&self.app, &self.agenda_context(context)?, &call.name, &call.arguments)
+                .map_err(|error| match error.code {
+                    crate::agenda::AgendaErrorCode::Storage => Self::agenda_error(error),
+                    _ => BackendError::invalid_input(error.message),
+                })?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.clone(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("agenda:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
                 }],
                 allowed_actions: vec![
                     MutationPreviewAction::ApplyAll,
@@ -3780,6 +3839,10 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 &call.arguments,
             )
             .map_err(Self::routine_error)?,
+            name if crate::agenda_tools::is_agenda_tool(name) => {
+                crate::agenda_tools::execute_tool(&self.app, &self.agenda_context(context)?, name, &call.arguments)
+                    .map_err(Self::agenda_error)?
+            }
             name if notia_backend_core::mail_tools::is_mail_tool(name) => crate::mail_tools::execute(&self.app, context, call)?,
             _ => {
                 return Err(BackendError::new(
@@ -3801,7 +3864,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -3891,7 +3954,10 @@ pub(crate) fn execute_backend_request(
             state
                 .journal
                 .hydrate_record(app, registry, &resume.context, &resume.idempotency_key)?;
-            let response = state.interactions(None).handle_resume(&resume)?;
+            // A confirmed change to a note checks that the note is still as
+            // the preview saw it; without the revisions every such change failed.
+            let revisions = TauriRevisionPort { app: app.clone() };
+            let response = state.interactions(Some(&revisions)).handle_resume(&resume)?;
             let should_continue = matches!(
                 &response,
                 BackendResponse::Resumed { status, .. }
@@ -4312,11 +4378,63 @@ fn complete_with(
     };
     let control = RequestControl::new(Some(timeout));
     use notia_backend_core::AgentProvider as _;
-    Ok(provider.chat(&request, &control)?.message.content)
+    let content = provider.chat(&request, &control)?.message.content;
+    // Background tasks (titles, memories, routing) need an answer; an empty
+    // one is an error for them, never an empty title or memory.
+    if content.trim().is_empty() {
+        return Err(BackendError::new(BackendErrorCode::ProviderUnavailable, "La IA no devolvió contenido.", true));
+    }
+    Ok(content)
 }
 
 fn internal_error(message: &str) -> BackendError {
     BackendError::new(BackendErrorCode::Internal, message, true)
+}
+
+/// Logs why an agent request failed, for diagnosis: its error code, the
+/// message only for system errors (a data or validation message may quote
+/// private content) and how many times it ran each tool.
+pub(crate) fn log_request_failure(runtime: &BackendRuntimeState, channel: &str, context: &BackendRequestContext, error: &BackendError) {
+    let system_error = matches!(
+        error.code,
+        BackendErrorCode::ProviderUnavailable | BackendErrorCode::Timeout | BackendErrorCode::Internal
+    );
+    let events = runtime.request_events(context, 0).unwrap_or_default();
+    // Error level: the app's logger only shows errors.
+    log::error!(
+        "[notia:{channel}] la solicitud {} falló ({:?}){}; herramientas: {}",
+        context.request_id,
+        error.code,
+        if system_error { format!(": {}", error.message) } else { String::new() },
+        tool_usage(events.iter().map(|envelope| &envelope.event)),
+    );
+}
+
+/// «search_gmail_messages 3, trash_gmail_messages 2 (1 falló)», or «ninguna».
+fn tool_usage<'a>(events: impl Iterator<Item = &'a notia_backend_core::BackendEvent>) -> String {
+    let mut tools = std::collections::BTreeMap::<&str, (u32, u32)>::new();
+    for event in events {
+        if let notia_backend_core::BackendEvent::ToolCompleted { tool_name, ok, .. } = event {
+            let counts = tools.entry(tool_name.as_str()).or_default();
+            if *ok {
+                counts.0 += 1;
+            } else {
+                counts.1 += 1;
+            }
+        }
+    }
+    if tools.is_empty() {
+        return "ninguna".to_string();
+    }
+    tools
+        .iter()
+        .map(|(name, (ok, failed))| match failed {
+            0 => format!("{name} {ok}"),
+            1 => format!("{name} {} (1 falló)", ok + failed),
+            _ => format!("{name} {} ({failed} fallaron)", ok + failed),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// User-facing name of a serde enum value (e.g. `Pendiente`).
@@ -4408,6 +4526,28 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    #[test]
+    fn a_failed_request_logs_its_tools_by_name_without_their_data() {
+        use notia_backend_core::BackendEvent;
+        let completed = |tool_name: &str, ok: bool| BackendEvent::ToolCompleted {
+            request_id: "r1".into(),
+            tool_name: tool_name.into(),
+            round: 1,
+            ok,
+            changed: Some(ok),
+            operation_id: None,
+        };
+        let events = [
+            completed("search_gmail_messages", true),
+            completed("trash_gmail_messages", true),
+            completed("search_gmail_messages", true),
+            completed("trash_gmail_messages", false),
+            BackendEvent::AssistantNote { request_id: "r1".into(), text: "Borro los correos de Jumbo.".into() },
+        ];
+        assert_eq!(super::tool_usage(events.iter()), "search_gmail_messages 2, trash_gmail_messages 2 (1 falló)");
+        assert_eq!(super::tool_usage(std::iter::empty()), "ninguna");
+    }
 
     /// Images stay in memory for the run; the saved journal keeps the text.
     #[test]

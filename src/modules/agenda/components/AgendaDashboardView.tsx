@@ -4,6 +4,7 @@ import type { NotiaLibrary } from '../../../types/notia'
 import { AGENDA_TODAY_REQUEST, useAgendaView } from '../hooks/useAgendaView'
 import type { AgendaEvent, AgendaMutation, AgendaNote, AgendaPriority, AgendaSlotInput } from '../types/agendaTypes'
 import { AgendaActionBar } from './AgendaActionBar'
+import { AgendaHolidaysCard } from './AgendaHolidaysCard'
 import { AgendaMonthCalendar } from './AgendaMonthCalendar'
 import { AgendaNotesCard } from './AgendaNotesCard'
 import { AgendaUpcomingCard } from './AgendaUpcomingCard'
@@ -74,9 +75,8 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
   }
 
   const priority = chosenPriority ?? view.defaultPriority
-  const activeEvent = view.week.events.find((event) => event.id === activeEventId)
-    ?? view.upcoming.events.find((event) => event.id === activeEventId)
-    ?? null
+  const activeWeekEvent = view.week.events.find((event) => event.id === activeEventId) ?? null
+  const activeEvent = activeWeekEvent ?? view.upcoming.events.find((event) => event.id === activeEventId) ?? null
 
   const schedule = async () => {
     if (selectedSlots.size === 0 || isMutating) return
@@ -100,6 +100,8 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
     handlePickEvent(event.id)
     setRevealEventId(event.id)
   }
+
+  const pickDate = (date: string) => navigate({ selectedDate: date, month: null })
 
   const addNote = (text: string) => {
     setNotesError(null)
@@ -137,7 +139,7 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
 
         <AgendaMonthCalendar
           month={view.month}
-          onPickDate={(date) => navigate({ selectedDate: date, month: null })}
+          onPickDate={pickDate}
           onShowMonth={(month) => navigate({ selectedDate: view.selectedDate, month })}
           onToday={() => navigate(AGENDA_TODAY_REQUEST)}
         />
@@ -164,6 +166,7 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
             priority={priority}
             priorities={view.priorities}
             activeEvent={activeEvent}
+            activeOverlapLabel={activeWeekEvent?.overlapLabel ?? ''}
             disabled={isMutating}
             error={weekError}
             onDraftTitle={setDraftTitle}
@@ -197,6 +200,7 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
             onDelete={deleteNote}
           />
           <AgendaUpcomingCard events={view.upcoming.events} label={view.upcoming.label} onPick={pickUpcoming} />
+          <AgendaHolidaysCard holidays={view.holidays} onPickDate={pickDate} />
         </div>
       </div>
     </main>

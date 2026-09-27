@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react'
-import type { AgendaEvent, AgendaTimeSlot, AgendaWeek } from '../types/agendaTypes'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react'
+import type { AgendaTimeSlot, AgendaWeek } from '../types/agendaTypes'
 
 export type SlotMode = 'add' | 'remove'
 
@@ -92,16 +92,6 @@ export function AgendaWeekGrid({
 
   useEffect(() => { selectedRef.current = selectedSlots }, [selectedSlots])
 
-  /** Qué evento cubre cada fila de cada día, para ubicar bloques y foco. */
-  const occupancy = useMemo(() => week.days.map((day) => {
-    const rows: Array<AgendaEvent | null> = Array.from({ length: rowCount }, () => null)
-    for (const event of week.events) {
-      if (event.date !== day.date) continue
-      for (let row = event.startMinute / slotMinutes; row < event.endMinute / slotMinutes && row < rowCount; row += 1) rows[row] = event
-    }
-    return rows
-  }), [rowCount, slotMinutes, week.days, week.events])
-
   useLayoutEffect(() => {
     const grid = gridRef.current
     const row = grid?.querySelector<HTMLElement>(`[data-time-row="${initialRow}"]`)
@@ -131,10 +121,16 @@ export function AgendaWeekGrid({
     onRevealed()
   }, [onRevealed, revealEventId, week.events])
 
+  // While a selection drags, events let the pointer through to the blocks under them.
+  const setDragging = (dragging: boolean) => {
+    if (gridRef.current) gridRef.current.dataset.dragging = String(dragging)
+  }
+
   const clearDrag = useCallback(() => {
     const drag = dragRef.current
     if (drag?.timerId !== null && drag?.timerId !== undefined) window.clearTimeout(drag.timerId)
     dragRef.current = null
+    if (gridRef.current) gridRef.current.dataset.dragging = 'false'
   }, [])
 
   useEffect(() => clearDrag, [clearDrag])
@@ -157,6 +153,7 @@ export function AgendaWeekGrid({
       drag.timerId = window.setTimeout(() => {
         drag.active = true
         drag.timerId = null
+        setDragging(true)
         suppressClickRef.current = true
         onSlotChange(key, mode)
       }, TOUCH_HOLD_MS)
@@ -167,6 +164,7 @@ export function AgendaWeekGrid({
     suppressClickRef.current = true
     onSlotChange(key, mode)
     dragRef.current = { pointerId: event.pointerId, mode, active: true, originX: event.clientX, originY: event.clientY, timerId: null }
+    setDragging(true)
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
@@ -195,23 +193,20 @@ export function AgendaWeekGrid({
     if (key) onSlotChange(key, selectedRef.current.has(key) ? 'remove' : 'add')
   }
 
+  // The arrows move through the blocks, also the ones under an event, so the
+  // keyboard can schedule at the same time; each event is its own tab stop.
   const focusCell = (position: GridPosition) => {
-    const event = occupancy[position.day]?.[position.row]
-    const selector = event
-      ? `[data-event-id="${CSS.escape(event.id)}"]`
-      : `.agenda-slot[data-day="${position.day}"][data-row="${position.row}"]`
-    gridRef.current?.querySelector<HTMLElement>(selector)?.focus()
+    gridRef.current?.querySelector<HTMLElement>(`.agenda-slot[data-day="${position.day}"][data-row="${position.row}"]`)?.focus()
     setFocusPosition(position)
   }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const cell = (event.target as HTMLElement).closest<HTMLElement>('[data-day][data-row]')
+    const cell = (event.target as HTMLElement).closest<HTMLElement>('.agenda-slot[data-day][data-row]')
     if (!cell) return
     const day = Number(cell.dataset.day)
     const row = Number(cell.dataset.row)
-    const lastRow = Number(cell.dataset.endRow ?? row + 1) - 1
     const next: GridPosition | null = event.key === 'ArrowUp' ? { day, row: row - 1 }
-      : event.key === 'ArrowDown' ? { day, row: lastRow + 1 }
+      : event.key === 'ArrowDown' ? { day, row: row + 1 }
         : event.key === 'ArrowLeft' ? { day: day - 1, row }
           : event.key === 'ArrowRight' ? { day: day + 1, row }
             : null
@@ -222,19 +217,19 @@ export function AgendaWeekGrid({
   }
 
   const handleFocus = (event: FocusEvent<HTMLDivElement>) => {
-    const cell = (event.target as HTMLElement).closest<HTMLElement>('[data-day][data-row]')
+    const cell = (event.target as HTMLElement).closest<HTMLElement>('.agenda-slot[data-day][data-row]')
     if (!cell) return
     const position = { day: Number(cell.dataset.day), row: Number(cell.dataset.row) }
     setFocusPosition((current) => (current.day === position.day && current.row === position.row ? current : position))
   }
 
-  const focusEventId = occupancy[focusPosition.day]?.[focusPosition.row]?.id ?? null
   const gridStyle = { '--agenda-slots': rowCount } as CSSProperties
 
   return (
     <div
       ref={gridRef}
       className="agenda-grid"
+      data-dragging="false"
       style={gridStyle}
       role="group"
       aria-label={`Semana ${week.label} en bloques de ${slotMinutes} minutos`}
@@ -271,7 +266,6 @@ export function AgendaWeekGrid({
         {week.days.map((day, dayIndex) => (
           <div key={day.date} className="agenda-grid__column" data-today={day.isToday}>
             {timeSlots.map((slot, row) => {
-              if (occupancy[dayIndex][row]) return null
               const id = slotKey(day.date, slot.minute)
               return (
                 <SlotButton
@@ -290,6 +284,7 @@ export function AgendaWeekGrid({
               const startRow = event.startMinute / slotMinutes
               const endRow = Math.min(rowCount, event.endMinute / slotMinutes)
               const isActive = event.id === activeEventId
+              const style = { gridRow: `${startRow + 1} / ${endRow + 1}`, '--agenda-lane': event.lane, '--agenda-lanes': event.lanes } as CSSProperties
               return (
                 <button
                   key={event.id}
@@ -298,13 +293,11 @@ export function AgendaWeekGrid({
                   data-event-id={event.id}
                   data-priority={event.priority}
                   data-active={isActive}
-                  data-day={dayIndex}
-                  data-row={startRow}
-                  data-end-row={endRow}
+                  data-short={endRow - startRow < 2}
                   aria-pressed={isActive}
-                  aria-label={`${event.title}, prioridad ${event.priorityLabel}, ${day.longLabel} de ${event.timeLabel}`}
-                  tabIndex={focusEventId === event.id ? 0 : -1}
-                  style={{ gridRow: `${startRow + 1} / ${endRow + 1}` }}
+                  aria-label={event.ariaLabel}
+                  title={event.tooltip}
+                  style={style}
                   onClick={() => onPickEvent(event.id)}
                 >
                   <span className="agenda-event__title">{event.title}</span>

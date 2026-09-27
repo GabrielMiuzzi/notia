@@ -1,4 +1,4 @@
-import { callBackend } from '../../../services/transport'
+import { callBackend, subscribeBackend, type Unsubscribe } from '../../../services/transport'
 import type { NotiaLibrary } from '../../../types/notia'
 import type { AgendaContext, AgendaMutation, AgendaMutationResponse, AgendaView, AgendaViewRequest } from '../types/agendaTypes'
 
@@ -24,6 +24,13 @@ export function applyAgendaMutation(
   return callBackend<AgendaMutationResponse>('agenda_apply_mutation', {
     payload: { context: agendaContext(library), mutation, request },
   })
+}
+
+/** Emitted by Rust after the assistant or the Google Calendar sync changed the Agenda. */
+export const AGENDA_DATA_CHANGED_EVENT = 'notia:agenda-data-changed'
+
+export function subscribeToAgendaDataChanges(listener: () => void): Promise<Unsubscribe> {
+  return subscribeBackend(AGENDA_DATA_CHANGED_EVENT, () => listener())
 }
 
 export function agendaErrorMessage(reason: unknown): string {

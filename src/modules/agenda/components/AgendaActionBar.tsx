@@ -8,6 +8,8 @@ interface AgendaActionBarProps {
   priority: AgendaPriority
   priorities: AgendaPriorityOption[]
   activeEvent: AgendaEvent | null
+  /** «Se superpone con …» del evento elegido, o vacío. */
+  activeOverlapLabel: string
   disabled: boolean
   error: string | null
   onDraftTitle: (title: string) => void
@@ -33,6 +35,7 @@ export function AgendaActionBar({
   priority,
   priorities,
   activeEvent,
+  activeOverlapLabel,
   disabled,
   error,
   onDraftTitle,
@@ -85,7 +88,18 @@ export function AgendaActionBar({
           <div className="agenda-bar__group">
             <span className="agenda-chip" data-priority={activeEvent.priority}>{activeEvent.priorityLabel}</span>
             <span className="agenda-bar__title">{activeEvent.title}</span>
-            <span className="agenda-bar__when">{activeEvent.whenLabel}</span>
+            <span className="agenda-bar__when">
+              <span>{activeEvent.whenLabel}</span>
+              {activeOverlapLabel ? (
+                <span className="agenda-overlap">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="12" height="12" rx="2" />
+                    <rect x="9" y="9" width="12" height="12" rx="2" />
+                  </svg>
+                  <span className="agenda-overlap__text">{activeOverlapLabel}</span>
+                </span>
+              ) : null}
+            </span>
             <div className="agenda-bar__buttons">
               <button type="button" className="agenda-danger" disabled={disabled} onClick={onDeleteActive}>Eliminar tarea</button>
               <button type="button" className="agenda-ghost" onClick={onCloseActive}>Cerrar</button>

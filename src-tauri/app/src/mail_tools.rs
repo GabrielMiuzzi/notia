@@ -100,7 +100,7 @@ fn google_error(status: reqwest::StatusCode, body: &Value, api: &str, account: &
             format!("Falta un permiso de Google en {}. Reconectala en Configuraciones → Cuentas asociadas para aceptar Gmail y Calendar.", account.describe()),
             false,
         ),
-        404 => BackendError::new(BackendErrorCode::NotFound, format!("No se encontró el correo o el evento pedido en {}.", account.email), false),
+        404 | 410 => BackendError::new(BackendErrorCode::NotFound, format!("No se encontró el correo o el evento pedido en {}.", account.email), false),
         429 => BackendError::new(
             BackendErrorCode::ProviderUnavailable,
             "Google limitó las consultas por un momento. Volvé a intentar en unos segundos.",
@@ -129,6 +129,35 @@ async fn call(session: &Session, method: Method, url: &str, body: Option<Value>)
     } else {
         Err(google_error(status, &value, api, &session.account))
     }
+}
+
+/// Google Calendar access of one account for the Agenda sync.
+pub(crate) struct CalendarSession(Session);
+
+impl CalendarSession {
+    pub(crate) async fn call(&self, method: Method, url: &str, body: Option<Value>) -> Result<Value, BackendError> {
+        call(&self.0, method, url, body).await
+    }
+}
+
+/// A Calendar session of `account`, when it granted the calendar permission.
+pub(crate) fn calendar_session(app: &AppHandle, library_id: &str, account: &MailAccountRef) -> Result<CalendarSession, BackendError> {
+    session(app, library_id, account, "list_calendar_events").map(CalendarSession)
+}
+
+/// The library's accounts that granted the calendar permission, in the order
+/// they were connected.
+pub(crate) fn calendar_accounts(app: &AppHandle, library_id: &str) -> Vec<MailAccountRef> {
+    let Some(config) = crate::library_config::read_library_config(app, library_id).ok().flatten() else {
+        return Vec::new();
+    };
+    if google_cloud_client(Some(&config)).is_none() {
+        return Vec::new();
+    }
+    account_refs(Some(&config))
+        .into_iter()
+        .filter(|account| find_account(Some(&config), &account.email).is_some_and(|stored| account_has_scope(stored, CALENDAR_SCOPE)))
+        .collect()
 }
 
 async fn get(session: &Session, url: &str) -> Result<Value, BackendError> {
@@ -274,9 +303,16 @@ pub(crate) fn guidance(app: &AppHandle, library_id: &str, tool_names: &[&str]) -
     crate::backend::mail_tools::mail_guidance(tool_names, &local_now().1, &account_refs(config.as_ref()))
 }
 
+/// Time zone of the primary calendar. It is read from a list of its events,
+/// which `calendar.events` allows; the calendar itself (`calendars/primary`)
+/// needs the read permission of the whole calendar, which Notia does not ask.
 async fn calendar_time_zone(session: &Session) -> Result<String, BackendError> {
-    let calendar = get(session, CALENDAR_API).await?;
-    Ok(calendar.get("timeZone").and_then(Value::as_str).unwrap_or("UTC").to_string())
+    let events = get(session, &calendar_time_zone_url()).await?;
+    Ok(events.get("timeZone").and_then(Value::as_str).unwrap_or("UTC").to_string())
+}
+
+fn calendar_time_zone_url() -> String {
+    format!("{CALENDAR_API}/events?maxResults=1&fields=timeZone")
 }
 
 /// A search over one account; the group of the grouped result.
@@ -390,6 +426,15 @@ pub(crate) fn execute(app: &AppHandle, context: &BackendRequestContext, call: &T
 mod tests {
     use super::*;
     use crate::backend::mail_accounts::MailAccountType;
+
+    /// `calendar.events` reads and writes events but not the calendar itself:
+    /// its time zone comes from an events list.
+    #[test]
+    fn the_time_zone_is_read_through_the_events_the_permission_covers() {
+        let url = calendar_time_zone_url();
+        assert!(url.starts_with(&format!("{CALENDAR_API}/events?")), "{url}");
+        assert!(url.contains("fields=timeZone"));
+    }
 
     #[test]
     fn google_errors_become_actionable_messages() {

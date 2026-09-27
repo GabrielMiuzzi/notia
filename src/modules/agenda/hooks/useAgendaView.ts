@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { NotiaLibrary } from '../../../types/notia'
-import { agendaErrorMessage, applyAgendaMutation, getAgendaView } from '../services/agendaService'
+import { agendaErrorMessage, applyAgendaMutation, getAgendaView, subscribeToAgendaDataChanges } from '../services/agendaService'
 import type { AgendaMutation, AgendaMutationOutcome, AgendaView, AgendaViewRequest } from '../types/agendaTypes'
 
 export type AgendaLoadStatus = 'loading' | 'ready' | 'error'
@@ -42,10 +42,21 @@ export function useAgendaView(library: NotiaLibrary) {
     void load(request)
   }, [load, request])
 
+  // The assistant's changes to the Agenda show at once; the focus covers the rest.
   useEffect(() => {
-    const handleFocus = () => { void load(requestRef.current) }
-    window.addEventListener('focus', handleFocus)
-    return () => window.removeEventListener('focus', handleFocus)
+    const handleChange = () => { void load(requestRef.current) }
+    window.addEventListener('focus', handleChange)
+    let isActive = true
+    let unsubscribe: (() => void) | null = null
+    void subscribeToAgendaDataChanges(handleChange).then((stop) => {
+      if (isActive) unsubscribe = stop
+      else stop()
+    }).catch(() => undefined)
+    return () => {
+      isActive = false
+      window.removeEventListener('focus', handleChange)
+      unsubscribe?.()
+    }
   }, [load])
 
   const reload = useCallback(() => load(requestRef.current), [load])

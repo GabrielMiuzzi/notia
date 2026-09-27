@@ -514,6 +514,11 @@ fn run_agent(
     loop {
         let response = execute(app, runtime, request);
         keep_notes(state, runtime, turn_id, identity, &mut seen_events);
+        if let Err(error) | Ok(BackendResponse::Error { error, .. }) = &response {
+            if error.code != BackendErrorCode::Cancelled {
+                crate::backend_runtime::log_request_failure(runtime, "chat", &identity.context, error);
+            }
+        }
         match response? {
             BackendResponse::Result { response } => return Ok(response),
             BackendResponse::Error { error, .. } => return Err(error),

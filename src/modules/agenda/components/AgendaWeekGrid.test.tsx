@@ -34,6 +34,26 @@ const week: AgendaWeek = {
     priorityLabel: 'Media',
     timeLabel: '09:00–09:30',
     whenLabel: 'Lun 21 sep · 09:00–09:30',
+    lane: 0,
+    lanes: 2,
+    overlapLabel: 'Se superpone con Llamada',
+    tooltip: 'Reunión de equipo · 09:00–09:30 · se superpone con Llamada',
+    ariaLabel: 'Reunión de equipo, prioridad Media, lunes 21 de septiembre de 09:00 a 09:30, superpuesta con 1 evento',
+  }, {
+    id: 'event-2',
+    date: '2026-09-21',
+    startMinute: 555,
+    endMinute: 570,
+    title: 'Llamada',
+    priority: 'urgent',
+    priorityLabel: 'Urgente',
+    timeLabel: '09:15–09:30',
+    whenLabel: 'Lun 21 sep · 09:15–09:30',
+    lane: 1,
+    lanes: 2,
+    overlapLabel: 'Se superpone con Reunión de equipo',
+    tooltip: 'Llamada · 09:15–09:30 · se superpone con Reunión de equipo',
+    ariaLabel: 'Llamada, prioridad Urgente, lunes 21 de septiembre de 09:15 a 09:30, superpuesta con 1 evento',
   }],
 }
 
@@ -61,12 +81,17 @@ const slot = (label: string) => screen.getByRole('button', { name: label })
 describe('AgendaWeekGrid', () => {
   afterEach(cleanup)
 
-  it('replaces the blocks an event covers with the event itself', () => {
-    const { onPickEvent } = renderGrid()
-    expect(screen.queryByRole('button', { name: 'lunes 21 de septiembre, 09:00' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'lunes 21 de septiembre, 09:15' })).toBeNull()
-    expect(slot('lunes 21 de septiembre, 09:30')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Reunión de equipo, prioridad Media/ }))
+  it('keeps the blocks under events and lays overlapping events in lanes', () => {
+    const { onPickEvent, onSlotChange } = renderGrid()
+    fireEvent.click(slot('lunes 21 de septiembre, 09:15'), { detail: 0 })
+    expect(onSlotChange).toHaveBeenCalledWith('2026-09-21|555', 'add')
+    const meeting = screen.getByRole('button', { name: /Reunión de equipo, prioridad Media/ })
+    const call = screen.getByRole('button', { name: /Llamada, prioridad Urgente/ })
+    expect(call.style.getPropertyValue('--agenda-lane')).toBe('1')
+    expect(call.style.getPropertyValue('--agenda-lanes')).toBe('2')
+    expect(call.dataset.short).toBe('true')
+    expect(meeting.title).toBe('Reunión de equipo · 09:00–09:30 · se superpone con Llamada')
+    fireEvent.click(meeting)
     expect(onPickEvent).toHaveBeenCalledWith('event-1')
   })
 
@@ -112,15 +137,16 @@ describe('AgendaWeekGrid', () => {
     }
   })
 
-  it('moves the focus with the arrow keys, through events', () => {
+  it('moves the focus with the arrow keys, also under events', () => {
     renderGrid()
     const start = slot('lunes 21 de septiembre, 08:45')
     start.focus()
     fireEvent.keyDown(start, { key: 'ArrowDown' })
-    const event = screen.getByRole('button', { name: /Reunión de equipo/ })
-    expect(document.activeElement).toBe(event)
-    fireEvent.keyDown(event, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(slot('lunes 21 de septiembre, 09:00'))
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
     expect(document.activeElement).toBe(slot('lunes 21 de septiembre, 09:30'))
+    expect(screen.getByRole('button', { name: /Llamada/ }).tabIndex).toBe(0)
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowRight' })
     expect(document.activeElement).toBe(slot('martes 22 de septiembre, 09:30'))
     expect(slot('martes 22 de septiembre, 09:30').tabIndex).toBe(0)

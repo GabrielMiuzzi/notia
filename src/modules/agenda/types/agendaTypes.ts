@@ -2,6 +2,9 @@
 
 export type AgendaPriority = 'urgent' | 'high' | 'medium' | 'low'
 
+/** Inamovible, trasladable, puente turístico o no laborable (incluye los días que solo cierran los bancos). */
+export type AgendaHolidayKind = 'fixed' | 'move' | 'bridge' | 'nonwork'
+
 export interface AgendaContext {
   libraryPath: string
   androidDirectoryUri?: string
@@ -21,6 +24,9 @@ export interface AgendaMonthCell {
   isToday: boolean
   isSelected: boolean
   hasEvents: boolean
+  holidayName: string
+  holidayKind: AgendaHolidayKind | null
+  holidayTitle: string
   ariaLabel: string
 }
 
@@ -54,12 +60,36 @@ export interface AgendaEvent {
   whenLabel: string
 }
 
+/** Evento de la semana: los superpuestos comparten el ancho en `lanes` carriles. */
+export interface AgendaWeekEvent extends AgendaEvent {
+  lane: number
+  lanes: number
+  overlapLabel: string
+  tooltip: string
+  ariaLabel: string
+}
+
 export interface AgendaWeek {
   label: string
   prevDate: string
   nextDate: string
   days: AgendaWeekDay[]
-  events: AgendaEvent[]
+  events: AgendaWeekEvent[]
+}
+
+export interface AgendaNextHoliday {
+  date: string
+  name: string
+  kind: AgendaHolidayKind
+  countdownLabel: string
+  dateLabel: string
+  kindLabel: string
+}
+
+export interface AgendaHolidays {
+  next: AgendaNextHoliday | null
+  afterLabel: string
+  emptyLabel: string
 }
 
 export interface AgendaTimeSlot {
@@ -92,6 +122,7 @@ export interface AgendaView {
   defaultPriority: AgendaPriority
   upcoming: { events: AgendaEvent[]; total: number; label: string }
   notes: { items: AgendaNote[]; pending: number; pendingLabel: string }
+  holidays: AgendaHolidays
 }
 
 export interface AgendaSlotInput {

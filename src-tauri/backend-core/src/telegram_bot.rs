@@ -8,14 +8,13 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::events::BackendEvent;
-use crate::formatting::escape_telegram_html;
+use crate::formatting::{escape_telegram_html, markdown_to_telegram_html};
 use crate::interaction::ExecutionPlan;
 use crate::protocol::MutationPreview;
 
 pub const MAX_PENDING_REQUESTS: usize = 10;
 pub const RECOVERY_COMMAND: &str = "/reanudar";
 pub const MAX_HISTORY_MESSAGES: usize = 20;
-const MAX_DETAIL_CHARS: usize = 3_000;
 
 fn fold(value: &str) -> String {
     value
@@ -81,16 +80,9 @@ pub fn redact_detail(value: &str) -> String {
 /// Longest agent note the progress message shows.
 const MAX_NOTE_CHARS: usize = 300;
 
-fn bounded(value: &str) -> String {
-    if value.chars().count() > MAX_DETAIL_CHARS {
-        format!("{}\n…", value.chars().take(MAX_DETAIL_CHARS).collect::<String>())
-    } else {
-        value.to_string()
-    }
-}
-
-/// Confirmation text for a prepared mutation (HTML).
-pub fn confirmation_message(preview: &MutationPreview) -> String {
+/// Confirmation text for a prepared mutation, as the HTML of one or more
+/// messages; the buttons go with the last one.
+pub fn confirmation_parts(preview: &MutationPreview) -> Vec<String> {
     let detail = [
         redact_detail(&preview.summary),
         format!(
@@ -103,14 +95,14 @@ pub fn confirmation_message(preview: &MutationPreview) -> String {
     .filter(|line| !line.is_empty())
     .collect::<Vec<_>>()
     .join("\n");
-    format!(
-        "Confirmación requerida:\n\n{}\n\nRespondé Confirmar para ejecutar o Cancelar para detenerla.",
-        escape_telegram_html(&bounded(&detail))
-    )
+    plain_parts(&format!(
+        "Confirmación requerida:\n\n{detail}\n\nRespondé Confirmar para ejecutar o Cancelar para detenerla."
+    ))
 }
 
-/// Approval text for an execution plan (HTML).
-pub fn plan_message(plan: &ExecutionPlan) -> String {
+/// Approval text for an execution plan, as the HTML of one or more
+/// messages; the buttons go with the last one.
+pub fn plan_parts(plan: &ExecutionPlan) -> Vec<String> {
     let steps = plan
         .steps
         .iter()
@@ -118,10 +110,71 @@ pub fn plan_message(plan: &ExecutionPlan) -> String {
         .map(|(index, step)| format!("{}. {}", index + 1, redact_detail(&step.label)))
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "Aprobar este plan de ejecución:\n{}\n\nRespondé Confirmar para ejecutarlo o Cancelar para detenerlo.",
-        escape_telegram_html(&bounded(&steps))
-    )
+    plain_parts(&format!(
+        "Aprobar este plan de ejecución:\n{steps}\n\nRespondé Confirmar para ejecutarlo o Cancelar para detenerlo."
+    ))
+}
+
+/// Longest text of an option button; Telegram shows short labels.
+pub const MAX_BUTTON_CHARS: usize = 48;
+
+/// A question of the agent (Markdown) as the HTML of one or more messages;
+/// the option buttons go with the last one. Options too long for a button
+/// are also listed in the text, so none is cut.
+pub fn question_parts(question: &str, options: &[String]) -> Vec<String> {
+    let mut markdown = question.trim().to_string();
+    if options.iter().any(|option| option.chars().count() > MAX_BUTTON_CHARS) {
+        let listed = options.iter().enumerate().map(|(index, option)| format!("{}. {option}", index + 1)).collect::<Vec<_>>();
+        markdown.push_str(&format!("\n\n{}", listed.join("\n")));
+    }
+    telegram_html_parts(&markdown)
+}
+
+/// Plain text as the HTML of one or more messages, split between lines.
+fn plain_parts(text: &str) -> Vec<String> {
+    let mut parts = Vec::<String>::new();
+    let mut current = String::new();
+    for line in text.lines().flat_map(|line| split_long_line(line, MAX_MESSAGE_HTML / 2)) {
+        let joined = if current.is_empty() { line.clone() } else { format!("{current}\n{line}") };
+        if escape_telegram_html(&joined).chars().count() <= MAX_MESSAGE_HTML {
+            current = joined;
+        } else {
+            parts.push(escape_telegram_html(&current));
+            current = line;
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(escape_telegram_html(&current));
+    }
+    parts
+}
+
+/// A line cut at spaces (or anywhere, for a word longer than the limit)
+/// into pieces of at most `max_chars`.
+fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
+    if line.chars().count() <= max_chars {
+        return vec![line.to_string()];
+    }
+    let mut pieces = Vec::<String>::new();
+    let mut current = String::new();
+    for word in line.split(' ') {
+        let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
+        if candidate.chars().count() <= max_chars {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            pieces.push(std::mem::take(&mut current));
+        }
+        let characters = word.chars().collect::<Vec<_>>();
+        let mut chunks = characters.chunks(max_chars).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>();
+        current = chunks.pop().unwrap_or_default();
+        pieces.extend(chunks);
+    }
+    if !current.is_empty() {
+        pieces.push(current);
+    }
+    pieces
 }
 
 /// Whether a message is about mail or the calendar. Those requests stay in
@@ -176,6 +229,8 @@ pub fn tool_label(tool: &str) -> &'static str {
         name if name.starts_with("get_routine_") || name.starts_with("list_routine_") => "consultando tu rutina",
         "set_routine_completions" => "registrando tus hábitos",
         name if name.contains("routine") => "preparando el cambio en tu rutina",
+        "list_agenda" => "leyendo tu agenda",
+        name if name.contains("agenda") => "preparando el cambio en tu agenda",
         name if name.contains("task") => "preparando el cambio en tareas",
         name if name.contains("library") || name.contains("markdown") || name.contains("document") => "preparando el cambio en la biblioteca",
         _ => "completando una tarea autorizada",
@@ -222,14 +277,140 @@ pub fn progress_message(events: &[BackendEvent]) -> Option<String> {
     }
     let phase = phase.or(round.map(|_| phase_label("reading")))?;
     let step = round.map(|value| format!(" (paso {value})")).unwrap_or_default();
-    // The agent's last note is its status, as a command-line agent shows it.
+    // The agent's last note is its status, as a command-line agent shows it,
+    // in plain text: a clipped Markdown would show its marks.
     let note = note
-        .map(|text| format!("\n<i>{}</i>", escape_telegram_html(&clipped_note(text))))
+        .map(|text| format!("\n<i>{}</i>", escape_telegram_html(&clipped_note(&plain_text(text)))))
         .unwrap_or_default();
     Some(match activity {
         Some(activity) => format!("<b>{phase}</b>{step}{note}\nAhora: {activity}."),
         None => format!("<b>{phase}</b>{step}{note}"),
     })
+}
+
+/// Markdown as one line of plain text: without headings, emphasis, code
+/// marks or table bars.
+fn plain_text(markdown: &str) -> String {
+    markdown
+        .lines()
+        .map(|line| line.trim().trim_start_matches('#').trim_start_matches(['-', '*', '•', '>']).trim())
+        .filter(|line| !line.is_empty() && !line.chars().all(|character| matches!(character, '|' | '-' | ':' | ' ')))
+        .map(|line| line.replace("**", "").replace("__", "").replace('`', "").replace('|', " "))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Notes of the agent the person has not read whole, in order: the ones the
+/// progress showed clipped and, before a question (`asking`), the note of
+/// the round that asks, which is its context. A short status note was read
+/// in the progress while it lasted.
+pub fn notes_to_deliver(events: &[BackendEvent], asking: bool) -> Vec<String> {
+    let mut notes = Vec::<(String, bool)>::new();
+    for event in events {
+        match event {
+            BackendEvent::RoundStarted { .. } => notes.iter_mut().for_each(|(_, current)| *current = false),
+            BackendEvent::AssistantNote { text, .. } if !text.trim().is_empty() => notes.push((text.trim().to_string(), true)),
+            _ => {}
+        }
+    }
+    notes
+        .into_iter()
+        .filter(|(text, current)| text.chars().count() > MAX_NOTE_CHARS || (asking && *current))
+        .map(|(text, _)| text)
+        .collect()
+}
+
+/// Longest HTML of one message; Telegram accepts 4096 characters.
+const MAX_MESSAGE_HTML: usize = 3_800;
+
+/// A Markdown answer as the HTML of one or more Telegram messages, split
+/// between paragraphs (a long paragraph between lines) so no tag is cut and
+/// nothing is lost. A code block is never split.
+pub fn telegram_html_parts(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::<String>::new();
+    let mut in_code = false;
+    for line in markdown.trim().lines() {
+        let fence = line.trim_start().starts_with("```");
+        match blocks.last_mut() {
+            Some(block) if in_code || !line.trim().is_empty() && !block.is_empty() => {
+                block.push('\n');
+                block.push_str(line);
+            }
+            _ if line.trim().is_empty() => blocks.push(String::new()),
+            _ => blocks.push(line.to_string()),
+        }
+        if fence {
+            in_code = !in_code;
+        }
+    }
+    let mut parts = Vec::<String>::new();
+    let mut current = String::new();
+    for block in blocks.into_iter().filter(|block| !block.trim().is_empty()) {
+        for piece in fitting_pieces(&block) {
+            let joined = if current.is_empty() { piece.clone() } else { format!("{current}\n\n{piece}") };
+            if markdown_to_telegram_html(&joined).chars().count() <= MAX_MESSAGE_HTML {
+                current = joined;
+            } else {
+                if !current.is_empty() {
+                    parts.push(markdown_to_telegram_html(&current));
+                }
+                current = piece;
+            }
+        }
+    }
+    if !current.is_empty() {
+        parts.push(markdown_to_telegram_html(&current));
+    }
+    parts
+}
+
+/// A block that fits in a message, or its lines grouped so they do. A code
+/// block keeps its fence in every piece; a line too long is cut at spaces.
+fn fitting_pieces(block: &str) -> Vec<String> {
+    if markdown_to_telegram_html(block).chars().count() <= MAX_MESSAGE_HTML {
+        return vec![block.to_string()];
+    }
+    let fits = |piece: &str| markdown_to_telegram_html(piece).chars().count() <= MAX_MESSAGE_HTML;
+    if block.trim_start().starts_with("```") {
+        let mut lines = block.lines().collect::<Vec<_>>();
+        let opening = lines.remove(0).trim().to_string();
+        if lines.last().is_some_and(|line| line.trim().starts_with("```")) {
+            lines.pop();
+        }
+        let fence = |body: &str| format!("{opening}\n{body}\n```");
+        let mut pieces = Vec::<String>::new();
+        let mut body = String::new();
+        for line in lines.iter().flat_map(|line| split_long_line(line, MAX_MESSAGE_HTML / 2)) {
+            let joined = if body.is_empty() { line.clone() } else { format!("{body}\n{line}") };
+            if fits(&fence(&joined)) {
+                body = joined;
+            } else {
+                if !body.is_empty() {
+                    pieces.push(fence(&body));
+                }
+                body = line;
+            }
+        }
+        if !body.is_empty() {
+            pieces.push(fence(&body));
+        }
+        return pieces;
+    }
+    let mut pieces = Vec::<String>::new();
+    for line in block.lines().flat_map(|line| split_long_line(line, MAX_MESSAGE_HTML / 2)) {
+        let line = line.as_str();
+        match pieces.last_mut() {
+            Some(piece) if markdown_to_telegram_html(&format!("{piece}\n{line}")).chars().count() <= MAX_MESSAGE_HTML => {
+                piece.push('\n');
+                piece.push_str(line);
+            }
+            _ => pieces.push(line.to_string()),
+        }
+    }
+    pieces
 }
 
 fn clipped_note(text: &str) -> String {
@@ -332,5 +513,87 @@ mod tests {
             BackendEvent::AssistantNote { request_id: "r".into(), text: "x".repeat(400) },
         ];
         assert!(progress_message(&long).expect("message").ends_with("…</i>"));
+    }
+
+    #[test]
+    fn the_progress_shows_a_markdown_note_as_plain_text() {
+        let events = vec![
+            BackendEvent::RoundStarted { request_id: "r".into(), round: 4 },
+            BackendEvent::AssistantNote {
+                request_id: "r".into(),
+                text: "Miré la cuenta **gabmiuzzi@gmail.com**.\n\n## 1. Carpeta Spam\n| Remitente | Cant. |\n|---|---|\n| LinkedIn | 19 |".into(),
+            },
+        ];
+        assert_eq!(
+            progress_message(&events).as_deref(),
+            Some("<b>Leyendo la información necesaria</b> (paso 4)\n<i>Miré la cuenta gabmiuzzi@gmail.com. 1. Carpeta Spam Remitente Cant. LinkedIn 19</i>")
+        );
+    }
+
+    #[test]
+    fn notes_the_progress_clipped_or_that_give_context_to_a_question_are_delivered_whole() {
+        let note = |text: &str| BackendEvent::AssistantNote { request_id: "r".into(), text: text.into() };
+        let round = |round: u32| BackendEvent::RoundStarted { request_id: "r".into(), round };
+        let analysis = format!("## Spam\n{}", "LinkedIn (19), Reddit (17). ".repeat(20)).trim().to_string();
+        let events = vec![round(1), note("Busco los correos."), note(&analysis), round(2), note("¿Borro estos?")];
+        // Before a question: the clipped analysis and the note of the round that asks.
+        assert_eq!(notes_to_deliver(&events, true), vec![analysis.clone(), "¿Borro estos?".to_string()]);
+        // Before the answer: only what the progress clipped.
+        assert_eq!(notes_to_deliver(&events, false), vec![analysis]);
+        // A short status of an earlier round was read in the progress.
+        assert!(notes_to_deliver(&[round(1), note("Busco los correos."), round(2)], true).is_empty());
+    }
+
+    #[test]
+    fn a_long_answer_is_split_between_paragraphs_without_cutting_tags() {
+        let paragraph = |index: usize| format!("**Grupo {index}**: {}", "correo de promoción ".repeat(30));
+        let markdown = (0..12).map(paragraph).collect::<Vec<_>>().join("\n\n");
+        let parts = telegram_html_parts(&markdown);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|part| part.chars().count() <= MAX_MESSAGE_HTML));
+        assert!(parts.iter().all(|part| part.matches("<b>").count() == part.matches("</b>").count()));
+        assert_eq!(parts.iter().map(|part| part.matches("<b>Grupo").count()).sum::<usize>(), 12);
+        assert_eq!(telegram_html_parts("Hola **vos**"), vec!["Hola <b>vos</b>".to_string()]);
+        assert!(telegram_html_parts("   ").is_empty());
+    }
+
+    #[test]
+    fn nothing_is_cut_however_long_it_is() {
+        let size = |parts: &[String]| parts.iter().all(|part| part.chars().count() <= MAX_MESSAGE_HTML);
+        // A code block longer than a message: every piece keeps its fence.
+        let code = format!("```json\n{}\n```", (0..600).map(|index| format!("  \"campo{index}\": {index},")).collect::<Vec<_>>().join("\n"));
+        let parts = telegram_html_parts(&code);
+        assert!(parts.len() > 1 && size(&parts));
+        assert!(parts.iter().all(|part| part.starts_with("<pre>") && part.ends_with("</pre>")));
+        assert_eq!(parts.iter().map(|part| part.matches("campo").count()).sum::<usize>(), 600);
+        // One line without breaks, longer than a message.
+        let line = "palabra ".repeat(2_000);
+        let parts = telegram_html_parts(&line);
+        assert!(parts.len() > 1 && size(&parts));
+        assert_eq!(parts.iter().map(|part| part.matches("palabra").count()).sum::<usize>(), 2_000);
+        // A long plan and a long confirmation are split, never clipped.
+        let plan = ExecutionPlan {
+            plan_id: "p".into(),
+            generation: 1,
+            title: "Plan".into(),
+            status: crate::interaction::PlanStatus::AwaitingApproval,
+            steps: (0..300)
+                .map(|index| crate::interaction::PlanStep {
+                    id: format!("s{index}"),
+                    label: format!("Mandar a la papelera el correo número {index} de la carpeta Spam"),
+                    operation_id: None,
+                    status: crate::interaction::PlanStepStatus::Pending,
+                })
+                .collect(),
+        };
+        let parts = plan_parts(&plan);
+        assert!(parts.len() > 1 && size(&parts));
+        assert!(parts.join("\n").contains("300. Mandar a la papelera el correo número 299"));
+        assert!(!parts.join("").contains('…'));
+        // A long option is listed whole in the question.
+        let option = "Mandar a la papelera el Spam y las promociones comerciales de Recibidos".to_string();
+        let parts = question_parts("¿Qué borro?", &["Solo Spam".into(), option.clone()]);
+        assert!(parts.join("").contains(&option));
+        assert_eq!(question_parts("¿Qué borro?", &["Solo Spam".into()]), vec!["¿Qué borro?".to_string()]);
     }
 }

@@ -18,6 +18,10 @@ pub enum ToolPolicy {
     FinanceWrite,
     RoutineRead,
     RoutineWrite,
+    /// The Agenda of Notia (events on the day grid and the notepad), per
+    /// library user like Rutina.
+    AgendaRead,
+    AgendaWrite,
     Memory,
     /// Gmail and Google Calendar of the library's connected accounts;
     /// confidential, like finance.
@@ -176,6 +180,17 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         ],
         false,
     ));
+    catalog.extend(routine_tools(&["list_agenda"], true));
+    catalog.extend(routine_tools(
+        &[
+            "create_agenda_event",
+            "delete_agenda_event",
+            "add_agenda_note",
+            "set_agenda_note_done",
+            "delete_agenda_note",
+        ],
+        false,
+    ));
     catalog.extend(alias_tools(
         ["undo_ai_operation"],
         BackendScope::Library,
@@ -331,8 +346,9 @@ fn finance_tools<const N: usize>(names: [&str; N], read_only: bool) -> Vec<ToolD
         .collect()
 }
 
-/// Rutina is reachable from the library chat and from Finanzas, because
-/// Telegram routes a message to Finanzas by its wording ("pagué la cuenta").
+/// Rutina and the Agenda are reachable from the library chat and from
+/// Finanzas, because Telegram routes a message to Finanzas by its wording
+/// ("pagué la cuenta").
 fn routine_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
     names
         .iter()
@@ -454,6 +470,12 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "reorder_routine_tasks"
         | "set_routine_completions"
         | "set_routine_goal" => ToolPolicy::RoutineWrite,
+        "list_agenda" => ToolPolicy::AgendaRead,
+        "create_agenda_event"
+        | "delete_agenda_event"
+        | "add_agenda_note"
+        | "set_agenda_note_done"
+        | "delete_agenda_note" => ToolPolicy::AgendaWrite,
         name if name.starts_with("list_finance_") || name.starts_with("get_finance_") => {
             ToolPolicy::FinanceRead
         }
@@ -565,6 +587,17 @@ pub fn authorize_tool_call(
         ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta de Rutina no está autorizada para este scope.",
+            false,
+        )),
+        // Agenda data is scoped to the acting library user, as Rutina.
+        ToolPolicy::AgendaRead | ToolPolicy::AgendaWrite
+            if matches!(context.scope, BackendScope::Library | BackendScope::Finance) =>
+        {
+            Ok(())
+        }
+        ToolPolicy::AgendaRead | ToolPolicy::AgendaWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La herramienta de Agenda no está autorizada para este scope.",
             false,
         )),
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite
@@ -780,6 +813,8 @@ mod tests {
             .expect("tool");
         assert!(write.requires_confirmation && !write.read_only);
         assert_eq!(tool_policy("get_routine_day"), ToolPolicy::RoutineRead);
+        assert_eq!(tool_policy("list_agenda"), ToolPolicy::AgendaRead);
+        assert_eq!(tool_policy("create_agenda_event"), ToolPolicy::AgendaWrite);
         assert!(write.scopes.contains(&BackendScope::Finance));
         assert!(authorize_tool_call(
             &context(BackendScope::TaskManager),

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::agenda_view::{
     build_view, date_key, long_day_label, time_label, AgendaFrame, AgendaView, AgendaViewRequest,
 };
+use crate::holidays::HolidayCalendar;
 
 /// Length of one block of the week grid.
 pub const SLOT_MINUTES: u16 = 15;
@@ -24,16 +25,15 @@ pub const MAX_YEAR: i32 = 2199;
 
 /// A selection covers at most a full week of blocks.
 const MAX_SELECTED_SLOTS: usize = 7 * (DAY_MINUTES / SLOT_MINUTES) as usize;
-const MAX_EVENT_TITLE_CHARS: usize = 120;
+pub(crate) const MAX_EVENT_TITLE_CHARS: usize = 120;
 const MAX_NOTE_CHARS: usize = 200;
-const UNTITLED_EVENT: &str = "Tarea sin título";
+pub(crate) const UNTITLED_EVENT: &str = "Tarea sin título";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgendaErrorCode {
     Validation,
     NotFound,
-    Conflict,
     Storage,
 }
 
@@ -55,13 +55,6 @@ impl AgendaCommandError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             code: AgendaErrorCode::NotFound,
-            message: message.into(),
-        }
-    }
-
-    fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            code: AgendaErrorCode::Conflict,
             message: message.into(),
         }
     }
@@ -91,7 +84,7 @@ pub struct AgendaContext {
 }
 
 impl AgendaContext {
-    fn owner(&self) -> &str {
+    pub(crate) fn owner(&self) -> &str {
         self.actor_library_user_id.trim()
     }
 }
@@ -162,7 +155,7 @@ impl AgendaPriority {
     pub const ALL: [Self; 4] = [Self::Urgent, Self::High, Self::Medium, Self::Low];
     pub const DEFAULT: Self = Self::Medium;
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Urgent => "urgent",
             Self::High => "high",
@@ -221,7 +214,7 @@ pub struct AgendaData {
 
 type EventRow = (String, String, u16, u16, String, String);
 
-fn query_events(
+pub(crate) fn query_events(
     connection: &Connection,
     sql: &str,
     params: impl rusqlite::Params,
@@ -300,7 +293,7 @@ pub fn load_data(connection: &Connection, owner: &str, frame: &AgendaFrame) -> A
 }
 
 /// Pending notes, plus the ones checked on `today` (`YYYY-MM-DD`).
-fn load_notes(connection: &Connection, owner: &str, today: &str) -> AgendaResult<Vec<NoteRecord>> {
+pub(crate) fn load_notes(connection: &Connection, owner: &str, today: &str) -> AgendaResult<Vec<NoteRecord>> {
     let mut statement = connection.prepare(
         "SELECT id, text, done_on FROM agenda_notes
          WHERE owner_user_id=?1 AND (done_on IS NULL OR done_on>=?2)
@@ -342,6 +335,39 @@ pub fn home_data(app: &crate::host::AppHandle, context: &AgendaContext, days: u3
     )?;
     let notes = load_notes(&connection, context.owner(), &date_key(today))?;
     Ok(HomeAgendaData { today, events, notes })
+}
+
+/// Events of `from` to `to` (both included), oldest first.
+pub(crate) fn events_between(connection: &Connection, owner: &str, from: NaiveDate, to: NaiveDate) -> AgendaResult<Vec<EventRecord>> {
+    query_events(
+        connection,
+        "SELECT id, date, start_minute, end_minute, title, priority FROM agenda_events
+         WHERE owner_user_id=?1 AND date BETWEEN ?2 AND ?3
+         ORDER BY date, start_minute",
+        params![owner, date_key(from), date_key(to)],
+    )
+}
+
+/// Runs `work` in a transaction of the Agenda of `context`, with today's
+/// date, and commits it only when `commit`: the agent's tools preview a
+/// change by rolling it back, so the confirmation shows what executes.
+pub(crate) fn with_transaction<T>(
+    app: &crate::host::AppHandle,
+    context: &AgendaContext,
+    commit: bool,
+    work: impl FnOnce(&Connection, &str, NaiveDate) -> AgendaResult<T>,
+) -> AgendaResult<T> {
+    let (today, _) = local_now();
+    let mut connection = open_connection(context, app)?;
+    let transaction = connection.transaction()?;
+    let value = work(&transaction, context.owner(), today)?;
+    if commit {
+        transaction.commit()?;
+        drop(connection);
+        crate::database::sync_user_data_connection(app, context.android_directory_uri.as_deref())
+            .map_err(AgendaCommandError::storage)?;
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -495,22 +521,8 @@ pub fn apply_mutation(
             };
             let runs = group_slots(slots)?;
             let mut ids = Vec::with_capacity(runs.len());
+            // Events may overlap: the week lays them out side by side.
             for run in &runs {
-                let overlapping: Option<String> = connection
-                    .query_row(
-                        "SELECT title FROM agenda_events
-                         WHERE owner_user_id=?1 AND date=?2 AND start_minute<?4 AND end_minute>?3
-                         ORDER BY start_minute LIMIT 1",
-                        params![owner, date_key(run.date), run.start_minute, run.end_minute],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(existing) = overlapping {
-                    return Err(AgendaCommandError::conflict(format!(
-                        "El horario del {} se superpone con «{existing}».",
-                        run_label(run)
-                    )));
-                }
                 let id = Uuid::new_v4().to_string();
                 connection.execute(
                     "INSERT INTO agenda_events
@@ -610,20 +622,41 @@ fn load_view(
     app: &crate::host::AppHandle,
     context: &AgendaContext,
     frame: &AgendaFrame,
+    holidays: &HolidayCalendar,
 ) -> AgendaResult<AgendaView> {
     let connection = open_connection(context, app)?;
     let data = load_data(&connection, context.owner(), frame)?;
-    Ok(build_view(frame, &data))
+    Ok(build_view(frame, &data, holidays))
 }
 
-pub fn agenda_get_view(
+/// The holidays of the years the view shows. Near the end of the year the
+/// countdown also needs the next one.
+async fn view_holidays(frame: &AgendaFrame) -> HolidayCalendar {
+    let years = frame.holiday_years();
+    let mut calendar = crate::holidays::calendar(years.iter().copied()).await;
+    let next_year = frame.today.year() + 1;
+    if calendar.next_days_off(frame.today, 2).len() < 2 && !years.contains(&next_year) {
+        calendar.extend(crate::holidays::calendar([next_year]).await);
+    }
+    calendar
+}
+
+/// Runs the database work of a command off the async runtime.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> AgendaResult<T> + Send + 'static) -> AgendaResult<T> {
+    crate::host::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| AgendaCommandError::storage("No se pudo acceder a la Agenda."))?
+}
+
+pub async fn agenda_get_view(
     app: crate::host::AppHandle,
     context: AgendaContext,
     request: AgendaViewRequest,
 ) -> AgendaResult<AgendaView> {
     let (today, now_minute) = local_now();
     let frame = AgendaFrame::resolve(&request, today, now_minute)?;
-    load_view(&app, &context, &frame)
+    let holidays = view_holidays(&frame).await;
+    blocking(move || load_view(&app, &context, &frame, &holidays)).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -642,22 +675,22 @@ pub struct AgendaMutationResponse {
     pub view: AgendaView,
 }
 
-pub fn agenda_apply_mutation(
+pub async fn agenda_apply_mutation(
     app: crate::host::AppHandle,
     payload: ApplyAgendaMutationPayload,
 ) -> AgendaResult<AgendaMutationResponse> {
     let (today, now_minute) = local_now();
     // Validate the frame first so a bad request never follows a saved change.
     let frame = AgendaFrame::resolve(&payload.request, today, now_minute)?;
-    let mut connection = open_connection(&payload.context, &app)?;
-    let transaction = connection.transaction()?;
-    let outcome = apply_mutation(&transaction, payload.context.owner(), &payload.mutation, today)?;
-    transaction.commit()?;
-    drop(connection);
-    crate::database::sync_user_data_connection(&app, payload.context.android_directory_uri.as_deref())
-        .map_err(AgendaCommandError::storage)?;
-    let view = load_view(&app, &payload.context, &frame)?;
-    Ok(AgendaMutationResponse { outcome, view })
+    let holidays = view_holidays(&frame).await;
+    blocking(move || {
+        let outcome = with_transaction(&app, &payload.context, true, |connection, owner, today| {
+            apply_mutation(connection, owner, &payload.mutation, today)
+        })?;
+        let view = load_view(&app, &payload.context, &frame, &holidays)?;
+        Ok(AgendaMutationResponse { outcome, view })
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -761,7 +794,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn schedules_events_and_rejects_overlaps() {
+    fn schedules_events_that_may_overlap() {
         let connection = connection();
         let created = schedule(
             &connection,
@@ -772,11 +805,9 @@ pub(crate) mod tests {
         assert_eq!(created.entity_ids.len(), 2);
         assert_eq!(created.summary, "Se agendaron 2 eventos «Reunión de equipo».");
 
-        let conflict = schedule(&connection, vec![slot("2026-09-24", 555)], "Otra").unwrap_err();
-        assert_eq!(conflict.code, AgendaErrorCode::Conflict);
-        assert!(conflict.message.contains("«Reunión de equipo»"));
+        let overlapping = schedule(&connection, vec![slot("2026-09-24", 555)], "Otra").expect("overlap");
+        assert_eq!(overlapping.summary, "Se agendó «Otra» el jueves 24 de septiembre de 09:15 a 09:30.");
 
-        // Right after the event ends is free.
         let adjacent = schedule(&connection, vec![slot("2026-09-24", 570)], "").expect("adjacent");
         assert_eq!(
             adjacent.summary,
@@ -793,6 +824,7 @@ pub(crate) mod tests {
             week,
             vec![
                 (date("2026-09-24"), 540, 570, "Reunión de equipo"),
+                (date("2026-09-24"), 555, 570, "Otra"),
                 (date("2026-09-24"), 570, 585, "Tarea sin título"),
                 (date("2026-09-25"), 600, 615, "Reunión de equipo"),
             ]

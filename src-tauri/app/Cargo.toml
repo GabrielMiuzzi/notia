@@ -38,7 +38,7 @@ rand_distr = "0.4"
 rayon = "1.10"
 regex = "1.10"
 unicode-normalization = "0.1"
-tokio = { version = "1", features = ["time", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["time", "rt", "rt-multi-thread", "sync"] }
 lopdf = "0.38"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 chrono = "0.4"

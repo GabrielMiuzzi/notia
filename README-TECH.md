@@ -8410,3 +8410,183 @@ Las listas de SAF no traen fecha de modificación, así que el inventario no pue
 - `npx vitest run`: 346, con el texto entre pasos en el hilo y los montos en `ChatMarkdownMessage`.
 - Warnings sin cambios: 37, 61 y 144.
 - Falta repetir en la app un plan largo con textos entre pasos y un «Sugerir cambios».
+
+### Respuesta vacía del modelo después de trabajar (2026-09-27)
+
+**Síntoma**: en Telegram, un pedido de mandar ~94 correos a la papelera trabajó unos 14 minutos. Después respondió «Ollama no pudo completar la solicitud: La IA no devolvio contenido.», y la terminal no mostró nada.
+
+**Causa**:
+
+- El agente repitió llamadas y la protección contra bucles (`MAX_STALLED_ROUNDS`) pidió una vuelta sin herramientas.
+- En esa vuelta el modelo no escribió nada.
+- La vía sin streaming que usa Telegram (`NativeOllamaTransport::chat` → `run_ollama_chat`) trataba la respuesta vacía como error del proveedor; en Android pasaba igual.
+- El pedido terminaba en error, perdía lo hecho y no dejaba rastro en el log.
+
+**Qué se hizo**:
+
+- **`backend_ollama.rs`**: una respuesta vacía, con o sin streaming y en escritorio o Android, vuelve como texto vacío. El agente decide qué hacer.
+- **`backend_runtime.rs::complete_with`**: para las tareas de fondo (títulos, memorias, ruteo, cola de mensajes) el vacío sigue siendo error, así nunca se guarda un título o una memoria vacíos.
+- **`agent.rs`**:
+  - en una vuelta sin herramientas, la corrección pide explícitamente un resumen de lo hecho y lo que falta;
+  - si el modelo igual no escribe nada y ya ejecutó herramientas, el turno termina con `work_summary`: acciones, cuántas cambiaron datos y cuántas fallaron;
+  - ese resumen no pasa por la detección de pasos anunciados ni por el control de respuestas de Finanzas.
+
+  Prueba: `a_model_that_worked_and_then_answers_nothing_ends_with_what_was_done`.
+- **Log**: `log_request_failure` registra con `log::error!` cada pedido fallido de Telegram y del chat de la app (el logger de la app solo muestra errores).
+  - Registra el id, el código y el mensaje solo si es un error del sistema (proveedor, tiempo agotado o interno), porque un error de datos puede citar contenido privado.
+  - Agrega las herramientas usadas por nombre y cuántas fallaron (`tool_usage`).
+- **Historial de Telegram**: un pedido fallido queda con «No pude terminar: …», así «seguí» o «¿qué pasó?» tienen contexto.
+
+**Validaciones**:
+
+- `cargo test -p notia-backend-core`: 364.
+- `cargo test -p notia-app --features bluetooth`: 376, con `a_failed_request_logs_its_tools_by_name_without_their_data`.
+- Warnings sin cambios: 37, 61 y 144.
+- Falta repetir el borrado masivo por Telegram y leer en la terminal qué herramientas se repitieron.
+
+### Respuestas de varias líneas a una aclaración (2026-09-27)
+
+**Síntoma**: en Telegram, responder una aclaración pegando un texto de varias líneas cortó el pedido con «La respuesta de aclaración no es válida». El log registró `InvalidInput` sin herramientas usadas.
+
+**Causa**: `validate_clarification_answer` rechazaba cualquier carácter de control, y el salto de línea lo es. La pregunta y las opciones del agente pasaban por `validate_identifier`, con la misma regla, así que una pregunta de dos líneas también cortaba el turno.
+
+**Qué se hizo** (`backend-core/src/interaction.rs`):
+
+- La pregunta, las etiquetas de las opciones y la respuesta usan `validate_text`: aceptan `\n`, `\r` y `\t` y siguen rechazando los demás caracteres de control (`has_hidden_control`).
+- Los identificadores siguen con `validate_identifier`.
+- Prueba: `questions_and_answers_may_span_several_lines_but_not_hide_control_characters`.
+
+**Validaciones**:
+
+- `cargo test -p notia-backend-core`: 365.
+- `cargo test -p notia-app --features bluetooth`: 376.
+- Warnings de Android (61) y Linux (144) sin cambios.
+
+### Telegram: la nota antes de la pregunta y los mensajes largos (2026-09-27)
+
+**Síntoma**: al pedir una limpieza de correos, el análisis quedó cortado en el mensaje de progreso («R…», con `**` y `##` visibles) y solo llegó la pregunta «¿Qué querés que borre?».
+
+**Causa**:
+
+- El modelo escribió el análisis como nota de la misma vuelta en que llamó a `request_user_clarification`.
+- Telegram mostraba esa nota solo en el progreso, recortada a 300 caracteres y con el Markdown crudo, y mandaba únicamente la pregunta.
+- Además, `send_message` cortaba todo mensaje a 4000 caracteres: una respuesta larga llegaba cortada y, si el corte caía en medio del HTML, como texto plano.
+
+**Qué se hizo**:
+
+- **`backend-core/src/telegram_bot.rs`**:
+  - `notes_to_deliver` devuelve las notas que la persona no leyó completas: las que el progreso mostró recortadas (más de 300 caracteres) y, antes de una pregunta, la nota de la vuelta que pregunta;
+  - el progreso muestra la nota en texto plano (`plain_text`);
+  - `telegram_html_parts` convierte el Markdown en uno o más mensajes de hasta 3800 caracteres de HTML, partidos entre párrafos (o entre líneas si un párrafo es largo), sin partir bloques de código ni etiquetas.
+- **`app/src/telegram_worker.rs`**:
+  - `deliver_notes` manda esas notas completas antes de cada aclaración, confirmación o plan y antes de la respuesta final; lee solo los eventos nuevos desde la última entrega, así una nota no se repite;
+  - la respuesta final sale con `send_markdown`, en varias partes si hace falta.
+- **Sin límite de largo**: ningún texto se recorta.
+  - La confirmación (`confirmation_parts`), el plan (`plan_parts`) y la pregunta (`question_parts`, en Markdown) se parten en varios mensajes con los botones en el último; antes, la confirmación y el plan se cortaban en 3000 caracteres con «…».
+  - Una opción más larga que un botón (48 caracteres) también se lista entera en el texto.
+  - Un bloque de código más largo que un mensaje se parte entre líneas, cada parte con su marco.
+  - Un renglón sin saltos se corta entre palabras (`split_long_line`).
+  - El tope de 4000 caracteres de `send_message` queda solo como resguardo, porque ninguna parte lo alcanza.
+- **`list_gmail_messages`**: la descripción dice que cada llamada trae una página de hasta 25 y que, para revisar o limpiar una carpeta entera, hay que seguir con `pageToken` mientras haya `nextPageToken`, sin presentar una página como el total.
+
+**Validaciones**:
+
+- `cargo test -p notia-backend-core`: 369, con `notes_the_progress_clipped_or_that_give_context_to_a_question_are_delivered_whole`, `the_progress_shows_a_markdown_note_as_plain_text`, `a_long_answer_is_split_between_paragraphs_without_cutting_tags` y `nothing_is_cut_however_long_it_is`.
+- `cargo test -p notia-app --features bluetooth`: 376.
+- Warnings de Android (61) y Linux (144) sin cambios.
+- Falta repetir la limpieza por Telegram.
+
+### Agenda de Notia para el asistente y confirmación de notas (2026-09-27)
+
+**Síntoma**: por Telegram, «marcalos como leídos y poné una agenda para Iron Maiden en la fecha del concierto, tanto en Gmail como en Notia» terminó con «No se pudo verificar el preview almacenado», y no se creó ni el evento de Google Calendar ni el de la Agenda.
+
+**Causas y arreglos**:
+
+- **Confirmar una nota fallaba siempre.** Al retomar una confirmación, `execute_backend_request` llamaba a `handle_resume` con `interactions(None)`, sin `RevisionPort`. Toda confirmación de un cambio con documentos (crear, reemplazar, borrar o editar una nota) fallaba en `current_revisions`, en la app y en Telegram.
+  - Ahora usa `TauriRevisionPort`, que devuelve `MISSING_DOCUMENT_REVISION` (0) para un documento que no existe, la revisión que espera la vista previa de `create_library_note`.
+  - Si la nota se crea mientras tanto, la revisión cambia y se informa el conflicto.
+- **El asistente no tenía herramientas de la Agenda de Notia**, así que resolvió «en Notia» creando una nota. Ahora las tiene:
+  - `list_agenda` (lectura): eventos de un rango (hoy y 30 días por defecto, hasta 92) y el anotador;
+  - `create_agenda_event`: fecha, inicio y fin HH:MM, título y prioridad; se redondea a la grilla de 15 minutos, termina el mismo día (24:00 es el fin) y no se superpone;
+  - `delete_agenda_event`, `add_agenda_note`, `set_agenda_note_done` y `delete_agenda_note`.
+
+  Están en `app/src/agenda_tools.rs`. Las escrituras se validan con `agenda::with_transaction` sin confirmar para la vista previa y usan el mismo `apply_mutation` que la pantalla.
+  - En el catálogo tienen las políticas `AgendaRead` y `AgendaWrite`: datos del usuario, en los alcances Biblioteca y Finanzas, como Rutina.
+  - El ruteo suma el área `agenda` («la Agenda de Notia, no Google Calendar»), que también entra en el respaldo por palabras de los pedidos de correo y calendario.
+  - Tienen esquemas en `tool_schemas.json` y una guía (`prompt_guidance::agenda_tools`, con la fecha de hoy) que distingue la Agenda de Notia de Google Calendar y pide no crear una nota en su lugar.
+  - Cada cambio emite `notia:agenda-data-changed`, que refresca la pantalla de Agenda y el Inicio.
+- **Google Calendar**: la cuenta se conectó antes de que Notia pidiera el permiso de Calendar, y `mail_tools::session` rechaza el pedido. No es un error: hay que reconectarla en **Configuraciones → Cuentas asociadas** (y tener habilitada la API de Calendar en el proyecto de Google Cloud).
+
+**Validaciones**:
+
+- `cargo test -p notia-backend-core`: 370, con `the_agenda_of_notia_is_told_apart_from_google_calendar` y el ruteo con el área nueva.
+- `cargo test -p notia-app --features bluetooth`: 379, con 3 pruebas de `agenda_tools` (concierto hasta las 24:00, superposición, redondeo, pasar la medianoche y el anotador) y la de herramientas soportadas con esquema.
+- `npx tsc`, `npx eslint .` y `npx vitest run` (346): sin errores.
+- Warnings sin cambios: 37, 61 y 144.
+- Falta:
+  - repetir el pedido por Telegram después de reconectar la cuenta de Google;
+  - confirmar una nota nueva y la edición de una existente desde el chat.
+
+### Google Calendar: la zona horaria sin pedir el calendario completo (2026-09-27)
+
+**Síntoma**: con la cuenta reconectada (y el permiso `calendar.events` guardado), crear o listar eventos seguía devolviendo «Falta un permiso de Google… para aceptar Gmail y Calendar».
+
+**Causa**:
+
+- Antes de crear o listar, `calendar_time_zone` pedía `calendars/primary` para leer la zona horaria del calendario.
+- Ese recurso exige permiso de lectura del calendario completo (`calendar.readonly` o `calendar`), que Notia no pide, así que Google respondía 403 `insufficientPermissions` aunque la cuenta tuviera `calendar.events`.
+- La reconexión de la sección anterior no lo resolvía.
+
+**Arreglo** (`app/src/mail_tools.rs`):
+
+- La zona horaria se lee del campo `timeZone` de una lista de eventos (`calendars/primary/events?maxResults=1&fields=timeZone`), que `calendar.events` permite.
+- No cambian los permisos pedidos.
+- Prueba: `the_time_zone_is_read_through_the_events_the_permission_covers`.
+
+**Validaciones**:
+
+- `cargo test -p notia-app --features bluetooth`: 380.
+- Android (61) y escritorio (37) sin warnings nuevos.
+- Falta crear el evento real en Google Calendar.
+
+## Agenda: feriados, eventos superpuestos y sincronización con Google Calendar (2026-09-27)
+
+Sigue el lienzo de la Agenda (claude.ai/artifact/PKU5AkiZMN7WcKCNd3ub95) ajustado por la persona usuaria: celdas del mes de 58 px con el feriado, leyenda «Feriados»/«Días», eventos superpuestos en carriles, chip «Se superpone con …» y tarjeta **Feriados** en una grilla inferior de tres columnas.
+
+### Feriados (`app/src/holidays.rs`)
+
+- Fuente: `GET https://api.argentinadatos.com/v1/feriados/{año}` (`fecha`, `tipo` inamovible|trasladable|puente, `nombre`) y `GET /v1/feriados-bancarios/{año}` (`fecha`, `nombre`). Un 404 (año sin datos publicados) es una lista vacía.
+- Una llamada por año a cada endpoint: `calendar(years)` guarda cada año en una caché de memoria del proceso (`tokio::sync::Mutex`, que se mantiene durante la consulta, así dos vistas del mismo año hacen una sola llamada). Un año que falla queda marcado y se vuelve a pedir pasados 120 s. Timeout de 15 s.
+- `merge` une las dos listas por fecha: `HolidayKind` Fixed/Movable/Bridge según `tipo` (otro valor → NonWorking), `bank` si la fecha está en la lista bancaria, y los días solo bancarios entran como NonWorking con `bank_only` («Feriado bancario»). Se ordenan por fecha y tipo; el primero del día es el que muestra la celda.
+- Serialización del tipo: `fixed`, `move`, `bridge`, `nonwork` (los nombres del lienzo).
+- `agenda_get_view` y `agenda_apply_mutation` pasan a ser asíncronos (`Dispatch::Pending`): piden los años de `AgendaFrame::holiday_years` (grilla de 42 días y hoy) y, si quedan menos de dos feriados por delante en el año, también el siguiente; el trabajo con SQLite corre en `spawn_blocking`. Moverse a otro año en el calendario hace la llamada de ese año.
+- DTO: cada celda suma `holidayName`, `holidayKind` y `holidayTitle` (todos los feriados del día con su tipo), y `ariaLabel` los nombra. `AgendaView.holidays` es `{ next: { date, name, kind, countdownLabel, dateLabel, kindLabel } | null, afterLabel, emptyLabel }`: la cuenta regresiva salta los no laborables, «Después» es el siguiente, y `emptyLabel` distingue «No se pudieron cargar los feriados» de «No hay feriados publicados por delante».
+- Tokens: `--color-slate` (`#64748B`, el acento de Anotadores de la paleta) se suma a `notia.css`; la Agenda usa `--agenda-hol-fixed` (coral), `-move` (oro), `-bridge` (violeta) y `-nonwork` (slate).
+- Diferencia con el lienzo: la muestra de «No laborable» de la leyenda es un feriado bancario («Día del Bancario», «Optativo según el empleador o solo bancario») en lugar de «Iom Kipur», porque la API no publica días no laborables religiosos.
+
+### Eventos superpuestos
+
+- `apply_mutation` ya no rechaza tramos que se superponen; `AgendaErrorCode::Conflict` desaparece (y su mapeo en `backend_runtime`).
+- `agenda_view::day_lanes` reparte los eventos de cada día como el lienzo: se ordenan por inicio (y fin descendente), un grupo de eventos que se tocan usa tantos carriles como necesita y cada evento toma el primero libre. `AgendaWeekEventView` (evento + `lane`, `lanes`, `overlapLabel`, `tooltip`, `ariaLabel`) reemplaza a `AgendaEventView` en `week.events`.
+- `AgendaWeekGrid`: los 96 bloques se renderizan siempre; el evento se ubica con `--agenda-lane`/`--agenda-lanes` (ancho `(100% - 14px)/lanes - 3px`), dejando 14 px libres para elegir bloques debajo. Durante un arrastre, `data-dragging` deja pasar el puntero a los bloques. Las flechas recorren solo bloques (también bajo eventos) y cada evento es su propia parada de tabulación. Eventos de 15 minutos ocultan la hora.
+- La barra de acciones muestra el chip ámbar «Se superpone con …» del evento activo; la descripción de `create_agenda_event` y la prueba de `agenda_tools` reflejan que se puede superponer.
+
+### Sincronización con Google Calendar (`app/src/agenda_sync.rs`)
+
+- Un hilo (`agenda_sync::init`, hook de arranque junto al de Telegram) espera 30 s y sincroniza cada 5 minutos la biblioteca seleccionada, sobre la Agenda de `user-owner`, con cada cuenta que concedió `calendar.events` (`mail_tools::calendar_accounts`). No hace nada sin cuentas.
+- Esquema v27: `agenda_google_links(account_email, google_event_id, event_id, owner_user_id, ical_uid, google_updated, notia_fingerprint, synced_at)`, clave `(account_email, google_event_id)` y `event_id` único, sin clave foránea (un vínculo sin evento indica que Notia lo borró).
+- Ventana: 30 días atrás y 365 adelante. Se lista con `singleEvents=true&showDeleted=true` (páginas de 250, hasta 20) y los vínculos de la ventana que Google no listó se leen uno por uno (hasta 50); un 404/410 cuenta como borrado.
+- Decisión (`plan`, pura): por vínculo, Notia cambió si su huella (`fecha|inicio|fin|título`) difiere de la guardada, y Google si su `updated` difiere. Notia borró → se borra en Google. Google borró → se borra en Notia, salvo que Notia haya cambiado (se vuelve a crear en Google). Notia cambió → `PATCH` a Google (también si Google cambió: **gana Notia**). Solo Google cambió → se actualiza Notia (si pasó a día completo, se borra). Eventos nuevos de Google → se importan con prioridad Media, salvo cancelados, de día completo o la misma reunión ya traída de otra cuenta (iCalUID + día + hora, así las repeticiones de un recurrente entran todas). Un evento de Google idéntico (día, horas y título) a uno de Notia sin vincular se adopta en lugar de duplicarse. Los eventos de Notia sin vínculo se crean en la cuenta destino: la primera personal o, si no hay, la primera.
+- Conversión: la hora de Google pasa a la hora local; el inicio se redondea hacia abajo y el fin hacia arriba a la grilla de 15 minutos, con un bloque como mínimo, y lo que pasa la medianoche termina a las 24:00. El redondeo no se devuelve a Google porque solo se escribe allí cuando cambia la huella de Notia. Hacia Google se envían `summary` y `dateTime` con el offset local.
+- Escrituras: las llamadas a Google van primero y los cambios de la base de cada cuenta se aplican en una transacción (`with_transaction`, que en Android sincroniza la copia SAF); si una llamada falla por red o permiso, se guarda lo ya hecho y la cuenta se reintenta en la siguiente vuelta. Un evento que Google rechaza (por ejemplo, de un calendario ajeno) se registra y no frena al resto; si era una actualización, Notia conserva su versión y deja de reintentarla. Cuando cambió la Agenda se emite `notia:agenda-data-changed`, que recargan la Agenda y el Inicio.
+- Registro: solo el número de cuenta, su tipo y el código de error; nunca direcciones, tokens ni contenido de eventos.
+- `mail_tools`: `CalendarSession`, `calendar_session` y `calendar_accounts`; `google_error` trata 410 como `NotFound`.
+- Guía del asistente y esquema de `create_agenda_event`: como la Agenda se sincroniza, para agendar «en los dos» crea el evento solo en la Agenda de Notia; `create_calendar_event` queda para pedidos solo de Google, de una cuenta en particular o con invitados.
+
+### Validaciones
+
+- `cargo test -p notia-app --features bluetooth`: 401 (antes 380): feriados (unión de listas, cuenta regresiva, serialización), vista (carriles, feriados en celdas, tarjeta, años del cuadro), sincronización (conversión horaria, lectura de eventos, cuerpo hacia Google, cada caso del plan, recurrentes, adopción, cuenta destino, URL de la ventana, escrituras en SQLite) y la Agenda con superposición.
+- `cargo test -p notia-backend-core`: 370. Warnings sin cambios: escritorio 37, Android 61, Linux 144 (`tokio` suma la feature `sync`; `futures` no existe en Android).
+- `npx tsc`, `npx eslint .` y `npx vitest run` (346, con la grilla actualizada): sin errores.
+- Revisión visual con Chrome sin ventana sobre la vista real alimentada con el JSON que serializa Rust (tema oscuro, 1280 px).
+- Pendiente: sincronizar con cuentas reales (alta, cambio y borrado en cada lado, recurrentes, dos cuentas con la misma reunión), la consulta real de feriados en la app, tema claro y Android (toque en la franja libre bajo eventos superpuestos, copia SAF).

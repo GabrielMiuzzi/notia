@@ -210,9 +210,15 @@ impl OllamaTransport for NativeOllamaTransport {
         let think = think.clone();
         run_with_control(
             move || {
-                crate::host::async_runtime::block_on(crate::services::ai_service::run_ollama_chat(
+                let result = crate::host::async_runtime::block_on(crate::services::ai_service::run_ollama_chat(
                     &settings, &model, &messages, &think,
-                ))
+                ));
+                // An empty answer is not a transport failure: the agent
+                // decides how to continue, as with streaming.
+                match result {
+                    Err(error) if error == EMPTY_ANSWER => Ok(crate::services::ai_service::AiChatResult { answer: String::new() }),
+                    other => other,
+                }
             },
             control,
         )
@@ -421,19 +427,14 @@ impl OllamaTransport for AndroidOllamaTransport {
                 "Ollama no pudo completar la solicitud.".to_string(),
             ));
         }
+        // An empty answer is not a transport failure: the agent decides how
+        // to continue, as with streaming.
         let answer = response
             .pointer("/message/content")
             .and_then(Value::as_str)
             .map(str::trim)
             .unwrap_or_default()
             .to_string();
-        if answer.is_empty() {
-            return Err(BackendError::new(
-                BackendErrorCode::ProviderUnavailable,
-                "La IA no devolvio contenido.",
-                true,
-            ));
-        }
         Ok(AiChatResult { answer })
     }
 

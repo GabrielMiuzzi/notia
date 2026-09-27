@@ -4,6 +4,7 @@ import { getHomeDashboard, homeErrorMessage } from '../../../../services/home/ho
 import type { HomeDashboard } from '../../../../services/home/homeTypes'
 import { subscribeToFinanceDataChanges } from '../../../../modules/finance/services/financeDataEvents'
 import { subscribeToRoutineDataChanges } from '../../../../modules/routine/services/routineService'
+import { subscribeToAgendaDataChanges } from '../../../../modules/agenda/services/agendaService'
 
 const TASK_MANAGER_CHANGED_EVENT = 'task-manager-changed'
 /** Changes that arrive together (a chat turn that writes to several modules) read the dashboard once. */
@@ -62,6 +63,7 @@ export function useHomeDashboard(libraryId: string | null) {
       else unsubscribe()
     }
     void subscribeToRoutineDataChanges(scheduleReload).then(keep).catch(() => undefined)
+    void subscribeToAgendaDataChanges(scheduleReload).then(keep).catch(() => undefined)
     void subscribeBackend(TASK_MANAGER_CHANGED_EVENT, scheduleReload).then(keep).catch(() => undefined)
     const stopFinance = subscribeToFinanceDataChanges(scheduleReload)
     window.addEventListener('focus', scheduleReload)

@@ -25,9 +25,12 @@ mod finance_records;
 mod finance_screen;
 mod agenda;
 mod agenda_view;
+mod agenda_sync;
+mod holidays;
 mod routine;
 mod routine_dashboard;
 mod routine_tools;
+mod agenda_tools;
 mod coldpass;
 mod agent_history;
 mod agent_knowledge;
@@ -148,6 +151,7 @@ pub fn startup_hooks() -> Vec<TauriPlugin> {
         library_registry::init(),
         backup::service::init(),
         telegram_worker::init(),
+        agenda_sync::init(),
         task_manager_publication_source::init(),
         database::init(),
         mobile_ai_bridge::init(),
