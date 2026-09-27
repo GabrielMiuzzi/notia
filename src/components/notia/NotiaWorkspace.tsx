@@ -14,6 +14,7 @@ import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
 import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
+import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntry } from '../../types/coldpass'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../../modules/task-manager/types/taskManagerTypes'
@@ -234,6 +235,10 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'agenda') {
     return <AgendaView library={activeLibrary} />
+  }
+
+  if (activeWorkspaceView === 'home') {
+    return <HomeView library={activeLibrary} />
   }
 
   if (activeWorkspaceView === 'routine') {

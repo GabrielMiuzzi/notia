@@ -464,6 +464,54 @@ pub(crate) async fn backend_list_chats(app: AppHandle, payload: ListChatsPayload
     .await
 }
 
+/// A recently active chat, for the Home dashboard.
+pub(crate) struct RecentChat {
+    /// Path of the chat as the explorer shows it.
+    pub file_path: String,
+    pub title: String,
+    /// Prompt file that answered last; `None` for Notia (`default.md`).
+    pub agent: Option<String>,
+    /// Local time of its last activity, when known.
+    pub activity_local_ms: Option<i64>,
+}
+
+/// The `limit` most recently active chats, newest first.
+pub(crate) async fn recent_chats(
+    app: &AppHandle,
+    library_id: &str,
+    clock: chat_list::ChatClock,
+    limit: usize,
+) -> Result<Vec<RecentChat>, BackendError> {
+    let files = chat_files(app, library_id).await?;
+    let app = app.clone();
+    let library_id = library_id.to_string();
+    blocking(move || {
+        let mut dated = files
+            .into_iter()
+            .map(|file| {
+                let name = file.logical_path.rsplit('/').next().unwrap_or(&file.logical_path).to_string();
+                let activity = chat_list::activity_local_ms(clock, file.modified_at, &name);
+                (file, activity)
+            })
+            .collect::<Vec<_>>();
+        dated.sort_by(|left, right| right.1.cmp(&left.1));
+        Ok(dated
+            .into_iter()
+            .take(limit)
+            .map(|(file, activity_local_ms)| {
+                let document = stored_chat(&app, &library_id, &file.logical_path);
+                RecentChat {
+                    title: document.as_ref().map(|document| document.title.clone()).unwrap_or_else(|| file_stem(&file.logical_path)),
+                    agent: document.as_ref().and_then(chat_list::last_agent),
+                    file_path: file.file_path,
+                    activity_local_ms,
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Pins a chat to the top of the history, or unpins it.
 pub(crate) async fn backend_set_chat_pinned(app: AppHandle, payload: PinChatPayload) -> Result<(), BackendError> {
     blocking(move || {

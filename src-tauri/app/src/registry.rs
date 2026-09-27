@@ -143,6 +143,12 @@ fn route(command: &str) -> Option<Route> {
         "speech_session_state" => speech_session_state,
         "start_audio_monitor" => start_audio_monitor,
         "stop_audio_monitor" => stop_audio_monitor,
+        "home_dashboard" => home_dashboard,
+        "meeting_media_begin" => meeting_media_begin,
+        "meeting_media_chunk" => meeting_media_chunk,
+        "meeting_media_finish" => meeting_media_finish,
+        "meeting_media_discard" => meeting_media_discard,
+        "meeting_start_file_session" => meeting_start_file_session,
         "meeting_snapshot" => meeting_snapshot,
         "meeting_context" => meeting_context,
         "meeting_discard" => meeting_discard,
@@ -336,6 +342,12 @@ pub const COMMAND_NAMES: &[&str] = &[
     "speech_session_state",
     "start_audio_monitor",
     "stop_audio_monitor",
+    "home_dashboard",
+    "meeting_media_begin",
+    "meeting_media_chunk",
+    "meeting_media_finish",
+    "meeting_media_discard",
+    "meeting_start_file_session",
     "meeting_snapshot",
     "meeting_context",
     "meeting_discard",
@@ -413,6 +425,11 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "speech_session_state",
     "start_audio_monitor",
     "stop_audio_monitor",
+    "meeting_media_begin",
+    "meeting_media_chunk",
+    "meeting_media_finish",
+    "meeting_media_discard",
+    "meeting_start_file_session",
     "meeting_snapshot",
     "meeting_context",
     "meeting_discard",
@@ -974,6 +991,36 @@ fn start_audio_monitor(app: &AppHandle, _window_label: &str, command: &str, args
 
 fn stop_audio_monitor(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::commands::speech::stop_audio_monitor(arg(command, args, "payload")?, app.state()))))
+}
+
+fn home_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::home::home_dashboard(arg0, arg1).await) })))
+}
+
+fn meeting_media_begin(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting_media::meeting_media_begin(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_media_chunk(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting_media::meeting_media_chunk(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_media_finish(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting_media::meeting_media_finish(arg0, arg1).await) })))
+}
+
+fn meeting_media_discard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting_media::meeting_media_discard(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_start_file_session(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting_media::meeting_start_file_session(arg0, arg1).await) })))
 }
 
 fn meeting_snapshot(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

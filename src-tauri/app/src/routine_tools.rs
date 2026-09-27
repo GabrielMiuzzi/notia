@@ -463,7 +463,7 @@ fn read_tool(
                     match &task {
                         Some(task) => json!({
                             "date": stamp,
-                            "applies": task.days.applies(weekday_index(date)),
+                            "applies": data.counts_on(task, date),
                             "completed": data.is_completed(&task.id, date),
                         }),
                         None => {

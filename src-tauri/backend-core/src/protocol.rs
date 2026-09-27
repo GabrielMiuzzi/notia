@@ -385,6 +385,9 @@ pub struct PlanDecision {
     pub accepted: bool,
     #[serde(default)]
     pub step_ids: Vec<String>,
+    /// Changes the person asked for instead of approving the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -787,6 +790,7 @@ mod tests {
                 generation: 1,
                 accepted: true,
                 step_ids: Vec::new(),
+                suggestion: None,
             }),
         })
         .validate(&limits)

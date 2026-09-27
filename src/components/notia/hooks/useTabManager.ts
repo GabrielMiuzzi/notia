@@ -21,6 +21,7 @@ import {
   FINANCE_WORKSPACE_TAB_PATH,
   AGENDA_WORKSPACE_TAB_PATH,
   ROUTINE_WORKSPACE_TAB_PATH,
+  HOME_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import { writeLibraryDocument } from '../../../services/libraries/libraryDocumentRuntime'
 import {
@@ -50,6 +51,7 @@ interface OpenWorkspaceSpecialTabs {
   finance: boolean
   agenda: boolean
   routine: boolean
+  home: boolean
 }
 
 function getDisplayBaseName(value: string): string {
@@ -105,6 +107,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.finance) { tabs.push({ path: FINANCE_WORKSPACE_TAB_PATH, title: 'Finanzas' }) }
   if (specialTabs.agenda) { tabs.push({ path: AGENDA_WORKSPACE_TAB_PATH, title: 'Agenda' }) }
   if (specialTabs.routine) { tabs.push({ path: ROUTINE_WORKSPACE_TAB_PATH, title: 'Rutina' }) }
+  if (specialTabs.home) { tabs.push({ path: HOME_WORKSPACE_TAB_PATH, title: 'Inicio' }) }
 
   return tabs
 }
@@ -214,6 +217,7 @@ export function useTabManager({
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
       || tabPath === AGENDA_WORKSPACE_TAB_PATH
       || tabPath === ROUTINE_WORKSPACE_TAB_PATH
+      || tabPath === HOME_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = store.getState().documents.specialTabs
       if (
@@ -225,6 +229,7 @@ export function useTabManager({
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !currentSpecialTabs.finance)
         || (tabPath === AGENDA_WORKSPACE_TAB_PATH && !currentSpecialTabs.agenda)
         || (tabPath === ROUTINE_WORKSPACE_TAB_PATH && !currentSpecialTabs.routine)
+        || (tabPath === HOME_WORKSPACE_TAB_PATH && !currentSpecialTabs.home)
       ) { return }
 
       const currentTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, currentSpecialTabs)
@@ -240,6 +245,7 @@ export function useTabManager({
         finance: tabPath === FINANCE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.finance,
         agenda: tabPath === AGENDA_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.agenda,
         routine: tabPath === ROUTINE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.routine,
+        home: tabPath === HOME_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.home,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)
       const currentActiveTabPath = selectActiveTabPath(store.getState())
@@ -375,6 +381,7 @@ export function useTabManager({
       || tabPath === FINANCE_WORKSPACE_TAB_PATH
       || tabPath === AGENDA_WORKSPACE_TAB_PATH
       || tabPath === ROUTINE_WORKSPACE_TAB_PATH
+      || tabPath === HOME_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = store.getState().documents.specialTabs
       if (
@@ -386,6 +393,7 @@ export function useTabManager({
         || (tabPath === FINANCE_WORKSPACE_TAB_PATH && !specialTabs.finance)
         || (tabPath === AGENDA_WORKSPACE_TAB_PATH && !specialTabs.agenda)
         || (tabPath === ROUTINE_WORKSPACE_TAB_PATH && !specialTabs.routine)
+        || (tabPath === HOME_WORKSPACE_TAB_PATH && !specialTabs.home)
       ) { return }
       dispatch(setActiveTabPath(tabPath))
       return

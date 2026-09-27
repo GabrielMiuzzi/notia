@@ -46,6 +46,25 @@ pub(crate) fn reindex_library(app: &AppHandle, library_id: &str) -> Result<(usiz
     Ok((entries.len(), generation))
 }
 
+/// Folders at the root of the published inventory, by name.
+pub(crate) fn root_folders(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
+    let binding = app.state::<LibraryBindingRegistry>().lookup(library_id)?;
+    let connection = open_connection(app, &binding)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT path FROM library_inventory
+             WHERE generation=(SELECT active_generation FROM library_inventory_state WHERE id=1)
+               AND entry_type='folder' AND parent_path IS NULL
+             ORDER BY lower(path)",
+        )
+        .map_err(|_| storage("No se pudo leer el índice de la biblioteca."))?;
+    let folders = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(|_| storage("No se pudo leer el índice de la biblioteca."))?;
+    Ok(folders)
+}
+
 /// Logical paths of the files in the published inventory and its generation.
 pub(crate) fn inventory_files(app: &AppHandle, library_id: &str) -> Result<(Vec<String>, i64), BackendError> {
     let binding = app.state::<LibraryBindingRegistry>().lookup(library_id)?;

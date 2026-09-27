@@ -110,6 +110,40 @@ fn is_greeting(candidate: &str) -> bool {
     candidate.is_empty() || GREETINGS.contains(&candidate.as_str())
 }
 
+/// What the agent reads when the person sent only files: it looks at them
+/// and decides what the request is, as with a document sent to Telegram
+/// without text (the router also sees the files).
+pub const ATTACHMENTS_ONLY_REQUEST: &str = "[La persona envió solo adjuntos, sin texto. Mirá su contenido y hacé lo que corresponda: si es un comprobante financiero (ticket de compra, factura o boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito), extraé todos los campos legibles y registralo con la herramienta financiera del tipo detectado, sin duplicar como gasto una factura de servicio; si es otra cosa (por ejemplo, una agenda o un calendario, una tarea, apuntes o un documento), usá las herramientas que correspondan o preguntá qué hacer. Si son varios, procesalos todos.]";
+
+/// The request of a turn: the person's message, or
+/// `ATTACHMENTS_ONLY_REQUEST` when they sent only files; `None` when there
+/// is neither.
+pub fn turn_request(message: &str, attachment_count: usize) -> Option<String> {
+    let message = message.trim();
+    if !message.is_empty() {
+        Some(message.to_string())
+    } else if attachment_count > 0 {
+        Some(ATTACHMENTS_ONLY_REQUEST.to_string())
+    } else {
+        None
+    }
+}
+
+/// What names a new chat: its first message, or the names of its files
+/// (without extension) when it had only files.
+pub fn title_seed(message: &str, attachment_names: &[&str]) -> String {
+    let message = message.trim();
+    if !message.is_empty() {
+        return message.to_string();
+    }
+    attachment_names
+        .iter()
+        .map(|name| name.rsplit_once('.').map_or(*name, |(stem, _)| stem).trim())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Provisional title of a chat from its first message: the first sentence
 /// that is not a greeting, up to eight words.
 pub fn title_from_prompt(prompt: &str) -> String {
@@ -520,6 +554,16 @@ pub fn undo_answer(path: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_with_only_files_asks_the_agent_to_decide() {
+        assert_eq!(turn_request("  cargá este ticket ", 1).as_deref(), Some("cargá este ticket"));
+        assert_eq!(turn_request("", 2).as_deref(), Some(ATTACHMENTS_ONLY_REQUEST));
+        assert_eq!(turn_request("   ", 0), None);
+        assert_eq!(title_seed("", &["ticket-coto.jpg", "resumen visa.pdf"]), "ticket-coto, resumen visa");
+        assert_eq!(title_seed("Resumen de gastos", &["a.png"]), "Resumen de gastos");
+        assert_eq!(title_from_prompt(&title_seed("", &["ticket-coto.jpg"])), "ticket-coto");
+    }
 
     fn message(role: ChatRole, content: &str) -> StoredChatMessage {
         StoredChatMessage { role, content: content.into(), attachments: Vec::new(), agent: None }

@@ -20,6 +20,7 @@ export interface OpenWorkspaceSpecialTabs {
   finance: boolean
   agenda: boolean
   routine: boolean
+  home: boolean
 }
 
 export interface DocumentsState {

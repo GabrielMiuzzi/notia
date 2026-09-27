@@ -363,7 +363,13 @@ pub fn validate_confirmation(
                 "La confirmación contiene un hunk desconocido o repetido.",
             ));
         }
-        ConfirmationSelection::ApplySelected
+        // The interface starts with every change checked: all of them
+        // selected is applying all, which every preview allows.
+        if decision.hunk_ids.len() == request.preview.hunks.len() {
+            ConfirmationSelection::ApplyAll
+        } else {
+            ConfirmationSelection::ApplySelected
+        }
     };
     let action = match selection {
         ConfirmationSelection::Reject => MutationPreviewAction::Reject,
@@ -714,6 +720,14 @@ mod tests {
         let revisions = BTreeMap::from([(String::from("note.md"), 4)]);
         assert_eq!(
             validate_confirmation(&decision, &request, &revisions).expect("selection"),
+            ConfirmationSelection::ApplyAll
+        );
+        let mut two_hunks = request.clone();
+        let mut second = two_hunks.preview.hunks[0].clone();
+        second.id = "hunk-2".into();
+        two_hunks.preview.hunks.push(second);
+        assert_eq!(
+            validate_confirmation(&decision, &two_hunks, &revisions).expect("selection"),
             ConfirmationSelection::ApplySelected
         );
         let stale = BTreeMap::from([(String::from("note.md"), 5)]);
@@ -722,6 +736,30 @@ mod tests {
                 .expect_err("revision conflict")
                 .code,
             BackendErrorCode::Conflict
+        );
+    }
+
+    #[test]
+    fn every_change_checked_is_applying_all_where_selection_is_not_allowed() {
+        // Finance, routine and mail previews only allow applying all.
+        let mut request = ConfirmationRequest { operation: token(1), preview: preview() };
+        request.preview.allowed_actions = vec![MutationPreviewAction::ApplyAll, MutationPreviewAction::Reject, MutationPreviewAction::Cancel];
+        let mut second = request.preview.hunks[0].clone();
+        second.id = "hunk-2".into();
+        request.preview.hunks.push(second);
+        let revisions = BTreeMap::from([(String::from("note.md"), 4)]);
+        let decide = |hunk_ids: &[&str]| ConfirmationDecision {
+            operation_id: "operation-1".into(),
+            accepted: true,
+            hunk_ids: hunk_ids.iter().map(|id| id.to_string()).collect(),
+        };
+        assert_eq!(
+            validate_confirmation(&decide(&["hunk-2", "hunk-1"]), &request, &revisions).expect("all checked"),
+            ConfirmationSelection::ApplyAll
+        );
+        assert_eq!(
+            validate_confirmation(&decide(&["hunk-1"]), &request, &revisions).expect_err("partial").code,
+            BackendErrorCode::Forbidden
         );
     }
 

@@ -54,6 +54,9 @@ mod library_document_adapter;
 mod library_registry;
 mod library_users;
 mod meeting;
+mod meeting_media;
+mod home;
+mod recent_documents;
 mod user_auth;
 
 mod commands {
@@ -85,6 +88,7 @@ mod services {
     pub mod coldpass_secure_link;
     pub mod finance_extraction;
     pub mod finance_external;
+    pub mod media_decoder;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
     pub mod sherpa_offline;
@@ -95,6 +99,8 @@ mod services {
     pub mod speech_levels;
     pub mod speech_model_repository;
     pub mod speech_service;
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    pub mod speech_file;
     pub mod speech_worker;
     pub mod telegram_audio;
     pub mod telegram_service;
@@ -121,6 +127,7 @@ pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
     app.manage(ai_chat::AiChatState::default());
     app.manage(ai_tasks::AiTasksState::default());
     app.manage(meeting::MeetingState::default());
+    app.manage(meeting_media::MeetingMediaState::default());
     app.manage(coldpass::ColdPassState::default());
     app.manage(library_catalog::LibraryCatalogState::default());
     app.manage(agent_workspace::AgentWorkspaceState::default());

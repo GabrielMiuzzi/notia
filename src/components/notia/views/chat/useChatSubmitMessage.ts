@@ -30,7 +30,7 @@ export function useChatSubmitMessage(
   deps: UseChatSubmitMessageDependencies,
   state: UseChatSubmitMessageState,
 ): {
-  submitMessage: (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string, fromQueue?: boolean) => Promise<void>
+  submitMessage: (rawMessage: string, undoOperationId?: string, fromQueue?: boolean) => Promise<void>
   cancelActiveReply: () => void
   interjectMessage: (rawMessage: string) => Promise<ChatInterruptDecision>
 } {
@@ -146,9 +146,10 @@ export function useChatSubmitMessage(
   }
 
   /** `fromQueue`: a message the person typed during an earlier turn; the composer keeps what they write now. */
-  const submitMessage = async (rawMessage: string, keepExecutionPlan?: boolean, undoOperationId?: string, fromQueue = false) => {
+  const submitMessage = async (rawMessage: string, undoOperationId?: string, fromQueue = false) => {
     const trimmedMessage = rawMessage.trim()
-    if (!trimmedMessage || isSubmitting || !library) {
+    // Files alone are a message too; the backend decides what they ask for.
+    if ((!trimmedMessage && (fromQueue || selectedImageAttachments.length === 0)) || isSubmitting || !library) {
       return
     }
 
@@ -243,7 +244,7 @@ export function useChatSubmitMessage(
 
     try {
       const effectiveAgentScope = agentScope ?? 'library'
-      if (!keepExecutionPlan) onAgentExecutionPlanChange([])
+      onAgentExecutionPlanChange([])
       const turn = startChatTurn({
         libraryId: library.id,
         mode: 'chat',
@@ -266,6 +267,15 @@ export function useChatSubmitMessage(
         onAgentMessage: (message) => {
           agentMessageCount += 1
           turnMessages = [...turnMessages, message]
+          setOptimisticThreadMessages(turnMessages)
+          setStreamingThinking('')
+          setStreamingAssistantMessage('')
+        },
+        // What the agent wrote before its next step stays in the thread
+        // instead of being replaced by the next round.
+        onAssistantNote: (text) => {
+          agentMessageCount += 1
+          turnMessages = [...turnMessages, { role: 'assistant', content: text }]
           setOptimisticThreadMessages(turnMessages)
           setStreamingThinking('')
           setStreamingAssistantMessage('')
@@ -304,9 +314,13 @@ export function useChatSubmitMessage(
           await onActiveMarkdownDocumentChanged(activeDocumentPath, refreshed.content, refreshed.revision)
         }
       }
-      aiReplyMeasurement.success({
-        responseLength: outcome.answer.length,
-      })
+      // A turn that stopped after working is saved with a note; the person
+      // still learns why it stopped.
+      if (outcome.error) aiReplyMeasurement.error(new Error(outcome.error.message))
+      else aiReplyMeasurement.success({ responseLength: outcome.answer.length })
+      if (outcome.error && outcome.error.code !== 'cancelled') {
+        setDialogMessage(describeAiFeedbackError(outcome.error, 'No se pudo completar la consulta con la IA.'))
+      }
 
       const persistedDocument: StoredChatDocument = outcome.document ?? {
         ...targetChatDocument,

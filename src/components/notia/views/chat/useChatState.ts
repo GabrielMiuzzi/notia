@@ -402,7 +402,9 @@ export function useChatState(props: ChatWorkspaceViewProps): UseChatStateResult 
   const transientContextSummaryLabel = hasTransientContext ? transientContextSummary?.trim() || null : null
   const aiAvailabilityMessage = aiHealthMessage
   const isAiAvailable = !isCheckingAiHealth && !aiAvailabilityMessage
-  const canSubmit = draft.trim().length > 0 && !isSubmitting && Boolean(library) && isAiAvailable
+  // A message may be only files: the backend decides what the request is.
+  const canSubmit = (draft.trim().length > 0 || selectedImageAttachments.length > 0)
+    && !isSubmitting && Boolean(library) && isAiAvailable
 
   // AI health check + active model resolution
   useEffect(() => {

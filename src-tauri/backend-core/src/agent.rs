@@ -529,12 +529,33 @@ fn run_agent_inner(
                 )? {
                     result
                 } else {
-                    let result = executor.execute_confirmed(
+                    let result = match executor.execute_confirmed(
                         &request.context,
-                    &continuation.pending_call,
-                    &value,
-                    continuation.preview.as_ref(),
-                )?;
+                        &continuation.pending_call,
+                        &value,
+                        continuation.preview.as_ref(),
+                    ) {
+                        Ok(result) => result,
+                        Err(error)
+                            if matches!(
+                                error.code,
+                                BackendErrorCode::Cancelled | BackendErrorCode::Timeout
+                            ) =>
+                        {
+                            return Err(error)
+                        }
+                        // A confirmed call that fails goes back to the model,
+                        // like any tool error, so it can fix the call and go on
+                        // instead of ending the turn.
+                        Err(error) => ToolResult {
+                            call_id: continuation.pending_call.id.clone(),
+                            ok: false,
+                            changed: false,
+                            data: None,
+                            error: Some(error),
+                            preview: None,
+                        },
+                    };
                     state.store_tool_result(
                         &request.context,
                         &request.idempotency_key,
@@ -561,7 +582,20 @@ fn run_agent_inner(
                 });
             }
             ResumeDecision::Plan(plan) => {
-                if !plan.accepted {
+                // Changes asked instead of an approval: the agent proposes
+                // a new plan with them.
+                let suggestion = plan.suggestion.as_deref().map(str::trim).filter(|value| !value.is_empty());
+                if let (false, Some(suggestion)) = (plan.accepted, suggestion) {
+                    messages.push(ProviderMessage {
+                        role: ProviderMessageRole::User,
+                        content: format!(
+                            "No apruebo ese plan. Cambialo así: {suggestion}\nProponé el plan corregido antes de ejecutar nada."
+                        ),
+                        images: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_name: None,
+                    });
+                } else if !plan.accepted {
                     let response = AgentResponse {
                         request_id: request.context.request_id.clone(),
                         changed: false,
@@ -576,19 +610,20 @@ fn run_agent_inner(
                         &continuation.pending_call.id,
                     )?;
                     return Ok(response);
+                } else {
+                    messages.push(ProviderMessage {
+                        role: ProviderMessageRole::User,
+                        content: serde_json::json!({
+                            "planId": plan.plan_id,
+                            "accepted": plan.accepted,
+                            "stepIds": plan.step_ids,
+                        })
+                        .to_string(),
+                        images: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_name: None,
+                    });
                 }
-                messages.push(ProviderMessage {
-                    role: ProviderMessageRole::User,
-                    content: serde_json::json!({
-                        "planId": plan.plan_id,
-                        "accepted": plan.accepted,
-                        "stepIds": plan.step_ids,
-                    })
-                    .to_string(),
-                    images: Vec::new(),
-                    tool_calls: Vec::new(),
-                    tool_name: None,
-                });
             }
         }
         state.clear_continuation(
@@ -1790,6 +1825,143 @@ mod tests {
         ) -> Result<Option<OperationReview>, BackendError> {
             Ok(self.review.lock().expect("review lock").clone())
         }
+    }
+
+    /// Fails every call, as a save with an incomplete record does.
+    struct FailingExecutor;
+
+    impl ToolExecutor for FailingExecutor {
+        fn execute(&self, _: &BackendRequestContext, _: &ToolCall) -> Result<ToolResult, BackendError> {
+            Err(BackendError::invalid_input("El movimiento financiero no es válido: missing field `accountId`."))
+        }
+    }
+
+    fn plan_resume(accepted: bool, suggestion: Option<&str>, provider: &Provider) -> AgentResponse {
+        let continuation = AgentContinuation {
+            messages: vec![ProviderMessage {
+                role: ProviderMessageRole::User,
+                content: "seguí con el plan".into(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_name: None,
+            }],
+            rounds: 1,
+            pending_call: ToolCall {
+                id: "plan-1".into(),
+                name: "set_agent_execution_plan".into(),
+                arguments: serde_json::json!({"steps": ["Crear Tecnología"]}),
+                round: 1,
+            },
+            tool_results: Vec::new(),
+            preview: None,
+        };
+        let decision = ResumeDecision::Plan(super::super::PlanDecision {
+            plan_id: "plan-1".into(),
+            generation: 1,
+            accepted,
+            step_ids: Vec::new(),
+            suggestion: suggestion.map(str::to_string),
+        });
+        run_agent_inner(
+            provider,
+            &read_executor(),
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![tool("read_library_documents", true)]),
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+            None,
+            Some(continuation),
+            Some(decision),
+        )
+        .expect("resumed")
+    }
+
+    #[test]
+    fn changes_suggested_to_a_plan_reach_the_model_and_a_plain_rejection_ends() {
+        let answering = || Provider {
+            responses: Mutex::new(vec![ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content: "Te propongo el plan sin «Tecnología».".into(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_name: None,
+                },
+            }]),
+            calls: Mutex::new(0),
+        };
+        let provider = answering();
+        let response = plan_resume(false, Some("usá Otros en vez de crear Tecnología"), &provider);
+        assert_eq!(response.response.markdown, "Te propongo el plan sin «Tecnología».");
+        assert_eq!(*provider.calls.lock().expect("calls"), 1);
+
+        let provider = answering();
+        let response = plan_resume(false, None, &provider);
+        assert_eq!(response.response.markdown, "El plan fue rechazado.");
+        assert_eq!(*provider.calls.lock().expect("calls"), 0);
+    }
+
+    #[test]
+    fn a_confirmed_call_that_fails_goes_back_to_the_model_instead_of_ending_the_turn() {
+        let provider = Provider {
+            responses: Mutex::new(vec![ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content: "Me faltó la cuenta; la busco y lo corrijo.".into(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_name: None,
+                },
+            }]),
+            calls: Mutex::new(0),
+        };
+        let mut save = tool("save_finance_transaction", false);
+        save.requires_confirmation = true;
+        let request = request(vec![save]);
+        let pending_call = ToolCall {
+            id: "call-1".into(),
+            name: "save_finance_transaction".into(),
+            arguments: serde_json::json!({"record": {"id": "tx-1", "categoryId": "tecnologia"}}),
+            round: 1,
+        };
+        let continuation = AgentContinuation {
+            messages: vec![ProviderMessage {
+                role: ProviderMessageRole::User,
+                content: "dale".into(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_name: None,
+            }],
+            rounds: 1,
+            pending_call,
+            tool_results: Vec::new(),
+            preview: None,
+        };
+        let decision = ResumeDecision::Confirmation(ConfirmationDecision {
+            operation_id: "call-1".into(),
+            accepted: true,
+            hunk_ids: Vec::new(),
+        });
+        let response = run_agent_inner(
+            &provider,
+            &FailingExecutor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request,
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+            None,
+            Some(continuation),
+            Some(decision),
+        )
+        .expect("the turn goes on");
+        assert_eq!(response.response.markdown, "Me faltó la cuenta; la busco y lo corrijo.");
+        let failed = response.tool_results.iter().find(|result| result.call_id == "call-1").expect("failed result");
+        assert!(!failed.ok);
+        assert!(failed.error.as_ref().is_some_and(|error| error.message.contains("accountId")));
     }
 
     #[test]

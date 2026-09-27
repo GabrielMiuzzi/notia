@@ -433,7 +433,12 @@ pub(crate) fn library_read_document(app: AppHandle, payload: LibraryDocumentPayl
     let logical_path = catalog_entry(&app, &payload.library_id)
         .and_then(|library| logical_path_of(&library, &payload.path))
         .ok();
+    // Only the editor opening a note asks for its defaults: Home lists it.
+    let opened_in_editor = payload.markdown_defaults;
     let result = read_document(&app, payload);
+    if let Some(path) = logical_path.as_deref().filter(|path| opened_in_editor && result.ok && is_markdown(path)) {
+        crate::recent_documents::record(&app, &library_id, path);
+    }
     let locked_context = logical_path
         .as_deref()
         .filter(|path| result.ok && is_markdown(path))

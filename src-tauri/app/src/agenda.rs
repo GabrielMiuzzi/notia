@@ -288,6 +288,19 @@ pub fn load_data(connection: &Connection, owner: &str, frame: &AgendaFrame) -> A
         |row| row.get(0),
     )?;
 
+    let notes = load_notes(connection, owner, &today)?;
+
+    Ok(AgendaData {
+        event_dates,
+        week_events,
+        upcoming,
+        upcoming_total: upcoming_total.max(0) as usize,
+        notes,
+    })
+}
+
+/// Pending notes, plus the ones checked on `today` (`YYYY-MM-DD`).
+fn load_notes(connection: &Connection, owner: &str, today: &str) -> AgendaResult<Vec<NoteRecord>> {
     let mut statement = connection.prepare(
         "SELECT id, text, done_on FROM agenda_notes
          WHERE owner_user_id=?1 AND (done_on IS NULL OR done_on>=?2)
@@ -302,14 +315,33 @@ pub fn load_data(connection: &Connection, owner: &str, frame: &AgendaFrame) -> A
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(notes)
+}
 
-    Ok(AgendaData {
-        event_dates,
-        week_events,
-        upcoming,
-        upcoming_total: upcoming_total.max(0) as usize,
-        notes,
-    })
+/// What the Home dashboard shows of the Agenda.
+#[derive(Debug)]
+pub struct HomeAgendaData {
+    pub today: NaiveDate,
+    /// Events from now to the end of the last day, oldest first.
+    pub events: Vec<EventRecord>,
+    pub notes: Vec<NoteRecord>,
+}
+
+/// Events of the `days` days starting today that have not ended, and the
+/// notepad, read with the Agenda's own clock.
+pub fn home_data(app: &crate::host::AppHandle, context: &AgendaContext, days: u32) -> AgendaResult<HomeAgendaData> {
+    let (today, now_minute) = local_now();
+    let last = today + chrono::Duration::days(i64::from(days.max(1)) - 1);
+    let connection = open_connection(context, app)?;
+    let events = query_events(
+        &connection,
+        "SELECT id, date, start_minute, end_minute, title, priority FROM agenda_events
+         WHERE owner_user_id=?1 AND date BETWEEN ?2 AND ?3 AND (date>?2 OR end_minute>?4)
+         ORDER BY date, start_minute",
+        params![context.owner(), date_key(today), date_key(last), now_minute],
+    )?;
+    let notes = load_notes(&connection, context.owner(), &date_key(today))?;
+    Ok(HomeAgendaData { today, events, notes })
 }
 
 #[derive(Debug, Clone, Deserialize)]

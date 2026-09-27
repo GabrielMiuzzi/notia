@@ -1,27 +1,37 @@
-// A view asks the side chat to show a message in its composer. The person
-// reviews it and sends it; nothing is sent from here. `null` only focuses
-// the composer and keeps what it has. When the side chat is not mounted
-// yet, the last request waits until it subscribes.
+// A view asks the side chat for something: show a message in its composer
+// for the person to review and send (`compose`; `null` only focuses the
+// composer and keeps what it has), send a message in a new chat with an agent
+// (`send`, the ask box of Home) or open a chat (`open`). When the side chat
+// is not mounted yet, the last request waits until it subscribes.
 
-type ComposerRequestListener = (text: string | null) => void
+export type ChatPanelRequest =
+  | { kind: 'compose'; text: string | null }
+  | { kind: 'send'; text: string; agentFileName: string | null }
+  | { kind: 'open'; filePath: string; agentFileName: string | null }
 
-const listeners = new Set<ComposerRequestListener>()
-let pendingText: string | null | undefined
+type ChatPanelRequestListener = (request: ChatPanelRequest) => void
 
-export function requestChatComposerText(text: string | null): void {
+const listeners = new Set<ChatPanelRequestListener>()
+let pendingRequest: ChatPanelRequest | null = null
+
+export function requestChatPanel(request: ChatPanelRequest): void {
   if (listeners.size === 0) {
-    pendingText = text
+    pendingRequest = request
     return
   }
-  for (const listener of listeners) listener(text)
+  for (const listener of listeners) listener(request)
 }
 
-export function subscribeToChatComposerRequests(listener: ComposerRequestListener): () => void {
+export function requestChatComposerText(text: string | null): void {
+  requestChatPanel({ kind: 'compose', text })
+}
+
+export function subscribeToChatPanelRequests(listener: ChatPanelRequestListener): () => void {
   listeners.add(listener)
-  if (pendingText !== undefined) {
-    const text = pendingText
-    pendingText = undefined
-    listener(text)
+  if (pendingRequest) {
+    const request = pendingRequest
+    pendingRequest = null
+    listener(request)
   }
   return () => {
     listeners.delete(listener)

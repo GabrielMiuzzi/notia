@@ -214,11 +214,41 @@ struct ActivePlatformSpeechSession {
     session_id: String,
     // Dropped first: it stops emitting before the capture closes.
     _levels: Option<crate::services::speech_levels::LevelReporter>,
-    audio_capture: crate::services::speech_audio::PlatformAudioCapture,
+    audio: SessionAudio,
     meter: crate::services::speech_audio::SharedCaptureMeter,
     worker: crate::services::speech_worker::SpeechWorker,
     confirmed: Arc<StdMutex<ConfirmedSpeech>>,
 }
+
+/// Where a session's audio comes from.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+enum SessionAudio {
+    /// The microphone and the computer's audio, recorded live.
+    Capture(crate::services::speech_audio::PlatformAudioCapture),
+    /// A file decoded into the session; it cannot be paused. The feeder is
+    /// held so dropping the session stops it.
+    File { _feeder: crate::services::speech_file::FileFeeder },
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+impl SessionAudio {
+    fn pause(&self) -> Result<(), String> {
+        match self {
+            Self::Capture(capture) => capture.pause(),
+            Self::File { .. } => Err(FILE_SESSION_CANNOT_PAUSE.to_string()),
+        }
+    }
+
+    fn resume(&self) -> Result<(), String> {
+        match self {
+            Self::Capture(capture) => capture.resume(),
+            Self::File { .. } => Err(FILE_SESSION_CANNOT_PAUSE.to_string()),
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+const FILE_SESSION_CANNOT_PAUSE: &str = "La transcripción de un archivo no se puede pausar.";
 
 /// What the session confirmed while recording: the whole text and each line
 /// with the samples it spans, which the speaker separation reuses.
@@ -345,13 +375,6 @@ pub fn start_platform_session(
         *skip = None;
     }
     let SessionCapture { sources, max_duration_seconds, expected_speakers, meeting } = capture;
-    let diarization_runtime_path = diarization_model
-        .as_ref()
-        .map(|_| crate::services::sherpa_runtime::resolve_platform_runtime_path(app))
-        .transpose()?;
-    let recognizer_app = app.clone();
-    let recognizer_cache = Arc::clone(&state.preloaded_recognizer);
-    let recycler_cache = Arc::clone(&recognizer_cache);
     let buffer = crate::services::speech_audio::create_shared_pcm_buffer();
     let meter: crate::services::speech_audio::SharedCaptureMeter = Arc::default();
     let audio_capture = crate::services::speech_audio::PlatformAudioCapture::start(
@@ -370,6 +393,165 @@ pub fn start_platform_session(
             )
         })
         .transpose()?;
+    let (worker, confirmed) = start_session_worker(
+        app,
+        state,
+        &session_id,
+        model,
+        diarization_model,
+        buffer,
+        max_duration_seconds,
+        SessionKind { expected_speakers, meeting, file: false },
+    )?;
+    *slot = Some(ActivePlatformSpeechSession {
+        session_id,
+        _levels: levels,
+        audio: SessionAudio::Capture(audio_capture),
+        meter,
+        worker,
+        confirmed,
+    });
+    Ok(())
+}
+
+/// A file a session transcribes: its decodable copy and its duration.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub struct FileCapture {
+    pub path: std::path::PathBuf,
+    pub duration_ms: u64,
+    pub expected_speakers: Option<u32>,
+}
+
+/// Starts a session that transcribes a file for a Meeting. It reports
+/// `finalizing` with the share of the file transcribed, then separates the
+/// speakers as a recording does.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub fn start_file_session(
+    app: &AppHandle,
+    state: &SpeechRuntimeState,
+    session_id: String,
+    model: OfflineNemoTransducerConfig,
+    diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
+    file: FileCapture,
+) -> Result<(), String> {
+    let mut slot = state
+        .active_session
+        .lock()
+        .map_err(|_| "No se pudo bloquear la sesion de voz.".to_string())?;
+    if slot.is_some() {
+        return Err("Ya existe una sesion de voz activa.".to_string());
+    }
+    stop_any_audio_monitor(state);
+    if let Ok(mut skip) = state.skip_diarization.lock() {
+        *skip = None;
+    }
+    // The archive holds the whole file, with room for a decoder that reads
+    // a little more than the container announced.
+    let max_duration_seconds = u32::try_from(file.duration_ms / 1_000 + 60)
+        .unwrap_or(MAX_SPEECH_SESSION_SECONDS)
+        .min(MAX_SPEECH_SESSION_SECONDS);
+    let buffer = crate::services::speech_audio::create_shared_pcm_buffer();
+    let meter: crate::services::speech_audio::SharedCaptureMeter = Arc::default();
+    let (worker, confirmed) = start_session_worker(
+        app,
+        state,
+        &session_id,
+        model,
+        diarization_model,
+        Arc::clone(&buffer),
+        max_duration_seconds,
+        SessionKind { expected_speakers: file.expected_speakers, meeting: true, file: true },
+    )?;
+    // The slot stays locked until the session is in it, so a short file
+    // cannot finish before its session exists.
+    let feeder = crate::services::speech_file::FileFeeder::start(
+        app.clone(),
+        session_id.clone(),
+        file.path,
+        file.duration_ms,
+        buffer,
+        Arc::clone(&meter),
+    )?;
+    // Processing from now on, so an interface that asks for the session's
+    // state right away can follow it (the worker's Ready reports it too).
+    if let Ok(mut phase) = state.phase.lock() {
+        *phase = SpeechPhase::Finalizing;
+    }
+    set_finalizing_session(state, Some(session_id.clone()));
+    *slot = Some(ActivePlatformSpeechSession {
+        session_id,
+        _levels: None,
+        audio: SessionAudio::File { _feeder: feeder },
+        meter,
+        worker,
+        confirmed,
+    });
+    Ok(())
+}
+
+/// The whole file reached the recognizer: the session ends as a stopped
+/// recording does, recognizing what is left and separating the speakers.
+/// Nothing happens when the session was cancelled meanwhile.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub(crate) fn finish_file_session(app: &AppHandle, session_id: &str) {
+    let state = app.state::<SpeechRuntimeState>();
+    let session = state.active_session.lock().ok().and_then(|mut slot| {
+        if slot.as_ref().is_some_and(|session| session.session_id == session_id) {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    let Some(ActivePlatformSpeechSession { worker, audio, .. }) = session else {
+        return;
+    };
+    drop(audio);
+    set_finalizing_session(&state, Some(session_id.to_string()));
+    let finished = worker.stop().and_then(|()| worker.join());
+    set_finalizing_session(&state, None);
+    if finished.is_err() {
+        if let Ok(mut phase) = state.phase.lock() {
+            *phase = SpeechPhase::Idle;
+        }
+    }
+    #[cfg(target_os = "android")]
+    crate::mobile_continuity::end_android_work(
+        app.state::<crate::mobile_continuity::ContinuityState>().inner(),
+    );
+}
+
+/// What kind of session a worker serves.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+struct SessionKind {
+    expected_speakers: Option<u32>,
+    meeting: bool,
+    /// The audio comes from a file: the session reports `finalizing` with
+    /// the file's progress instead of `recording`.
+    file: bool,
+}
+
+/// Starts the recognizer worker of a session over `buffer`.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+#[allow(clippy::too_many_arguments)]
+fn start_session_worker(
+    app: &AppHandle,
+    state: &SpeechRuntimeState,
+    session_id: &str,
+    model: OfflineNemoTransducerConfig,
+    diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
+    buffer: crate::services::speech_audio::SharedPcmBuffer,
+    max_duration_seconds: u32,
+    kind: SessionKind,
+) -> Result<(crate::services::speech_worker::SpeechWorker, Arc<StdMutex<ConfirmedSpeech>>), String> {
+    let SessionKind { expected_speakers, meeting, file } = kind;
+    let diarization_runtime_path = diarization_model
+        .as_ref()
+        .map(|_| crate::services::sherpa_runtime::resolve_platform_runtime_path(app))
+        .transpose()?;
+    let recognizer_app = app.clone();
+    let recognizer_cache = Arc::clone(&state.preloaded_recognizer);
+    let recycler_cache = Arc::clone(&recognizer_cache);
+    let session_id = session_id.to_string();
     let started_at = Instant::now();
     let confirmed = Arc::new(StdMutex::new(ConfirmedSpeech::default()));
     let callback_app = app.clone();
@@ -397,7 +579,7 @@ pub fn start_platform_session(
                 &callback_session_id,
                 started_at,
                 &callback_confirmed,
-                meeting,
+                WorkerEventTarget { meeting, file },
                 DiarizationSetup {
                     runtime_path: diarization_runtime_path.as_deref(),
                     model: diarization_model.as_ref(),
@@ -412,15 +594,7 @@ pub fn start_platform_session(
             }
         },
     )?;
-    *slot = Some(ActivePlatformSpeechSession {
-        session_id,
-        _levels: levels,
-        audio_capture,
-        meter,
-        worker,
-        confirmed,
-    });
-    Ok(())
+    Ok((worker, confirmed))
 }
 
 /// Position of the recording of `session_id`, without its pauses.
@@ -556,7 +730,7 @@ pub fn consume_platform_turn(
         .as_ref()
         .filter(|session| session.session_id == session_id)
         .ok_or_else(|| "La sesion de voz no coincide con la sesion activa.".to_string())?;
-    session.audio_capture.pause()?;
+    session.audio.pause()?;
     session.worker.pause()?;
     let mut confirmed = session
         .confirmed
@@ -567,7 +741,7 @@ pub fn consume_platform_turn(
     drop(confirmed);
     if text.is_empty() {
         session.worker.resume()?;
-        session.audio_capture.resume()?;
+        session.audio.resume()?;
         return Err("No se detecto voz en este turno.".to_string());
     }
     Ok(text)
@@ -602,7 +776,7 @@ pub fn pause_platform_audio(state: &SpeechRuntimeState) -> Result<(), String> {
     let session = slot
         .as_ref()
         .ok_or_else(|| "No hay una captura de voz activa.".to_string())?;
-    session.audio_capture.pause()?;
+    session.audio.pause()?;
     session.worker.pause()
 }
 
@@ -620,7 +794,7 @@ pub fn resume_platform_audio(state: &SpeechRuntimeState) -> Result<(), String> {
     let session = slot
         .as_ref()
         .ok_or_else(|| "No hay una captura de voz activa.".to_string())?;
-    session.audio_capture.resume()?;
+    session.audio.resume()?;
     session.worker.resume()
 }
 
@@ -660,7 +834,7 @@ pub fn stop_platform_session(state: &SpeechRuntimeState) -> Result<(), String> {
         .ok_or_else(|| "No hay una sesion de voz activa.".to_string())?;
     // The worker must finish even if the capture cannot pause: the phase is
     // already finalizing and only the worker's end returns it to idle.
-    if let Err(error) = session.audio_capture.pause() {
+    if let Err(error) = session.audio.pause() {
         log::warn!("[notia:speech] the capture did not pause before finishing: {error}");
     }
     // Nothing to measure while the speakers are separated.
@@ -692,11 +866,11 @@ fn release_ended_session(app: &AppHandle, session_id: &str) -> bool {
             None
         }
     });
-    let Some(ActivePlatformSpeechSession { _levels, audio_capture, worker, .. }) = session else {
+    let Some(ActivePlatformSpeechSession { _levels, audio, worker, .. }) = session else {
         return false;
     };
     drop(_levels);
-    drop(audio_capture);
+    drop(audio);
     worker.detach();
     #[cfg(target_os = "android")]
     crate::mobile_continuity::end_android_work(
@@ -734,6 +908,8 @@ pub fn session_state(state: &SpeechRuntimeState, session_id: &str) -> Result<Spe
     }
     let elapsed_ms = session_position_ms(state, session_id).map_err(|_| ENDED.to_string())?;
     match phase {
+        // The session exists but its worker has not reported that it is ready.
+        SpeechPhase::Preparing => Ok(SpeechSessionStateDto::Preparing { progress: None }),
         SpeechPhase::Recording => Ok(SpeechSessionStateDto::Recording { elapsed_ms, has_speech: true }),
         SpeechPhase::Paused => Ok(SpeechSessionStateDto::Paused { elapsed_ms }),
         _ => Err(ENDED.to_string()),
@@ -787,17 +963,38 @@ struct DiarizationSetup<'a> {
 const DIARIZATION_SKIPPED: &str = "La separación de hablantes se omitió.";
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
+/// Who a worker's events are for: a Meeting (its lines go through the
+/// meeting) and whether its audio is a file.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+#[derive(Clone, Copy)]
+struct WorkerEventTarget {
+    meeting: bool,
+    file: bool,
+}
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
 fn handle_worker_event(
     app: &AppHandle,
     session_id: &str,
     started_at: Instant,
     confirmed: &Arc<StdMutex<ConfirmedSpeech>>,
-    meeting: bool,
+    target: WorkerEventTarget,
     diarization: DiarizationSetup<'_>,
     event: crate::services::speech_worker::SpeechWorkerEvent,
 ) {
     use crate::services::speech_worker::SpeechWorkerEvent;
+    let meeting = target.meeting;
     match event {
+        // A file is not recorded: its session is processing from the start.
+        SpeechWorkerEvent::Ready if target.file => {
+            set_runtime_phase(app, SpeechPhase::Finalizing);
+            set_finalizing_session(&app.state::<SpeechRuntimeState>(), Some(session_id.to_string()));
+            emit_state(
+                app,
+                session_id,
+                SpeechSessionStateDto::Finalizing { progress: Some(0.0), stage: Some("transcribing") },
+            );
+        }
         SpeechWorkerEvent::Ready => {
             set_runtime_phase(app, SpeechPhase::Recording);
             emit_state(

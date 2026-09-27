@@ -4,6 +4,19 @@ import { describe, expect, it } from 'vitest'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 
 describe('ChatMarkdownMessage', () => {
+  it('keeps amounts in pesos as text and still renders inline formulas', () => {
+    const amounts = renderToStaticMarkup(createElement(ChatMarkdownMessage, {
+      source: 'Cine Fan Black ($21.999) está **descartado**, y la compra de USD ($1.530.000) es un pase interno.',
+    }))
+    expect(amounts).not.toContain('katex')
+    expect(amounts).toContain('($21.999)')
+    expect(amounts).toContain('<strong>descartado</strong>')
+
+    const formula = renderToStaticMarkup(createElement(ChatMarkdownMessage, { source: 'El área es $x^2$ y cuesta $5 o $10.' }))
+    expect(formula.match(/class="katex"/g)).toHaveLength(1)
+    expect(formula).toContain('cuesta $5 o $10.')
+  })
+
   it('renders every heading that follows a ticket field list', () => {
     const source = [
       'Leandro está involucrado en las siguientes **3 tareas**:',

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use notia_backend_core::ai_settings::{AiSettings, AiSettingsInput};
 use notia_backend_core::meeting::{
     self, MeetingFilter, MeetingInsightsRequest, MeetingMark, MeetingRecord, MeetingSegment,
-    MeetingSnapshotDto, MeetingSources, MeetingStart, MeetingStatus, SavedMeetingNote,
+    MeetingSnapshotDto, MeetingSourceFile, MeetingSources, MeetingStart, MeetingStatus, SavedMeetingNote,
 };
 use notia_backend_core::RequestControl;
 use serde::{Deserialize, Serialize};
@@ -133,6 +133,19 @@ pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, 
         options.live_answers && settings.is_some(),
     ));
     inner.live.settings = settings;
+    drop(inner);
+    announce(app, session_id);
+}
+
+/// A meeting transcribed from `file`. It exists before the first line of
+/// the file arrives and is processing from the start: there is nothing to
+/// capture and no live answers.
+#[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
+pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceFile) {
+    let Ok(mut inner) = lock(app) else { return };
+    inner.live.cancel();
+    inner.record = Some(MeetingRecord::from_file(session_id, start_labels(), file));
+    inner.live.settings = None;
     drop(inner);
     announce(app, session_id);
 }
@@ -311,6 +324,13 @@ pub(crate) struct MeetingSnapshotPayload {
     meeting_id: Option<String>,
     #[serde(default)]
     filter: MeetingFilter,
+}
+
+/// The current meeting, unfiltered, and when it started (ms since the
+/// epoch); `None` without one.
+pub(crate) fn current_meeting(app: &AppHandle) -> Option<(MeetingSnapshotDto, u64)> {
+    let inner = lock(app).ok()?;
+    inner.record.as_ref().map(|record| (record.snapshot(&MeetingFilter::default()), record.start.unix_ms))
 }
 
 /// The current meeting with its turns filtered; `None` without one.

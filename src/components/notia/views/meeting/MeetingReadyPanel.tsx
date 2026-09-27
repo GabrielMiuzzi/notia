@@ -1,23 +1,15 @@
 import { Mic, MonitorSpeaker, Activity } from 'lucide-react'
 import { MeetingLevelBars } from './MeetingLevelBars'
+import { MeetingOptions, type MeetingOptionsProps } from './MeetingOptions'
+import { MEETING_SOURCE_PANEL_ID } from './MeetingSourceTabs'
 import type { SpeechLevelHistory } from './useSpeechLevels'
 
 export type MeetingSource = 'microphone' | 'system'
 
-const LANGUAGES: Array<[string, string]> = [
-  ['es', 'Español'],
-  ['en', 'Inglés'],
-  ['pt', 'Portugués'],
-  ['fr', 'Francés'],
-  ['it', 'Italiano'],
-  ['de', 'Alemán'],
-]
-const SPEAKER_COUNTS = [2, 3, 4, 5, 6]
-export const DEFAULT_MEETING_FOLDER = 'Meetings'
 const METER_BARS = 28
 const SIGNAL_LEVEL = 0.1
 
-interface MeetingReadyPanelProps {
+interface MeetingReadyPanelProps extends MeetingOptionsProps {
   canStart: boolean
   isStarting: boolean
   onStart: () => void
@@ -28,14 +20,6 @@ interface MeetingReadyPanelProps {
   isChecking: boolean
   onToggleCheck: () => void
   levels: SpeechLevelHistory
-  language: string
-  onLanguageChange: (language: string) => void
-  expectedSpeakers: number | null
-  onExpectedSpeakersChange: (count: number | null) => void
-  folder: string
-  folderOptions: string[]
-  libraryName: string | null
-  onFolderChange: (folder: string) => void
 }
 
 export function MeetingReadyPanel({
@@ -49,17 +33,8 @@ export function MeetingReadyPanel({
   isChecking,
   onToggleCheck,
   levels,
-  language,
-  onLanguageChange,
-  expectedSpeakers,
-  onExpectedSpeakersChange,
-  folder,
-  folderOptions,
-  libraryName,
-  onFolderChange,
+  ...options
 }: MeetingReadyPanelProps) {
-  const languages = LANGUAGES.some(([code]) => code === language) ? LANGUAGES : [...LANGUAGES, [language, language] as [string, string]]
-  const folders = Array.from(new Set([DEFAULT_MEETING_FOLDER, folder, ...folderOptions]))
   const sourceCards = [
     {
       id: 'microphone' as const,
@@ -80,7 +55,7 @@ export function MeetingReadyPanel({
   ]
 
   return (
-    <div className="notia-meeting-ready">
+    <div className="notia-meeting-ready" id={MEETING_SOURCE_PANEL_ID} role="tabpanel">
       <section className="notia-meeting-card notia-meeting-setup" aria-label="Preparar la grabación">
         <div className="notia-meeting-hero">
           <button
@@ -137,32 +112,7 @@ export function MeetingReadyPanel({
           })}
         </div>
 
-        <div className="notia-meeting-options">
-          <label>
-            <span>Idioma</span>
-            <select value={language} onChange={(event) => onLanguageChange(event.target.value)}>
-              {languages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Hablantes</span>
-            <select
-              value={expectedSpeakers ?? 'auto'}
-              onChange={(event) => onExpectedSpeakersChange(event.target.value === 'auto' ? null : Number(event.target.value))}
-            >
-              <option value="auto">Detectar automáticamente</option>
-              {SPEAKER_COUNTS.map((count) => <option key={count} value={count}>{count} hablantes</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Guardar en</span>
-            <select value={folder} disabled={!libraryName} onChange={(event) => onFolderChange(event.target.value)}>
-              {libraryName
-                ? folders.map((option) => <option key={option} value={option}>{`${libraryName} / ${option}`}</option>)
-                : <option value={folder}>Abrí una biblioteca</option>}
-            </select>
-          </label>
-        </div>
+        <MeetingOptions {...options} />
 
         <div className="notia-meeting-setup-footer">
           <p>{systemAudioSupported

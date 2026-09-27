@@ -30,6 +30,7 @@
 - Memoria persistente y herramientas nativas para el agente de IA.
 - Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca, guardado de datos personales en el mismo turno y organización automática de memory.md en segundo plano; Meeting, Graph View, publicación y Telegram de otros usuarios sin memoria global.
 - Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas; la grabación sigue al cambiar de módulo.
+- Meeting: transcripción de archivos de audio (MP3, WAV, M4A, OGG, FLAC) y video (MP4, MOV, MKV, WEBM) elegidos o arrastrados, con duración, onda, progreso y cancelación; después, separación de hablantes y todo lo de una reunión grabada.
 - Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
 - Meeting: «Pasar por IA» (resumen, puntos clave, tareas enviables al Task Manager y corrección), preguntas a la reunión con el minuto citado, guardado como nota Markdown y exportación a PDF o Word.
 - Chat efímero de Meeting en el panel lateral con la transcripción como contexto.
@@ -37,6 +38,7 @@
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
 - Cuentas de Gmail asociadas por biblioteca (hasta 10, cada una laboral, personal o estudiantil), con las credenciales del propio proyecto de Google Cloud (escritas o importadas del JSON, y probadas contra Google), conectada con OAuth en el navegador (lectura, envío, borrado y movimiento de correos) y marcada como laboral, personal o estudiantil.
 - Agente sin límite de pasos: trabaja hasta terminar (con cancelación por botón o mensaje), resume los resultados viejos para no perder el pedido y responde si solo repite llamadas.
+- Mensajes con solo adjuntos en el chat de la app: el asistente decide qué pedido es (como en Telegram) y el chat nuevo se titula con los nombres de los archivos.
 - Adjuntos de Telegram decididos por el modelo: fotos, imágenes JPG/PNG como archivo y PDF van al chat de la biblioteca y el router mira el adjunto (comprobante → Finanzas, calendario → Google Calendar, apuntes → nota); un álbum es un solo pedido.
 - Trabajo continuo del agente: rondas con herramientas también por streaming (escritorio y Android) y una revisión corta del modelo que lo hace seguir cuando solo anunció un paso; notas de estado en el progreso de Telegram.
 - Cola de mensajes durante una respuesta (chat de la app y Telegram): una llamada corta al modelo decide si el mensaje cancela, cancela y sigue con el pedido nuevo, o queda en cola; `/cancelar` sin modelo y respaldo por palabras.
@@ -56,6 +58,7 @@
 - Pantalla de Finanzas con pestañas Resumen, Movimientos, Sueldo y ahorro, y Productos y tickets, adaptada a teléfono, con acciones que llevan preguntas y pedidos al chat.
 - Vínculos automáticos entre tickets, gastos con tarjeta, líneas del resumen, cuotas y servicios, que el asistente informa y puede deshacer; los casos dudosos quedan en «Para revisar» y se responden en la conversación.
 - Catálogo de productos con el último precio por comercio, historial de precios, alias y unificación de productos y comercios.
+- Inicio: tablero de la biblioteca con los datos de los demás módulos (agenda de 7 días, tareas urgentes y Pomodoro, mes de Finanzas y dólar, hábitos de hoy, anotador del día, chats, notas y reunión para retomar y carpetas), con preguntas al asistente por agente, nueva nota y grabación de reuniones.
 - Agenda por usuario con calendario mensual, semana en bloques de 15 minutos para agendar tareas con prioridad (mouse, táctil y teclado), anotador rápido del día y próximos eventos, persistida en SQLite.
 - Rutina de hábitos por usuario con rutinas, tareas por días, marcas diarias, rachas, calendario, evolución, progreso semanal y rueda de la vida con metas, persistida en SQLite y operable con tools de IA confirmadas.
 - Temas claro y oscuro.

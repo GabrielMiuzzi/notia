@@ -330,6 +330,10 @@ pub struct ReviewCard {
     label: String,
     parts: Vec<TextPart>,
     actions: Vec<ReviewAction>,
+    /// The doubt as a request for the chat, without choosing an answer:
+    /// what Home sends with «Revisar en el chat».
+    #[serde(skip)]
+    ask: String,
 }
 
 fn text(value: impl Into<String>) -> TextPart {
@@ -387,7 +391,25 @@ fn review_card(item: &ReviewItem) -> ReviewCard {
             primary: true,
         });
     }
-    ReviewCard { id: item.id.clone(), label: review_label(&item.kind).into(), parts: question_parts(&item.question), actions }
+    ReviewCard {
+        id: item.id.clone(),
+        label: review_label(&item.kind).into(),
+        parts: question_parts(&item.question),
+        actions,
+        ask: format!("Revisemos la duda de Finanzas «{}» (caso {}).", item.question, item.id),
+    }
+}
+
+/// One request with every doubt of «Para revisar», for the chat.
+fn review_request(cards: &[ReviewCard]) -> Option<String> {
+    match cards {
+        [] => None,
+        [card] => Some(card.ask.clone()),
+        cards => Some(format!(
+            "Revisemos lo que quedó para revisar en Finanzas:\n{}",
+            cards.iter().map(|card| format!("- {}", card.ask)).collect::<Vec<_>>().join("\n")
+        )),
+    }
 }
 
 fn pending_reviews(connection: &Connection) -> Result<Vec<ReviewItem>, String> {
@@ -1164,6 +1186,15 @@ fn statement_reviews(rows: &[StatementRow], statements: &[Statement]) -> Vec<Rev
         .map(|(row, statement)| {
             let total = spoken_money(statement.total_due, &row.currency);
             let lines = spoken_money(lines_total(statement), &row.currency);
+            let prompt = format!(
+                "Revisá el resumen de {} que vence el {}: su total es {} {} y las líneas cargadas suman {} {}. ¿Qué falta o sobra?",
+                row.name,
+                row.due_date,
+                row.currency,
+                row.amount,
+                row.currency,
+                format_cents(lines_total(statement))
+            );
             ReviewCard {
                 id: format!("statement:{}", row.id),
                 label: "Resumen de tarjeta".into(),
@@ -1172,19 +1203,8 @@ fn statement_reviews(rows: &[StatementRow], statements: &[Statement]) -> Vec<Rev
                     strong(&row.name),
                     text(format!(" es de {total}, pero sus líneas cargadas suman {lines}.")),
                 ],
-                actions: vec![ReviewAction {
-                    label: "Revisar en el chat".into(),
-                    prompt: format!(
-                        "Revisá el resumen de {} que vence el {}: su total es {} {} y las líneas cargadas suman {} {}. ¿Qué falta o sobra?",
-                        row.name,
-                        row.due_date,
-                        row.currency,
-                        row.amount,
-                        row.currency,
-                        format_cents(lines_total(statement))
-                    ),
-                    primary: true,
-                }],
+                actions: vec![ReviewAction { label: "Revisar en el chat".into(), prompt: prompt.clone(), primary: true }],
+                ask: prompt,
             }
         })
         .collect()
@@ -1309,6 +1329,7 @@ fn category_review(breakdown: &CategoryBreakdown, month: &str) -> Option<ReviewC
             text(format!(" {} {}{share}. Sin eso, el desglose no dice mucho.", if row.count == 1 { "suma" } else { "suman" }, spoken_money(cents(&row.amount), &row.currency))),
         ],
         actions: vec![ReviewAction { label: "Categorizar en el chat".into(), prompt: breakdown.categorize_prompt.clone().unwrap_or_default(), primary: true }],
+        ask: breakdown.categorize_prompt.clone().unwrap_or_default(),
     })
 }
 
@@ -1345,6 +1366,45 @@ fn overview(connection: &Connection, month: String) -> Result<FinanceOverview, S
         categories,
         review,
         month,
+    })
+}
+
+/// What the Home dashboard shows of Finanzas for a month: its expenses, the
+/// share without a category, what was saved, the first reserve and how many
+/// questions wait in «Para revisar».
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceHomeSummary {
+    expenses: Vec<Money>,
+    expense_count: usize,
+    /// Whole percent of the month's expenses without a category.
+    uncategorized_percent: Option<u8>,
+    saved: Vec<Money>,
+    reserve: Option<ReserveBalance>,
+    review_count: usize,
+    /// Every doubt of «Para revisar» as one request for the chat.
+    review_prompt: Option<String>,
+}
+
+pub(crate) fn home_summary(
+    app: &crate::host::AppHandle,
+    context: &FinanceContext,
+    month: &str,
+) -> FinanceCommandResult<FinanceHomeSummary> {
+    valid_month(month)?;
+    let connection = validate_context(context, app)?;
+    let overview = overview(&connection, month.to_string())?;
+    let expense_count = overview.expenses.count;
+    let uncategorized = overview.categories.uncategorized_count;
+    Ok(FinanceHomeSummary {
+        expenses: overview.expenses.totals,
+        expense_count,
+        uncategorized_percent: (expense_count > 0)
+            .then(|| ((uncategorized.min(expense_count) * 100) as f64 / expense_count as f64).round() as u8),
+        saved: overview.saved.contributions,
+        reserve: overview.saved.reserves.into_iter().next(),
+        review_count: overview.review.len(),
+        review_prompt: review_request(&overview.review),
     })
 }
 
@@ -2338,6 +2398,26 @@ mod tests {
         assert!(overview.review.iter().any(|card| card.label == "Producto" && card.actions.len() == 2));
         assert_eq!(overview.services.pending_count, 2);
         assert_eq!(overview.latest.len(), 2);
+    }
+
+    #[test]
+    fn home_asks_about_every_doubt_without_answering_it() {
+        let card = |id: &str, ask: &str| ReviewCard { id: id.into(), label: String::new(), parts: Vec::new(), actions: Vec::new(), ask: ask.into() };
+        assert_eq!(review_request(&[]), None);
+        let categories = card("categories:2026-09", "Ayudame a categorizar los 9 gastos sin categoría de septiembre.");
+        assert_eq!(review_request(std::slice::from_ref(&categories)).as_deref(), Some("Ayudame a categorizar los 9 gastos sin categoría de septiembre."));
+        let doubt = card("r1", "Revisemos la duda de Finanzas «¿Es el mismo comercio?» (caso r1).");
+        assert_eq!(
+            review_request(&[doubt, categories]).as_deref(),
+            Some("Revisemos lo que quedó para revisar en Finanzas:\n- Revisemos la duda de Finanzas «¿Es el mismo comercio?» (caso r1).\n- Ayudame a categorizar los 9 gastos sin categoría de septiembre.")
+        );
+
+        let connection = seeded();
+        let overview = overview(&connection, "2026-09".into()).expect("overview");
+        let request = review_request(&overview.review).expect("request");
+        let product = overview.review.iter().find(|card| card.label == "Producto").expect("product doubt");
+        assert!(request.contains(&format!("(caso {})", product.id)));
+        assert!(!request.contains(&product.actions[0].label), "the request does not pick an answer");
     }
 
     #[test]

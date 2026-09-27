@@ -33,8 +33,6 @@ interface ChatThreadProps {
   awaitingAgentExecutionPlanApproval?: boolean
   onApproveAgentExecutionPlan?: (steps?: TaskExecutionStep[]) => void
   onSuggestAgentExecutionPlanChanges?: () => void
-  onResumeAgentExecutionPlan?: () => void
-  onCancelAgentExecutionPlan?: () => void
   lastAppliedOperationId?: string | null
   onUndoLastAiOperation?: () => void
   aiOperationHistory?: AiOperationHistoryEntry[]
@@ -129,8 +127,6 @@ function ChatThreadComponent({
   awaitingAgentExecutionPlanApproval = false,
   onApproveAgentExecutionPlan,
   onSuggestAgentExecutionPlanChanges,
-  onResumeAgentExecutionPlan,
-  onCancelAgentExecutionPlan,
   lastAppliedOperationId = null,
   onUndoLastAiOperation,
   aiOperationHistory = [],
@@ -147,6 +143,8 @@ function ChatThreadComponent({
   onOpenAiSettings,
 }: ChatThreadProps) {
   const hasMessages = messages.length > 0
+  // Finance, routine and mail previews are applied whole; only note edits choose hunks.
+  const canSelectAgentHunks = Boolean(pendingAgentPreview?.allowedActions.includes('apply-selected'))
   const streamingAgentLook: ChatAgentLook | null = streamingAgent
     ? agentLooks[streamingAgent.fileName] ?? { name: streamingAgent.name, initials: streamingAgent.initials, colorIndex: 0 }
     : null
@@ -300,20 +298,6 @@ function ChatThreadComponent({
                     </button>
                   </div>
                 ) : null}
-                {!isSubmitting && !awaitingAgentExecutionPlanApproval ? (
-                  <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Continuar plan de ejecución">
-                    {agentExecutionPlan.some((step) => step.status === 'pending' || step.status === 'in-progress' || step.status === 'blocked') ? (
-                      <button type="button" className="notia-chat-agent-confirmation-button is-primary" onClick={onResumeAgentExecutionPlan}>
-                        Continuar TO-DO
-                      </button>
-                    ) : null}
-                    {agentExecutionPlan.some((step) => step.status === 'pending' || step.status === 'in-progress' || step.status === 'failed' || step.status === 'blocked') ? (
-                      <button type="button" className="notia-chat-agent-confirmation-button" onClick={onCancelAgentExecutionPlan}>
-                        Cancelar TO-DO
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
             </article>
           ) : null}
@@ -462,11 +446,13 @@ function ChatThreadComponent({
                             return (
                               <label key={hunk.id} className={`notia-chat-diff-hunk${selected ? ' is-selected' : ''}`}>
                                 <span className="notia-chat-diff-hunk-header">
-                                  <input
-                                    type="checkbox"
-                                    checked={selected}
-                                    onChange={() => onToggleAgentHunk?.(hunk.id)}
-                                  />
+                                  {canSelectAgentHunks ? (
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={() => onToggleAgentHunk?.(hunk.id)}
+                                    />
+                                  ) : null}
                                   <span>Hunk {index + 1} · líneas {hunk.startLine}-{hunk.endLine}</span>
                                 </span>
                                 <pre className="notia-chat-diff-hunk-old">{hunk.oldText || '(vacío)'}</pre>
@@ -484,7 +470,7 @@ function ChatThreadComponent({
                         onClick={onConfirmAgentAction}
                         disabled={Boolean(pendingAgentPreview && pendingAgentHunkIds.length === 0)}
                       >
-                        {pendingAgentPreview && pendingAgentHunkIds.length < pendingAgentPreview.hunks.length ? 'Aplicar seleccionados' : 'Aplicar todo'}
+                        {canSelectAgentHunks && pendingAgentPreview && pendingAgentHunkIds.length < pendingAgentPreview.hunks.length ? 'Aplicar seleccionados' : 'Aplicar todo'}
                       </button>
                       <button type="button" className="notia-chat-agent-confirmation-button" onClick={onDeclineAgentAction}>
                         Cancelar

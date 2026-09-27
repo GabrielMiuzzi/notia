@@ -729,8 +729,21 @@ fn validate_plan_decision(
     if plan.status != PlanStatus::AwaitingApproval {
         return Err(stale_error("El plan no está esperando aprobación."));
     }
+    if let Some(suggestion) = &decision.suggestion {
+        let suggestion = suggestion.trim();
+        if decision.accepted
+            || suggestion.is_empty()
+            || suggestion.chars().count() > MAX_PLAN_SUGGESTION_CHARS
+            || suggestion.chars().any(|character| character.is_control() && character != '\n' && character != '\t')
+        {
+            return Err(BackendError::invalid_input("La sugerencia del plan no es válida."));
+        }
+    }
     Ok(())
 }
+
+/// Longest suggestion of changes to a plan.
+const MAX_PLAN_SUGGESTION_CHARS: usize = 4_000;
 
 fn has_duplicates(values: &[String]) -> bool {
     let mut seen = HashSet::new();
@@ -1160,6 +1173,7 @@ mod tests {
                 generation: 1,
                 accepted: true,
                 step_ids: vec!["step-1".into()],
+                suggestion: None,
             }),
         };
         assert!(matches!(

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { shallowEqual } from 'react-redux'
 import { Check, ChevronDown, CircleStop, Download, FileText, Flag, Lock, Mic, Pause, Play, RotateCcw, X } from 'lucide-react'
 import { useVoiceTranscription } from './chat/useVoiceTranscription'
@@ -21,9 +21,13 @@ import {
   setMeetingNotes,
 } from '../../../services/meeting/meetingService'
 import { skipSpeechDiarization, startAudioMonitor, stopAudioMonitor } from '../../../services/speech/speechService'
+import { discardMeetingMedia, startMeetingFileSession, uploadMeetingMedia } from '../../../services/meeting/meetingMediaService'
 import { loadLibraryFolderOptions } from '../../../services/chat/chatAttachmentRuntime'
 import type { MeetingExportFormat, MeetingFilter } from '../../../services/meeting/meetingTypes'
-import { DEFAULT_MEETING_FOLDER, MeetingReadyPanel, type MeetingSource } from './meeting/MeetingReadyPanel'
+import { MeetingReadyPanel, type MeetingSource } from './meeting/MeetingReadyPanel'
+import { DEFAULT_MEETING_FOLDER } from './meeting/MeetingOptions'
+import { MeetingSourceTabs, type MeetingSourceTab } from './meeting/MeetingSourceTabs'
+import { MeetingUploadPanel, type MeetingFileState } from './meeting/MeetingUploadPanel'
 import { MeetingRecordingPanel } from './meeting/MeetingRecordingPanel'
 import { MeetingProcessingPanel } from './meeting/MeetingProcessingPanel'
 import { MeetingCompletedPanel } from './meeting/MeetingCompletedPanel'
@@ -66,6 +70,14 @@ function MeetingViewComponent() {
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [isSkipping, setIsSkipping] = useState(false)
   const monitorRef = useRef<string | null>(null)
+  // A file uploaded to transcribe instead of recording.
+  const [sourceTab, setSourceTab] = useState<MeetingSourceTab>('live')
+  const [fileState, setFileState] = useState<MeetingFileState>({ status: 'empty' })
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
+  const [isStartingFile, setIsStartingFile] = useState(false)
+  const uploadRef = useRef<AbortController | null>(null)
+  const readyMediaIdRef = useRef<string | null>(null)
+  readyMediaIdRef.current = fileState.status === 'ready' ? fileState.media.mediaId : null
 
   const meetingOptions = useMemo(
     () => ({ liveAnswers, settings: meetingAiSettings(aiPreferences) }),
@@ -162,6 +174,96 @@ function MeetingViewComponent() {
     setSources((current) => ({ ...current, [source]: !current[source] }))
   }
 
+  // A file left uploaded when the view closes is dropped.
+  useEffect(() => () => {
+    uploadRef.current?.abort()
+    const mediaId = readyMediaIdRef.current
+    if (mediaId) void discardMeetingMedia(mediaId).catch(() => undefined)
+  }, [])
+
+  const removeFile = useCallback(() => {
+    uploadRef.current?.abort()
+    uploadRef.current = null
+    const mediaId = readyMediaIdRef.current
+    if (mediaId) void discardMeetingMedia(mediaId).catch(() => undefined)
+    setFileState({ status: 'empty' })
+  }, [])
+
+  const chooseFile = async (file: File) => {
+    removeFile()
+    setSourceTab('file')
+    setActionError(null)
+    setNotice(null)
+    const controller = new AbortController()
+    uploadRef.current = controller
+    setFileState({ status: 'uploading', name: file.name, byteLength: file.size, progress: 0 })
+    try {
+      const media = await uploadMeetingMedia(file, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (!controller.signal.aborted) setFileState({ status: 'uploading', name: file.name, byteLength: file.size, progress })
+        },
+        onReading: () => {
+          if (!controller.signal.aborted) setFileState({ status: 'reading', name: file.name, byteLength: file.size })
+        },
+      })
+      if (controller.signal.aborted) {
+        void discardMeetingMedia(media.mediaId).catch(() => undefined)
+        return
+      }
+      setFileState({ status: 'ready', media })
+    } catch (error) {
+      if (controller.signal.aborted) return
+      setFileState({ status: 'empty' })
+      setActionError(errorText(error, 'No se pudo cargar el archivo.'))
+    } finally {
+      if (uploadRef.current === controller) uploadRef.current = null
+    }
+  }
+
+  const handleDragOver = (event: DragEvent<HTMLElement>) => {
+    if (stage !== 'ready' || !Array.from(event.dataTransfer.types).includes('Files')) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    if (!isDraggingFile) setIsDraggingFile(true)
+  }
+  const handleDragLeave = (event: DragEvent<HTMLElement>) => {
+    // Moving between children of the view is not leaving it.
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setIsDraggingFile(false)
+  }
+  const handleDrop = (event: DragEvent<HTMLElement>) => {
+    if (stage !== 'ready') return
+    event.preventDefault()
+    setIsDraggingFile(false)
+    const dropped = event.dataTransfer.files?.[0]
+    if (dropped) void chooseFile(dropped)
+  }
+
+  const transcribeFile = async () => {
+    if (fileState.status !== 'ready') return
+    setIsStartingFile(true)
+    setActionError(null)
+    setNotice(null)
+    setFilter(NO_FILTER)
+    try {
+      const sessionId = await startMeetingFileSession({
+        mediaId: fileState.media.mediaId,
+        language: speechRecognition.language,
+        expectedSpeakers,
+      })
+      // The session owns the file now; the view follows it as a meeting.
+      readyMediaIdRef.current = null
+      setFileState({ status: 'empty' })
+      attachedIdRef.current = sessionId
+      await attachVoice(sessionId)
+    } catch (error) {
+      setActionError(errorText(error, 'No se pudo empezar a transcribir el archivo.'))
+    } finally {
+      setIsStartingFile(false)
+    }
+  }
+
   const canStart = voice.isModelReady && (effectiveSources.microphone || effectiveSources.system)
   const startVoice = voice.start
   const start = useCallback(async () => {
@@ -173,7 +275,7 @@ function MeetingViewComponent() {
   }, [startVoice, stopMonitor])
 
   useEffect(() => {
-    if (stage !== 'ready' || !canStart || status === 'preparing') return
+    if (stage !== 'ready' || sourceTab !== 'live' || !canStart || status === 'preparing') return
     const handleShortcut = (event: KeyboardEvent) => {
       if (!event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey || event.key.toLowerCase() !== 'r') return
       event.preventDefault()
@@ -181,7 +283,7 @@ function MeetingViewComponent() {
     }
     window.addEventListener('keydown', handleShortcut)
     return () => window.removeEventListener('keydown', handleShortcut)
-  }, [canStart, stage, start, status])
+  }, [canStart, sourceTab, stage, start, status])
 
   const run = async (action: () => Promise<unknown>, fallback: string) => {
     setActionError(null)
@@ -254,23 +356,39 @@ function MeetingViewComponent() {
 
   const elapsedMs = voice.state.status === 'recording' || voice.state.status === 'paused' ? voice.state.elapsedMs : 0
   const speakerCount = snapshot?.speakers.length ?? 0
-  const readyLabel = status === 'preparing' ? 'Iniciando captura de audio…'
-    : voice.modelPreparationError ? 'No se pudo preparar el modelo de voz'
-      : !voice.isModelReady ? 'Preparando voz al iniciar Notia…'
-        : 'Lista para grabar'
+  const modelLabel = voice.modelPreparationError ? 'No se pudo preparar el modelo de voz'
+    : !voice.isModelReady ? 'Preparando voz al iniciar Notia…'
+      : null
+  const readyLabel = sourceTab === 'file'
+    ? (fileState.status === 'uploading' ? `Cargando archivo… ${Math.round(fileState.progress * 100)}%`
+      : fileState.status === 'reading' ? 'Leyendo el archivo…'
+        : modelLabel ?? (fileState.status === 'ready' ? 'Archivo listo' : 'Esperando un archivo'))
+    : status === 'preparing' ? 'Iniciando captura de audio…'
+      : modelLabel ?? 'Lista para grabar'
+  const transcribingFile = Boolean(snapshot?.sourceFile)
+    && (voice.state.status !== 'finalizing' || (voice.state.stage ?? 'transcribing') === 'transcribing')
   const errorMessage = voice.state.status === 'error' ? voice.state.error.message
     : voice.modelPreparationError ?? actionError ?? snapshotError
 
   return (
-    <main className="notia-main notia-meeting-view" data-stage={stage}>
+    <main
+      className="notia-main notia-meeting-view"
+      data-stage={stage}
+      data-dragging={isDraggingFile ? 'true' : undefined}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {stage === 'ready' ? (
         <header className="notia-meeting-intro">
           <div>
             <span className="notia-meeting-eyebrow"><Lock size={14} aria-hidden="true" /> Transcripción local</span>
             <h1>Meeting</h1>
-            <p>Nombrá la reunión y elegí las fuentes. Al finalizar, Notia separa las intervenciones por hablante.</p>
+            <p>{sourceTab === 'file'
+              ? 'Subí una grabación que ya tengas y Notia la transcribe entera, separada por hablante.'
+              : 'Nombrá la reunión y elegí las fuentes. Al finalizar, Notia separa las intervenciones por hablante.'}</p>
           </div>
-          <span className="notia-meeting-pill" role="status" aria-live="polite">
+          <span className="notia-meeting-pill" role="status" aria-live="polite" data-ready={sourceTab === 'file' && fileState.status === 'ready' ? 'true' : undefined}>
             <span className="notia-meeting-pill-dot" aria-hidden="true" />{readyLabel}
           </span>
         </header>
@@ -285,7 +403,9 @@ function MeetingViewComponent() {
                 <span className="notia-meeting-mono">{formatClock(elapsedMs)}</span>
               </span>
             ) : stage === 'processing' ? (
-              <span className="notia-meeting-pill" role="status"><span className="notia-meeting-pill-dot" aria-hidden="true" />Separando hablantes</span>
+              <span className="notia-meeting-pill" role="status">
+                <span className="notia-meeting-pill-dot" aria-hidden="true" />{transcribingFile ? 'Transcribiendo archivo' : 'Separando hablantes'}
+              </span>
             ) : (
               <span className="notia-meeting-pill notia-meeting-pill--done" role="status">
                 <Check size={13} aria-hidden="true" />Finalizada
@@ -387,7 +507,27 @@ function MeetingViewComponent() {
         </div>
       ) : null}
 
-      {stage === 'ready' ? (
+      {stage === 'ready' ? <MeetingSourceTabs selected={sourceTab} onSelect={setSourceTab} /> : null}
+
+      {stage === 'ready' && sourceTab === 'file' ? (
+        <MeetingUploadPanel
+          file={fileState}
+          isDragging={isDraggingFile}
+          canTranscribe={voice.isModelReady && status === 'idle'}
+          isStarting={isStartingFile}
+          onChooseFile={(file) => void chooseFile(file)}
+          onRemoveFile={removeFile}
+          onTranscribe={() => void transcribeFile()}
+          language={speechRecognition.language}
+          onLanguageChange={(language) => dispatch(setSpeechRecognitionSettings({ ...speechRecognition, language }))}
+          expectedSpeakers={expectedSpeakers}
+          onExpectedSpeakersChange={setExpectedSpeakers}
+          folder={folder}
+          folderOptions={folderOptions}
+          libraryName={library?.name ?? null}
+          onFolderChange={setFolder}
+        />
+      ) : stage === 'ready' ? (
         <MeetingReadyPanel
           canStart={canStart}
           isStarting={status === 'preparing'}
@@ -431,8 +571,10 @@ function MeetingViewComponent() {
           progress={voice.state.status === 'finalizing' ? voice.state.progress : undefined}
           stage={voice.state.status === 'finalizing' ? voice.state.stage : undefined}
           lines={snapshot?.lines ?? []}
+          sourceFile={snapshot?.sourceFile}
           isSkipping={isSkipping}
           onSkip={skipSeparation}
+          onCancelFile={() => void voice.cancel()}
         />
       ) : snapshot ? (
         <MeetingCompletedPanel

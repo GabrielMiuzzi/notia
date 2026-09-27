@@ -295,10 +295,9 @@ pub fn tasks_on<'a>(
     date: NaiveDate,
     routine_id: Option<&str>,
 ) -> Vec<&'a TaskRecord> {
-    let weekday = weekday_index(date);
     data.tasks
         .iter()
-        .filter(|task| task.is_active() && task.days.applies(weekday))
+        .filter(|task| task.is_active() && data.counts_on(task, date))
         .filter(|task| routine_id.is_none_or(|routine_id| task.routine_id == routine_id))
         .collect()
 }
@@ -349,9 +348,8 @@ pub fn category_score(
     let (mut done, mut total) = (0u32, 0u32);
     for date in month_dates(year, month).take_while(|date| limit.is_none_or(|limit| *date <= limit))
     {
-        let weekday = weekday_index(date);
         for task in data.tasks.iter().filter(|task| {
-            task.category == category && task.is_active() && task.days.applies(weekday)
+            task.category == category && task.is_active() && data.counts_on(task, date)
         }) {
             total += 1;
             if data.is_completed(&task.id, date) {
@@ -499,7 +497,7 @@ fn build_heatmap(data: &RoutineData, today: NaiveDate, streaks: &[u32]) -> Routi
                 .map(|date| HeatmapCell {
                     day: date.day(),
                     is_today: date == today,
-                    state: if !task.days.applies(weekday_index(date)) {
+                    state: if !data.counts_on(task, date) {
                         HeatmapCellState::NotApplicable
                     } else if date > today {
                         HeatmapCellState::Future
@@ -737,7 +735,7 @@ pub fn build_month_report(
         .map(|task| {
             let applicable = dates
                 .iter()
-                .filter(|date| task.days.applies(weekday_index(**date)))
+                .filter(|date| data.counts_on(task, **date))
                 .collect::<Vec<_>>();
             let done_days = applicable
                 .iter()
@@ -876,6 +874,7 @@ mod tests {
             days,
             notes: String::new(),
             status: RoutineTaskStatus::Active,
+            created_on: None,
         }
     }
 
@@ -934,6 +933,26 @@ mod tests {
         assert_eq!(dashboard.current_week.all.days[0].tasks[1].routine_id, "r1");
         assert_eq!(dashboard.calendar.leading_blanks, 1);
         assert_eq!(dashboard.calendar.days[20].level, Some(5));
+    }
+
+    #[test]
+    fn days_before_a_habit_existed_are_not_missed() {
+        let mut data = data();
+        // "a" was created on Monday 21; on the 20th it was marked done anyway.
+        data.tasks[0].created_on = Some(date("2026-09-21"));
+        data.tasks[1].created_on = Some(date("2026-09-21"));
+        let today = date("2026-09-23");
+        assert_eq!(completion_for_day(&data, date("2026-09-14"), None), None);
+        assert_eq!(completion_for_day(&data, date("2026-09-20"), None), Some((1, 1)));
+        let dashboard = build_dashboard(&data, today);
+        // 20 (1/1), 21 (2/2), 22 (1/1), 23 (0/1): 4 of 5, not 4 of 24.
+        assert_eq!((dashboard.weekly.month_done, dashboard.weekly.month_total), (4, 5));
+        assert_eq!(dashboard.nav.month_pct, Some(80));
+        assert_eq!(category_score(&data, 2026, 9, "Salud y deporte", Some(today)), 8);
+        let row = &dashboard.heatmap.rows[0];
+        assert!(matches!(row.cells[18].state, HeatmapCellState::NotApplicable));
+        assert!(matches!(row.cells[19].state, HeatmapCellState::Done));
+        assert!(matches!(row.cells[22].state, HeatmapCellState::Missed));
     }
 
     #[test]

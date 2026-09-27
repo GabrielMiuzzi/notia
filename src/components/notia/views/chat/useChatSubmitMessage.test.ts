@@ -248,4 +248,166 @@ describe('useChatSubmitMessage lifecycle', () => {
       expect.anything(),
     )
   })
+
+  it('sends files without text and never an empty message without files', async () => {
+    const attachment = { name: 'ticket-coto.jpg', mimeType: 'image/jpeg', base64: 'base64-fixture', kind: 'image' as const }
+    mocks.startChatTurn.mockReturnValue({
+      requestId: 'request-3',
+      abort: vi.fn(),
+      promise: Promise.resolve({ answer: 'Cargué el ticket.', dataChanged: true }),
+    })
+    const useSubmitWith = (selectedImageAttachments: typeof attachment[]) => {
+      const setState = vi.fn()
+      return useChatSubmitMessage({
+        agentCorpusPaths: [],
+        agentScope: 'library',
+        agentPromptFileName: 'default.md',
+        requestAgentClarification: vi.fn(),
+        requestAgentConfirmation: vi.fn(),
+        onAgentExecutionPlanChange: vi.fn(),
+        requestAgentExecutionPlanApproval: vi.fn(),
+        library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+        aiPreferences: {
+          ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'qwen3',
+          thinkingEnabled: false, thinkingLevel: 'medium',
+        },
+        activeChatDocument: {
+          title: 'Chat', agentMemoryEnabled: true, contextMemoryEnabled: true, contextMemoryMessageCount: 10,
+          contextScopeKey: null, selectedContextMode: 'direct' as const, selectedContextFiles: [], selectedContextFolders: [],
+          libraryRagEnabled: true, toolsEnabled: true, writeEnabled: true, permanentContext: '', dynamic: null, agents: [], messages: [],
+        },
+        selectedChatFilePath: 'C:/vault/chat.md',
+        effectiveSelectedContextPaths: [],
+        effectiveSelectedContextMode: 'direct',
+        selectedLibraryFilePaths: [],
+        selectedLibraryFileOptions: [],
+        selectedImageAttachments,
+        selectedFileContextMode: 'direct',
+        preferredContextScopeKey: null,
+        persistTransientContext: false,
+        hasTransientContext: false,
+        activeMarkdownSource: null,
+        workspaceSnapshot: null,
+      }, {
+        draft: '', setDraft: setState, isSubmitting: false, setStreamingThinking: setState,
+        setStreamingAssistantMessage: setState, setOptimisticThreadMessages: setState, setSelectedChatFilePath: setState,
+        setActiveChatDocument: setState, setChatTitleOverrides: setState, setSelectedImageAttachments: setState,
+        setSelectedLibraryFilePaths: setState, setSelectedLibraryFileOptions: setState, setSelectedFileContextMode: setState,
+        setPendingAutoCreatedChatFilePath: setState, setIsAttachmentMenuOpen: setState, setDialogMessage: setState,
+        setIsSubmitting: setState,
+      })
+    }
+
+    await useSubmitWith([]).submitMessage('   ')
+    expect(mocks.startChatTurn).not.toHaveBeenCalled()
+
+    await useSubmitWith([attachment]).submitMessage('')
+    expect(mocks.startChatTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ message: '', attachments: [attachment] }),
+      expect.anything(),
+    )
+  })
+
+  it('keeps what the agent wrote between steps in the thread instead of replacing it', async () => {
+    mocks.startChatTurn.mockImplementation((_request: unknown, handlers: { onAssistantNote?: (text: string) => void }) => {
+      handlers.onAssistantNote?.('Reviso las líneas del resumen.')
+      return { requestId: 'request-5', abort: vi.fn(), promise: Promise.resolve({ answer: 'Listo.', dataChanged: false }) }
+    })
+    const setState = vi.fn()
+    const setOptimisticThreadMessages = vi.fn()
+    const setStreamingAssistantMessage = vi.fn()
+    const { submitMessage } = useChatSubmitMessage({
+      agentCorpusPaths: [], agentScope: 'library', agentPromptFileName: 'default.md',
+      requestAgentClarification: vi.fn(), requestAgentConfirmation: vi.fn(), onAgentExecutionPlanChange: vi.fn(),
+      requestAgentExecutionPlanApproval: vi.fn(),
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: {
+        ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: false, thinkingLevel: 'medium',
+      },
+      activeChatDocument: {
+        title: 'Chat', agentMemoryEnabled: true, contextMemoryEnabled: true, contextMemoryMessageCount: 10,
+        contextScopeKey: null, selectedContextMode: 'direct' as const, selectedContextFiles: [], selectedContextFolders: [],
+        libraryRagEnabled: true, toolsEnabled: true, writeEnabled: true, permanentContext: '', dynamic: null, agents: [], messages: [],
+      },
+      selectedChatFilePath: 'C:/vault/chat.md',
+      effectiveSelectedContextPaths: [], effectiveSelectedContextMode: 'direct', selectedLibraryFilePaths: [],
+      selectedLibraryFileOptions: [], selectedImageAttachments: [], selectedFileContextMode: 'direct',
+      preferredContextScopeKey: null, persistTransientContext: false, hasTransientContext: false,
+      activeMarkdownSource: null, workspaceSnapshot: null,
+    }, {
+      draft: '', setDraft: setState, isSubmitting: false, setStreamingThinking: setState,
+      setStreamingAssistantMessage, setOptimisticThreadMessages, setSelectedChatFilePath: setState,
+      setActiveChatDocument: setState, setChatTitleOverrides: setState, setSelectedImageAttachments: setState,
+      setSelectedLibraryFilePaths: setState, setSelectedLibraryFileOptions: setState, setSelectedFileContextMode: setState,
+      setPendingAutoCreatedChatFilePath: setState, setIsAttachmentMenuOpen: setState, setDialogMessage: setState,
+      setIsSubmitting: setState,
+    })
+
+    await submitMessage('categorizá las líneas')
+
+    expect(setOptimisticThreadMessages).toHaveBeenCalledWith([
+      expect.objectContaining({ role: 'user', content: 'categorizá las líneas' }),
+      { role: 'assistant', content: 'Reviso las líneas del resumen.' },
+    ])
+    expect(setStreamingAssistantMessage).toHaveBeenCalledWith('')
+  })
+
+  it('shows a turn saved with an error and keeps the message out of the composer', async () => {
+    const emptyChat = {
+      title: 'Chat', agentMemoryEnabled: true, contextMemoryEnabled: true, contextMemoryMessageCount: 10,
+      contextScopeKey: null, selectedContextMode: 'direct' as const, selectedContextFiles: [], selectedContextFolders: [],
+      libraryRagEnabled: true, toolsEnabled: true, writeEnabled: true, permanentContext: '', dynamic: null, agents: [], messages: [],
+    }
+    const savedChat = {
+      ...emptyChat,
+      messages: [
+        { role: 'user' as const, content: 'dale' },
+        { role: 'assistant' as const, content: 'No pude terminar: El movimiento financiero no es válido.' },
+      ],
+    }
+    mocks.startChatTurn.mockReturnValue({
+      requestId: 'request-4',
+      abort: vi.fn(),
+      promise: Promise.resolve({
+        answer: savedChat.messages[1].content,
+        dataChanged: true,
+        document: savedChat,
+        error: { code: 'invalid-input', message: 'El movimiento financiero no es válido.', retryable: false },
+      }),
+    })
+    const setState = vi.fn()
+    const setDraft = vi.fn()
+    const setDialogMessage = vi.fn()
+    const setActiveChatDocument = vi.fn()
+    const { submitMessage } = useChatSubmitMessage({
+      agentCorpusPaths: [], agentScope: 'library', agentPromptFileName: 'default.md',
+      requestAgentClarification: vi.fn(), requestAgentConfirmation: vi.fn(), onAgentExecutionPlanChange: vi.fn(),
+      requestAgentExecutionPlanApproval: vi.fn(),
+      library: { id: 'library-1', name: 'Vault', path: 'C:/vault' } as never,
+      aiPreferences: {
+        ollamaUrl: 'http://localhost:11434', apiKey: '', selectedModel: 'qwen3',
+        thinkingEnabled: false, thinkingLevel: 'medium',
+      },
+      activeChatDocument: emptyChat,
+      selectedChatFilePath: 'C:/vault/chat.md',
+      effectiveSelectedContextPaths: [], effectiveSelectedContextMode: 'direct', selectedLibraryFilePaths: [],
+      selectedLibraryFileOptions: [], selectedImageAttachments: [], selectedFileContextMode: 'direct',
+      preferredContextScopeKey: null, persistTransientContext: false, hasTransientContext: false,
+      activeMarkdownSource: null, workspaceSnapshot: null,
+    }, {
+      draft: 'dale', setDraft, isSubmitting: false, setStreamingThinking: setState,
+      setStreamingAssistantMessage: setState, setOptimisticThreadMessages: setState, setSelectedChatFilePath: setState,
+      setActiveChatDocument, setChatTitleOverrides: setState, setSelectedImageAttachments: setState,
+      setSelectedLibraryFilePaths: setState, setSelectedLibraryFileOptions: setState, setSelectedFileContextMode: setState,
+      setPendingAutoCreatedChatFilePath: setState, setIsAttachmentMenuOpen: setState, setDialogMessage,
+      setIsSubmitting: setState,
+    })
+
+    await submitMessage('dale')
+
+    expect(setActiveChatDocument).toHaveBeenLastCalledWith(savedChat)
+    expect(setDialogMessage).toHaveBeenCalledWith('El movimiento financiero no es válido.')
+    expect(setDraft).not.toHaveBeenCalledWith('dale')
+  })
 })

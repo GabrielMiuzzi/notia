@@ -30,7 +30,7 @@ use crate::backend::chat_turn::{self, ContextSelection, TurnMode, WorkspaceInput
 use crate::backend::{
     AgentRequest, AgentResponse, BackendActor, BackendError, BackendErrorCode, BackendEvent, BackendRequest,
     BackendRequestContext, BackendRequestEnvelope, BackendResponse, CancelRequest, ClarificationAnswer,
-    ConfirmationDecision, GetOperationRequest, MutationPreview, OperationToken, PendingInteraction, PlanDecision,
+    ConfirmationDecision, ExecutionPlan, GetOperationRequest, MutationPreview, OperationToken, PendingInteraction, PlanDecision,
     PlanStepStatus, ProtocolVersion, ResumeDecision, ResumeRequest, UndoOperationRequest, OWNER_LIBRARY_USER_ID,
 };
 use crate::backend::turn_interrupts::{InterruptDecision, CANCELLED_REPLY};
@@ -45,8 +45,6 @@ pub(crate) const TITLE_EVENT: &str = "ai-chat-title";
 pub(crate) const AGENT_EVENT: &str = "ai-chat-agent";
 /// How long a question waits for the person before the turn is cancelled.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// Questions one turn may ask before it is considered stuck.
-const MAX_INTERACTIONS: usize = 4;
 /// Changed operations of this session that the interface may undo.
 const MAX_UNDOABLE_OPERATIONS: usize = 50;
 
@@ -65,6 +63,11 @@ struct ActiveTurn {
     cancelled: bool,
     /// A message sent during the turn asked to stop it.
     stopped_by_message: bool,
+    /// Prompt file of the agent that is answering; `None` for Notia.
+    speaker: Option<String>,
+    /// Questions the agent asked and the person's answers, not yet placed
+    /// among the turn's replies.
+    exchanges: Vec<StoredChatMessage>,
 }
 
 #[derive(Default)]
@@ -134,6 +137,9 @@ pub(crate) struct ChatTurnOutcome {
     /// The AI change this turn undid.
     #[serde(skip_serializing_if = "Option::is_none")]
     undone_operation_id: Option<String>,
+    /// Why the turn stopped; what happened until then is saved in `document`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<BackendError>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +177,9 @@ pub(crate) enum InteractionAnswer {
     },
     Plan {
         accepted: bool,
+        /// Changes the person asked for instead of approving.
+        #[serde(default)]
+        suggestion: Option<String>,
         /// Steps kept by the person; all of them when absent.
         #[serde(default)]
         step_ids: Option<Vec<String>>,
@@ -308,11 +317,12 @@ fn decision(interaction: &PendingInteraction, operation: &OperationToken, answer
                 hunk_ids,
             }))
         }
-        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, step_ids }) => Some(ResumeDecision::Plan(PlanDecision {
+        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, step_ids, suggestion }) => Some(ResumeDecision::Plan(PlanDecision {
             plan_id: plan.plan_id.clone(),
             generation: plan.generation,
             accepted,
             step_ids: step_ids.unwrap_or_else(|| plan.steps.iter().map(|step| step.id.clone()).collect()),
+            suggestion: suggestion.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
         })),
         _ => None,
     }
@@ -342,7 +352,138 @@ fn ask(
             turn.answer = None;
         }
     }
-    decision(interaction, operation, answer?)
+    let answer = answer?;
+    match (interaction, &answer) {
+        (PendingInteraction::Clarification(request), InteractionAnswer::Clarification { answer }) => {
+            record_exchange(app, state, request_id, &request.question, answer);
+        }
+        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, step_ids, suggestion }) => {
+            record_exchange(app, state, request_id, &plan_text(plan, step_ids.as_deref()), &plan_answer(*accepted, suggestion.as_deref()));
+        }
+        _ => {}
+    }
+    decision(interaction, operation, answer)
+}
+
+/// The plan as the chat keeps it: its title and the steps the person kept.
+fn plan_text(plan: &ExecutionPlan, step_ids: Option<&[String]>) -> String {
+    let steps = plan
+        .steps
+        .iter()
+        .filter(|step| step_ids.is_none_or(|kept| kept.contains(&step.id)))
+        .enumerate()
+        .map(|(index, step)| format!("{}. {}", index + 1, step.label))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("**{}**\n\n{steps}", plan.title)
+}
+
+/// What the person answered to a plan, as the chat keeps it.
+fn plan_answer(accepted: bool, suggestion: Option<&str>) -> String {
+    match (accepted, suggestion.map(str::trim).filter(|value| !value.is_empty())) {
+        (true, _) => "Aprobado.".to_string(),
+        (false, Some(suggestion)) => suggestion.to_string(),
+        (false, None) => "Cancelado.".to_string(),
+    }
+}
+
+/// Keeps a question the agent asked and the person's answer: the thread
+/// shows them at once and the turn saves them before the agent's reply, so
+/// they neither vanish from the screen nor from the chat's history.
+fn record_exchange(app: &AppHandle, state: &AiChatState, request_id: &str, question: &str, answer: &str) {
+    let (run_request_id, messages) = {
+        let Ok(mut turns) = state.turns.lock() else { return };
+        let Some(turn) = turns.get_mut(request_id) else { return };
+        let messages = exchange_messages(question, answer, turn.speaker.clone());
+        turn.exchanges.extend(messages.iter().cloned());
+        (turn.identity.context.request_id.clone(), messages)
+    };
+    for message in messages {
+        let phase = AgentPhase::Message { run_request_id: run_request_id.clone(), message };
+        let _ = app.emit(AGENT_EVENT, AgentEvent { request_id: request_id.to_string(), phase });
+    }
+}
+
+fn exchange_messages(question: &str, answer: &str, speaker: Option<String>) -> [StoredChatMessage; 2] {
+    [
+        StoredChatMessage { role: ChatRole::Assistant, content: question.trim().to_string(), attachments: Vec::new(), agent: speaker },
+        StoredChatMessage { role: ChatRole::User, content: answer.trim().to_string(), attachments: Vec::new(), agent: None },
+    ]
+}
+
+/// Keeps, in order, what the agent wrote while it worked (the notes that
+/// come with its tool calls). The thread showed them live; the turn saves
+/// them among the questions and before the answer, so they stay.
+fn keep_notes(state: &AiChatState, runtime: &BackendRuntimeState, turn_id: &str, identity: &RequestIdentity, seen: &mut u64) {
+    let Ok(events) = runtime.request_events(&identity.context, *seen) else { return };
+    let mut notes = Vec::new();
+    for envelope in events {
+        *seen = (*seen).max(envelope.sequence);
+        if let BackendEvent::AssistantNote { text, .. } = envelope.event {
+            let text = text.trim();
+            if !text.is_empty() {
+                notes.push(text.to_string());
+            }
+        }
+    }
+    if notes.is_empty() {
+        return;
+    }
+    let Ok(mut turns) = state.turns.lock() else { return };
+    let Some(turn) = turns.get_mut(turn_id) else { return };
+    let speaker = turn.speaker.clone();
+    turn.exchanges.extend(notes.into_iter().map(|content| StoredChatMessage {
+        role: ChatRole::Assistant,
+        content,
+        attachments: Vec::new(),
+        agent: speaker.clone(),
+    }));
+}
+
+/// The exchanges of the turn not placed yet among its replies.
+fn take_exchanges(state: &AiChatState, request_id: &str) -> Vec<StoredChatMessage> {
+    state
+        .turns
+        .lock()
+        .ok()
+        .and_then(|mut turns| turns.get_mut(request_id).map(|turn| std::mem::take(&mut turn.exchanges)))
+        .unwrap_or_default()
+}
+
+/// Replies of a turn one agent answered: the questions answered on the way,
+/// then its answer. A saved chat keeps a turn that failed (see
+/// [`keep_failed_turn`]); other chats only report the error.
+fn single_agent_replies(
+    exchanges: Vec<StoredChatMessage>,
+    response: Result<(StoredChatMessage, bool), BackendError>,
+    worked: bool,
+    keeps_failures: bool,
+) -> Result<TurnReplies, BackendError> {
+    match response {
+        Ok((reply, changed)) => {
+            let mut replies = exchanges;
+            replies.push(reply);
+            Ok((replies, changed, None))
+        }
+        Err(error) if keeps_failures => keep_failed_turn(exchanges, worked, error),
+        Err(error) => Err(error),
+    }
+}
+
+/// A turn that fails after the agent worked (it ran tools, answered or
+/// asked something) stays in the chat: the person's message, what was said
+/// and a note with the reason, instead of disappearing. One that failed
+/// before doing anything is not saved, so the message goes back to the
+/// composer to send again. A cancel keeps what was said, without a note.
+fn keep_failed_turn(mut replies: Vec<StoredChatMessage>, worked: bool, error: BackendError) -> Result<TurnReplies, BackendError> {
+    if error.code == BackendErrorCode::Cancelled {
+        return if replies.is_empty() { Err(error) } else { Ok((replies, true, Some(error))) };
+    }
+    if replies.is_empty() && !worked {
+        return Err(error);
+    }
+    replies.push(notia_reply(format!("No pude terminar: {}", error.message)));
+    Ok((replies, true, Some(error)))
 }
 
 fn cancel_request(app: &AppHandle, runtime: &BackendRuntimeState, identity: &RequestIdentity, operation: Option<OperationToken>) {
@@ -358,8 +499,9 @@ fn cancel_request(app: &AppHandle, runtime: &BackendRuntimeState, identity: &Req
     );
 }
 
-/// Runs the agent until it answers, resuming after each question. The
-/// questions go to the turn `turn_id`, whose run may be one of its agents.
+/// Runs the agent until it answers, resuming after each question, with no
+/// limit: every question waits for the person, who can cancel. The questions
+/// go to the turn `turn_id`, whose run may be one of its agents.
 fn run_agent(
     app: &AppHandle,
     state: &AiChatState,
@@ -368,8 +510,11 @@ fn run_agent(
     identity: &RequestIdentity,
     mut request: BackendRequest,
 ) -> Result<AgentResponse, BackendError> {
-    for _ in 0..=MAX_INTERACTIONS {
-        match execute(app, runtime, request)? {
+    let mut seen_events = 0;
+    loop {
+        let response = execute(app, runtime, request);
+        keep_notes(state, runtime, turn_id, identity, &mut seen_events);
+        match response? {
             BackendResponse::Result { response } => return Ok(response),
             BackendResponse::Error { error, .. } => return Err(error),
             BackendResponse::Cancelled { .. } => return Err(cancelled()),
@@ -399,13 +544,15 @@ fn run_agent(
     Err(internal("El runtime backend no devolvió una respuesta final."))
 }
 
-/// Remembers the changes of a finished request so a later turn can undo them.
-fn remember_undoable(state: &AiChatState, runtime: &BackendRuntimeState, identity: &RequestIdentity) {
+/// Remembers the changes of a finished request so a later turn can undo
+/// them. Returns whether the agent ran any tool.
+fn remember_undoable(state: &AiChatState, runtime: &BackendRuntimeState, identity: &RequestIdentity) -> bool {
     let Ok(events) = runtime.request_events(&identity.context, 0) else {
-        return;
+        return false;
     };
+    let worked = events.iter().any(|event| matches!(event.event, BackendEvent::ToolCompleted { .. }));
     let Ok(mut undoable) = state.undoable.lock() else {
-        return;
+        return worked;
     };
     for event in events {
         if let BackendEvent::ToolCompleted { ok: true, changed: Some(true), operation_id: Some(operation_id), .. } = event.event {
@@ -416,6 +563,7 @@ fn remember_undoable(state: &AiChatState, runtime: &BackendRuntimeState, identit
     while undoable.len() > MAX_UNDOABLE_OPERATIONS {
         undoable.pop_front();
     }
+    worked
 }
 
 /// Undoes an AI change of this session. The runtime re-reads the stored
@@ -602,6 +750,8 @@ impl TurnSetup {
 struct AgentRounds {
     replies: Vec<StoredChatMessage>,
     changed: bool,
+    /// Some agent ran a tool.
+    worked: bool,
     error: Option<BackendError>,
 }
 
@@ -633,7 +783,7 @@ fn run_agent_rounds(
     };
     let mut random = || rand::thread_rng().gen::<f64>();
     let round_limit = agent_rules::automatic_round_limit(&mut random);
-    let mut outcome = AgentRounds { replies: Vec::new(), changed: false, error: None };
+    let mut outcome = AgentRounds { replies: Vec::new(), changed: false, worked: false, error: None };
     let mut run = 0;
     for _ in 0..round_limit {
         let mut answered = 0;
@@ -653,6 +803,7 @@ fn run_agent_rounds(
             if let Ok(mut turns) = state.turns.lock() {
                 if let Some(active) = turns.get_mut(&turn_id) {
                     active.identity = identity.clone();
+                    active.speaker = Some(agent.file_name.clone());
                 }
             }
             let emit = |phase: AgentPhase| {
@@ -675,7 +826,12 @@ fn run_agent_rounds(
             let history = agent_rules::agent_history(conversation, &names);
             let request = setup.request(&identity, &history, &prompt, &[], Some(agent.file_name.clone()));
             let response = run_agent(app, state, runtime, &turn_id, &identity, request);
-            remember_undoable(state, runtime, &identity);
+            outcome.worked |= remember_undoable(state, runtime, &identity);
+            // The questions this agent asked go before its answer, or stay
+            // with the error.
+            let exchanges = take_exchanges(state, &turn_id);
+            conversation.extend(exchanges.iter().cloned());
+            outcome.replies.extend(exchanges);
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {
@@ -739,10 +895,15 @@ fn prompt_agent(prompt_name: Option<&str>) -> Option<String> {
 type TurnReplies = (Vec<StoredChatMessage>, bool, Option<BackendError>);
 
 fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, BackendError> {
+    // The message as the person wrote it (it may be empty when they sent
+    // only files) and the request the agent reads.
     let message = payload.message.trim().to_string();
-    if message.is_empty() {
-        return Err(BackendError::invalid_input("El mensaje no puede estar vacío."));
-    }
+    let request_text = chat_turn::turn_request(&message, payload.attachments.len())
+        .ok_or_else(|| BackendError::invalid_input("El mensaje no puede estar vacío."))?;
+    let title_seed = chat_turn::title_seed(
+        &message,
+        &payload.attachments.iter().map(|attachment| attachment.name.as_str()).collect::<Vec<_>>(),
+    );
     let library_id = payload.library_id.clone();
     let runtime = app.state::<BackendRuntimeState>().inner().clone();
     if let Some(settings) = &payload.settings {
@@ -793,10 +954,12 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
             payload.request_id.clone(),
             ActiveTurn {
                 identity: identity.clone(),
-                message: message.clone(),
+                message: request_text.clone(),
                 answer: None,
                 cancelled: false,
                 stopped_by_message: false,
+                speaker: prompt_agent(payload.prompt_name.as_deref()),
+                exchanges: Vec::new(),
             },
         );
     }
@@ -827,28 +990,30 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
                 permanent_block: chat_turn::permanent_context_block(chat.as_ref()),
             };
             if agents.is_empty() {
-                let prompt = setup.prompt(chat_turn::turn_prompt(payload.mode, &message, payload.context.as_deref()));
+                let prompt = setup.prompt(chat_turn::turn_prompt(payload.mode, &request_text, payload.context.as_deref()));
                 let request = setup.request(&identity, &history, &prompt, &payload.attachments, payload.prompt_name.clone());
                 let response = run_agent(app, &state, &runtime, &payload.request_id, &identity, request);
-                remember_undoable(&state, &runtime, &identity);
-                response.map(|response| {
+                let worked = remember_undoable(&state, &runtime, &identity);
+                let response = response.map(|response| {
                     let changed = response.changed || response.tool_results.iter().any(|result| result.ok && result.changed);
                     let mut reply = notia_reply(response.response.markdown);
                     reply.agent = prompt_agent(payload.prompt_name.as_deref());
-                    (vec![reply], changed, None)
-                })
+                    (reply, changed)
+                });
+                single_agent_replies(take_exchanges(&state, &payload.request_id), response, worked, chat.is_some())
             } else {
                 let dynamic = chat
                     .as_ref()
                     .and_then(|document| crate::chat_agents::chat_dynamic(app, &library_id, document.dynamic.as_deref()));
                 let mut conversation = chat.as_ref().map(|document| document.messages.clone()).unwrap_or_default();
-                conversation.push(user_message.clone());
+                // The agents read the request, also when the person sent only files.
+                conversation.push(StoredChatMessage { content: request_text.clone(), ..user_message.clone() });
                 let rounds =
                     run_agent_rounds(app, &state, &runtime, &identity, &setup, &agents, dynamic.as_deref(), &mut conversation);
                 // What the agents said before an error or a cancel is kept.
-                match (rounds.replies.is_empty(), rounds.error) {
-                    (true, Some(error)) => Err(error),
-                    (_, error) => Ok((rounds.replies, rounds.changed, error)),
+                match rounds.error {
+                    None => Ok((rounds.replies, rounds.changed, None)),
+                    Some(error) => keep_failed_turn(rounds.replies, rounds.worked, error),
                 }
             }
         }
@@ -869,7 +1034,7 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
             let previous_title = document.title.clone();
             let previous_messages = document.messages.clone();
             chat_turn::apply_turn_context(&mut document, &payload.selection);
-            document.title = chat_turn::persisted_title(&previous_title, !previous_messages.is_empty(), &message);
+            document.title = chat_turn::persisted_title(&previous_title, !previous_messages.is_empty(), &title_seed);
             document.messages.push(user_message);
             document.messages.extend(replies.iter().cloned());
             if let Some(logical_path) = &logical_path {
@@ -883,21 +1048,19 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
             // `rules.md` and `memory.md` and writes them only with its
             // `add_agent_rule` / `add_agent_memory` tools.
             if let Some(path) = logical_path.filter(|_| previous_messages.is_empty()) {
-                schedule_chat_title(app, &library_id, path, message.clone());
+                schedule_chat_title(app, &library_id, path, title_seed.clone());
             }
             Some(document)
         }
         None => None,
     };
-    // The messages are saved; the person still learns why the agents stopped.
-    if let Some(error) = interrupted {
-        return Err(error);
-    }
+    // The messages are saved; the person still learns why the turn stopped.
     Ok(ChatTurnOutcome {
         answer,
         data_changed,
         document,
         undone_operation_id: payload.undo_operation_id,
+        error: interrupted,
     })
 }
 
@@ -997,7 +1160,74 @@ pub(crate) async fn ai_chat_interject(app: AppHandle, payload: ChatInterjectPayl
 
 #[cfg(test)]
 mod tests {
-    use super::{closed_by_message, notia_reply, prompt_agent, strip_speaker_name, BackendError, BackendErrorCode, CANCELLED_REPLY};
+    use super::{
+        closed_by_message, exchange_messages, keep_failed_turn, notia_reply, plan_answer, plan_text, prompt_agent,
+        single_agent_replies, strip_speaker_name, BackendError, BackendErrorCode, ChatRole, ExecutionPlan, CANCELLED_REPLY,
+    };
+
+    #[test]
+    fn a_decided_plan_stays_in_the_chat_with_the_steps_kept_and_the_answer() {
+        let step = |id: &str, label: &str| notia_backend_core::PlanStep {
+            id: id.into(),
+            label: label.into(),
+            operation_id: None,
+            status: notia_backend_core::PlanStepStatus::Pending,
+        };
+        let plan = ExecutionPlan {
+            plan_id: "plan-1".into(),
+            generation: 1,
+            title: "Plan de ejecución".into(),
+            status: notia_backend_core::PlanStatus::AwaitingApproval,
+            steps: vec![step("s1", "Crear «Tecnología»"), step("s2", "Asignar Tecnología al celular"), step("s3", "Asignar Salud a la crema")],
+        };
+        assert_eq!(
+            plan_text(&plan, None),
+            "**Plan de ejecución**\n\n1. Crear «Tecnología»\n2. Asignar Tecnología al celular\n3. Asignar Salud a la crema"
+        );
+        let kept = ["s1".to_string(), "s2".to_string()];
+        assert_eq!(plan_text(&plan, Some(&kept)), "**Plan de ejecución**\n\n1. Crear «Tecnología»\n2. Asignar Tecnología al celular");
+        assert_eq!(plan_answer(true, None), "Aprobado.");
+        assert_eq!(plan_answer(false, Some("  la crema va a Cuidado personal ")), "la crema va a Cuidado personal");
+        assert_eq!(plan_answer(false, Some(" ")), "Cancelado.");
+    }
+
+    #[test]
+    fn questions_answered_during_a_turn_are_kept_before_the_answer_or_with_the_error() {
+        let exchanges = exchange_messages(" ¿Salud o Cuidado personal? ", "¿qué categoría recomendás?", Some("finanzas.md".into())).to_vec();
+        assert_eq!((exchanges[0].role, exchanges[0].content.as_str()), (ChatRole::Assistant, "¿Salud o Cuidado personal?"));
+        assert_eq!(exchanges[0].agent.as_deref(), Some("finanzas.md"));
+        assert_eq!((exchanges[1].role, exchanges[1].agent.as_deref()), (ChatRole::User, None));
+
+        let (replies, changed, error) =
+            single_agent_replies(exchanges.clone(), Ok((notia_reply("Listo".into()), false)), true, true).expect("answer");
+        assert_eq!(replies.iter().map(|reply| reply.content.as_str()).collect::<Vec<_>>(), ["¿Salud o Cuidado personal?", "¿qué categoría recomendás?", "Listo"]);
+        assert!(!changed && error.is_none());
+
+        let failure = || BackendError::new(BackendErrorCode::ProviderUnavailable, "sin IA", true);
+        let (replies, _, error) = single_agent_replies(exchanges.clone(), Err(failure()), false, true).expect("kept with the error");
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[2].content, "No pude terminar: sin IA");
+        assert_eq!(error.map(|error| error.code), Some(BackendErrorCode::ProviderUnavailable));
+        // A chat that is not saved only reports the error.
+        assert!(single_agent_replies(exchanges, Err(failure()), true, false).is_err());
+    }
+
+    #[test]
+    fn a_turn_that_fails_after_working_stays_in_the_chat_and_one_that_did_nothing_goes_back() {
+        let failure = || BackendError::invalid_input("El movimiento financiero no es válido.");
+        // «dale» → the agent read and tried to save, then failed: kept with a note.
+        let (replies, changed, error) = keep_failed_turn(Vec::new(), true, failure()).expect("kept");
+        assert_eq!(replies.iter().map(|reply| reply.content.as_str()).collect::<Vec<_>>(), ["No pude terminar: El movimiento financiero no es válido."]);
+        assert!(changed && error.is_some());
+        // Nothing happened yet: the message goes back to the composer.
+        assert!(keep_failed_turn(Vec::new(), false, failure()).is_err());
+        // A cancel keeps what was said, without a note.
+        let cancelled = BackendError::new(BackendErrorCode::Cancelled, "Consulta cancelada.", false);
+        let (replies, _, error) = keep_failed_turn(vec![notia_reply("Ana: busco".into())], true, cancelled.clone()).expect("kept");
+        assert_eq!(replies.len(), 1);
+        assert_eq!(error.map(|error| error.code), Some(BackendErrorCode::Cancelled));
+        assert!(keep_failed_turn(Vec::new(), true, cancelled).is_err());
+    }
 
     #[test]
     fn a_turn_a_message_stopped_is_saved_with_a_note() {

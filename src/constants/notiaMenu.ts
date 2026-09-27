@@ -16,8 +16,12 @@ import {
   WalletCards,
   CalendarCheck,
   CalendarClock,
+  House,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
+
+/** Home, first in the rail and apart from the modules. */
+export const HOME_RAIL_ACTION: NotiaIconAction = { id: 'home', label: 'Inicio', icon: House }
 
 /** Rail modules, in groups separated by a divider. */
 export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [

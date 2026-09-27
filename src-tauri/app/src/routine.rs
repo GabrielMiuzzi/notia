@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -323,6 +323,8 @@ pub struct TaskRecord {
     pub days: TaskDays,
     pub notes: String,
     pub status: RoutineTaskStatus,
+    /// Local day the task was created; `None` when it cannot be read.
+    pub created_on: Option<NaiveDate>,
 }
 
 impl TaskRecord {
@@ -345,12 +347,20 @@ impl RoutineData {
         self.completions.contains(&(task_id.to_string(), date))
     }
 
+    /// Whether `task` counts on `date`: a day it applies to, from the day it
+    /// was created, or an earlier one the person marked as done. Days before
+    /// a habit existed are not missed days.
+    pub fn counts_on(&self, task: &TaskRecord, date: NaiveDate) -> bool {
+        task.days.applies(weekday_index(date))
+            && (task.created_on.is_none_or(|created| date >= created) || self.is_completed(&task.id, date))
+    }
+
     pub fn goal(&self, category: &str) -> u8 {
         self.goals.get(category).copied().unwrap_or(DEFAULT_GOAL)
     }
 }
 
-const TASK_COLUMNS: &str = "t.id, t.routine_id, t.name, t.category, t.days, t.notes, t.status";
+const TASK_COLUMNS: &str = "t.id, t.routine_id, t.name, t.category, t.days, t.notes, t.status, t.created_at";
 
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
     Ok(TaskRecord {
@@ -361,7 +371,18 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
         days: TaskDays::from_stored(&row.get::<_, String>(4)?),
         notes: row.get(5)?,
         status: RoutineTaskStatus::from_stored(&row.get::<_, String>(6)?),
+        created_on: created_on(row.get(7)?),
     })
+}
+
+/// Local day of `created_at`, which Rutina writes as Unix seconds.
+fn created_on(value: rusqlite::types::Value) -> Option<NaiveDate> {
+    let seconds = match value {
+        rusqlite::types::Value::Integer(seconds) => seconds,
+        rusqlite::types::Value::Text(text) => text.trim().parse::<i64>().ok()?,
+        _ => return None,
+    };
+    Local.timestamp_opt(seconds, 0).single().map(|moment| moment.date_naive())
 }
 
 /// Loads the routines, visible tasks, goals and the completions recorded on

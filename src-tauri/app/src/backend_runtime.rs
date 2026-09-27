@@ -1618,6 +1618,44 @@ impl TauriBackendToolExecutor {
             .map(str::to_string)
     }
 
+    /// The payload of a `save_finance_*` tool that takes a whole record, or
+    /// why the record is not valid. The reason names the field, so the model
+    /// can fix its call.
+    fn finance_save_payload<T: serde::de::DeserializeOwned>(
+        &self,
+        context: &BackendRequestContext,
+        call: &ToolCall,
+    ) -> Result<T, BackendError> {
+        let (key, invalid) = match call.name.as_str() {
+            "save_finance_account" => ("account", "La cuenta financiera no es válida"),
+            "save_finance_category" => ("category", "La categoría financiera no es válida"),
+            "save_finance_transaction" => ("transaction", "El movimiento financiero no es válido"),
+            "save_finance_service" => ("service", "El servicio financiero no es válido"),
+            "save_finance_service_occurrence" => ("occurrence", "La ocurrencia financiera no es válida"),
+            "save_finance_service_invoice" => ("invoice", "La factura financiera no es válida"),
+            "save_finance_savings_movement" => ("movement", "El movimiento de ahorro no es válido"),
+            _ => return Err(BackendError::invalid_input("La herramienta financiera no guarda un registro.")),
+        };
+        let payload = json!({ "context": self.finance_context(context)?, key: Self::finance_record(&call.arguments) });
+        serde_json::from_value::<T>(payload).map_err(|error| BackendError::invalid_input(format!("{invalid}: {error}.")))
+    }
+
+    /// Checks the record of a `save_finance_*` call without saving it, so an
+    /// incomplete record returns to the model before the person confirms
+    /// something that could only fail.
+    fn validate_finance_save(&self, context: &BackendRequestContext, call: &ToolCall) -> Result<(), BackendError> {
+        match call.name.as_str() {
+            "save_finance_account" => self.finance_save_payload::<crate::finance::SaveAccountPayload>(context, call).map(drop),
+            "save_finance_category" => self.finance_save_payload::<crate::finance::SaveCategoryPayload>(context, call).map(drop),
+            "save_finance_transaction" => self.finance_save_payload::<crate::finance::SaveTransactionPayload>(context, call).map(drop),
+            "save_finance_service" => self.finance_save_payload::<crate::finance::SaveFinanceServicePayload>(context, call).map(drop),
+            "save_finance_service_occurrence" => self.finance_save_payload::<crate::finance::SaveFinanceServiceOccurrencePayload>(context, call).map(drop),
+            "save_finance_service_invoice" => self.finance_save_payload::<crate::finance::SaveFinanceServiceInvoicePayload>(context, call).map(drop),
+            "save_finance_savings_movement" => self.finance_save_payload::<crate::finance::SaveSavingsMovementPayload>(context, call).map(drop),
+            _ => Ok(()),
+        }
+    }
+
     fn finance_record(arguments: &Value) -> Value {
         let mut record = arguments
             .get("record")
@@ -2398,6 +2436,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        self.validate_finance_save(context, call)?;
         if call.name.starts_with("save_finance_")
             || call.name.starts_with("create_finance_")
             || matches!(
@@ -3171,10 +3210,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 result.map_err(|_| invalid_result())?
             }
             "save_finance_account" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "account": record });
-                let payload = serde_json::from_value::<crate::finance::SaveAccountPayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("La cuenta financiera no es válida."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveAccountPayload>(context, call)?;
                 serde_json::to_value(crate::finance::finance_save_account(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "create_finance_category" => {
@@ -3196,17 +3232,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 }
             }
             "save_finance_category" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "category": record });
-                let payload = serde_json::from_value::<crate::finance::SaveCategoryPayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("La categoría financiera no es válida."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveCategoryPayload>(context, call)?;
                 serde_json::to_value(crate::finance::finance_save_category(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "save_finance_transaction" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "transaction": record });
-                let payload = serde_json::from_value::<crate::finance::SaveTransactionPayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("El movimiento financiero no es válido."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveTransactionPayload>(context, call)?;
                 let (transaction, outcome) = crate::finance::finance_save_transaction_linked(self.app.clone(), payload)
                     .map_err(Self::finance_error)?;
                 json!({ "ok": true, "changed": true, "transaction": transaction, "links": outcome.links, "reviewItems": outcome.review_items })
@@ -3233,10 +3263,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 }
             }
             "save_finance_service" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "service": record });
-                let payload = serde_json::from_value::<crate::finance::SaveFinanceServicePayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("El servicio financiero no es válido."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveFinanceServicePayload>(context, call)?;
                 serde_json::to_value(crate::finance::finance_save_service(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "create_finance_service_occurrence" => {
@@ -3272,10 +3299,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 serde_json::to_value(crate::finance::finance_save_service_occurrence(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "save_finance_service_occurrence" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "occurrence": record });
-                let payload = serde_json::from_value::<crate::finance::SaveFinanceServiceOccurrencePayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("La ocurrencia financiera no es válida."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveFinanceServiceOccurrencePayload>(context, call)?;
                 serde_json::to_value(crate::finance::finance_save_service_occurrence(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "create_finance_service_invoice" => {
@@ -3303,10 +3327,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 serde_json::to_value(crate::finance::finance_save_service_invoice(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "save_finance_service_invoice" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "invoice": record });
-                let payload = serde_json::from_value::<crate::finance::SaveFinanceServiceInvoicePayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("La factura financiera no es válida."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveFinanceServiceInvoicePayload>(context, call)?;
                 serde_json::to_value(crate::finance::finance_save_service_invoice(self.app.clone(), payload).map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "set_finance_service_active" => {
@@ -3449,10 +3470,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     .map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }
             "save_finance_savings_movement" => {
-                let record = Self::finance_record(&call.arguments);
-                let payload = serde_json::json!({ "context": self.finance_context(context)?, "movement": record });
-                let payload = serde_json::from_value::<crate::finance::SaveSavingsMovementPayload>(payload)
-                    .map_err(|_| BackendError::invalid_input("El movimiento de ahorro no es válido."))?;
+                let payload = self.finance_save_payload::<crate::finance::SaveSavingsMovementPayload>(context, call)?;
                 serde_json::to_value(crate::finance::finance_save_savings_movement(self.app.clone(), payload)
                     .map_err(Self::finance_error)?).map_err(|_| invalid_result())?
             }

@@ -16,7 +16,7 @@ import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttach
 import { deleteChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { writeAgentMemories } from '../../../../services/ai/agentPromptRuntime'
 import { readChatFileAsAttachment } from './chatImageAttachment'
-import { subscribeToChatComposerRequests } from '../../../../services/chat/chatComposerRequests'
+import { subscribeToChatPanelRequests, type ChatPanelRequest } from '../../../../services/chat/chatComposerRequests'
 import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
 import { useChatAgentSettings } from './useChatAgentSettings'
@@ -277,15 +277,15 @@ export function ChatWorkspaceViewComponent({
   // The agent of the chat whose answer is streaming; `null` while Notia answers.
   const [streamingAgent, setStreamingAgent] = useState<ChatAgentSpeaker | null>(null)
 
-  // Views (Finanzas) put a message in the side chat's composer to review and send.
+  // Views ask the side chat to fill its composer (Finanzas), to send a
+  // message with an agent or to open a chat (Home). The request waits here
+  // until the chat can carry it out.
   const [composerFocusRequest, setComposerFocusRequest] = useState(0)
+  const [panelRequest, setPanelRequest] = useState<ChatPanelRequest | null>(null)
   useEffect(() => {
     if (showHistoryPanel) return undefined
-    return subscribeToChatComposerRequests((text) => {
-      if (text !== null) setDraft(text)
-      setComposerFocusRequest((request) => request + 1)
-    })
-  }, [setDraft, showHistoryPanel])
+    return subscribeToChatPanelRequests(setPanelRequest)
+  }, [showHistoryPanel])
 
   const hidesAttachedFileContext = agentScope === 'task-manager'
   const resolvedSelectedLibraryFilePaths = hidesAttachedFileContext ? EMPTY_CONTEXT_PATHS : selectedLibraryFilePaths
@@ -511,14 +511,18 @@ export function ChatWorkspaceViewComponent({
           planApprovalResolverRef.current = null
           clarificationResolverRef.current = null
           setAwaitingAgentExecutionPlanApproval(false)
+          setAgentExecutionPlan([])
           setPendingAgentQuestion(null)
           reject(new Error('Se canceló la aprobación del plan del agente.'))
         }
         signal.addEventListener('abort', handleAbort, { once: true })
+        // Once decided, the backend adds the plan and the answer to the
+        // thread and saves them; the card goes away.
         planApprovalResolverRef.current = (decision) => {
           signal.removeEventListener('abort', handleAbort)
           planApprovalResolverRef.current = null
           setAwaitingAgentExecutionPlanApproval(false)
+          setAgentExecutionPlan([])
           resolve(decision)
         }
         setAgentExecutionPlan(steps)
@@ -595,7 +599,7 @@ export function ChatWorkspaceViewComponent({
     if (isSubmitting || isSendingQueuedMessage || !next || next.deciding) return
     setQueuedMessages((current) => current.slice(1))
     setIsSendingQueuedMessage(true)
-    void submitMessage(next.text, undefined, undefined, true).finally(() => setIsSendingQueuedMessage(false))
+    void submitMessage(next.text, undefined, true).finally(() => setIsSendingQueuedMessage(false))
   }, [isSendingQueuedMessage, isSubmitting, queuedMessages, submitMessage])
 
   const submitComposerMessage = (message: string): Promise<void> => {
@@ -604,26 +608,13 @@ export function ChatWorkspaceViewComponent({
       ? lastAppliedOperationId
       : undefined
     if (operationId) setLastAppliedOperationId(null)
-    return submitMessage(message, undefined, operationId)
+    return submitMessage(message, operationId)
   }
 
   const consumeRehydratedClarification = async (answer: string): Promise<string | null> => {
     if (!rehydratedClarificationRef.current || !library) return null
     rehydratedClarificationRef.current = false
     return answerPendingClarification(library.id, answer).catch(() => null)
-  }
-
-  const handleResumeAgentExecutionPlan = () => {
-    if (isSubmitting || agentExecutionPlan.length === 0) return
-    void submitMessage('Continuá con el TO-DO aprobado.', true)
-  }
-
-  const handleCancelAgentExecutionPlan = () => {
-    if (isSubmitting) {
-      cancelActiveReply()
-    }
-    setAwaitingAgentExecutionPlanApproval(false)
-    setAgentExecutionPlan([])
   }
 
   const handleDeleteChat = async () => {
@@ -798,6 +789,8 @@ export function ChatWorkspaceViewComponent({
       colorIndex: index % 6,
     }))
   const panelAgent = panelAgents.find((agent) => agent.fileName === agentPromptFileName) ?? panelAgents[0] ?? null
+  // A string, so the effect below depends on the names and not on a new array each render.
+  const panelAgentFileNames = panelAgents.map((agent) => agent.fileName).join('\n')
   const panelAgentLookOf = (agentFile: string | null): ChatPanelAgentLook => {
     const fileName = agentFile ?? 'default.md'
     const agent = panelAgents.find((candidate) => candidate.fileName === fileName)
@@ -811,6 +804,52 @@ export function ChatWorkspaceViewComponent({
       void saveSelectedAgentPromptFileName(library.id, nextFileName).catch(() => undefined)
     }
   }
+
+  // A message sent from Home starts a new chat with its agent once the
+  // running turn ends; each step waits for the render that applies the last.
+  useEffect(() => {
+    if (!panelRequest) return
+    if (panelRequest.kind === 'compose') {
+      setPanelRequest(null)
+      if (panelRequest.text !== null) setDraft(panelRequest.text)
+      setComposerFocusRequest((request) => request + 1)
+      return
+    }
+    if (panelRequest.kind === 'open') {
+      setPanelRequest(null)
+      pickChat(panelRequest.filePath)
+      // A chat opens with the agent it talks with.
+      const agentFile = panelRequest.agentFileName
+      if (agentFile && agentFile !== agentPromptFileName && panelAgentFileNames.split('\n').includes(agentFile)) {
+        setAgentPromptFileName(agentFile)
+        if (library) void saveSelectedAgentPromptFileName(library.id, agentFile).catch(() => undefined)
+      }
+      return
+    }
+    if (isSubmitting || isChatLoading || !library) return
+    if (selectedChatFilePath !== null || activeChatDocument !== null) {
+      pickChat(null)
+      return
+    }
+    if (panelRequest.agentFileName && panelRequest.agentFileName !== agentPromptFileName) {
+      setAgentPromptFileName(panelRequest.agentFileName)
+      return
+    }
+    setPanelRequest(null)
+    void submitMessage(panelRequest.text)
+  }, [
+    activeChatDocument,
+    agentPromptFileName,
+    isChatLoading,
+    isSubmitting,
+    library,
+    panelAgentFileNames,
+    panelRequest,
+    pickChat,
+    selectedChatFilePath,
+    setDraft,
+    submitMessage,
+  ])
 
   const thread = (
     <ChatThread
@@ -844,8 +883,6 @@ export function ChatWorkspaceViewComponent({
           planResolver({ approved: false, suggestion })
         }
       }}
-      onResumeAgentExecutionPlan={handleResumeAgentExecutionPlan}
-      onCancelAgentExecutionPlan={handleCancelAgentExecutionPlan}
       lastAppliedOperationId={lastAppliedOperationId}
       aiOperationHistory={activeDocumentPath
         ? aiOperationHistory.filter((entry) => entry.documentPath === activeDocumentPath)
@@ -856,13 +893,13 @@ export function ChatWorkspaceViewComponent({
       onUndoAiOperation={(operationId) => {
         if (isSubmitting) return
         setLastAppliedOperationId(null)
-        void submitMessage('Volvé atrás el cambio de IA seleccionado.', undefined, operationId)
+        void submitMessage('Volvé atrás el cambio de IA seleccionado.', operationId)
       }}
       onUndoLastAiOperation={() => {
         if (!lastAppliedOperationId || isSubmitting) return
         const operationId = lastAppliedOperationId
         setLastAppliedOperationId(null)
-        void submitMessage('Volvé atrás el último cambio de IA.', undefined, operationId)
+        void submitMessage('Volvé atrás el último cambio de IA.', operationId)
       }}
       onConfirmAgentAction={() => confirmationResolverRef.current?.({ accepted: true, hunkIds: pendingAgentHunkIds })}
       onDeclineAgentAction={() => confirmationResolverRef.current?.({ accepted: false })}
@@ -889,7 +926,6 @@ export function ChatWorkspaceViewComponent({
           })
           return
         }
-        setPendingAgentAnswer(choice)
         setPendingAgentQuestion(null)
         resolver(choice)
       }}
@@ -953,7 +989,7 @@ export function ChatWorkspaceViewComponent({
         if (clarificationResolver) {
           const answer = draft.trim()
           if (!answer) return
-          setPendingAgentAnswer(answer)
+          // The backend adds the question and this answer to the thread.
           setDraft('')
           clarificationResolver(answer)
           return
@@ -988,7 +1024,6 @@ export function ChatWorkspaceViewComponent({
         }
         const clarificationResolver = clarificationResolverRef.current
         if (clarificationResolver) {
-          setPendingAgentAnswer(text)
           setPendingAgentQuestion(null)
           clarificationResolver(text)
           return Promise.resolve()

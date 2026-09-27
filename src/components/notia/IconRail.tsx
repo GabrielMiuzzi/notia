@@ -1,6 +1,7 @@
 import { Fragment, memo, type ReactNode } from 'react'
 import { CircleHelp, Files, Settings } from 'lucide-react'
 import type { NotiaIconAction } from '../../types/notia'
+import { HOME_RAIL_ACTION } from '../../constants/notiaMenu'
 
 interface IconRailProps {
   groups: NotiaIconAction[][]
@@ -48,6 +49,10 @@ function IconRailComponent({
 }: IconRailProps) {
   return (
     <nav className="notia-rail" aria-label="Menú principal" data-notia-prevent-menu-close>
+      <RailButton label={HOME_RAIL_ACTION.label} isActive={activeActionId === HOME_RAIL_ACTION.id} onClick={() => onActionClick(HOME_RAIL_ACTION.id)}>
+        <HOME_RAIL_ACTION.icon size={RAIL_ICON_SIZE} strokeWidth={RAIL_ICON_STROKE} />
+      </RailButton>
+      <div className="notia-rail-separator" role="separator" />
       <RailButton label="Explorador" isActive={isExplorerOpen} pressed={isExplorerOpen} onClick={onToggleExplorer}>
         <Files size={RAIL_ICON_SIZE} strokeWidth={RAIL_ICON_STROKE} />
       </RailButton>

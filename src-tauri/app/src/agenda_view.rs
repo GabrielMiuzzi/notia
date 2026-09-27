@@ -9,7 +9,7 @@ use crate::agenda::{
     AgendaResult, EventRecord, DAY_MINUTES, SLOT_MINUTES,
 };
 
-const MONTH_NAMES: [&str; 12] = [
+pub(crate) const MONTH_NAMES: [&str; 12] = [
     "enero",
     "febrero",
     "marzo",
@@ -23,8 +23,8 @@ const MONTH_NAMES: [&str; 12] = [
     "noviembre",
     "diciembre",
 ];
-const WEEKDAY_SHORT: [&str; 7] = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
-const WEEKDAY_LONG: [&str; 7] = [
+pub(crate) const WEEKDAY_SHORT: [&str; 7] = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+pub(crate) const WEEKDAY_LONG: [&str; 7] = [
     "lunes",
     "martes",
     "miércoles",
@@ -112,11 +112,11 @@ fn shift_month(month_start: NaiveDate, delta: i32) -> NaiveDate {
     NaiveDate::from_ymd_opt(index.div_euclid(12), index.rem_euclid(12) as u32 + 1, 1).unwrap_or(month_start)
 }
 
-fn weekday_index(date: NaiveDate) -> usize {
+pub(crate) fn weekday_index(date: NaiveDate) -> usize {
     date.weekday().num_days_from_monday() as usize
 }
 
-fn month_name(date: NaiveDate) -> &'static str {
+pub(crate) fn month_name(date: NaiveDate) -> &'static str {
     MONTH_NAMES[date.month0() as usize]
 }
 

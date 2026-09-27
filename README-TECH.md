@@ -5460,6 +5460,8 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `library_registry` | `revoke_library_binding` | `libraryRuntime` |
 | `library_session` | `library_open`, `library_refresh`, `library_read_directory`, `library_read_document`, `library_write_document`, `library_mutate_entry`, `library_pick_directory` †, `library_list_files` | `LibraryManagerModal`, `chatAttachmentRuntime`, `libraryDocumentRuntime`, `libraryRuntime` |
 | `library_users` | `list_library_roles`, `create_library_role`, `list_library_users`, `create_library_user`, `update_library_user_password`, `delete_library_user`, `update_library_user_name`, `update_library_user_role`, `update_library_user_contexts`, `resolve_library_telegram_user`, `find_library_user`, `link_library_user_telegram`, `unlink_library_user_telegram` | `libraryUsers` |
+| `home` | `home_dashboard` | `homeService` |
+| `meeting_media` | `meeting_media_begin` †, `meeting_media_chunk` †, `meeting_media_finish` †, `meeting_media_discard` †, `meeting_start_file_session` † | `meetingMediaService` |
 | `meeting` | `meeting_snapshot` †, `meeting_discard` †, `meeting_add_mark` †, `meeting_remove_mark` †, `meeting_set_notes` †, `meeting_set_live_answers` †, `meeting_regenerate_answer` †, `meeting_pin_answer` †, `meeting_rename_speaker` †, `meeting_merge_speakers` †, `meeting_generate_insights` †, `meeting_save_note` †, `meeting_export` †, `meeting_task_boards` †, `meeting_send_tasks` † | `meetingService` |
 | `chat_agents` | `chat_agents_catalog` | `chatAgentsRuntime` |
 | `page_links` | `backend_sync_page_link` | `MarkdownView` |
@@ -5497,7 +5499,7 @@ La tabla vigente de eventos, con emisor y consumidor, está en «Eventos del bac
 
 ### 5.3 Storage Keys (localStorage)
 
-Las preferencias del dispositivo (publicación de Task Manager y voz) y la selección de prompt del agente ya no usan `localStorage`: viven en `app_data/device-preferences.json` y `app_data/agent-prompt-selection.json`, administrados por Rust. El historial de operaciones del agente, las aclaraciones pendientes y el estado de Telegram tampoco se guardan en el navegador.
+Las preferencias del dispositivo (publicación de Task Manager y voz) y la selección de prompt del agente ya no usan `localStorage`: viven en `app_data/device-preferences.json` y `app_data/agent-prompt-selection.json`, administrados por Rust. El historial de operaciones del agente, las aclaraciones pendientes y el estado de Telegram tampoco se guardan en el navegador. Las notas que abrió el editor, para «Seguir donde quedaste» de Inicio, están en `app_data/home/recent-{libraryId}.json`.
 
 | Key | Servicio | Tipo | Descripción |
 |---|---|---|---|
@@ -6044,6 +6046,7 @@ La vista Meeting sigue el lienzo de diseño «Notia · Meeting» (artboards *Lis
 | Core | `detect_questions`, prompts y `parse_*` | Detección de preguntas (oraciones con `?` y al menos tres palabras, desde su `¿`), prompts de respuesta en vivo, resumen/puntos/tareas y corrección, y parseo tolerante del JSON de la IA con límites de tamaño. |
 | Core | `note_markdown`, `note_file_name` | Nota Markdown (título, duración, hablantes, resumen, puntos clave, tareas `- [ ]`, notas, momentos, respuestas fijadas y transcripción) y nombre `Reunión AAAA-MM-DD HH.MM.md`. |
 | App | `meeting::MeetingState` | Una reunión por vez, la respuesta en vivo en curso con su `RequestControl` y la última pregunta en cola; bandera de «Pasar por IA» en curso. |
+| App | `meeting_media`, `media_decoder`, `speech_file` | Archivos de audio o video transcriptos como una reunión (ver «Transcribir un archivo de audio o video»). |
 | App | `speech_service` / `commands::speech` | Crea la reunión (`meeting::begin`) al iniciar una sesión con `meeting`, informa cada línea confirmada (`on_line`), el procesamiento (`on_processing`), el resultado (`on_completed`), el fallo (`on_interrupted`) y la cancelación (`discard_session`). |
 | React | `MeetingView` | Elige el estado a mostrar (hook de voz + `snapshot.status`), las fuentes, la prueba de audio, las opciones y las acciones del encabezado. Al montarse con una reunión `live` o `processing`, retoma su sesión con `attach`. |
 | React | `views/meeting/*` | Paneles de cada estado, `useMeetingSnapshot` (relee ante `meeting://changed`, agrega sin releer la línea de `meeting://line` y actualiza en el lugar el texto de `meeting://answer`) y `useSpeechLevels` (historial visual de `speech://levels`). |
@@ -6127,6 +6130,67 @@ Eventos: `meeting://line { meetingId, line, durationMs }` con cada línea confir
 - Un solo «Pasar por IA» por vez; guardar, exportar y enviar tareas exigen una reunión terminada. Un `meetingId` que ya no existe responde `NotFound` («La reunión ya no está disponible»).
 - Cancelar la grabación o un inicio fallido descartan la reunión. Un error del worker completa la reunión con lo reconocido hasta ese momento.
 - La reunión vive solo en memoria: se pierde al cerrar Notia si no se guardó. Cambiar de módulo no la interrumpe: el hook de voz no cancela al desmontarse una sesión iniciada con `meeting` (el dictado del chat sí se cancela), y al volver la vista la retoma (ver «Volver a la vista durante una reunión»).
+
+### Transcribir un archivo de audio o video (2026-09-26)
+
+Sigue el artboard *1b · Subir audio o video* del lienzo. La pantalla lista tiene pestañas **Grabar en vivo** y **Subir audio o video**, y se puede soltar un archivo en cualquier parte de ella.
+
+**Por qué el archivo viaja en fragmentos.** El `File` que se elige o se suelta en el WebView no tiene ruta, ni en Windows (con `dragDropEnabled: false`, el WebView recibe el *drop* HTML5) ni en Android (`<input type="file">`). La interfaz lo manda en fragmentos de 4 MiB en Base64 y Rust lo escribe en una copia temporal. Un solo camino sirve para las dos plataformas y para arrastrar o elegir.
+
+**Backend.**
+
+| Pieza | Responsabilidad |
+|---|---|
+| `backend-core::meeting::media_file_kind`, `MeetingSourceFile` | Formatos admitidos: audio (MP3, WAV, M4A, AAC, OGG, OGA, Opus, FLAC) y video (MP4, MOV, M4V, MKV, WEBM). Validan el nombre (último segmento, sin controles, hasta 255 caracteres). `MeetingRecord::from_file` crea la reunión en `processing`, sin fuentes ni respuestas en vivo. El título es «Transcripción de {nombre}», la nota empieza con el archivo y la fecha, y el snapshot trae `sourceFile { name, kind }`. |
+| `app::services::media_decoder` | Symphonia 0.5.5 lee los contenedores y códecs (MP3, AAC en M4A/MP4/MOV, OGG Vorbis, MKV/WEBM, FLAC, WAV). El audio Opus (OGG, WEBM) se decodifica con `ropus`, que ya usaban las notas de voz de Telegram. `StreamResampler` pasa todo a 16 kHz mono. `summarize` lee el archivo entero: devuelve la duración y 70 picos para la onda, y confirma que se puede decodificar. `decode` entrega el audio en orden, saltea paquetes dañados y se cancela con una bandera. |
+| `app::meeting_media` | Comandos de carga. Guarda la copia en `app_data/meeting-media/{id}.{ext}`, con hasta 2 GB por archivo y 3 cargas a la vez. Los fragmentos deben llegar en orden y sin pasar el tamaño anunciado. Una carga sin tocar durante 1 hora se descarta, y una copia huérfana de más de 6 horas se borra. Descartar una carga borra su copia; al empezar la transcripción, la copia pasa a la sesión. |
+| `app::services::speech_file::FileFeeder` | Hilo que decodifica el archivo y empuja las muestras a la cola de la sesión al ritmo del reconocedor, hasta 5 s por delante (la cola descarta lo más viejo si se llena). Informa `finalizing { stage: "transcribing", progress }` una vez por punto porcentual y sin llegar al 100 %. Al terminar borra la copia y llama a `finish_file_session`, que cierra la sesión como un «Finalizar»: reconoce lo que queda, archiva el WAV y separa hablantes. Si el archivo se corta por daño, conserva lo reconocido hasta ahí. |
+| `speech_service::start_file_session` | Misma sesión que una grabación, con `SessionAudio::File` en lugar de la captura. `start_session_worker` es el arranque común del worker. La sesión queda en `Finalizing` desde que existe, y su `Ready` no emite `recording`. `session_state` responde `preparing` para una sesión que todavía no está lista, así `attach` puede seguirla desde el primer momento. |
+
+**Interfaz.**
+
+- `MeetingSourceTabs` tiene las pestañas con flechas del teclado y el aviso de arrastrar, que en pantallas táctiles no se muestra.
+- `MeetingUploadPanel` muestra la zona de carga («Arrastrá un audio o un video», en táctil «Elegí un audio o un video»), el botón **Elegir archivo** y la lista de formatos. La fila del archivo tiene un ícono ámbar para video o turquesa para audio, el detalle «Video · 18:32 · 142 MB · se usa solo el audio», la onda (o la barra de carga) y **Quitar archivo**. Siguen las opciones compartidas (`MeetingOptions`: idioma, hablantes, carpeta), el pie y **Transcribir archivo**.
+- `meetingMediaService` hace la carga (`begin`, fragmentos, `finish`) con progreso y cancelación, y cuando falla o se cancela descarta la carga.
+- `MeetingView` guarda el archivo como estado de presentación: vacío, cargando con porcentaje, leyendo el audio o listo. Al transcribir llama a `meeting_start_file_session` y sigue la sesión con `voice.attach`.
+- `MeetingProcessingPanel`, con `sourceFile`, muestra el nombre del archivo, «Transcribiendo el archivo…» con su porcentaje, **Ver lo transcripto** (las líneas llegan mientras avanza) y **Cancelar transcripción**, que llama a `cancel_speech_session` y descarta la reunión. Después sigue igual que una grabación, con separación de hablantes y **Cancelar separación**.
+- La reunión terminada se guarda, se exporta y pasa por IA igual que una grabada.
+- El lienzo no tiene un artboard del procesamiento de un archivo: se reutilizó *3 · Separando hablantes* con el paso «Transcribiendo el archivo».
+
+**Contratos** (todos en `LOCAL_ONLY_COMMANDS`):
+
+| Comando | Payload | Respuesta |
+|---|---|---|
+| `meeting_media_begin` | `{ name, byteLength }` | `{ mediaId }` |
+| `meeting_media_chunk` | `{ mediaId, offset, data }` (Base64, hasta 8 MiB decodificados) | `{ receivedBytes }` |
+| `meeting_media_finish` | `{ mediaId }` | `{ mediaId, name, kind, byteLength, durationMs, peaks }` |
+| `meeting_media_discard` | `{ mediaId }` | — |
+| `meeting_start_file_session` | `{ mediaId, language, diarizationEnabled, expectedSpeakers }` | `{ sessionId }` (también es el id de la reunión) |
+
+**Android.** La transcripción se declara como trabajo en primer plano de tipo `dataSync`, así sigue con la pantalla apagada, y termina al completar, cancelar o fallar. Symphonia es Rust puro y compila igual para `aarch64-linux-android`.
+
+**Validación.**
+
+- backend-core 360: archivo como reunión (título, nota y snapshot) y formatos admitidos.
+- notia-app 365, con 2 ignoradas. Cubre:
+  - la decodificación de un WAV estéreo de 44,1 kHz a 16 kHz mono con su duración y su onda;
+  - la cancelación y el rechazo de un archivo que no es audio;
+  - la onda;
+  - el orden y el tamaño de los fragmentos;
+  - la limpieza de copias;
+  - el progreso de la alimentación;
+  - la espera por lugar en la cola.
+- Prueba ignorada `media_formats_probe`: los 10 formatos generados con ffmpeg se decodifican con su duración (6 s):
+  - audio: MP3, WAV, M4A, OGG Opus, OGG Vorbis, FLAC;
+  - video: MP4, MOV y MKV con AAC, WEBM con VP9 y Opus.
+- vitest 336 pruebas: panel de carga, pestañas con teclado, panel de procesamiento de un archivo y servicio de carga (orden, cancelación e inicio).
+- `tsc`, `eslint` y `vite build` sin errores.
+- Captura del panel en tema oscuro y claro comparada con el artboard.
+- `cargo check` para Android: 61 advertencias. Linux (WSL): notia-app 308 y backend-core 360 aprobados, 144 advertencias. Las mismas advertencias que antes. En Linux no hay runtime de voz, así que `meeting_start_file_session` responde que no está integrado.
+- Pendiente:
+  - transcribir un archivo real de principio a fin con Parakeet y la separación de hablantes en Windows;
+  - probar Android en un dispositivo (selector, cargas grandes y trabajo en primer plano);
+  - probar un video de más de 1 GB.
 
 ### Volver a la vista durante una reunión
 
@@ -7404,6 +7468,26 @@ Complementa «Agente: trabajo continuo y cola de mensajes» y la sección de rut
   - probar una corrida larga con un modelo configurado, cancelando con un mensaje;
   - probar Android en un dispositivo.
 
+### App: mensajes con solo adjuntos (2026-09-26)
+
+El chat de la app acepta un mensaje con solo archivos (imágenes, PDF o texto) y decide qué pedido es, igual que Telegram.
+
+- **Rust (`chat_turn::turn_request`, `ai_chat::send`).**
+  - Un mensaje vacío con adjuntos no se rechaza. El agente lee `ATTACHMENTS_ONLY_REQUEST`, un pedido neutral como el `DOCUMENT_PROMPT` de Telegram: si es un comprobante lo registra, si es otra cosa hace lo que corresponda o pregunta, y si son varios los procesa todos.
+  - El router ve los adjuntos del mensaje, como en Telegram.
+  - Un mensaje vacío y sin adjuntos sigue respondiendo «El mensaje no puede estar vacío.».
+  - En el chat se guarda el mensaje como lo escribió la persona: vacío y con sus adjuntos. El formato del archivo ya conservaba un mensaje sin texto si tiene adjuntos.
+  - Los agentes del chat y la decisión sobre mensajes que llegan durante el turno leen el pedido neutral.
+  - Un chat nuevo toma el título de los nombres de sus archivos sin extensión (`title_seed`).
+- **Interfaz.** `canSubmit` acepta el borrador vacío si hay adjuntos seleccionados, y `submitMessage` también. Los mensajes en cola siguen siendo solo texto. `ChatThread` ya mostraba los nombres de los adjuntos arriba del texto.
+- **Validación.**
+  - backend-core 358, con la prueba del pedido neutral y del título.
+  - notia-app 357 y 1 ignorada.
+  - vitest 328 pruebas en 78 archivos. Una prueba nueva confirma que se envían archivos sin texto y que nunca se envía un mensaje vacío sin archivos.
+  - `tsc`, `eslint` y `vite build` sin errores.
+  - `cargo check` para Android: 61 advertencias. Linux (WSL): notia-app 302 y backend-core 358 aprobados, 144 advertencias. Las mismas advertencias que antes.
+  - Pendiente: probar en la app un ticket, una captura de calendario y un PDF mandados sin texto.
+
 ## Task Manager: edición de tareas con el editor de notas
 
 El doble clic sobre una tarjeta abre `TaskSourceDialog` (`src/modules/task-manager/components/dialogs/`), que edita el archivo de la tarea con `MarkdownView`, el mismo editor Milkdown (Crepe) de las notas. Tiene el panel de propiedades para el frontmatter, wikilinks, Mermaid, XGraph, InkMath y zoom. Reemplaza al `TextField` con el Markdown crudo. La lectura y el guardado no cambian: `loadTaskSource` / `saveTaskSource` (`task_manager_read_ticket_source` / `task_manager_write_ticket_source`) con la revisión leída.
@@ -8102,3 +8186,227 @@ Rediseño del 2026-09-25 según el canvas «Notia · Finanzas rediseño» (https
 - Probar en un Android físico.
 - Compilar en Linux (WSL).
 - Probar la pantalla nueva con datos reales, en Windows y en un Android físico (deslizar «Para revisar», hoja de detalle, teclado virtual al abrir el chat).
+
+## Inicio: tablero de la biblioteca (2026-09-26)
+
+Inicio sigue el lienzo «Notia — Inicio» (claude.ai/artifact/Cj5v78Dckwt2jtR1HVXBXt). Es un tablero que arma Rust con los datos de los demás módulos. React solo lo muestra y manda cada cambio al comando del módulo dueño.
+
+### Registro en el shell
+
+- **Barra izquierda**: `HOME_RAIL_ACTION` (`src/constants/notiaMenu.ts`, ícono `House`) va primero, separado de los grupos de módulos (`IconRail.tsx`).
+- **Pestaña especial**: la acción `home` abre la pestaña `__workspace_home__` («Inicio»), con `specialTabs.home` en `documentsSlice`, `documentsTypes`, `documentsSelectors`, `useTabManager` y `useToolbarActions`.
+- **Vista**: `activeView` y `selectActiveWorkspaceView` suman `'home'`, `selectActiveRailActionId` devuelve `home` y `NotiaWorkspace` muestra `HomeView`.
+- **Chat lateral**: con Inicio abierto trabaja con alcance `library` y el chip «Inicio». `WorkspaceAiView` suma `'home'`; el `turn_route` de Rust solo trata aparte `meeting`, así que Inicio no cambia la elección de herramientas.
+
+### Comando `home_dashboard`
+
+`app/src/home.rs`; no es `LOCAL_ONLY`, así que el servidor headless también lo atiende.
+
+- **Entrada y salida**: recibe `{ payload: { libraryId } }`. Busca la biblioteca en el catálogo y, si no está, responde `NotFound`.
+- **Orden de lectura**: primero lee los chats recientes (asincrónico) y después arma el resto en `spawn_blocking`.
+- **Errores por tarjeta**: cada tarjeta es un `HomeCard<T>` con `data` o con `error`, el mensaje del módulo. Si una fuente falla, solo se pierde su tarjeta.
+
+| Tarjeta | Fuente | Qué deriva Rust |
+|---|---|---|
+| `agenda`, `notes` | `agenda::home_data(app, context, 7)` | Arma los 7 días desde hoy, con punto en los días con eventos. Toma los eventos que no terminaron («Lun 28», o «Vie 2 oct» si caen en otro mes), su rango y la etiqueta de prioridad. Suma el anotador: los pendientes y los marcados hoy. |
+| `tasks` | `task_manager_commands::owner_board_view` y `owner_pomodoro_task` | **Abiertas**: Pendiente, En progreso o Bloqueada. **Columnas**: cuenta Sprint actual y En revisión por el nombre del grupo, sin mayúsculas ni acentos. **Bloqueadas**: por estado o por estar en un grupo «Bloquead…». **Urgentes**: las 5 primeras por prioridad, fecha de fin y título, con chip y `meta` (grupo o tablero, y estado). **`focus`**: el ticket que tiene elegido el Pomodoro o, si no hay, el abierto más urgente (`selected: false`). |
+| `finance` | `finance_screen::home_summary` | Del mes: gastos, cantidad, % sin categoría, aportes a ahorro, primera reserva, cantidad de «Para revisar» y `reviewPrompt`. «Para revisar» junta los casos guardados, los gastos sin categoría y los resúmenes que no cuadran; `reviewPrompt` es una sola consulta con todo eso, sin elegir respuesta (ver más abajo). |
+| `routine` | `routine::routine_get_dashboard` → `routine_summary` | La semana actual (letra L–D, hecho/total, %, hoy y días futuros) y los hábitos de hoy de cada rutina, con categoría, estado y racha. Suma el % del mes y de la semana, la mejor racha y los pendientes de hoy. |
+| `recent` | `chat_history::recent_chats` (5), `recent_documents::list` (5) y `meeting::current_meeting` | Junta chats, notas y la reunión actual y los ordena por hora local (quedan 5), con «Hoy», «Ayer», «Esta semana» o «12 sep». Los chats llevan el nombre del agente (`chat_agents`) y su `agentFile`; el texto es «Chat · agente X», o «Chat · X» si el nombre ya empieza con «Agente». Las notas que ya no están en el inventario se descartan. Agrega hasta 8 carpetas raíz (`library_inventory::root_folders`) sin las del sistema: `.…`, `chat` y `task-manager`. |
+
+**Encabezado**:
+
+- `dateLabel` («Sábado 26 de septiembre · gaia»).
+- `greeting` según la hora: «Buen día» de 5 a 11, «Buenas tardes» de 12 a 19 y «Buenas noches» el resto.
+- `summary`: eventos de 7 días, hábitos pendientes y tareas urgentes. Omite las fuentes que fallaron.
+
+### Notas recientes
+
+Las listas de SAF no traen fecha de modificación, así que el inventario no puede ordenar las notas por uso.
+
+- **Qué se registra**: `app/src/recent_documents.rs` anota cada nota Markdown que abre el editor. Lo hace `library_read_document`, cuando la lectura pide `markdownDefaults` y termina bien.
+- **Dónde**: `app_data/home/recent-{libraryId}.json`, con hasta 30 por biblioteca, la más reciente primero y sin repetidas.
+- **Cómo se escribe**: con un candado de proceso y un archivo `.tmp` que después se renombra.
+- **Alcance**: el registro es por equipo. Un fallo pierde la entrada, pero nunca impide abrir la nota.
+
+### Interfaz
+
+- **Servicio y estado**:
+  - `src/services/home/homeService.ts` y `homeTypes.ts` definen el contrato.
+  - `views/home/useHomeDashboard.ts` vuelve a leer el tablero en tres casos: `notia:routine-data-changed`, `task-manager-changed` y los cambios de Finanzas (del backend o locales). También al recuperar el foco, agrupando los avisos durante 300 ms. Una respuesta vieja nunca pisa a una nueva.
+- **Cambios**: cada tarjeta usa los comandos de su módulo y después vuelve a leer el tablero.
+
+  | Tarjeta | Comando | Acciones |
+  |---|---|---|
+  | Anotador | `agenda_apply_mutation` | `addNote`, `setNoteDone`, `deleteNote` |
+  | Hábitos | `routine_apply_mutation` | `setCompletion`, con `routine.today` |
+  | Pomodoro | `task_manager_pomodoro` | `read` (con el estado heredado del WebView, como Task Manager), `start`, `pause`, `resume`, `reset` y `tick` al llegar a cero |
+
+  Si el temporizador no tiene elegido el ticket `focus`, **Iniciar** manda `select-task` antes de `start`.
+- **Cuadro del asistente**:
+  - El chip muestra los agentes válidos de `chat_agents_catalog`, con la selección de `backend_agent_prompts`.
+  - Tocarlo pasa al siguiente agente y lo guarda con `backend_select_agent_prompt`: es el mismo agente del chat lateral.
+  - Enviar abre el panel y manda `requestChatPanel({ kind: 'send', text, agentFileName })`.
+  - `Ctrl + K` enfoca el cuadro.
+- **Pedidos al chat lateral**: `chatComposerRequests.ts` pasa a `ChatPanelRequest`, con tres tipos: `compose`, `send` y `open`. Se conserva `requestChatComposerText` (Finanzas), y un pedido hecho sin el chat montado espera hasta que se suscribe. `ChatWorkspaceView`, solo como panel lateral, guarda el pedido en estado y lo ejecuta en un efecto:
+  - `compose` llena el compositor y lo enfoca.
+  - `open` abre el chat con `pickChat` y, si su agente está en el catálogo, lo elige.
+  - `send` espera a que termine el turno o la carga del chat, empieza un chat nuevo, pone el agente pedido y envía el texto.
+- **Grabar**: `HomeRecordButton` usa `useVoiceTranscription` con las opciones de Meeting (respuestas en vivo apagadas, micrófono y audio del sistema donde exista) y se engancha a una reunión que ya está grabando.
+  - `Ctrl + Shift + R` también empieza a grabar.
+  - El botón queda deshabilitado mientras el modelo de voz no está listo.
+  - `meeting::begin` reemplaza la reunión actual, así que si hay una terminada sin guardar, el botón lleva a Meeting en lugar de grabar.
+- **Otras acciones**:
+  - **Nueva nota** usa `explorerToolClick('new-note')`.
+  - Las tarjetas abren su módulo con `railActionClick`.
+  - Las tareas y las notas recientes se abren con `openFile(path)`.
+  - Las carpetas abren el explorador y expanden el nodo raíz con la misma ruta o el mismo nombre.
+  - **Ver historial** abre el Chat IA.
+  - «Revisar en el chat» manda un `compose` con el `reviewPrompt` de Rust.
+- **Diseño** (`home.css`, con los tokens de la paleta y chips al 18 % en oscuro y al 10 % en claro): la vista es un contenedor `home`.
+  - Desde 1100 px: grilla de 12 columnas (4/5/3 y 5/3/4) con filas `minmax(380px, 1fr)`, que llenan el alto.
+  - Hasta 1100 px: dos columnas, con las listas de hasta 320 px.
+  - Hasta 900 px: el encabezado se apila.
+  - Hasta 640 px: una columna.
+  - Tarjeta de Rutinas: es su propio contenedor, y hasta 470 px apila la semana.
+  - Puntero táctil: objetivos de 44 px y sin la pista `Ctrl K`.
+
+### Validaciones ejecutadas
+
+- `cargo test --offline -p notia-app --features bluetooth`: 372 aprobados y 2 ignorados (con la corrección de abajo). Las 5 pruebas nuevas de Inicio cubren:
+  - el encabezado;
+  - la agenda de 7 días;
+  - las columnas, las urgentes y el foco del Pomodoro;
+  - los recientes y las carpetas del sistema;
+  - la lista de notas recientes.
+- `cargo test --offline -p notia-backend-core`: 361 aprobados (con la corrección de las confirmaciones).
+- Warnings, sin cambios: 37 en escritorio (41 con `bluetooth`), 61 con `cargo check --target aarch64-linux-android` y 144 en Linux (WSL).
+- `npx tsc -p tsconfig.app.json --noEmit` y `npx eslint .`: sin errores.
+- `npx vitest run`: 81 archivos y 343 pruebas. Son nuevas `HomeCards.test.tsx` (agenda, error por tarjeta, anotador, rechazo, Pomodoro con foco y recientes) y una de `chatComposerRequests`.
+- `npx vite build`: correcto.
+- Vista previa en Chrome headless con los datos del lienzo, contra una referencia estática armada con el HTML y los estilos del lienzo:
+  - a 1392×960, en tema oscuro y claro, todas las cajas medidas coinciden con 1 px de tolerancia (encabezado, cuadro del asistente, seis tarjetas, días, filas, chips, métricas, Pomodoro, dólar, anillos, pestañas, listas, campo y carpetas);
+  - se revisó también a 860 y 390 px.
+
+### Corrección tras la primera prueba real (2026-09-26)
+
+**«Revisar en el chat» no decía qué revisar.**
+
+- **Síntoma**: la tarjeta decía «1 para revisar», pero el botón mandaba un texto genérico. El asistente miraba solo los casos guardados, que estaban vacíos, y respondía que no había nada.
+- **Causa**: ese 1 era la tarjeta derivada de gastos sin categoría.
+- **Arreglo**: cada `ReviewCard` de `finance_screen.rs` guarda ahora `ask`, que no se serializa: la duda como consulta, sin elegir respuesta.
+  - Caso guardado: «Revisemos la duda de Finanzas «…» (caso id).».
+  - Gastos sin categoría: el pedido de categorizar.
+  - Resumen que no cuadra: el pedido de revisar ese resumen.
+- `review_request` devuelve el `ask` de la única tarjeta, o una lista «Revisemos lo que quedó para revisar en Finanzas:» con una línea por tarjeta. Prueba: `home_asks_about_every_doubt_without_answering_it`.
+
+**Rutina contaba como no cumplidos los días anteriores a un hábito.**
+
+- **Síntoma**: con la rutina empezada el lunes 21, el mes daba 14 % aunque la semana iba casi completa.
+- **Causa**: `tasks_on` contaba cada hábito activo en todos los días del mes.
+- **Arreglo**: `TaskRecord` lee `created_on`, el día local de `created_at` (Unix segundos). La regla nueva es `RoutineData::counts_on`: un hábito cuenta en los días que le tocan desde su alta, o en un día anterior si se marcó hecho.
+- **Dónde se aplica**: en los porcentajes (día, semana, mes, mejor día), el puntaje de la rueda de la vida, el calendario de hábitos (antes del alta, «no aplica»), el informe del mes y el campo `applies` de la herramienta del agente. Afecta igual a Inicio y a la pantalla de Rutina.
+- **Qué no cambia**: marcar días anteriores sigue permitido, y las rachas ya cortaban en el primer día sin marcar.
+- **Si `created_at` no se puede leer**: el hábito cuenta todos los días, como antes.
+- Prueba: `days_before_a_habit_existed_are_not_missed`.
+
+**Confirmar un cambio de Finanzas daba «La acción no está permitida para este preview».**
+
+- **Síntoma**: pasaba al aprobar cualquier cambio de Finanzas (por ejemplo, asignar una categoría dentro de un TO-DO aprobado); también afectaba a Rutina, Gmail y Calendar. No era un problema de Inicio.
+- **Causa**: la interfaz empieza con todos los cambios de la vista previa marcados y manda sus ids, aunque el botón diga «Aplicar todo». `validate_confirmation` (`backend-core/src/interaction.rs`) lo tomaba como `ApplySelected`, que esas vistas previas no admiten: solo `ApplyAll`, `Reject` y `Cancel`.
+- **Arreglo**: si la decisión marca todos los cambios, conocidos y sin repetir, es `ApplyAll`; una selección parcial sigue siendo `ApplySelected` y se rechaza donde no está permitida.
+- **Interfaz**: `ChatThread` muestra las casillas por cambio solo si la vista previa admite `apply-selected` (las ediciones de notas).
+- Pruebas: `validates_confirmation_selection_and_revisions` y `every_change_checked_is_applying_all_where_selection_is_not_allowed`.
+
+### Pendientes
+
+- Probar con datos reales en Windows y en un Android físico: toques, teclado virtual, grabar desde Inicio y la carpeta en el explorador SAF.
+- Probar el envío desde Inicio al chat lateral con Ollama y un agente distinto del predeterminado.
+- Las notas recientes empiezan a registrarse con esta versión; antes no hay historial.
+
+## Chat: preguntas del agente sin tope y guardadas en el turno (2026-09-26)
+
+**Síntoma**: en un plan con diez cambios, cada uno con su confirmación, el turno cortaba con «El runtime backend no devolvió una respuesta final». Además, la pregunta del agente desaparecía del hilo apenas se respondía, y todo el turno se perdía con el error.
+
+**Causas** (`app/src/ai_chat.rs`):
+
+- `run_agent` admitía como mucho 4 preguntas por turno (`MAX_INTERACTIONS`).
+- La pregunta de aclaración solo se mostraba como estado de la interfaz (`pendingAgentQuestion`) y no se guardaba.
+- Si el turno fallaba, `send` salía antes de guardar.
+
+**Qué se hizo**:
+
+- **Sin tope**: `run_agent` repite hasta la respuesta final. Solo sigue cuando la persona responde; cada pregunta espera hasta 30 minutos y se puede cancelar. Telegram ya funcionaba así.
+- **Intercambios del turno**: cuando la persona responde una aclaración, `record_exchange` agrega a `ActiveTurn.exchanges` la pregunta (asistente, firmada con el agente que habla: `speaker`) y la respuesta (usuario). También las emite como `ai-chat-agent` fase `message`, que la interfaz agrega al hilo al instante.
+- **Dónde se guardan**: los intercambios van antes de la respuesta del agente. En un turno de un solo agente los ordena `single_agent_replies`; con varios agentes, `run_agent_rounds` los ubica antes de la respuesta de cada uno.
+- **Error sin pérdida**: si el turno falla después de una aclaración respondida, se guardan el mensaje y lo conversado, y el error se muestra igual. Como la interfaz recibió mensajes del turno, recarga el chat guardado en lugar de devolver el texto al compositor.
+- **Qué no se registra**: las confirmaciones y los planes siguen como tarjetas. La respuesta a «Sugerir cambios» del plan se sigue mostrando provisoriamente (`pendingAgentAnswer`).
+- **Pendiente**: el texto de «Sugerir cambios» no llega al backend (`answerInteraction` solo manda `accepted` y `stepIds`), así que el plan queda rechazado sin la sugerencia.
+
+**Validaciones**:
+
+- `cargo test --offline -p notia-app --features bluetooth`: 373 aprobados, con `questions_answered_during_a_turn_are_kept_before_the_answer_or_with_the_error`.
+- Warnings sin cambios: 37 en escritorio, 61 en Android y 144 en Linux.
+- `npx tsc`, `npx eslint .` y `npx vitest run` (343): sin errores.
+- Falta repetir en la app el caso real: un plan largo, una aclaración respondida y el error de un proveedor.
+
+### Errores después de confirmar y turnos que fallan (2026-09-26)
+
+**Síntoma**: al responder «dale», el turno terminó con «El movimiento financiero no es válido» y el mensaje desapareció del chat.
+
+**Causas**:
+
+- **El error cortaba el turno**: el agente llamó a `save_finance_transaction` con un registro incompleto. La vista previa no validaba el registro, así que igual pidió confirmación. Después de confirmar, `execute_confirmed(...)?` en `backend-core/src/agent.rs` propagó el error y cortó el turno; en una ejecución sin confirmación, el mismo error habría vuelto al modelo.
+- **El mensaje se perdía**: `send` no guardaba un turno fallido sin aclaraciones respondidas.
+
+**Qué se hizo**:
+
+- **`agent.rs`**: si una llamada confirmada falla (salvo cancelación o tiempo agotado), el error vuelve al modelo como `ToolResult` fallido y el agente sigue. Prueba: `a_confirmed_call_that_fails_goes_back_to_the_model_instead_of_ending_the_turn`.
+- **`backend_runtime.rs`**: las siete herramientas `save_finance_*` que reciben un registro completo (cuenta, categoría, movimiento, servicio, ocurrencia, factura, movimiento de ahorro) usan `finance_save_payload`. El error nombra el campo que falta o está mal: «El movimiento financiero no es válido: missing field `accountId`.». La vista previa llama a `validate_finance_save`, así que un registro incompleto vuelve al modelo antes de pedirte confirmación.
+- **`ai_chat.rs`**: `keep_failed_turn` decide qué pasa con un turno fallido en un chat guardado:
+  - si el agente ya trabajó (corrió herramientas, dijo algo o se le respondió una aclaración), se guardan el mensaje, lo conversado y la nota «No pude terminar: {motivo}»;
+  - si falló antes de hacer nada, no se guarda y el mensaje vuelve al compositor;
+  - una cancelación guarda lo conversado, sin nota.
+
+  `remember_undoable` informa si hubo herramientas. Los chats sin documento (Meeting y publicado) siguen solo con el error.
+- **Contrato**: un turno guardado con error ya no se rechaza. `ai_chat_send` devuelve `ChatTurnOutcome` con `error` (el `BackendError`) y el `document` guardado; esto también vale para los turnos con varios agentes que antes guardaban y rechazaban. `useChatSubmitMessage` muestra ese documento y el aviso (salvo en una cancelación) y no devuelve el texto al compositor.
+
+**Validaciones**:
+
+- `cargo test -p notia-backend-core`: 362.
+- `cargo test -p notia-app --features bluetooth`: 374, con `a_turn_that_fails_after_working_stays_in_the_chat_and_one_that_did_nothing_goes_back`.
+- `npx vitest run`: 344, con el caso del turno guardado con error.
+- Warnings sin cambios: 37, 61 y 144.
+- Pendiente: repetir en la app la categorización de las líneas del resumen.
+
+### Lo que el agente escribe entre pasos, el plan y los montos en pesos (2026-09-26)
+
+**Síntomas**:
+
+- Lo que el agente escribía en una vuelta se borraba cuando seguía trabajando: el bloque «pensando» lo reemplazaba.
+- Al terminar, la tarjeta del plan seguía con los pasos sin marcar y ofrecía «Continuar TO-DO»; al cancelarla, el plan desaparecía del chat.
+- «($21.999) … ($1.530.000)» se mostraba como una fórmula.
+
+**Qué se hizo**:
+
+- **Textos entre pasos**: el agente ya emitía `AssistantNote`, pero la interfaz lo ignoraba.
+  - `aiChatRuntime` lo reenvía como `onAssistantNote`, y `useChatSubmitMessage` lo agrega al hilo como mensaje del asistente, limpiando el texto en curso.
+  - En Rust, `run_agent` lee los `AssistantNote` nuevos del registro de eventos después de cada ejecución (`keep_notes`) y los guarda en `ActiveTurn.exchanges`, en orden con las aclaraciones y antes de la respuesta.
+- **Plan en el chat**: cuando la persona decide un plan, `ask` guarda en el turno la pregunta y la respuesta.
+  - La pregunta es `plan_text`: el título y los pasos que quedaron.
+  - La respuesta es `plan_answer`: «Aprobado.», la sugerencia o «Cancelado.».
+  - Ambas se emiten al hilo, así que la tarjeta solo existe mientras espera la decisión y se cierra al decidir o cancelar.
+  - Se quitaron «Continuar TO-DO» y «Cancelar TO-DO» (`handleResumeAgentExecutionPlan`, `handleCancelAgentExecutionPlan`, sus props en `ChatThread`) y el parámetro `keepExecutionPlan` de `submitMessage`.
+- **Sugerir cambios**: el texto no llegaba al backend. Ahora viaja en la respuesta del plan (`InteractionAnswer::Plan.suggestion` → `PlanDecision.suggestion`).
+  - `validate_plan_decision` exige un rechazo, de hasta 4000 caracteres y sin caracteres de control.
+  - `agent.rs`, ante un rechazo con sugerencia, agrega el pedido y sigue, así el modelo propone el plan corregido; sin sugerencia, termina como antes.
+- **Montos en pesos**: `matchInlineMath` de `ChatMarkdownMessage` aplica la regla de Pandoc para `$…$`. El `$` de apertura va seguido de un carácter que no es espacio; el de cierre sigue a uno que no es espacio y no va seguido de un dígito.
+- **Límite conocido**: la edición de pasos en «Editar plan» sigue sin llegar al backend; solo se envían los ids de los pasos que quedan.
+
+**Validaciones**:
+
+- `cargo test -p notia-backend-core`: 363, con `changes_suggested_to_a_plan_reach_the_model_and_a_plain_rejection_ends`.
+- `cargo test -p notia-app --features bluetooth`: 375, con `a_decided_plan_stays_in_the_chat_with_the_steps_kept_and_the_answer`.
+- `npx vitest run`: 346, con el texto entre pasos en el hilo y los montos en `ChatMarkdownMessage`.
+- Warnings sin cambios: 37, 61 y 144.
+- Falta repetir en la app un plan largo con textos entre pasos y un «Sugerir cambios».

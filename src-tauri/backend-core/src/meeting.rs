@@ -123,6 +123,61 @@ pub struct MeetingSources {
     pub system: bool,
 }
 
+/// Whether a transcribed file carries only sound or a video whose audio is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingFileKind {
+    Audio,
+    Video,
+}
+
+const AUDIO_FILE_EXTENSIONS: [&str; 8] = ["mp3", "wav", "m4a", "aac", "ogg", "oga", "opus", "flac"];
+const VIDEO_FILE_EXTENSIONS: [&str; 5] = ["mp4", "mov", "m4v", "mkv", "webm"];
+/// Longest file name a meeting keeps.
+const MAX_FILE_NAME_CHARS: usize = 255;
+
+/// Kind of a file Meeting can transcribe, by its extension; `None` when the
+/// format is not supported.
+pub fn media_file_kind(file_name: &str) -> Option<MeetingFileKind> {
+    let extension = file_name.rsplit_once('.')?.1.to_ascii_lowercase();
+    if AUDIO_FILE_EXTENSIONS.contains(&extension.as_str()) {
+        Some(MeetingFileKind::Audio)
+    } else if VIDEO_FILE_EXTENSIONS.contains(&extension.as_str()) {
+        Some(MeetingFileKind::Video)
+    } else {
+        None
+    }
+}
+
+/// The audio or video file a meeting was transcribed from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingSourceFile {
+    /// The name the person's file had, without folders.
+    pub name: String,
+    pub kind: MeetingFileKind,
+}
+
+impl MeetingSourceFile {
+    /// A file by the name the person picked: its last path segment, which
+    /// must name a supported format.
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or_default().trim();
+        if name.is_empty() || name.chars().count() > MAX_FILE_NAME_CHARS || name.chars().any(char::is_control) {
+            return Err("El nombre del archivo no es válido.".to_string());
+        }
+        let kind = media_file_kind(name).ok_or_else(|| {
+            "Ese formato no se puede transcribir. Subí un MP3, WAV, M4A, OGG, FLAC, MP4, MOV, MKV o WEBM.".to_string()
+        })?;
+        Ok(Self { name: name.to_string(), kind })
+    }
+
+    /// The name without its extension.
+    pub fn stem(&self) -> &str {
+        self.name.rsplit_once('.').map_or(self.name.as_str(), |(stem, _)| stem)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpeakerName {
     id: String,
@@ -154,6 +209,8 @@ pub struct MeetingRecord {
     pub start: MeetingStart,
     pub status: MeetingStatus,
     pub sources: MeetingSources,
+    /// The file the meeting was transcribed from; `None` for a recording.
+    pub source_file: Option<MeetingSourceFile>,
     pub lines: Vec<MeetingLine>,
     pub segments: Vec<MeetingSegment>,
     speakers: Vec<SpeakerName>,
@@ -219,6 +276,8 @@ pub struct MeetingSnapshotDto {
     pub date_label: String,
     pub duration_ms: u64,
     pub sources: MeetingSources,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<MeetingSourceFile>,
     pub lines: Vec<MeetingLine>,
     pub speakers: Vec<MeetingSpeakerDto>,
     /// Turns that match the filter.
@@ -283,6 +342,7 @@ impl MeetingRecord {
             start,
             status: MeetingStatus::Live,
             sources,
+            source_file: None,
             lines: Vec::new(),
             segments: Vec::new(),
             speakers: Vec::new(),
@@ -302,8 +362,20 @@ impl MeetingRecord {
         format!("{prefix}-{}", self.next_id)
     }
 
+    /// A meeting transcribed from a file: it is processing from the start,
+    /// with no sources to capture and no live answers.
+    pub fn from_file(id: impl Into<String>, start: MeetingStart, file: MeetingSourceFile) -> Self {
+        let mut record = Self::new(id, start, MeetingSources { microphone: false, system: false }, false);
+        record.status = MeetingStatus::Processing;
+        record.source_file = Some(file);
+        record
+    }
+
     pub fn title(&self) -> String {
-        format!("Reunión {}", self.start.file_stamp)
+        match &self.source_file {
+            Some(file) => format!("Transcripción de {}", file.stem()),
+            None => format!("Reunión {}", self.start.file_stamp),
+        }
     }
 
     /// Adds a line the recognizer confirmed. `None` when the text is empty.
@@ -625,6 +697,7 @@ impl MeetingRecord {
             date_label: self.start.date_label.clone(),
             duration_ms: self.duration_ms,
             sources: self.sources,
+            source_file: self.source_file.clone(),
             lines: self.lines.clone(),
             speakers: self.speaker_stats(),
             turns: visible,
@@ -733,7 +806,15 @@ impl MeetingRecord {
 
     /// Markdown body of the meeting note (without frontmatter).
     pub fn note_markdown(&self) -> String {
-        let mut out = format!("# Reunión del {}\n\n", self.start.date_label);
+        let mut out = match &self.source_file {
+            Some(file) => format!(
+                "# Transcripción de {}\n\n- **Archivo:** {}\n- **Transcripta el:** {}\n",
+                single_line(file.stem()),
+                single_line(&file.name),
+                self.start.date_label
+            ),
+            None => format!("# Reunión del {}\n\n", self.start.date_label),
+        };
         out.push_str(&format!("- **Duración:** {}\n", format_clock(self.duration_ms)));
         let speakers = self.speakers.iter().map(|speaker| speaker.name.as_str()).collect::<Vec<_>>();
         if !speakers.is_empty() {
@@ -1081,6 +1162,36 @@ pub fn parse_corrections(answer: &str, batch: &CorrectionBatch) -> HashMap<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_meeting_from_a_file_is_named_after_it_and_says_so_in_its_note() {
+        let start = MeetingStart { date_label: "26/09/2026 21:10".into(), file_stamp: "2026-09-26 21.10".into(), unix_ms: 0 };
+        let file = MeetingSourceFile::from_name("C:\\Descargas\\entrevista-rrhh.mp4").expect("file");
+        assert_eq!(file, MeetingSourceFile { name: "entrevista-rrhh.mp4".into(), kind: MeetingFileKind::Video });
+        let mut record = MeetingRecord::from_file("m1", start, file);
+        assert_eq!(record.status, MeetingStatus::Processing);
+        assert_eq!(record.sources, MeetingSources { microphone: false, system: false });
+        assert!(!record.live_answers);
+        assert_eq!(record.title(), "Transcripción de entrevista-rrhh");
+        assert_eq!(record.note_file_name(), "Transcripción de entrevista-rrhh.md");
+        record.push_line(0, 2_000, "Buenas tardes.");
+        record.complete(Vec::new(), 2_000);
+        let note = record.note_markdown();
+        assert!(note.starts_with("# Transcripción de entrevista-rrhh\n\n- **Archivo:** entrevista-rrhh.mp4\n- **Transcripta el:** 26/09/2026 21:10\n- **Duración:** 00:02"));
+        let snapshot = serde_json::to_value(record.snapshot(&MeetingFilter::default())).expect("json");
+        assert_eq!(snapshot["sourceFile"], serde_json::json!({ "name": "entrevista-rrhh.mp4", "kind": "video" }));
+    }
+
+    #[test]
+    fn only_audio_and_video_files_can_be_transcribed() {
+        assert_eq!(media_file_kind("clase.WEBM"), Some(MeetingFileKind::Video));
+        assert_eq!(media_file_kind("nota.opus"), Some(MeetingFileKind::Audio));
+        assert_eq!(media_file_kind("planilla.xlsx"), None);
+        assert!(MeetingSourceFile::from_name("planilla.xlsx").is_err());
+        assert!(MeetingSourceFile::from_name("   ").is_err());
+        assert!(MeetingSourceFile::from_name("a\u{0}.mp3").is_err());
+        assert_eq!(MeetingSourceFile::from_name("carpeta/reunion.m4a").expect("file").stem(), "reunion");
+    }
 
     fn record() -> MeetingRecord {
         MeetingRecord::new(

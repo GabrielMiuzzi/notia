@@ -535,6 +535,26 @@ fn owner_context(library_id: &str) -> Result<TaskManagerContextDto, BackendError
     .into_core()
 }
 
+/// The owner's view of every board, with the paths the explorer shows, for
+/// the Home dashboard.
+pub(crate) fn owner_board_view(app: &AppHandle, library_id: &str) -> Result<TaskBoardViewDto, BackendError> {
+    let context = owner_context(library_id)?;
+    let state = app.state::<TaskManagerBackendState>();
+    let registry = app.state::<LibraryBindingRegistry>();
+    let mut view = board_view_in(app, &state, &registry, &context, false)?;
+    notia_backend_core::show_board_paths(&mut view, |logical| {
+        crate::library_session::visible_path(app, library_id, logical)
+    });
+    Ok(view)
+}
+
+/// Ticket selected in the owner's Pomodoro timer, if any.
+pub(crate) fn owner_pomodoro_task(app: &AppHandle, library_id: &str) -> Option<String> {
+    let file = pomodoro_file(app, &owner_context(library_id).ok()?).ok()?;
+    let value = serde_json::from_str::<Value>(&std::fs::read_to_string(file).ok()?).ok()?;
+    notia_backend_core::pomodoro::normalize_state(&value).selected_task_path
+}
+
 /// Names of the boards of a library, for the owner.
 pub(crate) fn owner_board_names(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
     let context = owner_context(library_id)?;

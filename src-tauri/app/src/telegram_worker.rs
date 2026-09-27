@@ -1251,6 +1251,7 @@ impl Worker {
                 generation: plan.generation,
                 accepted: matches!(reply, Some(Reply::Decision(true))),
                 step_ids: plan.steps.iter().map(|step| step.id.clone()).collect(),
+                suggestion: None,
             })),
             (Interaction::Clarification(request), Some(Reply::Text(answer, index))) => {
                 Some(ResumeDecision::Clarification(crate::backend::ClarificationAnswer {

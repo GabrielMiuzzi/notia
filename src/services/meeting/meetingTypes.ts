@@ -65,6 +65,23 @@ export interface MeetingQuestion {
   atMs: number
 }
 
+export type MeetingFileKind = 'audio' | 'video'
+
+/** The audio or video file a meeting was transcribed from. */
+export interface MeetingSourceFile {
+  name: string
+  kind: MeetingFileKind
+}
+
+/** A file uploaded and read by the backend, ready to transcribe. */
+export interface MeetingMediaFile extends MeetingSourceFile {
+  mediaId: string
+  byteLength: number
+  durationMs: number
+  /** Waveform heights between 0 and 1. */
+  peaks: number[]
+}
+
 export interface MeetingSnapshot {
   id: string
   status: MeetingStatus
@@ -72,6 +89,8 @@ export interface MeetingSnapshot {
   dateLabel: string
   durationMs: number
   sources: { microphone: boolean; system: boolean }
+  /** Present when the meeting was transcribed from a file. */
+  sourceFile?: MeetingSourceFile
   lines: MeetingLine[]
   speakers: MeetingSpeaker[]
   turns: MeetingTurn[]

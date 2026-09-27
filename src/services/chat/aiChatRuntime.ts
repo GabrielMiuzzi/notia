@@ -67,6 +67,8 @@ export interface ChatTurnOutcome {
   dataChanged: boolean
   document?: StoredChatDocument
   undoneOperationId?: string
+  /** Why the turn stopped; what happened until then is saved in `document`. */
+  error?: { code: string; message: string; retryable: boolean }
 }
 
 export interface ChatTurnHandlers {
@@ -74,6 +76,8 @@ export interface ChatTurnHandlers {
   onAgentStart?: (agent: ChatAgentSpeaker) => void
   /** An agent finished its message, which the backend saves with the turn. */
   onAgentMessage?: (message: StoredChatMessage) => void
+  /** Text the agent wrote while it keeps working; the turn saves it too. */
+  onAssistantNote?: (text: string) => void
   /** An agent answered nothing. */
   onAgentSilent?: () => void
   onMessageDelta?: (delta: string) => void
@@ -81,7 +85,7 @@ export interface ChatTurnHandlers {
   onAgentProgress?: (event: AgentProgressEvent) => void
   requestClarification?: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestConfirmation?: (question: string, signal: AbortSignal, preview?: MutationPreview) => Promise<boolean | AgentConfirmationDecision>
-  requestExecutionPlanApproval?: (steps: TaskExecutionStep[], signal: AbortSignal) => Promise<{ approved: boolean; steps?: TaskExecutionStep[] }>
+  requestExecutionPlanApproval?: (steps: TaskExecutionStep[], signal: AbortSignal) => Promise<{ approved: boolean; steps?: TaskExecutionStep[]; suggestion?: string }>
 }
 
 export interface ChatTurnHandle {
@@ -98,7 +102,7 @@ type Interaction =
 type InteractionAnswer =
   | { type: 'clarification'; answer: string }
   | { type: 'confirmation'; accepted: boolean; hunkIds: string[] }
-  | { type: 'plan'; accepted: boolean; stepIds?: string[] }
+  | { type: 'plan'; accepted: boolean; stepIds?: string[]; suggestion?: string }
 
 interface BackendEventEnvelope {
   requestId: string
@@ -120,6 +124,7 @@ function turnError(error: unknown): Error {
 function forwardEvent(requestId: string, envelope: BackendEventEnvelope, handlers: ChatTurnHandlers): void {
   const event = envelope.event
   if (event.type === 'assistant-delta' && typeof event.delta === 'string') handlers.onMessageDelta?.(event.delta)
+  if (event.type === 'assistant-note' && typeof event.text === 'string') handlers.onAssistantNote?.(event.text)
   if (event.type === 'thinking-summary' && typeof event.summary === 'string') handlers.onThinkingDelta?.(event.summary)
   if (event.type === 'tool-completed' && typeof event.toolName === 'string') {
     handlers.onAgentProgress?.({
@@ -159,7 +164,7 @@ async function answerInteraction(
   }
   if (!handlers.requestExecutionPlanApproval) return null
   const decision = await handlers.requestExecutionPlanApproval(interaction.steps, signal)
-  return { type: 'plan', accepted: decision.approved, stepIds: decision.steps?.map((step) => step.id) }
+  return { type: 'plan', accepted: decision.approved, stepIds: decision.steps?.map((step) => step.id), suggestion: decision.suggestion }
 }
 
 /** What the backend decided about a message sent while a turn runs. */

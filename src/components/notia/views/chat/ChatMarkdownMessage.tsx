@@ -143,7 +143,10 @@ function matchInlineMath(text: string): InlineMathMatch | null {
     }
   }
 
-  const inlineDollarMatch = text.match(/^\$((?:\\.|[^$\n])+?)\$/)
+  // Pandoc's rule, so amounts are not formulas: the opening `$` is followed
+  // by a non-space, the closing one follows a non-space and no digit comes
+  // after it («($21.999) … ($1.530.000)» stays text; `$x^2$` is math).
+  const inlineDollarMatch = text.match(/^\$(?![\s$])((?:\\.|[^$\n])*?[^\s\\$])\$(?!\d)/)
   if (inlineDollarMatch) {
     return {
       expression: inlineDollarMatch[1],
