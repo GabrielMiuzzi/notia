@@ -73,6 +73,30 @@ describe('interjectChatTurn', () => {
     })
   })
 
+  it('sends «Confirmar todos» and «Proponer otra cosa» with the answer', async () => {
+    const decisions = [{ accepted: true, approveAll: true }, { accepted: false, suggestion: 'movelos a Bancos' }]
+    for (const decision of decisions) {
+      const turn = startChatTurn(
+        { libraryId: 'library', mode: 'chat', message: 'Ordená el correo', chat: { kind: 'saved', path: 'chat/chats/a.md' } },
+        { requestConfirmation: async () => decision },
+      )
+      await flush()
+      listeners.get('ai-chat-interaction')!({
+        requestId: turn.requestId,
+        interaction: { type: 'confirmation', preview: { summary: 'Mover 12 correos', hunks: [] } },
+      })
+      await flush()
+      expect(callBackend).toHaveBeenCalledWith('ai_chat_answer', {
+        payload: {
+          requestId: turn.requestId,
+          answer: { type: 'confirmation', hunkIds: [], approveAll: undefined, suggestion: undefined, ...decision },
+        },
+      })
+      resolveSend({ answer: 'Listo', dataChanged: true })
+      await turn.promise
+    }
+  })
+
   it('closes a question that still waits when the turn ends', async () => {
     let signal: AbortSignal | null = null
     const turn = startChatTurn(

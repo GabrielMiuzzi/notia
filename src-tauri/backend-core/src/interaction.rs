@@ -755,6 +755,8 @@ mod tests {
             operation_id: "operation-1".into(),
             accepted: true,
             hunk_ids: vec!["hunk-1".into()],
+            approve_all: false,
+            suggestion: None,
         };
         let revisions = BTreeMap::from([(String::from("note.md"), 4)]);
         assert_eq!(
@@ -791,6 +793,8 @@ mod tests {
             operation_id: "operation-1".into(),
             accepted: true,
             hunk_ids: hunk_ids.iter().map(|id| id.to_string()).collect(),
+            approve_all: false,
+            suggestion: None,
         };
         assert_eq!(
             validate_confirmation(&decide(&["hunk-2", "hunk-1"]), &request, &revisions).expect("all checked"),

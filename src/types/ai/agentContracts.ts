@@ -91,6 +91,10 @@ export type MutationHunkStatus = 'pending' | 'accepted' | 'rejected'
 export interface AgentConfirmationDecision {
   accepted: boolean
   hunkIds?: readonly string[]
+  /** «Confirmar todos»: the rest of the turn asks no more. */
+  approveAll?: boolean
+  /** «Proponer otra cosa»: what to do instead of the change. */
+  suggestion?: string
 }
 
 export interface MutationPreviewDocument {

@@ -308,6 +308,21 @@ impl BackendJournal {
         Ok(())
     }
 
+    /// What a request left in the journal: the request, each tool call (by
+    /// its call key, which starts with the tool name) with its result, and
+    /// the final answer when it finished.
+    fn turn_record(
+        &self,
+        context: &BackendRequestContext,
+        idempotency_key: &str,
+    ) -> Option<(AgentRequest, Vec<(String, ToolResult)>, Option<AgentResponse>)> {
+        let records = self.records.lock().ok()?;
+        let record = records.get(&Self::key(context, idempotency_key))?;
+        let mut tools = record.tool_results.iter().map(|(key, result)| (key.clone(), result.clone())).collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.0.cmp(&right.0));
+        Some((record.request.clone()?, tools, record.response.clone()))
+    }
+
     fn load_request(
         &self,
         context: &BackendRequestContext,
@@ -737,12 +752,17 @@ impl OperationReviewPort for TauriOperationReviewPort {
     }
 }
 
+/// How a cancelled request ended, for the reflection on it.
+const CANCELLED_TURN_ENDING: &str = "La persona canceló el pedido antes de que terminara; lo hecho hasta ahí quedó hecho.";
+
 /// Maximum number of skill files loaded into one system prompt.
 const MAX_AGENT_SKILLS: usize = 16;
-/// Maximum characters read from one agent file (prompt, rules, memory, skill).
-const MAX_AGENT_FILE_CHARS: usize = 40_000;
-/// Maximum characters of the composed system prompt.
-const MAX_SYSTEM_PROMPT_CHARS: usize = 100_000;
+/// Maximum characters read from one agent file (prompt, rules, memory,
+/// thoughts, skill). The configured models have long contexts, so the memory
+/// and the thoughts may grow large (their own limits sit below this one).
+const MAX_AGENT_FILE_CHARS: usize = 250_000;
+/// Maximum characters of the composed system prompt (about 150k tokens).
+const MAX_SYSTEM_PROMPT_CHARS: usize = 600_000;
 
 /// `.agent` storage of one library through the platform document adapters
 /// (canonical desktop root or SAF tree/document resolution on Android).
@@ -3986,10 +4006,17 @@ pub(crate) fn execute_backend_request(
             // the preview saw it; without the revisions every such change failed.
             let revisions = TauriRevisionPort { app: app.clone() };
             let response = state.interactions(Some(&revisions)).handle_resume(&resume)?;
+            // A rejected change or plan also goes back to the agent, which
+            // ends the request with its answer («La operación fue
+            // rechazada.»); returning the stored interaction made the
+            // clients ask the same question again.
             let should_continue = matches!(
                 &response,
                 BackendResponse::Resumed { status, .. }
-                    if matches!(status.state, notia_backend_core::OperationState::Running)
+                    if matches!(
+                        status.state,
+                        notia_backend_core::OperationState::Running | notia_backend_core::OperationState::Cancelled
+                    )
             );
             if !should_continue {
                 state.journal.clear_continuation(
@@ -4047,6 +4074,10 @@ pub(crate) fn execute_backend_request(
             state
                 .journal
                 .persist_record(app, registry, context, idempotency_key)?;
+            // A request cancelled while it waited for an answer ends here.
+            if matches!(other, BackendRequest::Cancel(_)) && matches!(response, BackendResponse::Cancelled { .. }) {
+                schedule_turn_reflection(app, state, context, idempotency_key, Some(CANCELLED_TURN_ENDING.to_string()));
+            }
             return Ok(BackendResponseEnvelope {
                 protocol_version,
                 response,
@@ -4205,6 +4236,19 @@ pub(crate) fn execute_backend_request(
     state
         .journal
         .persist_record(app, registry, &request.context, &request.idempotency_key)?;
+    // A request that ended, however it ended, is reflected on; a paused one
+    // waits for its end.
+    let ending = match &result {
+        Ok(BackendResponse::Operation { .. }) => None,
+        Ok(BackendResponse::Error { error, .. }) => Some(Some(format!("No terminó: {}", error.message))),
+        Ok(_) => Some(None),
+        Err(error) if error.code == BackendErrorCode::Conflict => None,
+        Err(error) if error.code == BackendErrorCode::Cancelled => Some(Some(CANCELLED_TURN_ENDING.to_string())),
+        Err(error) => Some(Some(format!("No terminó: {}", error.message))),
+    };
+    if let Some(ending) = ending {
+        schedule_turn_reflection(app, state, &request.context, &request.idempotency_key, ending);
+    }
     let response = result?;
     Ok(BackendResponseEnvelope {
         protocol_version,
@@ -4319,8 +4363,15 @@ fn route_turn_tools(
 }
 
 /// One completion without tools for a background task of the library
-/// (titles, memories), with the library's saved AI settings.
-pub(crate) fn complete_text(app: &AppHandle, library_id: &str, system: &str, user: &str) -> Result<String, BackendError> {
+/// (titles, memories), with the library's saved AI settings, waiting at
+/// most `timeout`.
+pub(crate) fn complete_text(
+    app: &AppHandle,
+    library_id: &str,
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
+) -> Result<String, BackendError> {
     let config = crate::library_config::read_library_config(app, library_id)?.unwrap_or(Value::Null);
     let settings = provider_settings_from_config(&config)?;
     let context = BackendRequestContext {
@@ -4331,7 +4382,7 @@ pub(crate) fn complete_text(app: &AppHandle, library_id: &str, system: &str, use
         scope: BackendScope::Library,
         persistence_policy: PersistencePolicy::EphemeralNoMemory,
     };
-    complete_with(app, settings, context, system, user, Vec::new(), std::time::Duration::from_secs(180))
+    complete_with(app, settings, context, system, user, Vec::new(), timeout)
 }
 
 /// Decides what to do with a message sent while a request of the same chat
@@ -4551,6 +4602,68 @@ fn unsupported(message: &str) -> BackendError {
     BackendError::new(BackendErrorCode::Unsupported, message, false)
 }
 
+/// Learns from a request of the Owner that ended (answered, failed or
+/// cancelled): a background call reads what happened and saves the new
+/// memories and thoughts, so a long run keeps what it learned even when the
+/// model never saved it. Runs Notia started by itself keep their own
+/// thoughts and are left out.
+fn schedule_turn_reflection(
+    app: &AppHandle,
+    state: &BackendRuntimeState,
+    context: &BackendRequestContext,
+    idempotency_key: &str,
+    ending: Option<String>,
+) {
+    if !context.persistence_policy.allows_memory() || !context.actor.is_library_owner() {
+        return;
+    }
+    let Some((request, tools, response)) = state.journal.turn_record(context, idempotency_key) else {
+        return;
+    };
+    if request.autonomous {
+        return;
+    }
+    let asked = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == notia_backend_core::MessageRole::User)
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    let notes = state
+        .request_events(context, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|envelope| match envelope.event {
+            notia_backend_core::BackendEvent::AssistantNote { text, .. } if !text.trim().is_empty() => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let tools = tools
+        .into_iter()
+        .map(|(key, result)| {
+            let (name, arguments) = key.split_once(':').unwrap_or((key.as_str(), ""));
+            notia_backend_core::agent_knowledge::ToolDigest {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+                ok: result.ok,
+                result: match (&result.data, &result.error) {
+                    (_, Some(error)) => error.message.clone(),
+                    (Some(data), None) => data.to_string(),
+                    (None, None) => String::new(),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let ending = ending
+        .or_else(|| response.map(|response| response.response.markdown))
+        .unwrap_or_else(|| "El turno terminó sin respuesta final.".to_string());
+    let Some(transcript) = notia_backend_core::agent_knowledge::reflection_transcript(&asked, &notes, &tools, &ending) else {
+        return;
+    };
+    crate::agent_knowledge::schedule_reflection(app, &context.library_id, idempotency_key, transcript);
+}
+
 fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) {
     match request {
         BackendRequest::Run(request) => (&request.context, &request.idempotency_key),
@@ -4632,6 +4745,7 @@ mod tests {
                 pending_call: serde_json::from_value(serde_json::json!({"id": "c", "name": "create_finance_purchase", "arguments": {}, "round": 1})).expect("call"),
                 tool_results: Vec::new(),
                 preview: None,
+                approve_all: false,
             }),
             ..Default::default()
         };

@@ -16,6 +16,12 @@ use crate::backend::agent_knowledge as knowledge;
 use crate::backend::agent_workspace::{ItemBudget, MEMORY_TARGET, THOUGHTS_TARGET};
 use crate::backend::BackendError;
 
+/// A chat title is short.
+const TITLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+/// Organizing writes the whole memory or thoughts file again, which may be
+/// long with large files.
+const ORGANIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Names a new chat from its first message and saves the title in the chat
 /// file. Returns the title, or `None` when the model gave none.
 pub(crate) fn title_chat(app: &AppHandle, library_id: &str, logical_path: &str, prompt: &str) -> Result<Option<String>, BackendError> {
@@ -23,7 +29,7 @@ pub(crate) fn title_chat(app: &AppHandle, library_id: &str, logical_path: &str, 
         return Ok(None);
     }
     let (system, user) = knowledge::title_messages(prompt);
-    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user)?;
+    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user, TITLE_TIMEOUT)?;
     let Some(title) = knowledge::sanitize_title(&answer) else {
         return Ok(None);
     };
@@ -101,6 +107,72 @@ pub(crate) fn compact_thoughts(app: &AppHandle, library_id: &str) -> Result<bool
     organize_thoughts(app, library_id)
 }
 
+/// Requests already reflected on, so one that ends twice (an answer, then
+/// a late cancel) is read once.
+fn reflected() -> &'static Mutex<std::collections::VecDeque<String>> {
+    static REFLECTED: OnceLock<Mutex<std::collections::VecDeque<String>>> = OnceLock::new();
+    REFLECTED.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+}
+
+const MAX_REFLECTED_REQUESTS: usize = 256;
+
+/// Reads a finished turn in the background and saves what it taught: new
+/// memories about the person and the agent's own thoughts. Both files are
+/// then organized as after any save. The turn does not wait for it.
+pub(crate) fn schedule_reflection(app: &AppHandle, library_id: &str, idempotency_key: &str, transcript: String) {
+    {
+        let Ok(mut reflected) = reflected().lock() else { return };
+        if reflected.iter().any(|known| known == idempotency_key) {
+            return;
+        }
+        reflected.push_back(idempotency_key.to_string());
+        while reflected.len() > MAX_REFLECTED_REQUESTS {
+            reflected.pop_front();
+        }
+    }
+    let app = app.clone();
+    let library_id = library_id.to_string();
+    std::thread::spawn(move || match reflect(&app, &library_id, &transcript) {
+        Ok((memories, thoughts)) => log::info!("[notia:memory] reflexión: {memories} memorias y {thoughts} pensamientos nuevos"),
+        Err(error) => log::error!("[notia:memory] no se pudo reflexionar sobre el turno: {:?}", error.code),
+    });
+}
+
+/// Asks the model what the turn taught and saves it. Returns how many
+/// memories and thoughts it added.
+fn reflect(app: &AppHandle, library_id: &str, transcript: &str) -> Result<(usize, usize), BackendError> {
+    let memories = crate::agent_workspace::memories(app, library_id)?;
+    let thoughts = crate::agent_workspace::thoughts(app, library_id)?;
+    let (_, now) = crate::local_time::local_now();
+    let (system, user) = knowledge::reflection_messages(transcript, &memories, &thoughts, &now);
+    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user, ORGANIZE_TIMEOUT)?;
+    let Some(reflection) = knowledge::parse_reflection(&answer) else {
+        return Ok((0, 0));
+    };
+    let mut added = (0, 0);
+    for memory in &reflection.memories {
+        match crate::agent_workspace::append_agent_item(app, library_id, AgentItem::Memory, memory) {
+            Ok(true) => added.0 += 1,
+            Ok(false) => {}
+            Err(error) => log::error!("[notia:memory] una memoria de la reflexión no se guardó: {:?}", error.code),
+        }
+    }
+    for thought in &reflection.thoughts {
+        match crate::agent_workspace::append_agent_item(app, library_id, AgentItem::Thought, thought) {
+            Ok(true) => added.1 += 1,
+            Ok(false) => {}
+            Err(error) => log::error!("[notia:memory] un pensamiento de la reflexión no se guardó: {:?}", error.code),
+        }
+    }
+    if added.0 > 0 {
+        schedule_memory_organization(app, library_id);
+    }
+    if added.1 > 0 {
+        schedule_thoughts_organization(app, library_id);
+    }
+    Ok(added)
+}
+
 /// Saves a thought Notia keeps by itself (for example, a message it sent)
 /// and organizes the thoughts afterwards. Returns whether it wrote.
 pub(crate) fn keep_thought(app: &AppHandle, library_id: &str, thought: &str) -> Result<bool, BackendError> {
@@ -120,7 +192,7 @@ fn organize_memories(app: &AppHandle, library_id: &str, budget: Option<ItemBudge
         return Ok(false);
     }
     let (system, user) = knowledge::organize_memories_messages(&memories, budget);
-    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user)?;
+    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user, ORGANIZE_TIMEOUT)?;
     let Some(organized) = knowledge::parse_organized_memories(&answer, &memories, budget) else {
         return Ok(false);
     };
@@ -137,7 +209,7 @@ fn organize_thoughts(app: &AppHandle, library_id: &str) -> Result<bool, BackendE
     }
     let (_, now) = crate::local_time::local_now();
     let (system, user) = knowledge::organize_thoughts_messages(&thoughts, &now, THOUGHTS_TARGET);
-    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user)?;
+    let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user, ORGANIZE_TIMEOUT)?;
     let Some(organized) = knowledge::parse_organized_thoughts(&answer, &thoughts, THOUGHTS_TARGET) else {
         return Ok(false);
     };

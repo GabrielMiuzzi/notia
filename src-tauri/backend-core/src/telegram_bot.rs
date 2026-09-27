@@ -32,7 +32,7 @@ fn fold(value: &str) -> String {
 }
 
 /// `true`/`false` for a typed yes/no answer to a pending confirmation.
-pub fn parse_confirmation_decision(value: &str) -> Option<bool> {
+pub fn parse_confirmation_decision(value: &str) -> Option<ConfirmationReply> {
     let normalized = fold(value)
         .chars()
         .map(|character| if ",.!?¿¡".contains(character) { ' ' } else { character })
@@ -41,11 +41,52 @@ pub fn parse_confirmation_decision(value: &str) -> Option<bool> {
         .collect::<Vec<_>>()
         .join(" ");
     match normalized.as_str() {
-        "si" | "confirmo" | "si confirmo" | "confirmar" | "acepto" => Some(true),
-        "no" | "cancelo" | "no confirmo" | "cancelar" | "rechazo" => Some(false),
+        "si" | "confirmo" | "si confirmo" | "confirmar" | "acepto" => Some(ConfirmationReply::Confirm),
+        "confirmar todos" | "confirmar todo" | "confirmo todos" | "confirmo todo" | "si a todo" | "si a todos" | "todos"
+        | "aprobar todo" | "apruebo todo" => Some(ConfirmationReply::ConfirmAll),
+        "proponer otra cosa" | "propongo otra cosa" | "otra cosa" => Some(ConfirmationReply::Propose),
+        "no" | "cancelo" | "no confirmo" | "cancelar" | "rechazo" => Some(ConfirmationReply::Cancel),
         _ => None,
     }
 }
+
+/// What the person chose for a change or a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationReply {
+    Confirm,
+    /// This one and every change or plan the rest of the request asks for.
+    ConfirmAll,
+    /// Not this: the person writes what to do instead.
+    Propose,
+    Cancel,
+}
+
+impl ConfirmationReply {
+    /// Id carried by the button's callback data.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Confirm => "yes",
+            Self::ConfirmAll => "all",
+            Self::Propose => "other",
+            Self::Cancel => "no",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Confirm, Self::ConfirmAll, Self::Propose, Self::Cancel].into_iter().find(|reply| reply.id() == id)
+    }
+}
+
+/// Buttons of a change or a plan, in order, as (label, reply).
+pub const CONFIRMATION_BUTTONS: [(&str, ConfirmationReply); 4] = [
+    ("Confirmar", ConfirmationReply::Confirm),
+    ("Confirmar todos", ConfirmationReply::ConfirmAll),
+    ("Proponer otra cosa", ConfirmationReply::Propose),
+    ("Cancelar", ConfirmationReply::Cancel),
+];
+
+const CONFIRMATION_CHOICES: &str =
+    "Elegí Confirmar, Confirmar todos (no te vuelvo a preguntar en este pedido), Proponer otra cosa o Cancelar.";
 
 /// A typed 1-based number selects the same option shown as a button.
 pub fn resolve_choice_reply(value: &str, choices: &[String]) -> (String, Option<usize>) {
@@ -96,7 +137,7 @@ pub fn confirmation_parts(preview: &MutationPreview) -> Vec<String> {
     .collect::<Vec<_>>()
     .join("\n");
     plain_parts(&format!(
-        "Confirmación requerida:\n\n{detail}\n\nRespondé Confirmar para ejecutar o Cancelar para detenerla."
+        "Confirmación requerida:\n\n{detail}\n\n{CONFIRMATION_CHOICES}"
     ))
 }
 
@@ -111,7 +152,7 @@ pub fn plan_parts(plan: &ExecutionPlan) -> Vec<String> {
         .collect::<Vec<_>>()
         .join("\n");
     plain_parts(&format!(
-        "Aprobar este plan de ejecución:\n{steps}\n\nRespondé Confirmar para ejecutarlo o Cancelar para detenerlo."
+        "Aprobar este plan de ejecución:\n{steps}\n\n{CONFIRMATION_CHOICES}"
     ))
 }
 
@@ -459,9 +500,15 @@ mod tests {
 
     #[test]
     fn decisions_and_choices_are_parsed() {
-        assert_eq!(parse_confirmation_decision("Sí, confirmo!"), Some(true));
-        assert_eq!(parse_confirmation_decision("no"), Some(false));
+        assert_eq!(parse_confirmation_decision("Sí, confirmo!"), Some(ConfirmationReply::Confirm));
+        assert_eq!(parse_confirmation_decision("Confirmar todos"), Some(ConfirmationReply::ConfirmAll));
+        assert_eq!(parse_confirmation_decision("sí a todo"), Some(ConfirmationReply::ConfirmAll));
+        assert_eq!(parse_confirmation_decision("Proponer otra cosa"), Some(ConfirmationReply::Propose));
+        assert_eq!(parse_confirmation_decision("no"), Some(ConfirmationReply::Cancel));
         assert_eq!(parse_confirmation_decision("tal vez"), None);
+        for (_, reply) in CONFIRMATION_BUTTONS {
+            assert_eq!(ConfirmationReply::from_id(reply.id()), Some(reply));
+        }
         let choices = vec!["Banco".to_string(), "Efectivo".to_string()];
         assert_eq!(resolve_choice_reply("2)", &choices), ("Efectivo".to_string(), Some(1)));
         assert_eq!(resolve_choice_reply("otra", &choices), ("otra".to_string(), None));

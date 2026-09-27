@@ -246,7 +246,7 @@ struct ActiveRun {
 }
 
 enum Reply {
-    Decision(bool),
+    Decision(bot::ConfirmationReply),
     Text(String, Option<usize>),
 }
 
@@ -254,6 +254,8 @@ enum Reply {
 enum Prompt {
     Confirmation { id: String },
     Clarification { choices: Vec<String> },
+    /// The person chose «Proponer otra cosa» and writes the proposal.
+    Proposal,
 }
 
 #[derive(Debug, Clone)]
@@ -780,10 +782,12 @@ impl Worker {
             Prompt::Confirmation { id } => {
                 let mut parts = data.split(':');
                 if parts.next() == Some("confirm") && parts.next() == Some(id.as_str()) {
-                    let accepted = parts.next() == Some("yes");
-                    let _ = sender.send(Reply::Decision(accepted));
+                    if let Some(reply) = parts.next().and_then(bot::ConfirmationReply::from_id) {
+                        let _ = sender.send(Reply::Decision(reply));
+                    }
                 }
             }
+            Prompt::Proposal => {}
             Prompt::Clarification { choices } => {
                 if let Some(index) = data.strip_prefix("choice:").and_then(|value| value.parse::<usize>().ok()) {
                     if let Some(choice) = choices.get(index) {
@@ -814,6 +818,7 @@ impl Worker {
                 let (answer, index) = bot::resolve_choice_reply(text, choices);
                 sender.send(Reply::Text(answer, index)).is_ok()
             }
+            Prompt::Proposal => sender.send(Reply::Text(text.trim().to_string(), None)).is_ok(),
         }
     }
 
@@ -1205,7 +1210,12 @@ impl Worker {
             // the question: it goes whole before it.
             self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
             match self.ask(chat_id, interaction, operation) {
-                Some(decision) => Ok(decision),
+                Some((decision, acknowledgement)) => {
+                    if let Some(text) = acknowledgement {
+                        progress.restart(self, &text);
+                    }
+                    Ok(decision)
+                }
                 None if run.cancelled.load(Ordering::SeqCst) => {
                     self.cancel_operation(&run.context, &run.idempotency_key, operation.clone());
                     Err(bot::CANCELLED_MESSAGE.to_string())
@@ -1437,30 +1447,37 @@ impl Worker {
         );
     }
 
-    /// Shows the pending interaction and waits for the user's answer.
+    /// Shows the pending interaction and waits for the person's answer: the
+    /// decision the run resumes with and, when the work goes on, the text
+    /// that opens the next progress message. A decision that ends the work
+    /// is announced here.
     fn ask(
         &self,
         chat_id: i64,
         interaction: crate::backend::PendingInteraction,
         operation: &crate::backend::OperationToken,
-    ) -> Option<ResumeDecision> {
+    ) -> Option<(ResumeDecision, Option<String>)> {
         use crate::backend::PendingInteraction as Interaction;
+        use bot::ConfirmationReply as Choice;
         if self.cancel_requested(chat_id) {
             return None;
         }
         let (sender, receiver) = mpsc::channel();
-        let confirm_buttons = |id: &str| {
-            vec![("Confirmar".to_string(), format!("confirm:{id}:yes")), ("Cancelar".to_string(), format!("confirm:{id}:no"))]
+        let choice_buttons = |id: &str| {
+            bot::CONFIRMATION_BUTTONS
+                .iter()
+                .map(|(label, reply)| (label.to_string(), format!("confirm:{id}:{}", reply.id())))
+                .collect::<Vec<_>>()
         };
         let (prompt, timeout) = match &interaction {
             Interaction::Confirmation(request) => {
                 let id = short_id()[..8].to_string();
-                self.send_parts(chat_id, bot::confirmation_parts(&request.preview), confirm_buttons(&id));
+                self.send_parts(chat_id, bot::confirmation_parts(&request.preview), choice_buttons(&id));
                 (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT)
             }
             Interaction::Plan(plan) => {
                 let id = short_id()[..8].to_string();
-                self.send_parts(chat_id, bot::plan_parts(plan), confirm_buttons(&id));
+                self.send_parts(chat_id, bot::plan_parts(plan), choice_buttons(&id));
                 (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT)
             }
             Interaction::Clarification(request) => {
@@ -1474,49 +1491,107 @@ impl Worker {
                 (Prompt::Clarification { choices }, CLARIFICATION_TIMEOUT)
             }
         };
+        // A cancel dropped the question: the run stops without an answer.
+        let reply = self.wait_reply(chat_id, prompt, &sender, &receiver, timeout)?;
+        // «Proponer otra cosa»: the proposal is the next message.
+        let (reply, proposal) = match reply {
+            Some(Reply::Decision(Choice::Propose)) => {
+                self.send(chat_id, "Escribí qué querés que haga en su lugar.");
+                match self.wait_reply(chat_id, Prompt::Proposal, &sender, &receiver, CLARIFICATION_TIMEOUT)? {
+                    Some(Reply::Text(text, _)) if !text.trim().is_empty() => (Some(Choice::Propose), Some(text.trim().to_string())),
+                    _ => (None, None),
+                }
+            }
+            Some(Reply::Decision(choice)) => (Some(choice), None),
+            Some(Reply::Text(answer, index)) => {
+                return match interaction {
+                    Interaction::Clarification(request) => Some((
+                        ResumeDecision::Clarification(crate::backend::ClarificationAnswer {
+                            clarification_id: request.clarification_id.clone(),
+                            operation: operation.clone(),
+                            answer,
+                            option_id: index.and_then(|index| request.options.get(index)).map(|option| option.id.clone()),
+                        }),
+                        Some("Respuesta recibida. Sigo con tu pedido…".to_string()),
+                    )),
+                    _ => None,
+                };
+            }
+            None => (None, None),
+        };
+        let approve_all = reply == Some(Choice::ConfirmAll);
+        let accepted = matches!(reply, Some(Choice::Confirm | Choice::ConfirmAll));
+        match interaction {
+            Interaction::Confirmation(_) => {
+                let acknowledgement = match reply {
+                    Some(Choice::Confirm) => Some("Confirmación recibida. Aplicando el cambio…"),
+                    Some(Choice::ConfirmAll) => Some("Confirmado todo lo que queda de este pedido. Sigo sin volver a preguntarte…"),
+                    Some(Choice::Propose) => Some("Propuesta recibida. Sigo con lo que me pediste…"),
+                    // The agent's answer says the change was rejected.
+                    Some(Choice::Cancel) => None,
+                    None => {
+                        self.send(chat_id, "La confirmación venció sin respuesta. No se aplicaron cambios.");
+                        None
+                    }
+                };
+                Some((
+                    ResumeDecision::Confirmation(crate::backend::ConfirmationDecision {
+                        operation_id: operation.operation_id.clone(),
+                        accepted,
+                        hunk_ids: Vec::new(),
+                        approve_all,
+                        suggestion: proposal,
+                    }),
+                    acknowledgement.map(str::to_string),
+                ))
+            }
+            Interaction::Plan(plan) => {
+                let acknowledgement = match reply {
+                    Some(Choice::Confirm) => Some("Plan aprobado. Empiezo…"),
+                    Some(Choice::ConfirmAll) => Some("Plan aprobado junto con todo lo que siga en este pedido. Empiezo sin volver a preguntarte…"),
+                    Some(Choice::Propose) => Some("Propuesta recibida. Rehago el plan…"),
+                    Some(Choice::Cancel) => None,
+                    None => {
+                        self.send(chat_id, "El plan venció sin respuesta. No se aplicaron cambios.");
+                        None
+                    }
+                };
+                Some((
+                    ResumeDecision::Plan(crate::backend::PlanDecision {
+                        plan_id: plan.plan_id.clone(),
+                        generation: plan.generation,
+                        accepted,
+                        step_ids: plan.steps.iter().map(|step| step.id.clone()).collect(),
+                        suggestion: proposal,
+                        approve_all,
+                    }),
+                    acknowledgement.map(str::to_string),
+                ))
+            }
+            // Buttons answer confirmations and plans; a question needs text.
+            Interaction::Clarification(_) => None,
+        }
+    }
+
+    /// Waits for the answer to `prompt`, or `None` inside when it timed out.
+    /// `None` outside means a cancel dropped the question.
+    fn wait_reply(
+        &self,
+        chat_id: i64,
+        prompt: Prompt,
+        sender: &mpsc::Sender<Reply>,
+        receiver: &mpsc::Receiver<Reply>,
+        timeout: Duration,
+    ) -> Option<Option<Reply>> {
         if let Ok(mut pending) = self.prompt.lock() {
-            *pending = Some((chat_id, prompt, sender));
+            *pending = Some((chat_id, prompt, sender.clone()));
         }
         // A cancel that arrived while the question was being sent drops it.
         let reply = if self.cancel_requested(chat_id) { None } else { receiver.recv_timeout(timeout).ok() };
         if let Ok(mut pending) = self.prompt.lock() {
             *pending = None;
         }
-        // A cancel dropped the question: the run stops without an answer.
-        if self.cancel_requested(chat_id) {
-            return None;
-        }
-        match (interaction, reply) {
-            (Interaction::Confirmation(_), reply) => {
-                let accepted = matches!(reply, Some(Reply::Decision(true)));
-                self.send(chat_id, match reply {
-                    Some(Reply::Decision(true)) => "Confirmación recibida. Aplicando el cambio…",
-                    Some(_) => "Operación cancelada.",
-                    None => "La confirmación venció después de 2 minutos. No se aplicaron cambios.",
-                });
-                Some(ResumeDecision::Confirmation(crate::backend::ConfirmationDecision {
-                    operation_id: operation.operation_id.clone(),
-                    accepted,
-                    hunk_ids: Vec::new(),
-                }))
-            }
-            (Interaction::Plan(plan), reply) => Some(ResumeDecision::Plan(crate::backend::PlanDecision {
-                plan_id: plan.plan_id.clone(),
-                generation: plan.generation,
-                accepted: matches!(reply, Some(Reply::Decision(true))),
-                step_ids: plan.steps.iter().map(|step| step.id.clone()).collect(),
-                suggestion: None,
-            })),
-            (Interaction::Clarification(request), Some(Reply::Text(answer, index))) => {
-                Some(ResumeDecision::Clarification(crate::backend::ClarificationAnswer {
-                    clarification_id: request.clarification_id.clone(),
-                    operation: operation.clone(),
-                    answer,
-                    option_id: index.and_then(|index| request.options.get(index)).map(|option| option.id.clone()),
-                }))
-            }
-            (Interaction::Clarification(_), _) => None,
-        }
+        (!self.cancel_requested(chat_id)).then_some(reply)
     }
 }
 
@@ -1611,6 +1686,27 @@ impl Progress {
                 }
             })
             .ok()
+    }
+
+    /// Opens a new progress message with `text` below the person's answer,
+    /// so the work shows at the end of the chat, and deletes the one above.
+    /// Without an edited progress message, `text` goes as a plain message.
+    fn restart(&self, worker: &Worker, text: &str) {
+        if !self.enabled || !self.edit {
+            worker.send(self.chat_id, text);
+            return;
+        }
+        if let Some(previous) = self.message_id.lock().ok().and_then(|mut id| id.take()) {
+            let _ = block_on(telegram::delete_message(&self.token, self.chat_id, previous));
+        }
+        let sent = worker.send_html(self.chat_id, &format!("<b>{}</b>", crate::backend::escape_telegram_html(text)), Vec::new());
+        if let Ok(mut id) = self.message_id.lock() {
+            *id = sent;
+        }
+        // The new message shows only what happens from now on.
+        if let Ok(mut events) = self.events.lock() {
+            events.clear();
+        }
     }
 
     /// Leaves the progress message with the outcome `text` (HTML).

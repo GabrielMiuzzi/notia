@@ -174,9 +174,18 @@ pub(crate) enum InteractionAnswer {
         accepted: bool,
         #[serde(default)]
         hunk_ids: Vec<String>,
+        /// «Confirmar todos»: the rest of the turn asks no more.
+        #[serde(default)]
+        approve_all: bool,
+        /// «Proponer otra cosa»: what to do instead of the change.
+        #[serde(default)]
+        suggestion: Option<String>,
     },
     Plan {
         accepted: bool,
+        /// «Confirmar todos»: the plan and the rest of the turn's changes.
+        #[serde(default)]
+        approve_all: bool,
         /// Changes the person asked for instead of approving.
         #[serde(default)]
         suggestion: Option<String>,
@@ -310,19 +319,24 @@ fn decision(interaction: &PendingInteraction, operation: &OperationToken, answer
                 option_id,
             }))
         }
-        (PendingInteraction::Confirmation(_), InteractionAnswer::Confirmation { accepted, hunk_ids }) => {
+        (PendingInteraction::Confirmation(_), InteractionAnswer::Confirmation { accepted, hunk_ids, approve_all, suggestion }) => {
+            let suggestion = suggestion.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
             Some(ResumeDecision::Confirmation(ConfirmationDecision {
                 operation_id: operation.operation_id.clone(),
-                accepted,
-                hunk_ids,
+                accepted: accepted && suggestion.is_none(),
+                // A proposal rejects the change as a whole.
+                hunk_ids: if suggestion.is_some() { Vec::new() } else { hunk_ids },
+                approve_all: accepted && approve_all,
+                suggestion,
             }))
         }
-        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, step_ids, suggestion }) => Some(ResumeDecision::Plan(PlanDecision {
+        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, approve_all, step_ids, suggestion }) => Some(ResumeDecision::Plan(PlanDecision {
             plan_id: plan.plan_id.clone(),
             generation: plan.generation,
             accepted,
             step_ids: step_ids.unwrap_or_else(|| plan.steps.iter().map(|step| step.id.clone()).collect()),
             suggestion: suggestion.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            approve_all: accepted && approve_all,
         })),
         _ => None,
     }
@@ -357,8 +371,19 @@ fn ask(
         (PendingInteraction::Clarification(request), InteractionAnswer::Clarification { answer }) => {
             record_exchange(app, state, request_id, &request.question, answer);
         }
-        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, step_ids, suggestion }) => {
-            record_exchange(app, state, request_id, &plan_text(plan, step_ids.as_deref()), &plan_answer(*accepted, suggestion.as_deref()));
+        (PendingInteraction::Plan(plan), InteractionAnswer::Plan { accepted, approve_all, step_ids, suggestion }) => {
+            let answer = if *accepted && *approve_all {
+                "Aprobado, junto con todo lo que siga en este pedido.".to_string()
+            } else {
+                plan_answer(*accepted, suggestion.as_deref())
+            };
+            record_exchange(app, state, request_id, &plan_text(plan, step_ids.as_deref()), &answer);
+        }
+        // A proposal instead of a change stays in the chat, like an answer.
+        (PendingInteraction::Confirmation(request), InteractionAnswer::Confirmation { suggestion: Some(suggestion), .. })
+            if !suggestion.trim().is_empty() =>
+        {
+            record_exchange(app, state, request_id, &request.preview.summary, suggestion.trim());
         }
         _ => {}
     }

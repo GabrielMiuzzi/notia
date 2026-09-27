@@ -85,7 +85,7 @@ export interface ChatTurnHandlers {
   onAgentProgress?: (event: AgentProgressEvent) => void
   requestClarification?: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestConfirmation?: (question: string, signal: AbortSignal, preview?: MutationPreview) => Promise<boolean | AgentConfirmationDecision>
-  requestExecutionPlanApproval?: (steps: TaskExecutionStep[], signal: AbortSignal) => Promise<{ approved: boolean; steps?: TaskExecutionStep[]; suggestion?: string }>
+  requestExecutionPlanApproval?: (steps: TaskExecutionStep[], signal: AbortSignal) => Promise<{ approved: boolean; steps?: TaskExecutionStep[]; suggestion?: string; approveAll?: boolean }>
 }
 
 export interface ChatTurnHandle {
@@ -101,8 +101,8 @@ type Interaction =
 
 type InteractionAnswer =
   | { type: 'clarification'; answer: string }
-  | { type: 'confirmation'; accepted: boolean; hunkIds: string[] }
-  | { type: 'plan'; accepted: boolean; stepIds?: string[]; suggestion?: string }
+  | { type: 'confirmation'; accepted: boolean; hunkIds: string[]; approveAll?: boolean; suggestion?: string }
+  | { type: 'plan'; accepted: boolean; stepIds?: string[]; suggestion?: string; approveAll?: boolean }
 
 interface BackendEventEnvelope {
   requestId: string
@@ -160,11 +160,17 @@ async function answerInteraction(
     }
     const decision = await handlers.requestConfirmation(preview.summary, signal, preview)
     const normalized = typeof decision === 'boolean' ? { accepted: decision } : decision
-    return { type: 'confirmation', accepted: normalized.accepted, hunkIds: [...(normalized.hunkIds ?? [])] }
+    return {
+      type: 'confirmation',
+      accepted: normalized.accepted,
+      hunkIds: [...(normalized.hunkIds ?? [])],
+      approveAll: 'approveAll' in normalized ? normalized.approveAll : undefined,
+      suggestion: 'suggestion' in normalized ? normalized.suggestion : undefined,
+    }
   }
   if (!handlers.requestExecutionPlanApproval) return null
   const decision = await handlers.requestExecutionPlanApproval(interaction.steps, signal)
-  return { type: 'plan', accepted: decision.approved, stepIds: decision.steps?.map((step) => step.id), suggestion: decision.suggestion }
+  return { type: 'plan', accepted: decision.approved, stepIds: decision.steps?.map((step) => step.id), suggestion: decision.suggestion, approveAll: decision.approveAll }
 }
 
 /** What the backend decided about a message sent while a turn runs. */

@@ -187,6 +187,10 @@ pub struct AgentContinuation {
     pub tool_results: Vec<ToolResult>,
     #[serde(default)]
     pub preview: Option<super::protocol::MutationPreview>,
+    /// The person chose «Confirmar todos» earlier in this request: changes
+    /// and plans run without asking again until the request ends.
+    #[serde(default)]
+    pub approve_all: bool,
 }
 
 #[derive(Debug, Default)]
@@ -277,7 +281,10 @@ const MAX_STALLED_ROUNDS: u32 = 3;
 /// results older than the most recent ones are reduced to a short summary,
 /// so a long run keeps its request and its recent evidence inside the
 /// model's context (a server that truncates drops the oldest messages).
-const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 60_000;
+/// The configured models have long contexts: a lower limit summarized the
+/// lists a long run still worked on (ids of mails to move) and the agent
+/// acted on the summary.
+const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 400_000;
 const RECENT_TOOL_RESULTS_KEPT: usize = 6;
 const COMPACTED_RESULT_PREVIEW_CHARS: usize = 400;
 const COMPACTED_RESULT_MARKER: &str = "[Resultado anterior resumido para ahorrar contexto]";
@@ -483,8 +490,32 @@ fn run_agent_inner(
     let mut stalled_rounds = 0;
     let mut event_count = 0usize;
 
+    // «Confirmar todos» lasts until this request ends: every later pause
+    // keeps it in its continuation.
+    let mut approve_all = continuation.as_ref().is_some_and(|continuation| continuation.approve_all);
     if let (Some(continuation), Some(decision)) = (continuation, resume_decision) {
         match decision {
+            // «Proponer otra cosa»: the change is not made and the agent
+            // goes on with what the person proposes instead.
+            ResumeDecision::Confirmation(value)
+                if !value.accepted && value.suggestion.as_deref().is_some_and(|value| !value.trim().is_empty()) =>
+            {
+                let suggestion = value.suggestion.as_deref().unwrap_or_default().trim();
+                let result = ToolResult {
+                    call_id: continuation.pending_call.id.clone(),
+                    ok: false,
+                    changed: false,
+                    data: None,
+                    error: Some(BackendError::new(
+                        BackendErrorCode::Conflict,
+                        format!("La persona no aprobó este cambio y no se aplicó. En su lugar propone: {suggestion}. Seguí con lo que propone."),
+                        false,
+                    )),
+                    preview: None,
+                };
+                append_tool_message(&mut messages, &continuation.pending_call, &result);
+                tool_results.push(result);
+            }
             ResumeDecision::Confirmation(value) if !value.accepted => {
                 let response = AgentResponse {
                     request_id: request.context.request_id.clone(),
@@ -502,6 +533,7 @@ fn run_agent_inner(
                 return Ok(response);
             }
             ResumeDecision::Confirmation(value) => {
+                approve_all |= value.approve_all;
                 let pending_tool = tools
                     .iter()
                     .find(|tool| tool.name == continuation.pending_call.name)
@@ -611,6 +643,7 @@ fn run_agent_inner(
                     )?;
                     return Ok(response);
                 } else {
+                    approve_all |= plan.approve_all;
                     messages.push(ProviderMessage {
                         role: ProviderMessageRole::User,
                         content: serde_json::json!({
@@ -906,6 +939,7 @@ fn run_agent_inner(
                                 pending_call: call.clone(),
                                 tool_results: tool_results.clone(),
                                 preview: None,
+                                approve_all,
                             },
                         )?;
                         interactions.begin_clarification(
@@ -916,7 +950,7 @@ fn run_agent_inner(
                         )?;
                         return Err(interaction_conflict(&call.id));
                     }
-                    if call.name == "request_user_confirmation" {
+                    if call.name == "request_user_confirmation" && !approve_all {
                         let operation = interactions.next_operation_token(&request.context, &call.id);
                         let preview = confirmation_preview_from_call(&call, &operation)?;
                         state.store_continuation(
@@ -929,6 +963,7 @@ fn run_agent_inner(
                                 pending_call: call.clone(),
                                 tool_results: tool_results.clone(),
                                 preview: Some(preview.clone()),
+                                approve_all,
                             },
                         )?;
                         interactions.begin_confirmation_with_preview(
@@ -941,13 +976,7 @@ fn run_agent_inner(
                         )?;
                         return Err(interaction_conflict(&call.id));
                     }
-                    if matches!(
-                        call.name.as_str(),
-                        "set_agent_execution_plan"
-                            | "set_task_execution_plan"
-                            | "create_agent_plan"
-                            | "update_agent_plan"
-                    ) {
+                    if is_plan_tool(&call.name) && !approve_all {
                         let operation = interactions.next_operation_token(&request.context, &call.id);
                         let plan = plan_from_call(&call)?;
                         state.store_continuation(
@@ -960,6 +989,7 @@ fn run_agent_inner(
                                 pending_call: call.clone(),
                                 tool_results: tool_results.clone(),
                                 preview: None,
+                                approve_all,
                             },
                         )?;
                         interactions.begin_plan(
@@ -992,7 +1022,7 @@ fn run_agent_inner(
                         Err(error) => return Err(error),
                     }
                 }
-                if tool.requires_confirmation && authorization.is_ok() && rejected_input.is_none() {
+                if tool.requires_confirmation && authorization.is_ok() && rejected_input.is_none() && !approve_all {
                     if let Some(interactions) = interactions {
                         let preview = preflight_preview.flatten();
                         state.store_continuation(
@@ -1005,6 +1035,7 @@ fn run_agent_inner(
                                 pending_call: call.clone(),
                                 tool_results: tool_results.clone(),
                                 preview: preview.clone(),
+                                approve_all,
                             },
                         )?;
                         let _ = interactions.begin_confirmation_with_preview(
@@ -1043,8 +1074,41 @@ fn run_agent_inner(
                         round: rounds,
                     },
                 )?;
+                // With «Confirmar todos» a plan counts as approved and a change
+                // runs as confirmed, with the preview it was checked against.
+                let approved_plan = approve_all && is_plan_tool(&call.name);
+                if approved_plan {
+                    if let Ok(plan) = plan_from_call(&call) {
+                        emit(
+                            events,
+                            options,
+                            &mut event_count,
+                            BackendEvent::AssistantNote {
+                                request_id: request.context.request_id.clone(),
+                                text: approved_plan_note(&plan),
+                            },
+                        )?;
+                    }
+                }
+                let confirmed = approve_all && (tool.requires_confirmation || call.name == "request_user_confirmation");
+                let run = || {
+                    if approved_plan {
+                        return Ok(approved_plan_result(&call));
+                    }
+                    if confirmed {
+                        let decision = ConfirmationDecision {
+                            operation_id: call.id.clone(),
+                            accepted: true,
+                            hunk_ids: Vec::new(),
+                            approve_all: true,
+                            suggestion: None,
+                        };
+                        return executor.execute_confirmed(&request.context, &call, &decision, preflight_preview.clone().flatten().as_ref());
+                    }
+                    executor.execute(&request.context, &call)
+                };
                 let result = match authorization.and_then(|()| rejected_input.map_or(Ok(()), Err)) {
-                    Ok(()) => match executor.execute(&request.context, &call) {
+                    Ok(()) => match run() {
                         Ok(mut value) => {
                             value.call_id = call.id.clone();
                             value
@@ -1433,6 +1497,40 @@ fn verified_web_citations(content: String, tool_results: &[ToolResult]) -> Strin
     } else {
         content
     }
+}
+
+fn is_plan_tool(name: &str) -> bool {
+    matches!(name, "set_agent_execution_plan" | "set_task_execution_plan" | "create_agent_plan" | "update_agent_plan")
+}
+
+/// Result of a plan approved beforehand with «Confirmar todos».
+fn approved_plan_result(call: &ToolCall) -> ToolResult {
+    let plan = plan_from_call(call).ok();
+    ToolResult {
+        call_id: call.id.clone(),
+        ok: true,
+        changed: false,
+        data: Some(serde_json::json!({
+            "accepted": true,
+            "approvedBy": "confirmar-todos",
+            "planId": plan.as_ref().map(|plan| plan.plan_id.clone()),
+            "stepIds": plan.as_ref().map(|plan| plan.steps.iter().map(|step| step.id.clone()).collect::<Vec<_>>()),
+        })),
+        error: None,
+        preview: None,
+    }
+}
+
+/// The plan approved with «Confirmar todos», shown to the person as a note.
+fn approved_plan_note(plan: &super::ExecutionPlan) -> String {
+    let steps = plan
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("{}. {}", index + 1, step.label))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Plan (aprobado con «Confirmar todos»):\n{steps}")
 }
 
 fn plan_from_call(call: &ToolCall) -> Result<super::ExecutionPlan, BackendError> {
@@ -1890,6 +1988,7 @@ mod tests {
             },
             tool_results: Vec::new(),
             preview: None,
+            approve_all: false,
         };
         let decision = ResumeDecision::Plan(super::super::PlanDecision {
             plan_id: "plan-1".into(),
@@ -1897,6 +1996,7 @@ mod tests {
             accepted,
             step_ids: Vec::new(),
             suggestion: suggestion.map(str::to_string),
+            approve_all: false,
         });
         run_agent_inner(
             provider,
@@ -1939,6 +2039,127 @@ mod tests {
         assert_eq!(*provider.calls.lock().expect("calls"), 0);
     }
 
+    fn assistant(content: &str, tool_calls: Vec<ProviderToolCall>) -> ProviderResponse {
+        ProviderResponse {
+            message: ProviderMessage {
+                role: ProviderMessageRole::Assistant,
+                content: content.into(),
+                images: Vec::new(),
+                tool_calls,
+                tool_name: None,
+            },
+        }
+    }
+
+    /// Resumes a pending `move_gmail_messages` with `decision`; the
+    /// model then asks for a second change and answers.
+    fn resume_confirmation(decision: ConfirmationDecision, executor: &Executor) -> (Result<AgentResponse, BackendError>, usize) {
+        let provider = Provider {
+            responses: Mutex::new(vec![
+                assistant(
+                    "",
+                    vec![ProviderToolCall {
+                        id: "call-2".into(),
+                        name: "move_gmail_messages".into(),
+                        arguments: serde_json::json!({"ids": ["m-2"], "label": "Bancos"}),
+                    }],
+                ),
+                assistant("Moví los dos grupos.", Vec::new()),
+            ]),
+            calls: Mutex::new(0),
+        };
+        let mut save = tool("move_gmail_messages", false);
+        save.requires_confirmation = true;
+        let continuation = AgentContinuation {
+            messages: vec![ProviderMessage {
+                role: ProviderMessageRole::User,
+                content: "ordená el correo".into(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_name: None,
+            }],
+            rounds: 1,
+            pending_call: ToolCall {
+                id: "call-1".into(),
+                name: "move_gmail_messages".into(),
+                arguments: serde_json::json!({"ids": ["m-1"], "label": "Bancos"}),
+                round: 1,
+            },
+            tool_results: Vec::new(),
+            preview: None,
+            approve_all: false,
+        };
+        let result = run_agent_inner(
+            &provider,
+            executor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &request(vec![save]),
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+            None,
+            Some(continuation),
+            Some(ResumeDecision::Confirmation(decision)),
+        );
+        let calls = *provider.calls.lock().expect("calls");
+        (result, calls)
+    }
+
+    fn accepted(approve_all: bool) -> ConfirmationDecision {
+        ConfirmationDecision { operation_id: "call-1".into(), accepted: true, hunk_ids: Vec::new(), approve_all, suggestion: None }
+    }
+
+    #[test]
+    fn confirm_all_runs_the_later_changes_of_the_request_without_asking() {
+        let executor = read_executor();
+        let (result, _) = resume_confirmation(accepted(true), &executor);
+        assert_eq!(result.expect("the request finishes").response.markdown, "Moví los dos grupos.");
+        assert_eq!(*executor.executions.lock().expect("executions"), 2);
+
+        let executor = read_executor();
+        let (result, _) = resume_confirmation(accepted(false), &executor);
+        assert_eq!(result.expect_err("the second change asks").code, BackendErrorCode::Conflict);
+        assert_eq!(*executor.executions.lock().expect("executions"), 1);
+    }
+
+    #[test]
+    fn a_proposal_instead_of_a_change_goes_back_to_the_model() {
+        let executor = read_executor();
+        let decision = ConfirmationDecision {
+            operation_id: "call-1".into(),
+            accepted: false,
+            hunk_ids: Vec::new(),
+            approve_all: false,
+            suggestion: Some("mandalos a «Bancos y tarjetas»".into()),
+        };
+        let (result, calls) = resume_confirmation(decision, &executor);
+        // The model heard the proposal and asked for another change.
+        assert_eq!(calls, 1);
+        assert_eq!(result.expect_err("the new change asks").code, BackendErrorCode::Conflict);
+        assert_eq!(*executor.executions.lock().expect("executions"), 0);
+
+        let decision = ConfirmationDecision { accepted: false, ..accepted(false) };
+        let (result, calls) = resume_confirmation(decision, &read_executor());
+        assert_eq!(result.expect("a plain rejection ends").response.markdown, "La operación fue rechazada.");
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn a_plan_approved_with_confirm_all_is_noted_and_not_asked_again() {
+        let plan = ToolCall {
+            id: "plan-1".into(),
+            name: "set_agent_execution_plan".into(),
+            arguments: serde_json::json!({"steps": ["Mover Mercado Libre", "Mover bancos"]}),
+            round: 1,
+        };
+        let result = approved_plan_result(&plan);
+        assert!(result.ok && result.data.as_ref().is_some_and(|data| data["accepted"] == true));
+        let note = approved_plan_note(&plan_from_call(&plan).expect("plan"));
+        assert!(note.contains("Confirmar todos") && note.contains("2. Mover bancos"));
+        assert!(is_plan_tool("update_agent_plan") && !is_plan_tool("save_finance_transaction"));
+    }
+
     #[test]
     fn a_confirmed_call_that_fails_goes_back_to_the_model_instead_of_ending_the_turn() {
         let provider = Provider {
@@ -1974,11 +2195,14 @@ mod tests {
             pending_call,
             tool_results: Vec::new(),
             preview: None,
+            approve_all: false,
         };
         let decision = ResumeDecision::Confirmation(ConfirmationDecision {
             operation_id: "call-1".into(),
             accepted: true,
             hunk_ids: Vec::new(),
+            approve_all: false,
+            suggestion: None,
         });
         let response = run_agent_inner(
             &provider,
@@ -2409,7 +2633,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_name: None,
         }];
-        messages.extend((0..12).map(|index| tool_message(format!("{{\"callId\":\"{index}\",\"ok\":true,\"data\":\"{}\"}}", "y".repeat(8_000)))));
+        messages.extend((0..12).map(|index| tool_message(format!("{{\"callId\":\"{index}\",\"ok\":true,\"data\":\"{}\"}}", "y".repeat(MAX_TOOL_RESULT_CONTEXT_CHARS / 8)))));
         compact_tool_results(&mut messages);
         assert_eq!(messages[0].content.len(), 50_000, "the request stays whole");
         let tools = &messages[1..];

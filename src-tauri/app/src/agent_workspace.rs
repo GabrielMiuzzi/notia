@@ -227,7 +227,7 @@ pub(crate) fn list_prompts(app: &AppHandle, library_id: &str) -> Result<AgentPro
 }
 
 fn validate_items(items: &[String]) -> Result<(), BackendError> {
-    if items.len() > 500 || items.iter().any(|item| item.chars().count() > workspace::MAX_RULE_CHARS) {
+    if items.len() > workspace::MAX_MEMORIES || items.iter().any(|item| item.chars().count() > workspace::MAX_RULE_CHARS) {
         return Err(BackendError::invalid_input("La lista del agente no es válida o supera el límite."));
     }
     Ok(())

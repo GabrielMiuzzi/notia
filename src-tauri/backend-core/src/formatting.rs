@@ -110,6 +110,19 @@ fn render_inline(value: &str) -> String {
             continue;
         }
 
+        if let Some((open, close, inner, consumed)) = html_inline_tag(rest) {
+            output.push_str(open);
+            output.push_str(&if open == "<code>" { escape_telegram_html(inner) } else { render_inline(inner) });
+            output.push_str(close);
+            index += consumed;
+            continue;
+        }
+        if let Some(consumed) = html_line_break(rest) {
+            output.push('\n');
+            index += consumed;
+            continue;
+        }
+
         if let Some((text, url, consumed)) = markdown_link(rest) {
             output.push_str("<a href=\"");
             output.push_str(&escape_attribute(url));
@@ -148,6 +161,40 @@ fn render_inline(value: &str) -> String {
         index += character.len_utf8();
     }
     output
+}
+
+/// A formatting tag the model wrote as HTML (`<b>texto</b>`), without
+/// attributes and closed on the same line: the Telegram tags to emit, its
+/// content and the bytes it spans. The tags are rebuilt, never copied, and
+/// the content is rendered like any other text.
+fn html_inline_tag(value: &str) -> Option<(&'static str, &'static str, &str, usize)> {
+    const TAGS: [(&str, &str, &str); 10] = [
+        ("b", "<b>", "</b>"),
+        ("strong", "<b>", "</b>"),
+        ("i", "<i>", "</i>"),
+        ("em", "<i>", "</i>"),
+        ("u", "<u>", "</u>"),
+        ("ins", "<u>", "</u>"),
+        ("s", "<s>", "</s>"),
+        ("del", "<s>", "</s>"),
+        ("strike", "<s>", "</s>"),
+        ("code", "<code>", "</code>"),
+    ];
+    let name_end = value.strip_prefix('<')?.find('>')?;
+    let name = value[1..name_end + 1].trim().to_ascii_lowercase();
+    let (_, open, close) = TAGS.iter().find(|(tag, ..)| *tag == name)?;
+    let start = name_end + 2;
+    let closing = format!("</{name}>");
+    let end = value[start..].to_ascii_lowercase().find(&closing)?;
+    Some((open, close, &value[start..start + end], start + end + closing.len()))
+}
+
+/// Bytes of a `<br>`, `<br/>` or `<br />` at the start of `value`.
+fn html_line_break(value: &str) -> Option<usize> {
+    ["<br>", "<br/>", "<br />"]
+        .iter()
+        .find(|tag| value.get(..tag.len()).is_some_and(|start| start.eq_ignore_ascii_case(tag)))
+        .map(|tag| tag.len())
 }
 
 fn markdown_link(value: &str) -> Option<(&str, &str, usize)> {
@@ -202,6 +249,16 @@ mod tests {
             markdown_to_telegram_html("[unsafe](javascript:alert(1))"),
             "[unsafe](javascript:alert(1))"
         );
+    }
+
+    #[test]
+    fn formatting_tags_written_as_html_become_formatting() {
+        assert_eq!(
+            markdown_to_telegram_html("• <b>Google Play:</b> vence el <B>3/10</B>, <i>Face Yoga</i> y <code>a<b</code><br/>fin"),
+            "• <b>Google Play:</b> vence el <b>3/10</b>, <i>Face Yoga</i> y <code>a&lt;b</code>\nfin"
+        );
+        assert_eq!(markdown_to_telegram_html("<strong>x</strong> <em>y</em>"), "<b>x</b> <i>y</i>");
+        assert_eq!(markdown_to_telegram_html("<b onclick=\"x\">a</b> <b>sin cierre"), "&lt;b onclick=\"x\"&gt;a&lt;/b&gt; &lt;b&gt;sin cierre");
     }
 
     #[test]

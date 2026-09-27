@@ -32,6 +32,9 @@ interface ChatThreadProps {
   agentExecutionPlan?: TaskExecutionStep[]
   awaitingAgentExecutionPlanApproval?: boolean
   onApproveAgentExecutionPlan?: (steps?: TaskExecutionStep[]) => void
+  /** Approves the plan and every change the rest of the turn asks for. */
+  onApproveAllAgentExecutionPlan?: (steps?: TaskExecutionStep[]) => void
+  onCancelAgentExecutionPlan?: () => void
   onSuggestAgentExecutionPlanChanges?: () => void
   lastAppliedOperationId?: string | null
   onUndoLastAiOperation?: () => void
@@ -41,8 +44,11 @@ interface ChatThreadProps {
   onViewAiOperationDiff?: (operationId: string) => void
   onCloseAiOperationDiff?: () => void
   onConfirmAgentAction?: () => void
+  /** Confirms this change and every other one the rest of the turn asks for. */
+  onConfirmAllAgentActions?: () => void
   onDeclineAgentAction?: () => void
-  onEditAgentProposal?: () => void
+  /** Declines the change and writes what to do instead. */
+  onProposeAgentAlternative?: () => void
   onToggleAgentHunk?: (hunkId: string) => void
   onSelectAgentClarificationOption?: (choice: string) => void
   threadRef: React.RefObject<HTMLDivElement | null>
@@ -126,6 +132,8 @@ function ChatThreadComponent({
   agentExecutionPlan = [],
   awaitingAgentExecutionPlanApproval = false,
   onApproveAgentExecutionPlan,
+  onApproveAllAgentExecutionPlan,
+  onCancelAgentExecutionPlan,
   onSuggestAgentExecutionPlanChanges,
   lastAppliedOperationId = null,
   onUndoLastAiOperation,
@@ -135,8 +143,9 @@ function ChatThreadComponent({
   onViewAiOperationDiff,
   onCloseAiOperationDiff,
   onConfirmAgentAction,
+  onConfirmAllAgentActions,
   onDeclineAgentAction,
-  onEditAgentProposal,
+  onProposeAgentAlternative,
   onToggleAgentHunk,
   onSelectAgentClarificationOption,
   threadRef,
@@ -288,14 +297,29 @@ function ChatThreadComponent({
                 {awaitingAgentExecutionPlanApproval ? (
                   <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Revisar plan de ejecución">
                     <button type="button" className="notia-chat-agent-confirmation-button is-primary" onClick={() => { onApproveAgentExecutionPlan?.(isEditingPlan ? draftPlan : agentExecutionPlan); setIsEditingPlan(false) }}>
-                      {isEditingPlan ? 'Guardar y aprobar' : 'Aprobar TO-DO'}
+                      {isEditingPlan ? 'Guardar y confirmar' : 'Confirmar'}
                     </button>
+                    {onApproveAllAgentExecutionPlan ? (
+                      <button
+                        type="button"
+                        className="notia-chat-agent-confirmation-button"
+                        title="Aprueba el plan y todos los cambios de este pedido sin volver a preguntar"
+                        onClick={() => { onApproveAllAgentExecutionPlan(isEditingPlan ? draftPlan : agentExecutionPlan); setIsEditingPlan(false) }}
+                      >
+                        Confirmar todos
+                      </button>
+                    ) : null}
                     <button type="button" className="notia-chat-agent-confirmation-button" onClick={() => setIsEditingPlan((current) => !current)}>
                       {isEditingPlan ? 'Cerrar editor' : 'Editar plan'}
                     </button>
                     <button type="button" className="notia-chat-agent-confirmation-button" onClick={() => { setIsEditingPlan(false); onSuggestAgentExecutionPlanChanges?.() }}>
-                      Sugerir cambios
+                      Proponer otra cosa
                     </button>
+                    {onCancelAgentExecutionPlan ? (
+                      <button type="button" className="notia-chat-agent-confirmation-button" onClick={() => { setIsEditingPlan(false); onCancelAgentExecutionPlan() }}>
+                        Cancelar
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -470,16 +494,27 @@ function ChatThreadComponent({
                         onClick={onConfirmAgentAction}
                         disabled={Boolean(pendingAgentPreview && pendingAgentHunkIds.length === 0)}
                       >
-                        {canSelectAgentHunks && pendingAgentPreview && pendingAgentHunkIds.length < pendingAgentPreview.hunks.length ? 'Aplicar seleccionados' : 'Aplicar todo'}
+                        {canSelectAgentHunks && pendingAgentPreview && pendingAgentHunkIds.length < pendingAgentPreview.hunks.length ? 'Confirmar seleccionados' : 'Confirmar'}
                       </button>
+                      {onConfirmAllAgentActions ? (
+                        <button
+                          type="button"
+                          className="notia-chat-agent-confirmation-button"
+                          title="Confirma este cambio y todos los que siga pidiendo en este pedido, sin volver a preguntar"
+                          onClick={onConfirmAllAgentActions}
+                          disabled={Boolean(pendingAgentPreview && pendingAgentHunkIds.length === 0)}
+                        >
+                          Confirmar todos
+                        </button>
+                      ) : null}
+                      {onProposeAgentAlternative ? (
+                        <button type="button" className="notia-chat-agent-confirmation-button" onClick={onProposeAgentAlternative}>
+                          Proponer otra cosa
+                        </button>
+                      ) : null}
                       <button type="button" className="notia-chat-agent-confirmation-button" onClick={onDeclineAgentAction}>
                         Cancelar
                       </button>
-                      {onEditAgentProposal ? (
-                        <button type="button" className="notia-chat-agent-confirmation-button" onClick={onEditAgentProposal}>
-                          Editar propuesta
-                        </button>
-                      ) : null}
                     </div>
                   </div>
                 </article>

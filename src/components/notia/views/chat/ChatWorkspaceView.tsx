@@ -152,7 +152,7 @@ export function ChatWorkspaceViewComponent({
   const clarificationResolverRef = useRef<((answer: string) => void) | null>(null)
   const rehydratedClarificationRef = useRef(false)
   const confirmationResolverRef = useRef<((decision: AgentConfirmationDecision) => void) | null>(null)
-  const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string; steps?: TaskExecutionStep[] }) => void) | null>(null)
+  const planApprovalResolverRef = useRef<((decision: { approved: boolean; suggestion?: string; steps?: TaskExecutionStep[]; approveAll?: boolean }) => void) | null>(null)
   const activeLibraryId = library?.id
 
   // The plan shown is the one the backend asked to approve in this session.
@@ -470,6 +470,9 @@ export function ChatWorkspaceViewComponent({
       requestAgentConfirmation: (question, signal, preview) => new Promise<boolean | AgentConfirmationDecision>((resolve, reject) => {
         const handleAbort = () => {
           confirmationResolverRef.current = null
+          // A proposal being written («Proponer otra cosa») goes too.
+          clarificationResolverRef.current = null
+          setPendingAgentQuestion(null)
           setPendingAgentConfirmation(null)
           setPendingAgentPreview(null)
           setPendingAgentHunkIds([])
@@ -872,6 +875,8 @@ export function ChatWorkspaceViewComponent({
       agentExecutionPlan={agentExecutionPlan}
       awaitingAgentExecutionPlanApproval={awaitingAgentExecutionPlanApproval}
       onApproveAgentExecutionPlan={(steps) => planApprovalResolverRef.current?.({ approved: true, steps })}
+      onApproveAllAgentExecutionPlan={(steps) => planApprovalResolverRef.current?.({ approved: true, steps, approveAll: true })}
+      onCancelAgentExecutionPlan={() => planApprovalResolverRef.current?.({ approved: false })}
       onSuggestAgentExecutionPlanChanges={() => {
         const planResolver = planApprovalResolverRef.current
         if (!planResolver) return
@@ -902,10 +907,21 @@ export function ChatWorkspaceViewComponent({
         void submitMessage('Volvé atrás el último cambio de IA.', operationId)
       }}
       onConfirmAgentAction={() => confirmationResolverRef.current?.({ accepted: true, hunkIds: pendingAgentHunkIds })}
+      onConfirmAllAgentActions={() => confirmationResolverRef.current?.({ accepted: true, hunkIds: pendingAgentHunkIds, approveAll: true })}
       onDeclineAgentAction={() => confirmationResolverRef.current?.({ accepted: false })}
-      onEditAgentProposal={() => {
-        confirmationResolverRef.current?.({ accepted: false })
-        setDialogMessage('La propuesta se canceló. Indicame qué querés cambiar y preparo un nuevo preview.')
+      onProposeAgentAlternative={() => {
+        // The proposal is written in the question box; the turn goes on
+        // with it instead of the change.
+        const confirmationResolver = confirmationResolverRef.current
+        if (!confirmationResolver) return
+        setPendingAgentConfirmation(null)
+        setPendingAgentPreview(null)
+        setPendingAgentQuestion({ question: '¿Qué querés que haga en su lugar?', choices: [] })
+        clarificationResolverRef.current = (suggestion) => {
+          clarificationResolverRef.current = null
+          setPendingAgentQuestion(null)
+          confirmationResolver({ accepted: false, suggestion })
+        }
       }}
       onToggleAgentHunk={(hunkId) => {
         setPendingAgentHunkIds((current) => current.includes(hunkId)

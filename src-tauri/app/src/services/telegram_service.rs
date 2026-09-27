@@ -345,6 +345,23 @@ pub async fn edit_message(
     decode::<serde_json::Value>(response).await.map(|_| ())
 }
 
+/// Deletes a message the bot sent (Telegram allows it for 48 hours).
+pub async fn delete_message(token: &str, chat_id: i64, message_id: i64) -> Result<(), String> {
+    if chat_id == 0 || message_id <= 0 {
+        return Err("El mensaje de Telegram no es valido.".to_string());
+    }
+    let response = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(endpoint(token, "deleteMessage")?)
+        .json(&serde_json::json!({ "chat_id": chat_id, "message_id": message_id }))
+        .send()
+        .await
+        .map_err(|_| "No se pudo borrar el mensaje de Telegram.".to_string())?;
+    decode::<serde_json::Value>(response).await.map(|_| ())
+}
+
 pub async fn download_audio(token: &str, audio: &TelegramAudio) -> Result<Vec<u8>, String> {
     if audio.file_id.is_empty() || audio.file_id.len() > 256 {
         return Err("El identificador del audio de Telegram no es valido.".to_string());

@@ -393,6 +393,10 @@ pub struct PlanDecision {
     /// Changes the person asked for instead of approving the plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    /// «Confirmar todos»: the plan and every change the rest of this
+    /// request asks for are approved; later requests ask again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approve_all: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,6 +494,14 @@ pub struct ConfirmationDecision {
     pub accepted: bool,
     #[serde(default)]
     pub hunk_ids: Vec<String>,
+    /// «Confirmar todos»: this change and every other one the rest of this
+    /// request asks for are approved; later requests ask again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approve_all: bool,
+    /// «Proponer otra cosa»: the change is not made and the agent goes on
+    /// with what the person proposes instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -797,6 +809,7 @@ mod tests {
                 accepted: true,
                 step_ids: Vec::new(),
                 suggestion: None,
+                approve_all: false,
             }),
         })
         .validate(&limits)
@@ -880,6 +893,8 @@ mod tests {
                     operation_id: "operation-1".into(),
                     accepted: true,
                     hunk_ids: Vec::new(),
+                    approve_all: false,
+                    suggestion: None,
                 }),
             }))
             .expect("resume serializes")["payload"]["lastEventSequence"],

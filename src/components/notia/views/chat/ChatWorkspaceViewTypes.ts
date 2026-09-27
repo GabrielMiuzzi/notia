@@ -159,7 +159,7 @@ export interface UseChatSubmitMessageDependencies {
   requestAgentExecutionPlanApproval: (
     steps: TaskExecutionStep[],
     signal: AbortSignal,
-  ) => Promise<{ approved: boolean; suggestion?: string; steps?: TaskExecutionStep[] }>
+  ) => Promise<{ approved: boolean; suggestion?: string; steps?: TaskExecutionStep[]; approveAll?: boolean }>
   library: NotiaLibrary | null
   aiPreferences: AiPreferences
   activeChatDocument: StoredChatDocument | null

@@ -22,7 +22,7 @@ pub const MAIL_POLL_INTERVAL_MS: i64 = 2 * 60 * 1000;
 pub const MAX_TRIGGER_MAILS: usize = 10;
 const MAX_HEADER_CHARS: usize = 200;
 const MAX_SNIPPET_CHARS: usize = 300;
-const MAX_SENT_CHARS: usize = 300;
+const MAX_SENT_CHARS: usize = 900;
 
 /// Why Notia started a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +78,7 @@ pub fn autonomous_guidance() -> String {
         "Revisá lo necesario con tus herramientas de lectura (agenda, tareas, rutina, correo, finanzas, biblioteca) junto con tus pensamientos, sus reglas y su memoria.".to_string(),
         "Decidí si vale la pena escribirle ahora al Owner: un recordatorio, una pregunta o una propuesta concreta para organizar su rutina, agenda, tareas o correo.".to_string(),
         format!("Tu respuesta final es el mensaje que le llega por Telegram, breve y directo. Si nada vale un mensaje, respondé exactamente {SILENCE_MARKER} y nada más."),
+        "Escribilo en Markdown simple (**negrita**, *cursiva*, listas con guiones), nunca en HTML: Notia lo pasa al formato de Telegram.".to_string(),
         "No repitas avisos, preguntas ni propuestas que tus pensamientos dicen que ya hiciste, salvo que haya novedades o se acerque el momento.".to_string(),
         format!("Respetá sus reglas con la fecha y hora local (por ejemplo, horarios en que no quiere mensajes): si ahora no corresponde escribirle, respondé {SILENCE_MARKER}."),
         "Solo podés leer: no crees, cambies ni borres nada. Si algo conviene cambiarlo, proponelo en el mensaje; si te responde que sí, lo hacés en ese chat con su confirmación.".to_string(),
@@ -158,6 +159,21 @@ pub fn mail_trigger(now_label: &str, mails: &[NewMail], total: usize) -> String 
     lines.join("\n")
 }
 
+/// Text without the HTML tags a model may have written.
+fn without_tags(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut in_tag = false;
+    for character in value.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(character),
+            _ => {}
+        }
+    }
+    text
+}
+
 /// What the Telegram chat history keeps as the request of a message that
 /// Notia sent by itself, so a reply has its context.
 pub fn autonomous_history_note(kind: AutonomousKind) -> String {
@@ -167,7 +183,7 @@ pub fn autonomous_history_note(kind: AutonomousKind) -> String {
 /// The thought Notia keeps for each message it sent by itself, so the
 /// next runs know what was already said.
 pub fn sent_thought(message: &str) -> String {
-    let thought = format!("Le escribí por Telegram: {}", bounded(message, MAX_SENT_CHARS));
+    let thought = format!("Le escribí por Telegram: {}", bounded(&without_tags(message), MAX_SENT_CHARS));
     debug_assert!(thought.chars().count() <= MAX_THOUGHT_CHARS);
     thought
 }
@@ -238,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_sent_message_becomes_a_short_thought() {
-        let thought = sent_thought(&format!("Mañana   tenés turno. {}", "y ".repeat(400)));
+        let thought = sent_thought(&format!("Mañana   tenés <b>turno</b>. {}", "y ".repeat(400)));
         assert!(thought.starts_with("Le escribí por Telegram: Mañana tenés turno."));
         assert!(stamp_thought("2026-09-27 14:00", &thought).is_some());
     }

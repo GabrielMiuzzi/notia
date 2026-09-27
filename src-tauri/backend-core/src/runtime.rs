@@ -626,7 +626,9 @@ impl<'a> InteractionRuntime<'a> {
                 };
                 let revisions = current_revisions(self.revisions, &request.context, preview)?;
                 validate_confirmation(decision, &confirmation, &revisions)?;
-                if decision.accepted {
+                // A proposal instead of the change («Proponer otra cosa»)
+                // goes back to the agent, which continues with it.
+                if decision.accepted || has_text(decision.suggestion.as_deref()) {
                     Ok(OperationState::Running)
                 } else {
                     Ok(OperationState::Cancelled)
@@ -634,7 +636,7 @@ impl<'a> InteractionRuntime<'a> {
             }
             (ResumeDecision::Plan(decision), OperationState::WaitingPlan) => {
                 validate_plan_decision(stored, decision)?;
-                if decision.accepted {
+                if decision.accepted || has_text(decision.suggestion.as_deref()) {
                     Ok(OperationState::Running)
                 } else {
                     Ok(OperationState::Cancelled)
@@ -645,6 +647,10 @@ impl<'a> InteractionRuntime<'a> {
             )),
         }
     }
+}
+
+fn has_text(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
 }
 
 fn status_from_review(
@@ -949,6 +955,54 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_instead_of_the_change_keeps_the_run_going() {
+        let state = State::default();
+        let revisions = Revisions { value: 4 };
+        let generations = OperationGenerationCache::default();
+        let runtime = make_runtime(&state, &Ports, &revisions, &generations);
+        let resume = |key: &str, suggestion: Option<&str>| {
+            let response = runtime
+                .begin_confirmation(
+                    &context(),
+                    key,
+                    &ToolDefinition {
+                        name: "create_note".into(),
+                        description: "create".into(),
+                        input_schema: serde_json::json!({}),
+                        scopes: vec![BackendScope::Library],
+                        read_only: false,
+                        requires_confirmation: true,
+                    },
+                    &ToolCall { id: format!("operation-{key}"), name: "create_note".into(), arguments: serde_json::json!({"path": "note.md"}), round: 1 },
+                    1,
+                )
+                .expect("waiting response");
+            let BackendResponse::Operation { status } = response else { panic!("waiting") };
+            let resumed = runtime
+                .handle_resume(&ResumeRequest {
+                    context: context(),
+                    idempotency_key: key.into(),
+                    request_id: "request-1".into(),
+                    operation: status.operation.clone().expect("operation token"),
+                    last_event_sequence: 2,
+                    decision: ResumeDecision::Confirmation(ConfirmationDecision {
+                        operation_id: format!("operation-{key}"),
+                        accepted: false,
+                        hunk_ids: Vec::new(),
+                        approve_all: false,
+                        suggestion: suggestion.map(str::to_string),
+                    }),
+                })
+                .expect("resume");
+            let BackendResponse::Resumed { status, .. } = resumed else { panic!("resumed") };
+            status.state
+        };
+        assert_eq!(resume("idem-proposal", Some("creala en Inbox")), OperationState::Running);
+        assert_eq!(resume("idem-reject", None), OperationState::Cancelled);
+        assert_eq!(resume("idem-blank", Some("  ")), OperationState::Cancelled);
+    }
+
+    #[test]
     fn confirmation_waits_without_mutation_and_resumes_against_stored_preview() {
         let state = State::default();
         let ports = Ports;
@@ -991,6 +1045,8 @@ mod tests {
                 operation_id: "operation-1".into(),
                 accepted: true,
                 hunk_ids: vec!["hunk-1".into()],
+                approve_all: false,
+                suggestion: None,
             }),
         };
         let resumed = runtime.handle_resume(&decision).expect("resume");
@@ -1041,6 +1097,8 @@ mod tests {
                 operation_id: "operation-1".into(),
                 accepted: true,
                 hunk_ids: Vec::new(),
+                approve_all: false,
+                suggestion: None,
             }),
         };
         assert_eq!(
@@ -1054,6 +1112,8 @@ mod tests {
                 operation_id: "operation-1".into(),
                 accepted: true,
                 hunk_ids: Vec::new(),
+                approve_all: false,
+                suggestion: None,
             }),
             ..stale
         };
@@ -1174,6 +1234,7 @@ mod tests {
                 accepted: true,
                 step_ids: vec!["step-1".into()],
                 suggestion: None,
+                approve_all: false,
             }),
         };
         assert!(matches!(

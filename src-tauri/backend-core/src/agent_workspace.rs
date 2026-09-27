@@ -21,20 +21,20 @@ pub const MEMORY_PATH: &str = ".agent/memory/memory.md";
 pub const THOUGHTS_PATH: &str = ".agent/memory/thoughts.md";
 pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const DEFAULT_PROMPT_PATH: &str = ".agent/promps/default.md";
-pub const MAX_MEMORIES: usize = 100;
+pub const MAX_MEMORIES: usize = 1_000;
 pub const MAX_RULE_CHARS: usize = 8_000;
-/// Characters of every memory together; the prompt reads at most 40,000 per
-/// agent file, so the memory file must stay well below that.
-pub const MAX_MEMORY_CHARS: usize = 30_000;
+/// Characters of every memory together; the prompt reads at most 250,000
+/// per agent file, so the memory file must stay below that.
+pub const MAX_MEMORY_CHARS: usize = 150_000;
 /// Budget a new memory must fit in before it is added.
 pub const MEMORY_LIMIT: ItemBudget = ItemBudget { items: MAX_MEMORIES, chars: MAX_MEMORY_CHARS };
 /// What a full memory is rewritten down to, leaving room for new memories.
-pub const MEMORY_TARGET: ItemBudget = ItemBudget { items: 80, chars: 24_000 };
-pub const MAX_THOUGHT_CHARS: usize = 500;
+pub const MEMORY_TARGET: ItemBudget = ItemBudget { items: 800, chars: 120_000 };
+pub const MAX_THOUGHT_CHARS: usize = 1_000;
 /// Hard limit of the thoughts file: reaching it forces a rewrite.
-pub const THOUGHTS_LIMIT: ItemBudget = ItemBudget { items: 60, chars: 12_000 };
+pub const THOUGHTS_LIMIT: ItemBudget = ItemBudget { items: 500, chars: 100_000 };
 /// What every reorganization of the thoughts keeps them within.
-pub const THOUGHTS_TARGET: ItemBudget = ItemBudget { items: 40, chars: 8_000 };
+pub const THOUGHTS_TARGET: ItemBudget = ItemBudget { items: 400, chars: 80_000 };
 
 const RULES_START: &str = "<!-- NOTIA_DEFAULT_RULES_START -->";
 const RULES_END: &str = "<!-- NOTIA_DEFAULT_RULES_END -->";
