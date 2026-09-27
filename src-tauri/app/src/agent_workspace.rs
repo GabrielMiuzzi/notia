@@ -78,9 +78,8 @@ fn is_agent_text_file(path: &str) -> bool {
     [".md", ".markdown", ".txt"].iter().any(|extension| lowered.ends_with(extension))
 }
 
-/// Folders, rules (with personal facts moved to memory), memory, the legacy
-/// memory migration, the visual default prompt and the confidential context
-/// of every agent file.
+/// Folders, rules (with personal facts moved to memory), memory, the visual
+/// default prompt and the confidential context of every agent file.
 fn prepare_workspace(app: &AppHandle, library_id: &str) -> Result<(), BackendError> {
     {
         let registry = app.state::<LibraryBindingRegistry>();
@@ -109,19 +108,6 @@ fn prepare_workspace(app: &AppHandle, library_id: &str) -> Result<(), BackendErr
         let memory = documents.read(workspace::MEMORY_PATH)?;
         let mut memories = workspace::parse_memory_items(memory.as_deref().map(workspace::document_body).unwrap_or(""));
         memories.extend(misclassified);
-        if let Some(legacy) = documents.read(workspace::LEGACY_MEMORY_PATH)? {
-            let legacy_items = workspace::parse_memory_items(workspace::document_body(&legacy));
-            // The backup marks the one-time migration; the legacy file is
-            // never read again so two memory sources cannot diverge.
-            if !legacy_items.is_empty() && documents.read(workspace::LEGACY_MEMORY_BACKUP_PATH)?.is_none() {
-                documents.write(
-                    workspace::LEGACY_MEMORY_BACKUP_PATH,
-                    None,
-                    &workspace::legacy_memory_backup(&legacy),
-                )?;
-                memories.extend(legacy_items);
-            }
-        }
         let memory_content = workspace::with_confidential_context(&workspace::render_memories(&workspace::merge_memories(memories)));
         let unchanged_memory = memory.as_deref().is_some_and(|current| {
             workspace::parse_memory_items(workspace::document_body(current))

@@ -2240,7 +2240,7 @@ El catálogo común incorpora `search_library_exact`, `get_document_metadata` y 
 
 Meeting construye el agente con `ephemeral-no-memory`, por lo que no carga ni persiste memoria global. Los planes visibles se guardan como metadata mínima y acotada por biblioteca para poder reconstruir el TO-DO visual tras una reapertura controlada. El feedback admite `progressMode`, `showPlan`, `showReasoningSummary` y `editProgressMessage`; Telegram descarta eventos obsoletos por request/timestamp, informa la posición de cola y nunca transmite thinking crudo. En Telegram la request y el agente construido por `useTelegramAgentBridge` reciben `persistent` solo cuando el `libraryUserId` autorizado es `user-owner`; los demás reciben `ephemeral-no-memory` y quedan fuera de la memoria global.
 
-La clasificación de intención (`engines/ai/agentIntentEngine.ts`) decide únicamente si el siguiente flujo debe responder, leer, buscar, analizar, comparar, continuar, aclarar, proponer/aplicar una edición, crear, organizar o ejecutar; nunca concede permisos ni escribe. Las solicitudes compuestas reciben una instrucción para crear un plan general con dependencias, riesgo y herramienta prevista. El motor de diff separa cambios en hunks con anchors estables y el runtime expone aliases para selección/bloque, movimiento de bloques, actualización de frontmatter, creación desde plantilla, patch multi-hunk y `verify_operation`. La memoria activa es `.agent/memory/memory.md`; `chat/LongTermMemory.md` se conserva solo para compatibilidad y ya no es fuente de lectura/escritura activa. Las requests durables de Telegram eliminan el prompt original antes de serializar metadata; el scheduler del cache de enlaces difiere rebuilds mientras la aplicación está oculta y los retoma al volver al frente.
+La clasificación de intención (`engines/ai/agentIntentEngine.ts`) decide únicamente si el siguiente flujo debe responder, leer, buscar, analizar, comparar, continuar, aclarar, proponer/aplicar una edición, crear, organizar o ejecutar; nunca concede permisos ni escribe. Las solicitudes compuestas reciben una instrucción para crear un plan general con dependencias, riesgo y herramienta prevista. El motor de diff separa cambios en hunks con anchors estables y el runtime expone aliases para selección/bloque, movimiento de bloques, actualización de frontmatter, creación desde plantilla, patch multi-hunk y `verify_operation`. La memoria activa es `.agent/memory/memory.md`; `chat/LongTermMemory.md` ya no se lee ni se migra. Las requests durables de Telegram eliminan el prompt original antes de serializar metadata; el scheduler del cache de enlaces difiere rebuilds mientras la aplicación está oculta y los retoma al volver al frente.
 
 El listado de modelos, la inspección de capacidades, health y las rondas desktop pasan por comandos Tauri; el WebView no usa `/api/tags`, `/api/show` ni `/api/chat` de Ollama. Android tiene comandos versionados para rondas con tools y búsqueda web (`toolChat` y `webSearch` del plugin), y `AiBridgePlugin.kt` versionado para health, modelos, chat, streaming NDJSON, tools, búsqueda y cancelación; la validación Gradle/dispositivo sigue pendiente de plataforma. La búsqueda web nunca recibe snapshot, historial, memoria, rutas o contenido de archivos y bloquea secretos, credenciales, PII y datos sensibles antes del adapter. La configuración portable de biblioteca, Redux y localStorage conservan la configuración de IA sin API key; la credencial queda en memoria de sesión hasta la frontera nativa. El almacenamiento seguro nativo persistente entre reinicios sigue pendiente. El catálogo de tickets admite filtros por estado, prioridad, grupo, fechas, tags y texto de metadata, y persiste dependencias/checklist como campos controlados del frontmatter.
 
@@ -3390,7 +3390,7 @@ En el composer, `ChatComposer` limita verticalmente la lista de adjuntos y habil
 - Timeout de chat: 180s (`AI_CHAT_TIMEOUT_MS`).
 - Límite de contexto: 30k caracteres (`MAX_CONTEXT_CHARS`).
 - Límite de archivos en modo **Referencia**: 50 archivos / 6.000 caracteres.
-- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`) en el prompt; 100 memorias persistidas en `.agent/memory/memory.md`. `LongTermMemory.md` solo puede leerse durante la migración y se conserva en un backup versionado.
+- Máximo memorias: 50 (`MAX_MEMORY_ITEMS`) en el prompt; 100 memorias persistidas en `.agent/memory/memory.md`. `chat/LongTermMemory.md` ya no se lee ni se migra (2026-09-27).
 - Cancelación: `AbortController`/eventos Tauri en desktop y `abortSignal` en el bridge Android. La única excepción de transporte HTTP desde WebView es el adapter separado del servidor publicado.
 
 #### Arquitectura del Chat
@@ -3425,7 +3425,7 @@ flowchart LR
    - Si el título no cambió y el cuerpo del `.md` termina con un marker válido (`user` o `assistant`), se escriben solo los mensajes nuevos al final.
    - Si el título cambió o el formato no es seguro, fallback a `saveChatDocument` (re-escritura completa).
 6. **Título**: tras el primer mensaje del usuario, `generateAiChatTitle()` envía un prompt especial al modelo pidiendo un título corto (máx. 6 palabras, sin comillas). Parsea y sanitiza la respuesta.
-7. **Memoria activa**: el motor global carga `.agent/memory/rules.md` y `.agent/memory/memory.md` y solo los escribe con `add_agent_rule`/`add_agent_memory` bajo `persistencePolicy: 'persistent'`; los chats persistentes del Owner y Telegram vinculado al Owner pueden cargarla y escribirla, mientras Meeting, Multichat, publicación y Telegram vinculado a otro usuario no la cargan ni escriben. `LongTermMemory.md` solo se conserva como compatibilidad legacy.
+7. **Memoria activa**: el motor global carga `.agent/memory/rules.md` y `.agent/memory/memory.md` y solo los escribe con `add_agent_rule`/`add_agent_memory` bajo `persistencePolicy: 'persistent'`; los chats persistentes del Owner y Telegram vinculado al Owner pueden cargarla y escribirla, mientras Meeting, Multichat, publicación y Telegram vinculado a otro usuario no la cargan ni escriben. `chat/LongTermMemory.md` ya no se lee ni se migra.
 
 #### Pasos del proceso (Android)
 
@@ -6783,7 +6783,7 @@ Se retiró el camino paralelo del chat:
 - Se eliminaron `agent_knowledge::learn_from_turn` (app) y `memory_messages`, `parse_memory_list`, `organize_messages` y `parse_organized` (core), junto con `agent_workspace::memories`, `rules` y `save_rules`, que quedaron sin uso. Ese camino reescribía `memory.md` y reorganizaba `rules.md` sin pasar por el motor.
 - `StoredChatDocument` pierde `long_term_memory_enabled`: el parser ignora la clave `longTermMemory` de los archivos existentes y el serializador deja de escribirla. `CreateChatPayload`, `CreateChatFileInput`, `CreateChatModalSubmitPayload` y `StoredChatDocument` (TypeScript) pierden `longTermMemoryEnabled`, y `CreateChatModal` pierde la casilla «Memoria persistente». `buildAutoCreateChatPayload` ya no recibe parámetros y `UseChatSubmitMessageDependencies` pierde `showHistoryPanel`.
 - `chat_turn::prepare_new_chat` ya no desactiva la memoria para los chats que arrancan con un índice de archivos.
-- Compatibilidad: los chats antiguos se abren igual; la línea `longTermMemory:` desaparece al guardarlos. La migración de `chat/LongTermMemory.md` a `memory.md` del workspace del agente no cambió.
+- Compatibilidad: los chats antiguos se abren igual; la línea `longTermMemory:` desaparece al guardarlos. La migración de `chat/LongTermMemory.md` a `memory.md` se quitó el 2026-09-27 (ver «Memoria del agente: sin migración de `LongTermMemory.md`»).
 - El diálogo **Memoria del agente** (enlace **Administrar memoria** del panel de contexto) sigue vaciando `memory.md` (`backend_save_agent_memories` con una lista vacía) y explica que las reglas no cambian.
 
 Validación: `cargo test --offline -p notia-backend-core` (229), `cargo test --offline -p notia-app --features bluetooth` (299, 41 warnings en desktop frente a 44 antes), `cargo check` Android, `tsc -p tsconfig.app.json`, `eslint` y `vitest run` (217). Pendiente: comprobar en la app que el agente guarda reglas y memorias con sus tools en Windows y Android.
@@ -8622,3 +8622,18 @@ Sigue el lienzo del Inicio (claude.ai/artifact/Cj5v78Dckwt2jtR1HVXBXt): chip del
 - `npx tsc`, `npx eslint .` y `npx vitest run` (348, con `HomeWeatherChip.test.tsx`): sin errores.
 - Consulta real a Open-Meteo desde Rust (prueba temporal que no quedó en el código): pronóstico de Buenos Aires y búsqueda «Córdoba» con otras coincidencias. Revisión visual del chip y el panel con esos datos en tema oscuro y claro a 1100 px y en 390 px.
 - Pendiente: probar en la app de Windows y en Android (toque del chip y del panel), elegir otro lugar desde Configuraciones, y preguntar el clima al asistente por chat y por Telegram.
+
+## Memoria del agente: sin migración de `LongTermMemory.md` (2026-09-27)
+
+**Síntoma**: apareció `.agent/memory/LongTermMemory.legacy.v1.backup.md` en la biblioteca, aunque el chat había dejado de usar `longTermMemory` el 2026-09-24.
+
+**Causa**: aquel cambio quitó la memoria propia del chat, pero dejó la migración de `chat/LongTermMemory.md` en `prepare_workspace`. Cuando existía ese archivo con alguna línea, la migración copiaba su contenido a la copia versionada y sumaba sus líneas a `memory.md`. En la biblioteca afectada el archivo viejo solo tenía un `<br />`, así que la copia no tenía memorias.
+
+**Arreglo**:
+
+- `prepare_workspace` (`app/src/agent_workspace.rs`) ya no lee `chat/LongTermMemory.md` ni escribe la copia. `backend-core/src/agent_workspace.rs` pierde `LEGACY_MEMORY_PATH`, `LEGACY_MEMORY_BACKUP_PATH` y `legacy_memory_backup`.
+- La única memoria es `.agent/memory/memory.md`, escrita con `add_agent_memory` y las reglas de `rules.md`.
+- Las copias que ya existan en otras bibliotecas no se borran solas (pueden tener memorias). Un `chat/LongTermMemory.md` que quede en otra biblioteca ya no se importa.
+- En la biblioteca afectada se borró a mano la copia vacía.
+
+**Validaciones**: `cargo test -p notia-backend-core` (376) y `cargo test -p notia-app --features bluetooth` (404), sin warnings nuevos (37).

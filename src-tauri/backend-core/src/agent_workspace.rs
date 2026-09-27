@@ -17,8 +17,6 @@ pub const AGENT_FOLDERS: [&str; 5] = [
 ];
 pub const RULES_PATH: &str = ".agent/memory/rules.md";
 pub const MEMORY_PATH: &str = ".agent/memory/memory.md";
-pub const LEGACY_MEMORY_PATH: &str = "chat/LongTermMemory.md";
-pub const LEGACY_MEMORY_BACKUP_PATH: &str = ".agent/memory/LongTermMemory.legacy.v1.backup.md";
 pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const DEFAULT_PROMPT_PATH: &str = ".agent/promps/default.md";
 pub const MAX_MEMORIES: usize = 100;
@@ -207,11 +205,6 @@ pub fn render_memories(memories: &[String]) -> String {
     lines.extend(memories.iter().map(|memory| format!("- {memory}")));
     lines.push(String::new());
     lines.join("\n")
-}
-
-/// Recovery copy of the legacy chat memory kept once after its migration.
-pub fn legacy_memory_backup(legacy: &str) -> String {
-    format!("{MEMORY_VERSION_MARKER}\n<!-- Source: {LEGACY_MEMORY_PATH} -->\n\n{legacy}")
 }
 
 /// Document whose frontmatter marks it as confidential; the body is kept.
