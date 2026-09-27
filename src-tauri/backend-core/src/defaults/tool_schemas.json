@@ -4277,5 +4277,29 @@
         }
       }
     }
+  },
+  "get_weather": {
+    "description": "Consulta el clima actual y el pronóstico (Open-Meteo, datos públicos): temperatura, sensación térmica, humedad, viento, condición y probabilidad de lluvia por día y, si se pide, por hora. Sin location usa el lugar configurado de la biblioteca (Configuraciones → Clima). Devuelve el lugar resuelto; si el nombre coincide con otros lugares, otherMatches los lista.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "description": "Ciudad o lugar a consultar, con provincia o país si hace falta desambiguar (por ejemplo «Córdoba, Argentina»). Omitilo para el lugar de la biblioteca."
+        },
+        "days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Días de pronóstico desde hoy (1 a 16). Por defecto, 3."
+        },
+        "hours": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 48,
+          "description": "Horas de pronóstico hora por hora desde ahora (0 a 48). Por defecto, 0."
+        }
+      }
+    }
   }
 }

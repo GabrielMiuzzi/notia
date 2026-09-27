@@ -1,6 +1,7 @@
 import {
   Archive,
   AtSign,
+  CloudSun,
   CreditCard,
   Globe,
   Info,
@@ -15,12 +16,12 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-export type SettingsSection = 'General' | 'Contextos' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Cuentas asociadas' | 'Finanzas' | 'Backups' | 'Publicar'
+export type SettingsSection = 'General' | 'Contextos' | 'Clima' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Cuentas asociadas' | 'Finanzas' | 'Backups' | 'Publicar'
 
-export const SETTINGS_SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Cuentas asociadas', 'Finanzas', 'Backups', 'Publicar']
+export const SETTINGS_SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Clima', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Cuentas asociadas', 'Finanzas', 'Backups', 'Publicar']
 
 export const SETTINGS_GROUPS: Array<{ label: string; sections: SettingsSection[] }> = [
-  { label: 'Biblioteca', sections: ['General', 'Contextos'] },
+  { label: 'Biblioteca', sections: ['General', 'Contextos', 'Clima'] },
   { label: 'Acceso', sections: ['Usuarios', 'Roles'] },
   { label: 'Editor', sections: ['Panel desplegable', 'InkMath'] },
   { label: 'Integraciones', sections: ['IA', 'Voz', 'Telegram', 'Cuentas asociadas'] },
@@ -37,6 +38,7 @@ interface SettingsSectionMeta {
 export const SETTINGS_SECTION_META: Record<SettingsSection, SettingsSectionMeta> = {
   General: { description: 'Versión, dispositivo y biblioteca activa.', icon: Info, keywords: 'version plataforma' },
   Contextos: { description: 'Etiquetas que cada nota declara en su propiedad contexto. El color se usa en Graph View.', icon: Tag, keywords: 'tags color etiqueta' },
+  Clima: { description: 'Lugar del pronóstico del Inicio y del asistente.', icon: CloudSun, keywords: 'tiempo pronostico ciudad lugar temperatura open-meteo' },
   Usuarios: { description: 'Quién entra a la biblioteca activa, con qué rol y qué contextos ve.', icon: Users, keywords: 'contraseña password permisos' },
   Roles: { description: 'Roles disponibles en la biblioteca activa.', icon: Shield, keywords: 'owner family guest' },
   'Panel desplegable': { description: 'Cada cuánto el panel busca cambios en la biblioteca.', icon: PanelRight, keywords: 'explorador chequeo cooldown refresco' },

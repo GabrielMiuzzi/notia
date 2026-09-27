@@ -59,6 +59,7 @@ pub mod telegram_bot;
 pub mod tool_call_recovery;
 pub mod tool_routing;
 pub mod turn_interrupts;
+pub mod weather;
 pub mod web_search;
 pub mod wiki_links;
 

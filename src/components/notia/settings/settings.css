@@ -297,6 +297,15 @@
 .notia-settings-note { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--settings-muted); }
 .notia-settings-note code { padding: 2px 6px; border-radius: 4px; background: var(--settings-card-bg); }
 .notia-settings-empty { padding: 14px 20px; font-size: 13px; color: var(--settings-muted); }
+.notia-settings-weather-search { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.notia-settings-weather-results { margin: 0; padding: 4px 12px 12px; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.notia-settings-weather-result { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--settings-text); font: inherit; font-size: 13.5px; text-align: left; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.notia-settings-weather-result svg { flex-shrink: 0; color: var(--settings-muted); }
+.notia-settings-weather-result:focus-visible { outline: 2px solid var(--settings-accent); outline-offset: -2px; }
+.notia-settings-weather-result:disabled { opacity: 0.55; cursor: default; }
+@media (hover: hover) and (pointer: fine) {
+  .notia-settings-weather-result:hover:not(:disabled) { border-color: var(--settings-accent); background: var(--settings-accent-bg); }
+}
 .notia-settings-path { font-family: var(--settings-mono); font-size: 13px; color: color-mix(in srgb, var(--settings-text) 85%, var(--settings-muted)); overflow-wrap: anywhere; user-select: text; }
 .notia-settings-block { padding: 16px 20px; }
 .notia-settings-block-title { font-size: 15px; font-weight: 600; }

@@ -997,6 +997,7 @@ impl TauriBackendToolExecutor {
             "request_user_clarification",
             "request_user_confirmation",
             "search_web",
+            "get_weather",
             "set_agent_execution_plan",
             "set_task_execution_plan",
             "create_agent_plan",
@@ -3844,6 +3845,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     .map_err(Self::agenda_error)?
             }
             name if notia_backend_core::mail_tools::is_mail_tool(name) => crate::mail_tools::execute(&self.app, context, call)?,
+            "get_weather" => crate::weather::execute_tool(&self.app, &context.library_id, &call.arguments)?,
             _ => {
                 return Err(BackendError::new(
                     BackendErrorCode::Unsupported,

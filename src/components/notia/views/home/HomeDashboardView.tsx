@@ -9,6 +9,8 @@ import { setRightChatPanelOpen, setSidebarOpen } from '../../../../features/ui/u
 import { selectTreeNodes } from '../../../../features/documents/documentsSelectors'
 import { useNotiaAction } from '../../../../context/notiaActions/useNotiaAction'
 import { useHomeDashboard } from './useHomeDashboard'
+import { useHomeWeather } from './useHomeWeather'
+import { HomeWeatherChip } from './HomeWeatherChip'
 import { HomeAskBox } from './HomeAskBox'
 import { HomeRecordButton } from './HomeRecordButton'
 import { HomeAgendaCard } from './HomeAgendaCard'
@@ -32,6 +34,7 @@ export function HomeDashboardView({ library }: { library: NotiaLibrary }) {
   const explorerToolClick = useNotiaAction('explorerToolClick')
   const toggleFolder = useNotiaAction('toggleFolder')
   const { dashboard, error, isLoading, reload } = useHomeDashboard(library.id)
+  const weather = useHomeWeather(library.id)
   const [sentLabel, setSentLabel] = useState<string | null>(null)
 
   const openChatPanel = useCallback((request: ChatPanelRequest) => {
@@ -81,7 +84,10 @@ export function HomeDashboardView({ library }: { library: NotiaLibrary }) {
         <header className="home-header">
           <div className="home-header__intro">
             <p className="home-eyebrow home-mono">{dashboard.dateLabel}</p>
-            <h1>{dashboard.greeting}</h1>
+            <div className="home-header__title">
+              <h1>{dashboard.greeting}</h1>
+              <HomeWeatherChip weather={weather.weather} error={weather.error} isLoading={weather.isLoading} onRetry={() => void weather.reload()} />
+            </div>
             {dashboard.summary ? <p className="home-summary">{dashboard.summary}</p> : null}
           </div>
           <div className="home-header__actions">

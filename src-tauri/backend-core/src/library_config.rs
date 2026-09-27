@@ -117,6 +117,10 @@ pub fn normalize_library_config(value: &Value) -> NormalizedLibraryConfig {
     if let Some(accounts) = crate::mail_accounts::normalize_mail_accounts(candidate.get(crate::mail_accounts::MAIL_ACCOUNTS_KEY)) {
         config.insert(crate::mail_accounts::MAIL_ACCOUNTS_KEY.into(), accounts);
     }
+    // The weather place, chosen in Settings among Open-Meteo's places.
+    if let Some(weather) = crate::weather::normalize_weather_config(candidate.get(crate::weather::WEATHER_KEY)) {
+        config.insert(crate::weather::WEATHER_KEY.into(), weather);
+    }
 
     NormalizedLibraryConfig {
         config: Value::Object(config),

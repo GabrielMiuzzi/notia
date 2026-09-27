@@ -59,6 +59,7 @@ mod library_users;
 mod meeting;
 mod meeting_media;
 mod home;
+mod weather;
 mod recent_documents;
 mod user_auth;
 

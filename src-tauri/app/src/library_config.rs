@@ -208,9 +208,10 @@ pub(crate) fn backend_write_library_config(
         let stored = if exists { store.read().ok().flatten() } else { None };
         let mut merged = stored.unwrap_or_else(|| Value::Object(Default::default()));
         if let (Some(target), Some(updates)) = (merged.as_object_mut(), config.as_object()) {
-            // The Google Cloud client and the mail accounts are written only
-            // by the backend's own commands.
-            for (key, value) in updates.iter().filter(|(key, _)| key.as_str() != MAIL_ACCOUNTS_KEY && key.as_str() != GOOGLE_CLOUD_KEY) {
+            // The Google Cloud client, the mail accounts and the weather
+            // place are written only by the backend's own commands.
+            let backend_owned = [MAIL_ACCOUNTS_KEY, GOOGLE_CLOUD_KEY, crate::backend::weather::WEATHER_KEY];
+            for (key, value) in updates.iter().filter(|(key, _)| !backend_owned.contains(&key.as_str())) {
                 target.insert(key.clone(), value.clone());
             }
         }

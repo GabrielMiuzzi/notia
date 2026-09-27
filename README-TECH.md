@@ -8590,3 +8590,35 @@ Sigue el lienzo de la Agenda (claude.ai/artifact/PKU5AkiZMN7WcKCNd3ub95) ajustad
 - `npx tsc`, `npx eslint .` y `npx vitest run` (346, con la grilla actualizada): sin errores.
 - Revisión visual con Chrome sin ventana sobre la vista real alimentada con el JSON que serializa Rust (tema oscuro, 1280 px).
 - Pendiente: sincronizar con cuentas reales (alta, cambio y borrado en cada lado, recurrentes, dos cuentas con la misma reunión), la consulta real de feriados en la app, tema claro y Android (toque en la franja libre bajo eventos superpuestos, copia SAF).
+
+## Inicio: clima de Open-Meteo y herramienta del asistente (2026-09-27)
+
+Sigue el lienzo del Inicio (claude.ai/artifact/Cj5v78Dckwt2jtR1HVXBXt): chip del clima junto al saludo (temperatura, cielo, máxima y mínima, tres días) y un panel con sensación, humedad, viento, lugar y hora del dato, cinco columnas horarias y la barra de rango de 7 días.
+
+### Núcleo (`backend-core/src/weather.rs`)
+
+- `WeatherLocation` (`name`, `admin1`, `country`, `latitude`, `longitude`, `timezone`) con `label()` («San Martín, Provincia de Mendoza, Argentina») y `validate_location` (nombre de 1 a 120 caracteres sin control, coordenadas en rango, zona horaria solo con `[A-Za-z0-9/_+-]`).
+- Configuración: sección `weather.location` de `.notia/notiaConfig.json`, normalizada en `normalize_library_config` (se descarta si es inválida) y escrita solo por el backend (`backend_write_library_config` la ignora, como las cuentas de correo). Sin lugar, `configured_location` usa Buenos Aires y lo marca como predeterminado.
+- URLs: `forecast_url` (current, hourly con `is_day`, daily con probabilidad y suma de lluvia, `timezone=auto`, 1 a 16 días) y `geocoding_url` (`language=es`, hasta 8 resultados).
+- `parse_forecast` descarta filas sin números; `condition(code)` traduce el código WMO a palabras y a uno de los cielos `sun`, `partly`, `cloud`, `rain`; `condition_at` usa `night` (luna) para despejado o parcialmente nublado de noche. `wind_direction` da el punto cardinal en español.
+- `parse_weather_tool`: `location` opcional, `days` de 1 a 16 (3 por defecto) y `hours` de 0 a 48.
+
+### App (`app/src/weather.rs`)
+
+- HTTP con `reqwest` (10 s). Caché en memoria por URL: 15 minutos fresca y, si Open-Meteo no responde, hasta 6 horas como respaldo.
+- `weather_home({ payload: { libraryId } })` → `HomeWeather` con todos los textos armados en Rust: `place`, `now` (`temp`, `condition`, `sky`, `feels`, `humidity`, `wind` «15 km/h SE», `updated` = hora local del dato en el lugar, `max`, `min`), `hours` («Ahora» y cada 3 horas, con lluvia o «—»), `days` («Hoy» y los días siguientes con `barLeft`/`barWidth` sobre la escala de la semana y `title`) y `next` (los tres días del chip). Es un comando aparte del tablero para que una conexión lenta no demore las demás tarjetas.
+- `weather_get_location`, `weather_search_locations({ query })` y `weather_set_location({ libraryId, location })`: el cliente reenvía el lugar elegido de la búsqueda y Rust lo valida antes de guardarlo; al guardar emite `notia:weather-place-changed`.
+- Herramienta `get_weather` (política `Public`, alcances Biblioteca y Finanzas, siempre disponible como `search_web`, sin confirmación): sin `location` usa el lugar de la biblioteca; con `location` toma el primer resultado del geocoder y lista otros en `otherMatches`. Devuelve `location`, `now` (hora local, condición, °C, sensación, humedad, viento), `days` y, si se piden, `hours`. Tiene esquema en `tool_schemas.json`, guía (usar `get_weather` y no `search_web` para el clima, nombrar el lugar y la hora del dato) y etiquetas «consultando el clima» en el chat y en Telegram.
+
+### Interfaz
+
+- `useHomeWeather` lee el clima al abrir el Inicio, al volver el foco, cada 15 minutos y cuando cambia el lugar. `HomeWeatherChip` es un botón con `aria-expanded`; el panel (`role="dialog"`) se cierra con la X de 44 px, con Escape (el foco vuelve al chip) o tocando afuera. Iconos del lienzo por `data-sky` con los colores de la paleta (ámbar para sol, periwinkle para lluvia y noche, muted para nubes). Con 640 px de contenedor o menos, el chip muestra solo temperatura y cielo y el panel ocupa el ancho disponible.
+- Configuraciones suma la sección **Clima** (grupo Biblioteca, `WeatherSection`): lugar actual (con «Predeterminado» si no se eligió), búsqueda y resultados de 44 px de alto.
+
+### Validaciones
+
+- `cargo test -p notia-backend-core`: 376 (6 nuevas de clima). `cargo test -p notia-app --features bluetooth`: 404 (3 nuevas: vista del Inicio, «-0°» y resultado de la herramienta).
+- Warnings sin cambios: escritorio 37, Android 61, Linux 144.
+- `npx tsc`, `npx eslint .` y `npx vitest run` (348, con `HomeWeatherChip.test.tsx`): sin errores.
+- Consulta real a Open-Meteo desde Rust (prueba temporal que no quedó en el código): pronóstico de Buenos Aires y búsqueda «Córdoba» con otras coincidencias. Revisión visual del chip y el panel con esos datos en tema oscuro y claro a 1100 px y en 390 px.
+- Pendiente: probar en la app de Windows y en Android (toque del chip y del panel), elegir otro lugar desde Configuraciones, y preguntar el clima al asistente por chat y por Telegram.

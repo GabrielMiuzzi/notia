@@ -55,6 +55,11 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
             vec![BackendScope::Library, BackendScope::Finance],
         ),
         public_tool(
+            "get_weather",
+            "Consulta el clima actual y el pronóstico de Open-Meteo.",
+            vec![BackendScope::Library, BackendScope::Finance],
+        ),
+        public_tool(
             "request_user_clarification",
             "Solicita un dato que falta antes de continuar.",
             vec![BackendScope::Library, BackendScope::Document, BackendScope::TaskManager, BackendScope::Finance],
@@ -433,6 +438,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
     match tool_name {
         name if super::mail_tools::is_mail_tool(name) => ToolPolicy::Mail,
         "search_web"
+        | "get_weather"
         | "request_user_clarification"
         | "request_user_confirmation"
         | "get_workspace_context" => ToolPolicy::Public,

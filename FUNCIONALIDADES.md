@@ -59,6 +59,7 @@
 - Vínculos automáticos entre tickets, gastos con tarjeta, líneas del resumen, cuotas y servicios, que el asistente informa y puede deshacer; los casos dudosos quedan en «Para revisar» y se responden en la conversación.
 - Catálogo de productos con el último precio por comercio, historial de precios, alias y unificación de productos y comercios.
 - Inicio: tablero de la biblioteca con los datos de los demás módulos (agenda de 7 días, tareas urgentes y Pomodoro, mes de Finanzas y dólar, hábitos de hoy, anotador del día, chats, notas y reunión para retomar y carpetas), con preguntas al asistente por agente, nueva nota y grabación de reuniones.
+- Clima de Open-Meteo en el Inicio (ahora, próximas horas y 7 días) para el lugar elegido en Configuraciones → Clima, y herramienta `get_weather` del asistente para cualquier ciudad (chat y Telegram).
 - Agenda por usuario con calendario mensual, semana en bloques de 15 minutos para agendar tareas con prioridad (mouse, táctil y teclado), tareas superpuestas lado a lado, anotador rápido del día y próximos eventos, persistida en SQLite y operable con herramientas de IA confirmadas (chat y Telegram).
 - Feriados de Argentina (nacionales y bancarios, de argentinadatos.com) en el calendario de la Agenda, con leyenda por tipo y cuenta regresiva al próximo feriado.
 - Sincronización bidireccional de la Agenda con Google Calendar cada 5 minutos, con todas las cuentas conectadas; ante cambios en los dos lados gana Notia.

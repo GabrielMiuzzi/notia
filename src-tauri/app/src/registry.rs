@@ -144,6 +144,10 @@ fn route(command: &str) -> Option<Route> {
         "start_audio_monitor" => start_audio_monitor,
         "stop_audio_monitor" => stop_audio_monitor,
         "home_dashboard" => home_dashboard,
+        "weather_home" => weather_home,
+        "weather_get_location" => weather_get_location,
+        "weather_search_locations" => weather_search_locations,
+        "weather_set_location" => weather_set_location,
         "meeting_media_begin" => meeting_media_begin,
         "meeting_media_chunk" => meeting_media_chunk,
         "meeting_media_finish" => meeting_media_finish,
@@ -343,6 +347,10 @@ pub const COMMAND_NAMES: &[&str] = &[
     "start_audio_monitor",
     "stop_audio_monitor",
     "home_dashboard",
+    "weather_home",
+    "weather_get_location",
+    "weather_search_locations",
+    "weather_set_location",
     "meeting_media_begin",
     "meeting_media_chunk",
     "meeting_media_finish",
@@ -999,6 +1007,25 @@ fn home_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Va
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::home::home_dashboard(arg0, arg1).await) })))
+}
+
+fn weather_home(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::weather::weather_home(arg0, arg1).await) })))
+}
+
+fn weather_get_location(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::weather::weather_get_location(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn weather_search_locations(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::weather::weather_search_locations(arg0).await) })))
+}
+
+fn weather_set_location(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::weather::weather_set_location(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn meeting_media_begin(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
