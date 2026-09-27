@@ -798,6 +798,12 @@ impl notia_backend_core::AgentStateRepository for TauriAgentStateRepository {
         self.read_optional(library_id, ".agent/memory/rules.md")
     }
 
+    fn load_thoughts(&self, library_id: &str) -> Result<Option<String>, BackendError> {
+        // Asked for under the same owner and persistence checks as memory;
+        // the agent writes them only with the `add_agent_thought` tool.
+        self.read_optional(library_id, notia_backend_core::agent_workspace::THOUGHTS_PATH)
+    }
+
     fn load_skills(&self, library_id: &str) -> Result<Vec<notia_backend_core::AgentSkill>, BackendError> {
         let registry = self.app.state::<LibraryBindingRegistry>();
         let picker = self.app.state::<AndroidDirectoryPickerState>();
@@ -861,6 +867,13 @@ fn compose_request_system_prompt(
         .map(|rules| notia_backend_core::resolve_rules_for_format(&rules, format))
         .filter(|rules| !rules.is_empty());
     let mut system = notia_backend_core::compose_system_prompt(&parts, &request.context);
+    // The local time lets the agent follow rules such as quiet hours and
+    // tell which of its thoughts already passed.
+    system.push_str(&format!("\n\nFecha y hora local: {}.", crate::local_time::local_now().1));
+    if request.autonomous {
+        system.push_str("\n\n");
+        system.push_str(&notia_backend_core::agent_autonomy::autonomous_guidance());
+    }
     let guidance = notia_backend_core::scope_guidance(
         &request.context,
         visible_tools,
@@ -1005,6 +1018,7 @@ impl TauriBackendToolExecutor {
             "get_workspace_context",
             "add_agent_memory",
             "add_agent_rule",
+            "add_agent_thought",
             "read_library_documents",
             "search_library_documents",
             "search_library_context",
@@ -2201,10 +2215,16 @@ impl TauriBackendToolExecutor {
             ));
         }
         let changed = crate::agent_workspace::append_agent_item(&self.app, &context.library_id, kind, value)?;
-        if changed && matches!(kind, crate::agent_workspace::AgentItem::Memory) {
-            // A parallel call without tools and without memory context
-            // organizes memory.md; the turn does not wait for it.
-            crate::agent_knowledge::schedule_memory_organization(&self.app, &context.library_id);
+        // A parallel call without tools and without memory context
+        // organizes memory.md or thoughts.md; the turn does not wait for it.
+        match kind {
+            crate::agent_workspace::AgentItem::Memory if changed => {
+                crate::agent_knowledge::schedule_memory_organization(&self.app, &context.library_id)
+            }
+            crate::agent_workspace::AgentItem::Thought if changed => {
+                crate::agent_knowledge::schedule_thoughts_organization(&self.app, &context.library_id)
+            }
+            _ => {}
         }
         Ok(json!({ "changed": changed }))
     }
@@ -3031,6 +3051,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 context,
                 crate::agent_workspace::AgentItem::Rule,
                 &Self::text(&call.arguments, "rule"),
+            )?,
+            "add_agent_thought" => self.append_agent_file(
+                context,
+                crate::agent_workspace::AgentItem::Thought,
+                &Self::first_text(&call.arguments, "thought", "content"),
             )?,
             "get_finance_record" => {
                 let entity = Self::text(&call.arguments, "entity");
@@ -3876,6 +3901,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "apply_multi_document_markdown_edit"
                     | "add_agent_memory"
                     | "add_agent_rule"
+                    | "add_agent_thought"
                     | "save_finance_account"
                     | "save_finance_category"
                     | "save_finance_transaction"
@@ -4073,6 +4099,17 @@ pub(crate) fn execute_backend_request(
         request.tool_access,
         request.library_search,
     );
+    // A run Notia started by itself only reads and keeps its thoughts.
+    if request.autonomous {
+        request.tools = notia_backend_core::agent_autonomy::autonomous_tools(std::mem::take(&mut request.tools));
+    }
+    // `thoughts.md` is always present for the runs that read it, even when
+    // it was deleted during the session.
+    if request.context.persistence_policy.allows_memory() && request.context.actor.is_library_owner() {
+        if let Err(error) = crate::agent_workspace::ensure_thoughts_file(app, &request.context.library_id) {
+            log::error!("[notia:memory] no se pudo recrear thoughts.md: {:?}", error.code);
+        }
+    }
     if fresh_run && request.context.scope == BackendScope::Library {
         let tools = std::mem::take(&mut request.tools);
         request.tools = route_turn_tools(app, state, &request, tools);

@@ -1,7 +1,7 @@
 //! Content rules of the library's `.agent` workspace: the managed default
-//! rules block, rules added by the agent, persistent memories, the
-//! confidential context of every agent file and prompt names. The adapter
-//! only reads and writes the files.
+//! rules block, rules added by the agent, persistent memories, the agent's
+//! own thoughts, the confidential context of every agent file and prompt
+//! names. The adapter only reads and writes the files.
 
 use crate::prompt::{strip_frontmatter, DEFAULT_AGENT_RULES};
 
@@ -17,17 +17,55 @@ pub const AGENT_FOLDERS: [&str; 5] = [
 ];
 pub const RULES_PATH: &str = ".agent/memory/rules.md";
 pub const MEMORY_PATH: &str = ".agent/memory/memory.md";
+/// The agent's own working notes: what it noticed, told, asked or proposed.
+pub const THOUGHTS_PATH: &str = ".agent/memory/thoughts.md";
 pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const DEFAULT_PROMPT_PATH: &str = ".agent/promps/default.md";
 pub const MAX_MEMORIES: usize = 100;
 pub const MAX_RULE_CHARS: usize = 8_000;
+/// Characters of every memory together; the prompt reads at most 40,000 per
+/// agent file, so the memory file must stay well below that.
+pub const MAX_MEMORY_CHARS: usize = 30_000;
+/// Budget a new memory must fit in before it is added.
+pub const MEMORY_LIMIT: ItemBudget = ItemBudget { items: MAX_MEMORIES, chars: MAX_MEMORY_CHARS };
+/// What a full memory is rewritten down to, leaving room for new memories.
+pub const MEMORY_TARGET: ItemBudget = ItemBudget { items: 80, chars: 24_000 };
+pub const MAX_THOUGHT_CHARS: usize = 500;
+/// Hard limit of the thoughts file: reaching it forces a rewrite.
+pub const THOUGHTS_LIMIT: ItemBudget = ItemBudget { items: 60, chars: 12_000 };
+/// What every reorganization of the thoughts keeps them within.
+pub const THOUGHTS_TARGET: ItemBudget = ItemBudget { items: 40, chars: 8_000 };
 
 const RULES_START: &str = "<!-- NOTIA_DEFAULT_RULES_START -->";
 const RULES_END: &str = "<!-- NOTIA_DEFAULT_RULES_END -->";
 const IA_RULES_START: &str = "<!-- NOTIA_IA_RULES_START -->";
 const IA_RULES_END: &str = "<!-- NOTIA_IA_RULES_END -->";
 const MEMORY_VERSION_MARKER: &str = "<!-- NOTIA_AGENT_MEMORY_VERSION:1 -->";
+const THOUGHTS_VERSION_MARKER: &str = "<!-- NOTIA_AGENT_THOUGHTS_VERSION:1 -->";
 const CONFIDENTIAL_CONTEXT_LINE: &str = "contexto: \"#Confidencial\"";
+
+/// How many list items, and how many characters in total, a list may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemBudget {
+    pub items: usize,
+    pub chars: usize,
+}
+
+impl ItemBudget {
+    /// Whether `items` fit in the budget.
+    pub fn fits(&self, items: &[String]) -> bool {
+        items.len() <= self.items && total_chars(items) <= self.chars
+    }
+
+    /// Whether one more item of `extra` characters still fits.
+    pub fn fits_one_more(&self, items: &[String], extra: &str) -> bool {
+        items.len() < self.items && total_chars(items) + extra.chars().count() <= self.chars
+    }
+}
+
+fn total_chars(items: &[String]) -> usize {
+    items.iter().map(|item| item.chars().count()).sum()
+}
 
 /// Rules body with the current managed default block and an (possibly
 /// empty) block for rules added by the agent.
@@ -183,10 +221,10 @@ pub fn parse_memory_items(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Case-insensitive union keeping the latest spelling, capped.
-pub fn merge_memories(items: impl IntoIterator<Item = String>) -> Vec<String> {
+/// Case-insensitive union keeping the latest spelling, in first-seen order.
+fn dedupe_items(items: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut merged = Vec::<String>::new();
-    for item in items.into_iter().map(|item| item.trim().to_string()) {
+    for item in items.into_iter().map(|item| item.split_whitespace().collect::<Vec<_>>().join(" ")) {
         if item.is_empty() {
             continue;
         }
@@ -195,16 +233,61 @@ pub fn merge_memories(items: impl IntoIterator<Item = String>) -> Vec<String> {
             None => merged.push(item),
         }
     }
+    merged
+}
+
+/// Case-insensitive union keeping the latest spelling, capped.
+pub fn merge_memories(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut merged = dedupe_items(items);
     merged.truncate(MAX_MEMORIES);
     merged
 }
 
-/// Memory file body for `memories`.
-pub fn render_memories(memories: &[String]) -> String {
-    let mut lines = vec![MEMORY_VERSION_MARKER.to_string(), String::new()];
-    lines.extend(memories.iter().map(|memory| format!("- {memory}")));
+fn render_list(marker: &str, items: &[String]) -> String {
+    let mut lines = vec![marker.to_string(), String::new()];
+    lines.extend(items.iter().map(|item| format!("- {item}")));
     lines.push(String::new());
     lines.join("\n")
+}
+
+/// Memory file body for `memories`.
+pub fn render_memories(memories: &[String]) -> String {
+    render_list(MEMORY_VERSION_MARKER, memories)
+}
+
+/// Thoughts file body for `thoughts`, without duplicates.
+pub fn render_thoughts(thoughts: &[String]) -> String {
+    render_list(THOUGHTS_VERSION_MARKER, &dedupe_items(thoughts.iter().cloned()))
+}
+
+/// A thought dated with the local time `now_label` (`AAAA-MM-DD HH:MM`),
+/// with its whitespace collapsed. `None` when it is empty or too long.
+pub fn stamp_thought(now_label: &str, text: &str) -> Option<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let length = text.chars().count();
+    (length > 0 && length <= MAX_THOUGHT_CHARS).then(|| format!("[{now_label}] {text}"))
+}
+
+/// The text of a thought without its `[fecha]` prefix.
+pub fn thought_text(thought: &str) -> &str {
+    let trimmed = thought.trim();
+    trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .map_or(trimmed, |(_, text)| text.trim())
+}
+
+/// Thoughts with `stamped` added last. A thought that says the same (apart
+/// from its date) is replaced, so a repeated note only refreshes its date.
+pub fn with_thought(thoughts: &[String], stamped: String) -> Vec<String> {
+    let text = thought_text(&stamped).to_string();
+    let mut next = thoughts
+        .iter()
+        .filter(|known| !thought_text(known).eq_ignore_ascii_case(&text))
+        .cloned()
+        .collect::<Vec<_>>();
+    next.push(stamped);
+    next
 }
 
 /// Document whose frontmatter marks it as confidential; the body is kept.
@@ -314,6 +397,38 @@ mod tests {
         let merged = merge_memories(items.into_iter().chain(["UNO".to_string()]));
         assert_eq!(merged, vec!["UNO".to_string(), "Dos".to_string()]);
         assert_eq!(parse_memory_items(&render_memories(&merged)), merged);
+    }
+
+    #[test]
+    fn thoughts_are_dated_refreshed_and_rendered() {
+        let first = stamp_thought("2026-09-27 10:00", "  Le avisé del turno   del lunes. ").expect("thought");
+        assert_eq!(first, "[2026-09-27 10:00] Le avisé del turno del lunes.");
+        assert_eq!(thought_text(&first), "Le avisé del turno del lunes.");
+        assert_eq!(thought_text("sin fecha"), "sin fecha");
+        assert_eq!(stamp_thought("2026-09-27 10:00", " "), None);
+        assert_eq!(stamp_thought("2026-09-27 10:00", &"x".repeat(MAX_THOUGHT_CHARS + 1)), None);
+
+        let other = stamp_thought("2026-09-27 10:05", "Propuse ordenar la rutina.").expect("thought");
+        let again = stamp_thought("2026-09-27 11:00", "le avisé del turno del lunes.").expect("thought");
+        let thoughts = with_thought(&with_thought(&[first], other.clone()), again.clone());
+        assert_eq!(thoughts, vec![other, again]);
+
+        let rendered = render_thoughts(&thoughts);
+        assert!(rendered.starts_with(THOUGHTS_VERSION_MARKER));
+        assert_eq!(parse_memory_items(&rendered), thoughts);
+    }
+
+    #[test]
+    fn budgets_count_items_and_characters() {
+        let items = vec!["abc".to_string(), "de".to_string()];
+        let budget = ItemBudget { items: 3, chars: 6 };
+        assert!(budget.fits(&items));
+        assert!(budget.fits_one_more(&items, "f"));
+        assert!(!budget.fits_one_more(&items, "fg"));
+        assert!(!ItemBudget { items: 2, chars: 100 }.fits_one_more(&items, "f"));
+        assert!(!ItemBudget { items: 5, chars: 4 }.fits(&items));
+        assert!(MEMORY_TARGET.items < MEMORY_LIMIT.items && MEMORY_TARGET.chars < MEMORY_LIMIT.chars);
+        assert!(THOUGHTS_TARGET.items < THOUGHTS_LIMIT.items && THOUGHTS_TARGET.chars < THOUGHTS_LIMIT.chars);
     }
 
     #[test]

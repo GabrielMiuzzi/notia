@@ -75,6 +75,12 @@ pub trait AgentStateRepository: Send + Sync {
         Ok(None)
     }
 
+    /// The agent's own thoughts (`.agent/memory/thoughts.md`), stored once
+    /// per library like the memory.
+    fn load_thoughts(&self, _library_id: &str) -> Result<Option<String>, BackendError> {
+        Ok(None)
+    }
+
     fn load_skills(&self, _library_id: &str) -> Result<Vec<AgentSkill>, BackendError> {
         Ok(Vec::new())
     }
@@ -140,6 +146,15 @@ pub fn load_memory_for_context(
     let authorized = authorize_agent_path(context, ".agent/memory/memory.md")?;
     debug_assert_eq!(authorized.path().kind(), AgentPathKind::Memory);
     state.load_memory(authorized.library_id(), authorized.library_user_id())
+}
+
+pub fn load_thoughts_for_context(
+    state: &dyn AgentStateRepository,
+    context: &BackendRequestContext,
+) -> Result<Option<String>, BackendError> {
+    let authorized = authorize_agent_path(context, ".agent/memory/thoughts.md")?;
+    debug_assert_eq!(authorized.path().kind(), AgentPathKind::Thoughts);
+    state.load_thoughts(authorized.library_id())
 }
 
 pub fn save_memory_for_context(

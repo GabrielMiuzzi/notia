@@ -49,6 +49,7 @@ const TOOL_LABELS: Record<string, string> = {
   set_routine_goal: 'ajustando una meta de la rueda de la vida',
   list_agenda: 'consultando tu agenda',
   get_weather: 'consultando el clima',
+  add_agent_thought: 'anotando un pensamiento',
   create_agenda_event: 'agendando el evento',
   delete_agenda_event: 'preparando la eliminación del evento',
   add_agenda_note: 'anotando el pendiente',

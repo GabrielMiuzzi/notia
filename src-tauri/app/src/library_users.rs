@@ -866,6 +866,24 @@ pub fn resolve_library_telegram_user(
     ).optional().map_err(map_sql_error)?.map(|user| enrich_user_contexts(&connection, user)).transpose()
 }
 
+/// Telegram user and chat the Owner linked, or `None` while unlinked. The
+/// autonomous agent writes only to this chat.
+pub(crate) fn owner_telegram_link(app: &AppHandle, context: &LibraryDatabaseContext) -> CommandResult<Option<(i64, i64)>> {
+    let connection = open_context(app, context)?;
+    let link = connection
+        .query_row(
+            "SELECT telegram_user_id, telegram_chat_id FROM library_users WHERE id=?1",
+            params![OWNER_USER_ID],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()
+        .map_err(map_sql_error)?;
+    Ok(match link {
+        Some((Some(user_id), Some(chat_id))) if user_id > 0 && chat_id > 0 => Some((user_id, chat_id)),
+        _ => None,
+    })
+}
+
 pub fn find_library_user(
     app: AppHandle,
     payload: FindLibraryUserPayload,

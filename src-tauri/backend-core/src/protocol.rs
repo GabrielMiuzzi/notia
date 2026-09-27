@@ -265,6 +265,11 @@ pub struct AgentRequest {
     /// person chose.
     #[serde(default = "library_search_default")]
     pub library_search: bool,
+    /// Notia started the run by itself (the hourly review or a new mail),
+    /// not a message of the person: it only reads, keeps its thoughts and
+    /// answers with the message to send, if any (see `agent_autonomy`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub autonomous: bool,
 }
 
 fn library_search_default() -> bool {
@@ -757,6 +762,7 @@ mod tests {
             prompt_name: None,
             tool_access: Default::default(),
             library_search: true,
+            autonomous: false,
         }
     }
 

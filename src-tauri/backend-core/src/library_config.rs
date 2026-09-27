@@ -267,6 +267,8 @@ fn normalize_ai(value: &Value) -> Value {
 
 /// Telegram bot of the library. The backend worker keeps the polling offset
 /// and the processed updates in its own state, not in the configuration.
+/// `autonomousAgent` (on unless turned off) lets the agent write to the
+/// Owner by itself: every hour and when new mail arrives.
 fn normalize_telegram(value: &Value) -> Value {
     json!({
         "enabled": value.get("enabled").and_then(Value::as_bool) == Some(true),
@@ -274,7 +276,13 @@ fn normalize_telegram(value: &Value) -> Value {
             value.get("botToken").and_then(Value::as_str).unwrap_or_default().trim(),
             MAX_TELEGRAM_TOKEN_CHARS,
         ),
+        "autonomousAgent": value.get("autonomousAgent").and_then(Value::as_bool) != Some(false),
     })
+}
+
+/// Whether the library's agent may write to the Owner by itself.
+pub fn autonomous_agent_enabled(config: &Value) -> bool {
+    config.pointer("/telegram/autonomousAgent").and_then(Value::as_bool) != Some(false)
 }
 
 #[cfg(test)]
@@ -342,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn telegram_keeps_only_the_switch_and_a_bounded_token() {
+    fn telegram_keeps_only_the_switches_and_a_bounded_token() {
         let normalized = normalize_library_config(&json!({
             "contextDefaultsVersion": 1,
             "telegram": {
@@ -356,7 +364,20 @@ mod tests {
         let telegram = &normalized.config["telegram"];
         assert_eq!(telegram["enabled"], true);
         assert_eq!(telegram["botToken"].as_str().expect("token").len(), MAX_TELEGRAM_TOKEN_CHARS);
-        assert_eq!(telegram.as_object().expect("object").len(), 2);
+        assert_eq!(telegram["autonomousAgent"], true);
+        assert_eq!(telegram.as_object().expect("object").len(), 3);
+        assert!(autonomous_agent_enabled(&normalized.config));
+        assert!(autonomous_agent_enabled(&json!({})));
+    }
+
+    #[test]
+    fn the_autonomous_agent_stays_off_once_turned_off() {
+        let normalized = normalize_library_config(&json!({
+            "contextDefaultsVersion": 1,
+            "telegram": { "enabled": true, "botToken": "1:a", "autonomousAgent": false },
+        }));
+        assert_eq!(normalized.config["telegram"]["autonomousAgent"], false);
+        assert!(!autonomous_agent_enabled(&normalized.config));
     }
 
     #[test]

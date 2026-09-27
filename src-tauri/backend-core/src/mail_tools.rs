@@ -616,6 +616,69 @@ pub fn list_messages_url(query: &str, label_ids: &[String], max_results: u64, pa
     url
 }
 
+/// The account's profile: its current `historyId`, where watching starts.
+pub fn profile_url() -> String {
+    format!("{GMAIL_API}/profile")
+}
+
+/// Messages added to Recibidos since `start_history_id`.
+pub fn history_url(start_history_id: &str, page_token: Option<&str>) -> String {
+    let mut url = format!(
+        "{GMAIL_API}/history?startHistoryId={}&historyTypes=messageAdded&labelId=INBOX&maxResults=100",
+        percent_encode(start_history_id)
+    );
+    if let Some(token) = page_token {
+        url.push_str(&format!("&pageToken={}", percent_encode(token)));
+    }
+    url
+}
+
+/// The `historyId` of a profile answer.
+pub fn profile_history_id(profile: &Value) -> Option<String> {
+    history_id(profile.get("historyId")?)
+}
+
+/// Gmail sends history ids as strings; accept numbers too.
+fn history_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(id) if !id.trim().is_empty() => Some(id.trim().to_string()),
+        Value::Number(id) => Some(id.to_string()),
+        _ => None,
+    }
+}
+
+/// One page of a history answer: the new received messages, in order and
+/// without repeats, the history id reached and the next page, if any.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryPage {
+    pub added: Vec<String>,
+    pub history_id: Option<String>,
+    pub next_page_token: Option<String>,
+}
+
+/// Messages that arrived in Recibidos: drafts, spam and trash are left out.
+pub fn parse_history_page(answer: &Value) -> HistoryPage {
+    const SKIPPED: [&str; 3] = ["SPAM", "TRASH", "DRAFT"];
+    let mut added = Vec::<String>::new();
+    let entries = answer.get("history").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    for entry in entries {
+        for item in entry.get("messagesAdded").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
+            let Some(message) = item.get("message") else { continue };
+            let labels = label_ids(message);
+            let received = labels.iter().any(|label| label == "INBOX") && !labels.iter().any(|label| SKIPPED.contains(&label.as_str()));
+            match message.get("id").and_then(Value::as_str) {
+                Some(id) if received && !id.is_empty() && !added.iter().any(|known| known == id) => added.push(id.to_string()),
+                _ => {}
+            }
+        }
+    }
+    HistoryPage {
+        added,
+        history_id: answer.get("historyId").and_then(history_id),
+        next_page_token: answer.get("nextPageToken").and_then(Value::as_str).filter(|token| !token.is_empty()).map(str::to_string),
+    }
+}
+
 /// A message with the headers the summaries and replies need.
 pub fn message_metadata_url(id: &str) -> String {
     format!(
@@ -1336,5 +1399,35 @@ mod tests {
         assert!(guidance.contains("2026-09-26 17:00") && guidance.contains("yo@gmail.com (cuenta laboral)"));
         assert!(mail_guidance(&["search_web"], "x", &[]).is_none());
         assert!(mail_guidance(&["list_gmail_messages"], "x", &[]).is_none());
+    }
+
+    #[test]
+    fn history_keeps_only_new_received_messages() {
+        assert!(history_url("12 3", Some("t")).contains("startHistoryId=12%203&historyTypes=messageAdded&labelId=INBOX"));
+        assert!(history_url("9", Some("t")).ends_with("&pageToken=t"));
+        assert_eq!(profile_history_id(&json!({ "historyId": "77" })).as_deref(), Some("77"));
+        assert_eq!(profile_history_id(&json!({ "historyId": 78 })).as_deref(), Some("78"));
+        assert_eq!(profile_history_id(&json!({})), None);
+        let page = parse_history_page(&json!({
+            "history": [
+                { "messagesAdded": [
+                    { "message": { "id": "a", "labelIds": ["UNREAD", "INBOX", "CATEGORY_PROMOTIONS"] } },
+                    { "message": { "id": "spam", "labelIds": ["INBOX", "SPAM"] } },
+                    { "message": { "id": "sent", "labelIds": ["SENT"] } },
+                ] },
+                { "messagesAdded": [
+                    { "message": { "id": "a", "labelIds": ["INBOX"] } },
+                    { "message": { "id": "b", "labelIds": ["INBOX", "IMPORTANT"] } },
+                    { "message": { "id": "draft", "labelIds": ["INBOX", "DRAFT"] } },
+                ] },
+                { "labelsAdded": [] },
+            ],
+            "historyId": "90",
+            "nextPageToken": "next",
+        }));
+        assert_eq!(page.added, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(page.history_id.as_deref(), Some("90"));
+        assert_eq!(page.next_page_token.as_deref(), Some("next"));
+        assert_eq!(parse_history_page(&json!({ "historyId": "91" })), HistoryPage { history_id: Some("91".into()), ..HistoryPage::default() });
     }
 }

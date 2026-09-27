@@ -241,6 +241,7 @@ mod tests {
     fn every_tool_belongs_to_an_area_or_to_every_turn() {
         assert_eq!(tool_area("search_web"), None);
         assert_eq!(tool_area("add_agent_memory"), None);
+        assert_eq!(tool_area("add_agent_thought"), None);
         assert_eq!(tool_area("create_agent_plan"), None);
         assert_eq!(tool_area("read_library_documents"), Some(ToolArea::Library));
         assert_eq!(tool_area("export_document"), Some(ToolArea::Library));

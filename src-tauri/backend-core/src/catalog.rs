@@ -76,6 +76,10 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         ),
         memory_tool("add_agent_rule", "Guarda una regla operativa persistente."),
         memory_tool("add_agent_memory", "Guarda un hecho persistente del usuario."),
+        memory_tool(
+            "add_agent_thought",
+            "Guarda un pensamiento propio: algo que observaste, avisaste, preguntaste o propusiste.",
+        ),
     ]);
     catalog.extend(alias_tools(
         [
@@ -442,7 +446,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "request_user_clarification"
         | "request_user_confirmation"
         | "get_workspace_context" => ToolPolicy::Public,
-        "add_agent_rule" | "add_agent_memory" => ToolPolicy::Memory,
+        "add_agent_rule" | "add_agent_memory" | "add_agent_thought" => ToolPolicy::Memory,
         "search_library_documents"
         | "search_library_context"
         | "search_library_exact"
@@ -851,6 +855,11 @@ mod tests {
         let mut without_memory = context(BackendScope::Library);
         without_memory.persistence_policy = super::super::PersistencePolicy::EphemeralNoMemory;
         assert!(authorize_tool_call(&without_memory, &principal(), &memory, ToolCatalogProjection::Full).is_err());
+        let thought = canonical_tool_catalog().into_iter().find(|tool| tool.name == "add_agent_thought").expect("tool");
+        assert!(!thought.requires_confirmation);
+        assert!(authorize_tool_call(&context(BackendScope::Library), &principal(), &thought, ToolCatalogProjection::Full).is_ok());
+        assert!(authorize_tool_call(&without_memory, &principal(), &thought, ToolCatalogProjection::Full).is_err());
+        assert_eq!(restrict_tool_access(vec![thought], ToolAccess::ReadOnly, false).len(), 1);
     }
 
     #[test]

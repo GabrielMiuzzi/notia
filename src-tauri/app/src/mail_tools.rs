@@ -6,7 +6,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::{Datelike, Local};
+use chrono::Local;
 use reqwest::Method;
 use serde_json::{json, Value};
 
@@ -160,6 +160,32 @@ pub(crate) fn calendar_accounts(app: &AppHandle, library_id: &str) -> Vec<MailAc
         .collect()
 }
 
+/// Gmail access of one account for the autonomous agent's mail watch.
+pub(crate) struct GmailSession(Session);
+
+impl GmailSession {
+    pub(crate) async fn get(&self, url: &str) -> Result<Value, BackendError> {
+        get(&self.0, url).await
+    }
+}
+
+/// A Gmail session of `account`, refreshing its token when needed.
+pub(crate) fn gmail_session(app: &AppHandle, library_id: &str, account: &MailAccountRef) -> Result<GmailSession, BackendError> {
+    session(app, library_id, account, "list_gmail_messages").map(GmailSession)
+}
+
+/// The library's connected Gmail accounts, in the order they were
+/// connected; none without the library's Google Cloud client.
+pub(crate) fn gmail_accounts(app: &AppHandle, library_id: &str) -> Vec<MailAccountRef> {
+    let Some(config) = crate::library_config::read_library_config(app, library_id).ok().flatten() else {
+        return Vec::new();
+    };
+    if google_cloud_client(Some(&config)).is_none() {
+        return Vec::new();
+    }
+    account_refs(Some(&config))
+}
+
 async fn get(session: &Session, url: &str) -> Result<Value, BackendError> {
     call(session, Method::GET, url, None).await
 }
@@ -288,19 +314,11 @@ pub(crate) fn preview(app: &AppHandle, context: &BackendRequestContext, call: &T
     })
 }
 
-/// The device's offset (`-03:00`) and its local date and time in words.
-fn local_now() -> (String, String) {
-    let now = Local::now();
-    let weekday = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"][now.weekday().num_days_from_monday() as usize];
-    let offset = now.format("%:z").to_string();
-    (offset.clone(), format!("{}, {weekday} (UTC{offset})", now.format("%Y-%m-%d %H:%M")))
-}
-
 /// Guidance for the model when the mail tools are offered: the connected
 /// accounts with their type and the local time.
 pub(crate) fn guidance(app: &AppHandle, library_id: &str, tool_names: &[&str]) -> Option<String> {
     let config = crate::library_config::read_library_config(app, library_id).ok().flatten();
-    crate::backend::mail_tools::mail_guidance(tool_names, &local_now().1, &account_refs(config.as_ref()))
+    crate::backend::mail_tools::mail_guidance(tool_names, &crate::local_time::local_now().1, &account_refs(config.as_ref()))
 }
 
 /// Time zone of the primary calendar. It is read from a list of its events,
@@ -334,7 +352,7 @@ async fn search(session: &Session, request: &MailToolRequest) -> Result<Value, B
         MailToolRequest::ListLabels => Ok(labels_view(&account_labels(session).await?)),
         MailToolRequest::ListEvents { time_min, time_max, query, max_results } => {
             let time_zone = calendar_time_zone(session).await?;
-            let (offset, _) = local_now();
+            let (offset, _) = crate::local_time::local_now();
             let start = time_min.as_ref().map(|value| calendar_bound(value, &offset)).unwrap_or_else(|| Local::now().to_rfc3339());
             let end = time_max.as_ref().map(|value| calendar_bound(value, &offset));
             Ok(events_view(&get(session, &events_url(&start, end.as_deref(), query, *max_results)).await?, &time_zone))
@@ -453,7 +471,7 @@ mod tests {
 
     #[test]
     fn the_local_time_carries_its_offset_and_weekday() {
-        let (offset, now) = local_now();
+        let (offset, now) = crate::local_time::local_now();
         assert!(offset.starts_with('+') || offset.starts_with('-'));
         assert!(now.contains(&format!("(UTC{offset})")));
     }

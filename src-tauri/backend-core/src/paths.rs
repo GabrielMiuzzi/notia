@@ -8,6 +8,7 @@ pub const SKILLS_DIRECTORY: &str = "skills";
 pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const RULES_FILE: &str = "rules.md";
 pub const MEMORY_FILE: &str = "memory.md";
+pub const THOUGHTS_FILE: &str = "thoughts.md";
 
 const MAX_LOGICAL_PATH_CHARS: usize = 4096;
 const MAX_PATH_SEGMENT_CHARS: usize = 255;
@@ -30,6 +31,8 @@ pub enum AgentPathKind {
     Prompt,
     Rules,
     Memory,
+    /// The agent's own thoughts: as private as the memory.
+    Thoughts,
     Skill,
 }
 
@@ -129,6 +132,7 @@ pub fn validate_agent_path(path: &str) -> Result<AgentPath, BackendError> {
         }
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, RULES_FILE] => (AgentPathKind::Rules, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, MEMORY_FILE] => (AgentPathKind::Memory, true),
+        [AGENT_DIRECTORY, MEMORY_DIRECTORY, THOUGHTS_FILE] => (AgentPathKind::Thoughts, true),
         [AGENT_DIRECTORY, SKILLS_DIRECTORY, skill, rest @ ..]
             if !skill.is_empty()
                 && (rest.is_empty() || !rest.iter().any(|value| value.is_empty())) =>
@@ -198,7 +202,7 @@ pub fn authorize_agent_path_for(
         ));
     }
     let path = validate_agent_path(path)?;
-    if path.kind == AgentPathKind::Memory
+    if matches!(path.kind, AgentPathKind::Memory | AgentPathKind::Thoughts)
         && (!context.persistence_policy.allows_memory()
             || !context.actor.is_library_owner())
     {
@@ -330,6 +334,11 @@ mod tests {
             ".agent/memory/memory.md"
         )
         .is_err());
+        let thoughts = ".agent/memory/thoughts.md";
+        assert_eq!(validate_agent_path(thoughts).ok().map(|path| path.kind()), Some(AgentPathKind::Thoughts));
+        assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-owner"), thoughts).is_ok());
+        assert!(authorize_agent_path(&context(PersistencePolicy::EphemeralNoMemory, "user-owner"), thoughts).is_err());
+        assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-other"), thoughts).is_err());
         assert!(authorize_agent_path(
             &context(PersistencePolicy::PublishedNoMemory, "user-owner"),
             ".agent/memory/rules.md"

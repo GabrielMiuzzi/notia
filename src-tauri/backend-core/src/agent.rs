@@ -1685,6 +1685,7 @@ mod tests {
             prompt_name: None,
             tool_access: Default::default(),
             library_search: true,
+            autonomous: false,
         }
     }
 

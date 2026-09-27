@@ -32,6 +32,7 @@ mod routine_dashboard;
 mod routine_tools;
 mod agenda_tools;
 mod coldpass;
+mod agent_autonomy;
 mod agent_history;
 mod agent_knowledge;
 mod agent_pending;
@@ -56,6 +57,7 @@ mod chat_agents;
 mod library_document_adapter;
 mod library_registry;
 mod library_users;
+mod local_time;
 mod meeting;
 mod meeting_media;
 mod home;
@@ -152,6 +154,7 @@ pub fn startup_hooks() -> Vec<TauriPlugin> {
         library_registry::init(),
         backup::service::init(),
         telegram_worker::init(),
+        agent_autonomy::init(),
         agenda_sync::init(),
         task_manager_publication_source::init(),
         database::init(),

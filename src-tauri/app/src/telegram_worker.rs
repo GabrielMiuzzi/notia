@@ -13,6 +13,11 @@
 //! album become one request. Offsets,
 //! processed updates and the queue survive restarts; the text of queued
 //! requests is never stored.
+//!
+//! The autonomous agent (`agent_autonomy`) also runs here, as requests of
+//! the Owner's chat that Notia queues by itself: they only read, show no
+//! progress, are never stored, send their answer only when it is not
+//! silence, and give way as soon as the Owner writes.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -26,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::host::{AppHandle, Emitter, Manager};
 
+use crate::backend::agent_autonomy::{self as autonomy, AutonomousKind};
 use crate::backend::telegram_bot as bot;
 use crate::backend::{
     AgentRequest, BackendActor, BackendChannel, BackendMessage, BackendRequest, BackendRequestContext,
@@ -61,7 +67,47 @@ pub(crate) const LIBRARY_CHANGED_EVENT: &str = "notia://telegram-library-changed
 
 #[derive(Default)]
 pub(crate) struct TelegramWorkerState {
-    running: Mutex<Option<(WorkerKey, Arc<AtomicBool>)>>,
+    running: Mutex<Option<RunningWorker>>,
+}
+
+struct RunningWorker {
+    key: WorkerKey,
+    stop: Arc<AtomicBool>,
+    worker: Arc<Worker>,
+}
+
+/// What happened to a run the autonomous agent asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutonomousEnqueue {
+    Queued,
+    /// Another autonomous run is still queued or running.
+    Busy,
+    /// No bot runs for the library, or its Owner has not linked Telegram.
+    Unavailable,
+}
+
+fn running_worker(app: &AppHandle, library_id: &str) -> Option<Arc<Worker>> {
+    let state = app.state::<TelegramWorkerState>();
+    let running = state.running.lock().ok()?;
+    running
+        .as_ref()
+        .filter(|running| running.key.library_id == library_id && !running.worker.stopped())
+        .map(|running| Arc::clone(&running.worker))
+}
+
+/// Whether the bot of `library_id` runs on this device, the only place its
+/// autonomous agent can write from.
+pub(crate) fn bot_runs_for(app: &AppHandle, library_id: &str) -> bool {
+    running_worker(app, library_id).is_some()
+}
+
+/// Queues a run of the autonomous agent in the Owner's Telegram chat of
+/// `library_id`, with `trigger` as its request.
+pub(crate) fn enqueue_autonomous(app: &AppHandle, library_id: &str, kind: AutonomousKind, trigger: String) -> AutonomousEnqueue {
+    match running_worker(app, library_id) {
+        Some(worker) => worker.enqueue_autonomous(kind, trigger),
+        None => AutonomousEnqueue::Unavailable,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,16 +149,17 @@ fn reconcile(app: &AppHandle) {
     let Ok(mut running) = state.running.lock() else {
         return;
     };
-    if running.as_ref().map(|(key, _)| key) == desired.as_ref().map(|(key, _)| key) {
+    if running.as_ref().map(|running| &running.key) == desired.as_ref().map(|(key, _)| key) {
         return;
     }
-    if let Some((_, stop)) = running.take() {
-        stop.store(true, Ordering::SeqCst);
+    if let Some(previous) = running.take() {
+        previous.stop.store(true, Ordering::SeqCst);
     }
     if let Some((key, library)) = desired {
         let stop = Arc::new(AtomicBool::new(false));
-        Worker::start(app.clone(), library, key.token.clone(), Arc::clone(&stop));
-        *running = Some((key, stop));
+        if let Some(worker) = Worker::start(app.clone(), library, key.token.clone(), Arc::clone(&stop)) {
+            *running = Some(RunningWorker { key, stop, worker });
+        }
     }
 }
 
@@ -176,6 +223,8 @@ struct WorkerFile {
 struct Job {
     stored: StoredJob,
     text: String,
+    /// Set when Notia queued the run by itself; such a job is never stored.
+    autonomous: Option<AutonomousKind>,
 }
 
 /// The request running now, so a message of its chat can stop it. Its text
@@ -183,6 +232,14 @@ struct Job {
 struct CurrentRun {
     chat_id: i64,
     text: String,
+    context: BackendRequestContext,
+    idempotency_key: String,
+    cancelled: Arc<AtomicBool>,
+    autonomous: bool,
+}
+
+/// Identity of a job's run while it goes on.
+struct ActiveRun {
     context: BackendRequestContext,
     idempotency_key: String,
     cancelled: Arc<AtomicBool>,
@@ -243,12 +300,10 @@ fn short_id() -> String {
 }
 
 impl Worker {
-    fn start(app: AppHandle, library: CatalogLibrary, token: String, stop: Arc<AtomicBool>) {
+    fn start(app: AppHandle, library: CatalogLibrary, token: String, stop: Arc<AtomicBool>) -> Option<Arc<Worker>> {
         let bot_id = token.split(':').next().unwrap_or("bot").chars().filter(char::is_ascii_digit).collect::<String>();
         let library_key = library.id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect::<String>();
-        let Ok(directory) = app.path().app_data_dir().map(|directory| directory.join("telegram")) else {
-            return;
-        };
+        let directory = app.path().app_data_dir().map(|directory| directory.join("telegram")).ok()?;
         let file = directory.join(format!("{library_key}-{bot_id}.json"));
         let mut persisted = std::fs::read_to_string(&file)
             .ok()
@@ -276,7 +331,9 @@ impl Worker {
         worker.notify_interrupted();
         let executor = Arc::clone(&worker);
         let _ = std::thread::Builder::new().name("notia-telegram-executor".into()).spawn(move || executor.run_queue());
-        let _ = std::thread::Builder::new().name("notia-telegram-poller".into()).spawn(move || worker.poll());
+        let poller = Arc::clone(&worker);
+        let _ = std::thread::Builder::new().name("notia-telegram-poller".into()).spawn(move || poller.poll());
+        Some(worker)
     }
 
     fn stopped(&self) -> bool {
@@ -289,7 +346,12 @@ impl Worker {
         };
         let mut jobs = self.active.lock().map(|active| active.iter().cloned().collect::<Vec<_>>()).unwrap_or_default();
         jobs.extend(self.interrupted.lock().map(|items| items.clone()).unwrap_or_default());
-        jobs.extend(self.queue.lock().map(|queue| queue.iter().map(|job| job.stored.clone()).collect::<Vec<_>>()).unwrap_or_default());
+        jobs.extend(
+            self.queue
+                .lock()
+                .map(|queue| queue.iter().filter(|job| job.autonomous.is_none()).map(|job| job.stored.clone()).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
         persisted.jobs = jobs;
         let Ok(text) = serde_json::to_string(&*persisted) else {
             return;
@@ -410,7 +472,8 @@ impl Worker {
         // Stopping keeps the queue on disk: it becomes interrupted and is
         // only resumed with the explicit recovery command.
         if let Ok(mut queue) = self.queue.lock() {
-            let drained = queue.drain(..).map(|job| job.stored).collect::<Vec<_>>();
+            // Autonomous runs are dropped: the next review asks again.
+            let drained = queue.drain(..).filter(|job| job.autonomous.is_none()).map(|job| job.stored).collect::<Vec<_>>();
             if let Ok(mut interrupted) = self.interrupted.lock() {
                 interrupted.extend(drained);
             }
@@ -470,6 +533,8 @@ impl Worker {
         if text.is_empty() && attachment.is_none() {
             return;
         }
+        // The Owner comes first: a run Notia started by itself gives way.
+        self.stop_autonomous_run(update.chat_id);
         if let (Some(attachment), Some(group)) = (attachment.clone(), update.media_group_id.clone()) {
             self.collect_album_part(update.chat_id, group, update.user.id, library_user_id, text, attachment);
             return;
@@ -554,14 +619,66 @@ impl Worker {
         });
     }
 
-    /// Text and context of the request that runs for `chat_id`.
+    /// Text and context of the request that runs for `chat_id` because the
+    /// person asked for it (an autonomous run never decides about messages).
     fn running_request(&self, chat_id: i64) -> Option<(String, BackendRequestContext)> {
         self.current
             .lock()
             .ok()?
             .as_ref()
-            .filter(|run| run.chat_id == chat_id)
+            .filter(|run| run.chat_id == chat_id && !run.autonomous)
             .map(|run| (run.text.clone(), run.context.clone()))
+    }
+
+    /// Drops the queued autonomous run of `chat_id` and cancels, without
+    /// telling the chat, the one that runs, so the message just received
+    /// goes first.
+    fn stop_autonomous_run(self: &Arc<Self>, chat_id: i64) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.retain(|job| job.autonomous.is_none() || job.stored.chat_id != chat_id);
+        }
+        let request_id = self.current.lock().ok().and_then(|current| {
+            current.as_ref().filter(|run| run.chat_id == chat_id && run.autonomous).map(|run| run.context.request_id.clone())
+        });
+        let Some(request_id) = request_id else {
+            return;
+        };
+        let worker = Arc::clone(self);
+        let _ = std::thread::Builder::new()
+            .name("notia-telegram-autonomy-stop".into())
+            .spawn(move || worker.cancel_current(chat_id, &request_id));
+    }
+
+    /// Queues an autonomous run in the Owner's chat, unless one is already
+    /// queued or running or the Owner has not linked Telegram.
+    fn enqueue_autonomous(&self, kind: AutonomousKind, trigger: String) -> AutonomousEnqueue {
+        let running = self.current.lock().map(|current| current.as_ref().is_some_and(|run| run.autonomous)).unwrap_or(true);
+        let queued = self.queue.lock().map(|queue| queue.iter().any(|job| job.autonomous.is_some())).unwrap_or(true);
+        if running || queued {
+            return AutonomousEnqueue::Busy;
+        }
+        let Ok(Some((telegram_user_id, chat_id))) = crate::library_users::owner_telegram_link(&self.app, &self.database_context()) else {
+            return AutonomousEnqueue::Unavailable;
+        };
+        // Only the autonomy thread queues these runs, so none arrived meanwhile.
+        let Ok(mut queue) = self.queue.lock() else {
+            return AutonomousEnqueue::Unavailable;
+        };
+        queue.push_back(Job {
+            stored: StoredJob {
+                request_id: short_id(),
+                chat_id,
+                telegram_user_id,
+                library_user_id: OWNER.to_string(),
+                attachments: Vec::new(),
+                attachment: None,
+            },
+            text: trigger,
+            autonomous: Some(kind),
+        });
+        drop(queue);
+        self.queue_ready.notify_all();
+        AutonomousEnqueue::Queued
     }
 
     fn cancel_requested(&self, chat_id: i64) -> bool {
@@ -717,7 +834,7 @@ impl Worker {
         let (recoverable, resend): (Vec<_>, Vec<_>) = recovered.into_iter().partition(|job| !job.attachments.is_empty());
         let count = recoverable.len();
         if let Ok(mut queue) = self.queue.lock() {
-            queue.extend(recoverable.into_iter().map(|stored| Job { stored, text: String::new() }));
+            queue.extend(recoverable.into_iter().map(|stored| Job { stored, text: String::new(), autonomous: None }));
         }
         self.persist();
         self.queue_ready.notify_all();
@@ -749,12 +866,13 @@ impl Worker {
             let Ok(mut queue) = self.queue.lock() else {
                 return;
             };
-            if queue.len() >= bot::MAX_PENDING_REQUESTS {
+            let pending = queue.iter().filter(|job| job.autonomous.is_none()).count();
+            if pending >= bot::MAX_PENDING_REQUESTS {
                 drop(queue);
                 self.send(chat_id, "No puedo aceptar más de 10 solicitudes pendientes. Esperá a que termine alguna e intentá nuevamente.");
                 return;
             }
-            let ahead = queue.len() + usize::from(self.active.lock().map(|active| active.is_some()).unwrap_or(false));
+            let ahead = pending + usize::from(self.active.lock().map(|active| active.is_some()).unwrap_or(false));
             queue.push_back(Job {
                 stored: StoredJob {
                     request_id: short_id(),
@@ -765,6 +883,7 @@ impl Worker {
                     attachment: None,
                 },
                 text,
+                autonomous: None,
             });
             ahead
         };
@@ -930,6 +1049,14 @@ impl Worker {
             let Some(job) = job else {
                 continue;
             };
+            // Runs Notia started by itself are never stored nor resumed.
+            if let Some(kind) = job.autonomous {
+                self.run_autonomous(&job, kind);
+                if let Ok(mut current) = self.current.lock() {
+                    *current = None;
+                }
+                continue;
+            }
             if let Ok(mut active) = self.active.lock() {
                 *active = Some(job.stored.clone());
             }
@@ -1070,115 +1197,23 @@ impl Worker {
         let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
         runtime.configure_from_library_config(&config).map_err(|error| error.message)?;
         let (text, attachments) = self.prepare_input(job)?;
-        let owner = job.stored.library_user_id == OWNER;
-        let context = BackendRequestContext {
-            request_id: job.stored.request_id.clone(),
-            library_id: self.library.id.clone(),
-            actor: BackendActor {
-                library_user_id: job.stored.library_user_id.clone(),
-                external_identity: Some(crate::backend::context::ExternalIdentity {
-                    provider: "telegram".into(),
-                    user_id: job.stored.telegram_user_id.to_string(),
-                    chat_id: Some(chat_id),
-                }),
-            },
-            channel: BackendChannel::Telegram,
-            // Text, photos and documents all go to the library chat, where
-            // the model picks the tools the request needs.
-            scope: BackendScope::Library,
-            persistence_policy: if owner { PersistencePolicy::Persistent } else { PersistencePolicy::EphemeralNoMemory },
-        };
-        let mut messages = self.history.lock().map(|history| history.get(&chat_id).map(|items| items.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
-        messages.push(BackendMessage { role: MessageRole::User, content: text.clone(), images: Vec::new(), attachments });
-        let idempotency_key = format!("{}:{}", self.library.id, job.stored.request_id);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        if let Ok(mut current) = self.current.lock() {
-            *current = Some(CurrentRun {
-                chat_id,
-                text: text.clone(),
-                context: context.clone(),
-                idempotency_key: idempotency_key.clone(),
-                cancelled: Arc::clone(&cancelled),
-            });
-        }
-        let mut request = BackendRequest::Run(AgentRequest {
-            context: context.clone(),
-            messages,
-            snapshot: None,
-            tools: Vec::new(),
-            attachments: Vec::new(),
-            idempotency_key: idempotency_key.clone(),
-            prompt_name: None,
-            tool_access: Default::default(),
-            library_search: true,
-        });
+        let (run, request) = self.begin_run(job, &text, attachments);
         let progress = Progress::start(self, chat_id, progress_enabled, edit_progress);
         let mut seen_events = 0;
-        let outcome = loop {
-            let running = Arc::new(AtomicBool::new(true));
-            let observer = progress.observe(&runtime, &context, Arc::clone(&running));
-            let result = {
-                let registry = self.app.state::<crate::library_registry::LibraryBindingRegistry>();
-                crate::backend_runtime::execute_backend_request(
-                    &self.app,
-                    BackendRequestEnvelope { protocol_version: ProtocolVersion::default(), request },
-                    &runtime,
-                    registry.inner(),
-                )
-            };
-            running.store(false, Ordering::SeqCst);
-            if let Some(observer) = observer {
-                let _ = observer.join();
+        let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
+            // What the agent wrote in the round it asks is the context of
+            // the question: it goes whole before it.
+            self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
+            match self.ask(chat_id, interaction, operation) {
+                Some(decision) => Ok(decision),
+                None if run.cancelled.load(Ordering::SeqCst) => {
+                    self.cancel_operation(&run.context, &run.idempotency_key, operation.clone());
+                    Err(bot::CANCELLED_MESSAGE.to_string())
+                }
+                None => Err("Operación cancelada.".to_string()),
             }
-            let response = match result {
-                Ok(envelope) => envelope.response,
-                Err(error) => {
-                    crate::backend_runtime::log_request_failure(&runtime, "telegram", &context, &error);
-                    break Err(error.message);
-                }
-            };
-            let stopped = cancelled.load(Ordering::SeqCst);
-            match response {
-                // The run finished before the cancel reached it.
-                BackendResponse::Result { response } => break Ok(response),
-                BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } if stopped => {
-                    if let Some(operation) = status.operation {
-                        self.cancel_operation(&context, &idempotency_key, operation);
-                    }
-                    break Err(bot::CANCELLED_MESSAGE.to_string());
-                }
-                _ if stopped => break Err(bot::CANCELLED_MESSAGE.to_string()),
-                BackendResponse::Error { error, .. } => {
-                    crate::backend_runtime::log_request_failure(&runtime, "telegram", &context, &error);
-                    break Err(error.message);
-                }
-                BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } => {
-                    let (Some(operation), Some(interaction)) = (status.operation.clone(), status.interaction.clone()) else {
-                        break Err("El runtime no devolvió una respuesta final.".to_string());
-                    };
-                    // What the agent wrote in the round it asks is the
-                    // context of the question: it goes whole before it.
-                    self.deliver_notes(chat_id, &runtime, &context, &mut seen_events, true);
-                    let Some(decision) = self.ask(chat_id, interaction, &operation) else {
-                        if cancelled.load(Ordering::SeqCst) {
-                            self.cancel_operation(&context, &idempotency_key, operation);
-                            break Err(bot::CANCELLED_MESSAGE.to_string());
-                        }
-                        break Err("Operación cancelada.".to_string());
-                    };
-                    request = BackendRequest::Resume(ResumeRequest {
-                        context: context.clone(),
-                        idempotency_key: idempotency_key.clone(),
-                        request_id: context.request_id.clone(),
-                        operation,
-                        last_event_sequence: status.last_event_sequence,
-                        decision,
-                    });
-                }
-                _ => break Err("El runtime no devolvió una respuesta final.".to_string()),
-            }
-        };
-        let stopped = cancelled.load(Ordering::SeqCst);
+        });
+        let stopped = run.cancelled.load(Ordering::SeqCst);
         progress.finish(match (&outcome, stopped) {
             (Ok(_), _) => "<b>Respuesta enviada</b>",
             (Err(_), true) => "<b>Solicitud cancelada</b>",
@@ -1199,13 +1234,183 @@ impl Worker {
             self.send(chat_id, bot::TOO_LATE_TO_CANCEL_MESSAGE);
         }
         // What the progress showed clipped arrives whole before the answer.
-        self.deliver_notes(chat_id, &runtime, &context, &mut seen_events, false);
+        self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
         self.send_markdown(chat_id, &response.response.markdown);
         self.remember(chat_id, text, response.response.markdown.clone());
         if response.changed {
             let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
         }
         Ok(())
+    }
+
+    /// Runs a request Notia queued by itself. Nothing reaches the chat but
+    /// the agent's message, and only when it is not silence; the message
+    /// then joins the chat's history, so a reply has its context, and
+    /// becomes a thought, so the next runs know it was said.
+    fn run_autonomous(&self, job: &Job, kind: AutonomousKind) {
+        let chat_id = job.stored.chat_id;
+        let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
+        if let Err(error) = runtime.configure_from_library_config(&self.library_config()) {
+            log::error!("[notia:autonomy] no se pudo preparar la corrida {}: {:?}", kind.id(), error.code);
+            return;
+        }
+        let (run, request) = self.begin_run(job, &job.text, Vec::new());
+        let silent_progress = Progress::start(self, chat_id, false, false);
+        let mut question = None;
+        let outcome = self.drive(&runtime, &run, request, &silent_progress, |interaction, operation| {
+            // Nobody waits for an answer: a question becomes the message
+            // and any other pause ends the run.
+            if let crate::backend::PendingInteraction::Clarification(request) = &interaction {
+                let options = request.options.iter().map(|option| format!("\n- {}", option.label)).collect::<String>();
+                question = Some(format!("{}{options}", request.question.trim()));
+            }
+            self.cancel_operation(&run.context, &run.idempotency_key, operation.clone());
+            Err("La corrida autónoma no espera respuestas.".to_string())
+        });
+        // The Owner wrote meanwhile: their message goes first and the next
+        // run can bring this up again.
+        if run.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        let message = match (outcome, question) {
+            (Ok(response), _) => response.response.markdown,
+            (Err(_), Some(question)) => question,
+            // A failed run sends nothing; `drive` logged backend errors.
+            (Err(_), None) => return,
+        };
+        if autonomy::is_silent(&message) {
+            return;
+        }
+        self.send_markdown(chat_id, &message);
+        self.keep_autonomous_message(chat_id, kind, message);
+    }
+
+    /// Keeps a message Notia sent by itself in the chat's history and in
+    /// the agent's thoughts.
+    fn keep_autonomous_message(&self, chat_id: i64, kind: AutonomousKind, message: String) {
+        if let Err(error) = crate::agent_knowledge::keep_thought(&self.app, &self.library.id, &autonomy::sent_thought(&message)) {
+            log::error!("[notia:autonomy] no se pudo anotar el mensaje enviado: {:?}", error.code);
+        }
+        self.remember(chat_id, autonomy::autonomous_history_note(kind), message);
+    }
+
+    /// Context and first request of a job's run, registered as the chat's
+    /// current run so a message of the chat can stop it.
+    fn begin_run(&self, job: &Job, text: &str, attachments: Vec<MessageAttachment>) -> (ActiveRun, BackendRequest) {
+        let chat_id = job.stored.chat_id;
+        let owner = job.stored.library_user_id == OWNER;
+        let context = BackendRequestContext {
+            request_id: job.stored.request_id.clone(),
+            library_id: self.library.id.clone(),
+            actor: BackendActor {
+                library_user_id: job.stored.library_user_id.clone(),
+                external_identity: Some(crate::backend::context::ExternalIdentity {
+                    provider: "telegram".into(),
+                    user_id: job.stored.telegram_user_id.to_string(),
+                    chat_id: Some(chat_id),
+                }),
+            },
+            channel: BackendChannel::Telegram,
+            // Text, photos and documents all go to the library chat, where
+            // the model picks the tools the request needs.
+            scope: BackendScope::Library,
+            persistence_policy: if owner { PersistencePolicy::Persistent } else { PersistencePolicy::EphemeralNoMemory },
+        };
+        let mut messages = self.history.lock().map(|history| history.get(&chat_id).map(|items| items.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
+        messages.push(BackendMessage { role: MessageRole::User, content: text.to_string(), images: Vec::new(), attachments });
+        let idempotency_key = format!("{}:{}", self.library.id, job.stored.request_id);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = self.current.lock() {
+            *current = Some(CurrentRun {
+                chat_id,
+                text: text.to_string(),
+                context: context.clone(),
+                idempotency_key: idempotency_key.clone(),
+                cancelled: Arc::clone(&cancelled),
+                autonomous: job.autonomous.is_some(),
+            });
+        }
+        let request = BackendRequest::Run(AgentRequest {
+            context: context.clone(),
+            messages,
+            snapshot: None,
+            tools: Vec::new(),
+            attachments: Vec::new(),
+            idempotency_key: idempotency_key.clone(),
+            prompt_name: None,
+            tool_access: Default::default(),
+            library_search: true,
+            autonomous: job.autonomous.is_some(),
+        });
+        (ActiveRun { context, idempotency_key, cancelled }, request)
+    }
+
+    /// Runs `request` until the agent answers. Each pause (a confirmation,
+    /// plan or question) is resumed with what `pause` decides, or ends the
+    /// run with its error. A cancelled run ends with the cancel message.
+    fn drive(
+        &self,
+        runtime: &crate::backend_runtime::BackendRuntimeState,
+        run: &ActiveRun,
+        mut request: BackendRequest,
+        progress: &Progress,
+        mut pause: impl FnMut(crate::backend::PendingInteraction, &crate::backend::OperationToken) -> Result<ResumeDecision, String>,
+    ) -> Result<crate::backend::AgentResponse, String> {
+        loop {
+            let running = Arc::new(AtomicBool::new(true));
+            let observer = progress.observe(runtime, &run.context, Arc::clone(&running));
+            let result = {
+                let registry = self.app.state::<crate::library_registry::LibraryBindingRegistry>();
+                crate::backend_runtime::execute_backend_request(
+                    &self.app,
+                    BackendRequestEnvelope { protocol_version: ProtocolVersion::default(), request },
+                    runtime,
+                    registry.inner(),
+                )
+            };
+            running.store(false, Ordering::SeqCst);
+            if let Some(observer) = observer {
+                let _ = observer.join();
+            }
+            let response = match result {
+                Ok(envelope) => envelope.response,
+                Err(error) => {
+                    crate::backend_runtime::log_request_failure(runtime, "telegram", &run.context, &error);
+                    return Err(error.message);
+                }
+            };
+            let stopped = run.cancelled.load(Ordering::SeqCst);
+            match response {
+                // The run finished before the cancel reached it.
+                BackendResponse::Result { response } => return Ok(response),
+                BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } if stopped => {
+                    if let Some(operation) = status.operation {
+                        self.cancel_operation(&run.context, &run.idempotency_key, operation);
+                    }
+                    return Err(bot::CANCELLED_MESSAGE.to_string());
+                }
+                _ if stopped => return Err(bot::CANCELLED_MESSAGE.to_string()),
+                BackendResponse::Error { error, .. } => {
+                    crate::backend_runtime::log_request_failure(runtime, "telegram", &run.context, &error);
+                    return Err(error.message);
+                }
+                BackendResponse::Operation { status } | BackendResponse::Resumed { status, .. } => {
+                    let (Some(operation), Some(interaction)) = (status.operation.clone(), status.interaction.clone()) else {
+                        return Err("El runtime no devolvió una respuesta final.".to_string());
+                    };
+                    let decision = pause(interaction, &operation)?;
+                    request = BackendRequest::Resume(ResumeRequest {
+                        context: run.context.clone(),
+                        idempotency_key: run.idempotency_key.clone(),
+                        request_id: run.context.request_id.clone(),
+                        operation,
+                        last_event_sequence: status.last_event_sequence,
+                        decision,
+                    });
+                }
+                _ => return Err("El runtime no devolvió una respuesta final.".to_string()),
+            }
+        }
     }
 
     /// Adds a request and its answer to the chat's recent history.

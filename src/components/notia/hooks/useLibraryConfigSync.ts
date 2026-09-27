@@ -10,7 +10,7 @@ import { readLibraryConfig, writeLibraryConfig, type NotiaLibraryConfig } from '
 import { useAppSelector } from '../../../store/hooks'
 import { selectLibraryStatus } from '../../../features/library/librarySelectors'
 import type { NotiaLibrary } from '../../../types/notia'
-import type { TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
+import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../../services/preferences/telegramSettingsStorage'
 import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../../services/contexts/libraryContexts'
 
 interface UseLibraryConfigSyncParams {
@@ -86,7 +86,7 @@ export function useLibraryConfigSync({
     // not inherit the key of the previous one.
     const ai = config.ia ?? { ...fallback.aiPreferences, apiKey: '' }
     if (canonicalJson(ai) !== canonicalJson({ ...fallback.aiPreferences, apiKey: getSessionAiApiKey() })) setters.setAiPreferences(ai)
-    const telegram = config.telegram ?? { enabled: false, botToken: '' }
+    const telegram = config.telegram ?? DEFAULT_TELEGRAM_PREFERENCES
     if (canonicalJson(telegram) !== canonicalJson(fallback.telegramPreferences)) setters.setTelegramPreferences(telegram)
     setters.setContexts(config.contexts ?? DEFAULT_LIBRARY_CONTEXTS.map((context) => ({ ...context })))
   }

@@ -13,6 +13,20 @@
       }
     }
   },
+  "add_agent_thought": {
+    "description": "Guarda sin confirmacion un pensamiento propio y breve en tus notas de trabajo (thoughts.md): algo que observaste, le avisaste, le preguntaste o le propusiste a la persona, o algo que queres seguir. Notia le agrega la fecha y hora. Nunca guarda datos personales (van en add_agent_memory) ni instrucciones de la persona (van en add_agent_rule). Solo guarda el campo requerido; no autoriza ni confirma otras acciones.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "thought"
+      ],
+      "properties": {
+        "thought": {
+          "type": "string"
+        }
+      }
+    }
+  },
   "add_agent_rule": {
     "description": "Guarda solo una instruccion imperativa y explicita sobre tu comportamiento futuro. Nunca guarda identidad, gustos, empleo, proyectos ni otros hechos personales. Fuente de verdad: memoria administrada de la biblioteca. Solo guarda el campo requerido; no autoriza ni confirma otras acciones.",
     "parameters": {

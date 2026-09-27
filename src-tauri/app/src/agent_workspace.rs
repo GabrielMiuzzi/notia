@@ -1,7 +1,8 @@
 //! The library's `.agent` workspace exposed to the interface: folder
 //! structure, the visual copy of the default prompt, custom prompts and the
-//! selected one, rules added by the agent and persistent memories. The
-//! content rules live in `backend_core::agent_workspace`.
+//! selected one, rules added by the agent, persistent memories and the
+//! agent's own thoughts. The content rules live in
+//! `backend_core::agent_workspace`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use crate::backend::agent_workspace as workspace;
 use crate::backend::{
     BackendError, BackendErrorCode,
 };
-use crate::library_documents::{inventory_paths, with_documents};
+use crate::library_documents::{inventory_paths, with_documents, Documents};
 use crate::library_registry::LibraryBindingRegistry;
 use crate::mobile_directory_picker::AndroidDirectoryPickerState;
 
@@ -117,6 +118,7 @@ fn prepare_workspace(app: &AppHandle, library_id: &str) -> Result<(), BackendErr
         if !unchanged_memory {
             documents.write(workspace::MEMORY_PATH, memory.as_deref(), &memory_content)?;
         }
+        write_missing_thoughts(documents)?;
 
         let default_prompt = documents.read(workspace::DEFAULT_PROMPT_PATH)?;
         documents.write(
@@ -327,6 +329,128 @@ pub(crate) async fn backend_save_agent_memories(app: AppHandle, payload: AgentIt
     .await
 }
 
+fn read_items(documents: &Documents<'_>, path: &str) -> Result<(Option<String>, Vec<String>), BackendError> {
+    let current = documents.read(path)?;
+    let items = current
+        .as_deref()
+        .map(|content| workspace::parse_memory_items(workspace::document_body(content)))
+        .unwrap_or_default();
+    Ok((current, items))
+}
+
+/// Writes the empty thoughts file when it is missing.
+fn write_missing_thoughts(documents: &Documents<'_>) -> Result<bool, BackendError> {
+    if documents.read(workspace::THOUGHTS_PATH)?.is_some() {
+        return Ok(false);
+    }
+    documents.write(workspace::THOUGHTS_PATH, None, &workspace::with_confidential_context(&workspace::render_thoughts(&[])))?;
+    Ok(true)
+}
+
+/// Creates `thoughts.md` again when it is missing (deleted or never made).
+/// Unlike the session preparation, it looks at the file every time. Returns
+/// whether it wrote.
+pub(crate) fn ensure_thoughts_file(app: &AppHandle, library_id: &str) -> Result<bool, BackendError> {
+    with_workspace_lock(app, || with_documents(app, library_id, write_missing_thoughts))
+}
+
+/// The agent's thoughts saved in `thoughts.md`.
+pub(crate) fn thoughts(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
+    with_documents(app, library_id, |documents| read_items(documents, workspace::THOUGHTS_PATH).map(|(_, items)| items))
+}
+
+/// Replaces the thoughts with `next` only when `thoughts.md` still holds
+/// `expected`, so a thought saved meanwhile is never lost. Returns whether
+/// it wrote.
+pub(crate) fn replace_thoughts_if_unchanged(
+    app: &AppHandle,
+    library_id: &str,
+    expected: &[String],
+    next: &[String],
+) -> Result<bool, BackendError> {
+    if !workspace::THOUGHTS_LIMIT.fits(next) {
+        return Err(BackendError::invalid_input("Los pensamientos del agente superan el límite."));
+    }
+    with_workspace_lock(app, || {
+        with_documents(app, library_id, |documents| {
+            let (current, saved) = read_items(documents, workspace::THOUGHTS_PATH)?;
+            if saved != expected || saved == next {
+                return Ok(false);
+            }
+            documents.write(
+                workspace::THOUGHTS_PATH,
+                current.as_deref(),
+                &workspace::with_confidential_context(&workspace::render_thoughts(next)),
+            )?;
+            Ok(true)
+        })
+    })
+}
+
+/// Result of adding one item to a bounded agent file.
+enum Appended {
+    Changed(bool),
+    /// The file has no room: it must be rewritten first.
+    Full,
+}
+
+fn append_memory_locked(app: &AppHandle, library_id: &str, value: &str) -> Result<Appended, BackendError> {
+    with_documents(app, library_id, |documents| {
+        let (current, mut memories) = read_items(documents, workspace::MEMORY_PATH)?;
+        if memories.iter().any(|memory| memory.eq_ignore_ascii_case(value)) {
+            return Ok(Appended::Changed(false));
+        }
+        if !workspace::MEMORY_LIMIT.fits_one_more(&memories, value) {
+            return Ok(Appended::Full);
+        }
+        memories.push(value.to_string());
+        documents.write(
+            workspace::MEMORY_PATH,
+            current.as_deref(),
+            &workspace::with_confidential_context(&workspace::render_memories(&memories)),
+        )?;
+        Ok(Appended::Changed(true))
+    })
+}
+
+fn append_thought_locked(app: &AppHandle, library_id: &str, stamped: &str) -> Result<Appended, BackendError> {
+    with_documents(app, library_id, |documents| {
+        let (current, thoughts) = read_items(documents, workspace::THOUGHTS_PATH)?;
+        let next = workspace::with_thought(&thoughts, stamped.to_string());
+        if !workspace::THOUGHTS_LIMIT.fits(&next) {
+            return Ok(Appended::Full);
+        }
+        documents.write(
+            workspace::THOUGHTS_PATH,
+            current.as_deref(),
+            &workspace::with_confidential_context(&workspace::render_thoughts(&next)),
+        )?;
+        Ok(Appended::Changed(true))
+    })
+}
+
+/// Adds an item under the workspace lock. When the file is full, the model
+/// rewrites it (`rewrite`, run without the lock because it calls the model)
+/// and the item is added once more; a file still full is an error, so
+/// nothing is dropped silently.
+fn append_bounded(
+    app: &AppHandle,
+    append: impl Fn() -> Result<Appended, BackendError>,
+    rewrite: impl FnOnce() -> Result<bool, BackendError>,
+    full: &str,
+) -> Result<bool, BackendError> {
+    if let Appended::Changed(changed) = with_workspace_lock(app, &append)? {
+        return Ok(changed);
+    }
+    if let Err(error) = rewrite() {
+        log::error!("[notia:memory] no se pudo reescribir un archivo lleno del agente: {:?}", error.code);
+    }
+    match with_workspace_lock(app, &append)? {
+        Appended::Changed(changed) => Ok(changed),
+        Appended::Full => Err(BackendError::invalid_input(full)),
+    }
+}
+
 fn append_rule_locked(app: &AppHandle, library_id: &str, rule: &str) -> Result<bool, BackendError> {
     with_documents(app, library_id, |documents| {
         let current = documents.read(workspace::RULES_PATH)?;
@@ -338,41 +462,44 @@ fn append_rule_locked(app: &AppHandle, library_id: &str, rule: &str) -> Result<b
     })
 }
 
-/// Persists a rule or memory requested by the agent tool, with the same
-/// format the interface reads. Returns whether the file changed.
+/// Persists a rule, memory or thought requested by the agent tool, with the
+/// same format the interface reads. A thought is dated here. A full memory
+/// or thoughts file is rewritten by the model before adding. Returns
+/// whether the file changed.
 pub(crate) fn append_agent_item(app: &AppHandle, library_id: &str, kind: AgentItem, value: &str) -> Result<bool, BackendError> {
-    let value = value.trim();
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if value.is_empty() || value.chars().count() > workspace::MAX_RULE_CHARS {
         return Err(BackendError::invalid_input("El contenido de memoria no es válido o supera el límite."));
     }
     ensure_workspace(app, library_id)?;
-    with_workspace_lock(app, || match kind {
-        AgentItem::Rule => append_rule_locked(app, library_id, value),
-        AgentItem::Memory => with_documents(app, library_id, |documents| {
-            let current = documents.read(workspace::MEMORY_PATH)?;
-            let mut memories = current
-                .as_deref()
-                .map(|content| workspace::parse_memory_items(workspace::document_body(content)))
-                .unwrap_or_default();
-            if memories.iter().any(|memory| memory.eq_ignore_ascii_case(value)) {
-                return Ok(false);
-            }
-            if memories.len() >= workspace::MAX_MEMORIES {
-                return Err(BackendError::invalid_input("La memoria del agente alcanzó el límite de elementos."));
-            }
-            memories.push(value.to_string());
-            documents.write(
-                workspace::MEMORY_PATH,
-                current.as_deref(),
-                &workspace::with_confidential_context(&workspace::render_memories(&memories)),
-            )?;
-            Ok(true)
-        }),
-    })
+    match kind {
+        AgentItem::Rule => with_workspace_lock(app, || append_rule_locked(app, library_id, &value)),
+        AgentItem::Memory => append_bounded(
+            app,
+            || append_memory_locked(app, library_id, &value),
+            || crate::agent_knowledge::compact_memories(app, library_id),
+            "La memoria del agente está llena y no se pudo reorganizar. Probá de nuevo más tarde.",
+        ),
+        AgentItem::Thought => {
+            let stamped = workspace::stamp_thought(&crate::local_time::thought_stamp(), &value).ok_or_else(|| {
+                BackendError::invalid_input(format!(
+                    "Un pensamiento debe ser una oración breve de hasta {} caracteres.",
+                    workspace::MAX_THOUGHT_CHARS
+                ))
+            })?;
+            append_bounded(
+                app,
+                || append_thought_locked(app, library_id, &stamped),
+                || crate::agent_knowledge::compact_thoughts(app, library_id),
+                "Tus pensamientos están llenos y no se pudieron reorganizar. Probá de nuevo más tarde.",
+            )
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum AgentItem {
     Rule,
     Memory,
+    Thought,
 }

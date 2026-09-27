@@ -6,6 +6,7 @@
 //! una ventana.
 
 pub mod agent;
+pub mod agent_autonomy;
 pub mod agent_knowledge;
 pub mod agent_workspace;
 pub mod ai_settings;
@@ -79,11 +80,11 @@ pub use paths::{
     normalize_prompt_file_name, validate_agent_path, validate_logical_library_path, AgentPath,
     AgentPathKind, LogicalLibraryPath, ScopedAgentPath, ScopedLibraryPath, AGENT_DIRECTORY,
     DEFAULT_PROMPT_FILE, MEMORY_DIRECTORY, MEMORY_FILE, PROMPTS_DIRECTORY, RULES_FILE,
-    SKILLS_DIRECTORY,
+    SKILLS_DIRECTORY, THOUGHTS_FILE,
 };
 pub use ports::{
     load_memory_for_context, load_prompt_for_context, load_rules_for_context,
-    load_skills_for_context, save_memory_for_context, synchronize_default_prompt_for_context,
+    load_skills_for_context, load_thoughts_for_context, save_memory_for_context, synchronize_default_prompt_for_context,
     AgentFileRepository, AgentSkill, AgentStateRepository, DocumentRepository, LibraryDescriptor,
     LibraryRepository, ScopedDocumentRepository,
 };

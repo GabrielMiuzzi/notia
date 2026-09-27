@@ -1448,6 +1448,20 @@ export function SettingsModal({
                         onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitTelegramToken() } }}
                       />
                     </SettingsRow>
+                    <SettingsRow
+                      inline
+                      label="Agente autónomo"
+                      htmlFor="notia-settings-telegram-autonomous"
+                      description="Cada hora y al llegar un mail revisa tus cosas y, si hace falta, te escribe por Telegram (solo al Owner)."
+                    >
+                      <SettingsSwitch
+                        id="notia-settings-telegram-autonomous"
+                        label="Agente autónomo"
+                        checked={telegramPreferences.autonomousAgent}
+                        disabled={!telegramPreferences.enabled}
+                        onChange={(autonomousAgent) => onTelegramPreferencesChange({ ...telegramPreferences, autonomousAgent })}
+                      />
+                    </SettingsRow>
                     <SettingsFooter tone={isCheckingTelegram ? 'loading' : telegramStatusTone} message={telegramStatus}>
                       <NotiaButton disabled={!telegramTokenDraft.trim() || isCheckingTelegram} onClick={() => { void handleCheckTelegram() }}>
                         {isCheckingTelegram ? 'Probando…' : 'Probar conexión'}
